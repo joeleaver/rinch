@@ -335,5 +335,6 @@ fn app() -> Element {
 }
 
 fn main() {
-    rinch::run(app);
+    // Use hot reload for development - UI updates when files change
+    rinch::run_with_hot_reload(app);
 }

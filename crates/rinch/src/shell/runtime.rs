@@ -378,6 +378,109 @@ impl Runtime {
         }
     }
 
+    /// Generate an HTML representation of the DOM tree for the target window.
+    fn generate_dom_tree_html(&self) -> String {
+        let Some(target_id) = self.devtools_target else {
+            return r#"<p style="color: #808080;">No window selected.</p>"#.to_string();
+        };
+
+        let Some(window) = self.window_manager.get(target_id) else {
+            return r#"<p style="color: #808080;">Target window not found.</p>"#.to_string();
+        };
+
+        let inner = window.doc.inner();
+        let mut html = String::new();
+
+        // Start from the root and walk the tree
+        fn render_node(
+            inner: &blitz_dom::BaseDocument,
+            node_id: usize,
+            depth: usize,
+            html: &mut String,
+            max_depth: usize,
+        ) {
+            if depth > max_depth {
+                return;
+            }
+
+            let Some(node) = inner.get_node(node_id) else {
+                return;
+            };
+
+            let indent = "  ".repeat(depth);
+
+            if let Some(element) = node.element_data() {
+                let tag = &element.name.local;
+
+                // Get id and class for display
+                let mut id_str = String::new();
+                let mut class_str = String::new();
+                for attr in element.attrs() {
+                    let name = attr.name.local.as_ref();
+                    if name == "id" {
+                        id_str = format!(r#" <span class="attr-id">#{}</span>"#, attr.value);
+                    } else if name == "class" {
+                        let classes: Vec<&str> = attr.value.split_whitespace().collect();
+                        if !classes.is_empty() {
+                            class_str = format!(
+                                r#" <span class="attr-class">.{}</span>"#,
+                                classes.join(".")
+                            );
+                        }
+                    }
+                }
+
+                html.push_str(&format!(
+                    r#"{}<div class="tree-node"><span class="tag">&lt;{}&gt;</span>{}{}</div>"#,
+                    indent, tag, id_str, class_str
+                ));
+                html.push('\n');
+
+                // Recurse into children
+                for &child_id in &node.children {
+                    render_node(inner, child_id, depth + 1, html, max_depth);
+                }
+            } else if node.is_text_node() {
+                let text = node.text_content();
+                let trimmed = text.trim();
+                if !trimmed.is_empty() && trimmed.len() < 50 {
+                    html.push_str(&format!(
+                        r#"{}<div class="tree-text">"{}"</div>"#,
+                        indent,
+                        html_escape(trimmed)
+                    ));
+                    html.push('\n');
+                }
+            } else {
+                // Other node types - just recurse
+                for &child_id in &node.children {
+                    render_node(inner, child_id, depth + 1, html, max_depth);
+                }
+            }
+        }
+
+        // Helper to escape HTML
+        fn html_escape(s: &str) -> String {
+            s.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;")
+        }
+
+        // Get root node and render
+        if let Some(root) = inner.get_node(0) {
+            for &child_id in &root.children {
+                render_node(&inner, child_id, 0, &mut html, 10);
+            }
+        }
+
+        if html.is_empty() {
+            r#"<p style="color: #808080;">Empty document.</p>"#.to_string()
+        } else {
+            format!(r#"<div class="dom-tree">{}</div>"#, html)
+        }
+    }
+
     /// Generate HTML content for the DevTools window.
     fn generate_devtools_html(&self) -> String {
         use rinch_core::get_hooks_debug_info;
@@ -407,6 +510,30 @@ impl Runtime {
             Some(info) => {
                 let id_str = info.id.as_deref().unwrap_or("-");
                 let classes_str = info.classes.as_deref().unwrap_or("-");
+
+                // Generate styles HTML
+                let styles_html: String = if info.styles.is_empty() {
+                    String::new()
+                } else {
+                    let style_items: String = info
+                        .styles
+                        .iter()
+                        .map(|(name, value)| {
+                            format!(
+                                r#"<div class="style-item"><span class="style-name">{}</span>: <span class="style-value">{}</span></div>"#,
+                                name, value
+                            )
+                        })
+                        .collect();
+                    format!(
+                        r#"<div class="element-styles">
+                            <div class="layout-title">Computed Styles</div>
+                            {}
+                        </div>"#,
+                        style_items
+                    )
+                };
+
                 format!(
                     r#"<div class="element-info">
                         <div class="element-tag">&lt;{}&gt;</div>
@@ -421,6 +548,7 @@ impl Runtime {
                                 <div>h: {:.0}</div>
                             </div>
                         </div>
+                        {}
                     </div>"#,
                     info.tag_name,
                     id_str,
@@ -428,7 +556,8 @@ impl Runtime {
                     info.layout.x,
                     info.layout.y,
                     info.layout.width,
-                    info.layout.height
+                    info.layout.height,
+                    styles_html
                 )
             }
             None => r#"<p style="color: #808080;">Enable inspect mode (Alt+I) and hover over elements.</p>"#.to_string(),
@@ -564,6 +693,46 @@ impl Runtime {
             gap: 4px;
             color: #b5cea8;
         }}
+        .element-styles {{
+            margin-top: 12px;
+            padding-top: 8px;
+            border-top: 1px solid #3c3c3c;
+        }}
+        .style-item {{
+            margin-bottom: 2px;
+        }}
+        .style-name {{
+            color: #9cdcfe;
+        }}
+        .style-value {{
+            color: #ce9178;
+        }}
+        .dom-tree {{
+            background: #252526;
+            padding: 8px;
+            border-radius: 4px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-size: 11px;
+        }}
+        .tree-node {{
+            padding: 2px 0;
+            white-space: nowrap;
+        }}
+        .tree-node .tag {{
+            color: #569cd6;
+        }}
+        .tree-node .attr-id {{
+            color: #9cdcfe;
+        }}
+        .tree-node .attr-class {{
+            color: #ce9178;
+        }}
+        .tree-text {{
+            color: #808080;
+            font-style: italic;
+            padding: 2px 0;
+        }}
     </style>
 </head>
 <body>
@@ -573,6 +742,10 @@ impl Runtime {
         <div class="tab">Hooks</div>
     </div>
     <div class="panel">
+        <div class="section">
+            <div class="section-title">DOM Tree</div>
+            {}
+        </div>
         <div class="section">
             <div class="section-title">Hovered Element</div>
             {}
@@ -610,6 +783,7 @@ impl Runtime {
     </div>
 </body>
 </html>"#,
+            self.generate_dom_tree_html(),
             element_html,
             hooks_info.len(),
             hooks_html
@@ -745,6 +919,33 @@ pub fn run<F>(app: F)
 where
     F: Fn() -> Element + 'static,
 {
+    run_internal(app, false);
+}
+
+/// Run the application with hot reloading enabled.
+///
+/// When files in the `src` directory change, the UI will automatically re-render.
+/// This is useful during development to see changes without restarting.
+///
+/// # Example
+///
+/// ```ignore
+/// fn main() {
+///     rinch::run_with_hot_reload(app);
+/// }
+/// ```
+#[cfg(feature = "hot-reload")]
+pub fn run_with_hot_reload<F>(app: F)
+where
+    F: Fn() -> Element + 'static,
+{
+    run_internal(app, true);
+}
+
+fn run_internal<F>(app: F, #[allow(unused)] enable_hot_reload: bool)
+where
+    F: Fn() -> Element + 'static,
+{
     // Initialize tracing
     let _ = tracing_subscriber::fmt::try_init();
 
@@ -770,6 +971,12 @@ where
     let proxy = event_loop.create_proxy();
     runtime.proxy = Some(proxy.clone());
     runtime.render_context.set_proxy(proxy);
+
+    // Enable hot reload if requested
+    #[cfg(feature = "hot-reload")]
+    if enable_hot_reload {
+        runtime.enable_hot_reload(super::hot_reload::HotReloadConfig::default());
+    }
 
     event_loop.set_control_flow(ControlFlow::Wait);
     event_loop.run_app(&mut runtime).expect("Event loop error");

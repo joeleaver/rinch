@@ -454,8 +454,50 @@ impl ManagedWindow {
             height,
         };
 
-        // Get some key styles (we could expand this later)
-        let styles = Vec::new();
+        // Extract computed styles from the node
+        let mut styles = Vec::new();
+
+        // Get size
+        styles.push((
+            "size".to_string(),
+            format!("{:.0} × {:.0}", width, height),
+        ));
+
+        // Get padding from layout
+        let padding = &node.final_layout.padding;
+        if padding.top > 0.0 || padding.right > 0.0 || padding.bottom > 0.0 || padding.left > 0.0 {
+            styles.push((
+                "padding".to_string(),
+                format!(
+                    "{:.0} {:.0} {:.0} {:.0}",
+                    padding.top, padding.right, padding.bottom, padding.left
+                ),
+            ));
+        }
+
+        // Get margin from layout
+        let margin = &node.final_layout.margin;
+        if margin.top > 0.0 || margin.right > 0.0 || margin.bottom > 0.0 || margin.left > 0.0 {
+            styles.push((
+                "margin".to_string(),
+                format!(
+                    "{:.0} {:.0} {:.0} {:.0}",
+                    margin.top, margin.right, margin.bottom, margin.left
+                ),
+            ));
+        }
+
+        // Get border from layout
+        let border = &node.final_layout.border;
+        if border.top > 0.0 || border.right > 0.0 || border.bottom > 0.0 || border.left > 0.0 {
+            styles.push((
+                "border-width".to_string(),
+                format!(
+                    "{:.0} {:.0} {:.0} {:.0}",
+                    border.top, border.right, border.bottom, border.left
+                ),
+            ));
+        }
 
         Some(HoveredElementInfo {
             tag_name,

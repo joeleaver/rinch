@@ -113,6 +113,8 @@ pub use rinch_core::element::{
 pub use rinch_core::{batch, derived, untracked, Effect, Memo, Scope, Signal};
 pub use rinch_macros::rsx;
 pub use shell::run;
+#[cfg(feature = "hot-reload")]
+pub use shell::run_with_hot_reload;
 
 pub use rinch_core as core;
 pub use rinch_renderer as renderer;

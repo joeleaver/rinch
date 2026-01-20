@@ -6,6 +6,6 @@ license.workspace = true
 description = "A fully-featured rich-text editor built with rinch"
 
 [dependencies]
-rinch.workspace = true
+rinch = { workspace = true, features = ["hot-reload"] }
 tokio.workspace = true
 tracing.workspace = true

@@ -12,4 +12,6 @@ pub use devtools_overlay::render_overlay;
 #[cfg(feature = "hot-reload")]
 pub use hot_reload::{HotReloadConfig, HotReloader};
 pub use runtime::{run, RinchEvent, Runtime};
+#[cfg(feature = "hot-reload")]
+pub use runtime::run_with_hot_reload;
 pub use window_manager::{ManagedWindow, WindowManager};

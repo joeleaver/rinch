@@ -12,6 +12,7 @@
   - [Signals](./guide/signals.md)
   - [Effects](./guide/effects.md)
   - [Memos](./guide/memos.md)
+- [Hooks](./guide/hooks.md)
 
 # Architecture
 

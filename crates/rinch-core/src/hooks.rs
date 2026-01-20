@@ -1094,4 +1094,147 @@ mod tests {
         let _ = use_signal(|| 0);
         end_render();
     }
+
+    #[test]
+    fn use_state_provides_value_and_setter() {
+        reset_registry();
+
+        // First render
+        begin_render();
+        let (value, set_value) = use_state(|| 10);
+        assert_eq!(value, 10);
+        set_value(20);
+        end_render();
+
+        // Second render - should have updated value
+        begin_render();
+        let (value2, _) = use_state(|| 0);
+        assert_eq!(value2, 20);
+        end_render();
+    }
+
+    #[test]
+    fn use_effect_runs_when_deps_change() {
+        reset_registry();
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let run_count = Rc::new(Cell::new(0));
+        let run_count_clone = Rc::clone(&run_count);
+
+        // First render - effect runs
+        begin_render();
+        use_effect(
+            move || {
+                run_count_clone.set(run_count_clone.get() + 1);
+            },
+            "dep1",
+        );
+        end_render();
+        assert_eq!(run_count.get(), 1);
+
+        // Second render - same deps, effect should not run again
+        let run_count_clone2 = Rc::clone(&run_count);
+        begin_render();
+        use_effect(
+            move || {
+                run_count_clone2.set(run_count_clone2.get() + 1);
+            },
+            "dep1",
+        );
+        end_render();
+        assert_eq!(run_count.get(), 1); // Still 1
+
+        // Third render - different deps, effect should run
+        let run_count_clone3 = Rc::clone(&run_count);
+        begin_render();
+        use_effect(
+            move || {
+                run_count_clone3.set(run_count_clone3.get() + 1);
+            },
+            "dep2",
+        );
+        end_render();
+        assert_eq!(run_count.get(), 2);
+    }
+
+    #[test]
+    fn use_derived_tracks_dependencies() {
+        reset_registry();
+
+        begin_render();
+        let count = use_signal(|| 5);
+        let doubled = use_derived({
+            let count = count.clone();
+            move || count.get() * 2
+        });
+        assert_eq!(doubled.get(), 10);
+
+        // Update the signal
+        count.set(7);
+
+        // Derived value should update automatically
+        assert_eq!(doubled.get(), 14);
+        end_render();
+    }
+
+    #[test]
+    fn context_can_be_created_and_retrieved() {
+        // Clear any existing context
+        clear_context();
+
+        #[derive(Clone, PartialEq, Debug)]
+        struct TestContext {
+            value: i32,
+        }
+
+        // Create context
+        let ctx = create_context(TestContext { value: 42 });
+        assert_eq!(ctx.value, 42);
+
+        // Retrieve context
+        let retrieved = use_context::<TestContext>();
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().value, 42);
+
+        // Wrong type returns None
+        let wrong: Option<String> = use_context();
+        assert!(wrong.is_none());
+
+        // Clean up
+        clear_context();
+    }
+
+    #[test]
+    fn multiple_signals_track_independently() {
+        reset_registry();
+
+        begin_render();
+        let a = use_signal(|| 1);
+        let b = use_signal(|| 2);
+        let c = use_signal(|| 3);
+
+        assert_eq!(a.get(), 1);
+        assert_eq!(b.get(), 2);
+        assert_eq!(c.get(), 3);
+
+        a.set(10);
+        b.set(20);
+
+        assert_eq!(a.get(), 10);
+        assert_eq!(b.get(), 20);
+        assert_eq!(c.get(), 3); // Unchanged
+        end_render();
+
+        // Next render - values persist
+        begin_render();
+        let a2 = use_signal(|| 0);
+        let b2 = use_signal(|| 0);
+        let c2 = use_signal(|| 0);
+
+        assert_eq!(a2.get(), 10);
+        assert_eq!(b2.get(), 20);
+        assert_eq!(c2.get(), 3);
+        end_render();
+    }
 }

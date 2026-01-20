@@ -26,8 +26,20 @@ pub struct HotReloadConfig {
 
 impl Default for HotReloadConfig {
     fn default() -> Self {
+        // Try to find source directories that exist
+        let candidates = ["src", "examples", "crates"];
+        let watch_paths: Vec<PathBuf> = candidates
+            .iter()
+            .map(PathBuf::from)
+            .filter(|p| p.exists())
+            .collect();
+
         Self {
-            watch_paths: vec![PathBuf::from("src")],
+            watch_paths: if watch_paths.is_empty() {
+                vec![PathBuf::from(".")]
+            } else {
+                watch_paths
+            },
             extensions: vec!["rs".into(), "css".into(), "html".into()],
             debounce: Duration::from_millis(100),
         }
