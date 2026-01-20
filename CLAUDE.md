@@ -260,3 +260,18 @@ Press F12 to toggle the DevTools panel which shows:
 - We implement our own shell layer (not blitz-shell) for more control
 - Menu callbacks are fully implemented and trigger re-renders automatically
 - RSX macro provides helpful error messages with typo suggestions
+
+## Documentation Requirements
+
+**Always update user-facing documentation when adding or changing features:**
+
+1. **User Guide** (`docs/src/guide/`): Update relevant guide pages when adding new user-facing features, APIs, or changing behavior
+2. **API docs**: Ensure doc comments are added/updated for public APIs
+3. **CLAUDE.md**: Update this file when adding new hooks, element types, or architectural changes
+
+Documentation locations:
+- `docs/src/guide/hooks.md` - Hooks API guide
+- `docs/src/guide/menus.md` - Menu and shortcut guide
+- `docs/src/guide/windows.md` - Window management
+- `docs/src/guide/reactivity.md` - Signals, effects, memos
+- `docs/src/SUMMARY.md` - Table of contents (update when adding new pages)
