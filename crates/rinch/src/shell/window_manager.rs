@@ -7,6 +7,9 @@ use std::time::Instant;
 
 use anyrender_vello::VelloWindowRenderer;
 use anyrender::WindowRenderer;
+use peniko::Color;
+
+use super::transparent_renderer::{TransparentRendererOptions, TransparentWindowRenderer};
 use blitz_dom::{Document, DocumentConfig};
 use blitz_html::HtmlDocument;
 use blitz_paint::paint_scene;
@@ -24,15 +27,66 @@ use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Theme, Window, WindowAttributes, WindowId};
 
+#[cfg(target_os = "windows")]
+use winit::platform::windows::WindowAttributesExtWindows;
+
 use super::devtools::DevToolsState;
 use super::runtime::{ElementLayout, HoveredElementInfo, RinchEvent};
+
+/// Renderer wrapper that supports both standard and transparent rendering.
+pub enum RinchWindowRenderer {
+    /// Standard Vello renderer (Vulkan backend, opaque).
+    Standard(VelloWindowRenderer),
+    /// Transparent renderer (DX12 + DirectComposition).
+    Transparent(TransparentWindowRenderer),
+}
+
+impl RinchWindowRenderer {
+    fn is_active(&self) -> bool {
+        match self {
+            RinchWindowRenderer::Standard(r) => r.is_active(),
+            RinchWindowRenderer::Transparent(r) => r.is_active(),
+        }
+    }
+
+    fn resume(&mut self, window: Arc<Window>, width: u32, height: u32) {
+        match self {
+            RinchWindowRenderer::Standard(r) => r.resume(window, width, height),
+            RinchWindowRenderer::Transparent(r) => r.resume(window, width, height),
+        }
+    }
+
+    fn suspend(&mut self) {
+        match self {
+            RinchWindowRenderer::Standard(r) => r.suspend(),
+            RinchWindowRenderer::Transparent(r) => r.suspend(),
+        }
+    }
+
+    fn set_size(&mut self, width: u32, height: u32) {
+        match self {
+            RinchWindowRenderer::Standard(r) => r.set_size(width, height),
+            RinchWindowRenderer::Transparent(r) => r.set_size(width, height),
+        }
+    }
+
+    fn render<F>(&mut self, draw_fn: F)
+    where
+        F: for<'a, 'b> FnOnce(&'a mut anyrender_vello::VelloScenePainter<'b, 'b>),
+    {
+        match self {
+            RinchWindowRenderer::Standard(r) => r.render(draw_fn),
+            RinchWindowRenderer::Transparent(r) => r.render(draw_fn),
+        }
+    }
+}
 
 /// A window managed by rinch with integrated blitz rendering.
 pub struct ManagedWindow {
     /// The blitz document being rendered.
     pub doc: Box<dyn Document>,
-    /// The Vello renderer.
-    pub renderer: VelloWindowRenderer,
+    /// The window renderer (standard or transparent).
+    pub renderer: RinchWindowRenderer,
     /// Waker for async document updates.
     pub waker: Option<Waker>,
     /// The underlying winit window.
@@ -63,6 +117,14 @@ impl ManagedWindow {
         props: WindowProps,
         html_content: String,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        tracing::info!(
+            "Creating window '{}': borderless={}, transparent={}, decorations={}",
+            props.title,
+            props.borderless,
+            props.transparent,
+            !props.borderless
+        );
+
         // Build window attributes
         let mut attrs = WindowAttributes::default()
             .with_title(&props.title)
@@ -76,8 +138,23 @@ impl ManagedWindow {
             attrs = attrs.with_position(LogicalPosition::new(x, y));
         }
 
+        // On Windows, transparent windows need WS_EX_NOREDIRECTIONBITMAP for true
+        // desktop transparency with DirectComposition
+        #[cfg(target_os = "windows")]
+        if props.transparent {
+            attrs = attrs.with_no_redirection_bitmap(true);
+            tracing::info!("Enabled no_redirection_bitmap for transparent window");
+        }
+
         // Create winit window
         let window = Arc::new(event_loop.create_window(attrs)?);
+
+        // Log actual window state after creation
+        tracing::info!(
+            "Window created - is_decorated: {:?}, transparent: {:?}",
+            window.is_decorated(),
+            props.transparent // winit doesn't have is_transparent()
+        );
 
         // Set up viewport
         let size = window.inner_size();
@@ -107,8 +184,19 @@ impl ManagedWindow {
             }
         }
 
-        // Create renderer
-        let renderer = VelloWindowRenderer::new();
+        // Create renderer - use transparent renderer for transparent windows on Windows
+        let renderer = if props.transparent && cfg!(target_os = "windows") {
+            RinchWindowRenderer::Transparent(TransparentWindowRenderer::with_options(
+                TransparentRendererOptions {
+                    // Fully transparent base for true window transparency
+                    base_color: Color::TRANSPARENT,
+                    transparent: true,
+                    ..Default::default()
+                },
+            ))
+        } else {
+            RinchWindowRenderer::Standard(VelloWindowRenderer::new())
+        };
 
         let is_visible = window.is_visible().unwrap_or(true);
 
@@ -550,6 +638,48 @@ impl ManagedWindow {
         }
 
         None
+    }
+
+    /// Check if the element under the current mouse position should trigger window dragging.
+    ///
+    /// Returns `true` if there's an element with `data-drag-window` attribute at the
+    /// current mouse position.
+    pub fn should_drag_window(&self) -> bool {
+        let inner = self.doc.inner();
+
+        // Hit test at current mouse position
+        let Some(hit_result) = inner.hit(self.mouse_pos.0, self.mouse_pos.1) else {
+            return false;
+        };
+        let node_id = hit_result.node_id;
+
+        // Walk up the tree looking for a data-drag-window attribute
+        let mut current = Some(node_id);
+        while let Some(id) = current {
+            if let Some(node) = inner.get_node(id) {
+                if let Some(element) = node.element_data() {
+                    // Check for data-drag-window or draggable attribute
+                    for attr in element.attrs() {
+                        let name = attr.name.local.as_ref();
+                        if name == "data-drag-window" || name == "draggable" {
+                            return true;
+                        }
+                    }
+                }
+                current = node.parent;
+            } else {
+                break;
+            }
+        }
+
+        false
+    }
+
+    /// Initiate window dragging.
+    pub fn start_drag(&self) {
+        if let Err(e) = self.window.drag_window() {
+            tracing::warn!("Failed to start window drag: {:?}", e);
+        }
     }
 }
 

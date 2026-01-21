@@ -92,6 +92,7 @@ pub mod app;
 pub mod menu;
 pub mod shell;
 pub mod window;
+pub mod windows;
 
 #[cfg(feature = "file-dialogs")]
 pub mod dialogs;
@@ -113,6 +114,10 @@ pub mod prelude {
         use_memo, use_mount, use_ref, use_signal, use_state, RefHandle,
     };
     pub use rinch_macros::rsx;
+    // Window control functions
+    pub use crate::windows::{
+        close_current_window, minimize_current_window, toggle_maximize_current_window,
+    };
 }
 
 // Re-export core types at crate root

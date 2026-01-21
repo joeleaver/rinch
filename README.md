@@ -9,7 +9,9 @@ Rinch provides a reactive GUI framework using HTML/CSS for layout with a Vello-b
 - **Declarative UI** - React-style component model with hooks API
 - **HTML/CSS Rendering** - Full HTML/CSS support via Stylo and Taffy
 - **GPU Accelerated** - Fast 2D rendering via Vello and wgpu
+- **Transparent Windows** - VS Code-style frameless windows with transparency (Windows)
 - **Native Menus** - Cross-platform menu support via muda
+- **Window Controls** - Programmatic minimize/maximize/close for custom chrome
 - **DevTools** - Built-in developer tools for debugging
 
 ## Quick Start
@@ -43,15 +45,50 @@ fn main() {
 - [**Getting Started Guide**](https://joeleaver.github.io/wrinch/guide/getting-started.html)
 - [**API Reference**](https://joeleaver.github.io/wrinch/api/rinch/)
 
+## Transparent Windows (Windows)
+
+Rinch supports true window transparency on Windows, enabling VS Code-style frameless windows with custom chrome:
+
+```rust
+Window {
+    title: "My App",
+    borderless: true,      // Remove native decorations
+    transparent: true,     // Enable transparency
+    // ... your custom titlebar and controls
+}
+```
+
+For custom window controls, use the provided functions:
+
+```rust
+use rinch::prelude::*;
+
+button { onclick: || minimize_current_window(), "−" }
+button { onclick: || toggle_maximize_current_window(), "□" }
+button { onclick: || close_current_window(), "×" }
+```
+
+### wgpu Fork Requirement
+
+Transparent windows on Windows require a patched version of wgpu to enable Rgba8Unorm storage textures for Vello rendering with DX12/DirectComposition. This is handled automatically via `[patch.crates-io]` in `Cargo.toml`:
+
+```toml
+[patch.crates-io]
+wgpu = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
+wgpu-core = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
+wgpu-hal = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
+wgpu-types = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
+naga = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
+```
+
+A PR has been submitted upstream: [gfx-rs/wgpu#8908](https://github.com/gfx-rs/wgpu/pull/8908)
+
 ## Development Setup
 
 ```bash
 # Clone the repository
-git clone git@github.com:joeleaver/wrinch.git
-cd wrinch
-
-# Install git hooks (validates docs on commit)
-./scripts/setup-hooks.sh
+git clone git@github.com:joeleaver/rinch.git
+cd rinch
 
 # Build
 cargo build

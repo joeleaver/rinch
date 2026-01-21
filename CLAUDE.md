@@ -305,12 +305,60 @@ let tray = TrayIconBuilder::new()
     .build()?;
 ```
 
+## Transparent Windows (Windows)
+
+Rinch supports true window transparency on Windows via DX12 + DirectComposition:
+
+```rust
+Window {
+    title: "My App",
+    borderless: true,      // Remove native decorations
+    transparent: true,     // Enable transparency
+    // ... your custom titlebar and content
+}
+```
+
+**Requirements for transparency:**
+- DX12 backend with DirectComposition (`WGPU_DX12_PRESENTATION_SYSTEM=DxgiFromVisual`)
+- `CompositeAlphaMode::PreMultiplied`
+- `WS_EX_NOREDIRECTIONBITMAP` window style (handled automatically)
+- Patched wgpu for Rgba8Unorm storage textures (see wgpu fork below)
+
+### Window Control Functions
+
+For custom window chrome (minimize/maximize/close buttons):
+
+```rust
+use rinch::prelude::*;
+
+// In event handlers:
+button { onclick: || minimize_current_window(), "−" }
+button { onclick: || toggle_maximize_current_window(), "□" }
+button { onclick: || close_current_window(), "×" }
+```
+
+These functions are available in the prelude and work from onclick handlers.
+
+### wgpu Fork
+
+Transparent windows require a patched wgpu to enable Rgba8Unorm storage textures for Vello's compute shaders on DX12. The patches are in `[patch.crates-io]` in `Cargo.toml`:
+
+- **Repository**: https://github.com/joeleaver/wgpu-fork
+- **Branch**: `rinch-patch`
+- **Upstream PR**: https://github.com/gfx-rs/wgpu/pull/8908
+
+The patches:
+1. `instance.rs` - Force storage capabilities for Rgba8Unorm/Bgra8Unorm
+2. `device/resource.rs` - Use hardware format features instead of WebGPU defaults
+3. `present.rs` - Use adapter format features for surface textures
+
 ## Development Notes
 
 - **smyeditor** is the primary way to iterate on the framework
 - We implement our own shell layer (not blitz-shell) for more control
 - Menu callbacks are fully implemented and trigger re-renders automatically
 - RSX macro provides helpful error messages with typo suggestions
+- Transparent windows use an intermediate render texture (swapchain textures don't support STORAGE_BINDING)
 
 ## Documentation Requirements
 

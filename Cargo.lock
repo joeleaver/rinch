@@ -2573,6 +2573,31 @@ dependencies = [
 
 [[package]]
 name = "naga"
+version = "27.0.1"
+source = "git+https://github.com/joeleaver/wgpu-fork?branch=rinch-patch#4664307b1c18db5eecf0bb36541b4f7b4d192b6d"
+dependencies = [
+ "arrayvec",
+ "bit-set",
+ "bitflags 2.10.0",
+ "cfg-if",
+ "cfg_aliases",
+ "codespan-reporting",
+ "half",
+ "hashbrown 0.16.1",
+ "hexf-parse",
+ "indexmap",
+ "libm",
+ "log",
+ "num-traits",
+ "once_cell",
+ "rustc-hash 1.1.0",
+ "spirv",
+ "thiserror 2.0.18",
+ "unicode-ident",
+]
+
+[[package]]
+name = "naga"
 version = "27.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "066cf25f0e8b11ee0df221219010f213ad429855f57c494f995590c861a9a7d8"
@@ -2592,7 +2617,6 @@ dependencies = [
  "num-traits",
  "once_cell",
  "rustc-hash 1.1.0",
- "spirv",
  "thiserror 2.0.18",
  "unicode-ident",
 ]
@@ -3048,9 +3072,9 @@ dependencies = [
 
 [[package]]
 name = "ordered-float"
-version = "5.1.0"
+version = "4.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f4779c6901a562440c3786d08192c6fbda7c1c2060edd10006b05ee35d10f2d"
+checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
 dependencies = [
  "num-traits",
 ]
@@ -3615,6 +3639,8 @@ dependencies = [
  "futures-util",
  "muda 0.14.1",
  "notify",
+ "peniko",
+ "pollster",
  "rfd",
  "rinch-core",
  "rinch-macros",
@@ -3623,6 +3649,8 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tray-icon",
+ "vello",
+ "wgpu",
  "winit",
 ]
 
@@ -4846,7 +4874,7 @@ checksum = "7a765d44d4bd354146e44f9a860f4e92effd91a97302549be9e47f0a18d8128c"
 dependencies = [
  "bytemuck",
  "log",
- "naga",
+ "naga 27.0.3",
  "thiserror 2.0.18",
  "vello_encoding",
 ]
@@ -5103,8 +5131,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 [[package]]
 name = "wgpu"
 version = "27.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfe68bac7cde125de7a731c3400723cadaaf1703795ad3f4805f187459cd7a77"
+source = "git+https://github.com/joeleaver/wgpu-fork?branch=rinch-patch#4664307b1c18db5eecf0bb36541b4f7b4d192b6d"
 dependencies = [
  "arrayvec",
  "bitflags 2.10.0",
@@ -5114,7 +5141,7 @@ dependencies = [
  "hashbrown 0.16.1",
  "js-sys",
  "log",
- "naga",
+ "naga 27.0.1",
  "parking_lot",
  "portable-atomic",
  "profiling",
@@ -5131,9 +5158,8 @@ dependencies = [
 
 [[package]]
 name = "wgpu-core"
-version = "27.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27a75de515543b1897b26119f93731b385a19aea165a1ec5f0e3acecc229cae7"
+version = "27.0.1"
+source = "git+https://github.com/joeleaver/wgpu-fork?branch=rinch-patch#4664307b1c18db5eecf0bb36541b4f7b4d192b6d"
 dependencies = [
  "arrayvec",
  "bit-set",
@@ -5145,7 +5171,7 @@ dependencies = [
  "hashbrown 0.16.1",
  "indexmap",
  "log",
- "naga",
+ "naga 27.0.1",
  "once_cell",
  "parking_lot",
  "portable-atomic",
@@ -5163,36 +5189,32 @@ dependencies = [
 
 [[package]]
 name = "wgpu-core-deps-apple"
-version = "27.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0772ae958e9be0c729561d5e3fd9a19679bcdfb945b8b1a1969d9bfe8056d233"
+version = "27.0.1"
+source = "git+https://github.com/joeleaver/wgpu-fork?branch=rinch-patch#4664307b1c18db5eecf0bb36541b4f7b4d192b6d"
 dependencies = [
  "wgpu-hal",
 ]
 
 [[package]]
 name = "wgpu-core-deps-emscripten"
-version = "27.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b06ac3444a95b0813ecfd81ddb2774b66220b264b3e2031152a4a29fda4da6b5"
+version = "27.0.1"
+source = "git+https://github.com/joeleaver/wgpu-fork?branch=rinch-patch#4664307b1c18db5eecf0bb36541b4f7b4d192b6d"
 dependencies = [
  "wgpu-hal",
 ]
 
 [[package]]
 name = "wgpu-core-deps-windows-linux-android"
-version = "27.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71197027d61a71748e4120f05a9242b2ad142e3c01f8c1b47707945a879a03c3"
+version = "27.0.1"
+source = "git+https://github.com/joeleaver/wgpu-fork?branch=rinch-patch#4664307b1c18db5eecf0bb36541b4f7b4d192b6d"
 dependencies = [
  "wgpu-hal",
 ]
 
 [[package]]
 name = "wgpu-hal"
-version = "27.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b21cb61c57ee198bc4aff71aeadff4cbb80b927beb912506af9c780d64313ce"
+version = "27.0.1"
+source = "git+https://github.com/joeleaver/wgpu-fork?branch=rinch-patch#4664307b1c18db5eecf0bb36541b4f7b4d192b6d"
 dependencies = [
  "android_system_properties",
  "arrayvec",
@@ -5216,7 +5238,7 @@ dependencies = [
  "libloading 0.8.9",
  "log",
  "metal",
- "naga",
+ "naga 27.0.1",
  "ndk-sys",
  "objc",
  "once_cell",
@@ -5240,8 +5262,7 @@ dependencies = [
 [[package]]
 name = "wgpu-types"
 version = "27.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afdcf84c395990db737f2dd91628706cb31e86d72e53482320d368e52b5da5eb"
+source = "git+https://github.com/joeleaver/wgpu-fork?branch=rinch-patch#4664307b1c18db5eecf0bb36541b4f7b4d192b6d"
 dependencies = [
  "bitflags 2.10.0",
  "bytemuck",

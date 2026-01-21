@@ -5,6 +5,7 @@ pub mod devtools_overlay;
 #[cfg(feature = "hot-reload")]
 pub mod hot_reload;
 pub mod runtime;
+pub mod transparent_renderer;
 pub mod window_manager;
 
 pub use devtools::{DevToolsPanel, DevToolsState};

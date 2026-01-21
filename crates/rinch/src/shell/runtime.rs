@@ -23,8 +23,8 @@ pub enum RinchEvent {
     MenuEvent(muda::MenuId),
     /// Request a re-render of all windows.
     ReRender,
-    /// An element was clicked (with handler ID).
-    ElementClicked(EventHandlerId),
+    /// An element was clicked (with handler ID and source window).
+    ElementClicked { handler_id: EventHandlerId, window_id: WindowId },
     /// Toggle the DevTools window.
     ToggleDevTools { source_window: WindowId },
     /// Update DevTools with hovered element info.
@@ -37,6 +37,14 @@ pub enum RinchEvent {
         shift: bool,
         key: winit::keyboard::KeyCode,
     },
+    /// Process pending window requests (open/close).
+    ProcessWindowRequests,
+    /// Minimize a window.
+    MinimizeWindow { window_id: WindowId },
+    /// Toggle maximize state of a window.
+    ToggleMaximizeWindow { window_id: WindowId },
+    /// Close a window (from window controls).
+    CloseWindowControl { window_id: WindowId },
 }
 
 /// Information about a hovered element for DevTools display.
@@ -145,6 +153,10 @@ pub struct Runtime {
     devtools_target: Option<WindowId>,
     /// Current hovered element info for DevTools display.
     hovered_element: Option<HoveredElementInfo>,
+    /// Mapping from WindowHandle to winit WindowId for programmatic window management.
+    window_handles: std::collections::HashMap<crate::windows::WindowHandle, WindowId>,
+    /// Reverse mapping from winit WindowId to WindowHandle.
+    window_ids_to_handles: std::collections::HashMap<WindowId, crate::windows::WindowHandle>,
 }
 
 impl Runtime {
@@ -170,6 +182,8 @@ impl Runtime {
             devtools_window: None,
             devtools_target: None,
             hovered_element: None,
+            window_handles: std::collections::HashMap::new(),
+            window_ids_to_handles: std::collections::HashMap::new(),
         }
     }
 
@@ -264,9 +278,16 @@ impl Runtime {
         }
 
         // Initialize menu for each window (Windows/Linux)
+        // Skip borderless windows - native menus require window decorations
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         {
             for (_, window) in self.window_manager.windows_iter() {
+                if window.props.borderless {
+                    tracing::info!(
+                        "Skipping native menu for borderless window (native menus require decorations)"
+                    );
+                    continue;
+                }
                 self.menu_manager.init_for_window(&window.window);
                 tracing::info!("Initialized menu for window");
             }
@@ -283,6 +304,95 @@ impl Runtime {
                 self.render_context.request_render();
             }
         }
+    }
+
+    /// Process any pending window requests (open/close).
+    fn process_window_requests(&mut self, event_loop: &ActiveEventLoop) {
+        use crate::windows::{take_window_requests, WindowRequest};
+
+        let requests = take_window_requests();
+        if requests.is_empty() {
+            return;
+        }
+
+        let Some(proxy) = self.proxy.clone() else {
+            tracing::error!("No event loop proxy available for window requests");
+            return;
+        };
+
+        for request in requests {
+            match request {
+                WindowRequest::Open(open_req) => {
+                    match self.window_manager.create_window(
+                        event_loop,
+                        proxy.clone(),
+                        open_req.props.clone(),
+                        open_req.html_content,
+                    ) {
+                        Ok(window_id) => {
+                            tracing::info!(
+                                "Opened window {:?} with handle {:?}: {}",
+                                window_id,
+                                open_req.handle,
+                                open_req.props.title
+                            );
+                            // Track the handle <-> window_id mappings
+                            self.window_handles.insert(open_req.handle, window_id);
+                            self.window_ids_to_handles.insert(window_id, open_req.handle);
+                            // Resume the window to start rendering
+                            if let Some(window) = self.window_manager.get_mut(window_id) {
+                                window.resume();
+                                // Set initial window state
+                                Self::update_window_state_for_handle(open_req.handle, window);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to open window: {:?}", e);
+                        }
+                    }
+                }
+                WindowRequest::Close(close_req) => {
+                    if let Some(window_id) = self.window_handles.remove(&close_req.handle) {
+                        tracing::info!(
+                            "Closing window {:?} with handle {:?}",
+                            window_id,
+                            close_req.handle
+                        );
+                        self.window_ids_to_handles.remove(&window_id);
+                        crate::windows::remove_window_state(close_req.handle);
+                        self.window_manager.close_window(window_id);
+                    } else {
+                        tracing::warn!(
+                            "Attempted to close unknown window handle {:?}",
+                            close_req.handle
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Update the window state for a given handle.
+    fn update_window_state_for_handle(
+        handle: crate::windows::WindowHandle,
+        managed_window: &super::window_manager::ManagedWindow,
+    ) {
+        let window = &managed_window.window;
+        let size = window.inner_size();
+        let position = window.outer_position().unwrap_or_default();
+        let maximized = window.is_maximized();
+        let minimized = window.is_minimized().unwrap_or(false);
+
+        let state = crate::windows::WindowState {
+            x: position.x,
+            y: position.y,
+            width: size.width,
+            height: size.height,
+            maximized,
+            minimized,
+        };
+
+        crate::windows::update_window_state(handle, state);
     }
 
     /// Re-render all windows by re-running the app function.
@@ -334,12 +444,19 @@ impl Runtime {
     }
 
     /// Handle a click event by dispatching to the registered handler.
-    fn handle_element_click(&mut self, handler_id: EventHandlerId) {
-        tracing::debug!("Dispatching click event to handler {:?}", handler_id);
+    fn handle_element_click(&mut self, handler_id: EventHandlerId, window_id: WindowId) {
+        tracing::debug!("Dispatching click event to handler {:?} from window {:?}", handler_id, window_id);
+
+        // Track the current window so event handlers can call window control functions
+        crate::windows::set_current_window_id(Some(window_id));
+
         if dispatch_event(handler_id) {
             // Handler was called - request re-render in case state changed
             self.render_context.request_render();
         }
+
+        // Clear current window tracking
+        crate::windows::set_current_window_id(None);
     }
 
     /// Toggle the DevTools window.
@@ -826,6 +943,12 @@ impl ApplicationHandler<RinchEvent> for Runtime {
                 self.devtools_target = None;
             }
 
+            // Clean up window state tracking if this is a programmatically opened window
+            if let Some(handle) = self.window_ids_to_handles.remove(&window_id) {
+                self.window_handles.remove(&handle);
+                crate::windows::remove_window_state(handle);
+            }
+
             self.window_manager.close_window(window_id);
 
             if !self.window_manager.has_windows() {
@@ -834,8 +957,34 @@ impl ApplicationHandler<RinchEvent> for Runtime {
             return;
         }
 
+        // Track window state changes for programmatically opened windows
+        if let Some(&handle) = self.window_ids_to_handles.get(&window_id) {
+            match &event {
+                WindowEvent::Resized(_) | WindowEvent::Moved(_) => {
+                    if let Some(window) = self.window_manager.get(window_id) {
+                        Self::update_window_state_for_handle(handle, window);
+                    }
+                }
+                _ => {}
+            }
+        }
+
         // Forward other events to the window
         if let Some(window) = self.window_manager.get_mut(window_id) {
+            // Check for mouse down events that might trigger window dragging
+            if let WindowEvent::MouseInput {
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            } = &event
+            {
+                // Check if we should start window dragging
+                if window.should_drag_window() {
+                    window.start_drag();
+                    return; // Don't process further - drag takes over
+                }
+            }
+
             // Check for click events that might trigger handlers
             if let WindowEvent::MouseInput {
                 state: winit::event::ElementState::Released,
@@ -846,7 +995,7 @@ impl ApplicationHandler<RinchEvent> for Runtime {
                 // Check if we clicked on an element with a handler
                 if let Some(handler_id) = window.get_clicked_handler() {
                     if let Some(proxy) = &self.proxy {
-                        let _ = proxy.send_event(RinchEvent::ElementClicked(handler_id));
+                        let _ = proxy.send_event(RinchEvent::ElementClicked { handler_id, window_id });
                     }
                 }
             }
@@ -874,8 +1023,8 @@ impl ApplicationHandler<RinchEvent> for Runtime {
                 tracing::debug!("Re-rendering...");
                 self.re_render();
             }
-            RinchEvent::ElementClicked(handler_id) => {
-                self.handle_element_click(handler_id);
+            RinchEvent::ElementClicked { handler_id, window_id } => {
+                self.handle_element_click(handler_id, window_id);
             }
             RinchEvent::ToggleDevTools { source_window } => {
                 self.toggle_devtools(event_loop, source_window);
@@ -905,6 +1054,33 @@ impl ApplicationHandler<RinchEvent> for Runtime {
                         // Callback was invoked - request re-render
                         self.render_context.request_render();
                     }
+                }
+            }
+            RinchEvent::ProcessWindowRequests => {
+                self.process_window_requests(event_loop);
+            }
+            RinchEvent::MinimizeWindow { window_id } => {
+                if let Some(window) = self.window_manager.get(window_id) {
+                    window.window.set_minimized(true);
+                }
+            }
+            RinchEvent::ToggleMaximizeWindow { window_id } => {
+                if let Some(window) = self.window_manager.get(window_id) {
+                    let is_maximized = window.window.is_maximized();
+                    window.window.set_maximized(!is_maximized);
+                }
+            }
+            RinchEvent::CloseWindowControl { window_id } => {
+                // Clean up window state tracking if this is a programmatically opened window
+                if let Some(handle) = self.window_ids_to_handles.remove(&window_id) {
+                    self.window_handles.remove(&handle);
+                    crate::windows::remove_window_state(handle);
+                }
+
+                self.window_manager.close_window(window_id);
+
+                if !self.window_manager.has_windows() {
+                    event_loop.exit();
                 }
             }
         }
@@ -995,7 +1171,10 @@ where
 
     let proxy = event_loop.create_proxy();
     runtime.proxy = Some(proxy.clone());
-    runtime.render_context.set_proxy(proxy);
+    runtime.render_context.set_proxy(proxy.clone());
+
+    // Set proxy for window management API
+    crate::windows::set_event_proxy(proxy);
 
     // Enable hot reload if requested
     #[cfg(feature = "hot-reload")]

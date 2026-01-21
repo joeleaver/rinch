@@ -58,3 +58,13 @@ tracing-subscriber = "0.3"
 
 # Hot reload
 notify = "7"
+
+# Patch wgpu to use our fork with fixes for Rgba8Unorm storage texture validation
+# Required for transparent windows with Vello on Windows (DX12 + DirectComposition)
+# See: https://github.com/joeleaver/wgpu-fork/tree/rinch-patch
+[patch.crates-io]
+wgpu = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
+wgpu-core = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
+wgpu-hal = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
+wgpu-types = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
+naga = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
