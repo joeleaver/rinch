@@ -157,6 +157,9 @@ pub struct Node {
     /// Cached computed style string (merged class + inline styles).
     /// Populated during style recomputation; used by inline text layout.
     pub computed_style_str: String,
+    /// Cached parsed style properties (from computed_style_str).
+    /// Populated alongside computed_style_str to avoid re-parsing during paint.
+    pub cached_style_props: HashMap<String, String>,
 }
 
 impl Node {
@@ -176,6 +179,7 @@ impl Node {
             ifc_root: None,
             text_layout: None,
             computed_style_str: String::new(),
+            cached_style_props: HashMap::new(),
         }
     }
 
@@ -196,6 +200,7 @@ impl Node {
             ifc_root: None,
             text_layout: None,
             computed_style_str: String::new(),
+            cached_style_props: HashMap::new(),
         }
     }
 
@@ -215,6 +220,7 @@ impl Node {
             ifc_root: None,
             text_layout: None,
             computed_style_str: String::new(),
+            cached_style_props: HashMap::new(),
         }
     }
 
@@ -234,6 +240,7 @@ impl Node {
             ifc_root: None,
             text_layout: None,
             computed_style_str: String::new(),
+            cached_style_props: HashMap::new(),
         }
     }
 

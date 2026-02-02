@@ -727,26 +727,36 @@ fn render_text(scene: &mut Scene, layout: &parley::layout::Layout<Brush>, x: f64
 
 /// Get a CSS style property value from a node, checking inline style first,
 /// then class-based styles from the stylesheet.
-fn get_style_property(node: &Node, stylesheet: &Stylesheet, property: &str) -> Option<String> {
-    // Check inline style first (highest priority)
+fn get_style_property(node: &Node, _stylesheet: &Stylesheet, property: &str) -> Option<String> {
+    // Use pre-computed cached style props (populated during style recomputation).
+    // This avoids re-parsing inline styles and re-running CSS selector matching
+    // on every property lookup during paint.
+    if !node.cached_style_props.is_empty() {
+        return node.cached_style_props.get(property).cloned();
+    }
+
+    // Fallback: parse computed_style_str if cached_style_props not populated
+    if !node.computed_style_str.is_empty() {
+        for part in node.computed_style_str.split(';') {
+            let part = part.trim();
+            if let Some((key, value)) = part.split_once(':') {
+                if key.trim() == property {
+                    return Some(value.trim().to_string());
+                }
+            }
+        }
+        return None;
+    }
+
+    // Last resort: parse inline style only (no selector matching)
     if let Some(style_str) = node.attributes.get("style") {
         for part in style_str.split(';') {
             let part = part.trim();
             if let Some((key, value)) = part.split_once(':') {
                 if key.trim() == property {
-                    let value = value.trim().to_string();
-                    let resolved = stylesheet.resolve_value(&value);
-                    return Some(resolved);
+                    return Some(value.trim().to_string());
                 }
             }
-        }
-    }
-
-    // Fall back to class-based styles
-    if let Some(class_attr) = node.attributes.get("class") {
-        let class_props = stylesheet.resolve_class_styles(class_attr);
-        if let Some(value) = class_props.get(property) {
-            return Some(value.clone());
         }
     }
 

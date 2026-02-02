@@ -353,6 +353,7 @@ impl DomDocument for RinchDocument {
             // Compute merged style: class-based + inline overlay
             let merged = self.compute_merged_style(node.0);
             self.tree.nodes[node.0].computed_style_str = layout::props_to_style_string(&merged);
+            self.tree.nodes[node.0].cached_style_props = merged.clone();
             if let Some(taffy_id) = self.tree.nodes[node.0].taffy_id {
                 let dd = self.default_display_for_node(node.0);
                 let taffy_style = layout::build_taffy_style_full(&merged, &self.tree.viewport, dd);
@@ -402,9 +403,13 @@ impl DomDocument for RinchDocument {
             .collect::<Vec<_>>()
             .join("; ");
         self.tree.nodes[node.0].attributes.insert("style".to_string(), style_str.clone());
+        // Recompute merged styles (class + inline) and cache
+        let merged = self.compute_merged_style(node.0);
+        self.tree.nodes[node.0].computed_style_str = layout::props_to_style_string(&merged);
+        self.tree.nodes[node.0].cached_style_props = merged;
         // Update taffy style
         if let Some(taffy_id) = self.tree.nodes[node.0].taffy_id {
-            let props = layout::parse_style_string(&style_str);
+            let props = &self.tree.nodes[node.0].cached_style_props;
             let dd = self.default_display_for_node(node.0);
             let taffy_style = layout::build_taffy_style_full(&props, &self.tree.viewport, dd);
             let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
@@ -572,6 +577,7 @@ impl RinchDocument {
 
     /// Recompute taffy styles for all element nodes.
     /// Called when viewport dimensions change to update vh/vw-dependent styles.
+    /// Uses cached style props to avoid re-running CSS selector matching.
     fn recompute_all_styles(&mut self) {
         let node_ids: Vec<usize> = self.tree.nodes.iter().map(|(id, _)| id).collect();
         for node_id in node_ids {
@@ -588,8 +594,16 @@ impl RinchDocument {
                 continue;
             }
             if let Some(taffy_id) = self.tree.nodes[node_id].taffy_id {
-                let merged = self.compute_merged_style(node_id);
-                self.tree.nodes[node_id].computed_style_str = layout::props_to_style_string(&merged);
+                // Use cached style props to avoid expensive CSS selector re-matching.
+                // On resize, CSS rules haven't changed — only vh/vw values need recalc.
+                let merged = if !self.tree.nodes[node_id].cached_style_props.is_empty() {
+                    self.tree.nodes[node_id].cached_style_props.clone()
+                } else {
+                    let m = self.compute_merged_style(node_id);
+                    self.tree.nodes[node_id].computed_style_str = layout::props_to_style_string(&m);
+                    self.tree.nodes[node_id].cached_style_props = m.clone();
+                    m
+                };
                 let dd = self.default_display_for_node(node_id);
                 let mut taffy_style = layout::build_taffy_style_full(&merged, &self.tree.viewport, dd);
                 // Body node needs flex_grow: 1 and height: auto to fill the viewport,
