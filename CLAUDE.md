@@ -546,17 +546,21 @@ The debug server starts automatically when the feature is enabled. Disable at ru
 
 **MCP configuration** (`.mcp.json`):
 
+For fastest startup, point to the pre-built binary:
+
 ```json
 {
   "mcpServers": {
     "rinch": {
-      "command": "cargo",
-      "args": ["run", "-p", "rinch-mcp-server"],
+      "command": "/path/to/rinch/target/debug/rinch-mcp-server",
+      "args": [],
       "cwd": "/path/to/rinch"
     }
   }
 }
 ```
+
+Build first with `cargo build -p rinch-mcp-server`. Using `cargo run` instead works but is slower to start.
 
 **MCP tools available:**
 
@@ -564,10 +568,11 @@ The debug server starts automatically when the feature is enabled. Disable at ru
 |------|-------------|
 | `list_apps` | List all running rinch apps with debug enabled |
 | `connect` | Connect to a specific app by name or PID |
-| `screenshot` | Capture a base64-encoded PNG screenshot |
-| `dom_tree` | Get the full DOM tree as JSON with layout bounds |
-| `query_selector` | Query nodes by tag, `[attr]`, or `[attr=value]` |
-| `get_node` | Get detailed info for a specific node by ID |
+| `screenshot` | Capture a PNG screenshot (returns as inline MCP image, directly viewable) |
+| `dom_tree` | Get the full DOM tree as JSON with layout bounds and computed styles |
+| `query_selector` | Query nodes by tag, `.class`, `[attr]`, or `[attr=value]` |
+| `get_node` | Get detailed info for a specific node by ID (includes computed styles, display mode) |
+| `get_computed_styles` | Get computed CSS styles for a specific DOM node |
 | `get_text_content` | Get text content within a node subtree |
 | `click` | Simulate a mouse click at (x, y) coordinates |
 | `type_text` | Simulate keyboard text input |
@@ -986,92 +991,61 @@ for_each_dom(
 
 ## Iterative Development with MCP (IMPORTANT)
 
-**Always use the rinch MCP debug protocol to test and iterate on rinch applications.** This is the standard workflow for verifying rendering, layout, and interactivity.
+**Always use the rinch MCP tools to test and iterate on rinch applications.** The MCP server provides direct access to screenshots (viewable inline), DOM inspection with computed styles, and input simulation — no Python scripts or intermediate files needed.
 
 ### Workflow: Launch → Test → Close → Edit → Repeat
 
 **Step 1: Launch the app**
 
-Use the MCP `launch_app` tool, or manually:
+Use the MCP `launch_app` tool — it builds, launches, waits for debug registration, and auto-connects:
 
-```bash
-cargo run -p <package-name> &
-sleep 3  # Wait for app to start and register with debug server
+```
+launch_app(package: "smyeditor")
 ```
 
-In headless environments (CI, SSH), use `Xvfb :99 -screen 0 1280x720x24 &` and prefix with `DISPLAY=:99`.
+In headless environments, ensure Xvfb is running: `Xvfb :99 -screen 0 1280x720x24 &`. The `launch_app` tool forwards `DISPLAY` automatically.
 
-**Step 2: Connect and inspect**
+**Step 2: Inspect and interact**
 
-Find the app's debug port from `~/.rinch/debug/*.json`, then use a TCP client or the MCP tools:
+Use MCP tools directly — screenshots render inline, DOM queries return computed styles:
 
-```python
-import socket, struct, json, base64
-
-# Connect
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.connect(('127.0.0.1', PORT))
-
-def send(msg):
-    data = json.dumps(msg).encode()
-    sock.sendall(struct.pack('>I', len(data)) + data)
-
-def recv():
-    hdr = b''
-    while len(hdr) < 4: hdr += sock.recv(4 - len(hdr))
-    length = struct.unpack('>I', hdr)[0]
-    data = b''
-    while len(data) < length: data += sock.recv(length - len(data))
-    return json.loads(data)
-
-# Handshake
-send({'protocol': 'rinch-debug', 'version': 1})
-recv()
-
-# Screenshot → save as PNG → view with Read tool
-send({'id': 1, 'method': 'screenshot', 'params': None})
-resp = recv()
-png = base64.b64decode(resp['data'])
-with open('/tmp/screenshot.png', 'wb') as f: f.write(png)
-
-# DOM tree with layout info
-send({'id': 2, 'method': 'dom_tree', 'params': None})
-tree = recv()
-
-# Click interaction
-send({'id': 3, 'method': 'click', 'params': {'x': 50, 'y': 100}})
-recv()
-
-# Wait for render then screenshot again
-send({'id': 4, 'method': 'wait_frame', 'params': None})
-recv()
+```
+screenshot()                              → inline PNG image (directly viewable)
+dom_tree()                                → full DOM tree with layout + computed styles
+query_selector(selector: ".my-class")     → find nodes by tag, .class, [attr], [attr=value]
+get_node(id: 42)                          → detailed node info with computed styles + display mode
+get_computed_styles(id: 42)               → just the CSS properties for a node
+click(x: 100, y: 200)                     → simulate mouse click
+wait_frame()                              → wait for next render
+type_text(text: "hello")                  → simulate keyboard input
+get_text_content(id: 42)                  → get text in subtree
 ```
 
 **Step 3: Close the app**
 
-```python
-send({'id': 99, 'method': 'close_app', 'params': None})
 ```
-
-Or `kill <PID>` and clean up `~/.rinch/debug/*.json`.
+close_app()
+```
 
 **Step 4: Edit code and repeat**
 
 Make changes, rebuild, launch again. The full cycle:
-1. Take screenshot → view with `Read` tool → identify issues
-2. Get DOM tree → check layout positions and sizes
-3. Click/interact → screenshot again to verify reactive updates
-4. Close app → edit code → rebuild → repeat
+1. `screenshot()` → view inline → identify issues
+2. `dom_tree()` or `get_node()` → check layout and computed styles
+3. `click()` → `wait_frame()` → `screenshot()` to verify reactive updates
+4. `close_app()` → edit code → rebuild → `launch_app()` → repeat
 
 ### What to Check
 
 | Check | How |
 |-------|-----|
-| Text renders correctly | Screenshot — no garbled glyphs, correct wrapping |
-| Layout is correct | DOM tree — verify x, y, width, height values |
-| Colors/backgrounds | Screenshot — visual inspection |
-| Click handlers work | Click → wait_frame → screenshot to see state change |
-| Text content | `get_text_content` to verify reactive values update |
+| Text renders correctly | `screenshot()` — no garbled glyphs, correct wrapping |
+| Layout is correct | `dom_tree()` — verify x, y, width, height values |
+| Styles applied correctly | `get_computed_styles(id)` — inspect resolved CSS properties |
+| Colors/backgrounds | `screenshot()` — visual inspection |
+| Click handlers work | `click()` → `wait_frame()` → `screenshot()` to see state change |
+| Text content | `get_text_content(id)` to verify reactive values update |
+| CSS class matching | `query_selector(selector: ".className")` to find styled elements |
 
 ### Common Issues
 
@@ -1079,6 +1053,7 @@ Make changes, rebuild, launch again. The full cycle:
 - **Elements stacking wrong**: Check `display` property — default is `flex row wrap`
 - **Text not updating**: Verify signal/effect wiring in the component
 - **No display (headless)**: Use Xvfb with `DISPLAY=:99` when running without a monitor
+- **MCP tools not available**: Ensure `rinch-mcp-server` is built (`cargo build -p rinch-mcp-server`) and `.mcp.json` points to the binary
 
 ## Development Notes
 
