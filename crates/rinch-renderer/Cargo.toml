@@ -9,6 +9,5 @@ description = "Vello-based renderer for rinch"
 rinch-core.workspace = true
 vello.workspace = true
 wgpu.workspace = true
-blitz-traits.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

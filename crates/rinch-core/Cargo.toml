@@ -5,5 +5,10 @@ edition.workspace = true
 license.workspace = true
 description = "Core types and traits for the rinch GUI framework"
 
+[features]
+default = []
+theme = []
+
 [dependencies]
 thiserror.workspace = true
+tracing.workspace = true

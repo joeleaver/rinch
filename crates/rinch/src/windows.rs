@@ -1,3 +1,7 @@
+// NOTE: Some functions in this module are not yet called by fine_grained_runtime.
+// They're part of the programmatic window management API that will be implemented.
+#![allow(dead_code)]
+
 //! Window management API for opening and closing windows programmatically.
 //!
 //! # Example
@@ -44,7 +48,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use winit::event_loop::EventLoopProxy;
 use winit::window::WindowId;
 
-use crate::shell::runtime::RinchEvent;
+use crate::shell::types::RinchEvent;
 
 /// A handle to an open window.
 ///

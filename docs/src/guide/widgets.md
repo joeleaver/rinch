@@ -1,0 +1,1052 @@
+# Widgets
+
+Rinch provides a comprehensive widget library with 51 styled, themeable UI components inspired by [Mantine](https://mantine.dev/). Enable with the `widgets` feature (which also enables `theme`):
+
+```toml
+[dependencies]
+rinch = { path = "...", features = ["widgets"] }
+```
+
+## Using Widgets
+
+Widgets are used directly in RSX with a declarative syntax:
+
+```rust
+use rinch::prelude::*;
+use rinch_core::element::ThemeProviderProps;
+
+fn app(__scope: &mut RenderScope) -> NodeHandle {
+    rsx! {
+        Stack { gap: "md",
+            Title { order: 1, "Welcome" }
+            Text { size: "lg", color: "dimmed", "Get started with Rinch widgets." }
+
+            Group { gap: "sm",
+                Button { variant: "filled", "Get Started" }
+                Button { variant: "outline", "Learn More" }
+            }
+        }
+    }
+}
+
+fn main() {
+    let theme = ThemeProviderProps {
+        primary_color: Some("cyan".into()),
+        ..Default::default()
+    };
+    run_with_theme("My App", 800, 600, app, theme);
+}
+```
+
+## Component Categories
+
+### Layout Components
+
+| Component | Description |
+|-----------|-------------|
+| `Stack` | Vertical flex container with spacing |
+| `Group` | Horizontal flex container with spacing |
+| `Container` | Centered max-width container |
+| `Center` | Center content horizontally/vertically |
+| `Space` | Empty space component |
+
+```rust
+// Stack - vertical layout
+Stack { gap: "md",
+    Text { "Item 1" }
+    Text { "Item 2" }
+}
+
+// Group - horizontal layout
+Group { gap: "sm", justify: "space-between",
+    Button { "Left" }
+    Button { "Right" }
+}
+
+// Center content
+Center {
+    Loader {}
+}
+
+// Add spacing
+Space { h: "xl" }  // height
+Space { w: "md" }  // width
+```
+
+### Buttons
+
+| Component | Description |
+|-----------|-------------|
+| `Button` | Clickable button with variants |
+| `ActionIcon` | Icon-only button |
+| `CloseButton` | Dismiss/close button |
+
+```rust
+// Button variants
+Button { variant: "filled", "Primary" }
+Button { variant: "outline", "Secondary" }
+Button { variant: "light", "Light" }
+Button { variant: "subtle", "Subtle" }
+
+// Button sizes
+Button { size: "xs", "Extra Small" }
+Button { size: "sm", "Small" }
+Button { size: "md", "Medium" }  // default
+Button { size: "lg", "Large" }
+Button { size: "xl", "Extra Large" }
+
+// Button colors
+Button { color: "red", "Delete" }
+Button { color: "green", "Success" }
+
+// Button states
+Button { disabled: true, "Disabled" }
+Button { loading: true, "Loading..." }
+Button { full_width: true, "Full Width" }
+
+// With click handler
+Button { onclick: move || count.update(|n| *n += 1), "Click Me" }
+
+// ActionIcon - for icon buttons
+ActionIcon { variant: "filled", "+" }
+ActionIcon { size: "lg", variant: "light", "?" }
+
+// CloseButton
+CloseButton { onclick: move || modal_open.set(false) }
+```
+
+### Form Inputs
+
+| Component | Description |
+|-----------|-------------|
+| `TextInput` | Single-line text input |
+| `Textarea` | Multi-line text input |
+| `PasswordInput` | Password field with visibility toggle |
+| `NumberInput` | Numeric input with controls |
+| `Checkbox` | Checkbox input |
+| `Switch` | Toggle switch |
+| `Select` | Dropdown select |
+| `Radio` / `RadioGroup` | Radio buttons |
+| `Slider` | Range input slider |
+| `Fieldset` | Grouped form fields |
+
+```rust
+// TextInput with label and description
+TextInput {
+    label: "Email",
+    placeholder: "you@example.com",
+    description: "We'll never share your email."
+}
+
+// TextInput with error
+TextInput {
+    label: "Password",
+    input_type: "password",
+    error: "Password must be at least 8 characters"
+}
+
+// PasswordInput with visibility toggle
+PasswordInput {
+    label: "Password",
+    placeholder: "Enter password"
+}
+
+// NumberInput
+NumberInput {
+    label: "Quantity",
+    placeholder: "0"
+}
+
+// Textarea
+Textarea {
+    label: "Description",
+    placeholder: "Enter your message..."
+}
+
+// Checkbox
+let checked = use_signal(|| false);
+Checkbox {
+    label: "Accept terms",
+    checked: checked.get(),
+    onchange: move || checked.update(|v| *v = !*v)
+}
+
+// Switch
+Switch {
+    label: "Enable notifications",
+    checked: enabled.get(),
+    onchange: move || enabled.update(|v| *v = !*v)
+}
+
+// Select
+Select {
+    label: "Country",
+    placeholder: "Select a country",
+    option { value: "us", "United States" }
+    option { value: "uk", "United Kingdom" }
+    option { value: "ca", "Canada" }
+}
+
+// RadioGroup
+RadioGroup { label: "Plan",
+    Radio { value: "free", label: "Free" }
+    Radio { value: "pro", label: "Pro" }
+    Radio { value: "enterprise", label: "Enterprise" }
+}
+
+// Slider
+Slider { color: "cyan" }
+
+// Fieldset
+Fieldset { legend: "Personal Info",
+    Stack { gap: "sm",
+        TextInput { placeholder: "First name" }
+        TextInput { placeholder: "Last name" }
+    }
+}
+```
+
+### Typography
+
+| Component | Description |
+|-----------|-------------|
+| `Text` | Text display with styling |
+| `Title` | Heading text (h1-h6) |
+| `Code` | Inline or block code |
+| `Kbd` | Keyboard key |
+| `Anchor` | Styled link |
+| `Blockquote` | Styled quotation |
+| `Mark` | Highlighted text |
+| `Highlight` | Search text highlighting |
+
+```rust
+// Text sizes and weights
+Text { size: "lg", weight: "bold", "Large Bold Text" }
+Text { size: "sm", color: "dimmed", "Small dimmed text" }
+
+// Titles (h1-h6)
+Title { order: 1, "Main Heading" }
+Title { order: 2, "Subheading" }
+Title { order: 3, "Section Title" }
+
+// Code
+Text { "Run " Code { "npm install" } " to install." }
+Code { block: true, "fn main() {\n    println!(\"Hello!\");\n}" }
+
+// Keyboard keys
+Group { gap: "xs",
+    Kbd { "Ctrl" }
+    Text { "+" }
+    Kbd { "C" }
+}
+
+// Anchor (link)
+Anchor { href: "https://example.com", "Visit site" }
+Anchor { href: "#", underline: true, "Always underlined" }
+
+// Blockquote
+Blockquote { cite: "— Albert Einstein",
+    "Imagination is more important than knowledge."
+}
+
+// Mark (highlight)
+Text { "This has " Mark { "marked text" } " inline." }
+
+// Highlight (search highlighting)
+Highlight { highlight: "quick brown", "The quick brown fox jumps" }
+```
+
+### Feedback
+
+| Component | Description |
+|-----------|-------------|
+| `Alert` | User feedback messages |
+| `Loader` | Loading spinner/indicator |
+| `Progress` | Progress bar |
+| `Skeleton` | Loading placeholder |
+| `Tooltip` | CSS-only hover tooltip |
+
+```rust
+// Alert variants
+Alert { color: "blue", title: "Info", "This is informational." }
+Alert { color: "green", title: "Success", "Operation completed!" }
+Alert { color: "yellow", title: "Warning", "Please review." }
+Alert { color: "red", title: "Error", "Something went wrong." }
+
+Alert { variant: "filled", color: "blue", "Filled style" }
+Alert { variant: "light", color: "blue", "Light style" }
+Alert { variant: "outline", color: "blue", "Outline style" }
+
+// Loader
+Loader {}
+Loader { size: "lg", color: "cyan" }
+
+// Progress
+Progress { color: "blue" }
+Progress { color: "green", striped: true }
+Progress { striped: true, animated: true }
+
+// Skeleton (loading placeholders)
+Skeleton { height: "12px", width: "80%" }
+Skeleton { height: "40px", width: "40px", circle: true }
+
+// Tooltip
+Tooltip { label: "This is a tooltip!",
+    Button { "Hover me" }
+}
+Tooltip { label: "Top tooltip", position: "top",
+    Button { "Top" }
+}
+```
+
+### Data Display
+
+| Component | Description |
+|-----------|-------------|
+| `Avatar` | User avatar with image or initials |
+| `Badge` | Small status indicator |
+| `Card` / `CardSection` | Container with sections |
+| `Paper` | Card-like container with shadow |
+| `Divider` | Horizontal/vertical separator |
+| `Image` | Responsive image with fallback |
+| `List` / `ListItem` | Styled list |
+
+```rust
+// Avatar
+Avatar { name: "John Doe" }  // Shows "JD"
+Avatar { size: "lg", color: "cyan", name: "Jane Smith" }
+Avatar { src: "https://example.com/photo.jpg" }
+
+// Badge
+Badge { "New" }
+Badge { variant: "light", color: "green", "Active" }
+Badge { variant: "outline", color: "red", "Error" }
+Badge { variant: "dot", "With dot" }
+
+// Card
+Card { shadow: "sm",
+    CardSection { with_border: true,
+        div { style: "padding: var(--rinch-spacing-sm);",
+            Text { weight: "bold", "Card Title" }
+        }
+    }
+    div { style: "padding: var(--rinch-spacing-md);",
+        Text { "Card content goes here." }
+    }
+}
+
+// Paper
+Paper { shadow: "md", p: "lg",
+    "Simple paper container"
+}
+Paper { shadow: "sm", p: "md", with_border: true,
+    "Paper with border"
+}
+
+// Divider
+Divider {}
+Divider { label: "OR" }
+
+// Image
+Image {
+    src: "https://example.com/image.jpg",
+    width: "200px",
+    height: "150px",
+    radius: "md"
+}
+
+// List
+List {
+    ListItem { "First item" }
+    ListItem { "Second item" }
+    ListItem { "Third item" }
+}
+```
+
+### Navigation
+
+| Component | Description |
+|-----------|-------------|
+| `Tabs` / `TabsList` / `Tab` / `TabsPanel` | Tab navigation |
+| `Accordion` / `AccordionItem` / `AccordionControl` / `AccordionPanel` | Collapsible sections |
+| `Breadcrumbs` / `BreadcrumbsItem` | Navigation trail |
+| `Pagination` | Page navigation |
+| `NavLink` | Navigation link with active state |
+| `Stepper` / `StepperStep` / `StepperCompleted` | Step progress |
+
+```rust
+// Tabs
+Tabs {
+    TabsList {
+        Tab { value: "gallery", "Gallery" }
+        Tab { value: "messages", "Messages" }
+        Tab { value: "settings", "Settings" }
+    }
+    TabsPanel { value: "gallery",
+        Text { "Gallery content" }
+    }
+    TabsPanel { value: "messages",
+        Text { "Messages content" }
+    }
+}
+
+// Tab variants
+Tabs { variant: "outline", /* ... */ }
+Tabs { variant: "pills", /* ... */ }
+
+// Accordion
+Accordion {
+    AccordionItem { value: "item-1",
+        AccordionControl { "What is Rinch?" }
+        AccordionPanel {
+            Text { "A reactive GUI framework for Rust." }
+        }
+    }
+    AccordionItem { value: "item-2",
+        AccordionControl { "How do I get started?" }
+        AccordionPanel {
+            Text { "Add rinch to your Cargo.toml!" }
+        }
+    }
+}
+
+// Breadcrumbs
+Breadcrumbs {
+    BreadcrumbsItem { "Home" }
+    BreadcrumbsItem { "Products" }
+    BreadcrumbsItem { "Widget" }
+}
+Breadcrumbs { separator: ">",
+    BreadcrumbsItem { "Docs" }
+    BreadcrumbsItem { "API" }
+}
+
+// Pagination
+Pagination {}
+Pagination { with_edges: true }
+
+// NavLink
+NavLink { label: "Dashboard", active: true }
+NavLink { label: "Settings", description: "App configuration" }
+NavLink { label: "Disabled", disabled: true }
+NavLink { label: "With handler", onclick: move || navigate("/page") }
+
+// Stepper
+let step = use_signal(|| 1u32);
+Stepper { active: step.get(),
+    StepperStep { label: "Account", description: "Create account" }
+    StepperStep { label: "Verify", description: "Verify email" }
+    StepperStep { label: "Complete", description: "Get started" }
+}
+```
+
+### Overlays
+
+| Component | Description |
+|-----------|-------------|
+| `Modal` | Dialog overlay |
+| `Drawer` | Slide-out panel |
+| `Notification` | Toast notification |
+| `Popover` / `PopoverTarget` / `PopoverDropdown` | Positioned popup |
+| `DropdownMenu` / `DropdownMenuTarget` / `DropdownMenuDropdown` / `DropdownMenuItem` | Dropdown menu |
+| `HoverCard` / `HoverCardTarget` / `HoverCardDropdown` | Card on hover |
+| `LoadingOverlay` | Loading overlay for containers |
+
+```rust
+// Modal
+let modal_open = use_signal(|| false);
+let open = modal_open.clone();
+let close = modal_open.clone();
+
+Button { onclick: move || open.set(true), "Open Modal" }
+
+Modal {
+    opened: modal_open.get(),
+    onclose: move || close.set(false),
+    title: "Confirm Action",
+    size: "md",
+
+    Text { "Are you sure you want to proceed?" }
+    Space { h: "lg" }
+    Group { justify: "end", gap: "sm",
+        Button { variant: "outline", "Cancel" }
+        Button { "Confirm" }
+    }
+}
+
+// Drawer
+Drawer {
+    opened: drawer_open.get(),
+    onclose: move || drawer_close.set(false),
+    title: "Settings",
+    position: "right",  // left, right, top, bottom
+    size: "sm",
+
+    // Drawer content
+}
+
+// Notification
+Notification {
+    opened: show_notification.get(),
+    title: "Success!",
+    color: "green",
+    position: "top-right",
+    onclose: move || close_notification.set(false),
+    "Your changes have been saved."
+}
+
+// Popover
+Popover { position: "bottom",
+    PopoverTarget {
+        Button { "Click me" }
+    }
+    PopoverDropdown {
+        Text { "Popover content!" }
+        Button { size: "xs", "Action" }
+    }
+}
+
+// DropdownMenu
+DropdownMenu {
+    DropdownMenuTarget {
+        Button { "Menu" }
+    }
+    DropdownMenuDropdown {
+        DropdownMenuLabel { "Application" }
+        DropdownMenuItem { "Settings" }
+        DropdownMenuItem { "Profile" }
+        DropdownMenuDivider {}
+        DropdownMenuItem { color: "red", "Delete" }
+    }
+}
+
+// HoverCard
+HoverCard { position: "bottom",
+    HoverCardTarget {
+        Text { weight: "bold", "@username" }
+    }
+    HoverCardDropdown {
+        Group { gap: "sm",
+            Avatar { name: "User Name" }
+            Stack { gap: "xs",
+                Text { weight: "bold", "User Name" }
+                Text { size: "sm", color: "dimmed", "Bio here" }
+            }
+        }
+    }
+}
+
+// LoadingOverlay
+div { style: "position: relative; height: 200px;",
+    // Your content
+    LoadingOverlay { visible: is_loading.get() }
+}
+```
+
+### Window Widgets
+
+| Component | Description |
+|-----------|-------------|
+| `BorderlessWindow` | Container for borderless/transparent windows with custom titlebar |
+
+```rust
+use rinch::prelude::*;
+use std::rc::Rc;
+
+fn app(__scope: &mut RenderScope) -> NodeHandle {
+    // For custom left section (e.g., menu button)
+    let menu_open = use_signal(|| false);
+    let menu_toggle = menu_open.clone();
+    let left_section: SectionRenderer = Rc::new(move |__scope| {
+        let mt = menu_toggle.clone();
+        rsx! {
+            ActionIcon { onclick: move || mt.update(|v| *v = !*v),
+                "☰"
+            }
+        }
+    });
+
+    rsx! {
+        BorderlessWindow {
+            title: "My App",
+            radius: "md",  // none, xs, sm, md, lg, xl
+            left_section: Some(left_section),
+            on_minimize: || minimize_current_window(),
+            on_maximize: || toggle_maximize_current_window(),
+            on_close: || close_current_window(),
+
+            // Your content here
+            Stack { gap: "md",
+                Title { order: 2, "Welcome!" }
+                Text { "This is a borderless window." }
+            }
+        }
+    }
+}
+
+fn main() {
+    let window_props = WindowProps {
+        title: "My App".into(),
+        borderless: true,
+        transparent: true,
+        resize_inset: Some(8.0),
+        ..Default::default()
+    };
+
+    run_with_window_props(app, window_props, None);
+}
+```
+
+**BorderlessWindow Props:**
+
+| Prop | Type | Description |
+|------|------|-------------|
+| `title` | `Option<String>` | Window title in titlebar |
+| `radius` | `Option<String>` | Corner radius: none, xs, sm, md, lg, xl |
+| `show_minimize` | `bool` | Show minimize button (default: true) |
+| `show_maximize` | `bool` | Show maximize button (default: true) |
+| `show_close` | `bool` | Show close button (default: true) |
+| `left_section` | `Option<SectionRenderer>` | Custom content for titlebar left |
+| `right_section` | `Option<SectionRenderer>` | Custom content before controls |
+| `on_minimize` | `Option<WidgetCallback>` | Minimize callback |
+| `on_maximize` | `Option<WidgetCallback>` | Maximize callback |
+| `on_close` | `Option<WidgetCallback>` | Close callback |
+
+The widget provides:
+- Rounded corners with configurable radius
+- Draggable titlebar (via `app-region: drag`)
+- Window control buttons with hover effects
+- Left/right custom sections for menu buttons or additional controls
+- Proper theming via CSS variables
+
+## Building Custom Widget Crates
+
+You can create your own widget library that integrates with Rinch's theme system. Here's how to build a custom widget crate like `rinch-bootstrap` or `rinch-material`.
+
+### 1. Create the Crate
+
+```toml
+# Cargo.toml
+[package]
+name = "my-widgets"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rinch-core = { path = "../rinch-core" }
+```
+
+### 2. Implement the Widget Trait
+
+Each widget must implement the `Widget` trait from `rinch-core`. Widgets receive a `RenderScope` for DOM construction and return a `NodeHandle`:
+
+```rust
+use rinch_core::{Widget, NodeHandle, RenderScope};
+
+/// A custom card widget.
+#[derive(Debug, Default)]
+pub struct MyCard {
+    /// Card title.
+    pub title: Option<String>,
+    /// Card variant.
+    pub variant: Option<String>,
+    /// Whether to show shadow.
+    pub shadow: bool,
+}
+
+impl Widget for MyCard {
+    fn render(&self, scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
+        // Create the card element
+        let card = scope.create_element("div");
+
+        // Build CSS classes
+        let mut classes = vec!["my-card".to_string()];
+
+        if let Some(ref v) = self.variant {
+            match v.as_str() {
+                "elevated" => classes.push("my-card--elevated".to_string()),
+                "outlined" => classes.push("my-card--outlined".to_string()),
+                _ => {}
+            }
+        }
+
+        if self.shadow {
+            classes.push("my-card--shadow".to_string());
+        }
+
+        card.set_attribute("class", &classes.join(" "));
+
+        // Add title if provided
+        if let Some(ref title) = self.title {
+            let title_div = scope.create_element("div");
+            title_div.set_attribute("class", "my-card__title");
+            title_div.set_text(title);
+            card.append_child(&title_div);
+        }
+
+        // Append children
+        for child in children {
+            card.append_child(child);
+        }
+
+        card
+    }
+}
+```
+
+### 3. Add Event Handlers
+
+For interactive widgets, add event listeners directly to DOM nodes:
+
+```rust
+use rinch_core::WidgetCallback;
+
+pub struct MyButton {
+    pub onclick: Option<WidgetCallback>,
+}
+
+impl Widget for MyButton {
+    fn render(&self, scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
+        let button = scope.create_element("button");
+        button.set_attribute("class", "my-button");
+
+        // Add click handler if provided
+        if let Some(ref cb) = self.onclick {
+            let cb = cb.clone();
+            button.add_event_listener("click", move |_| cb.call());
+        }
+
+        // Append children
+        for child in children {
+            button.append_child(child);
+        }
+
+        button
+    }
+}
+```
+
+### 4. Create CSS Styles
+
+Create a styles module that generates CSS for your widgets:
+
+```rust
+// src/styles/mod.rs
+mod card;
+mod button;
+
+pub fn generate_all_styles() -> String {
+    let mut css = String::new();
+    css.push_str(&card::styles());
+    css.push_str(&button::styles());
+    css
+}
+
+// src/styles/card.rs
+pub fn styles() -> String {
+    r#"
+.my-card {
+    background: var(--rinch-color-body);
+    border-radius: var(--rinch-radius-default);
+    padding: var(--rinch-spacing-md);
+}
+
+.my-card--elevated {
+    box-shadow: var(--rinch-shadow-md);
+}
+
+.my-card--outlined {
+    border: 1px solid var(--rinch-color-border);
+}
+
+.my-card__title {
+    font-size: var(--rinch-font-size-lg);
+    font-weight: 600;
+    margin-bottom: var(--rinch-spacing-sm);
+}
+"#.to_string()
+}
+```
+
+### 5. Export Your Widgets
+
+```rust
+// src/lib.rs
+pub mod styles;
+
+mod card;
+mod button;
+
+pub use card::MyCard;
+pub use button::MyButton;
+
+// Re-export Widget trait for convenience
+pub use rinch_core::Widget;
+
+/// Generate all widget CSS.
+pub fn generate_css() -> String {
+    styles::generate_all_styles()
+}
+```
+
+### 6. Use Theme CSS Variables
+
+Leverage Rinch's theme variables for consistency:
+
+| Variable | Description |
+|----------|-------------|
+| `--rinch-primary-color` | Primary theme color |
+| `--rinch-color-body` | Background color |
+| `--rinch-color-text` | Text color |
+| `--rinch-color-dimmed` | Dimmed/muted text |
+| `--rinch-color-border` | Border color |
+| `--rinch-color-{name}-{0-9}` | Color shades (e.g., `--rinch-color-blue-5`) |
+| `--rinch-spacing-{xs,sm,md,lg,xl}` | Spacing scale |
+| `--rinch-radius-{xs,sm,md,lg,xl}` | Border radius |
+| `--rinch-radius-default` | Default radius |
+| `--rinch-shadow-{xs,sm,md,lg,xl}` | Box shadows |
+| `--rinch-font-size-{xs,sm,md,lg,xl}` | Font sizes |
+| `--rinch-font-family` | Default font |
+| `--rinch-font-family-monospace` | Monospace font |
+
+### 7. Use Your Widget Crate
+
+```rust
+use rinch::prelude::*;
+use rinch_core::element::ThemeProviderProps;
+use my_widgets::{MyCard, MyButton};
+
+fn app(__scope: &mut RenderScope) -> NodeHandle {
+    rsx! {
+        MyCard { title: "Hello", variant: "elevated", shadow: true,
+            Text { "Card content here" }
+            MyButton { onclick: move || println!("Clicked!"),
+                "Click Me"
+            }
+        }
+    }
+}
+
+fn main() {
+    let theme = ThemeProviderProps {
+        primary_color: Some("blue".into()),
+        ..Default::default()
+    };
+    run_with_theme("Custom Widgets", 800, 600, app, theme);
+}
+```
+
+## Widget CSS Injection
+
+Widget CSS is automatically injected when you use `ThemeProvider`. If you need the CSS separately:
+
+```rust
+use rinch::widgets::generate_widget_css;
+
+let css = generate_widget_css();
+```
+
+For custom widget crates, inject your CSS alongside the theme:
+
+```rust
+use my_widgets::generate_css;
+
+// Add to your HTML head or inject via ThemeProvider
+let custom_css = generate_css();
+```
+
+## Icon System
+
+Rinch provides a type-safe icon system with a curated library of SVG icons. Instead of passing arbitrary HTML strings, widgets accept `Icon` enum values for discoverability and consistency.
+
+### Basic Usage
+
+```rust
+use rinch::prelude::*;
+use rinch::widgets::*;
+
+fn app(__scope: &mut RenderScope) -> NodeHandle {
+    rsx! {
+        Alert { icon: Icon::InfoCircle, color: "blue", title: "Information",
+            "This is an informational message."
+        }
+
+        Alert { icon: Icon::CheckCircle, color: "green", title: "Success",
+            "Operation completed successfully."
+        }
+
+        Alert { icon: Icon::AlertTriangle, color: "yellow", title: "Warning",
+            "Please review this carefully."
+        }
+
+        Alert { icon: Icon::XCircle, color: "red", title: "Error",
+            "Something went wrong."
+        }
+    }
+}
+```
+
+### Available Icons
+
+| Category | Icons |
+|----------|-------|
+| **Navigation** | `ChevronUp`, `ChevronDown`, `ChevronLeft`, `ChevronRight`, `ChevronsLeft`, `ChevronsRight`, `ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight` |
+| **Actions** | `Close`, `Check`, `Plus`, `Minus`, `Search`, `Settings`, `Edit`, `Trash` |
+| **Status/Alerts** | `InfoCircle`, `CheckCircle`, `AlertCircle`, `AlertTriangle`, `XCircle` |
+| **Content** | `User`, `Mail`, `Phone`, `Calendar`, `Clock`, `File`, `Folder`, `Image`, `Link`, `ExternalLink` |
+| **UI** | `Eye`, `EyeOff`, `Menu`, `MoreHorizontal`, `MoreVertical`, `Loader`, `Quote` |
+
+### Widgets with Icon Support
+
+| Widget | Icon Props |
+|--------|-----------|
+| `Alert` | `icon: Option<Icon>` |
+| `Notification` | `icon: Option<Icon>` |
+| `AccordionControl` | `icon: Option<Icon>` |
+| `Blockquote` | `icon: Option<Icon>` |
+| `List` | `icon: Option<Icon>` |
+| `ListItem` | `icon: Option<Icon>` |
+| `Stepper` | `completed_icon`, `progress_icon: Option<Icon>` |
+| `StepperStep` | `icon`, `completed_icon`, `progress_icon: Option<Icon>` |
+| `NavLink` | `left_section`, `right_section: Option<Icon>` |
+| `DropdownMenuItem` | `left_section`, `right_section: Option<Icon>` |
+| `Tab` | `left_section`, `right_section: Option<Icon>` |
+
+### Examples
+
+```rust
+// NavLink with icons
+NavLink {
+    label: "Dashboard",
+    left_section: Icon::Settings,
+    active: true
+}
+
+// Tab with icon
+Tabs {
+    TabsList {
+        Tab { value: "home", left_section: Icon::User, "Profile" }
+        Tab { value: "settings", left_section: Icon::Settings, "Settings" }
+    }
+}
+
+// Dropdown menu items with icons
+DropdownMenu {
+    DropdownMenuTarget {
+        Button { "Actions" }
+    }
+    DropdownMenuDropdown {
+        DropdownMenuItem { left_section: Icon::Edit, "Edit" }
+        DropdownMenuItem { left_section: Icon::Trash, color: "red", "Delete" }
+    }
+}
+
+// Blockquote with quote icon
+Blockquote { icon: Icon::Quote, cite: "— Unknown",
+    "The best code is no code at all."
+}
+
+// Stepper with custom icons
+Stepper { active: 1, completed_icon: Icon::CheckCircle,
+    StepperStep { label: "Account" }
+    StepperStep { label: "Verify" }
+    StepperStep { label: "Complete" }
+}
+```
+
+### Benefits of the Icon System
+
+1. **Type Safety**: Compiler catches typos and invalid icon names
+2. **Discoverability**: IDE autocomplete shows all available icons
+3. **Consistency**: All icons use the same SVG style and sizing
+4. **Performance**: Icons render as structured nodes, enabling differential updates instead of full re-renders
+
+## Fine-Grained Reactivity
+
+For optimal performance, many widgets support fine-grained reactive updates via `*_fn` props. These allow widgets to update their visual state without full re-renders.
+
+### Reactive Props Pattern
+
+Instead of passing static values that are captured at render time, pass a reactive closure:
+
+```rust
+use std::rc::Rc;
+
+// Static (captured at render time - won't update):
+Checkbox { checked: my_signal.get(), ... }
+
+// Reactive (updates automatically when signal changes):
+Checkbox {
+    checked_fn: Some(Rc::new({ let s = my_signal.clone(); move || s.get() })),
+    ...
+}
+```
+
+### Widgets with Reactive Props
+
+| Widget | Reactive Prop | Purpose |
+|--------|---------------|---------|
+| `Checkbox` | `checked_fn: Option<Rc<dyn Fn() -> bool>>` | Toggle checked class reactively |
+| `Switch` | `checked_fn: Option<Rc<dyn Fn() -> bool>>` | Toggle checked class reactively |
+| `Radio` | `checked_fn: Option<Rc<dyn Fn() -> bool>>` | Toggle checked class reactively |
+| `NavLink` | `active_fn: Option<Rc<dyn Fn() -> bool>>` | Toggle active class reactively |
+| `Progress` | `value_fn: Option<Rc<dyn Fn() -> f32>>` | Update progress bar width reactively |
+| `Modal` | `opened_fn: Option<Rc<dyn Fn() -> bool>>` | Show/hide modal reactively |
+| `Drawer` | `opened_fn: Option<Rc<dyn Fn() -> bool>>` | Show/hide drawer reactively |
+| `Notification` | `opened_fn: Option<Rc<dyn Fn() -> bool>>` | Show/hide notification reactively |
+
+### Examples
+
+```rust
+use rinch::prelude::*;
+use std::rc::Rc;
+
+fn app(__scope: &mut RenderScope) -> NodeHandle {
+    let current_tab = use_signal(|| 0_usize);
+    let is_checked = use_signal(|| false);
+    let progress = use_signal(|| 0.0);
+
+    rsx! {
+        // NavLink with reactive active state
+        NavLink {
+            label: Some("Home".to_string()),
+            active_fn: Some(Rc::new({ let s = current_tab.clone(); move || s.get() == 0 })),
+            onclick: move || current_tab.set(0)
+        }
+
+        // Checkbox with reactive checked state
+        Checkbox {
+            label: "Enable feature",
+            checked_fn: Some(Rc::new({ let s = is_checked.clone(); move || s.get() })),
+            onchange: move || is_checked.update(|v| *v = !*v)
+        }
+
+        // Progress with reactive value
+        Progress {
+            value_fn: Some(Rc::new({ let s = progress.clone(); move || s.get() }))
+        }
+    }
+}
+```
+
+### Benefits
+
+1. **Performance**: Only the affected DOM node updates, not the entire component tree
+2. **Smooth animations**: CSS transitions work correctly since DOM nodes are stable
+3. **Lower memory**: No intermediate re-renders or virtual DOM diffing
+
+## Customization
+
+Widgets automatically respond to theme settings:
+
+```rust
+let theme = ThemeProviderProps {
+    primary_color: Some("violet".into()),  // All primary-colored widgets use violet
+    default_radius: Some("lg".into()),     // Larger border radius everywhere
+    dark_mode: true,                       // Dark theme colors
+    ..Default::default()
+};
+
+// Widgets automatically adapt to the theme
+run_with_theme("My App", 800, 600, app, theme);
+```

@@ -1,0 +1,22 @@
+[package]
+name = "rinch-dom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rinch-core = { workspace = true }
+slab = "0.4"
+taffy = "0.9"
+bitflags = "2"
+tracing = { workspace = true }
+cssparser = "0.36"
+selectors = "0.35"
+precomputed-hash = "0.1"
+parley = { workspace = true }
+vello = { workspace = true }
+peniko = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]

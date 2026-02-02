@@ -1,0 +1,8 @@
+[package]
+name = "hello-rinch-dom"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rinch = { workspace = true, features = ["debug"] }
+rinch-core = { workspace = true }

@@ -17,15 +17,16 @@ rinch = { path = "crates/rinch" }
 rinch-core = { path = "crates/rinch-core" }
 rinch-macros = { path = "crates/rinch-macros" }
 rinch-renderer = { path = "crates/rinch-renderer" }
+rinch-theme = { path = "crates/rinch-theme" }
+rinch-widgets = { path = "crates/rinch-widgets" }
+rinch-tabler-icons = { path = "crates/rinch-tabler-icons" }
+rinch-dom = { path = "crates/rinch-dom" }
+rinch-editor = { path = "crates/rinch-editor" }
+rinch-editor-macros = { path = "crates/rinch-editor-macros" }
+rinch-editor-widgets = { path = "crates/rinch-editor-widgets" }
+rinch-debug = { path = "crates/rinch-debug" }
 
-# Blitz ecosystem
-blitz = { git = "https://github.com/DioxusLabs/blitz" }
-blitz-dom = { git = "https://github.com/DioxusLabs/blitz" }
-blitz-traits = { git = "https://github.com/DioxusLabs/blitz" }
-blitz-html = { git = "https://github.com/DioxusLabs/blitz" }
-blitz-shell = { git = "https://github.com/DioxusLabs/blitz" }
-
-# Rendering (versions matched to blitz's dependencies)
+# Rendering
 anyrender = "0.7"
 anyrender_vello = "0.7"
 vello = "0.7"
@@ -51,6 +52,9 @@ arboard = "3"
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
+# Text layout
+parley = { git = "https://github.com/linebender/parley", rev = "f6a8485c35367b581b03bd6da55c8465f24e16ef" }
+
 # Utilities
 thiserror = "1"
 tracing = "0.1"
@@ -61,7 +65,8 @@ notify = "7"
 
 # Patch wgpu to use our fork with fixes for Rgba8Unorm storage texture validation
 # Required for transparent windows with Vello on Windows (DX12 + DirectComposition)
-# See: https://github.com/joeleaver/wgpu-fork/tree/rinch-patch
+# See: https://github.com/gfx-rs/wgpu/pull/8908 (still open as of Jan 2026)
+# Fork rebased to wgpu v27.0.1 for Vello rendering
 [patch.crates-io]
 wgpu = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
 wgpu-core = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }

@@ -1,0 +1,29 @@
+[package]
+name = "rinch-editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rich-text editor for Rinch with CRDT collaboration support"
+
+[dependencies]
+rinch-core = { workspace = true }
+rinch-editor-macros = { path = "../rinch-editor-macros" }
+automerge = "0.5"
+regex = "1"
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+pretty_assertions = "1"
+proptest = "1"
+
+[features]
+default = ["starter-kit"]
+starter-kit = []
+tables = []
+task-lists = []
+text-align = []
+highlight = []
+color = []
+collaboration = []
+all = ["starter-kit", "tables", "task-lists", "text-align", "highlight", "color", "collaboration"]

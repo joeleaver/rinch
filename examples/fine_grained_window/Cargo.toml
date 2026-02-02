@@ -1,0 +1,10 @@
+[package]
+name = "fine_grained_window"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+rinch = { path = "../../crates/rinch" }
+rinch-core = { path = "../../crates/rinch-core" }
+tracing-subscriber = "0.3"

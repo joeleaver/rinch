@@ -1,10 +1,13 @@
 //! Menu module - native menu support via muda.
+//!
+//! NOTE: This module provides menu infrastructure but is not yet wired up
+//! to the fine-grained runtime. Menu support will be added via a builder API.
 
 use muda::{
     accelerator::Accelerator, Menu, MenuEvent, MenuEventReceiver, MenuItem, PredefinedMenuItem,
     Submenu,
 };
-use rinch_core::element::{Element, MenuItemCallback, MenuItemProps};
+use rinch_core::element::{MenuItemCallback, MenuItemProps, MenuProps};
 use std::collections::HashMap;
 use std::str::FromStr;
 use winit::keyboard::KeyCode;
@@ -37,6 +40,16 @@ pub struct MenuCallback {
     pub callback: Option<MenuItemCallback>,
 }
 
+/// Specification for a menu item.
+pub enum MenuEntry {
+    /// A clickable menu item.
+    Item(MenuItemProps),
+    /// A separator line.
+    Separator,
+    /// A submenu with nested entries.
+    Submenu(MenuProps, Vec<MenuEntry>),
+}
+
 impl MenuManager {
     pub fn new() -> Self {
         Self {
@@ -47,57 +60,40 @@ impl MenuManager {
         }
     }
 
-    /// Build native menu from AppMenu element.
-    pub fn build_from_element(&mut self, element: &Element) -> Option<&Menu> {
-        let Element::AppMenu(props, children) = element else {
-            return None;
-        };
-
-        // Only build native menu if native: true
-        if !props.native {
-            return None;
-        }
-
+    /// Build native menu from a list of top-level submenus.
+    pub fn build(&mut self, submenus: Vec<(MenuProps, Vec<MenuEntry>)>) -> Option<&Menu> {
         let menu = Menu::new();
 
-        for child in children {
-            if let Some(submenu) = self.build_submenu(child) {
-                let _ = menu.append(&submenu);
-            }
+        for (props, entries) in submenus {
+            let submenu = self.build_submenu(&props, &entries);
+            let _ = menu.append(&submenu);
         }
 
         self.menu = Some(menu);
         self.menu.as_ref()
     }
 
-    /// Build a Submenu from a Menu element.
-    fn build_submenu(&mut self, element: &Element) -> Option<Submenu> {
-        let Element::Menu(props, children) = element else {
-            return None;
-        };
-
+    /// Build a Submenu from props and entries.
+    fn build_submenu(&mut self, props: &MenuProps, entries: &[MenuEntry]) -> Submenu {
         let submenu = Submenu::new(&props.label, true);
 
-        for child in children {
-            match child {
-                Element::MenuItem(item_props) => {
+        for entry in entries {
+            match entry {
+                MenuEntry::Item(item_props) => {
                     let menu_item = self.build_menu_item(item_props);
                     let _ = submenu.append(&menu_item);
                 }
-                Element::MenuSeparator => {
+                MenuEntry::Separator => {
                     let _ = submenu.append(&PredefinedMenuItem::separator());
                 }
-                Element::Menu(_, _) => {
-                    // Nested submenu
-                    if let Some(nested) = self.build_submenu(child) {
-                        let _ = submenu.append(&nested);
-                    }
+                MenuEntry::Submenu(nested_props, nested_entries) => {
+                    let nested = self.build_submenu(nested_props, nested_entries);
+                    let _ = submenu.append(&nested);
                 }
-                _ => {}
             }
         }
 
-        Some(submenu)
+        submenu
     }
 
     /// Build a MenuItem from MenuItemProps.
