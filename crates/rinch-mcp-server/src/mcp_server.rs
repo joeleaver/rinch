@@ -2,7 +2,7 @@ use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
 use rmcp::schemars;
-use rmcp::{tool, tool_router, ErrorData as McpError};
+use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError};
 use serde::Deserialize;
 use std::sync::Mutex;
 
@@ -396,6 +396,7 @@ impl RinchMcpServer {
     }
 }
 
+#[tool_handler]
 impl rmcp::ServerHandler for RinchMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
