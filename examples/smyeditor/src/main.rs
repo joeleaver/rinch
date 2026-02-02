@@ -341,9 +341,8 @@ fn main() {
         title: "UI Zoo - Rinch Component Library".into(),
         width: 1200,
         height: 800,
-        // NOTE: borderless/transparent not supported in rinch-dom yet, disable for now
-        borderless: false,
-        transparent: false,
+        borderless: true,
+        transparent: true,
         ..Default::default()
     };
 

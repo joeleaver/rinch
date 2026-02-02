@@ -39,12 +39,19 @@ use rinch_core::events;
 use rinch_core::hooks::{begin_render, clear_hooks, end_render};
 use rinch_dom::RinchDocument;
 
+use super::devtools::DevToolsState;
+
 #[cfg(feature = "debug")]
 use {
     serde_json::json,
     super::screenshot,
     rinch_debug::{CommandReceiver, DebugCommandKind, DebugResult},
 };
+
+// Thread-local proxy for the native event loop, used by window control functions.
+thread_local! {
+    pub(crate) static NATIVE_PROXY: RefCell<Option<EventLoopProxy<RinchNativeEvent>>> = RefCell::new(None);
+}
 
 /// Events sent to the event loop.
 #[derive(Debug, Clone)]
@@ -54,6 +61,12 @@ pub enum RinchNativeEvent {
     /// A debug command is waiting on the channel (debug feature).
     #[cfg(feature = "debug")]
     DebugCommand,
+    /// Minimize the window.
+    MinimizeWindow,
+    /// Toggle maximize state.
+    ToggleMaximizeWindow,
+    /// Close the window (from window controls).
+    CloseWindowControl,
 }
 
 /// GPU state for Vello rendering.
@@ -96,6 +109,10 @@ pub struct RinchRuntime {
     /// Debug server handle (kept alive).
     #[cfg(feature = "debug")]
     _debug_server: Option<rinch_debug::DebugServer>,
+    /// Window properties for configuring borderless, transparent, etc.
+    window_props: Option<rinch_core::element::WindowProps>,
+    /// DevTools state.
+    devtools: DevToolsState,
 }
 
 impl RinchRuntime {
@@ -122,13 +139,35 @@ impl RinchRuntime {
             debug_cmd_rx: None,
             #[cfg(feature = "debug")]
             _debug_server: None,
+            window_props: None,
+            devtools: DevToolsState::new(),
         }
     }
 
     fn create_window(&mut self, event_loop: &ActiveEventLoop) {
-        let window_attrs = Window::default_attributes()
+        let mut window_attrs = Window::default_attributes()
             .with_title(&self.title)
             .with_inner_size(winit::dpi::LogicalSize::new(self.width, self.height));
+
+        // Apply window props if set
+        if let Some(props) = &self.window_props {
+            if props.borderless {
+                window_attrs = window_attrs.with_decorations(false);
+            }
+            if props.transparent {
+                window_attrs = window_attrs.with_transparent(true);
+            }
+            if !props.resizable {
+                window_attrs = window_attrs.with_resizable(false);
+            }
+            if props.always_on_top {
+                window_attrs = window_attrs.with_window_level(winit::window::WindowLevel::AlwaysOnTop);
+            }
+            if let (Some(x), Some(y)) = (props.x, props.y) {
+                window_attrs = window_attrs.with_position(winit::dpi::LogicalPosition::new(x, y));
+            }
+        }
+
         let window = event_loop
             .create_window(window_attrs)
             .expect("Failed to create window");
@@ -386,7 +425,11 @@ impl RinchRuntime {
                 &self.scene,
                 &render_texture_view,
                 &RenderParams {
-                    base_color: Color::WHITE,
+                    base_color: if self.window_props.as_ref().is_some_and(|p| p.transparent) {
+                        Color::TRANSPARENT
+                    } else {
+                        Color::WHITE
+                    },
                     width: state.surface_config.width,
                     height: state.surface_config.height,
                     antialiasing_method: AaConfig::Msaa16,
@@ -525,17 +568,31 @@ impl RinchRuntime {
 
         // Walk nodes to find hit target (simple: iterate all nodes, find deepest match)
         if let Some(hit_id) = hit_test(&d.tree, x, y) {
-            // Walk up to find data-rid
+            // Walk up to find data-rid or data-drag-window
             let mut current = Some(hit_id);
             while let Some(node_id) = current {
                 if let Some(node) = d.tree.get(node_id) {
+                    // Check for click handler first
                     if let Some(rid_str) = node.attributes.get("data-rid") {
                         if let Ok(handler_id) = rid_str.parse::<usize>() {
                             // Must drop borrow before dispatching (handler may mutate doc)
                             drop(d);
+                            // Set current window ID so window control functions work
+                            if let Some(w) = &self.window {
+                                crate::windows::set_current_window_id(Some(w.id()));
+                            }
                             events::dispatch_event(events::EventHandlerId(handler_id));
+                            crate::windows::set_current_window_id(None);
                             return;
                         }
+                    }
+                    // Check for drag-window region
+                    if node.attributes.get("data-drag-window").is_some() {
+                        drop(d);
+                        if let Some(w) = &self.window {
+                            let _ = w.drag_window();
+                        }
+                        return;
                     }
                     current = node.parent;
                 } else {
@@ -553,7 +610,7 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: RinchNativeEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: RinchNativeEvent) {
         match event {
             RinchNativeEvent::ReRender => {
                 self.resolve_and_repaint();
@@ -561,6 +618,19 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
             #[cfg(feature = "debug")]
             RinchNativeEvent::DebugCommand => {
                 self.handle_debug_commands();
+            }
+            RinchNativeEvent::MinimizeWindow => {
+                if let Some(w) = &self.window {
+                    w.set_minimized(true);
+                }
+            }
+            RinchNativeEvent::ToggleMaximizeWindow => {
+                if let Some(w) = &self.window {
+                    w.set_maximized(!w.is_maximized());
+                }
+            }
+            RinchNativeEvent::CloseWindowControl => {
+                event_loop.exit();
             }
         }
     }
@@ -594,6 +664,25 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
             } => {
                 if let Some((x, y)) = self.cursor_pos {
                     self.handle_click(x, y);
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event: winit::event::KeyEvent {
+                    physical_key: winit::keyboard::PhysicalKey::Code(key_code),
+                    state: ElementState::Pressed,
+                    ..
+                },
+                ..
+            } => {
+                match key_code {
+                    winit::keyboard::KeyCode::F12 => {
+                        self.devtools.toggle();
+                        tracing::info!("DevTools: {}", if self.devtools.visible { "opened" } else { "closed" });
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                    }
+                    _ => {}
                 }
             }
             _ => {}
@@ -698,6 +787,9 @@ where
     let mut runtime = RinchRuntime::new(title, width, height, component);
     runtime.proxy = Some(proxy.clone());
 
+    // Set native proxy for window control functions
+    NATIVE_PROXY.with(|p| *p.borrow_mut() = Some(proxy.clone()));
+
     // Start debug IPC server if feature is enabled (disable with RINCH_DEBUG=0)
     #[cfg(feature = "debug")]
     {
@@ -745,6 +837,10 @@ where
 
     let mut runtime = RinchRuntime::new(&props.title, props.width, props.height, component);
     runtime.proxy = Some(proxy.clone());
+    runtime.window_props = Some(props.clone());
+
+    // Set native proxy for window control functions
+    NATIVE_PROXY.with(|p| *p.borrow_mut() = Some(proxy.clone()));
 
     #[cfg(feature = "debug")]
     {
