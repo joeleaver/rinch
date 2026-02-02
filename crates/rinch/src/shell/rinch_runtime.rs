@@ -552,6 +552,18 @@ impl RinchRuntime {
                 self.resolve_and_repaint();
                 DebugResult::Json { data: json!(null) }
             }
+            DebugCommandKind::GetComputedStyles { id } => {
+                let Some(doc) = &self.doc else {
+                    return DebugResult::Error { message: "No document".into() };
+                };
+                let d = doc.borrow();
+                match d.tree.get(id) {
+                    Some(node) => {
+                        DebugResult::Json { data: json!(node.cached_style_props) }
+                    }
+                    None => DebugResult::Error { message: format!("Node {} not found", id) },
+                }
+            }
             DebugCommandKind::CloseApp => {
                 std::thread::spawn(|| {
                     std::thread::sleep(std::time::Duration::from_millis(100));

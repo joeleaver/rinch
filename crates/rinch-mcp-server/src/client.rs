@@ -26,6 +26,8 @@ pub enum DebugCommandKind {
     WaitFrame,
     #[serde(rename = "close_app")]
     CloseApp,
+    #[serde(rename = "get_computed_styles")]
+    GetComputedStyles { id: usize },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

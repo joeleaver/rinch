@@ -53,6 +53,10 @@ fn serialize_node(tree: &NodeTree, id: RawNodeId, offset_x: f32, offset_y: f32) 
     if !node.attributes.is_empty() {
         obj["attributes"] = json!(node.attributes);
     }
+    // Include key computed styles in tree serialization
+    if !node.cached_style_props.is_empty() {
+        obj["computed_styles"] = json!(node.cached_style_props);
+    }
     if !children.is_empty() {
         obj["children"] = Value::Array(children);
     }
@@ -75,6 +79,7 @@ pub fn query_selector(tree: &NodeTree, selector: &str) -> Vec<RawNodeId> {
 
 enum Matcher {
     Tag(String),
+    Class(String),
     AttrExists(String),
     AttrEquals(String, String),
 }
@@ -91,6 +96,8 @@ fn parse_selector(selector: &str) -> Matcher {
         } else {
             Matcher::AttrExists(inner.to_string())
         }
+    } else if s.starts_with('.') {
+        Matcher::Class(s[1..].to_string())
     } else {
         Matcher::Tag(s.to_lowercase())
     }
@@ -101,6 +108,11 @@ fn query_walk(tree: &NodeTree, id: RawNodeId, matcher: &Matcher, results: &mut V
 
     let matches = match matcher {
         Matcher::Tag(tag) => node.tag().map(|t| t.to_lowercase() == *tag).unwrap_or(false),
+        Matcher::Class(cls) => {
+            node.attributes.get("class")
+                .map(|c| c.split_whitespace().any(|w| w == cls))
+                .unwrap_or(false)
+        }
         Matcher::AttrExists(attr) => node.attributes.contains_key(attr),
         Matcher::AttrEquals(attr, val) => {
             node.attributes.get(attr).map(|v| v == val).unwrap_or(false)
@@ -169,6 +181,13 @@ pub fn get_node_detail(tree: &NodeTree, id: RawNodeId) -> Option<Value> {
     if let Some(text) = text {
         obj["text"] = Value::String(text.to_string());
     }
+
+    // Add computed styles if available
+    if !node.cached_style_props.is_empty() {
+        obj["computed_styles"] = json!(node.cached_style_props);
+    }
+    // Add display mode
+    obj["display_mode"] = Value::String(format!("{:?}", node.display_mode));
 
     Some(obj)
 }

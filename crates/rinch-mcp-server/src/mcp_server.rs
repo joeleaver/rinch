@@ -247,6 +247,17 @@ impl RinchMcpServer {
         .await
     }
 
+    #[tool(description = "Get computed CSS styles for a specific DOM node.")]
+    async fn get_computed_styles(
+        &self,
+        params: Parameters<NodeIdParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.forward_json_command(DebugCommandKind::GetComputedStyles {
+            id: params.0.id as usize,
+        })
+        .await
+    }
+
     #[tool(description = "Wait for the next render frame.")]
     async fn wait_frame(&self) -> Result<CallToolResult, McpError> {
         self.forward_json_command(DebugCommandKind::WaitFrame).await
@@ -310,6 +321,11 @@ impl RinchMcpServer {
 
         // Set env to enable debug
         cmd.env("RINCH_DEBUG", "1");
+
+        // Forward DISPLAY for headless environments (Xvfb)
+        if let Ok(display) = std::env::var("DISPLAY") {
+            cmd.env("DISPLAY", display);
+        }
 
         // Spawn detached
         cmd.stdout(std::process::Stdio::null());
