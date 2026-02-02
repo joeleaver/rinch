@@ -344,7 +344,12 @@ impl DomDocument for RinchDocument {
                 self.invalidate_parent_ifc(parent_id);
             }
         }
-        if name == "class" || name == "style" {
+        // SVG elements: width/height HTML attributes affect layout sizing
+        let needs_style_recompute = name == "class" || name == "style"
+            || ((name == "width" || name == "height" || name == "viewBox")
+                && self.tree.nodes[node.0].tag() == Some("svg"));
+
+        if needs_style_recompute {
             // Compute merged style: class-based + inline overlay
             let merged = self.compute_merged_style(node.0);
             self.tree.nodes[node.0].computed_style_str = layout::props_to_style_string(&merged);
@@ -628,14 +633,46 @@ impl RinchDocument {
             ..Default::default()
         };
 
-        crate::stylesheet::compute_merged_styles_with_state(
+        let mut merged = crate::stylesheet::compute_merged_styles_with_state(
             &self.tree.stylesheet,
             class_attr,
             inline_style,
             Some(&element_state),
             &ancestors,
             tag,
-        )
+        );
+
+        // For SVG elements, inject width/height from HTML attributes into CSS props
+        // so Taffy assigns them proper layout dimensions.
+        if tag == Some("svg") {
+            if !merged.contains_key("width") {
+                if let Some(w) = node.attributes.get("width") {
+                    // Add "px" if it's a bare number
+                    let css_w = if w.ends_with("px") || w.ends_with('%') {
+                        w.clone()
+                    } else {
+                        format!("{}px", w)
+                    };
+                    merged.insert("width".to_string(), css_w);
+                }
+            }
+            if !merged.contains_key("height") {
+                if let Some(h) = node.attributes.get("height") {
+                    let css_h = if h.ends_with("px") || h.ends_with('%') {
+                        h.clone()
+                    } else {
+                        format!("{}px", h)
+                    };
+                    merged.insert("height".to_string(), css_h);
+                }
+            }
+            // SVG elements should not stretch in flex containers
+            if !merged.contains_key("flex-shrink") {
+                merged.insert("flex-shrink".to_string(), "0".to_string());
+            }
+        }
+
+        merged
     }
 
     /// Build an ancestor chain from a node up to the root.
