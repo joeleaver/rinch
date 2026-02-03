@@ -567,6 +567,83 @@ impl RinchDocument {
         self.tree.viewport = crate::layout::Viewport { width, height };
     }
 
+    /// Update hover state: set the hovered node and its ancestors as hovered,
+    /// clear previous hover, and recompute styles for affected nodes.
+    /// Returns true if the hovered node changed (caller should repaint).
+    pub fn update_hover(&mut self, new_hovered: Option<usize>) -> bool {
+        let old_hovered = self.tree.hovered_node;
+        if old_hovered == new_hovered {
+            return false;
+        }
+
+        // Collect old hovered chain (node + ancestors)
+        let mut old_chain = Vec::new();
+        if let Some(old_id) = old_hovered {
+            let mut current = Some(old_id);
+            while let Some(id) = current {
+                old_chain.push(id);
+                current = self.tree.nodes.get(id).and_then(|n| n.parent);
+            }
+        }
+
+        // Collect new hovered chain (node + ancestors)
+        let mut new_chain = Vec::new();
+        if let Some(new_id) = new_hovered {
+            let mut current = Some(new_id);
+            while let Some(id) = current {
+                new_chain.push(id);
+                current = self.tree.nodes.get(id).and_then(|n| n.parent);
+            }
+        }
+
+        // Clear old hover state
+        for &id in &old_chain {
+            if let Some(node) = self.tree.nodes.get_mut(id) {
+                node.is_hovered = false;
+            }
+        }
+
+        // Set new hover state
+        for &id in &new_chain {
+            if let Some(node) = self.tree.nodes.get_mut(id) {
+                node.is_hovered = true;
+            }
+        }
+
+        self.tree.hovered_node = new_hovered;
+
+        // Recompute styles for nodes that changed hover state
+        // (nodes in old chain but not new, and vice versa)
+        let mut dirty_nodes: Vec<usize> = Vec::new();
+        for &id in &old_chain {
+            if !new_chain.contains(&id) {
+                dirty_nodes.push(id);
+            }
+        }
+        for &id in &new_chain {
+            if !old_chain.contains(&id) {
+                dirty_nodes.push(id);
+            }
+        }
+
+        for id in dirty_nodes {
+            if !self.tree.nodes[id].is_element() {
+                continue;
+            }
+            let merged = self.compute_merged_style(id);
+            self.tree.nodes[id].computed_style_str = layout::props_to_style_string(&merged);
+            self.tree.nodes[id].cached_style_props = merged.clone();
+            if let Some(taffy_id) = self.tree.nodes[id].taffy_id {
+                let dd = self.default_display_for_node(id);
+                let taffy_style = layout::build_taffy_style_full(&merged, &self.tree.viewport, dd);
+                let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
+            }
+            self.push_dirty_flags(id, DirtyFlags::STYLE | DirtyFlags::PAINT);
+        }
+
+        true
+    }
+
     /// Get the default display type for a node based on its tag.
     fn default_display_for_node(&self, node_id: usize) -> layout::DefaultDisplay {
         match self.tree.nodes[node_id].display_mode {
@@ -644,6 +721,7 @@ impl RinchDocument {
                 .map(|s| s.to_string())
                 .collect(),
             attributes: node.attributes.clone(),
+            is_hovered: node.is_hovered,
             ..Default::default()
         };
 
@@ -707,6 +785,7 @@ impl RinchDocument {
                         tag,
                         classes,
                         attributes: parent.attributes.clone(),
+                        is_hovered: parent.is_hovered,
                         ..Default::default()
                     });
                 }

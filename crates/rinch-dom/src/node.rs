@@ -160,6 +160,8 @@ pub struct Node {
     /// Cached parsed style properties (from computed_style_str).
     /// Populated alongside computed_style_str to avoid re-parsing during paint.
     pub cached_style_props: HashMap<String, String>,
+    /// Whether this node is currently under the cursor (for CSS :hover).
+    pub is_hovered: bool,
 }
 
 impl Node {
@@ -180,6 +182,7 @@ impl Node {
             text_layout: None,
             computed_style_str: String::new(),
             cached_style_props: HashMap::new(),
+            is_hovered: false,
         }
     }
 
@@ -201,6 +204,7 @@ impl Node {
             text_layout: None,
             computed_style_str: String::new(),
             cached_style_props: HashMap::new(),
+            is_hovered: false,
         }
     }
 
@@ -221,6 +225,7 @@ impl Node {
             text_layout: None,
             computed_style_str: String::new(),
             cached_style_props: HashMap::new(),
+            is_hovered: false,
         }
     }
 
@@ -241,6 +246,7 @@ impl Node {
             text_layout: None,
             computed_style_str: String::new(),
             cached_style_props: HashMap::new(),
+            is_hovered: false,
         }
     }
 
@@ -312,6 +318,8 @@ pub struct NodeTree {
     pub stylesheet: crate::stylesheet::Stylesheet,
     /// Viewport dimensions for resolving vh/vw CSS units.
     pub viewport: crate::layout::Viewport,
+    /// Currently hovered node ID (for CSS :hover).
+    pub hovered_node: Option<RawNodeId>,
 }
 
 impl NodeTree {
@@ -386,6 +394,7 @@ impl NodeTree {
             taffy_map,
             stylesheet: crate::stylesheet::Stylesheet::new(),
             viewport: crate::layout::Viewport::default(),
+            hovered_node: None,
         }
     }
 

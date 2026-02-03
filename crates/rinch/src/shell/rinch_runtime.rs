@@ -667,7 +667,23 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                 self.paint();
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor_pos = Some((position.x as f32, position.y as f32));
+                let x = position.x as f32;
+                let y = position.y as f32;
+                self.cursor_pos = Some((x, y));
+
+                // Update hover state for CSS :hover support
+                if let Some(doc) = &self.doc {
+                    let hovered = {
+                        let d = doc.borrow();
+                        hit_test(&d.tree, x, y)
+                    };
+                    let changed = doc.borrow_mut().update_hover(hovered);
+                    if changed {
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                    }
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
