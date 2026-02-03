@@ -136,8 +136,9 @@ fn paint_node(
 
             // Handle overflow clipping
             let overflow = get_style_property(node, &tree.stylesheet,"overflow").unwrap_or_default();
-            let clips =
-                overflow == "hidden" || overflow == "scroll" || overflow == "auto";
+            let overflow_y = get_style_property(node, &tree.stylesheet,"overflow-y").unwrap_or_default();
+            let effective_overflow_y = if !overflow_y.is_empty() { &overflow_y } else { &overflow };
+            let clips = matches!(effective_overflow_y.as_str(), "hidden" | "scroll" | "auto");
 
             if clips {
                 scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &rect);
@@ -193,6 +194,51 @@ fn paint_node(
 
             if clips {
                 scene.pop_layer();
+            }
+
+            // Paint scrollbar overlay for scroll containers
+            if effective_overflow_y == "scroll" || effective_overflow_y == "auto" {
+                let node = tree.get(node_id).unwrap(); // re-borrow after children done
+                let mut content_height: f64 = 0.0;
+                for &child_id in &node.children {
+                    if let Some(child) = tree.get(child_id) {
+                        let bottom = (child.layout.y + child.layout.height) as f64 * scale;
+                        if bottom > content_height {
+                            content_height = bottom;
+                        }
+                    }
+                }
+                if content_height > h {
+                    let scrollbar_width = 6.0 * scale;
+                    let scrollbar_margin = 2.0 * scale;
+                    let scrollbar_x = x + w - scrollbar_width - scrollbar_margin;
+
+                    // Thumb sizing
+                    let visible_ratio = h / content_height;
+                    let max_scroll = content_height - h;
+                    let scroll_ratio = if max_scroll > 0.0 {
+                        (node.scroll_offset.1 * scale / max_scroll).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+
+                    let track_height = h - scrollbar_margin * 2.0;
+                    let thumb_height = (track_height * visible_ratio).max(20.0 * scale);
+                    let thumb_travel = track_height - thumb_height;
+                    let thumb_y = y + scrollbar_margin + thumb_travel * scroll_ratio;
+
+                    let thumb_rect = RoundedRect::from_rect(
+                        Rect::new(
+                            scrollbar_x,
+                            thumb_y,
+                            scrollbar_x + scrollbar_width,
+                            thumb_y + thumb_height,
+                        ),
+                        scrollbar_width * 0.5,
+                    );
+                    let thumb_color = AlphaColor::<Srgb>::new([0.0, 0.0, 0.0, 0.4_f32]);
+                    scene.fill(Fill::NonZero, Affine::IDENTITY, &Brush::Solid(thumb_color.into()), None, &thumb_rect);
+                }
             }
 
             if has_opacity {
