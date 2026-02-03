@@ -569,6 +569,36 @@ impl Stylesheet {
         parts.join(" ")
     }
 
+    /// Re-parse CSS and update only `:root` variables (no rule duplication).
+    /// Use this when theme CSS changes at runtime to update CSS custom properties
+    /// without re-adding all the non-`:root` rules.
+    pub fn update_variables_from_css(&mut self, css: &str) {
+        let css = css.trim();
+        if css.is_empty() {
+            return;
+        }
+
+        self.variables.clear();
+
+        let mut input = ParserInput::new(css);
+        let mut parser = Parser::new(&mut input);
+        let mut rule_parser = RinchRuleParser;
+
+        for result in StyleSheetParser::new(&mut parser, &mut rule_parser) {
+            let rule = match result {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            if rule.selector_text.trim() == ":root" {
+                for (k, (v, _)) in &rule.properties {
+                    if k.starts_with("--") {
+                        self.variables.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
+    }
+
     /// Resolve all units in a value: var() first, then rem.
     /// Viewport units (vh/vw) are left as-is for the layout engine to resolve.
     pub fn resolve_value(&self, value: &str) -> String {
@@ -848,6 +878,75 @@ fn parse_properties(body: &str) -> HashMap<String, (String, bool)> {
     result
 }
 
+/// Resolve var() references checking local custom properties first, then global stylesheet variables.
+fn resolve_var_with_locals(value: &str, stylesheet: &Stylesheet, local_vars: &HashMap<String, String>) -> String {
+    if !value.contains("var(") {
+        return value.to_string();
+    }
+
+    let mut result = String::with_capacity(value.len());
+    let mut remaining = value;
+
+    while let Some(start) = remaining.find("var(") {
+        result.push_str(&remaining[..start]);
+        let after_var = &remaining[start + 4..];
+
+        // Find matching closing paren (handling nested parens)
+        let mut depth = 1;
+        let mut end = 0;
+        for (i, ch) in after_var.char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if depth != 0 {
+            // Unbalanced parens, keep as-is
+            result.push_str(&remaining[start..]);
+            remaining = "";
+            break;
+        }
+
+        let inner = &after_var[..end];
+        remaining = &after_var[end + 1..];
+
+        // Split on first comma for fallback
+        let (var_name, fallback) = if let Some(comma_pos) = inner.find(',') {
+            (inner[..comma_pos].trim(), Some(inner[comma_pos + 1..].trim()))
+        } else {
+            (inner.trim(), None)
+        };
+
+        // Check local vars first, then global
+        if let Some(resolved) = local_vars.get(var_name) {
+            result.push_str(resolved);
+        } else if let Some(resolved) = stylesheet.variables.get(var_name) {
+            // Recursively resolve the global var value
+            let resolved = resolve_var_with_locals(resolved, stylesheet, local_vars);
+            result.push_str(&resolved);
+        } else if let Some(fb) = fallback {
+            let resolved = resolve_var_with_locals(fb, stylesheet, local_vars);
+            result.push_str(&resolved);
+        } else {
+            // Unresolved, keep original
+            result.push_str("var(");
+            result.push_str(inner);
+            result.push(')');
+        }
+    }
+
+    result.push_str(remaining);
+    result
+}
+
 /// Compute merged style properties: class-based styles + inline overrides.
 /// Resolves var() and rem in the final result.
 /// Respects !important: inline styles won't override class-based !important values unless the inline style is also !important.
@@ -907,9 +1006,27 @@ pub fn compute_merged_styles_with_state(
         merged.insert(k.clone(), v.clone());
     }
 
-    // Resolve var() and rem
+    // Resolve var() references, considering both global :root variables and local custom properties
+    // Step 1: Extract and resolve local custom properties (--xxx) against global vars
+    let mut local_vars: HashMap<String, String> = HashMap::new();
+    for (key, value) in &merged {
+        if key.starts_with("--") {
+            local_vars.insert(key.clone(), stylesheet.resolve_value(value));
+        }
+    }
+
+    // Step 2: Resolve all properties using a combined lookup (local vars first, then global)
     for value in merged.values_mut() {
-        let resolved = stylesheet.resolve_value(value);
+        // First resolve using local custom properties
+        let mut resolved = value.clone();
+        // Keep resolving until no more var() references change
+        for _ in 0..10 {
+            let prev = resolved.clone();
+            resolved = resolve_var_with_locals(&resolved, stylesheet, &local_vars);
+            if resolved == prev { break; }
+        }
+        // Then resolve rem units
+        resolved = Stylesheet::resolve_unit(&resolved);
         *value = resolved;
     }
 
@@ -1185,5 +1302,54 @@ mod tests {
         // Content child
         let props2 = ss.match_classes("rinch-borderlesswindow__content");
         assert_eq!(props2.get("flex").map(|(v, _)| v.as_str()), Some("1"), "flex missing");
+    }
+
+    #[test]
+    fn test_inline_custom_property_resolution() {
+        // Test that inline custom properties can reference global variables
+        let css = r#"
+            :root { --rinch-color-cyan-6: #0c8599; }
+        "#;
+        let ss = Stylesheet::parse(css);
+
+        // Inline style defines a local custom property that references a global one
+        let inline = "--rinch-action-icon-color: var(--rinch-color-cyan-6); background-color: var(--rinch-action-icon-color, transparent)";
+        let merged = compute_merged_styles(&ss, None, Some(inline), None);
+
+        // The local custom property should be resolved
+        assert_eq!(merged.get("--rinch-action-icon-color").unwrap(), "#0c8599");
+        // And it should be used to resolve other properties
+        assert_eq!(merged.get("background-color").unwrap(), "#0c8599");
+    }
+
+    #[test]
+    fn test_inline_custom_property_chain() {
+        // Test chained local custom properties
+        let css = r#"
+            :root { --base-color: red; }
+        "#;
+        let ss = Stylesheet::parse(css);
+
+        let inline = "--local-a: var(--base-color); --local-b: var(--local-a); color: var(--local-b)";
+        let merged = compute_merged_styles(&ss, None, Some(inline), None);
+
+        assert_eq!(merged.get("--local-a").unwrap(), "red");
+        assert_eq!(merged.get("--local-b").unwrap(), "red");
+        assert_eq!(merged.get("color").unwrap(), "red");
+    }
+
+    #[test]
+    fn test_inline_custom_property_with_fallback() {
+        // Test that fallbacks work with local custom properties
+        let css = r#"
+            :root { --rinch-color-blue: blue; }
+        "#;
+        let ss = Stylesheet::parse(css);
+
+        let inline = "--local-color: var(--undefined, var(--rinch-color-blue)); color: var(--local-color)";
+        let merged = compute_merged_styles(&ss, None, Some(inline), None);
+
+        assert_eq!(merged.get("--local-color").unwrap(), "blue");
+        assert_eq!(merged.get("color").unwrap(), "blue");
     }
 }

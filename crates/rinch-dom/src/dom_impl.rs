@@ -364,6 +364,7 @@ impl DomDocument for RinchDocument {
                 let mode = match display.as_str() {
                     "inline" => Some(DisplayMode::Inline),
                     "inline-block" => Some(DisplayMode::InlineBlock),
+                    "inline-flex" => Some(DisplayMode::Flex),
                     "block" => Some(DisplayMode::Block),
                     "flex" => Some(DisplayMode::Flex),
                     _ => None,
@@ -650,6 +651,23 @@ impl RinchDocument {
             crate::node::DisplayMode::Inline | crate::node::DisplayMode::InlineBlock => layout::DefaultDisplay::Inline,
             _ => layout::DefaultDisplay::Block,
         }
+    }
+
+    /// Update theme CSS variables without duplicating non-`:root` rules.
+    /// After calling this, call `recompute_all_styles_full()` to apply the new variables.
+    pub fn update_theme_variables(&mut self, css: &str) {
+        self.tree.stylesheet.update_variables_from_css(css);
+    }
+
+    /// Recompute taffy styles for all element nodes, clearing cached style props
+    /// so that CSS variables are re-resolved. Use this after `update_theme_variables()`.
+    pub fn recompute_all_styles_full(&mut self) {
+        // Clear cached style props so var() references get re-resolved
+        let node_ids: Vec<usize> = self.tree.nodes.iter().map(|(id, _)| id).collect();
+        for &nid in &node_ids {
+            self.tree.nodes[nid].cached_style_props.clear();
+        }
+        self.recompute_all_styles();
     }
 
     /// Recompute taffy styles for all element nodes.

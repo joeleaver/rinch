@@ -129,6 +129,8 @@ pub struct RinchRuntime {
     window_props: Option<rinch_core::element::WindowProps>,
     /// DevTools state.
     devtools: DevToolsState,
+    /// Last theme CSS loaded into the document (for change detection).
+    last_theme_css: Option<String>,
 }
 
 impl RinchRuntime {
@@ -158,6 +160,7 @@ impl RinchRuntime {
             _debug_server: None,
             window_props: None,
             devtools: DevToolsState::new(),
+            last_theme_css: None,
         }
     }
 
@@ -210,6 +213,8 @@ impl RinchRuntime {
             // Set viewport size so vh/vw units resolve correctly during DOM construction
             d.set_viewport(size.width as f32, size.height as f32);
         }
+        // Remember the initial theme CSS so we can detect changes later
+        self.last_theme_css = Some(rinch_core::get_current_theme_css().unwrap_or_default());
 
         // Create RenderScope
         let doc_as_dom: Rc<RefCell<dyn DomDocument>> = doc.clone();
@@ -381,6 +386,19 @@ impl RinchRuntime {
 
     fn resolve_and_repaint(&mut self) {
         if let (Some(window), Some(doc)) = (&self.window, &self.doc) {
+            // Check if theme CSS has changed (e.g. primary color or dark mode toggled)
+            let current_theme = rinch_core::get_current_theme_css().unwrap_or_default();
+            let theme_changed = self.last_theme_css.as_deref() != Some(current_theme.as_str());
+
+            if theme_changed {
+                self.last_theme_css = Some(current_theme.clone());
+                if !current_theme.is_empty() {
+                    let mut d = doc.borrow_mut();
+                    d.update_theme_variables(&current_theme);
+                    d.recompute_all_styles_full();
+                }
+            }
+
             // Resolve layout
             let size = window.inner_size();
             {
