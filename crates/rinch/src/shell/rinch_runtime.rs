@@ -79,6 +79,20 @@ struct RenderState {
     render_texture: Texture,
 }
 
+/// State for an active scrollbar drag operation.
+struct ScrollbarDrag {
+    /// The node ID of the scroll container being scrolled.
+    node_id: usize,
+    /// The Y coordinate where the drag started (screen pixels).
+    start_y: f32,
+    /// The scroll_offset.1 value when the drag started.
+    start_scroll: f64,
+    /// Content height of the scroll container (for ratio calculation).
+    content_height: f64,
+    /// Container height of the scroll container.
+    container_height: f64,
+}
+
 /// The main application runtime using rinch-dom.
 pub struct RinchRuntime {
     /// Component function to render.
@@ -103,6 +117,8 @@ pub struct RinchRuntime {
     paint_layout_cx: parley::LayoutContext<peniko::Brush>,
     /// Current cursor position.
     cursor_pos: Option<(f32, f32)>,
+    /// Active scrollbar drag state.
+    scrollbar_drag: Option<ScrollbarDrag>,
     /// Debug command receiver.
     #[cfg(feature = "debug")]
     debug_cmd_rx: Option<CommandReceiver>,
@@ -135,6 +151,7 @@ impl RinchRuntime {
             scene: Scene::new(),
             paint_layout_cx: parley::LayoutContext::new(),
             cursor_pos: None,
+            scrollbar_drag: None,
             #[cfg(feature = "debug")]
             debug_cmd_rx: None,
             #[cfg(feature = "debug")]
@@ -719,6 +736,29 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                 let y = position.y as f32;
                 self.cursor_pos = Some((x, y));
 
+                // Handle scrollbar drag
+                if let Some(drag) = &self.scrollbar_drag {
+                    let node_id = drag.node_id;
+                    let dy = y - drag.start_y;
+                    let track_height = drag.container_height - 4.0; // 2px margin each side
+                    let max_scroll = drag.content_height - drag.container_height;
+                    let scroll_delta = (dy as f64 / track_height) * drag.content_height;
+                    let new_scroll = (drag.start_scroll + scroll_delta).clamp(0.0, max_scroll);
+
+                    if let Some(doc) = &self.doc {
+                        let mut d = doc.borrow_mut();
+                        if let Some(node) = d.tree.nodes.get_mut(node_id) {
+                            node.scroll_offset.1 = new_scroll;
+                            node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+                            d.tree.dirty_nodes.push(node_id);
+                        }
+                    }
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                    return;
+                }
+
                 // Update hover state for CSS :hover support
                 if let Some(doc) = &self.doc {
                     let hovered = {
@@ -739,8 +779,53 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                 ..
             } => {
                 if let Some((x, y)) = self.cursor_pos {
-                    self.handle_click(x, y);
+                    // Check if clicking on a scrollbar first
+                    let scrollbar_hit = if let Some(doc) = &self.doc {
+                        let d = doc.borrow();
+                        find_scrollbar_hit(&d.tree, x, y)
+                    } else {
+                        None
+                    };
+
+                    if let Some((node_id, content_height, container_height)) = scrollbar_hit {
+                        if let Some(doc) = &self.doc {
+                            let mut d = doc.borrow_mut();
+                            let node_abs_y = compute_absolute_y(&d.tree, node_id);
+                            let margin = 2.0_f64;
+                            let track_top = node_abs_y as f64 + margin;
+                            let track_height = container_height - margin * 2.0;
+                            let max_scroll = content_height - container_height;
+                            let click_ratio = ((y as f64 - track_top) / track_height).clamp(0.0, 1.0);
+                            let new_scroll = click_ratio * max_scroll;
+
+                            if let Some(node) = d.tree.nodes.get_mut(node_id) {
+                                node.scroll_offset.1 = new_scroll;
+                                node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+                                d.tree.dirty_nodes.push(node_id);
+                            }
+
+                            self.scrollbar_drag = Some(ScrollbarDrag {
+                                node_id,
+                                start_y: y,
+                                start_scroll: new_scroll,
+                                content_height,
+                                container_height,
+                            });
+                        }
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                    } else {
+                        self.handle_click(x, y);
+                    }
                 }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.scrollbar_drag = None;
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 // Convert delta to pixels
@@ -895,6 +980,88 @@ fn compute_content_height(tree: &rinch_dom::NodeTree, node_id: usize) -> f64 {
         }
     }
     max_bottom
+}
+
+/// Check if a point (x, y) hits a scrollbar. Returns the scroll container node_id,
+/// content height, and container height if hit.
+fn find_scrollbar_hit(
+    tree: &rinch_dom::NodeTree,
+    x: f32,
+    y: f32,
+) -> Option<(usize, f64, f64)> {
+    find_scrollbar_hit_node(tree, tree.body_id, 0.0, 0.0, x, y)
+}
+
+fn find_scrollbar_hit_node(
+    tree: &rinch_dom::NodeTree,
+    node_id: usize,
+    offset_x: f32,
+    offset_y: f32,
+    x: f32,
+    y: f32,
+) -> Option<(usize, f64, f64)> {
+    let node = tree.get(node_id)?;
+    let nx = offset_x + node.layout.x;
+    let ny = offset_y + node.layout.y;
+    let nw = node.layout.width;
+    let nh = node.layout.height;
+
+    if x < nx || x > nx + nw || y < ny || y > ny + nh {
+        return None;
+    }
+
+    // Check children first (depth-first, reverse order for topmost)
+    let sx = node.scroll_offset.0 as f32;
+    let sy = node.scroll_offset.1 as f32;
+    let children: Vec<_> = node.children.clone();
+    for &child_id in children.iter().rev() {
+        if let Some(hit) = find_scrollbar_hit_node(tree, child_id, nx - sx, ny - sy, x, y) {
+            return Some(hit);
+        }
+    }
+
+    // Check if this node is a scroll container with a visible scrollbar
+    let overflow = node.cached_style_props.get("overflow")
+        .or_else(|| node.cached_style_props.get("overflow-y"))
+        .map(|s| s.as_str())
+        .unwrap_or("visible");
+
+    if overflow == "scroll" || overflow == "auto" {
+        let content_height = compute_content_height(tree, node_id);
+        let container_height = nh as f64;
+
+        if content_height > container_height {
+            // Scrollbar hit area: right 16px of the container
+            let scrollbar_hit_width: f32 = 16.0;
+            let scrollbar_left = nx + nw - scrollbar_hit_width;
+
+            if x >= scrollbar_left && x <= nx + nw && y >= ny && y <= ny + nh {
+                return Some((node_id, content_height, container_height));
+            }
+        }
+    }
+
+    None
+}
+
+/// Compute the absolute Y position of a node by walking up its parent chain.
+fn compute_absolute_y(tree: &rinch_dom::NodeTree, node_id: usize) -> f32 {
+    let mut y = 0.0_f32;
+    let mut current = Some(node_id);
+    while let Some(id) = current {
+        if let Some(node) = tree.get(id) {
+            y += node.layout.y;
+            if let Some(parent_id) = node.parent {
+                if let Some(parent) = tree.get(parent_id) {
+                    y -= parent.scroll_offset.1 as f32;
+                }
+            }
+            current = node.parent;
+        } else {
+            break;
+        }
+    }
+    y
 }
 
 /// Run a rinch application using the rinch-dom rendering pipeline.
