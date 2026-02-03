@@ -45,6 +45,27 @@ pub struct ClickParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MouseMoveParams {
+    /// X coordinate in pixels
+    pub x: f64,
+    /// Y coordinate in pixels
+    pub y: f64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ScrollParams {
+    /// X coordinate where the scroll occurs
+    pub x: f64,
+    /// Y coordinate where the scroll occurs
+    pub y: f64,
+    /// Horizontal scroll delta in pixels (positive = right)
+    #[serde(default)]
+    pub delta_x: f64,
+    /// Vertical scroll delta in pixels (positive = scroll down, negative = scroll up)
+    pub delta_y: f64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct TypeTextParams {
     /// The text to type
     pub text: String,
@@ -235,6 +256,32 @@ impl RinchMcpServer {
         self.forward_json_command(DebugCommandKind::Click {
             x: params.0.x as f32,
             y: params.0.y as f32,
+        })
+        .await
+    }
+
+    #[tool(description = "Simulate mouse movement to the given coordinates. Triggers hover effects.")]
+    async fn mouse_move(
+        &self,
+        params: Parameters<MouseMoveParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.forward_json_command(DebugCommandKind::MouseMove {
+            x: params.0.x as f32,
+            y: params.0.y as f32,
+        })
+        .await
+    }
+
+    #[tool(description = "Simulate a scroll wheel event at the given coordinates.")]
+    async fn scroll(
+        &self,
+        params: Parameters<ScrollParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.forward_json_command(DebugCommandKind::Scroll {
+            x: params.0.x as f32,
+            y: params.0.y as f32,
+            delta_x: params.0.delta_x,
+            delta_y: params.0.delta_y,
         })
         .await
     }

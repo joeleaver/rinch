@@ -31,6 +31,10 @@ pub enum DebugCommandKind {
     CloseApp,
     #[serde(rename = "get_computed_styles")]
     GetComputedStyles { id: usize },
+    #[serde(rename = "mouse_move")]
+    MouseMove { x: f32, y: f32 },
+    #[serde(rename = "scroll")]
+    Scroll { x: f32, y: f32, delta_x: f64, delta_y: f64 },
 }
 
 /// Result of a debug command.

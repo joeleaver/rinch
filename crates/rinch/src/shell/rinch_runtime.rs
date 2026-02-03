@@ -544,6 +544,54 @@ impl RinchRuntime {
                 }
                 DebugResult::Json { data: json!(null) }
             }
+            DebugCommandKind::MouseMove { x, y } => {
+                self.cursor_pos = Some((x, y));
+                // Update hover state for CSS :hover support
+                if let Some(doc) = &self.doc {
+                    let hovered = {
+                        let d = doc.borrow();
+                        hit_test(&d.tree, x, y)
+                    };
+                    let changed = doc.borrow_mut().update_hover(hovered);
+                    if changed {
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                    }
+                }
+                DebugResult::Json { data: json!(null) }
+            }
+            DebugCommandKind::Scroll { x, y, delta_x: _delta_x, delta_y } => {
+                self.cursor_pos = Some((x, y));
+
+                if let Some(doc) = &self.doc {
+                    let hit_node = hit_test(&doc.borrow().tree, x, y);
+                    if let Some(hit_node) = hit_node {
+                        let mut doc = doc.borrow_mut();
+                        if let Some(scroll_node_id) = find_scroll_container(&doc.tree, hit_node) {
+                            let content_height = compute_content_height(&doc.tree, scroll_node_id);
+                            let container_height = doc.tree.get(scroll_node_id)
+                                .map(|n| n.layout.height as f64)
+                                .unwrap_or(0.0);
+                            let max_scroll = (content_height - container_height).max(0.0);
+
+                            if let Some(node) = doc.tree.nodes.get_mut(scroll_node_id) {
+                                let new_y = (node.scroll_offset.1 + delta_y).clamp(0.0, max_scroll);
+                                if new_y != node.scroll_offset.1 {
+                                    node.scroll_offset.1 = new_y;
+                                    node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+                                    doc.tree.dirty_nodes.push(scroll_node_id);
+                                }
+                            }
+                        }
+                        drop(doc);
+                    }
+                }
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                DebugResult::Json { data: json!(null) }
+            }
             DebugCommandKind::TypeText { text: _text } => {
                 // TODO: implement keyboard input injection
                 DebugResult::Json { data: json!(null) }
