@@ -4,6 +4,7 @@ use rmcp::model::*;
 use rmcp::schemars;
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::client::{DebugClient, DebugCommandKind, DebugResult};
@@ -13,6 +14,7 @@ use crate::discovery;
 pub struct RinchMcpServer {
     client: std::sync::Arc<Mutex<Option<DebugClient>>>,
     tool_router: ToolRouter<Self>,
+    spawned_processes: std::sync::Arc<Mutex<HashMap<u32, std::process::Child>>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -63,6 +65,7 @@ impl RinchMcpServer {
         Self {
             client: std::sync::Arc::new(Mutex::new(None)),
             tool_router: Self::tool_router(),
+            spawned_processes: std::sync::Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -265,26 +268,48 @@ impl RinchMcpServer {
 
     #[tool(description = "Close the connected rinch application. The app will exit gracefully.")]
     async fn close_app(&self) -> Result<CallToolResult, McpError> {
-        match self.execute_command(DebugCommandKind::CloseApp) {
+        // Get the connected app's PID before we clear the client
+        let pid = {
+            let client = self.client.lock().unwrap();
+            client.as_ref().map(|c| c.pid)
+        };
+
+        // Try graceful TCP close first
+        let tcp_result = self.execute_command(DebugCommandKind::CloseApp);
+
+        // Clear the client connection
+        *self.client.lock().unwrap() = None;
+
+        // Give the app a moment to exit gracefully
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        // Kill and reap the spawned process if we launched it
+        if let Some(pid) = pid {
+            let mut procs = self.spawned_processes.lock().unwrap();
+            if let Some(mut child) = procs.remove(&pid) {
+                match child.try_wait() {
+                    Ok(Some(_)) => {} // Already exited
+                    _ => {
+                        let _ = child.kill();
+                        let _ = child.wait(); // Reap zombie
+                    }
+                }
+            }
+        }
+
+        match tcp_result {
             Ok(DebugResult::Json { data }) => {
-                // Clear the client connection since the app is closing
-                *self.client.lock().unwrap() = None;
                 Ok(CallToolResult::success(vec![Content::text(
-                    format!("App closing: {}", data),
+                    format!("App closed: {}", data),
                 )]))
             }
             Ok(DebugResult::Error { message }) => {
                 Ok(CallToolResult::error(vec![Content::text(message)]))
             }
-            Err(e) => {
-                // Connection may have been lost because app exited
-                *self.client.lock().unwrap() = None;
-                Ok(CallToolResult::success(vec![Content::text(
-                    format!("App closed (connection lost: {})", e),
-                )]))
+            Err(_) => {
+                Ok(CallToolResult::success(vec![Content::text("App closed")]))
             }
             _ => {
-                *self.client.lock().unwrap() = None;
                 Ok(CallToolResult::success(vec![Content::text("App closed")]))
             }
         }
@@ -334,6 +359,9 @@ impl RinchMcpServer {
         match cmd.spawn() {
             Ok(child) => {
                 let pid = child.id();
+
+                // Store the child process handle
+                self.spawned_processes.lock().unwrap().insert(pid, child);
 
                 // Wait for the app to register with debug server (poll for up to 30 seconds)
                 let mut connected = false;
@@ -405,6 +433,17 @@ impl rmcp::ServerHandler for RinchMcpServer {
             ),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             ..Default::default()
+        }
+    }
+}
+
+impl Drop for RinchMcpServer {
+    fn drop(&mut self) {
+        let mut procs = self.spawned_processes.lock().unwrap();
+        for (pid, mut child) in procs.drain() {
+            tracing::info!("Cleaning up spawned process {}", pid);
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }
