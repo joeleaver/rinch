@@ -694,6 +694,44 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                     self.handle_click(x, y);
                 }
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // Convert delta to pixels
+                let (_dx, dy) = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => {
+                        (x as f64 * 40.0, y as f64 * 40.0)
+                    }
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => {
+                        (pos.x, pos.y)
+                    }
+                };
+
+                if let (Some((cx, cy)), Some(doc)) = (self.cursor_pos, &self.doc) {
+                    let hit_node = hit_test(&doc.borrow().tree, cx, cy);
+                    if let Some(hit_node) = hit_node {
+                        let mut doc = doc.borrow_mut();
+                        if let Some(scroll_node_id) = find_scroll_container(&doc.tree, hit_node) {
+                            let content_height = compute_content_height(&doc.tree, scroll_node_id);
+                            let container_height = doc.tree.get(scroll_node_id)
+                                .map(|n| n.layout.height as f64)
+                                .unwrap_or(0.0);
+                            let max_scroll = (content_height - container_height).max(0.0);
+
+                            if let Some(node) = doc.tree.nodes.get_mut(scroll_node_id) {
+                                let new_y = (node.scroll_offset.1 - dy).clamp(0.0, max_scroll);
+                                if new_y != node.scroll_offset.1 {
+                                    node.scroll_offset.1 = new_y;
+                                    node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+                                    doc.tree.dirty_nodes.push(scroll_node_id);
+                                }
+                            }
+                        }
+                        drop(doc);
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                    }
+                }
+            }
             WindowEvent::KeyboardInput {
                 event: winit::event::KeyEvent {
                     physical_key: winit::keyboard::PhysicalKey::Code(key_code),
@@ -751,14 +789,64 @@ fn hit_test_node(
     }
 
     // Check children in reverse order (topmost first)
+    let sx = node.scroll_offset.0 as f32;
+    let sy = node.scroll_offset.1 as f32;
     let children: Vec<_> = node.children.clone();
     for &child_id in children.iter().rev() {
-        if let Some(hit) = hit_test_node(tree, child_id, nx, ny, x, y) {
+        if let Some(hit) = hit_test_node(tree, child_id, nx - sx, ny - sy, x, y) {
             return Some(hit);
         }
     }
 
     Some(node_id)
+}
+
+/// Find the nearest ancestor (or self) that is a scroll container.
+fn find_scroll_container(tree: &rinch_dom::NodeTree, start: usize) -> Option<usize> {
+    let mut current = Some(start);
+    while let Some(node_id) = current {
+        let node = tree.get(node_id)?;
+        let overflow = node.cached_style_props.get("overflow")
+            .or_else(|| node.cached_style_props.get("overflow-y"))
+            .map(|s| s.as_str())
+            .unwrap_or("visible");
+        match overflow {
+            "scroll" | "auto" => return Some(node_id),
+            "hidden" => {
+                let content_h = compute_content_height(tree, node_id);
+                if content_h > node.layout.height as f64 {
+                    return Some(node_id);
+                }
+            }
+            _ => {}
+        }
+        current = node.parent;
+    }
+    // Fall back to body if content overflows
+    let body = tree.get(tree.body_id)?;
+    let content_h = compute_content_height(tree, tree.body_id);
+    if content_h > body.layout.height as f64 {
+        return Some(tree.body_id);
+    }
+    None
+}
+
+/// Compute the total content height of a node from its children's layout bounds.
+fn compute_content_height(tree: &rinch_dom::NodeTree, node_id: usize) -> f64 {
+    let node = match tree.get(node_id) {
+        Some(n) => n,
+        None => return 0.0,
+    };
+    let mut max_bottom: f64 = 0.0;
+    for &child_id in &node.children {
+        if let Some(child) = tree.get(child_id) {
+            let bottom = (child.layout.y + child.layout.height) as f64;
+            if bottom > max_bottom {
+                max_bottom = bottom;
+            }
+        }
+    }
+    max_bottom
 }
 
 /// Run a rinch application using the rinch-dom rendering pipeline.
