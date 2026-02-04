@@ -18,8 +18,8 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
 
 ```bash
 cargo build                    # Build all crates
-cargo build -p smyeditor       # Build the editor example
-cargo run -p smyeditor         # Run the rich-text editor
+cargo build -p ui-zoo-desktop       # Build the editor example
+cargo run -p ui-zoo-desktop         # Run the rich-text editor
 cargo clippy                   # Lint
 cargo fmt                      # Format
 ```
@@ -77,7 +77,7 @@ crates/
 └── rinch-renderer/           # (placeholder for custom rendering)
 
 examples/
-└── smyeditor/                # Rich-text editor - primary development target
+└── ui-zoo-desktop/                # Rich-text editor - primary development target
 ```
 
 ## Element Enum
@@ -1000,7 +1000,7 @@ for_each_dom(
 Use the MCP `launch_app` tool — it builds, launches, waits for debug registration, and auto-connects:
 
 ```
-launch_app(package: "smyeditor")
+launch_app(package: "ui-zoo-desktop")
 ```
 
 In headless environments, ensure Xvfb is running: `Xvfb :99 -screen 0 1280x720x24 &`. The `launch_app` tool forwards `DISPLAY` automatically.
@@ -1057,7 +1057,7 @@ Make changes, rebuild, launch again. The full cycle:
 
 ## Development Notes
 
-- **smyeditor** is the primary way to iterate on the framework
+- **ui-zoo-desktop** is the primary way to iterate on the framework
 - The shell layer handles window management and event loop integration
 - Menu callbacks are fully implemented and trigger re-renders automatically
 - RSX macro provides helpful error messages with typo suggestions
@@ -1098,7 +1098,7 @@ Use the rinch MCP tools to systematically compare rinch rendering against expect
 
 **Quick start:**
 ```
-launch_app(package: "smyeditor")   # Start app
+launch_app(package: "ui-zoo-desktop")   # Start app
 screenshot()                        # View inline
 query_selector(selector: ".class")  # Find elements
 get_computed_styles(id: 123)        # Check CSS values

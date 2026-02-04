@@ -133,12 +133,12 @@ Rinch is organized as a workspace of specialized crates:
 
 ## Examples
 
-### smyeditor
+### ui-zoo-desktop
 
 A rich-text editor with formatting toolbar and markdown shortcuts:
 
 ```bash
-cargo run -p smyeditor
+cargo run -p ui-zoo-desktop
 ```
 
 Features:
@@ -187,7 +187,7 @@ cd rinch
 cargo build
 
 # Run the rich-text editor example
-cargo run -p smyeditor
+cargo run -p ui-zoo-desktop
 
 # Run the widget showcase
 cargo run -p ui-zoo

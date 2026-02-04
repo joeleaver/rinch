@@ -33,8 +33,8 @@ jobs:
       - name: Build visual test runner
         run: cargo build -p rinch-visual-test --release
 
-      - name: Build test app (smyeditor)
-        run: cargo build -p smyeditor --release --features debug
+      - name: Build test app (ui-zoo-desktop)
+        run: cargo build -p ui-zoo-desktop --release --features debug
 
       - name: Run visual tests
         run: |
@@ -43,7 +43,7 @@ jobs:
           export DISPLAY=:99
 
           # Launch app in background
-          cargo run -p smyeditor --release --features debug &
+          cargo run -p ui-zoo-desktop --release --features debug &
           APP_PID=$!
 
           # Wait for app to start

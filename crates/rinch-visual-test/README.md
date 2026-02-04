@@ -17,7 +17,7 @@ The visual test system works by:
 ```
 ┌─────────────────┐
 │  Rinch App      │ (with debug feature enabled)
-│  (smyeditor)    │
+│  (ui-zoo-desktop)    │
 └────────┬────────┘
          │ TCP IPC (debug protocol)
          ▼
@@ -123,7 +123,7 @@ The default config lives at `tests/visual/tests.json` within this crate:
 Build and run your Rinch app with the `debug` feature enabled:
 
 ```bash
-cargo run -p smyeditor --features debug
+cargo run -p ui-zoo-desktop --features debug
 ```
 
 The app will automatically start the debug server and write discovery info to `~/.rinch/debug/{pid}.json`.
@@ -170,7 +170,7 @@ Xvfb :99 -screen 0 1280x720x24 &
 export DISPLAY=:99
 
 # Run your app
-cargo run -p smyeditor --features debug &
+cargo run -p ui-zoo-desktop --features debug &
 APP_PID=$!
 
 # Wait for startup
@@ -188,10 +188,10 @@ kill $APP_PID
 ```bash
 # 1. Build everything
 cargo build -p rinch-visual-test --release
-cargo build -p smyeditor --features debug
+cargo build -p ui-zoo-desktop --features debug
 
 # 2. Start app in background (headless)
-DISPLAY=:99 cargo run -p smyeditor --features debug &
+DISPLAY=:99 cargo run -p ui-zoo-desktop --features debug &
 APP_PID=$!
 sleep 5
 
@@ -281,7 +281,7 @@ Ensure the test viewport matches your app window size:
 cargo test -p rinch-visual-test
 
 # Integration test (requires running app)
-cargo run -p smyeditor --features debug &
+cargo run -p ui-zoo-desktop --features debug &
 sleep 3
 cargo test -p rinch-visual-test -- --ignored
 ```

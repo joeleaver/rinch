@@ -85,7 +85,7 @@ pub struct KeyPressParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct LaunchAppParams {
-    /// Cargo package name to run (e.g. "hello-rinch-dom" or "smyeditor")
+    /// Cargo package name to run (e.g. "hello-rinch-dom" or "ui-zoo-desktop")
     pub package: String,
     /// Additional cargo arguments (e.g. "--features debug")
     #[serde(default)]

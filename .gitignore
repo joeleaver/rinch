@@ -24,8 +24,8 @@ nul
 # Debug & log output
 crash_output*.txt
 debug_theme_css.txt
-smyeditor_*.log
-smyeditor_*.txt
+ui-zoo-desktop_*.log
+ui-zoo-desktop_*.txt
 
 # Generated review/summary files
 security-review-*.md

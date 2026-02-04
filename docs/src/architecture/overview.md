@@ -36,7 +36,7 @@ rinch/
 │   ├── rinch-debug/        # Debug IPC server
 │   └── rinch-mcp-server/   # MCP server for Claude
 └── examples/
-    ├── smyeditor/          # Rich-text editor
+    ├── ui-zoo-desktop/          # Rich-text editor
     └── ui-zoo/             # Widget showcase (upcoming)
 ```
 
@@ -45,7 +45,7 @@ rinch/
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                     Application Layer                         │
-│  (your app, smyeditor, ui-zoo, etc.)                         │
+│  (your app, ui-zoo-desktop, ui-zoo, etc.)                         │
 ├──────────────────────────────────────────────────────────────┤
 │                         rinch                                 │
 │  ┌──────────────────────────────────────────────────┐        │
