@@ -72,6 +72,18 @@ pub struct TypeTextParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct KeyPressParams {
+    /// Key name: ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, Enter, Backspace, Delete
+    pub key: String,
+    /// Shift modifier
+    #[serde(default)]
+    pub shift: bool,
+    /// Ctrl modifier
+    #[serde(default)]
+    pub ctrl: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct LaunchAppParams {
     /// Cargo package name to run (e.g. "hello-rinch-dom" or "smyeditor")
     pub package: String,
@@ -293,6 +305,19 @@ impl RinchMcpServer {
     ) -> Result<CallToolResult, McpError> {
         self.forward_json_command(DebugCommandKind::TypeText {
             text: params.0.text,
+        })
+        .await
+    }
+
+    #[tool(description = "Simulate a key press (for special keys like arrows, Enter, Backspace, etc).")]
+    async fn key_press(
+        &self,
+        params: Parameters<KeyPressParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.forward_json_command(DebugCommandKind::KeyPress {
+            key: params.0.key,
+            shift: params.0.shift,
+            ctrl: params.0.ctrl,
         })
         .await
     }

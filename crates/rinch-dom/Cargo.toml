@@ -10,13 +10,31 @@ slab = "0.4"
 taffy = "0.9"
 bitflags = "2"
 tracing = { workspace = true }
-cssparser = "0.36"
-selectors = "0.35"
-precomputed-hash = "0.1"
 parley = { workspace = true }
 vello = { workspace = true }
 peniko = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+atomic_refcell = "0.1"
+euclid = "0.22"
+app_units = "0.7"
+url = "2"
+
+# CSS engine (Stylo from Firefox/Servo)
+# Note: stylo_taffy 0.2 requires stylo 0.8.x
+stylo = { workspace = true }
+stylo_traits = { workspace = true }
+stylo_dom = { workspace = true }
+stylo_atoms = { workspace = true }
+stylo_config = { workspace = true }
+stylo_taffy = { workspace = true }
+servo_arc = { workspace = true }
+
+# Keep cssparser/selectors for compatibility during migration
+# Use versions that match stylo 0.11's dependencies
+cssparser = "0.36"
+selectors = "0.35"
+precomputed-hash = "0.1"
+web_atoms = "0.2"
 
 [dev-dependencies]

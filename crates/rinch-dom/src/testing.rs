@@ -53,10 +53,8 @@ fn serialize_node(tree: &NodeTree, id: RawNodeId, offset_x: f32, offset_y: f32) 
     if !node.attributes.is_empty() {
         obj["attributes"] = json!(node.attributes);
     }
-    // Include key computed styles in tree serialization
-    if !node.cached_style_props.is_empty() {
-        obj["computed_styles"] = json!(node.cached_style_props);
-    }
+    // Include computed styles in tree serialization
+    obj["computed_styles"] = json!(&node.computed_style);
     if !children.is_empty() {
         obj["children"] = Value::Array(children);
     }
@@ -182,10 +180,8 @@ pub fn get_node_detail(tree: &NodeTree, id: RawNodeId) -> Option<Value> {
         obj["text"] = Value::String(text.to_string());
     }
 
-    // Add computed styles if available
-    if !node.cached_style_props.is_empty() {
-        obj["computed_styles"] = json!(node.cached_style_props);
-    }
+    // Add computed styles
+    obj["computed_styles"] = json!(&node.computed_style);
     // Add display mode
     obj["display_mode"] = Value::String(format!("{:?}", node.display_mode));
 

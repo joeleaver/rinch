@@ -8,9 +8,9 @@ use peniko::kurbo::{Affine, BezPath, Cap, Join, Rect, RoundedRect, Stroke};
 use peniko::{Brush, Fill};
 use vello::Scene;
 
+use crate::computed_style::OverflowValue;
 use crate::layout::parse_color;
 use crate::node::{Node, NodeKind, NodeTree, RawNodeId};
-use crate::stylesheet::Stylesheet;
 
 /// Paint the entire document to a Vello scene.
 ///
@@ -70,14 +70,12 @@ fn paint_node(
             let rect = Rect::new(x, y, x + w, y + h);
 
             // Parse and render box-shadow
-            if let Some(shadow_str) = get_style_property(node, &tree.stylesheet, "box-shadow") {
-                paint_box_shadow(scene, &shadow_str, x, y, w, h, scale, node, &tree.stylesheet);
+            if let Some(shadow_str) = get_style_property(node, "box-shadow") {
+                paint_box_shadow(scene, &shadow_str, x, y, w, h, scale, node);
             }
 
-            // Parse opacity and push layer if needed
-            let opacity = get_style_property(node, &tree.stylesheet, "opacity")
-                .and_then(|v| v.parse::<f32>().ok())
-                .unwrap_or(1.0);
+            // Get opacity from computed style and push layer if needed
+            let opacity = node.computed_style.opacity;
             let has_opacity = opacity < 1.0;
             if has_opacity {
                 scene.push_layer(
@@ -89,16 +87,19 @@ fn paint_node(
                 );
             }
 
-            // Parse border-radius for rounded rect usage
-            let radius = get_style_property(node, &tree.stylesheet,"border-radius")
-                .and_then(|v| parse_px(&v))
-                .unwrap_or(0.0) as f64
-                * scale;
+            // Get border-radius from computed style (use average of all 4 corners)
+            let radius = {
+                let cs = &node.computed_style;
+                let avg = (cs.border_radius_top_left
+                    + cs.border_radius_top_right
+                    + cs.border_radius_bottom_right
+                    + cs.border_radius_bottom_left)
+                    / 4.0;
+                avg as f64 * scale
+            };
 
-            // Parse background-color from style
-            if let Some(bg_color) = get_style_property(node, &tree.stylesheet,"background-color")
-                .and_then(|v| parse_color(&v))
-            {
+            // Get background-color from computed style
+            if let Some(bg_color) = node.computed_style.background_color {
                 if radius > 0.0 {
                     let rrect = RoundedRect::from_rect(rect, radius);
                     scene.fill(Fill::NonZero, Affine::IDENTITY, bg_color, None, &rrect);
@@ -107,19 +108,12 @@ fn paint_node(
                 }
             }
 
-            // Parse border
-            let border_width = get_style_property(node, &tree.stylesheet,"border-width")
-                .and_then(|v| parse_px(&v))
-                .or_else(|| {
-                    get_style_property(node, &tree.stylesheet,"border").and_then(|v| parse_border_width(&v))
-                });
-            let border_color = get_style_property(node, &tree.stylesheet,"border-color")
-                .and_then(|v| parse_color(&v))
-                .or_else(|| {
-                    get_style_property(node, &tree.stylesheet,"border").and_then(|v| parse_border_color(&v))
-                });
+            // Get border from computed style
+            let border_width = node.computed_style.border_top_width.to_px();
+            let border_color = node.computed_style.border_color;
 
-            if let (Some(bw), Some(bc)) = (border_width, border_color) {
+            if let Some(bc) = border_color {
+                let bw = border_width;
                 if bw > 0.0 {
                     let stroke = Stroke::new(bw as f64 * scale);
                     let half = bw as f64 * scale * 0.5;
@@ -134,11 +128,14 @@ fn paint_node(
                 }
             }
 
-            // Handle overflow clipping
-            let overflow = get_style_property(node, &tree.stylesheet,"overflow").unwrap_or_default();
-            let overflow_y = get_style_property(node, &tree.stylesheet,"overflow-y").unwrap_or_default();
-            let effective_overflow_y = if !overflow_y.is_empty() { &overflow_y } else { &overflow };
-            let clips = matches!(effective_overflow_y.as_str(), "hidden" | "scroll" | "auto");
+            // Render input element value
+            if matches!(node.tag(), Some("input" | "textarea")) {
+                paint_input_value(node, scene, scale, x, y, w, h, font_cx, layout_cx);
+            }
+
+            // Handle overflow clipping from computed style
+            let overflow_y = node.computed_style.overflow_y;
+            let clips = matches!(overflow_y, OverflowValue::Hidden | OverflowValue::Scroll | OverflowValue::Auto);
 
             if clips {
                 scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &rect);
@@ -197,7 +194,7 @@ fn paint_node(
             }
 
             // Paint scrollbar overlay for scroll containers
-            if effective_overflow_y == "scroll" || effective_overflow_y == "auto" {
+            if matches!(overflow_y, OverflowValue::Scroll | OverflowValue::Auto) {
                 let node = tree.get(node_id).unwrap(); // re-borrow after children done
                 let mut content_height: f64 = 0.0;
                 for &child_id in &node.children {
@@ -251,27 +248,19 @@ fn paint_node(
                 return;
             }
 
-            // Read all font properties from parent's computed_style_str
-            // (same source as Taffy measurement via sync_text_contexts)
-            let parent_style = node.parent
+            // Read all font properties from parent's computed_style
+            let parent_computed = node.parent
                 .and_then(|p| tree.get(p))
-                .map(|p| {
-                    if !p.computed_style_str.is_empty() {
-                        &p.computed_style_str as &str
-                    } else {
-                        p.attributes.get("style").map(|s| s.as_str()).unwrap_or("")
-                    }
-                })
-                .unwrap_or("");
+                .map(|p| &p.computed_style);
 
-            let font_size = crate::layout::parse_font_size(parent_style).unwrap_or(16.0);
-            let font_weight = crate::layout::parse_font_weight(parent_style).unwrap_or(400.0);
-            let font_family = crate::layout::parse_font_family(parent_style)
+            let font_size = parent_computed.map(|s| s.font_size).unwrap_or(16.0);
+            let font_weight = parent_computed.map(|s| s.font_weight).unwrap_or(400.0);
+            let font_family = parent_computed
+                .map(|s| if s.font_family.is_empty() { "sans-serif".to_string() } else { s.font_family.clone() })
                 .unwrap_or_else(|| "sans-serif".to_string());
 
-            let color = crate::layout::parse_style_string(parent_style)
-                .get("color")
-                .and_then(|v| parse_color(v))
+            let color = parent_computed
+                .and_then(|s| s.color)
                 .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255));
 
             // Build Parley layout with identical parameters to measurement
@@ -288,9 +277,7 @@ fn paint_node(
                     parley::style::FontWeight::new(font_weight),
                 ));
             }
-            let line_height_css = crate::layout::parse_line_height_css(parent_style)
-                .unwrap_or_default();
-            if let Some(lh) = crate::layout::css_line_height_to_parley(&line_height_css) {
+            if let Some(lh) = parent_computed.and_then(|s| s.line_height.to_parley()) {
                 builder.push_default(parley::style::StyleProperty::LineHeight(lh));
             }
 
@@ -306,14 +293,8 @@ fn paint_node(
             text_layout.break_all_lines(max_width);
 
             // Read text-align from parent's computed style
-            let alignment = crate::layout::parse_style_string(parent_style)
-                .get("text-align")
-                .map(|a| match a.as_str() {
-                    "center" => parley::layout::Alignment::Center,
-                    "right" | "end" => parley::layout::Alignment::End,
-                    "justify" => parley::layout::Alignment::Justify,
-                    _ => parley::layout::Alignment::Start,
-                })
+            let alignment = parent_computed
+                .map(|s| s.text_align.to_parley())
                 .unwrap_or(parley::layout::Alignment::Start);
             text_layout.align(alignment, parley::layout::AlignmentOptions::default());
 
@@ -368,7 +349,6 @@ fn paint_box_shadow(
     h: f64,
     scale: f64,
     node: &crate::node::Node,
-    stylesheet: &Stylesheet,
 ) {
     // Parse box-shadow: offset-x offset-y blur-radius [spread-radius] color
     // May also have "none" or multiple shadows separated by commas
@@ -403,10 +383,16 @@ fn paint_box_shadow(
         AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 40) // default shadow color
     });
 
-    let radius = get_style_property(node, stylesheet, "border-radius")
-        .and_then(|v| parse_px(&v))
-        .unwrap_or(0.0) as f64
-        * scale;
+    // Get border-radius from computed style (use average of all 4 corners)
+    let radius = {
+        let cs = &node.computed_style;
+        let avg = (cs.border_radius_top_left
+            + cs.border_radius_top_right
+            + cs.border_radius_bottom_right
+            + cs.border_radius_bottom_left)
+            / 4.0;
+        avg as f64 * scale
+    };
 
     // Draw shadow as expanded rounded rect behind the element
     // Approximate blur with multiple layers of decreasing opacity
@@ -612,23 +598,9 @@ fn resolve_current_color(tree: &NodeTree, node: &Node) -> AlphaColor<Srgb> {
     let mut current = Some(node.id);
     while let Some(id) = current {
         if let Some(n) = tree.get(id) {
-            // Check computed style
-            if !n.computed_style_str.is_empty() {
-                let props = crate::layout::parse_style_string(&n.computed_style_str);
-                if let Some(color_str) = props.get("color") {
-                    if let Some(c) = parse_color(color_str) {
-                        return c;
-                    }
-                }
-            }
-            // Check inline style
-            if let Some(style) = n.attributes.get("style") {
-                let props = crate::layout::parse_style_string(style);
-                if let Some(color_str) = props.get("color") {
-                    if let Some(c) = parse_color(color_str) {
-                        return c;
-                    }
-                }
+            // Check computed_style.color
+            if let Some(c) = n.computed_style.color {
+                return c;
             }
             current = n.parent;
         } else {
@@ -771,17 +743,13 @@ fn render_text(scene: &mut Scene, layout: &parley::layout::Layout<Brush>, x: f64
     }
 }
 
-/// Get a CSS style property value from a node, checking inline style first,
-/// then class-based styles from the stylesheet.
-fn get_style_property(node: &Node, _stylesheet: &Stylesheet, property: &str) -> Option<String> {
-    // Use pre-computed cached style props (populated during style recomputation).
-    // This avoids re-parsing inline styles and re-running CSS selector matching
-    // on every property lookup during paint.
-    if !node.cached_style_props.is_empty() {
-        return node.cached_style_props.get(property).cloned();
-    }
-
-    // Fallback: parse computed_style_str if cached_style_props not populated
+/// Get a CSS style property value from inline styles.
+///
+/// NOTE: This function is deprecated. Most properties should be read from
+/// `node.computed_style` directly. This function is only used for properties
+/// not yet in ComputedStyle (like box-shadow).
+fn get_style_property(node: &Node, property: &str) -> Option<String> {
+    // Check computed_style_str (used during style resolution)
     if !node.computed_style_str.is_empty() {
         for part in node.computed_style_str.split(';') {
             let part = part.trim();
@@ -794,7 +762,7 @@ fn get_style_property(node: &Node, _stylesheet: &Stylesheet, property: &str) -> 
         return None;
     }
 
-    // Last resort: parse inline style only (no selector matching)
+    // Fallback: parse inline style attribute directly
     if let Some(style_str) = node.attributes.get("style") {
         for part in style_str.split(';') {
             let part = part.trim();
@@ -805,7 +773,6 @@ fn get_style_property(node: &Node, _stylesheet: &Stylesheet, property: &str) -> 
             }
         }
     }
-
     None
 }
 
@@ -815,24 +782,240 @@ fn parse_px(value: &str) -> Option<f32> {
     v.parse().ok()
 }
 
-/// Parse border shorthand width, e.g. "1px solid #ccc" -> 1.0
-fn parse_border_width(value: &str) -> Option<f32> {
-    for part in value.split_whitespace() {
-        if let Some(px) = parse_px(part) {
-            return Some(px);
-        }
-    }
-    None
-}
+/// Paint the value of an input element.
+fn paint_input_value(
+    node: &Node,
+    scene: &mut Scene,
+    scale: f64,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<Brush>,
+) {
+    // Get the value or placeholder
+    let value = node.attributes.get("value").map(|s| s.as_str()).unwrap_or("");
+    let placeholder = node.attributes.get("placeholder").map(|s| s.as_str()).unwrap_or("");
 
-/// Parse border shorthand color, e.g. "1px solid #ccc" -> Color
-fn parse_border_color(value: &str) -> Option<peniko::Color> {
-    for part in value.split_whitespace() {
-        if let Some(c) = parse_color(part) {
-            return Some(c);
+    // Check if this input is focused
+    let is_focused = node.attributes.get("data-focused").map(|s| s == "true").unwrap_or(false);
+    let cursor_pos = node.attributes.get("data-cursor-pos")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
+    let selection_start = node.attributes.get("data-selection-start")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(cursor_pos);
+    let cursor_visible = node.attributes.get("data-cursor-visible")
+        .map(|s| s == "true")
+        .unwrap_or(true);
+
+    let (text, is_placeholder) = if value.is_empty() && !placeholder.is_empty() {
+        (placeholder, true)
+    } else {
+        (value, false)
+    };
+
+    // Get font properties from computed style
+    let font_size = node.computed_style.font_size;
+    let font_weight = node.computed_style.font_weight;
+    let font_family = if node.computed_style.font_family.is_empty() {
+        "sans-serif".to_string()
+    } else {
+        node.computed_style.font_family.clone()
+    };
+
+    // Get text color from computed style - dimmed for placeholder
+    let base_color = node.computed_style.color
+        .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(33, 37, 41, 255)); // #212529
+
+    let color = if is_placeholder {
+        // Placeholder uses dimmed color
+        AlphaColor::<Srgb>::from_rgba8(134, 142, 150, 255) // #868e96
+    } else {
+        base_color
+    };
+
+    // Get padding from computed style
+    let padding_left = node.computed_style.padding_left.to_px() as f64 * scale;
+    let padding_top = node.computed_style.padding_top.to_px() as f64 * scale;
+
+    // Check if this is a textarea (multi-line) or input (single-line)
+    let is_textarea = node.tag() == Some("textarea");
+
+    // Build text layout
+    let scaled_font_size = font_size * scale as f32;
+    let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
+    builder.push_default(parley::style::StyleProperty::FontSize(scaled_font_size));
+    builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
+    builder.push_default(parley::style::StyleProperty::FontStack(
+        parley::style::FontStack::Source(std::borrow::Cow::Owned(font_family)),
+    ));
+    if (font_weight - 400.0).abs() > 1.0 {
+        builder.push_default(parley::style::StyleProperty::FontWeight(
+            parley::style::FontWeight::new(font_weight),
+        ));
+    }
+
+    let mut text_layout = builder.build(text);
+    text_layout.break_all_lines(Some((w - padding_left * 2.0) as f32));
+
+    // For textarea, align to top with padding; for input, center vertically
+    let text_height = text_layout.height() as f64;
+    let text_y = if is_textarea {
+        y + padding_top
+    } else {
+        y + (h - text_height) / 2.0
+    };
+    let text_x = x + padding_left;
+
+    // Helper to get (x, y) position for a byte offset in text layout.
+    // For multi-line text, y is the top of the line containing the offset.
+    let get_position_for_offset = |layout: &parley::layout::Layout<Brush>, byte_offset: usize| -> (f32, f32) {
+        // Get first line metrics for default values
+        let first_line_top = layout.lines().next()
+            .map(|line| line.metrics().baseline - line.metrics().ascent)
+            .unwrap_or(0.0);
+
+        if byte_offset == 0 {
+            return (0.0, first_line_top);
+        }
+
+        let mut last_x = 0.0f32;
+        let mut last_y = first_line_top;
+
+        for line in layout.lines() {
+            let line_metrics = line.metrics();
+            let line_y = line_metrics.baseline - line_metrics.ascent;
+
+            for item in line.items() {
+                if let parley::layout::PositionedLayoutItem::GlyphRun(glyph_run) = item {
+                    let run = glyph_run.run();
+                    let run_start = run.text_range().start;
+                    let run_end = run.text_range().end;
+
+                    if byte_offset <= run_start {
+                        return (glyph_run.offset(), line_y);
+                    }
+
+                    if byte_offset <= run_end {
+                        // Byte offset is within this run - iterate glyphs
+                        let mut gx = glyph_run.offset();
+                        for cluster in run.cluster_range() {
+                            let Some(cluster_data) = run.get(cluster) else { continue };
+                            let cluster_start = cluster_data.text_range().start;
+                            let cluster_end = cluster_data.text_range().end;
+
+                            if byte_offset <= cluster_start {
+                                return (gx, line_y);
+                            }
+                            if byte_offset < cluster_end {
+                                // Strictly within this cluster - return start of cluster
+                                return (gx, line_y);
+                            }
+                            // byte_offset == cluster_end means after this cluster
+                            gx += cluster_data.advance();
+                        }
+                        return (gx, line_y);
+                    }
+
+                    // Track end position
+                    last_x = glyph_run.offset();
+                    for cluster in run.cluster_range() {
+                        if let Some(cluster_data) = run.get(cluster) {
+                            last_x += cluster_data.advance();
+                        }
+                    }
+                    last_y = line_y;
+                }
+            }
+        }
+        (last_x, last_y)
+    };
+
+    // Wrapper for backward compatibility - returns just x offset
+    let _get_x_for_offset = |layout: &parley::layout::Layout<Brush>, byte_offset: usize| -> f32 {
+        get_position_for_offset(layout, byte_offset).0
+    };
+
+    // Draw selection highlight if there's a selection
+    if is_focused && cursor_pos != selection_start && !is_placeholder && !text.is_empty() {
+        let sel_start_byte = cursor_pos.min(selection_start).min(text.len());
+        let sel_end_byte = cursor_pos.max(selection_start).min(text.len());
+
+        let (start_x, start_y) = get_position_for_offset(&text_layout, sel_start_byte);
+        let (end_x, end_y) = get_position_for_offset(&text_layout, sel_end_byte);
+
+        let sel_color = AlphaColor::<Srgb>::from_rgba8(51, 154, 240, 100); // Blue with alpha
+        let line_height = scaled_font_size as f64 * 1.2;
+
+        if (start_y - end_y).abs() < 0.1 {
+            // Same line - draw single rectangle
+            let sel_x = text_x + start_x as f64;
+            let sel_width = (end_x - start_x) as f64;
+            let sel_y = text_y + start_y as f64;
+
+            let sel_rect = vello::kurbo::Rect::new(sel_x, sel_y, sel_x + sel_width, sel_y + line_height);
+            scene.fill(vello::peniko::Fill::NonZero, vello::kurbo::Affine::IDENTITY, sel_color, None, &sel_rect);
+        } else {
+            // Multi-line selection - draw rectangles for each line
+            let content_width = (w - padding_left * 2.0) as f32;
+
+            for line in text_layout.lines() {
+                let line_metrics = line.metrics();
+                let line_top = line_metrics.baseline - line_metrics.ascent;
+
+                // Skip lines outside selection range
+                if line_top + line_metrics.line_height < start_y || line_top > end_y {
+                    continue;
+                }
+
+                let rect_y = text_y + line_top as f64;
+                let (rect_start_x, rect_end_x) = if (line_top - start_y).abs() < 0.1 {
+                    // First line of selection: from start_x to end of line
+                    (start_x, content_width)
+                } else if (line_top - end_y).abs() < 0.1 {
+                    // Last line of selection: from start of line to end_x
+                    (0.0, end_x)
+                } else {
+                    // Middle line: full width
+                    (0.0, content_width)
+                };
+
+                let sel_rect = vello::kurbo::Rect::new(
+                    text_x + rect_start_x as f64,
+                    rect_y,
+                    text_x + rect_end_x as f64,
+                    rect_y + line_height,
+                );
+                scene.fill(vello::peniko::Fill::NonZero, vello::kurbo::Affine::IDENTITY, sel_color, None, &sel_rect);
+            }
         }
     }
-    None
+
+    // Render text
+    if !text.is_empty() {
+        render_text(scene, &text_layout, text_x, text_y);
+    }
+
+    // Draw cursor/caret if focused and visible
+    if is_focused && cursor_visible {
+        let caret_pos = cursor_pos.min(text.len());
+        let (caret_offset_x, caret_offset_y) = if text.is_empty() {
+            (0.0, 0.0)
+        } else {
+            get_position_for_offset(&text_layout, caret_pos)
+        };
+        let caret_x = text_x + caret_offset_x as f64;
+        let caret_y = text_y + caret_offset_y as f64;
+
+        let caret_height = scaled_font_size as f64 * 1.2;
+
+        // Draw caret line
+        let caret_color = base_color;
+        let caret_rect = vello::kurbo::Rect::new(caret_x, caret_y, caret_x + 1.5 * scale, caret_y + caret_height);
+        scene.fill(vello::peniko::Fill::NonZero, vello::kurbo::Affine::IDENTITY, caret_color, None, &caret_rect);
+    }
 }
 
 #[cfg(test)]
@@ -847,15 +1030,4 @@ mod tests {
         assert_eq!(parse_px("abc"), None);
     }
 
-    #[test]
-    fn test_parse_border_width() {
-        assert_eq!(parse_border_width("2px solid black"), Some(2.0));
-        assert_eq!(parse_border_width("1px"), Some(1.0));
-    }
-
-    #[test]
-    fn test_parse_border_color() {
-        assert!(parse_border_color("2px solid black").is_some());
-        assert!(parse_border_color("1px solid #ff0000").is_some());
-    }
 }

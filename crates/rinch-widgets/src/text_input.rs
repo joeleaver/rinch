@@ -3,7 +3,7 @@
 //! A single-line text input field with label and error support.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::Widget;
+use rinch_core::{InputCallback, Widget};
 
 /// TextInput size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -45,7 +45,6 @@ impl std::str::FromStr for TextInputSize {
 }
 
 /// A single-line text input field.
-#[derive(Debug, Default)]
 pub struct TextInput {
     /// Input label.
     pub label: Option<String>,
@@ -65,6 +64,46 @@ pub struct TextInput {
     pub radius: Option<String>,
     /// Input type (text, password, email, etc.).
     pub input_type: Option<String>,
+    /// Current value.
+    pub value: Option<String>,
+    /// Callback when input value changes.
+    pub oninput: Option<InputCallback>,
+}
+
+impl std::fmt::Debug for TextInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextInput")
+            .field("label", &self.label)
+            .field("placeholder", &self.placeholder)
+            .field("description", &self.description)
+            .field("error", &self.error)
+            .field("size", &self.size)
+            .field("disabled", &self.disabled)
+            .field("required", &self.required)
+            .field("radius", &self.radius)
+            .field("input_type", &self.input_type)
+            .field("value", &self.value)
+            .field("oninput", &self.oninput.as_ref().map(|_| "<callback>"))
+            .finish()
+    }
+}
+
+impl Default for TextInput {
+    fn default() -> Self {
+        Self {
+            label: None,
+            placeholder: None,
+            description: None,
+            error: None,
+            size: None,
+            disabled: false,
+            required: false,
+            radius: None,
+            input_type: None,
+            value: None,
+            oninput: None,
+        }
+    }
 }
 
 impl TextInput {
@@ -117,11 +156,23 @@ impl Widget for TextInput {
         if let Some(placeholder) = &self.placeholder {
             input.set_attribute("placeholder", placeholder);
         }
+        if let Some(value) = &self.value {
+            input.set_attribute("value", value);
+        }
         if self.disabled {
             input.set_attribute("disabled", "");
         }
         if self.required {
             input.set_attribute("required", "");
+        }
+
+        // Input handler
+        if let Some(callback) = &self.oninput {
+            let callback = callback.clone();
+            let handler_id = __scope.register_input_handler(move |value| {
+                callback.invoke(value);
+            });
+            input.set_attribute("data-oninput", &handler_id.to_string());
         }
 
         container.append_child(&input);

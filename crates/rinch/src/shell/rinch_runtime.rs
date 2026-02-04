@@ -131,6 +131,28 @@ pub struct RinchRuntime {
     devtools: DevToolsState,
     /// Last theme CSS loaded into the document (for change detection).
     last_theme_css: Option<String>,
+    /// Currently focused input element (node ID).
+    focused_input: Option<usize>,
+    /// Cursor position within the focused input (byte offset).
+    input_cursor: usize,
+    /// Selection start position (byte offset). If equal to input_cursor, no selection.
+    input_selection_start: usize,
+    /// Last time the cursor blink state changed.
+    cursor_blink_time: std::time::Instant,
+    /// Whether the cursor is currently visible (for blinking).
+    cursor_visible: bool,
+    /// Current keyboard modifier state (Shift, Ctrl, Alt).
+    modifiers: winit::keyboard::ModifiersState,
+    /// Whether mouse is being pressed for text selection drag.
+    input_mouse_drag: bool,
+    /// Timestamp of last mouse click (for multi-click detection).
+    last_click_time: std::time::Instant,
+    /// Position of last mouse click.
+    last_click_pos: (f32, f32),
+    /// Current click count (1 = single, 2 = double, 3 = triple).
+    click_count: u8,
+    /// Font context for hit testing (reused across frames).
+    hit_test_font_cx: parley::FontContext,
 }
 
 impl RinchRuntime {
@@ -161,6 +183,17 @@ impl RinchRuntime {
             window_props: None,
             devtools: DevToolsState::new(),
             last_theme_css: None,
+            focused_input: None,
+            input_cursor: 0,
+            input_selection_start: 0,
+            cursor_blink_time: std::time::Instant::now(),
+            cursor_visible: true,
+            modifiers: winit::keyboard::ModifiersState::empty(),
+            input_mouse_drag: false,
+            last_click_time: std::time::Instant::now(),
+            last_click_pos: (0.0, 0.0),
+            click_count: 0,
+            hit_test_font_cx: parley::FontContext::new(),
         }
     }
 
@@ -206,15 +239,21 @@ impl RinchRuntime {
         // Load theme + widget CSS into the document's stylesheet
         {
             let mut d = doc.borrow_mut();
-            let theme_css = rinch_core::get_current_theme_css().unwrap_or_default();
-            if !theme_css.is_empty() {
-                d.load_css(&theme_css);
+            #[cfg(feature = "theme")]
+            {
+                let theme_css = rinch_core::get_current_theme_css().unwrap_or_default();
+                if !theme_css.is_empty() {
+                    d.load_css(&theme_css);
+                }
             }
             // Set viewport size so vh/vw units resolve correctly during DOM construction
             d.set_viewport(size.width as f32, size.height as f32);
         }
         // Remember the initial theme CSS so we can detect changes later
-        self.last_theme_css = Some(rinch_core::get_current_theme_css().unwrap_or_default());
+        #[cfg(feature = "theme")]
+        {
+            self.last_theme_css = Some(rinch_core::get_current_theme_css().unwrap_or_default());
+        }
 
         // Create RenderScope
         let doc_as_dom: Rc<RefCell<dyn DomDocument>> = doc.clone();
@@ -387,15 +426,18 @@ impl RinchRuntime {
     fn resolve_and_repaint(&mut self) {
         if let (Some(window), Some(doc)) = (&self.window, &self.doc) {
             // Check if theme CSS has changed (e.g. primary color or dark mode toggled)
-            let current_theme = rinch_core::get_current_theme_css().unwrap_or_default();
-            let theme_changed = self.last_theme_css.as_deref() != Some(current_theme.as_str());
+            #[cfg(feature = "theme")]
+            {
+                let current_theme = rinch_core::get_current_theme_css().unwrap_or_default();
+                let theme_changed = self.last_theme_css.as_deref() != Some(current_theme.as_str());
 
-            if theme_changed {
-                self.last_theme_css = Some(current_theme.clone());
-                if !current_theme.is_empty() {
-                    let mut d = doc.borrow_mut();
-                    d.update_theme_variables(&current_theme);
-                    d.recompute_all_styles_full();
+                if theme_changed {
+                    self.last_theme_css = Some(current_theme.clone());
+                    if !current_theme.is_empty() {
+                        let mut d = doc.borrow_mut();
+                        d.update_theme_variables(&current_theme);
+                        d.recompute_all_styles_full();
+                    }
                 }
             }
 
@@ -627,8 +669,12 @@ impl RinchRuntime {
                 }
                 DebugResult::Json { data: json!(null) }
             }
-            DebugCommandKind::TypeText { text: _text } => {
-                // TODO: implement keyboard input injection
+            DebugCommandKind::TypeText { text } => {
+                // Inject keyboard input into the focused input element
+                self.handle_text_input(&text);
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
                 DebugResult::Json { data: json!(null) }
             }
             DebugCommandKind::WaitFrame => {
@@ -642,7 +688,7 @@ impl RinchRuntime {
                 let d = doc.borrow();
                 match d.tree.get(id) {
                     Some(node) => {
-                        DebugResult::Json { data: json!(node.cached_style_props) }
+                        DebugResult::Json { data: json!(&node.computed_style) }
                     }
                     None => DebugResult::Error { message: format!("Node {} not found", id) },
                 }
@@ -654,24 +700,134 @@ impl RinchRuntime {
                 });
                 DebugResult::Json { data: json!({"status": "closing"}) }
             }
+            DebugCommandKind::KeyPress { key, shift, ctrl } => {
+                match key.as_str() {
+                    "ArrowUp" => self.handle_arrow_up(shift),
+                    "ArrowDown" => self.handle_arrow_down(shift),
+                    "ArrowLeft" => self.handle_arrow_left(shift, ctrl),
+                    "ArrowRight" => self.handle_arrow_right(shift, ctrl),
+                    "Home" => self.handle_home(shift),
+                    "End" => self.handle_end(shift),
+                    "Enter" => self.handle_enter(),
+                    "Backspace" => self.handle_backspace(),
+                    "Delete" => self.handle_delete(),
+                    _ => {}
+                }
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                DebugResult::Json { data: json!(null) }
+            }
         }
     }
 
-    fn handle_click(&self, x: f32, y: f32) {
+    fn handle_click(&mut self, x: f32, y: f32) {
         let Some(doc) = &self.doc else { return };
         let d = doc.borrow();
 
         // Walk nodes to find hit target (simple: iterate all nodes, find deepest match)
         if let Some(hit_id) = hit_test(&d.tree, x, y) {
-            // Walk up to find data-rid or data-drag-window
+            // Walk up to find data-rid, data-oninput, or data-drag-window
             let mut current = Some(hit_id);
             while let Some(node_id) = current {
                 if let Some(node) = d.tree.get(node_id) {
-                    // Check for click handler first
+                    // Check for focusable input element (input/textarea tags, not disabled)
+                    let is_input = matches!(node.tag(), Some("input" | "textarea"));
+                    let is_disabled = node.attributes.contains_key("disabled");
+                    if is_input && !is_disabled {
+                        // Get node info for cursor positioning
+                        let value = node.attributes.get("value").cloned().unwrap_or_default();
+                        let value_len = value.len();
+                        let computed_style = node.computed_style.clone();
+                        let input_width = node.layout.width;
+
+                        // Calculate absolute x and y position of the input node
+                        let mut abs_x = node.layout.x;
+                        let mut abs_y = node.layout.y;
+                        let mut parent_id = node.parent;
+                        while let Some(pid) = parent_id {
+                            if let Some(parent_node) = d.tree.get(pid) {
+                                abs_x += parent_node.layout.x;
+                                abs_y += parent_node.layout.y;
+                                // Account for scroll offset
+                                abs_x -= parent_node.scroll_offset.0 as f32;
+                                abs_y -= parent_node.scroll_offset.1 as f32;
+                                parent_id = parent_node.parent;
+                            } else {
+                                break;
+                            }
+                        }
+
+                        drop(d);
+
+                        // Clear focus attributes from previously focused input
+                        if let Some(prev_id) = self.focused_input {
+                            if prev_id != node_id {
+                                if let Some(doc) = &self.doc {
+                                    let mut d = doc.borrow_mut();
+                                    if let Some(prev_node) = d.tree.nodes.get_mut(prev_id) {
+                                        prev_node.attributes.remove("data-focused");
+                                        prev_node.attributes.remove("data-cursor-pos");
+                                        prev_node.attributes.remove("data-selection-start");
+                                        prev_node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+                                        d.tree.dirty_nodes.push(prev_id);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Calculate cursor position from click coordinates
+                        let cursor_pos = if !value.is_empty() {
+                            // Get scale factor
+                            let scale = self.window.as_ref()
+                                .map(|w| w.scale_factor() as f32)
+                                .unwrap_or(1.0);
+
+                            // Build text layout using computed_style
+                            let layout = computed_style.build_parley_layout(
+                                &value,
+                                scale,
+                                &mut self.hit_test_font_cx,
+                                &mut self.paint_layout_cx,
+                                Some(input_width),
+                            );
+
+                            // Calculate padding using computed_style
+                            let padding_left = computed_style.padding_left.to_px() * scale;
+                            let padding_top = computed_style.padding_top.to_px() * scale;
+
+                            // Calculate click position relative to text start
+                            let click_rel_x = (x - abs_x - padding_left).max(0.0);
+                            let click_rel_y = (y - abs_y - padding_top).max(0.0);
+
+                            Self::byte_offset_from_xy(&layout, click_rel_x, click_rel_y)
+                        } else {
+                            0
+                        };
+
+                        self.focused_input = Some(node_id);
+                        self.input_cursor = cursor_pos.min(value_len);
+                        self.input_selection_start = self.input_cursor;
+                        self.cursor_visible = true;
+                        self.cursor_blink_time = std::time::Instant::now();
+                        self.input_mouse_drag = true;
+
+                        // Set focus attributes on the node
+                        self.sync_cursor_to_dom(node_id);
+
+                        tracing::debug!("Focused input element: node_id={}, cursor={}", node_id, self.input_cursor);
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                        return;
+                    }
+                    // Check for click handler
                     if let Some(rid_str) = node.attributes.get("data-rid") {
                         if let Ok(handler_id) = rid_str.parse::<usize>() {
                             // Must drop borrow before dispatching (handler may mutate doc)
                             drop(d);
+                            // Clear focus when clicking non-input elements
+                            self.clear_input_focus();
                             // Set current window ID so window control functions work
                             if let Some(w) = &self.window {
                                 crate::windows::set_current_window_id(Some(w.id()));
@@ -694,7 +850,861 @@ impl RinchRuntime {
                     break;
                 }
             }
+            // Clicked on something without a handler - clear focus
+            drop(d);
+            self.clear_input_focus();
         }
+    }
+
+    /// Handle double-click to select a word.
+    fn handle_double_click(&mut self, x: f32, y: f32) {
+        // First do normal click to focus and position
+        self.handle_click(x, y);
+
+        let Some(focused_id) = self.focused_input else { return };
+        let Some(doc) = &self.doc else { return };
+
+        let value = {
+            let d = doc.borrow();
+            let Some(node) = d.tree.get(focused_id) else { return };
+            node.attributes.get("value").cloned().unwrap_or_default()
+        };
+
+        if value.is_empty() {
+            return;
+        }
+
+        // Find word boundaries around cursor
+        let cursor = self.input_cursor.min(value.len());
+        let word_start = Self::find_word_start(&value, cursor);
+        let word_end = Self::find_word_end(&value, cursor);
+
+        self.input_selection_start = word_start;
+        self.input_cursor = word_end;
+        self.cursor_visible = true;
+        self.cursor_blink_time = std::time::Instant::now();
+        self.input_mouse_drag = false; // Don't start drag on double-click
+
+        self.sync_cursor_to_dom(focused_id);
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Handle triple-click to select all text.
+    fn handle_triple_click(&mut self, x: f32, y: f32) {
+        // First do normal click to focus
+        self.handle_click(x, y);
+
+        let Some(focused_id) = self.focused_input else { return };
+        let Some(doc) = &self.doc else { return };
+
+        let value_len = {
+            let d = doc.borrow();
+            let Some(node) = d.tree.get(focused_id) else { return };
+            node.attributes.get("value").map(|v| v.len()).unwrap_or(0)
+        };
+
+        // Select all
+        self.input_selection_start = 0;
+        self.input_cursor = value_len;
+        self.cursor_visible = true;
+        self.cursor_blink_time = std::time::Instant::now();
+        self.input_mouse_drag = false;
+
+        self.sync_cursor_to_dom(focused_id);
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Clear input focus and remove focus attributes from DOM.
+    fn clear_input_focus(&mut self) {
+        if let Some(focused_id) = self.focused_input.take() {
+            if let Some(doc) = &self.doc {
+                let mut d = doc.borrow_mut();
+                if let Some(node) = d.tree.nodes.get_mut(focused_id) {
+                    node.attributes.remove("data-focused");
+                    node.attributes.remove("data-cursor-pos");
+                    node.attributes.remove("data-selection-start");
+                    node.attributes.remove("data-cursor-visible");
+                    node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+                    d.tree.dirty_nodes.push(focused_id);
+                }
+            }
+        }
+    }
+
+    /// Sync cursor state to DOM attributes for paint.
+    fn sync_cursor_to_dom(&mut self, node_id: usize) {
+        if let Some(doc) = &self.doc {
+            let mut d = doc.borrow_mut();
+            if let Some(node) = d.tree.nodes.get_mut(node_id) {
+                node.attributes.insert("data-focused".to_string(), "true".to_string());
+                node.attributes.insert("data-cursor-pos".to_string(), self.input_cursor.to_string());
+                node.attributes.insert("data-selection-start".to_string(), self.input_selection_start.to_string());
+                node.attributes.insert("data-cursor-visible".to_string(), self.cursor_visible.to_string());
+                node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+                d.tree.dirty_nodes.push(node_id);
+            }
+        }
+    }
+
+    /// Handle keyboard input for focused input elements.
+    fn handle_text_input(&mut self, text: &str) {
+        let Some(focused_id) = self.focused_input else { return };
+        let Some(doc) = &self.doc else { return };
+
+        // Get the current value and handler ID
+        let (current_value, handler_id, is_disabled) = {
+            let d = doc.borrow();
+            let Some(node) = d.tree.get(focused_id) else { return };
+            let is_disabled = node.attributes.contains_key("disabled");
+            let value = node.attributes.get("value").cloned().unwrap_or_default();
+            let handler_id = node.attributes.get("data-oninput")
+                .and_then(|s| s.parse::<usize>().ok());
+            (value, handler_id, is_disabled)
+        };
+
+        // Block input to disabled fields
+        if is_disabled {
+            return;
+        }
+
+        // Clamp cursor positions to valid range
+        let len = current_value.len();
+        let cursor = self.input_cursor.min(len);
+        let sel_start = self.input_selection_start.min(len);
+
+        // Determine the range to replace (either selection or just cursor position)
+        let (start, end) = if cursor != sel_start {
+            (cursor.min(sel_start), cursor.max(sel_start))
+        } else {
+            (cursor, cursor)
+        };
+
+        // Snap to valid UTF-8 boundaries
+        let start = Self::snap_to_char_boundary(&current_value, start);
+        let end = Self::snap_to_char_boundary(&current_value, end);
+
+        // Build new value: before + inserted text + after
+        let new_value = format!(
+            "{}{}{}",
+            &current_value[..start],
+            text,
+            &current_value[end..]
+        );
+
+        // Update cursor to end of inserted text
+        let new_cursor = start + text.len();
+        self.input_cursor = new_cursor;
+        self.input_selection_start = new_cursor;
+
+        // Reset cursor blink
+        self.cursor_visible = true;
+        self.cursor_blink_time = std::time::Instant::now();
+
+        // Update the DOM value and sync cursor state
+        {
+            let mut d = doc.borrow_mut();
+            if let Some(node) = d.tree.nodes.get_mut(focused_id) {
+                node.attributes.insert("value".to_string(), new_value.clone());
+                node.attributes.insert("data-focused".to_string(), "true".to_string());
+                node.attributes.insert("data-cursor-pos".to_string(), self.input_cursor.to_string());
+                node.attributes.insert("data-selection-start".to_string(), self.input_selection_start.to_string());
+                node.attributes.insert("data-cursor-visible".to_string(), "true".to_string());
+                node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+                d.tree.dirty_nodes.push(focused_id);
+            }
+        }
+
+        // Dispatch the input event
+        if let Some(id) = handler_id {
+            events::dispatch_input_event(events::EventHandlerId(id), new_value);
+        }
+
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Handle backspace key for focused input elements.
+    fn handle_backspace(&mut self) {
+        let Some(focused_id) = self.focused_input else { return };
+        let Some(doc) = &self.doc else { return };
+
+        // Get the current value and handler ID
+        let (current_value, handler_id) = {
+            let d = doc.borrow();
+            let Some(node) = d.tree.get(focused_id) else { return };
+            let value = node.attributes.get("value").cloned().unwrap_or_default();
+            let handler_id = node.attributes.get("data-oninput")
+                .and_then(|s| s.parse::<usize>().ok());
+            (value, handler_id)
+        };
+
+        // Clamp cursor positions to valid range
+        let len = current_value.len();
+        let cursor = self.input_cursor.min(len);
+        let sel_start = self.input_selection_start.min(len);
+
+        // Determine what to delete
+        let (start, end, new_cursor) = if cursor != sel_start {
+            // Delete selection
+            let s = cursor.min(sel_start);
+            let e = cursor.max(sel_start);
+            (s, e, s)
+        } else if cursor > 0 {
+            // Delete character before cursor (find char boundary)
+            let prev_char_start = current_value[..cursor]
+                .char_indices()
+                .last()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            (prev_char_start, cursor, prev_char_start)
+        } else {
+            // At start, nothing to delete
+            return;
+        };
+
+        // Snap to valid UTF-8 boundaries
+        let start = Self::snap_to_char_boundary(&current_value, start);
+        let end = Self::snap_to_char_boundary(&current_value, end);
+
+        // Build new value
+        let new_value = format!("{}{}", &current_value[..start], &current_value[end..]);
+
+        // Update cursor
+        self.input_cursor = new_cursor;
+        self.input_selection_start = new_cursor;
+
+        // Reset cursor blink
+        self.cursor_visible = true;
+        self.cursor_blink_time = std::time::Instant::now();
+
+        // Update the DOM value and sync cursor state
+        {
+            let mut d = doc.borrow_mut();
+            if let Some(node) = d.tree.nodes.get_mut(focused_id) {
+                node.attributes.insert("value".to_string(), new_value.clone());
+                node.attributes.insert("data-focused".to_string(), "true".to_string());
+                node.attributes.insert("data-cursor-pos".to_string(), self.input_cursor.to_string());
+                node.attributes.insert("data-selection-start".to_string(), self.input_selection_start.to_string());
+                node.attributes.insert("data-cursor-visible".to_string(), "true".to_string());
+                node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+                d.tree.dirty_nodes.push(focused_id);
+            }
+        }
+
+        // Dispatch the input event
+        if let Some(id) = handler_id {
+            events::dispatch_input_event(events::EventHandlerId(id), new_value);
+        }
+
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Handle Delete key for focused input elements.
+    fn handle_delete(&mut self) {
+        let Some(focused_id) = self.focused_input else { return };
+        let Some(doc) = &self.doc else { return };
+
+        let (current_value, handler_id) = {
+            let d = doc.borrow();
+            let Some(node) = d.tree.get(focused_id) else { return };
+            let value = node.attributes.get("value").cloned().unwrap_or_default();
+            let handler_id = node.attributes.get("data-oninput")
+                .and_then(|s| s.parse::<usize>().ok());
+            (value, handler_id)
+        };
+
+        let len = current_value.len();
+        let cursor = self.input_cursor.min(len);
+        let sel_start = self.input_selection_start.min(len);
+
+        let (start, end, new_cursor) = if cursor != sel_start {
+            // Delete selection
+            let s = cursor.min(sel_start);
+            let e = cursor.max(sel_start);
+            (s, e, s)
+        } else if cursor < len {
+            // Delete character after cursor (find next char boundary)
+            let next_char_end = current_value[cursor..]
+                .char_indices()
+                .nth(1)
+                .map(|(i, _)| cursor + i)
+                .unwrap_or(len);
+            (cursor, next_char_end, cursor)
+        } else {
+            return; // At end, nothing to delete
+        };
+
+        // Snap to valid UTF-8 boundaries
+        let start = Self::snap_to_char_boundary(&current_value, start);
+        let end = Self::snap_to_char_boundary(&current_value, end);
+
+        let new_value = format!("{}{}", &current_value[..start], &current_value[end..]);
+        self.input_cursor = new_cursor;
+        self.input_selection_start = new_cursor;
+        self.cursor_visible = true;
+        self.cursor_blink_time = std::time::Instant::now();
+
+        {
+            let mut d = doc.borrow_mut();
+            if let Some(node) = d.tree.nodes.get_mut(focused_id) {
+                node.attributes.insert("value".to_string(), new_value.clone());
+                node.attributes.insert("data-focused".to_string(), "true".to_string());
+                node.attributes.insert("data-cursor-pos".to_string(), self.input_cursor.to_string());
+                node.attributes.insert("data-selection-start".to_string(), self.input_selection_start.to_string());
+                node.attributes.insert("data-cursor-visible".to_string(), "true".to_string());
+                node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+                d.tree.dirty_nodes.push(focused_id);
+            }
+        }
+
+        if let Some(id) = handler_id {
+            events::dispatch_input_event(events::EventHandlerId(id), new_value);
+        }
+
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Handle left arrow key.
+    fn handle_arrow_left(&mut self, shift: bool, ctrl: bool) {
+        let Some(focused_id) = self.focused_input else { return };
+        let Some(doc) = &self.doc else { return };
+
+        let value = {
+            let d = doc.borrow();
+            let Some(node) = d.tree.get(focused_id) else { return };
+            node.attributes.get("value").cloned().unwrap_or_default()
+        };
+
+        let len = value.len();
+        let cursor = self.input_cursor.min(len);
+
+        let new_cursor = if ctrl {
+            // Move to previous word boundary
+            Self::find_prev_word_boundary(&value, cursor)
+        } else if cursor > 0 {
+            // Move to previous character
+            value[..cursor]
+                .char_indices()
+                .last()
+                .map(|(i, _)| i)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        self.input_cursor = new_cursor;
+        if !shift {
+            self.input_selection_start = new_cursor;
+        }
+        self.cursor_visible = true;
+        self.cursor_blink_time = std::time::Instant::now();
+        self.sync_cursor_to_dom(focused_id);
+
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Handle right arrow key.
+    fn handle_arrow_right(&mut self, shift: bool, ctrl: bool) {
+        let Some(focused_id) = self.focused_input else { return };
+        let Some(doc) = &self.doc else { return };
+
+        let value = {
+            let d = doc.borrow();
+            let Some(node) = d.tree.get(focused_id) else { return };
+            node.attributes.get("value").cloned().unwrap_or_default()
+        };
+
+        let len = value.len();
+        let cursor = self.input_cursor.min(len);
+
+        let new_cursor = if ctrl {
+            // Move to next word boundary
+            Self::find_next_word_boundary(&value, cursor)
+        } else if cursor < len {
+            // Move to next character
+            value[cursor..]
+                .char_indices()
+                .nth(1)
+                .map(|(i, _)| cursor + i)
+                .unwrap_or(len)
+        } else {
+            len
+        };
+
+        self.input_cursor = new_cursor;
+        if !shift {
+            self.input_selection_start = new_cursor;
+        }
+        self.cursor_visible = true;
+        self.cursor_blink_time = std::time::Instant::now();
+        self.sync_cursor_to_dom(focused_id);
+
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Handle Enter key - insert newline for textarea elements.
+    fn handle_enter(&mut self) {
+        let Some(focused_id) = self.focused_input else { return };
+        let Some(doc) = &self.doc else { return };
+
+        // Check if this is a textarea element
+        let is_textarea = {
+            let d = doc.borrow();
+            d.tree.get(focused_id)
+                .map(|node| node.tag() == Some("textarea"))
+                .unwrap_or(false)
+        };
+
+        if is_textarea {
+            self.handle_text_input("\n");
+        }
+    }
+
+    /// Handle up arrow key for multi-line navigation.
+    fn handle_arrow_up(&mut self, shift: bool) {
+        let Some(focused_id) = self.focused_input else { return };
+        let Some(doc) = &self.doc else { return };
+
+        let value = {
+            let d = doc.borrow();
+            let Some(node) = d.tree.get(focused_id) else { return };
+            node.attributes.get("value").cloned().unwrap_or_default()
+        };
+
+        let len = value.len();
+        let cursor = self.input_cursor.min(len);
+
+        // Find the start of the current line
+        let line_start = value[..cursor].rfind('\n').map(|i| i + 1).unwrap_or(0);
+
+        if line_start == 0 {
+            // Already on first line - move to start
+            self.input_cursor = 0;
+        } else {
+            // Find the end of the previous line (the newline before current line)
+            let prev_line_end = line_start - 1;
+            // Find the start of the previous line
+            let prev_line_start = value[..prev_line_end].rfind('\n').map(|i| i + 1).unwrap_or(0);
+
+            // Calculate column offset on current line
+            let column = cursor - line_start;
+            // Calculate the length of the previous line
+            let prev_line_len = prev_line_end - prev_line_start;
+
+            // Move to same column on previous line (or end of line if shorter)
+            self.input_cursor = prev_line_start + column.min(prev_line_len);
+        }
+
+        if !shift {
+            self.input_selection_start = self.input_cursor;
+        }
+        self.cursor_visible = true;
+        self.cursor_blink_time = std::time::Instant::now();
+        self.sync_cursor_to_dom(focused_id);
+
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Handle down arrow key for multi-line navigation.
+    fn handle_arrow_down(&mut self, shift: bool) {
+        let Some(focused_id) = self.focused_input else { return };
+        let Some(doc) = &self.doc else { return };
+
+        let value = {
+            let d = doc.borrow();
+            let Some(node) = d.tree.get(focused_id) else { return };
+            node.attributes.get("value").cloned().unwrap_or_default()
+        };
+
+        let len = value.len();
+        let cursor = self.input_cursor.min(len);
+
+        // Find the start of the current line
+        let line_start = value[..cursor].rfind('\n').map(|i| i + 1).unwrap_or(0);
+
+        // Find the end of the current line (next newline or end of text)
+        let line_end = value[cursor..].find('\n').map(|i| cursor + i).unwrap_or(len);
+
+        if line_end == len {
+            // Already on last line - move to end
+            self.input_cursor = len;
+        } else {
+            // Find the start of the next line
+            let next_line_start = line_end + 1;
+            // Find the end of the next line
+            let next_line_end = value[next_line_start..].find('\n')
+                .map(|i| next_line_start + i)
+                .unwrap_or(len);
+
+            // Calculate column offset on current line
+            let column = cursor - line_start;
+            // Calculate the length of the next line
+            let next_line_len = next_line_end - next_line_start;
+
+            // Move to same column on next line (or end of line if shorter)
+            self.input_cursor = next_line_start + column.min(next_line_len);
+        }
+
+        if !shift {
+            self.input_selection_start = self.input_cursor;
+        }
+        self.cursor_visible = true;
+        self.cursor_blink_time = std::time::Instant::now();
+        self.sync_cursor_to_dom(focused_id);
+
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Handle Home key.
+    fn handle_home(&mut self, shift: bool) {
+        let Some(focused_id) = self.focused_input else { return };
+
+        self.input_cursor = 0;
+        if !shift {
+            self.input_selection_start = 0;
+        }
+        self.cursor_visible = true;
+        self.cursor_blink_time = std::time::Instant::now();
+        self.sync_cursor_to_dom(focused_id);
+
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Handle End key.
+    fn handle_end(&mut self, shift: bool) {
+        let Some(focused_id) = self.focused_input else { return };
+        let Some(doc) = &self.doc else { return };
+
+        let len = {
+            let d = doc.borrow();
+            let Some(node) = d.tree.get(focused_id) else { return };
+            node.attributes.get("value").map(|v| v.len()).unwrap_or(0)
+        };
+
+        self.input_cursor = len;
+        if !shift {
+            self.input_selection_start = len;
+        }
+        self.cursor_visible = true;
+        self.cursor_blink_time = std::time::Instant::now();
+        self.sync_cursor_to_dom(focused_id);
+
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Handle Ctrl+A (select all).
+    fn handle_select_all(&mut self) {
+        let Some(focused_id) = self.focused_input else { return };
+        let Some(doc) = &self.doc else { return };
+
+        let len = {
+            let d = doc.borrow();
+            let Some(node) = d.tree.get(focused_id) else { return };
+            node.attributes.get("value").map(|v| v.len()).unwrap_or(0)
+        };
+
+        self.input_selection_start = 0;
+        self.input_cursor = len;
+        self.cursor_visible = true;
+        self.cursor_blink_time = std::time::Instant::now();
+        self.sync_cursor_to_dom(focused_id);
+
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Handle Ctrl+C (copy).
+    fn handle_copy(&mut self) {
+        let Some(focused_id) = self.focused_input else { return };
+        let Some(doc) = &self.doc else { return };
+
+        let (value, is_password) = {
+            let d = doc.borrow();
+            let Some(node) = d.tree.get(focused_id) else { return };
+            let value = node.attributes.get("value").cloned().unwrap_or_default();
+            let is_password = node.attributes.get("type").map(|t| t == "password").unwrap_or(false);
+            (value, is_password)
+        };
+
+        if is_password {
+            return; // Security: never copy from password fields
+        }
+
+        let len = value.len();
+        let cursor = self.input_cursor.min(len);
+        let sel_start = self.input_selection_start.min(len);
+
+        if cursor == sel_start {
+            return; // No selection to copy
+        }
+
+        let start = cursor.min(sel_start);
+        let end = cursor.max(sel_start);
+        let selected_text = &value[start..end];
+
+        #[cfg(feature = "clipboard")]
+        {
+            let _ = crate::clipboard::copy_text(selected_text);
+        }
+        #[cfg(not(feature = "clipboard"))]
+        {
+            tracing::warn!("Clipboard feature not enabled, cannot copy");
+            let _ = selected_text;
+        }
+    }
+
+    /// Handle Ctrl+V (paste).
+    fn handle_paste(&mut self) {
+        #[cfg(feature = "clipboard")]
+        {
+            if let Ok(text) = crate::clipboard::paste_text() {
+                if !text.is_empty() {
+                    self.handle_text_input(&text);
+                }
+            }
+        }
+        #[cfg(not(feature = "clipboard"))]
+        {
+            tracing::warn!("Clipboard feature not enabled, cannot paste");
+        }
+    }
+
+    /// Handle Ctrl+X (cut).
+    fn handle_cut(&mut self) {
+        let Some(focused_id) = self.focused_input else { return };
+        let Some(doc) = &self.doc else { return };
+
+        let (value, handler_id, is_password) = {
+            let d = doc.borrow();
+            let Some(node) = d.tree.get(focused_id) else { return };
+            let value = node.attributes.get("value").cloned().unwrap_or_default();
+            let handler_id = node.attributes.get("data-oninput")
+                .and_then(|s| s.parse::<usize>().ok());
+            let is_password = node.attributes.get("type").map(|t| t == "password").unwrap_or(false);
+            (value, handler_id, is_password)
+        };
+
+        if is_password {
+            return; // Security: never cut from password fields
+        }
+
+        let len = value.len();
+        let cursor = self.input_cursor.min(len);
+        let sel_start = self.input_selection_start.min(len);
+
+        if cursor == sel_start {
+            return; // No selection to cut
+        }
+
+        let start = cursor.min(sel_start);
+        let end = cursor.max(sel_start);
+
+        // Snap to valid UTF-8 boundaries
+        let start = Self::snap_to_char_boundary(&value, start);
+        let end = Self::snap_to_char_boundary(&value, end);
+
+        let selected_text = &value[start..end];
+
+        // Copy to clipboard
+        #[cfg(feature = "clipboard")]
+        {
+            let _ = crate::clipboard::copy_text(selected_text);
+        }
+
+        // Delete the selection
+        let new_value = format!("{}{}", &value[..start], &value[end..]);
+        self.input_cursor = start;
+        self.input_selection_start = start;
+        self.cursor_visible = true;
+        self.cursor_blink_time = std::time::Instant::now();
+
+        {
+            let mut d = doc.borrow_mut();
+            if let Some(node) = d.tree.nodes.get_mut(focused_id) {
+                node.attributes.insert("value".to_string(), new_value.clone());
+                node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+                d.tree.dirty_nodes.push(focused_id);
+            }
+        }
+
+        if let Some(id) = handler_id {
+            events::dispatch_input_event(events::EventHandlerId(id), new_value);
+        }
+
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Find the previous word boundary from cursor position.
+    fn find_prev_word_boundary(text: &str, cursor: usize) -> usize {
+        let cursor = Self::snap_to_char_boundary(text, cursor);
+        let before = &text[..cursor];
+        // Skip any trailing whitespace/punctuation
+        let trimmed = before.trim_end_matches(|c: char| !c.is_alphanumeric());
+        if trimmed.is_empty() {
+            return 0;
+        }
+        // Find the start of the current word
+        trimmed
+            .rfind(|c: char| !c.is_alphanumeric())
+            .map(|i| i + 1)
+            .unwrap_or(0)
+    }
+
+    /// Find the next word boundary from cursor position.
+    fn find_next_word_boundary(text: &str, cursor: usize) -> usize {
+        let cursor = Self::snap_to_char_boundary(text, cursor);
+        let after = &text[cursor..];
+        // Skip current word
+        let word_end = after
+            .find(|c: char| !c.is_alphanumeric())
+            .unwrap_or(after.len());
+        // Skip whitespace/punctuation after word
+        let rest = &after[word_end..];
+        let space_end = rest
+            .find(|c: char| c.is_alphanumeric())
+            .unwrap_or(rest.len());
+        cursor + word_end + space_end
+    }
+
+    /// Find the start of the word containing the given position.
+    fn find_word_start(text: &str, pos: usize) -> usize {
+        if pos == 0 {
+            return 0;
+        }
+        let pos = Self::snap_to_char_boundary(text, pos);
+        let before = &text[..pos];
+        // Walk backwards to find non-word character
+        for (i, c) in before.char_indices().rev() {
+            if !c.is_alphanumeric() && c != '_' {
+                return i + c.len_utf8();
+            }
+        }
+        0
+    }
+
+    /// Find the end of the word containing the given position.
+    fn find_word_end(text: &str, pos: usize) -> usize {
+        let pos = Self::snap_to_char_boundary(text, pos);
+        let after = &text[pos..];
+        // Walk forwards to find non-word character
+        for (i, c) in after.char_indices() {
+            if !c.is_alphanumeric() && c != '_' {
+                return pos + i;
+            }
+        }
+        text.len()
+    }
+
+    /// Snap a byte position to a valid UTF-8 character boundary.
+    /// If pos is already at a boundary, returns pos unchanged.
+    /// Otherwise walks backwards to find the nearest valid boundary.
+    fn snap_to_char_boundary(s: &str, pos: usize) -> usize {
+        if pos >= s.len() {
+            return s.len();
+        }
+        if s.is_char_boundary(pos) {
+            return pos;
+        }
+        // Walk backwards to find valid boundary
+        (0..pos).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0)
+    }
+
+    /// Calculate byte offset from click coordinates relative to text start.
+    /// Returns the byte offset closest to the click position, accounting for which line was clicked.
+    fn byte_offset_from_xy(
+        layout: &parley::layout::Layout<peniko::Brush>,
+        click_x: f32,
+        click_y: f32,
+    ) -> usize {
+        if click_x <= 0.0 && click_y <= 0.0 {
+            return 0;
+        }
+
+        // First, find which line was clicked based on Y coordinate
+        let mut target_line_idx = 0usize;
+        let mut cumulative_height = 0.0f32;
+
+        for (idx, line) in layout.lines().enumerate() {
+            let line_height = line.metrics().line_height;
+            if click_y < cumulative_height + line_height {
+                target_line_idx = idx;
+                break;
+            }
+            cumulative_height += line_height;
+            target_line_idx = idx; // Default to last line if click is below all lines
+        }
+
+        // Now find the character position within that line
+        let mut best_offset = 0usize;
+
+        for (line_idx, line) in layout.lines().enumerate() {
+            if line_idx < target_line_idx {
+                // Track the end of previous lines
+                for item in line.items() {
+                    if let parley::layout::PositionedLayoutItem::GlyphRun(glyph_run) = item {
+                        let run = glyph_run.run();
+                        best_offset = run.text_range().end;
+                    }
+                }
+                continue;
+            }
+
+            if line_idx > target_line_idx {
+                break;
+            }
+
+            // This is the target line - find the character position based on X
+            for item in line.items() {
+                if let parley::layout::PositionedLayoutItem::GlyphRun(glyph_run) = item {
+                    let run = glyph_run.run();
+                    let mut gx = glyph_run.offset();
+
+                    for cluster in run.cluster_range() {
+                        let Some(cluster_data) = run.get(cluster) else {
+                            continue;
+                        };
+                        let cluster_start = cluster_data.text_range().start;
+                        let advance = cluster_data.advance();
+
+                        let mid_x = gx + advance / 2.0;
+
+                        if click_x <= mid_x {
+                            return cluster_start;
+                        }
+
+                        gx += advance;
+                        best_offset = cluster_data.text_range().end;
+                    }
+                }
+            }
+            break;
+        }
+
+        best_offset
     }
 }
 
@@ -777,6 +1787,74 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                     return;
                 }
 
+                // Handle text selection drag in input
+                if self.input_mouse_drag {
+                    if let Some(focused_id) = self.focused_input {
+                        if let Some(doc) = &self.doc {
+                            let (value, computed_style, input_width, abs_x, abs_y) = {
+                                let d = doc.borrow();
+                                if let Some(node) = d.tree.get(focused_id) {
+                                    let value = node.attributes.get("value").cloned().unwrap_or_default();
+                                    let style = node.computed_style.clone();
+                                    let width = node.layout.width;
+
+                                    // Calculate absolute x and y position
+                                    let mut ax = node.layout.x;
+                                    let mut ay = node.layout.y;
+                                    let mut parent_id = node.parent;
+                                    while let Some(pid) = parent_id {
+                                        if let Some(parent_node) = d.tree.get(pid) {
+                                            ax += parent_node.layout.x;
+                                            ay += parent_node.layout.y;
+                                            ax -= parent_node.scroll_offset.0 as f32;
+                                            ay -= parent_node.scroll_offset.1 as f32;
+                                            parent_id = parent_node.parent;
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                    (value, style, width, ax, ay)
+                                } else {
+                                    (String::new(), rinch_dom::ComputedStyle::default(), 0.0, 0.0, 0.0)
+                                }
+                            };
+
+                            if !value.is_empty() {
+                                let scale = self.window.as_ref()
+                                    .map(|w| w.scale_factor() as f32)
+                                    .unwrap_or(1.0);
+
+                                let layout = computed_style.build_parley_layout(
+                                    &value,
+                                    scale,
+                                    &mut self.hit_test_font_cx,
+                                    &mut self.paint_layout_cx,
+                                    Some(input_width),
+                                );
+
+                                let padding_left = computed_style.padding_left.to_px() * scale;
+                                let padding_top = computed_style.padding_top.to_px() * scale;
+
+                                let click_rel_x = (x - abs_x - padding_left).max(0.0);
+                                let click_rel_y = (y - abs_y - padding_top).max(0.0);
+                                let cursor_pos = Self::byte_offset_from_xy(&layout, click_rel_x, click_rel_y).min(value.len());
+
+                                if cursor_pos != self.input_cursor {
+                                    self.input_cursor = cursor_pos;
+                                    self.cursor_visible = true;
+                                    self.cursor_blink_time = std::time::Instant::now();
+                                    self.sync_cursor_to_dom(focused_id);
+
+                                    if let Some(w) = &self.window {
+                                        w.request_redraw();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return;
+                }
+
                 // Update hover state for CSS :hover support
                 if let Some(doc) = &self.doc {
                     let hovered = {
@@ -797,6 +1875,25 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                 ..
             } => {
                 if let Some((x, y)) = self.cursor_pos {
+                    // Multi-click detection constants
+                    const DOUBLE_CLICK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+                    const DOUBLE_CLICK_DISTANCE: f32 = 5.0;
+
+                    // Check for multi-click
+                    let now = std::time::Instant::now();
+                    let elapsed = now.duration_since(self.last_click_time);
+                    let (last_x, last_y) = self.last_click_pos;
+                    let distance = ((x - last_x).powi(2) + (y - last_y).powi(2)).sqrt();
+
+                    if elapsed < DOUBLE_CLICK_TIMEOUT && distance < DOUBLE_CLICK_DISTANCE {
+                        self.click_count = (self.click_count % 3) + 1;
+                    } else {
+                        self.click_count = 1;
+                    }
+
+                    self.last_click_time = now;
+                    self.last_click_pos = (x, y);
+
                     // Check if clicking on a scrollbar first
                     let scrollbar_hit = if let Some(doc) = &self.doc {
                         let d = doc.borrow();
@@ -834,7 +1931,12 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                             w.request_redraw();
                         }
                     } else {
-                        self.handle_click(x, y);
+                        // Route to appropriate handler based on click count
+                        match self.click_count {
+                            2 => self.handle_double_click(x, y),
+                            3 => self.handle_triple_click(x, y),
+                            _ => self.handle_click(x, y),
+                        }
                     }
                 }
             }
@@ -844,6 +1946,7 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                 ..
             } => {
                 self.scrollbar_drag = None;
+                self.input_mouse_drag = false;
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 // Convert delta to pixels
@@ -883,23 +1986,85 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                     }
                 }
             }
+            WindowEvent::ModifiersChanged(new_modifiers) => {
+                self.modifiers = new_modifiers.state();
+            }
             WindowEvent::KeyboardInput {
                 event: winit::event::KeyEvent {
                     physical_key: winit::keyboard::PhysicalKey::Code(key_code),
                     state: ElementState::Pressed,
+                    ref text,
                     ..
                 },
                 ..
             } => {
+                use winit::keyboard::KeyCode;
+                let shift = self.modifiers.shift_key();
+                // On macOS, Cmd (super_key) is used for shortcuts; on other platforms, Ctrl
+                #[cfg(target_os = "macos")]
+                let ctrl = self.modifiers.super_key();
+                #[cfg(not(target_os = "macos"))]
+                let ctrl = self.modifiers.control_key();
+
                 match key_code {
-                    winit::keyboard::KeyCode::F12 => {
+                    KeyCode::F12 => {
                         self.devtools.toggle();
                         tracing::info!("DevTools: {}", if self.devtools.visible { "opened" } else { "closed" });
                         if let Some(w) = &self.window {
                             w.request_redraw();
                         }
                     }
-                    _ => {}
+                    KeyCode::Backspace => {
+                        self.handle_backspace();
+                    }
+                    KeyCode::Delete => {
+                        self.handle_delete();
+                    }
+                    KeyCode::ArrowLeft => {
+                        self.handle_arrow_left(shift, ctrl);
+                    }
+                    KeyCode::ArrowRight => {
+                        self.handle_arrow_right(shift, ctrl);
+                    }
+                    KeyCode::Home => {
+                        self.handle_home(shift);
+                    }
+                    KeyCode::End => {
+                        self.handle_end(shift);
+                    }
+                    KeyCode::KeyA if ctrl => {
+                        self.handle_select_all();
+                    }
+                    KeyCode::KeyC if ctrl => {
+                        self.handle_copy();
+                    }
+                    KeyCode::KeyV if ctrl => {
+                        self.handle_paste();
+                    }
+                    KeyCode::KeyX if ctrl => {
+                        self.handle_cut();
+                    }
+                    KeyCode::Enter if !ctrl => {
+                        // Insert newline only for textarea elements
+                        self.handle_enter();
+                    }
+                    KeyCode::ArrowUp => {
+                        self.handle_arrow_up(shift);
+                    }
+                    KeyCode::ArrowDown => {
+                        self.handle_arrow_down(shift);
+                    }
+                    _ => {
+                        // Handle text input for focused input elements
+                        // Skip if Ctrl is held (except for Ctrl+V which is handled above)
+                        if !ctrl {
+                            if let Some(t) = text {
+                                if !t.is_empty() {
+                                    self.handle_text_input(t.as_str());
+                                }
+                            }
+                        }
+                    }
                 }
             }
             _ => {}
@@ -907,6 +2072,34 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // Handle cursor blink for focused input
+        if let Some(focused_id) = self.focused_input {
+            let elapsed = self.cursor_blink_time.elapsed();
+            const BLINK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(530);
+
+            if elapsed >= BLINK_INTERVAL {
+                self.cursor_visible = !self.cursor_visible;
+                self.cursor_blink_time = std::time::Instant::now();
+
+                // Update the DOM attribute
+                if let Some(doc) = &self.doc {
+                    let mut d = doc.borrow_mut();
+                    if let Some(node) = d.tree.nodes.get_mut(focused_id) {
+                        node.attributes.insert(
+                            "data-cursor-visible".to_string(),
+                            self.cursor_visible.to_string(),
+                        );
+                        node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+                        d.tree.dirty_nodes.push(focused_id);
+                    }
+                }
+
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+            }
+        }
+
         if let Some(doc) = &self.doc {
             let has_dirty = !doc.borrow().tree.dirty_nodes.is_empty();
             if has_dirty {
@@ -954,16 +2147,16 @@ fn hit_test_node(
 
 /// Find the nearest ancestor (or self) that is a scroll container.
 fn find_scroll_container(tree: &rinch_dom::NodeTree, start: usize) -> Option<usize> {
+    use rinch_dom::computed_style::OverflowValue;
+
     let mut current = Some(start);
     while let Some(node_id) = current {
         let node = tree.get(node_id)?;
-        let overflow = node.cached_style_props.get("overflow")
-            .or_else(|| node.cached_style_props.get("overflow-y"))
-            .map(|s| s.as_str())
-            .unwrap_or("visible");
-        match overflow {
-            "scroll" | "auto" => return Some(node_id),
-            "hidden" => {
+        // Use computed_style instead of cached_style_props
+        let overflow_y = &node.computed_style.overflow_y;
+        match overflow_y {
+            OverflowValue::Scroll | OverflowValue::Auto => return Some(node_id),
+            OverflowValue::Hidden => {
                 let content_h = compute_content_height(tree, node_id);
                 if content_h > node.layout.height as f64 {
                     return Some(node_id);
@@ -1039,12 +2232,10 @@ fn find_scrollbar_hit_node(
     }
 
     // Check if this node is a scroll container with a visible scrollbar
-    let overflow = node.cached_style_props.get("overflow")
-        .or_else(|| node.cached_style_props.get("overflow-y"))
-        .map(|s| s.as_str())
-        .unwrap_or("visible");
+    use rinch_dom::computed_style::OverflowValue;
+    let overflow_y = &node.computed_style.overflow_y;
 
-    if overflow == "scroll" || overflow == "auto" {
+    if matches!(overflow_y, OverflowValue::Scroll | OverflowValue::Auto) {
         let content_height = compute_content_height(tree, node_id);
         let container_height = nh as f64;
 

@@ -956,10 +956,12 @@ pub fn compute_merged_styles(
     inline_style: Option<&str>,
     tag: Option<&str>,
 ) -> HashMap<String, String> {
-    compute_merged_styles_with_state(stylesheet, class_attr, inline_style, None, &[], tag)
+    compute_merged_styles_with_state(stylesheet, class_attr, inline_style, None, &[], tag, None)
 }
 
 /// Compute merged styles with full element state for pseudo-class and descendant matching.
+/// The `inherited_custom_props` parameter allows CSS custom properties (--xxx) to be
+/// inherited from parent elements, enabling proper CSS variable inheritance.
 pub fn compute_merged_styles_with_state(
     stylesheet: &Stylesheet,
     class_attr: Option<&str>,
@@ -967,6 +969,7 @@ pub fn compute_merged_styles_with_state(
     element_state: Option<&ElementState>,
     ancestors: &[ElementState],
     tag: Option<&str>,
+    inherited_custom_props: Option<&HashMap<String, String>>,
 ) -> HashMap<String, String> {
     // Get class-based styles with importance tracking
     let class_props = match (element_state, class_attr) {
@@ -1006,16 +1009,47 @@ pub fn compute_merged_styles_with_state(
         merged.insert(k.clone(), v.clone());
     }
 
-    // Resolve var() references, considering both global :root variables and local custom properties
-    // Step 1: Extract and resolve local custom properties (--xxx) against global vars
+    // Resolve var() references, considering inherited, global :root, and local custom properties
+    // Step 1: Start with inherited custom properties from parent (CSS custom property inheritance)
     let mut local_vars: HashMap<String, String> = HashMap::new();
-    for (key, value) in &merged {
-        if key.starts_with("--") {
-            local_vars.insert(key.clone(), stylesheet.resolve_value(value));
+    if let Some(inherited) = inherited_custom_props {
+        for (key, value) in inherited {
+            if key.starts_with("--") {
+                local_vars.insert(key.clone(), value.clone());
+            }
         }
     }
 
-    // Step 2: Resolve all properties using a combined lookup (local vars first, then global)
+    // Step 2: Override/add local custom properties (--xxx) from this element
+    for (key, value) in &merged {
+        if key.starts_with("--") {
+            // Resolve the value using inherited vars + global vars
+            local_vars.insert(key.clone(), resolve_var_with_locals(&stylesheet.resolve_value(value), stylesheet, &local_vars));
+        }
+    }
+
+    // Step 3: Re-resolve local vars in case they reference each other
+    for _ in 0..5 {
+        let mut changed = false;
+        let vars_snapshot = local_vars.clone();
+        for (key, value) in local_vars.iter_mut() {
+            if key.starts_with("--") && value.contains("var(") {
+                let resolved = resolve_var_with_locals(value, stylesheet, &vars_snapshot);
+                if &resolved != value {
+                    *value = resolved;
+                    changed = true;
+                }
+            }
+        }
+        if !changed { break; }
+    }
+
+    // Step 4: Add resolved custom properties back to merged (for inheritance to children)
+    for (key, value) in &local_vars {
+        merged.insert(key.clone(), value.clone());
+    }
+
+    // Step 5: Resolve all properties using a combined lookup (local vars first, then global)
     for value in merged.values_mut() {
         // First resolve using local custom properties
         let mut resolved = value.clone();

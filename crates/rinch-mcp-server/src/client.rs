@@ -32,6 +32,8 @@ pub enum DebugCommandKind {
     MouseMove { x: f32, y: f32 },
     #[serde(rename = "scroll")]
     Scroll { x: f32, y: f32, delta_x: f64, delta_y: f64 },
+    #[serde(rename = "key_press")]
+    KeyPress { key: String, shift: bool, ctrl: bool },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

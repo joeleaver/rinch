@@ -5,9 +5,50 @@ use std::collections::HashMap;
 use rinch_core::dom::{DomDocument, NodeId};
 
 use peniko::Brush;
+use servo_arc::Arc as ServoArc;
+
+// Stylo CSS engine imports
+use style::context::QuirksMode;
+use style::media_queries::{Device, MediaType};
+use style::properties::style_structs::Font as StyloFont;
+use style::properties::ComputedValues;
+use style::queries::values::PrefersColorScheme;
+use style::stylist::Stylist;
+use style::values::computed::{CSSPixelLength, Length};
+use style::values::specified::font::QueryFontMetricsFlags;
+use style::font_metrics::FontMetrics;
+use style::values::computed::font::GenericFontFamily;
+use euclid::Scale;
+use stylo_config as style_config;
+// CSSPixel and DevicePixel are used via euclid::Size2D type parameters
 
 use crate::layout;
 use crate::node::{DirtyFlags, Node, NodeKind, NodeTree, NodeContext, TextMeasure, LayoutResult, DisplayMode, InlineLayout};
+use crate::computed_style::ComputedStyle;
+
+/// A simple FontMetricsProvider that returns default/fixed values.
+/// This is used by the Stylist's Device to resolve font-relative units.
+#[derive(Debug)]
+struct SimpleFontMetricsProvider;
+
+impl style::servo::media_queries::FontMetricsProvider for SimpleFontMetricsProvider {
+    fn query_font_metrics(
+        &self,
+        _vertical: bool,
+        _font: &StyloFont,
+        _base_size: CSSPixelLength,
+        _flags: QueryFontMetricsFlags,
+    ) -> FontMetrics {
+        // Return sensible defaults - these will be used for font-relative units
+        // like ex, ch, cap, ic when we don't have actual font metrics
+        FontMetrics::default()
+    }
+
+    fn base_size_for_generic(&self, _generic: GenericFontFamily) -> Length {
+        // Default base font size (16px for most generics)
+        Length::new(16.0)
+    }
+}
 
 /// The primary document type for rinch-dom.
 ///
@@ -21,16 +62,107 @@ pub struct RinchDocument {
     pub font_cx: parley::FontContext,
     /// Parley layout context for text measurement.
     pub layout_cx: parley::LayoutContext<[u8; 4]>,
+    /// Stylo CSS engine stylist for CSS cascade and selector matching.
+    pub stylist: Stylist,
 }
 
 impl RinchDocument {
     /// Create a new document with root and body nodes.
     pub fn new() -> Self {
-        Self {
+        // Enable CSS Grid support in Stylo
+        // This must be called before any CSS parsing happens
+        style_config::set_bool("layout.grid.enabled", true);
+
+        // Create the Stylo Device with default viewport and settings
+        let viewport_size = euclid::Size2D::new(800.0, 600.0);
+        let device_pixel_ratio = Scale::new(1.0);
+        let font_metrics_provider = Box::new(SimpleFontMetricsProvider);
+        let default_font = StyloFont::initial_values();
+        let default_computed_values = ComputedValues::initial_values_with_font_override(default_font);
+
+        let device = Device::new(
+            MediaType::screen(),
+            QuirksMode::NoQuirks,
+            viewport_size,
+            device_pixel_ratio,
+            font_metrics_provider,
+            default_computed_values,
+            PrefersColorScheme::Light,
+        );
+
+        let stylist = Stylist::new(device, QuirksMode::NoQuirks);
+
+        let mut doc = Self {
             tree: NodeTree::new(),
             font_cx: parley::FontContext::new(),
             layout_cx: parley::LayoutContext::new(),
-        }
+            stylist,
+        };
+
+        // Load User-Agent stylesheet with default display values for HTML elements
+        doc.load_ua_stylesheet();
+
+        doc
+    }
+
+    /// Load the User-Agent stylesheet with default display values for HTML elements.
+    /// Without this, all elements default to display: inline in Stylo.
+    fn load_ua_stylesheet(&mut self) {
+        use style::stylesheets::{Stylesheet, Origin, UrlExtraData, AllowImportRules, DocumentStyleSheet};
+        use style::media_queries::MediaList;
+
+        // Basic UA stylesheet defining block-level elements
+        // Note: Stylo's initial border-width is 'medium' (3px), so we reset it to 0
+        let ua_css = r#"
+            * {
+                border-width: 0;
+            }
+
+            html, body, div, section, article, aside, header, footer, main, nav,
+            h1, h2, h3, h4, h5, h6, p, blockquote, pre, figure, figcaption,
+            ul, ol, li, dl, dt, dd, table, form, fieldset, legend, hr,
+            address, details, summary {
+                display: block;
+            }
+
+            head, style, script, link, meta, title, noscript {
+                display: none;
+            }
+
+            span, a, em, strong, b, i, u, s, sub, sup, small, mark, abbr, cite,
+            code, kbd, samp, var, q, dfn, time, label, br, wbr {
+                display: inline;
+            }
+
+            img, input, button, select, textarea {
+                display: inline-block;
+            }
+
+            /* Default body margin - set to 0 for GUI apps */
+            body {
+                margin: 0;
+            }
+        "#;
+
+        let url_data = UrlExtraData::from(url::Url::parse("about:ua-stylesheet").unwrap());
+        let media = ServoArc::new(self.tree.guard.wrap(MediaList::empty()));
+
+        let stylesheet = Stylesheet::from_str(
+            ua_css,
+            url_data,
+            Origin::UserAgent, // Use UserAgent origin for lowest priority
+            media,
+            self.tree.guard.clone(),
+            None, // stylesheet_loader
+            None, // error_reporter
+            QuirksMode::NoQuirks,
+            AllowImportRules::No,
+        );
+
+        let doc_stylesheet = DocumentStyleSheet(ServoArc::new(stylesheet));
+        let guard = self.tree.guard.read();
+        self.stylist.append_stylesheet(doc_stylesheet, &guard);
+        self.stylist.force_stylesheet_origins_dirty(Origin::UserAgent.into());
     }
 
     /// Mark a node and its ancestors as needing layout.
@@ -66,7 +198,7 @@ impl RinchDocument {
 impl DomDocument for RinchDocument {
     fn create_element(&mut self, tag: &str) -> NodeId {
         let id = self.tree.nodes.vacant_key();
-        let mut node = Node::element(id, tag);
+        let mut node = Node::element(id, tag, self.tree.guard.clone());
         // Use CSS-standard defaults based on element type:
         // Block elements (div, p, h1, etc.): flex-column (emulates block stacking)
         // Inline elements (span, a, etc.): flex-row
@@ -94,7 +226,7 @@ impl DomDocument for RinchDocument {
 
     fn create_text(&mut self, text: &str) -> NodeId {
         let id = self.tree.nodes.vacant_key();
-        let mut node = Node::text(id, text);
+        let mut node = Node::text(id, text, self.tree.guard.clone());
         let context = NodeContext::Text(TextMeasure {
             content: text.to_string(),
             font_size: 16.0, // default, will be updated from parent before layout
@@ -111,7 +243,7 @@ impl DomDocument for RinchDocument {
 
     fn create_comment(&mut self, text: &str) -> NodeId {
         let id = self.tree.nodes.vacant_key();
-        let node = Node::comment(id, text);
+        let node = Node::comment(id, text, self.tree.guard.clone());
         // Comments do NOT get Taffy nodes
         self.tree.nodes.insert(node);
         NodeId(id)
@@ -146,6 +278,9 @@ impl DomDocument for RinchDocument {
         // Invalidate parent's IFC (structure changed)
         self.invalidate_parent_ifc(p);
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
+
+        // Recompute styles for the inserted subtree to pick up ancestor-based selectors
+        self.recompute_node_styles_recursive(c);
 
         // If a text node is appended to a <style> element, load its content as CSS
         self.maybe_load_style_css(p);
@@ -304,7 +439,7 @@ impl DomDocument for RinchDocument {
                 self.tree.nodes[n].children.clear();
                 // Create text child with taffy node and context
                 let text_id = self.tree.nodes.vacant_key();
-                let mut text_node = Node::text(text_id, text);
+                let mut text_node = Node::text(text_id, text, self.tree.guard.clone());
                 text_node.parent = Some(n);
                 let context = NodeContext::Text(TextMeasure {
                     content: text.to_string(),
@@ -336,6 +471,25 @@ impl DomDocument for RinchDocument {
 
     fn set_attribute(&mut self, node: NodeId, name: &str, value: &str) {
         self.tree.nodes[node.0].attributes.insert(name.to_string(), value.to_string());
+
+        // Parse inline style into Stylo PropertyDeclarationBlock
+        if name == "style" {
+            use style::properties::parse_style_attribute;
+            use style::stylesheets::CssRuleType;
+            use url::Url;
+
+            let url = Url::parse("about:blank").unwrap();
+            let extra_data = style::stylesheets::UrlExtraData::from(url);
+            let pdb = parse_style_attribute(
+                value,
+                &extra_data,
+                None, // error_reporter
+                style::context::QuirksMode::NoQuirks,
+                CssRuleType::Style,
+            );
+            self.tree.nodes[node.0].style_attribute_cache =
+                Some(ServoArc::new(self.tree.guard.wrap(pdb)));
+        }
         // Invalidate IFC if this node belongs to one (style/class changes affect inline layout)
         if name == "style" || name == "class" {
             self.invalidate_ifc_for_node(node.0);
@@ -350,29 +504,10 @@ impl DomDocument for RinchDocument {
                 && self.tree.nodes[node.0].tag() == Some("svg"));
 
         if needs_style_recompute {
-            // Compute merged style: class-based + inline overlay
-            let merged = self.compute_merged_style(node.0);
-            self.tree.nodes[node.0].computed_style_str = layout::props_to_style_string(&merged);
-            self.tree.nodes[node.0].cached_style_props = merged.clone();
-            if let Some(taffy_id) = self.tree.nodes[node.0].taffy_id {
-                let dd = self.default_display_for_node(node.0);
-                let taffy_style = layout::build_taffy_style_full(&merged, &self.tree.viewport, dd);
-                let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
-            }
-            // Sync display_mode from merged styles
-            if let Some(display) = merged.get("display") {
-                let mode = match display.as_str() {
-                    "inline" => Some(DisplayMode::Inline),
-                    "inline-block" => Some(DisplayMode::InlineBlock),
-                    "inline-flex" => Some(DisplayMode::Flex),
-                    "block" => Some(DisplayMode::Block),
-                    "flex" => Some(DisplayMode::Flex),
-                    _ => None,
-                };
-                if let Some(m) = mode {
-                    self.tree.nodes[node.0].display_mode = m;
-                }
-            }
+            // Invalidate cached Stylo data and resolve styles for this subtree
+            *self.tree.nodes[node.0].stylo_element_data.borrow_mut() = None;
+            self.resolve_styles();
+            self.apply_stylo_styles_to_taffy();
             self.push_dirty_flags(node.0, DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT);
         } else {
             self.push_dirty(node.0);
@@ -404,23 +539,28 @@ impl DomDocument for RinchDocument {
             .collect::<Vec<_>>()
             .join("; ");
         self.tree.nodes[node.0].attributes.insert("style".to_string(), style_str.clone());
-        // Recompute merged styles (class + inline) and cache
-        let merged = self.compute_merged_style(node.0);
-        self.tree.nodes[node.0].computed_style_str = layout::props_to_style_string(&merged);
-        self.tree.nodes[node.0].cached_style_props = merged;
-        // Update taffy style
-        if let Some(taffy_id) = self.tree.nodes[node.0].taffy_id {
-            let props = &self.tree.nodes[node.0].cached_style_props;
-            let dd = self.default_display_for_node(node.0);
-            let taffy_style = layout::build_taffy_style_full(&props, &self.tree.viewport, dd);
-            let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
-        }
-        // Sync display_mode
-        if property == "display" {
-            if let Some(mode) = layout::parse_display_mode(&style_str) {
-                self.tree.nodes[node.0].display_mode = mode;
-            }
-        }
+
+        // Parse inline style into Stylo PropertyDeclarationBlock (same as set_attribute)
+        use style::properties::parse_style_attribute;
+        use style::stylesheets::CssRuleType;
+        use url::Url;
+
+        let url = Url::parse("about:blank").unwrap();
+        let extra_data = style::stylesheets::UrlExtraData::from(url);
+        let pdb = parse_style_attribute(
+            &style_str,
+            &extra_data,
+            None, // error_reporter
+            style::context::QuirksMode::NoQuirks,
+            CssRuleType::Style,
+        );
+        self.tree.nodes[node.0].style_attribute_cache =
+            Some(ServoArc::new(self.tree.guard.wrap(pdb)));
+
+        // Invalidate cached Stylo data and resolve styles
+        *self.tree.nodes[node.0].stylo_element_data.borrow_mut() = None;
+        self.resolve_styles();
+        self.apply_stylo_styles_to_taffy();
         self.push_dirty_flags(node.0, DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT);
     }
 
@@ -489,6 +629,9 @@ impl DomDocument for RinchDocument {
         }
         self.invalidate_parent_ifc(p);
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
+
+        // Recompute styles for the inserted subtree to pick up ancestor-based selectors
+        self.recompute_node_styles_recursive(c);
     }
 
     fn parent_node(&self, node: NodeId) -> Option<NodeId> {
@@ -536,7 +679,7 @@ impl RinchDocument {
     /// Parses the CSS string and merges rules/variables into the existing stylesheet.
     /// Call this at startup to load theme and widget CSS.
     pub fn load_css(&mut self, css: &str) {
-        self.tree.stylesheet.add_css(css);
+        self.load_stylo_css(css);
     }
 
     /// If the given node is a `<style>` element, extract its text children's content
@@ -557,15 +700,262 @@ impl RinchDocument {
             }
         }
         if !css.is_empty() {
-            self.tree.stylesheet.add_css(&css);
+            self.load_stylo_css(&css);
             // Recompute all styles since new CSS rules may affect existing nodes
-            self.recompute_all_styles();
+            self.resolve_styles();
+            self.apply_stylo_styles_to_taffy();
         }
     }
 
     /// Set viewport dimensions for resolving vh/vw CSS units.
+    /// This also updates the Stylo Device so that vh/vw units resolve correctly.
     pub fn set_viewport(&mut self, width: f32, height: f32) {
+        self.set_stylist_viewport(width, height);
+    }
+
+    /// Set viewport dimensions for the Stylo Device.
+    /// Call this when the window is resized to update media queries and viewport units.
+    pub fn set_stylist_viewport(&mut self, width: f32, height: f32) {
+        use style::shared_lock::StylesheetGuards;
+        use style::stylesheets::Origin;
+
+        // Update our internal viewport tracking
         self.tree.viewport = crate::layout::Viewport { width, height };
+
+        // Create a new Device with the updated viewport
+        let viewport_size = euclid::Size2D::new(width, height);
+        let device_pixel_ratio = Scale::new(1.0);
+        let font_metrics_provider = Box::new(SimpleFontMetricsProvider);
+        let default_font = StyloFont::initial_values();
+        let default_computed_values = ComputedValues::initial_values_with_font_override(default_font);
+
+        let device = Device::new(
+            MediaType::screen(),
+            QuirksMode::NoQuirks,
+            viewport_size,
+            device_pixel_ratio,
+            font_metrics_provider,
+            default_computed_values,
+            PrefersColorScheme::Light,
+        );
+
+        // Update the stylist's device using StylesheetGuards
+        let guard = self.tree.guard.read();
+        let guards = StylesheetGuards::same(&guard);
+        self.stylist.set_device(device, &guards);
+
+        // Mark all stylesheet origins as dirty to force style recomputation with new viewport
+        self.stylist.force_stylesheet_origins_dirty(Origin::UserAgent.into());
+        self.stylist.force_stylesheet_origins_dirty(Origin::Author.into());
+    }
+
+    /// Load CSS into Stylo's stylesheet system.
+    ///
+    /// Parses the CSS string and adds it to the Stylist for CSS cascade.
+    /// This is the Stylo-based replacement for the old stylesheet system.
+    pub fn load_stylo_css(&mut self, css: &str) {
+        use style::stylesheets::{Stylesheet, Origin, UrlExtraData, AllowImportRules, DocumentStyleSheet};
+        use style::media_queries::MediaList;
+
+        // Create a dummy URL for the stylesheet
+        let url_data = UrlExtraData::from(
+            ::url::Url::parse("about:blank").expect("about:blank is a valid URL")
+        );
+
+        // Parse the CSS into a stylesheet
+        let media = ServoArc::new(self.tree.guard.wrap(MediaList::empty()));
+        let stylesheet = Stylesheet::from_str(
+            css,
+            url_data,
+            Origin::Author,
+            media,
+            self.tree.guard.clone(),
+            None, // stylesheet_loader
+            None, // error_reporter
+            QuirksMode::NoQuirks,
+            AllowImportRules::Yes,
+        );
+
+        // Wrap in DocumentStyleSheet for the Stylist
+        let doc_stylesheet = DocumentStyleSheet(ServoArc::new(stylesheet));
+
+        // Add the stylesheet to the stylist
+        let guard = self.tree.guard.read();
+        self.stylist.append_stylesheet(doc_stylesheet, &guard);
+
+        // Mark stylesheets as changed so they'll be flushed on next style computation
+        self.stylist.force_stylesheet_origins_dirty(Origin::Author.into());
+    }
+
+    /// Resolve styles for all elements using Stylo's CSS cascade.
+    ///
+    /// This walks the DOM tree and computes styles for each element using:
+    /// 1. Selector matching via `push_applicable_declarations()`
+    /// 2. Rule tree construction via `compute_rule_node()`
+    /// 3. Cascade via `cascade_style_and_visited()`
+    ///
+    /// The computed styles are stored in each node's `stylo_element_data` field.
+    pub fn resolve_styles(&mut self) {
+        use style::shared_lock::StylesheetGuards;
+        use crate::stylo_impl::RinchNode;
+
+        // Flush any pending stylesheet changes
+        {
+            let guard = self.tree.guard.read();
+            let guards = StylesheetGuards::same(&guard);
+            self.stylist.flush::<RinchNode>(&guards, None, None);
+        }
+
+        // Start from the html element and traverse down
+        let html_id = self.tree.html_id;
+        self.resolve_styles_recursive(html_id, None);
+    }
+
+    /// Recursively resolve styles for a node and its descendants.
+    fn resolve_styles_recursive(
+        &mut self,
+        node_id: usize,
+        parent_style: Option<ServoArc<ComputedValues>>,
+    ) {
+        use style::applicable_declarations::ApplicableDeclarationList;
+        use style::context::CascadeInputs;
+        use style::data::ElementData;
+        use style::properties::FirstLineReparenting;
+        use style::rule_cache::RuleCacheConditions;
+        use style::shared_lock::StylesheetGuards;
+        use style::stylist::RuleInclusion;
+        use selectors::matching::{MatchingContext, MatchingMode, NeedsSelectorFlags, MatchingForInvalidation, VisitedHandlingMode, IncludeStartingStyle, SelectorCaches};
+
+        use crate::stylo_impl::RinchNode;
+
+        // Extract node info in a block to release borrows before recursion
+        let (is_element, children, cached_style) = {
+            let node = match self.tree.nodes.get(node_id) {
+                Some(n) => n,
+                None => return,
+            };
+
+            let is_element = node.is_element();
+            let children: Vec<usize> = node.children.clone();
+
+            // Check for cached style
+            let cached_style = {
+                let stylo_data = node.stylo_element_data.borrow();
+                stylo_data.as_ref().and_then(|d| d.styles.primary.clone())
+            };
+
+            (is_element, children, cached_style)
+        };
+
+        // Skip non-element nodes
+        if !is_element {
+            // For text nodes, just recurse to children (shouldn't have any)
+            for child_id in children {
+                self.resolve_styles_recursive(child_id, parent_style.clone());
+            }
+            return;
+        }
+
+        // PERFORMANCE: Skip nodes that already have computed styles (cache hit)
+        // When a node's style changes, its stylo_element_data is set to None,
+        // causing it to be recomputed. Nodes with valid cached styles are skipped.
+        if let Some(computed) = cached_style {
+            for child_id in children {
+                self.resolve_styles_recursive(child_id, Some(computed.clone()));
+            }
+            return;
+        }
+
+        // Compute styles in a block so borrows are dropped before recursion
+        let (computed, children) = {
+            // Create the RinchNode wrapper for Stylo
+            let rinch_node = RinchNode::new(node_id, &self.tree);
+
+            // Set up matching context
+            let guard = self.tree.guard.read();
+            let guards = StylesheetGuards::same(&guard);
+
+            let mut selector_caches = SelectorCaches::default();
+            let mut matching_context = MatchingContext::new_for_visited(
+                MatchingMode::Normal,
+                None, // bloom filter - could add for performance
+                &mut selector_caches,
+                VisitedHandlingMode::AllLinksUnvisited,
+                IncludeStartingStyle::No,
+                self.stylist.quirks_mode(),
+                NeedsSelectorFlags::No,
+                MatchingForInvalidation::No,
+            );
+
+            // Collect applicable declarations
+            let mut applicable_declarations = ApplicableDeclarationList::new();
+
+            // Get the style attribute (already parsed and cached)
+            let style_attribute = rinch_node.node().style_attribute_cache
+                .as_ref()
+                .map(|arc| arc.borrow_arc());
+
+            self.stylist.push_applicable_declarations(
+                rinch_node,
+                None, // pseudo_element
+                style_attribute,
+                None, // smil_override
+                Default::default(), // animation_declarations
+                RuleInclusion::All,
+                &mut applicable_declarations,
+                &mut matching_context,
+            );
+
+            // Build rule node from applicable declarations
+            let rule_node = self.stylist
+                .rule_tree()
+                .compute_rule_node(&mut applicable_declarations, &guards);
+
+            // Cascade to compute final styles
+            let parent_style_ref = parent_style.as_ref().map(|s| &**s);
+            let mut rule_cache_conditions = RuleCacheConditions::default();
+
+            let computed = self.stylist.cascade_style_and_visited(
+                Some(rinch_node),
+                None, // pseudo
+                CascadeInputs {
+                    rules: Some(rule_node),
+                    visited_rules: None,
+                    flags: matching_context.extra_data.cascade_input_flags,
+                },
+                &guards,
+                parent_style_ref, // parent_style
+                parent_style_ref, // layout_parent_style
+                FirstLineReparenting::No,
+                &Default::default(), // try_tactic (PositionTryFallbacksTryTactic)
+                None, // rule_cache
+                &mut rule_cache_conditions,
+            );
+
+            // Store the computed style in the node's ElementData
+            {
+                let mut stylo_data = self.tree.nodes[node_id].stylo_element_data.borrow_mut();
+                if stylo_data.is_none() {
+                    *stylo_data = Some(ElementData::default());
+                }
+                if let Some(ref mut data) = *stylo_data {
+                    data.styles.primary = Some(computed.clone());
+                }
+            }
+
+            // Mark this node as needing Taffy sync (style was recomputed)
+            self.tree.style_dirty_nodes.push(node_id);
+
+            // Clone children list before returning
+            let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
+
+            (computed.clone(), children)
+        };
+
+        // Now we can recurse without holding borrows
+        for child_id in children {
+            self.resolve_styles_recursive(child_id, Some(computed.clone()));
+        }
     }
 
     /// Update hover state: set the hovered node and its ancestors as hovered,
@@ -627,18 +1017,14 @@ impl RinchDocument {
             }
         }
 
+        // Recompute styles using Stylo for affected nodes
+        // For simplicity, we recompute styles for the entire tree
+        // (a more optimized approach would only restyle the affected subtrees)
+        self.resolve_styles();
+        self.apply_stylo_styles_to_taffy();
+
+        // Mark dirty nodes for repaint
         for id in dirty_nodes {
-            if !self.tree.nodes[id].is_element() {
-                continue;
-            }
-            let merged = self.compute_merged_style(id);
-            self.tree.nodes[id].computed_style_str = layout::props_to_style_string(&merged);
-            self.tree.nodes[id].cached_style_props = merged.clone();
-            if let Some(taffy_id) = self.tree.nodes[id].taffy_id {
-                let dd = self.default_display_for_node(id);
-                let taffy_style = layout::build_taffy_style_full(&merged, &self.tree.viewport, dd);
-                let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
-            }
             self.push_dirty_flags(id, DirtyFlags::STYLE | DirtyFlags::PAINT);
         }
 
@@ -656,164 +1042,57 @@ impl RinchDocument {
     /// Update theme CSS variables without duplicating non-`:root` rules.
     /// After calling this, call `recompute_all_styles_full()` to apply the new variables.
     pub fn update_theme_variables(&mut self, css: &str) {
-        self.tree.stylesheet.update_variables_from_css(css);
+        // Load CSS variables into Stylo
+        self.load_stylo_css(css);
     }
 
     /// Recompute taffy styles for all element nodes, clearing cached style props
     /// so that CSS variables are re-resolved. Use this after `update_theme_variables()`.
     pub fn recompute_all_styles_full(&mut self) {
-        // Clear cached style props so var() references get re-resolved
+        // Clear cached Stylo element data so styles are recomputed
         let node_ids: Vec<usize> = self.tree.nodes.iter().map(|(id, _)| id).collect();
         for &nid in &node_ids {
-            self.tree.nodes[nid].cached_style_props.clear();
+            *self.tree.nodes[nid].stylo_element_data.borrow_mut() = None;
         }
-        self.recompute_all_styles();
+        // Resolve styles using Stylo
+        self.resolve_styles();
+        self.apply_stylo_styles_to_taffy();
     }
 
     /// Recompute taffy styles for all element nodes.
     /// Called when viewport dimensions change to update vh/vw-dependent styles.
-    /// Uses cached style props to avoid re-running CSS selector matching.
     fn recompute_all_styles(&mut self) {
-        let node_ids: Vec<usize> = self.tree.nodes.iter().map(|(id, _)| id).collect();
-        for node_id in node_ids {
-            // Skip root and html nodes — their Taffy styles are manually set in NodeTree::new()
-            // and have no CSS representation (size: 100%, flex-direction: column).
-            if node_id == self.tree.root_id || node_id == self.tree.html_id {
-                continue;
-            }
-            if !self.tree.nodes[node_id].is_element() {
-                continue;
-            }
-            // Skip elements that should never participate in layout.
-            if matches!(self.tree.nodes[node_id].tag(), Some("style" | "script" | "head" | "meta" | "link" | "title")) {
-                continue;
-            }
-            if let Some(taffy_id) = self.tree.nodes[node_id].taffy_id {
-                // Use cached style props to avoid expensive CSS selector re-matching.
-                // On resize, CSS rules haven't changed — only vh/vw values need recalc.
-                let merged = if !self.tree.nodes[node_id].cached_style_props.is_empty() {
-                    self.tree.nodes[node_id].cached_style_props.clone()
-                } else {
-                    let m = self.compute_merged_style(node_id);
-                    self.tree.nodes[node_id].computed_style_str = layout::props_to_style_string(&m);
-                    self.tree.nodes[node_id].cached_style_props = m.clone();
-                    m
-                };
-                let dd = self.default_display_for_node(node_id);
-                let mut taffy_style = layout::build_taffy_style_full(&merged, &self.tree.viewport, dd);
-                // Body node needs flex_grow: 1 and height: auto to fill the viewport,
-                // but these aren't in CSS. Preserve them unless CSS explicitly sets them.
-                if node_id == self.tree.body_id {
-                    if !merged.contains_key("flex-grow") && !merged.contains_key("flex") {
-                        taffy_style.flex_grow = 1.0;
-                    }
-                    if !merged.contains_key("height") {
-                        taffy_style.size.height = taffy::Dimension::auto();
-                    }
-                    if !merged.contains_key("width") {
-                        taffy_style.size.width = taffy::Dimension::percent(1.0);
-                    }
-                }
-                let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
-            }
-        }
+        // When viewport changes, Stylo needs to know about it to recalculate vh/vw units
+        // For now, just resolve styles and apply to Taffy
+        self.resolve_styles();
+        self.apply_stylo_styles_to_taffy();
     }
 
-    /// Compute merged style properties for a node (class-based + inline).
-    /// Resolves var() and rem units.
-    fn compute_merged_style(&self, node_id: usize) -> HashMap<String, String> {
-        let node = &self.tree.nodes[node_id];
-        let class_attr = node.attributes.get("class").map(|s| s.as_str());
-        let inline_style = node.attributes.get("style").map(|s| s.as_str());
-        let tag = node.tag();
 
-        // Build ancestor chain for combinator selector matching
-        let ancestors = self.build_ancestor_chain(node_id);
-
-        // Build element state for this node
-        let element_state = crate::stylesheet::ElementState {
-            tag: tag.map(|t| t.to_string()),
-            classes: class_attr
-                .unwrap_or("")
-                .split_whitespace()
-                .map(|s| s.to_string())
-                .collect(),
-            attributes: node.attributes.clone(),
-            is_hovered: node.is_hovered,
-            ..Default::default()
-        };
-
-        let mut merged = crate::stylesheet::compute_merged_styles_with_state(
-            &self.tree.stylesheet,
-            class_attr,
-            inline_style,
-            Some(&element_state),
-            &ancestors,
-            tag,
-        );
-
-        // For SVG elements, inject width/height from HTML attributes into CSS props
-        // so Taffy assigns them proper layout dimensions.
-        if tag == Some("svg") {
-            if !merged.contains_key("width") {
-                if let Some(w) = node.attributes.get("width") {
-                    // Add "px" if it's a bare number
-                    let css_w = if w.ends_with("px") || w.ends_with('%') {
-                        w.clone()
-                    } else {
-                        format!("{}px", w)
-                    };
-                    merged.insert("width".to_string(), css_w);
-                }
-            }
-            if !merged.contains_key("height") {
-                if let Some(h) = node.attributes.get("height") {
-                    let css_h = if h.ends_with("px") || h.ends_with('%') {
-                        h.clone()
-                    } else {
-                        format!("{}px", h)
-                    };
-                    merged.insert("height".to_string(), css_h);
-                }
-            }
-            // SVG elements should not stretch in flex containers
-            if !merged.contains_key("flex-shrink") {
-                merged.insert("flex-shrink".to_string(), "0".to_string());
-            }
+    /// Recompute styles recursively for a node and all its descendants.
+    /// This is needed when a node is inserted into a new parent, as ancestor-based
+    /// CSS selectors (like `.parent .child`) need to be re-evaluated with the new ancestor chain.
+    fn recompute_node_styles_recursive(&mut self, node_id: usize) {
+        if !self.tree.nodes[node_id].is_element() {
+            return;
         }
 
-        merged
-    }
-
-    /// Build an ancestor chain from a node up to the root.
-    /// Each ancestor is represented as an ElementState for selector matching.
-    fn build_ancestor_chain(&self, node_id: usize) -> Vec<crate::stylesheet::ElementState> {
-        let mut ancestors = Vec::new();
-        let mut current = self.tree.nodes.get(node_id).and_then(|n| n.parent);
-        while let Some(pid) = current {
-            if let Some(parent) = self.tree.nodes.get(pid) {
-                if parent.is_element() {
-                    let tag = parent.tag().map(|t| t.to_string());
-                    let classes = parent
-                        .attributes
-                        .get("class")
-                        .map(|c| c.split_whitespace().map(|s| s.to_string()).collect())
-                        .unwrap_or_default();
-                    ancestors.push(crate::stylesheet::ElementState {
-                        tag,
-                        classes,
-                        attributes: parent.attributes.clone(),
-                        is_hovered: parent.is_hovered,
-                        ..Default::default()
-                    });
-                }
-                current = parent.parent;
-            } else {
-                break;
+        // Invalidate cached Stylo data for this node and its descendants
+        fn invalidate_recursive(tree: &mut NodeTree, node_id: usize) {
+            *tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
+            let children = tree.nodes[node_id].children.clone();
+            for &child_id in &children {
+                invalidate_recursive(tree, child_id);
             }
         }
-        ancestors
+        invalidate_recursive(&mut self.tree, node_id);
+
+        // Resolve styles using Stylo
+        self.resolve_styles();
+        self.apply_stylo_styles_to_taffy();
+        self.push_dirty_flags(node_id, DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT);
     }
+
 
     /// Compute the taffy child index for a DOM child at the given position.
     /// This counts only children that have taffy IDs (skipping comments).
@@ -830,6 +1109,96 @@ impl RinchDocument {
         taffy_idx
     }
 
+    /// Apply Stylo computed styles to Taffy layout nodes.
+    ///
+    /// This reads from each element's `stylo_element_data` and sets the corresponding
+    /// Taffy style. It also updates our `ComputedStyle` for paint operations.
+    ///
+    /// PERFORMANCE: Only processes nodes in `style_dirty_nodes` (set by resolve_styles).
+    pub fn apply_stylo_styles_to_taffy(&mut self) {
+        // Take the dirty nodes list - only these need Taffy sync
+        let dirty_node_ids = std::mem::take(&mut self.tree.style_dirty_nodes);
+
+        // If no dirty nodes, nothing to do
+        if dirty_node_ids.is_empty() {
+            return;
+        }
+
+        for node_id in dirty_node_ids {
+            // Skip root and html nodes - their Taffy styles are manually set
+            if node_id == self.tree.root_id || node_id == self.tree.html_id {
+                continue;
+            }
+
+            let node = match self.tree.nodes.get(node_id) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            if !node.is_element() {
+                continue;
+            }
+
+            // Skip elements that should never participate in layout
+            if matches!(node.tag(), Some("style" | "script" | "head" | "meta" | "link" | "title")) {
+                continue;
+            }
+
+            // Get Taffy node ID
+            let taffy_id = match node.taffy_id {
+                Some(id) => id,
+                None => continue,
+            };
+
+            // Get computed values from Stylo
+            let stylo_data = node.stylo_element_data.borrow();
+            let computed_values = match stylo_data.as_ref().and_then(|d| d.styles.get_primary()) {
+                Some(cv) => cv.clone(),
+                None => continue,
+            };
+            drop(stylo_data);
+
+            // Convert Stylo ComputedValues to our ComputedStyle
+            let computed_style = ComputedStyle::from_stylo(&computed_values);
+
+            // Update node's computed_style for paint operations
+            self.tree.nodes[node_id].computed_style = computed_style.clone();
+
+            // Sync display_mode from computed style
+            let display_mode = match computed_style.display {
+                crate::computed_style::DisplayValue::Inline => DisplayMode::Inline,
+                crate::computed_style::DisplayValue::InlineBlock => DisplayMode::InlineBlock,
+                crate::computed_style::DisplayValue::InlineFlex => DisplayMode::Flex,
+                crate::computed_style::DisplayValue::Block => DisplayMode::Block,
+                crate::computed_style::DisplayValue::Flex => DisplayMode::Flex,
+                crate::computed_style::DisplayValue::Grid => DisplayMode::Block, // Grid treated as block for IFC
+                crate::computed_style::DisplayValue::None => DisplayMode::Block,
+                crate::computed_style::DisplayValue::Contents => DisplayMode::Block,
+            };
+            self.tree.nodes[node_id].display_mode = display_mode;
+
+            // Convert to Taffy style
+            let dd = self.default_display_for_node(node_id);
+            let mut taffy_style = computed_style.to_taffy_style(dd);
+
+            // Body node needs flex_grow: 1 and height: auto to fill the viewport
+            if node_id == self.tree.body_id {
+                if taffy_style.flex_grow == 0.0 {
+                    taffy_style.flex_grow = 1.0;
+                }
+                if taffy_style.size.height == taffy::Dimension::auto() {
+                    taffy_style.size.height = taffy::Dimension::auto();
+                }
+                if taffy_style.size.width == taffy::Dimension::auto() {
+                    taffy_style.size.width = taffy::Dimension::percent(1.0);
+                }
+            }
+
+            // Apply to Taffy node
+            let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
+        }
+    }
+
     /// Resolve layout using Taffy.
     ///
     /// Computes layout for the entire tree given a viewport size,
@@ -839,10 +1208,20 @@ impl RinchDocument {
         let old_viewport = self.tree.viewport;
         self.tree.viewport = crate::layout::Viewport { width, height };
 
-        // Recompute all taffy styles when viewport changes (for vh/vw units)
+        // When viewport changes, update Stylo's Device and invalidate all cached styles
+        // so that vh/vw units are recomputed with the new viewport dimensions
         if (old_viewport.width - width).abs() > 0.5 || (old_viewport.height - height).abs() > 0.5 {
-            self.recompute_all_styles();
+            self.set_stylist_viewport(width, height);
+
+            // Invalidate all cached stylo_element_data so styles are recomputed with new viewport
+            for (node_id, _) in self.tree.nodes.iter() {
+                *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
+            }
         }
+
+        // Resolve Stylo styles and apply to Taffy nodes
+        self.resolve_styles();
+        self.apply_stylo_styles_to_taffy();
 
         let root_taffy = match self.tree.nodes[self.tree.root_id].taffy_id {
             Some(id) => id,
@@ -959,20 +1338,27 @@ impl RinchDocument {
                     Some(t) => t,
                     None => continue,
                 };
-                let parent_style = node.parent
+
+                // Read from parent's parsed computed_style instead of parsing CSS strings
+                let (font_size, font_weight, font_family, line_height_css) = node.parent
                     .and_then(|p| self.tree.nodes.get(p))
                     .map(|parent| {
-                        if !parent.computed_style_str.is_empty() {
-                            parent.computed_style_str.clone()
+                        let font_size = parent.computed_style.font_size;
+                        let font_weight = parent.computed_style.font_weight;
+                        let font_family = if parent.computed_style.font_family.is_empty() {
+                            "sans-serif".to_string()
                         } else {
-                            parent.attributes.get("style").cloned().unwrap_or_default()
-                        }
+                            parent.computed_style.font_family.clone()
+                        };
+                        let line_height_css = match &parent.computed_style.line_height {
+                            crate::computed_style::LineHeightValue::Normal => String::new(),
+                            crate::computed_style::LineHeightValue::Absolute(v) => format!("{}px", v),
+                            crate::computed_style::LineHeightValue::Relative(v) => v.to_string(),
+                        };
+                        (font_size, font_weight, font_family, line_height_css)
                     })
-                    .unwrap_or_default();
-                let font_size = layout::parse_font_size(&parent_style).unwrap_or(16.0);
-                let font_weight = layout::parse_font_weight(&parent_style).unwrap_or(400.0);
-                let font_family = layout::parse_font_family(&parent_style).unwrap_or_default();
-                let line_height_css = layout::parse_line_height_css(&parent_style).unwrap_or_default();
+                    .unwrap_or((16.0, 400.0, "sans-serif".to_string(), String::new()));
+
                 updates.push((taffy_id, font_size, font_weight, font_family, line_height_css));
             }
         }
@@ -1399,72 +1785,53 @@ impl RinchDocument {
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<Brush>,
     ) -> InlineLayout {
-        // Get root style properties (use computed style which merges class + inline)
-        let root_style_str_owned;
-        let root_style_str = if !nodes[root_id].computed_style_str.is_empty() {
-            &nodes[root_id].computed_style_str
+        // Get root style properties from typed ComputedStyle
+        let root_computed = &nodes[root_id].computed_style;
+        let root_font_size = root_computed.font_size * scale;
+        let root_color = root_computed.color.unwrap_or_else(|| {
+            peniko::color::AlphaColor::<peniko::color::Srgb>::from_rgba8(0, 0, 0, 255)
+        });
+
+        let font_family: std::borrow::Cow<'static, str> = if root_computed.font_family.is_empty() {
+            "sans-serif".into()
         } else {
-            root_style_str_owned = nodes[root_id].attributes.get("style").cloned().unwrap_or_default();
-            &root_style_str_owned
+            root_computed.font_family.clone().into()
         };
-        let root_font_size = layout::parse_font_size(root_style_str).unwrap_or(16.0) * scale;
-        let root_color = root_style_str
-            .split(';')
-            .find_map(|part| {
-                let (k, v) = part.split_once(':')?;
-                if k.trim() == "color" { layout::parse_color(v.trim()) } else { None }
-            })
-            .unwrap_or_else(|| peniko::color::AlphaColor::<peniko::color::Srgb>::from_rgba8(0, 0, 0, 255));
 
         let mut root_text_style = parley::style::TextStyle {
             font_size: root_font_size,
             brush: Brush::Solid(root_color),
-            font_stack: parley::style::FontStack::Source("sans-serif".into()),
+            font_stack: parley::style::FontStack::Source(font_family),
             ..Default::default()
         };
 
-        // Apply font-weight from root style
-        if let Some(fw) = layout::parse_font_weight(root_style_str) {
-            root_text_style.font_weight = parley::style::FontWeight::new(fw);
+        // Apply font-weight from computed style
+        root_text_style.font_weight = parley::style::FontWeight::new(root_computed.font_weight);
+
+        // Apply font-style from computed style
+        root_text_style.font_style = root_computed.font_style.to_parley();
+
+        // Apply line-height from computed style
+        if let Some(lh) = root_computed.line_height.to_parley() {
+            root_text_style.line_height = lh;
         }
-        // Apply font-style from root style
-        if let Some(fs) = layout::parse_font_style(root_style_str) {
-            root_text_style.font_style = match fs {
-                "italic" => parley::style::FontStyle::Italic,
-                "oblique" => parley::style::FontStyle::Oblique(None),
-                _ => parley::style::FontStyle::Normal,
-            };
-        }
-        // Apply line-height from root style
-        if let Some(lh) = layout::parse_line_height(root_style_str) {
-            if lh > 10.0 {
-                // Absolute value (e.g. "24px")
-                root_text_style.line_height = parley::style::LineHeight::Absolute(lh);
-            } else {
-                // Relative multiplier (e.g. "1.5")
-                root_text_style.line_height = parley::style::LineHeight::FontSizeRelative(lh);
-            }
-        }
-        // Apply text-decoration from root style
-        if let Some(td) = layout::parse_text_decoration(root_style_str) {
-            if td.contains("underline") {
-                root_text_style.has_underline = true;
-            }
-            if td.contains("line-through") {
-                root_text_style.has_strikethrough = true;
-            }
-        }
+
+        // Apply text-decoration from computed style
+        root_text_style.has_underline = root_computed.text_decoration.underline;
+        root_text_style.has_strikethrough = root_computed.text_decoration.strikethrough;
 
         let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);
 
-        // Apply white-space mode
-        if let Some(ws) = layout::parse_white_space(root_style_str) {
-            let collapse = match ws.as_str() {
-                "pre" | "pre-wrap" | "pre-line" => parley::style::WhiteSpaceCollapse::Preserve,
-                _ => parley::style::WhiteSpaceCollapse::Collapse,
-            };
-            builder.set_white_space_mode(collapse);
-        }
+        // Apply white-space mode from computed style
+        use crate::computed_style::WhiteSpaceValue;
+        let collapse = match root_computed.white_space {
+            WhiteSpaceValue::Pre | WhiteSpaceValue::PreWrap | WhiteSpaceValue::PreLine => {
+                parley::style::WhiteSpaceCollapse::Preserve
+            }
+            _ => parley::style::WhiteSpaceCollapse::Collapse,
+        };
+        builder.set_white_space_mode(collapse);
+
         let mut child_positions = Vec::new();
 
         // Walk children and build the Parley tree
@@ -1474,15 +1841,8 @@ impl RinchDocument {
         let mut text_layout = text_layout;
         text_layout.break_all_lines(max_width);
 
-        // Parse text-align
-        let alignment = layout::parse_text_align(root_style_str)
-            .map(|a| match a.as_str() {
-                "center" => parley::layout::Alignment::Center,
-                "right" | "end" => parley::layout::Alignment::End,
-                "justify" => parley::layout::Alignment::Justify,
-                _ => parley::layout::Alignment::Start,
-            })
-            .unwrap_or(parley::layout::Alignment::Start);
+        // Apply text-align from computed style
+        let alignment = root_computed.text_align.to_parley();
         text_layout.align(alignment, parley::layout::AlignmentOptions::default());
 
         InlineLayout {
@@ -1515,53 +1875,48 @@ impl RinchDocument {
                     }
                 }
                 NodeKind::Element(_) if child.display_mode == DisplayMode::Inline => {
-                    // Push style span for inline element (use computed style which merges class + inline)
-                    let style_str = if !child.computed_style_str.is_empty() {
-                        &child.computed_style_str
-                    } else {
-                        child.attributes.get("style").map(|s| s.as_str()).unwrap_or("")
-                    };
+                    // Push style span for inline element using typed ComputedStyle
+                    let child_computed = &child.computed_style;
                     let mut props: Vec<parley::style::StyleProperty<'_, Brush>> = Vec::new();
 
-                    if let Some(fs) = layout::parse_font_size(style_str) {
-                        props.push(parley::style::StyleProperty::FontSize(fs * scale));
-                    }
-                    if let Some(fw) = layout::parse_font_weight(style_str) {
-                        props.push(parley::style::StyleProperty::FontWeight(
-                            parley::style::FontWeight::new(fw),
-                        ));
-                    }
-                    if let Some(fstyle) = layout::parse_font_style(style_str) {
-                        props.push(parley::style::StyleProperty::FontStyle(match fstyle {
-                            "italic" => parley::style::FontStyle::Italic,
-                            "oblique" => parley::style::FontStyle::Oblique(None),
-                            _ => parley::style::FontStyle::Normal,
-                        }));
-                    }
-                    if let Some(color) = style_str.split(';').find_map(|part| {
-                        let (k, v) = part.split_once(':')?;
-                        if k.trim() == "color" { layout::parse_color(v.trim()) } else { None }
-                    }) {
+                    // Font size (always apply scaled)
+                    props.push(parley::style::StyleProperty::FontSize(
+                        child_computed.font_size * scale,
+                    ));
+
+                    // Font weight
+                    props.push(parley::style::StyleProperty::FontWeight(
+                        parley::style::FontWeight::new(child_computed.font_weight),
+                    ));
+
+                    // Font style
+                    props.push(parley::style::StyleProperty::FontStyle(
+                        child_computed.font_style.to_parley(),
+                    ));
+
+                    // Color
+                    if let Some(color) = child_computed.color {
                         props.push(parley::style::StyleProperty::Brush(Brush::Solid(color)));
                     }
-                    if let Some(td) = layout::parse_text_decoration(style_str) {
-                        if td.contains("underline") {
-                            props.push(parley::style::StyleProperty::Underline(true));
-                        }
-                        if td.contains("line-through") {
-                            props.push(parley::style::StyleProperty::Strikethrough(true));
-                        }
+
+                    // Text decoration
+                    if child_computed.text_decoration.underline {
+                        props.push(parley::style::StyleProperty::Underline(true));
                     }
-                    if let Some(lh) = layout::parse_line_height(style_str) {
-                        if lh > 10.0 {
-                            props.push(parley::style::StyleProperty::LineHeight(
-                                parley::style::LineHeight::Absolute(lh * scale),
-                            ));
-                        } else {
-                            props.push(parley::style::StyleProperty::LineHeight(
-                                parley::style::LineHeight::FontSizeRelative(lh),
-                            ));
-                        }
+                    if child_computed.text_decoration.strikethrough {
+                        props.push(parley::style::StyleProperty::Strikethrough(true));
+                    }
+
+                    // Line height
+                    if let Some(lh) = child_computed.line_height.to_parley() {
+                        // Scale absolute line heights
+                        let scaled_lh = match lh {
+                            parley::style::LineHeight::Absolute(v) => {
+                                parley::style::LineHeight::Absolute(v * scale)
+                            }
+                            other => other,
+                        };
+                        props.push(parley::style::StyleProperty::LineHeight(scaled_lh));
                     }
 
                     builder.push_style_modification_span(props.iter());

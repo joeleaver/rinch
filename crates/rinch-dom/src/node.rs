@@ -1,9 +1,17 @@
 //! Node tree data structures for rinch-dom.
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 
+use atomic_refcell::AtomicRefCell;
 use bitflags::bitflags;
 use peniko::Brush;
+use selectors::matching::ElementSelectorFlags;
+use servo_arc::Arc as ServoArc;
+use style::properties::PropertyDeclarationBlock;
+use style::shared_lock::{Locked, SharedRwLock};
+
+use crate::computed_style::ComputedStyle;
 
 /// Raw node ID (index into slab).
 pub type RawNodeId = usize;
@@ -126,7 +134,6 @@ impl std::fmt::Debug for InlineLayout {
 }
 
 /// A node in the DOM tree.
-#[derive(Debug)]
 pub struct Node {
     /// This node's ID (its slab key).
     pub id: RawNodeId,
@@ -157,16 +164,51 @@ pub struct Node {
     /// Cached computed style string (merged class + inline styles).
     /// Populated during style recomputation; used by inline text layout.
     pub computed_style_str: String,
-    /// Cached parsed style properties (from computed_style_str).
-    /// Populated alongside computed_style_str to avoid re-parsing during paint.
-    pub cached_style_props: HashMap<String, String>,
     /// Whether this node is currently under the cursor (for CSS :hover).
     pub is_hovered: bool,
+    /// Typed computed style derived from Stylo.
+    /// This is the primary source for layout and paint after Stylo migration.
+    pub computed_style: ComputedStyle,
+
+    // === Stylo CSS engine fields ===
+
+    /// Stylo element data containing computed CSS values.
+    /// This is the primary source of truth for CSS after Stylo migration.
+    pub stylo_element_data: AtomicRefCell<Option<style::data::ElementData>>,
+    /// Selector flags set during CSS matching.
+    pub selector_flags: AtomicRefCell<ElementSelectorFlags>,
+    /// Whether this node has a snapshot for animation/transition.
+    pub has_snapshot: bool,
+    /// Whether the snapshot has been handled.
+    pub snapshot_handled: AtomicBool,
+    /// Shared lock for Stylo (reference to document's lock).
+    pub guard: SharedRwLock,
+    /// Cached parsed inline style attribute (Stylo PropertyDeclarationBlock).
+    /// Populated when style attribute is set, used by Stylo for cascade.
+    pub style_attribute_cache: Option<ServoArc<Locked<PropertyDeclarationBlock>>>,
+}
+
+impl std::fmt::Debug for Node {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Node")
+            .field("id", &self.id)
+            .field("kind", &self.kind)
+            .field("parent", &self.parent)
+            .field("children", &self.children)
+            .field("attributes", &self.attributes)
+            .field("dirty", &self.dirty)
+            .field("layout", &self.layout)
+            .field("display_mode", &self.display_mode)
+            .field("is_hovered", &self.is_hovered)
+            .field("has_snapshot", &self.has_snapshot)
+            // Skip non-Debug fields: stylo_element_data, selector_flags, snapshot_handled, guard
+            .finish_non_exhaustive()
+    }
 }
 
 impl Node {
     /// Create a new document root node.
-    pub fn document(id: RawNodeId) -> Self {
+    pub fn document(id: RawNodeId, guard: SharedRwLock) -> Self {
         Self {
             id,
             kind: NodeKind::Document,
@@ -181,13 +223,20 @@ impl Node {
             ifc_root: None,
             text_layout: None,
             computed_style_str: String::new(),
-            cached_style_props: HashMap::new(),
             is_hovered: false,
+            computed_style: ComputedStyle::default(),
+            // Stylo fields
+            stylo_element_data: AtomicRefCell::new(None),
+            selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
+            has_snapshot: false,
+            snapshot_handled: AtomicBool::new(false),
+            guard,
+            style_attribute_cache: None,
         }
     }
 
     /// Create a new element node.
-    pub fn element(id: RawNodeId, tag: &str) -> Self {
+    pub fn element(id: RawNodeId, tag: &str, guard: SharedRwLock) -> Self {
         let display_mode = default_display_for_tag(tag);
         Self {
             id,
@@ -203,13 +252,20 @@ impl Node {
             ifc_root: None,
             text_layout: None,
             computed_style_str: String::new(),
-            cached_style_props: HashMap::new(),
             is_hovered: false,
+            computed_style: ComputedStyle::default(),
+            // Stylo fields
+            stylo_element_data: AtomicRefCell::new(None),
+            selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
+            has_snapshot: false,
+            snapshot_handled: AtomicBool::new(false),
+            guard,
+            style_attribute_cache: None,
         }
     }
 
     /// Create a new text node.
-    pub fn text(id: RawNodeId, content: &str) -> Self {
+    pub fn text(id: RawNodeId, content: &str, guard: SharedRwLock) -> Self {
         Self {
             id,
             kind: NodeKind::Text(TextData { content: content.to_string() }),
@@ -224,13 +280,20 @@ impl Node {
             ifc_root: None,
             text_layout: None,
             computed_style_str: String::new(),
-            cached_style_props: HashMap::new(),
             is_hovered: false,
+            computed_style: ComputedStyle::default(),
+            // Stylo fields
+            stylo_element_data: AtomicRefCell::new(None),
+            selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
+            has_snapshot: false,
+            snapshot_handled: AtomicBool::new(false),
+            guard,
+            style_attribute_cache: None,
         }
     }
 
     /// Create a new comment node.
-    pub fn comment(id: RawNodeId, text: &str) -> Self {
+    pub fn comment(id: RawNodeId, text: &str, guard: SharedRwLock) -> Self {
         Self {
             id,
             kind: NodeKind::Comment(text.to_string()),
@@ -245,8 +308,15 @@ impl Node {
             ifc_root: None,
             text_layout: None,
             computed_style_str: String::new(),
-            cached_style_props: HashMap::new(),
             is_hovered: false,
+            computed_style: ComputedStyle::default(),
+            // Stylo fields
+            stylo_element_data: AtomicRefCell::new(None),
+            selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
+            has_snapshot: false,
+            snapshot_handled: AtomicBool::new(false),
+            guard,
+            style_attribute_cache: None,
         }
     }
 
@@ -310,16 +380,18 @@ pub struct NodeTree {
     pub body_id: RawNodeId,
     /// IDs of nodes that have been mutated since last take_dirty_nodes.
     pub dirty_nodes: Vec<RawNodeId>,
+    /// IDs of nodes whose styles were recomputed and need Taffy sync.
+    pub style_dirty_nodes: Vec<RawNodeId>,
     /// Taffy layout tree.
     pub taffy: taffy::TaffyTree<NodeContext>,
     /// Reverse map from Taffy node ID to slab node ID.
     pub taffy_map: HashMap<taffy::NodeId, RawNodeId>,
-    /// CSS stylesheet for class-based styling.
-    pub stylesheet: crate::stylesheet::Stylesheet,
     /// Viewport dimensions for resolving vh/vw CSS units.
     pub viewport: crate::layout::Viewport,
     /// Currently hovered node ID (for CSS :hover).
     pub hovered_node: Option<RawNodeId>,
+    /// Shared lock for Stylo CSS engine.
+    pub guard: SharedRwLock,
 }
 
 impl NodeTree {
@@ -329,9 +401,12 @@ impl NodeTree {
         let mut taffy = taffy::TaffyTree::new();
         let mut taffy_map = HashMap::new();
 
+        // Create shared lock for Stylo CSS engine
+        let guard = SharedRwLock::new();
+
         // Create root (document) node
         let root_id = nodes.vacant_key();
-        let mut root = Node::document(root_id);
+        let mut root = Node::document(root_id, guard.clone());
         let root_taffy = taffy.new_leaf(taffy::Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
@@ -347,7 +422,7 @@ impl NodeTree {
 
         // Create html element
         let html_id = nodes.vacant_key();
-        let mut html = Node::element(html_id, "html");
+        let mut html = Node::element(html_id, "html", guard.clone());
         html.parent = Some(root_id);
         let html_taffy = taffy.new_leaf(taffy::Style {
             display: taffy::Display::Flex,
@@ -366,7 +441,7 @@ impl NodeTree {
 
         // Create body element
         let body_id = nodes.vacant_key();
-        let mut body = Node::element(body_id, "body");
+        let mut body = Node::element(body_id, "body", guard.clone());
         body.parent = Some(html_id);
         let body_taffy = taffy.new_leaf(taffy::Style {
             display: taffy::Display::Flex,
@@ -390,11 +465,12 @@ impl NodeTree {
             html_id,
             body_id,
             dirty_nodes: Vec::new(),
+            style_dirty_nodes: Vec::new(),
             taffy,
             taffy_map,
-            stylesheet: crate::stylesheet::Stylesheet::new(),
             viewport: crate::layout::Viewport::default(),
             hovered_node: None,
+            guard,
         }
     }
 

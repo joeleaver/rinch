@@ -8,8 +8,10 @@ pub mod layout;
 pub mod paint;
 pub mod stylesheet;
 pub mod testing;
+pub mod computed_style;
+pub mod stylo_impl;
 mod dom_impl;
 
 pub use node::{Node, NodeKind, NodeTree, ElementData, TextData, DirtyFlags, LayoutResult, NodeContext, TextMeasure, DisplayMode, InlineLayout};
 pub use dom_impl::RinchDocument;
-pub use stylesheet::{Stylesheet, ElementState, compute_merged_styles_with_state};
+pub use computed_style::ComputedStyle;

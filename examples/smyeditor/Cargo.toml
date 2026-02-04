@@ -6,7 +6,7 @@ license.workspace = true
 description = "UI Zoo - A showcase of rinch's theme system and widgets"
 
 [dependencies]
-rinch = { workspace = true, features = ["widgets", "debug"] }
+rinch = { workspace = true, features = ["widgets", "debug", "clipboard"] }
 rinch-tabler-icons.workspace = true
 rinch-core = { workspace = true }
 rinch-editor = { path = "../../crates/rinch-editor" }

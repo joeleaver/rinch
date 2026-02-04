@@ -337,6 +337,7 @@ body {
 "#;
 
 fn main() {
+    eprintln!("[DEBUG MAIN] Starting smyeditor");
     let window_props = WindowProps {
         title: "UI Zoo - Rinch Component Library".into(),
         width: 1200,
