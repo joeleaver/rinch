@@ -289,13 +289,6 @@ Add features to your `Cargo.toml`:
 rinch = { version = "0.1", features = ["file-dialogs", "clipboard", "system-tray"] }
 ```
 
-Or enable all platform features:
-
-```toml
-[dependencies]
-rinch = { version = "0.1", features = ["file-dialogs", "clipboard", "system-tray", "hot-reload"] }
-```
-
 ## Platform Support
 
 | Feature | Windows | macOS | Linux |

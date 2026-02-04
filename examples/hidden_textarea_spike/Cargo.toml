@@ -1,0 +1,11 @@
+[package]
+name = "hidden_textarea_spike"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Spike: Hidden textarea + custom DOM rendering for rich-text editor"
+
+[dependencies]
+rinch = { workspace = true, features = ["widgets", "debug"] }
+tracing.workspace = true
+tracing-subscriber = "0.3"

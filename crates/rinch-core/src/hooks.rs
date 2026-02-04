@@ -63,7 +63,7 @@
 //!         if c.is_none() {
 //!             *c = Some(Signal::new(0));
 //!         }
-//!         c.as_ref().unwrap().clone()
+//!         *c.as_ref().unwrap()
 //!     })
 //! }
 //!
@@ -73,7 +73,7 @@
 //!         if t.is_none() {
 //!             *t = Some(Signal::new(String::from("Hello")));
 //!         }
-//!         t.as_ref().unwrap().clone()
+//!         *t.as_ref().unwrap()
 //!     })
 //! }
 //!
@@ -250,9 +250,6 @@
 //!         || println!("App unmounted!")
 //!     });
 //!
-//!     // Clone for event handlers
-//!     let count_inc = count.clone();
-//!     let count_dec = count.clone();
 //!
 //!     rsx! {
 //!         div {
@@ -263,8 +260,8 @@
 //!             p { "Renders: " {render_count.get()} }
 //!
 //!             div {
-//!                 button { onclick: move || count_dec.update(|n| *n -= 1), "-" }
-//!                 button { onclick: move || count_inc.update(|n| *n += 1), "+" }
+//!                 button { onclick: move || count.update(|n| *n -= 1), "-" }
+//!                 button { onclick: move || count.update(|n| *n += 1), "+" }
 //!             }
 //!
 //!             ul {
@@ -445,6 +442,18 @@ impl Default for HookRegistry {
 // Thread-local hook registry
 thread_local! {
     static HOOK_REGISTRY: RefCell<HookRegistry> = RefCell::new(HookRegistry::new());
+}
+
+/// Execute a function with render context enabled.
+/// This allows hooks to be called from within Effects that need to render new content.
+pub fn with_render_context<T>(f: impl FnOnce() -> T) -> T {
+    HOOK_REGISTRY.with(|registry| {
+        let was_rendering = registry.borrow().is_rendering;
+        registry.borrow_mut().is_rendering = true;
+        let result = f();
+        registry.borrow_mut().is_rendering = was_rendering;
+        result
+    })
 }
 
 // ============================================================================
@@ -1164,10 +1173,7 @@ mod tests {
 
         begin_render();
         let count = use_signal(|| 5);
-        let doubled = use_derived({
-            let count = count.clone();
-            move || count.get() * 2
-        });
+        let doubled = use_derived(move || count.get() * 2);
         assert_eq!(doubled.get(), 10);
 
         // Update the signal

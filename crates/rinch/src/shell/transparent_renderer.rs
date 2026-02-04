@@ -133,23 +133,35 @@ impl TransparentWindowRenderer {
         height: u32,
         backends: Backends,
     ) -> ActiveRenderState {
+        #[cfg(feature = "memory-profile")]
+        let before = super::memory_profile::MemorySnapshot::now();
         let instance = Instance::new(&InstanceDescriptor {
             backends,
             flags: wgpu::InstanceFlags::from_build_config().with_env(),
             backend_options: wgpu::BackendOptions::from_env_or_default(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
         });
+        #[cfg(feature = "memory-profile")]
+        super::memory_profile::checkpoint_delta("  GPU: Instance creation", before);
 
+        #[cfg(feature = "memory-profile")]
+        let before = super::memory_profile::MemorySnapshot::now();
         let surface = instance
             .create_surface(window.clone())
             .expect("Failed to create surface");
+        #[cfg(feature = "memory-profile")]
+        super::memory_profile::checkpoint_delta("  GPU: Surface creation", before);
 
+        #[cfg(feature = "memory-profile")]
+        let before = super::memory_profile::MemorySnapshot::now();
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
         }))
         .expect("Failed to find adapter");
+        #[cfg(feature = "memory-profile")]
+        super::memory_profile::checkpoint_delta("  GPU: Adapter request", before);
 
         let caps = surface.get_capabilities(&adapter);
 
@@ -189,6 +201,8 @@ impl TransparentWindowRenderer {
         let available_features = adapter.features();
         let features = required_features & available_features;
 
+        #[cfg(feature = "memory-profile")]
+        let before = super::memory_profile::MemorySnapshot::now();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("rinch device"),
             required_features: features,
@@ -198,6 +212,8 @@ impl TransparentWindowRenderer {
             experimental_features: wgpu::ExperimentalFeatures::default(),
         }))
         .expect("Failed to create device");
+        #[cfg(feature = "memory-profile")]
+        super::memory_profile::checkpoint_delta("  GPU: Device + Queue creation", before);
 
         // Surface only needs RENDER_ATTACHMENT and COPY_DST (for receiving the copy)
         let surface_config = SurfaceConfiguration {
@@ -205,16 +221,30 @@ impl TransparentWindowRenderer {
             format,
             width,
             height,
-            present_mode: PresentMode::AutoVsync,
+            present_mode: PresentMode::Mailbox,
             desired_maximum_frame_latency: 2,
             alpha_mode,
             view_formats: vec![],
         };
+
+        #[cfg(feature = "memory-profile")]
+        let before = super::memory_profile::MemorySnapshot::now();
         surface.configure(&device, &surface_config);
+        #[cfg(feature = "memory-profile")]
+        super::memory_profile::checkpoint_delta("  GPU: Surface configure", before);
 
         // Create intermediate render texture for Vello
+        #[cfg(feature = "memory-profile")]
+        let before = super::memory_profile::MemorySnapshot::now();
         let render_texture = Self::create_render_texture(&device, format, width, height);
+        #[cfg(feature = "memory-profile")]
+        super::memory_profile::checkpoint_delta(
+            &format!("  GPU: Render texture ({}x{})", width, height),
+            before,
+        );
 
+        #[cfg(feature = "memory-profile")]
+        let before = super::memory_profile::MemorySnapshot::now();
         let renderer = VelloRenderer::new(
             &device,
             RendererOptions {
@@ -225,6 +255,8 @@ impl TransparentWindowRenderer {
             },
         )
         .expect("Failed to create Vello renderer");
+        #[cfg(feature = "memory-profile")]
+        super::memory_profile::checkpoint_delta("  GPU: Vello renderer (shader compilation)", before);
 
         tracing::info!(
             "Created renderer: backend={:?}, alpha_mode={:?}, format={:?}",

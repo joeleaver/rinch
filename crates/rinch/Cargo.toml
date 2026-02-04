@@ -7,14 +7,12 @@ description = "A lightweight cross-platform GUI library for Rust"
 
 [dependencies]
 rinch-core.workspace = true
+rinch-dom.workspace = true
 rinch-macros.workspace = true
 rinch-renderer.workspace = true
-blitz-dom.workspace = true
-blitz-html.workspace = true
-blitz-traits = { git = "https://github.com/DioxusLabs/blitz" }
-blitz-paint = { git = "https://github.com/DioxusLabs/blitz" }
 anyrender.workspace = true
 anyrender_vello.workspace = true
+parley = { workspace = true }
 peniko = "0.6"
 pollster = "0.4"
 vello = "0.7"
@@ -25,14 +23,32 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 futures-util = "0.3"
-notify = { workspace = true, optional = true }
+serde_json = "1"
+base64 = "0.22"
+png = "0.17"
+
+keyboard-types = "0.7"
 rfd = { workspace = true, optional = true }
 arboard = { workspace = true, optional = true }
 tray-icon = { workspace = true, optional = true }
 
+# Optional memory profiling
+memory-stats = { version = "1.2", optional = true }
+
+# Theme and widgets
+rinch-theme = { workspace = true, optional = true }
+rinch-widgets = { workspace = true, optional = true }
+rinch-debug = { path = "../rinch-debug", optional = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Graphics_Gdi", "Win32_Foundation"] }
+
 [features]
 default = []
-hot-reload = ["notify"]
 file-dialogs = ["rfd"]
 clipboard = ["arboard"]
 system-tray = ["tray-icon"]
+memory-profile = ["memory-stats"]
+theme = ["dep:rinch-theme", "rinch-core/theme"]
+widgets = ["theme", "dep:rinch-widgets"]
+debug = ["dep:rinch-debug"]

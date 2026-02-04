@@ -12,15 +12,13 @@ Hooks provide:
 ```rust
 use rinch::prelude::*;
 
-fn counter() -> Element {
+fn counter(__scope: &mut RenderScope) -> NodeHandle {
     let count = use_signal(|| 0);
     let count_inc = count.clone();
 
     rsx! {
-        Window { title: "Counter",
-            button { onclick: move || count_inc.update(|n| *n += 1),
-                "Count: " {count.get()}
-            }
+        button { onclick: move || count_inc.update(|n| *n += 1),
+            "Count: " {|| count.get().to_string()}
         }
     }
 }
@@ -60,15 +58,13 @@ The initialization function only runs on the first render. Subsequent renders re
 ### Example: Toggle
 
 ```rust
-fn toggle() -> Element {
+fn toggle(__scope: &mut RenderScope) -> NodeHandle {
     let enabled = use_signal(|| false);
     let enabled_toggle = enabled.clone();
 
     rsx! {
-        Window { title: "Toggle",
-            button { onclick: move || enabled_toggle.update(|b| *b = !*b),
-                {if enabled.get() { "ON" } else { "OFF" }}
-            }
+        button { onclick: move || enabled_toggle.update(|b| *b = !*b),
+            {|| if enabled.get() { "ON" } else { "OFF" }}
         }
     }
 }
@@ -238,7 +234,7 @@ struct Theme {
     background: String,
 }
 
-fn app() -> Element {
+fn app(__scope: &mut RenderScope) -> NodeHandle {
     // Create context available to all descendants
     create_context(Theme {
         primary: "#007bff".into(),
@@ -246,7 +242,7 @@ fn app() -> Element {
     });
 
     rsx! {
-        Window { title: "App",
+        div {
             // ... child components can access Theme
         }
     }
@@ -258,13 +254,13 @@ fn app() -> Element {
 In any descendant component:
 
 ```rust
-fn themed_button() -> Element {
+fn themed_button(__scope: &mut RenderScope) -> NodeHandle {
     let theme: Option<Theme> = use_context();
 
     let bg = theme.map(|t| t.primary).unwrap_or("#ccc".into());
 
     rsx! {
-        button { style: format!("background: {bg}"),
+        button { style: {|| format!("background: {}", bg)},
             "Click me"
         }
     }
@@ -300,7 +296,7 @@ Hooks must be called **in the same order** every render. This is how rinch track
 ### Do: Call at Top Level
 
 ```rust
-fn app() -> Element {
+fn app(__scope: &mut RenderScope) -> NodeHandle {
     let count = use_signal(|| 0);      // Always first
     let name = use_signal(|| "".into()); // Always second
 
@@ -311,7 +307,7 @@ fn app() -> Element {
 ### Don't: Call Conditionally
 
 ```rust
-fn app() -> Element {
+fn app(__scope: &mut RenderScope) -> NodeHandle {
     let show = use_signal(|| false);
 
     // BAD: Hook order changes based on condition
@@ -326,7 +322,7 @@ fn app() -> Element {
 ### Don't: Call in Loops
 
 ```rust
-fn app() -> Element {
+fn app(__scope: &mut RenderScope) -> NodeHandle {
     // BAD: Number of hooks depends on items length
     for i in 0..items.len() {
         let state = use_signal(|| i);  // Wrong!
@@ -339,7 +335,7 @@ fn app() -> Element {
 ### Don't: Call in Event Handlers
 
 ```rust
-fn app() -> Element {
+fn app(__scope: &mut RenderScope) -> NodeHandle {
     rsx! {
         button { onclick: || {
             let x = use_signal(|| 0);  // Wrong! Not during render
@@ -360,7 +356,7 @@ struct AppSettings {
     dark_mode: bool,
 }
 
-fn app() -> Element {
+fn app(__scope: &mut RenderScope) -> NodeHandle {
     // Create shared settings context
     create_context(AppSettings { dark_mode: false });
 
@@ -384,29 +380,32 @@ fn app() -> Element {
     let todos_add = todos.clone();
     let input_submit = input.clone();
     let input_change = input.clone();
+    let count_display = count.clone();
 
     rsx! {
-        Window { title: "Todo App", width: 400, height: 300,
-            div {
-                h1 { "Todos (" {count.get()} ")" }
+        div {
+            h1 { "Todos (" {|| count_display.get().to_string()} ")" }
 
-                input {
-                    value: {input.get()},
-                    oninput: move |e| input_change.set(e.value())
+            input {
+                value: {|| input.get()},
+                oninput: move |e| input_change.set(e.value())
+            }
+
+            button { onclick: move || {
+                let text = input_submit.get();
+                if !text.is_empty() {
+                    todos_add.update(|t| t.push(text.clone()));
+                    input_submit.set(String::new());
                 }
+            }, "Add" }
 
-                button { onclick: move || {
-                    let text = input_submit.get();
-                    if !text.is_empty() {
-                        todos_add.update(|t| t.push(text.clone()));
-                        input_submit.set(String::new());
-                    }
-                }, "Add" }
-
-                ul {
-                    {todos.get().iter().map(|t| rsx! {
-                        li { {t.clone()} }
-                    }).collect::<Vec<_>>()}
+            For {
+                each: {|| todos.get().into_iter().enumerate().map(|(i, t)| {
+                    ForItem::new(i.to_string(), t)
+                }).collect()},
+                |item| {
+                    let text = item.downcast::<String>().unwrap().clone();
+                    rsx! { li { {text} } }
                 }
             }
         }
@@ -414,6 +413,6 @@ fn app() -> Element {
 }
 
 fn main() {
-    rinch::run(app);
+    run("Todo App", 400, 300, app);
 }
 ```

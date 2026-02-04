@@ -29,33 +29,38 @@ Rinch provides three core reactive primitives:
 ```rust
 use rinch::prelude::*;
 
-fn counter() -> Element {
+fn counter(__scope: &mut RenderScope) -> NodeHandle {
     // Create reactive state
-    let count = Signal::new(0);
+    let count = use_signal(|| 0);
 
     // Create a derived value
-    let doubled = derived(move || count.get() * 2);
+    let doubled = use_derived(move || count.get() * 2);
 
     // Side effect: log when count changes
     let count_for_effect = count.clone();
-    Effect::new(move || {
+    use_effect(|| {
         println!("Count changed to: {}", count_for_effect.get());
-    });
+    }, count_for_effect.get());
+
+    // Clone for event handler
+    let count_inc = count.clone();
 
     rsx! {
         div {
-            // These update automatically when count changes
-            p { "Count: " {count.get()} }
-            p { "Doubled: " {doubled.get()} }
+            // Use closure syntax {|| ...} for reactive updates
+            p { "Count: " {|| count.get().to_string()} }
+            p { "Doubled: " {|| doubled.get().to_string()} }
 
             button {
-                onclick: move |_| count.update(|n| *n += 1),
+                onclick: move || count_inc.update(|n| *n += 1),
                 "Increment"
             }
         }
     }
 }
 ```
+
+> **Note:** The closure syntax `{|| expr}` is required for fine-grained reactive updates. Without it, values are captured once and never update. See [RSX Syntax - Reactive Expressions](./rsx-syntax.md#reactive-expressions) for details.
 
 ## How Dependency Tracking Works
 

@@ -1,494 +1,362 @@
-//! smyeditor - A rich-text editor built with rinch.
+//! UI Zoo - Rinch Component Library Showcase
 //!
-//! This example demonstrates rinch's reactive system with:
-//! - Signals and event handlers
-//! - Menu item callbacks (onclick)
-//! - use_context for shared state
-//! - use_derived for computed state
-//! - Frameless window with custom chrome
+//! A comprehensive demonstration of all rinch widgets organized into sections.
+//! Uses signal-based navigation to switch between different widget categories.
+
+mod sections;
 
 use rinch::prelude::*;
+use rinch::{run_rinch_with_window_props, WindowProps};
+use rinch_tabler_icons::{render_tabler_icon, TablerIcon, TablerIconStyle};
+use sections::*;
+use std::rc::Rc;
 
-/// Theme context shared across the application.
-#[derive(Clone)]
-struct ThemeContext {
-    primary_color: String,
-    background: String,
-}
+fn app(__scope: &mut RenderScope) -> NodeHandle {
+    let current_section = use_signal(|| 0_usize);
+    let primary_color = use_signal(|| "blue");
+    let dark_mode = use_signal(|| false);
+    let drawer_opened = use_signal(|| false);
 
-fn app() -> Element {
-    // Create a theme context accessible from anywhere
-    let theme = create_context(ThemeContext {
-        primary_color: "#569cd6".into(),
-        background: "#1e1e1e".into(),
+    // Initialize section state contexts synchronously.
+    // These must be called BEFORE overlays_demo_overlays() so context is available.
+    // In fine-grained architecture, app() only runs once, so this is safe.
+    init_inputs_state();
+    init_overlays_state();
+    init_navigation_state();
+    init_buttons_state();
+    init_feedback_state();
+    init_icons_state();
+    init_tree_state();
+    init_editor_state();
+
+    // Nav helper (also closes drawer)
+    #[allow(unused_variables)]
+    let nav = |idx: usize| {
+        move || {
+            current_section.set(idx);
+            drawer_opened.set(false);
+        }
+    };
+
+    // Color picker helper
+    #[allow(unused_variables)]
+    let set_color = |color: &'static str| {
+        move || primary_color.set(color)
+    };
+
+    // Dark mode toggle
+    #[allow(unused_variables)]
+    let toggle_dark = move || dark_mode.update(|v| *v = !*v);
+
+    // Create left section renderer for menu button
+    let left_section: SectionRenderer = Rc::new(move |__scope| {
+        rsx! {
+            ActionIcon {
+                variant: "subtle",
+                size: "lg",
+                onclick: move || drawer_opened.update(|v| *v = !*v),
+                {render_tabler_icon(__scope, TablerIcon::Menu2, TablerIconStyle::Outline)}
+            }
+        }
     });
 
-    // Persistent reactive state using hooks
-    let count = use_signal(|| 0);
-    let text = use_signal(|| String::from("Hello, Rinch!"));
-    let show_about = use_signal(|| false);
-
-    // Use derived to compute values automatically
-    let doubled = use_derived({
-        let count = count.clone();
-        move || count.get() * 2
-    });
-
-    let is_positive = use_derived({
-        let count = count.clone();
-        move || count.get() > 0
-    });
-
-    // Clone signals for use in event handlers
-    let count_inc = count.clone();
-    let count_dec = count.clone();
-    let count_reset = count.clone();
-    let text_change = text.clone();
-
-    // Clones for menu callbacks
-    let menu_count_reset = count.clone();
-    let menu_show_about = show_about.clone();
-
+    // Note: Don't create nested html/head/body - the runtime already creates those.
+    // Widget CSS is injected via theme system. App CSS goes in a style element in body.
     rsx! {
-        Fragment {
-            AppMenu { native: true,
-                Menu { label: "File",
-                    MenuItem { label: "New", shortcut: "Cmd+N", onclick: || {
-                        println!("File > New clicked!");
-                    }}
-                    MenuItem { label: "Open...", shortcut: "Cmd+O", onclick: || {
-                        println!("File > Open clicked!");
-                    }}
-                    MenuSeparator {}
-                    MenuItem { label: "Save", shortcut: "Cmd+S", onclick: || {
-                        println!("File > Save clicked!");
-                    }}
-                    MenuItem { label: "Save As...", shortcut: "Cmd+Shift+S" }
-                    MenuSeparator {}
-                    MenuItem { label: "Exit", shortcut: "Alt+F4" }
+        ThemeProvider {
+            primary_color_fn: Rc::new(move || primary_color.get()),
+            dark_mode_fn: Rc::new(move || dark_mode.get()),
+
+            style { {CSS} }
+
+            BorderlessWindow {
+                title: "UI Zoo",
+                radius: "md",
+                left_section: Some(left_section),
+                on_minimize: || minimize_current_window(),
+                on_maximize: || toggle_maximize_current_window(),
+                on_close: || close_current_window(),
+
+                // Main content area - uses reactive Show for section switching
+                div { class: "main-content",
+                Show { when: move || current_section.get() == 0, then: |__scope| overview_section(__scope) }
+                Show { when: move || current_section.get() == 1, then: |__scope| buttons_section(__scope) }
+                Show { when: move || current_section.get() == 2, then: |__scope| inputs_section(__scope) }
+                Show { when: move || current_section.get() == 3, then: |__scope| typography_section(__scope) }
+                Show { when: move || current_section.get() == 4, then: |__scope| layout_section(__scope) }
+                Show { when: move || current_section.get() == 5, then: |__scope| navigation_section(__scope) }
+                Show { when: move || current_section.get() == 6, then: |__scope| data_display_section(__scope) }
+                Show { when: move || current_section.get() == 7, then: |__scope| feedback_section(__scope) }
+                Show { when: move || current_section.get() == 8, then: |__scope| overlays_section(__scope) }
+                Show { when: move || current_section.get() == 9, then: |__scope| icons_section(__scope) }
+                Show { when: move || current_section.get() == 10, then: |__scope| tree_section(__scope) }
+                Show { when: move || current_section.get() == 11, then: |__scope| editor_section(__scope) }
+            }
+            }
+
+            // Navigation Drawer (inside BorderlessWindow but fixed positioning)
+            Drawer {
+                opened_fn: Some(Rc::new(move || drawer_opened.get())),
+                onclose: move || drawer_opened.set(false),
+                position: "left",
+                size: "xs",
+                title: "UI Zoo",
+                with_overlay: true,
+
+                // Navigation links - use active_fn for fine-grained reactive updates
+                Stack { gap: "0",
+                    NavLink {
+                        label: Some("Overview".to_string()),
+                        active_fn: Some(Rc::new(move || current_section.get() == 0)),
+                        onclick: nav(0)
+                    }
+                    NavLink {
+                        label: Some("Buttons".to_string()),
+                        active_fn: Some(Rc::new(move || current_section.get() == 1)),
+                        onclick: nav(1)
+                    }
+                    NavLink {
+                        label: Some("Inputs".to_string()),
+                        active_fn: Some(Rc::new(move || current_section.get() == 2)),
+                        onclick: nav(2)
+                    }
+                    NavLink {
+                        label: Some("Typography".to_string()),
+                        active_fn: Some(Rc::new(move || current_section.get() == 3)),
+                        onclick: nav(3)
+                    }
+                    NavLink {
+                        label: Some("Layout".to_string()),
+                        active_fn: Some(Rc::new(move || current_section.get() == 4)),
+                        onclick: nav(4)
+                    }
+                    NavLink {
+                        label: Some("Navigation".to_string()),
+                        active_fn: Some(Rc::new(move || current_section.get() == 5)),
+                        onclick: nav(5)
+                    }
+                    NavLink {
+                        label: Some("Data Display".to_string()),
+                        active_fn: Some(Rc::new(move || current_section.get() == 6)),
+                        onclick: nav(6)
+                    }
+                    NavLink {
+                        label: Some("Feedback".to_string()),
+                        active_fn: Some(Rc::new(move || current_section.get() == 7)),
+                        onclick: nav(7)
+                    }
+                    NavLink {
+                        label: Some("Overlays".to_string()),
+                        active_fn: Some(Rc::new(move || current_section.get() == 8)),
+                        onclick: nav(8)
+                    }
+                    NavLink {
+                        label: Some("Icons".to_string()),
+                        active_fn: Some(Rc::new(move || current_section.get() == 9)),
+                        onclick: nav(9)
+                    }
+                    NavLink {
+                        label: Some("Tree".to_string()),
+                        active_fn: Some(Rc::new(move || current_section.get() == 10)),
+                        onclick: nav(10)
+                    }
+                    NavLink {
+                        label: Some("Rich Text Editor".to_string()),
+                        active_fn: Some(Rc::new(move || current_section.get() == 11)),
+                        onclick: nav(11)
+                    }
                 }
-                Menu { label: "Edit",
-                    MenuItem { label: "Undo", shortcut: "Cmd+Z" }
-                    MenuItem { label: "Redo", shortcut: "Cmd+Shift+Z" }
-                    MenuSeparator {}
-                    MenuItem { label: "Cut", shortcut: "Cmd+X" }
-                    MenuItem { label: "Copy", shortcut: "Cmd+C" }
-                    MenuItem { label: "Paste", shortcut: "Cmd+V" }
-                    MenuSeparator {}
-                    MenuItem { label: "Reset Counter", onclick: move || {
-                        menu_count_reset.set(0);
-                        println!("Counter reset from menu!");
-                    }}
+
+                Space { h: "xl" }
+                Divider { label: "Theme" }
+                Space { h: "md" }
+
+                // Theme controls
+                Switch {
+                    label: Some("Dark Mode".to_string()),
+                    checked_fn: Some(Rc::new(move || dark_mode.get())),
+                    onchange: toggle_dark
                 }
-                Menu { label: "View",
-                    MenuItem { label: "Zoom In", shortcut: "Cmd+=" }
-                    MenuItem { label: "Zoom Out", shortcut: "Cmd+-" }
-                    MenuItem { label: "Reset Zoom", shortcut: "Cmd+0" }
+
+                Space { h: "md" }
+                Text { size: "sm", "Primary Color" }
+                Space { h: "xs" }
+                Group { gap: "xs",
+                    ActionIcon { variant: "filled", color: "blue", onclick: set_color("blue") }
+                    ActionIcon { variant: "filled", color: "cyan", onclick: set_color("cyan") }
+                    ActionIcon { variant: "filled", color: "teal", onclick: set_color("teal") }
+                    ActionIcon { variant: "filled", color: "green", onclick: set_color("green") }
+                    ActionIcon { variant: "filled", color: "orange", onclick: set_color("orange") }
                 }
-                Menu { label: "Help",
-                    MenuItem { label: "About smyeditor", onclick: move || {
-                        menu_show_about.update(|v| *v = !*v);
-                    }}
+                Space { h: "xs" }
+                Group { gap: "xs",
+                    ActionIcon { variant: "filled", color: "red", onclick: set_color("red") }
+                    ActionIcon { variant: "filled", color: "pink", onclick: set_color("pink") }
+                    ActionIcon { variant: "filled", color: "grape", onclick: set_color("grape") }
+                    ActionIcon { variant: "filled", color: "violet", onclick: set_color("violet") }
+                    ActionIcon { variant: "filled", color: "indigo", onclick: set_color("indigo") }
                 }
             }
 
-            // Try transparent window. On Windows with DX12/DirectComposition, this enables
-            // true transparency. Falls back to opaque rendering if not supported.
-            Window { title: "smyeditor", width: 1024, height: 768, borderless: true, transparent: true,
-                html {
-                    head {
-                        style {
-                            "
-                            * {
-                                box-sizing: border-box;
-                                margin: 0;
-                                padding: 0;
-                            }
-                            html, body {
-                                background: transparent;
-                                height: 100%;
-                            }
-                            body {
-                                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                                color: #cccccc;
-                                display: flex;
-                                flex-direction: column;
-                                padding: 8px;
-                            }
-                            /* Window frame with rounded corners */
-                            .window-frame {
-                                background: #1e1e1e;
-                                height: 100%;
-                                display: flex;
-                                flex-direction: column;
-                                overflow: hidden;
-                                border-radius: 8px;
-                            }
-                            /* VS Code Style Title Bar */
-                            .titlebar {
-                                height: 32px;
-                                background: #323233;
-                                display: flex;
-                                align-items: center;
-                                flex-shrink: 0;
-                                user-select: none;
-                                border-radius: 8px 8px 0 0;
-                            }
-                            .titlebar-drag {
-                                flex: 1;
-                                height: 100%;
-                                display: flex;
-                                align-items: center;
-                                padding-left: 12px;
-                                gap: 8px;
-                            }
-                            .titlebar-icon {
-                                width: 16px;
-                                height: 16px;
-                                background: linear-gradient(135deg, #0098ff 0%, #00d4aa 100%);
-                                border-radius: 3px;
-                            }
-                            .titlebar-text {
-                                font-size: 13px;
-                                color: #cccccc;
-                            }
-                            .window-controls {
-                                display: flex;
-                                height: 100%;
-                            }
-                            .window-control {
-                                width: 46px;
-                                height: 32px;
-                                border: none;
-                                background: transparent;
-                                color: #cccccc;
-                                cursor: pointer;
-                                display: flex;
-                                align-items: center;
-                                justify-content: center;
-                            }
-                            .window-control:hover {
-                                background: rgba(255, 255, 255, 0.1);
-                            }
-                            .window-control.close:hover {
-                                background: #e81123;
-                            }
-                            .window-control.close:hover .icon-close-1,
-                            .window-control.close:hover .icon-close-2 {
-                                background: white;
-                            }
-                            /* Window control icons using CSS */
-                            .icon-minimize {
-                                width: 10px;
-                                height: 1px;
-                                background: #cccccc;
-                            }
-                            .icon-maximize {
-                                width: 9px;
-                                height: 9px;
-                                border: 1px solid #cccccc;
-                                background: transparent;
-                            }
-                            /* X icon using two rotated lines */
-                            .icon-close {
-                                width: 10px;
-                                height: 10px;
-                                position: relative;
-                            }
-                            .icon-close-1, .icon-close-2 {
-                                position: absolute;
-                                width: 12px;
-                                height: 1px;
-                                background: #cccccc;
-                                top: 50%;
-                                left: 50%;
-                            }
-                            .icon-close-1 {
-                                transform: translate(-50%, -50%) rotate(45deg);
-                            }
-                            .icon-close-2 {
-                                transform: translate(-50%, -50%) rotate(-45deg);
-                            }
-                            /* Main Content Area */
-                            .main-content {
-                                flex: 1;
-                                overflow: auto;
-                                padding: 20px;
-                                background: " {theme.background.clone()} ";
-                            }
-                            h1 {
-                                color: " {theme.primary_color.clone()} ";
-                                margin-bottom: 10px;
-                            }
-                            h2 {
-                                color: #4ec9b0;
-                                margin-top: 30px;
-                                margin-bottom: 15px;
-                            }
-                            .section {
-                                background: #252526;
-                                border: 1px solid #3c3c3c;
-                                border-radius: 4px;
-                                padding: 20px;
-                                margin-bottom: 20px;
-                            }
-                            .about-dialog {
-                                background: #2d2d2d;
-                                border: 1px solid #569cd6;
-                                border-radius: 4px;
-                                padding: 20px;
-                                margin-bottom: 20px;
-                                text-align: center;
-                            }
-                            .counter-display {
-                                font-size: 48px;
-                                font-weight: bold;
-                                color: #ce9178;
-                                text-align: center;
-                                margin: 20px 0;
-                            }
-                            .derived-values {
-                                display: flex;
-                                justify-content: center;
-                                gap: 30px;
-                                margin: 15px 0;
-                                color: #9cdcfe;
-                            }
-                            .derived-value {
-                                text-align: center;
-                            }
-                            .derived-label {
-                                font-size: 12px;
-                                color: #808080;
-                            }
-                            .derived-number {
-                                font-size: 24px;
-                                font-weight: bold;
-                            }
-                            .button-row {
-                                display: flex;
-                                gap: 10px;
-                                justify-content: center;
-                                margin-top: 15px;
-                            }
-                            button {
-                                background: #0e639c;
-                                color: white;
-                                border: none;
-                                padding: 8px 16px;
-                                border-radius: 2px;
-                                font-size: 13px;
-                                cursor: pointer;
-                            }
-                            button:hover {
-                                background: #1177bb;
-                            }
-                            button.danger {
-                                background: #c72e2e;
-                            }
-                            button.danger:hover {
-                                background: #e03e3e;
-                            }
-                            .text-display {
-                                font-size: 24px;
-                                color: #9cdcfe;
-                                text-align: center;
-                                padding: 20px;
-                                background: #252526;
-                                border-radius: 4px;
-                                margin: 15px 0;
-                            }
-                            .info {
-                                color: #808080;
-                                font-size: 13px;
-                                margin-top: 10px;
-                            }
-                            p {
-                                margin: 8px 0;
-                            }
-                            ul {
-                                margin: 8px 0;
-                                padding-left: 20px;
-                            }
-                            .feature-badge {
-                                display: inline-block;
-                                background: #4ec9b0;
-                                color: #1e1e1e;
-                                padding: 2px 8px;
-                                border-radius: 2px;
-                                font-size: 11px;
-                                margin-left: 8px;
-                            }
-                            /* VS Code Style Status Bar */
-                            .status-bar {
-                                height: 22px;
-                                padding: 0 10px;
-                                background: #007acc;
-                                color: white;
-                                font-size: 12px;
-                                display: flex;
-                                align-items: center;
-                                flex-shrink: 0;
-                                border-radius: 0 0 8px 8px;
-                            }
-                            .keyboard-hint {
-                                color: #808080;
-                                font-size: 12px;
-                                margin-top: 10px;
-                            }
-                            kbd {
-                                background: #3c3c3c;
-                                padding: 2px 6px;
-                                border-radius: 2px;
-                                font-family: monospace;
-                                font-size: 11px;
-                            }
-                            "
-                        }
+            // Overlays section demo components (rendered at body level for proper fixed positioning)
+            {overlays_demo_overlays(__scope)}
+        }
+    }
+}
+
+/// Renders the overlay components (Modal, Drawer, Notification) for the Overlays section demo.
+/// These are rendered at the body level (outside .main-content) for proper fixed positioning.
+fn overlays_demo_overlays(__scope: &mut RenderScope) -> NodeHandle {
+    let state = use_context::<OverlaysSectionState>();
+
+    let (
+        modal_opened,
+        modal_lg_opened,
+        drawer_opened,
+        drawer_right_opened,
+        notification_visible,
+    ) = match state {
+        Some(s) => (
+            s.modal_opened,
+            s.modal_lg_opened,
+            s.drawer_opened,
+            s.drawer_right_opened,
+            s.notification_visible,
+        ),
+        None => {
+            return rsx! { div { } };
+        }
+    };
+
+    rsx! {
+        Fragment {
+            // Basic Modal - use opened_fn for fine-grained reactive updates
+            Modal {
+                opened_fn: Some(Rc::new(move || modal_opened.get())),
+                onclose: move || modal_opened.set(false),
+                title: "Welcome!",
+
+                Text { size: "sm", color: "dimmed",
+                    "This is a working modal dialog. Click outside or the X button to close it."
+                }
+                Space { h: "lg" }
+                Group { justify: "flex-end", gap: "sm",
+                    Button { variant: "subtle", onclick: move || modal_opened.set(false), "Cancel" }
+                    Button { onclick: move || modal_opened.set(false), "Confirm" }
+                }
+            }
+
+            // Large Modal - use opened_fn for fine-grained reactive updates
+            Modal {
+                opened_fn: Some(Rc::new(move || modal_lg_opened.get())),
+                onclose: move || modal_lg_opened.set(false),
+                title: "Large Modal",
+                size: "lg",
+
+                Stack { gap: "md",
+                    Text { size: "sm", color: "dimmed",
+                        "This modal uses size=\"lg\" for a wider dialog. Large modals are useful for forms with many fields or displaying detailed content."
                     }
-                    body {
-                        // Window frame for rounded corners
-                        div { class: "window-frame",
-                            // VS Code Style Title Bar
-                            div { class: "titlebar",
-                                div { class: "titlebar-drag", draggable: "true",
-                                    div { class: "titlebar-icon" }
-                                    span { class: "titlebar-text", "smyeditor" }
-                                }
-                                div { class: "window-controls",
-                                    button { class: "window-control minimize", title: "Minimize",
-                                        onclick: || minimize_current_window(),
-                                        span { class: "icon-minimize" }
-                                    }
-                                    button { class: "window-control maximize", title: "Maximize",
-                                        onclick: || toggle_maximize_current_window(),
-                                        span { class: "icon-maximize" }
-                                    }
-                                    button { class: "window-control close", title: "Close",
-                                        onclick: || close_current_window(),
-                                        div { class: "icon-close",
-                                            div { class: "icon-close-1" }
-                                            div { class: "icon-close-2" }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Main Content Area
-                            div { class: "main-content",
-                            h1 { "smyeditor" }
-                            p { "A demonstration of rinch's reactive system with custom window chrome" }
-
-                            // About dialog using menu callback
-                            div { class: "about-dialog", style: if show_about.get() { "display: block" } else { "display: none" },
-                                h2 { "About smyeditor" }
-                                p { "Built with " strong { "rinch" } " - a reactive GUI framework for Rust" }
-                                p { "Features demonstrated:" }
-                                ul { style: "text-align: left; display: inline-block;",
-                                    li { "Menu item callbacks (onclick)" }
-                                    li { "use_context for shared state" }
-                                    li { "use_derived for computed values" }
-                                    li { "Frameless window with custom chrome" }
-                                }
-                                p { style: "color: #808080;", "Click Help > About again to close" }
-                            }
-
-                            div { class: "section",
-                            h2 {
-                                "Counter Demo"
-                                span { class: "feature-badge", "use_derived" }
-                            }
-                            p { "Click the buttons to update the counter. Derived values update automatically!" }
-
-                            div { class: "counter-display",
-                                {count.get()}
-                            }
-
-                            div { class: "derived-values",
-                                div { class: "derived-value",
-                                    div { class: "derived-label", "Doubled (use_derived)" }
-                                    div { class: "derived-number", {doubled.get()} }
-                                }
-                                div { class: "derived-value",
-                                    div { class: "derived-label", "Is Positive?" }
-                                    div { class: "derived-number",
-                                        {if is_positive.get() { "Yes" } else { "No" }}
-                                    }
-                                }
-                            }
-
-                            div { class: "button-row",
-                                button { onclick: move || count_dec.update(|n| *n -= 1),
-                                    "- Decrement"
-                                }
-                                button { onclick: move || count_inc.update(|n| *n += 1),
-                                    "+ Increment"
-                                }
-                                button { class: "danger", onclick: move || count_reset.set(0),
-                                    "Reset"
-                                }
-                            }
-
-                            p { class: "info",
-                                "use_derived automatically tracks signal dependencies and recomputes when they change."
-                            }
-                            p { class: "info",
-                                "Try Edit > Reset Counter from the menu to see menu callbacks in action!"
-                            }
-                        }
-
-                        div { class: "section",
-                            h2 {
-                                "Dynamic Text Demo"
-                                span { class: "feature-badge", "use_context" }
-                            }
-                            p { "The theme colors come from a shared ThemeContext:" }
-
-                            div { class: "text-display",
-                                {text.get()}
-                            }
-
-                            div { class: "button-row",
-                                button { onclick: move || {
-                                    let messages = [
-                                        "Hello, Rinch!",
-                                        "Fine-grained reactivity!",
-                                        "Built with Rust!",
-                                        "GPU-accelerated rendering!",
-                                    ];
-                                    text_change.update(|t| {
-                                        let current_idx = messages.iter().position(|&m| m == t.as_str()).unwrap_or(0);
-                                        let next_idx = (current_idx + 1) % messages.len();
-                                        *t = messages[next_idx].to_string();
-                                    });
-                                },
-                                    "Change Message"
-                                }
-                            }
-                        }
-
-                            div { class: "keyboard-hint",
-                                "Developer Tools: "
-                                kbd { "F12" } " Toggle DevTools | "
-                                kbd { "Alt+D" } " Layout Debug | "
-                                kbd { "Alt+I" } " Inspect Mode | "
-                                kbd { "Alt+T" } " Print Taffy Tree"
-                            }
-                        }
-
-                            // VS Code Style Status Bar
-                            div { class: "status-bar",
-                                "smyeditor | Count: " {count.get()} " | Doubled: " {doubled.get()}
-                            }
-                        }
+                    Alert { color: "blue", title: "Tip",
+                        "You can also use 'xl' or 'full' for even larger modals."
                     }
                 }
+                Space { h: "lg" }
+                Button { full_width: true, onclick: move || modal_lg_opened.set(false), "Got it!" }
+            }
+
+            // Left Drawer
+            Drawer {
+                opened_fn: Some(Rc::new(move || drawer_opened.get())),
+                onclose: move || drawer_opened.set(false),
+                title: "Navigation",
+                position: "left",
+
+                Stack { gap: "0",
+                    NavLink { label: Some("Home".to_string()), active: true }
+                    NavLink { label: Some("Dashboard".to_string()) }
+                    NavLink { label: Some("Settings".to_string()) }
+                    NavLink { label: Some("Profile".to_string()) }
+                }
+            }
+
+            // Right Drawer
+            Drawer {
+                opened_fn: Some(Rc::new(move || drawer_right_opened.get())),
+                onclose: move || drawer_right_opened.set(false),
+                title: "Details Panel",
+                position: "right",
+
+                Stack { gap: "md",
+                    Text { size: "sm", color: "dimmed",
+                        "This drawer slides in from the right. Use right drawers for detail panels, filters, or secondary navigation."
+                    }
+                    Alert { color: "blue",
+                        "Drawers also support 'top' and 'bottom' positions."
+                    }
+                }
+            }
+
+            // Notification - use opened_fn for fine-grained reactive updates
+            Notification {
+                opened_fn: Some(Rc::new(move || notification_visible.get())),
+                onclose: move || notification_visible.set(false),
+                title: "Success!",
+                color: "green",
+                with_close_button: true,
+                "Your changes have been saved successfully."
             }
         }
     }
 }
 
+/// Global CSS for the app layout.
+/// BorderlessWindow widget handles titlebar, window controls, and layout.
+/// We only need styles for the content area.
+const CSS: &str = r#"
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html, body {
+    height: 100vh;
+}
+
+body {
+    font-family: var(--rinch-font-family);
+    background: transparent; /* For transparent window */
+    color: var(--rinch-color-text);
+    overflow: hidden;
+}
+
+.main-content {
+    padding: var(--rinch-spacing-xl);
+}
+"#;
+
 fn main() {
-    // Use hot reload for development - UI updates when files change
-    rinch::run_with_hot_reload(app);
+    eprintln!("[DEBUG MAIN] Starting smyeditor");
+    let window_props = WindowProps {
+        title: "UI Zoo - Rinch Component Library".into(),
+        width: 1200,
+        height: 800,
+        borderless: true,
+        transparent: true,
+        ..Default::default()
+    };
+
+    let theme = ThemeProviderProps {
+        primary_color: Some("blue".into()),
+        default_radius: Some("md".into()),
+        dark_mode: false,
+        ..Default::default()
+    };
+
+    // Set up theme CSS (loads into thread-local, picked up by rinch-dom runtime)
+    rinch::setup_theme_css(&theme);
+
+    // Use rinch-dom runtime instead of blitz
+    run_rinch_with_window_props(app, window_props);
 }

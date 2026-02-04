@@ -3,9 +3,13 @@ name = "smyeditor"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "A fully-featured rich-text editor built with rinch"
+description = "UI Zoo - A showcase of rinch's theme system and widgets"
 
 [dependencies]
-rinch = { workspace = true, features = ["hot-reload"] }
+rinch = { workspace = true, features = ["widgets", "debug", "clipboard"] }
+rinch-tabler-icons.workspace = true
+rinch-core = { workspace = true }
+rinch-editor = { path = "../../crates/rinch-editor" }
+rinch-editor-widgets = { path = "../../crates/rinch-editor-widgets" }
 tokio.workspace = true
 tracing.workspace = true

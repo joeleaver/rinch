@@ -1,0 +1,74 @@
+name: Visual Regression Tests
+
+on:
+  push:
+    branches: [main, architecture-cleanup]
+  pull_request:
+    branches: [main]
+
+jobs:
+  visual-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libxkbcommon-dev libwayland-dev
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Playwright
+        run: |
+          cd crates/rinch-visual-test/scripts
+          npm install
+          npx playwright install chromium
+
+      - name: Build visual test runner
+        run: cargo build -p rinch-visual-test --release
+
+      - name: Build test app (smyeditor)
+        run: cargo build -p smyeditor --release --features debug
+
+      - name: Run visual tests
+        run: |
+          # Start Xvfb
+          Xvfb :99 -screen 0 1280x720x24 &
+          export DISPLAY=:99
+
+          # Launch app in background
+          cargo run -p smyeditor --release --features debug &
+          APP_PID=$!
+
+          # Wait for app to start
+          sleep 5
+
+          # Run tests
+          ./target/release/visual-test || true
+
+          # Cleanup
+          kill $APP_PID || true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-test-results
+          path: tests/visual/output/
+          retention-days: 30
+
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-test-report
+          path: tests/visual/output/report.html
+          retention-days: 30

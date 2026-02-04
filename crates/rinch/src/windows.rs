@@ -1,3 +1,7 @@
+// NOTE: Some functions in this module are not yet called by fine_grained_runtime.
+// They're part of the programmatic window management API that will be implemented.
+#![allow(dead_code)]
+
 //! Window management API for opening and closing windows programmatically.
 //!
 //! # Example
@@ -44,7 +48,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use winit::event_loop::EventLoopProxy;
 use winit::window::WindowId;
 
-use crate::shell::runtime::RinchEvent;
+use crate::shell::rinch_runtime::{NATIVE_PROXY, RinchNativeEvent};
+use crate::shell::types::RinchEvent;
 
 /// A handle to an open window.
 ///
@@ -374,6 +379,17 @@ impl Default for WindowBuilder {
 /// button { onclick: || minimize_current_window(), "Minimize" }
 /// ```
 pub fn minimize_current_window() {
+    // Try native runtime proxy first (rinch-dom runtime)
+    let sent = NATIVE_PROXY.with(|p| {
+        if let Some(proxy) = p.borrow().as_ref() {
+            let _ = proxy.send_event(RinchNativeEvent::MinimizeWindow);
+            return true;
+        }
+        false
+    });
+    if sent { return; }
+
+    // Fallback to RinchEvent proxy (blitz-based runtime)
     if let Some(window_id) = get_current_window_id() {
         EVENT_PROXY.with(|p| {
             if let Some(proxy) = p.borrow().as_ref() {
@@ -394,6 +410,17 @@ pub fn minimize_current_window() {
 /// button { onclick: || toggle_maximize_current_window(), "Maximize" }
 /// ```
 pub fn toggle_maximize_current_window() {
+    // Try native runtime proxy first (rinch-dom runtime)
+    let sent = NATIVE_PROXY.with(|p| {
+        if let Some(proxy) = p.borrow().as_ref() {
+            let _ = proxy.send_event(RinchNativeEvent::ToggleMaximizeWindow);
+            return true;
+        }
+        false
+    });
+    if sent { return; }
+
+    // Fallback to RinchEvent proxy (blitz-based runtime)
     if let Some(window_id) = get_current_window_id() {
         EVENT_PROXY.with(|p| {
             if let Some(proxy) = p.borrow().as_ref() {
@@ -414,6 +441,17 @@ pub fn toggle_maximize_current_window() {
 /// button { onclick: || close_current_window(), "Close" }
 /// ```
 pub fn close_current_window() {
+    // Try native runtime proxy first (rinch-dom runtime)
+    let sent = NATIVE_PROXY.with(|p| {
+        if let Some(proxy) = p.borrow().as_ref() {
+            let _ = proxy.send_event(RinchNativeEvent::CloseWindowControl);
+            return true;
+        }
+        false
+    });
+    if sent { return; }
+
+    // Fallback to RinchEvent proxy (blitz-based runtime)
     if let Some(window_id) = get_current_window_id() {
         EVENT_PROXY.with(|p| {
             if let Some(proxy) = p.borrow().as_ref() {
