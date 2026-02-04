@@ -10,6 +10,7 @@ pub fn styles() -> String {
     border: 1px solid transparent;
     cursor: pointer;
     text-decoration: none;
+    white-space: nowrap;
     transition: background-color 150ms ease, border-color 150ms ease;
 }
 

@@ -25,6 +25,7 @@ rinch-editor = { path = "crates/rinch-editor" }
 rinch-editor-macros = { path = "crates/rinch-editor-macros" }
 rinch-editor-widgets = { path = "crates/rinch-editor-widgets" }
 rinch-debug = { path = "crates/rinch-debug" }
+rinch-visual-test = { path = "crates/rinch-visual-test" }
 
 # Rendering
 anyrender = "0.7"

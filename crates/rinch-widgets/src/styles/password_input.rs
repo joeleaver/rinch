@@ -28,6 +28,7 @@ pub fn styles() -> String {
     height: 2.625rem;
     overflow: hidden;
     transition: border-color 150ms ease;
+    min-width: 10rem;
 }
 
 .rinch-password-input__wrapper:focus-within {

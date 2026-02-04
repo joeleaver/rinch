@@ -444,6 +444,18 @@ thread_local! {
     static HOOK_REGISTRY: RefCell<HookRegistry> = RefCell::new(HookRegistry::new());
 }
 
+/// Execute a function with render context enabled.
+/// This allows hooks to be called from within Effects that need to render new content.
+pub fn with_render_context<T>(f: impl FnOnce() -> T) -> T {
+    HOOK_REGISTRY.with(|registry| {
+        let was_rendering = registry.borrow().is_rendering;
+        registry.borrow_mut().is_rendering = true;
+        let result = f();
+        registry.borrow_mut().is_rendering = was_rendering;
+        result
+    })
+}
+
 // ============================================================================
 // Context Store
 // ============================================================================

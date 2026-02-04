@@ -89,13 +89,16 @@ fn paint_node(
             }
 
             // Get border-radius from computed style (use average of all 4 corners)
+            // Resolve percentage values against element dimensions
             let radius = {
                 let cs = &node.computed_style;
-                let avg = (cs.border_radius_top_left
-                    + cs.border_radius_top_right
-                    + cs.border_radius_bottom_right
-                    + cs.border_radius_bottom_left)
-                    / 4.0;
+                // For percentage border-radius, resolve against min(width, height) for uniform corners
+                let resolve_size = node.layout.width.min(node.layout.height);
+                let tl = cs.border_radius_top_left.resolve(resolve_size);
+                let tr = cs.border_radius_top_right.resolve(resolve_size);
+                let br = cs.border_radius_bottom_right.resolve(resolve_size);
+                let bl = cs.border_radius_bottom_left.resolve(resolve_size);
+                let avg = (tl + tr + br + bl) / 4.0;
                 avg as f64 * scale
             };
 
@@ -249,7 +252,27 @@ fn paint_node(
                 return;
             }
 
-            // Read all font properties from parent's computed_style
+            // Use cached layout if available (built after Taffy layout with final widths)
+            if let Some(cached_layout) = &node.cached_text_parley {
+                // Read text-align from parent's computed style
+                let parent_computed = node.parent
+                    .and_then(|p| tree.get(p))
+                    .map(|p| &p.computed_style);
+                let alignment = parent_computed
+                    .map(|s| s.text_align.to_parley())
+                    .unwrap_or(parley::layout::Alignment::Start);
+
+                // Clone the cached layout so we can align it
+                // (align mutates the layout, and we don't want to modify the cache)
+                let mut text_layout = (**cached_layout).clone();
+                text_layout.align(alignment, parley::layout::AlignmentOptions::default());
+
+                // Render text glyphs to scene
+                render_text(scene, &text_layout, x, y);
+                return;
+            }
+
+            // Fallback: build layout on demand (should not happen with caching)
             let parent_computed = node.parent
                 .and_then(|p| tree.get(p))
                 .map(|p| &p.computed_style);
@@ -284,14 +307,10 @@ fn paint_node(
 
             let mut text_layout = builder.build(&text_data.content);
 
-            // Use the text node's own layout width for text wrapping
-            // (matches the width Taffy computed during measurement)
-            let max_width = if layout.width > 0.0 {
-                Some(layout.width * scale as f32)
-            } else {
-                None
-            };
-            text_layout.break_all_lines(max_width);
+            // Text was measured without width constraint to get natural width.
+            // Paint should use the same (no constraint) to avoid re-wrapping.
+            // The parent element's width constrains positioning, not text wrapping.
+            text_layout.break_all_lines(None);
 
             // Read text-align from parent's computed style
             let alignment = parent_computed
@@ -385,13 +404,15 @@ fn paint_box_shadow(
     });
 
     // Get border-radius from computed style (use average of all 4 corners)
+    // Resolve percentage values against element dimensions
     let radius = {
         let cs = &node.computed_style;
-        let avg = (cs.border_radius_top_left
-            + cs.border_radius_top_right
-            + cs.border_radius_bottom_right
-            + cs.border_radius_bottom_left)
-            / 4.0;
+        let resolve_size = node.layout.width.min(node.layout.height);
+        let tl = cs.border_radius_top_left.resolve(resolve_size);
+        let tr = cs.border_radius_top_right.resolve(resolve_size);
+        let br = cs.border_radius_bottom_right.resolve(resolve_size);
+        let bl = cs.border_radius_bottom_left.resolve(resolve_size);
+        let avg = (tl + tr + br + bl) / 4.0;
         avg as f64 * scale
     };
 
@@ -674,6 +695,28 @@ fn render_text(scene: &mut Scene, layout: &parley::layout::Layout<Brush>, x: f64
             let font = run.font();
             let font_size = run.font_size();
             let synthesis = run.synthesis();
+
+            // DEBUG: Print font info for first run only (to avoid spam)
+            {
+                use std::sync::atomic::{AtomicBool, Ordering};
+                static PRINTED: AtomicBool = AtomicBool::new(false);
+                if !PRINTED.swap(true, Ordering::SeqCst) {
+                    use read_fonts::TableProvider;
+                    if let Ok(font_ref) = read_fonts::FontRef::from_index(font.data.as_ref(), font.index) {
+                        if let Ok(name_table) = font_ref.name() {
+                            // Try to get font family name (nameID 1) or full name (nameID 4)
+                            for record in name_table.name_record().iter() {
+                                if record.name_id().to_u16() == 1 || record.name_id().to_u16() == 4 {
+                                    if let Ok(name) = record.string(name_table.string_data()) {
+                                        eprintln!("[DEBUG] Font selected: {:?} (nameID={})", name.to_string(), record.name_id().to_u16());
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             let glyph_xform = synthesis
                 .skew()
                 .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
@@ -876,8 +919,8 @@ fn paint_input_value(
         let sel_start_byte = cursor_pos.min(selection_start).min(text.len());
         let sel_end_byte = cursor_pos.max(selection_start).min(text.len());
 
-        let (start_x, start_y) = caret_position_for_offset(&text_layout, sel_start_byte);
-        let (end_x, end_y) = caret_position_for_offset(&text_layout, sel_end_byte);
+        let (start_x, start_y) = crate::text_query::caret_position_for_offset_layout(&text_layout, sel_start_byte);
+        let (end_x, end_y) = crate::text_query::caret_position_for_offset_layout(&text_layout, sel_end_byte);
 
         let sel_color = AlphaColor::<Srgb>::from_rgba8(51, 154, 240, 100); // Blue with alpha
         let line_height = scaled_font_size as f64 * 1.2;
@@ -937,7 +980,7 @@ fn paint_input_value(
         let (caret_offset_x, caret_offset_y) = if text.is_empty() {
             (0.0, 0.0)
         } else {
-            caret_position_for_offset(&text_layout, caret_pos)
+            crate::text_query::caret_position_for_offset_layout(&text_layout, caret_pos)
         };
         let caret_x = text_x + caret_offset_x as f64;
         let caret_y = text_y + caret_offset_y as f64;

@@ -15,7 +15,71 @@ pub struct GlyphBounds {
     pub height: f32,
 }
 
-/// Get the (x, y) position for a caret at the given byte offset.
+/// Get the caret position for a byte offset in a specific node.
+///
+/// This is a wrapper that looks up the text layout for the given node
+/// and calls the layout-based function.
+///
+/// # Arguments
+/// * `doc` - The RinchDocument containing the node
+/// * `node_id` - The node ID to query
+/// * `byte_offset` - The UTF-8 byte offset in the text
+///
+/// # Returns
+/// Some((x, y)) if the node has text layout, None otherwise
+pub fn caret_position_for_offset(
+    doc: &crate::dom_impl::RinchDocument,
+    node_id: u64,
+    byte_offset: usize,
+) -> Option<(f32, f32)> {
+    let node = doc.tree.nodes.get(node_id as usize)?;
+
+    // Check inline layout first (IFC root)
+    if let Some(ref inline_layout) = node.text_layout {
+        return Some(caret_position_for_offset_layout(&inline_layout.layout, byte_offset));
+    }
+
+    // Check cached standalone text layout
+    if let Some(ref layout) = node.cached_text_parley {
+        return Some(caret_position_for_offset_layout(layout, byte_offset));
+    }
+
+    None
+}
+
+/// Get the glyph bounds for a byte offset in a specific node.
+///
+/// This is a wrapper that looks up the text layout for the given node
+/// and calls the layout-based function.
+///
+/// # Arguments
+/// * `doc` - The RinchDocument containing the node
+/// * `node_id` - The node ID to query
+/// * `byte_offset` - The UTF-8 byte offset in the text
+///
+/// # Returns
+/// Some(GlyphBounds) if the node has text layout and offset is valid, None otherwise
+pub fn glyph_bounds_for_offset(
+    doc: &crate::dom_impl::RinchDocument,
+    node_id: u64,
+    byte_offset: usize,
+) -> Option<GlyphBounds> {
+    let node = doc.tree.nodes.get(node_id as usize)?;
+
+    // Check inline layout first (IFC root)
+    if let Some(ref inline_layout) = node.text_layout {
+        return glyph_bounds_for_offset_layout(&inline_layout.layout, byte_offset);
+    }
+
+    // Check cached standalone text layout
+    if let Some(ref layout) = node.cached_text_parley {
+        return glyph_bounds_for_offset_layout(layout, byte_offset);
+    }
+
+    None
+}
+
+/// Get the (x, y) position for a caret at the given byte offset in a layout.
 ///
 /// Returns coordinates relative to the layout origin, where:
 /// - x is the horizontal offset from the left edge
@@ -27,7 +91,7 @@ pub struct GlyphBounds {
 ///
 /// # Returns
 /// A tuple (x, y) representing the caret position
-pub fn caret_position_for_offset(
+pub fn caret_position_for_offset_layout(
     layout: &parley::layout::Layout<Brush>,
     byte_offset: usize,
 ) -> (f32, f32) {
@@ -96,7 +160,7 @@ pub fn caret_position_for_offset(
     (last_x, last_y)
 }
 
-/// Get the bounding box for the glyph cluster containing the given byte offset.
+/// Get the bounding box for the glyph cluster containing the given byte offset in a layout.
 ///
 /// Returns None if the offset is out of bounds or layout is empty.
 ///
@@ -106,7 +170,7 @@ pub fn caret_position_for_offset(
 ///
 /// # Returns
 /// An optional `GlyphBounds` representing the cluster's bounding box
-pub fn glyph_bounds_for_offset(
+pub fn glyph_bounds_for_offset_layout(
     layout: &parley::layout::Layout<Brush>,
     byte_offset: usize,
 ) -> Option<GlyphBounds> {
@@ -155,7 +219,7 @@ pub fn glyph_bounds_for_offset(
 
 /// Find the byte offset closest to the given (x, y) position.
 ///
-/// This is the inverse of `caret_position_for_offset`. It finds which
+/// This is the inverse of `caret_position_for_offset_layout`. It finds which
 /// character position is closest to the given screen coordinates.
 ///
 /// # Arguments

@@ -22,6 +22,7 @@ pub fn styles() -> String {
     display: flex;
     align-items: stretch;
     position: relative;
+    min-width: 10rem;
 }
 
 .rinch-number-input__input {

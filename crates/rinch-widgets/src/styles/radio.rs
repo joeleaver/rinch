@@ -77,6 +77,7 @@ pub fn styles() -> String {
     font-size: var(--rinch-font-size-sm);
     color: var(--rinch-color-text);
     line-height: 1.4;
+    white-space: nowrap;
 }
 
 .rinch-radio__description {

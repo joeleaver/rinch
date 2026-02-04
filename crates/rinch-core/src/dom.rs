@@ -234,6 +234,12 @@ impl NodeHandle {
         }
     }
 
+    /// Get an attribute value from this element.
+    pub fn get_attribute(&self, name: &str) -> Option<String> {
+        let doc = self.doc.upgrade()?;
+        doc.borrow().get_attribute(self.node_id, name)
+    }
+
     /// Append a child node to this element.
     pub fn append_child(&self, child: &NodeHandle) {
         if let Some(doc) = self.doc.upgrade() {
@@ -268,6 +274,16 @@ impl NodeHandle {
     pub fn remove(&self) {
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut().remove_node(self.node_id);
+        }
+    }
+
+    /// Focus this element programmatically.
+    ///
+    /// This sets the element as the currently focused element, allowing it to
+    /// receive keyboard input. For input/textarea elements, this enables text input.
+    pub fn focus(&self) {
+        if let Some(doc) = self.doc.upgrade() {
+            doc.borrow_mut().focus_element(self.node_id);
         }
     }
 
@@ -415,6 +431,49 @@ impl NodeHandle {
             }
         }
     }
+
+    /// Query a single child node matching the selector.
+    pub fn query_selector(&self, selector: &str) -> Option<NodeHandle> {
+        let doc = self.doc.upgrade()?;
+        let node_id = doc.borrow().query_selector(selector)?;
+        Some(NodeHandle::new(node_id, self.doc.clone()))
+    }
+
+    /// Query all child nodes matching the selector.
+    pub fn query_selector_all(&self, selector: &str) -> Vec<NodeHandle> {
+        if let Some(doc) = self.doc.upgrade() {
+            doc.borrow().query_selector_all(selector)
+                .into_iter()
+                .map(|id| NodeHandle::new(id, self.doc.clone()))
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Query the screen position of a text caret at the given byte offset.
+    ///
+    /// Returns the (x, y) coordinates where a text cursor would be rendered
+    /// at the specified byte offset within this node's text content.
+    ///
+    /// # Returns
+    /// Some((x, y)) if the node has text layout and the offset is valid, None otherwise
+    pub fn query_caret_position(&self, byte_offset: usize) -> Option<(f32, f32)> {
+        let doc = self.doc.upgrade()?;
+        doc.borrow().query_caret_position(self.node_id.0 as u64, byte_offset)
+    }
+
+    /// Query the bounding box of a glyph cluster at the given byte offset.
+    ///
+    /// Returns the bounding box of the glyph cluster containing the specified
+    /// byte offset within this node's text content.
+    ///
+    /// # Returns
+    /// Some(GlyphBounds) if the node has text layout and the offset is valid, None otherwise
+    pub fn query_glyph_bounds(&self, byte_offset: usize) -> Option<GlyphBounds> {
+        let doc = self.doc.upgrade()?;
+        doc.borrow().query_glyph_bounds(self.node_id.0 as u64, byte_offset)
+    }
 }
 
 impl std::fmt::Debug for NodeHandle {
@@ -484,6 +543,15 @@ impl_into_node_for_display!(
     bool, char
 );
 
+/// Bounding box for a glyph cluster.
+#[derive(Debug, Clone, Copy)]
+pub struct GlyphBounds {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
 /// Trait for DOM documents that support mutation operations.
 ///
 /// This trait abstracts the DOM mutation API, allowing different
@@ -552,6 +620,9 @@ pub trait DomDocument {
     /// Query selector to find a node.
     fn query_selector(&self, selector: &str) -> Option<NodeId>;
 
+    /// Query selector to find all matching nodes.
+    fn query_selector_all(&self, selector: &str) -> Vec<NodeId>;
+
     /// Get the children of a node.
     fn get_children(&self, node: NodeId) -> Vec<NodeId>;
 
@@ -579,6 +650,41 @@ pub trait DomDocument {
     /// that avoids incremental mutations which can leave the document
     /// in an inconsistent state.
     fn set_inner_html(&mut self, node: NodeId, html: &str);
+
+    /// Query the screen position of a text caret at the given byte offset.
+    ///
+    /// Returns the (x, y) coordinates where a text cursor would be rendered
+    /// at the specified byte offset within the text node.
+    ///
+    /// # Arguments
+    /// * `node_id` - The ID of the text node or element containing text
+    /// * `byte_offset` - The UTF-8 byte offset within the text content
+    ///
+    /// # Returns
+    /// Some((x, y)) if the node has text layout and the offset is valid, None otherwise
+    fn query_caret_position(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32)>;
+
+    /// Query the bounding box of a glyph cluster at the given byte offset.
+    ///
+    /// Returns the bounding box of the glyph cluster containing the specified
+    /// byte offset within the text node.
+    ///
+    /// # Arguments
+    /// * `node_id` - The ID of the text node or element containing text
+    /// * `byte_offset` - The UTF-8 byte offset within the text content
+    ///
+    /// # Returns
+    /// Some(GlyphBounds) if the node has text layout and the offset is valid, None otherwise
+    fn query_glyph_bounds(&self, node_id: u64, byte_offset: usize) -> Option<GlyphBounds>;
+
+    /// Focus a specific element programmatically.
+    ///
+    /// This sets the element as the currently focused element, allowing it to
+    /// receive keyboard input. For input/textarea elements, this enables text input.
+    ///
+    /// # Arguments
+    /// * `node_id` - The ID of the element to focus
+    fn focus_element(&mut self, node_id: NodeId);
 }
 
 /// Context for building DOM trees with automatic effect tracking.
@@ -1113,6 +1219,11 @@ impl DomDocument for MockDomDocument {
     fn query_selector(&self, _selector: &str) -> Option<NodeId> {
         // Mock implementation - just return body
         Some(self.body_id)
+    }
+
+    fn query_selector_all(&self, _selector: &str) -> Vec<NodeId> {
+        // Mock implementation - return empty vec
+        Vec::new()
     }
 
     fn get_children(&self, node: NodeId) -> Vec<NodeId> {

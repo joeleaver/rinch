@@ -15,7 +15,7 @@ pub fn capture_texture_rgba(
     width: u32,
     height: u32,
     format: TextureFormat,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, String> {
     let bytes_per_pixel = 4u32;
     // wgpu requires rows to be aligned to 256 bytes
     let unpadded_row = width * bytes_per_pixel;
@@ -61,12 +61,14 @@ pub fn capture_texture_rgba(
     let slice = staging_buffer.slice(..);
     let (tx, rx) = std::sync::mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |result| {
-        tx.send(result).unwrap();
+        let _ = tx.send(result);
     });
     device
         .poll(wgpu::PollType::wait_indefinitely())
-        .unwrap();
-    rx.recv().unwrap().expect("Failed to map buffer");
+        .map_err(|e| format!("GPU poll failed: {:?}", e))?;
+    rx.recv()
+        .map_err(|e| format!("Channel recv failed: {}", e))?
+        .map_err(|e| format!("Buffer mapping failed: {:?}", e))?;
 
     let data = slice.get_mapped_range();
 
@@ -96,7 +98,7 @@ pub fn capture_texture_rgba(
     drop(data);
     staging_buffer.unmap();
 
-    rgba
+    Ok(rgba)
 }
 
 /// Encode raw RGBA pixel data to PNG bytes.

@@ -21,6 +21,7 @@ pub fn styles() -> String {
     border: 1px solid var(--rinch-color-border);
     border-radius: var(--rinch-radius-default);
     transition: border-color 150ms ease;
+    min-width: 10rem;
 }
 
 .rinch-text-input__input:focus {

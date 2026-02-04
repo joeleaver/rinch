@@ -76,6 +76,7 @@ pub fn styles() -> String {
 .rinch-checkbox__label {
     font-size: var(--rinch-font-size-sm);
     color: var(--rinch-color-text);
+    white-space: nowrap;
 }
 
 /* Checkbox sizes - matches Mantine: xs=16px, sm=20px, md=24px, lg=30px */

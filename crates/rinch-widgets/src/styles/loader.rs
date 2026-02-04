@@ -15,7 +15,28 @@ pub fn styles() -> String {
 .rinch-loader--lg { width: 2.5rem; height: 2.5rem; }
 .rinch-loader--xl { width: 3rem; height: 3rem; }
 
-/* Oval loader (spinner) */
+/* Oval loader (spinner) - CSS-based spinning circle */
+.rinch-loader__oval {
+    width: 100%;
+    height: 100%;
+    border: 3px solid transparent;
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: rinch-loader-spin 0.8s linear infinite;
+}
+
+/* Size adjustments for oval border */
+.rinch-loader--xs .rinch-loader__oval { border-width: 2px; }
+.rinch-loader--sm .rinch-loader__oval { border-width: 2px; }
+.rinch-loader--lg .rinch-loader__oval { border-width: 4px; }
+.rinch-loader--xl .rinch-loader__oval { border-width: 4px; }
+
+@keyframes rinch-loader-spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* SVG variant for oval loader (if used) */
 .rinch-loader--oval svg {
     width: 100%;
     height: 100%;

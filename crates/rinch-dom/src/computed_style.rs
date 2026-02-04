@@ -724,11 +724,11 @@ pub struct ComputedStyle {
     pub border_bottom_width: LengthPercentageValue,
     pub border_left_width: LengthPercentageValue,
 
-    // Border radius
-    pub border_radius_top_left: f32,
-    pub border_radius_top_right: f32,
-    pub border_radius_bottom_right: f32,
-    pub border_radius_bottom_left: f32,
+    // Border radius (can be percentage, resolved at paint time)
+    pub border_radius_top_left: LengthPercentageValue,
+    pub border_radius_top_right: LengthPercentageValue,
+    pub border_radius_bottom_right: LengthPercentageValue,
+    pub border_radius_bottom_left: LengthPercentageValue,
 
     // Colors
     #[serde(serialize_with = "color_serde::serialize")]
@@ -747,6 +747,8 @@ pub struct ComputedStyle {
     pub font_family: String,
     pub font_style: FontStyleValue,
     pub line_height: LineHeightValue,
+    pub letter_spacing: f32,  // in pixels, 0.0 means normal
+    pub word_spacing: f32,  // in pixels, 0.0 means normal
     pub text_align: TextAlignValue,
     pub text_decoration: TextDecorationValue,
     pub white_space: WhiteSpaceValue,
@@ -811,10 +813,10 @@ impl Default for ComputedStyle {
             border_bottom_width: LengthPercentageValue::Zero,
             border_left_width: LengthPercentageValue::Zero,
 
-            border_radius_top_left: 0.0,
-            border_radius_top_right: 0.0,
-            border_radius_bottom_right: 0.0,
-            border_radius_bottom_left: 0.0,
+            border_radius_top_left: LengthPercentageValue::Zero,
+            border_radius_top_right: LengthPercentageValue::Zero,
+            border_radius_bottom_right: LengthPercentageValue::Zero,
+            border_radius_bottom_left: LengthPercentageValue::Zero,
 
             background_color: None,
             color: None,
@@ -827,6 +829,8 @@ impl Default for ComputedStyle {
             font_family: String::new(),
             font_style: FontStyleValue::default(),
             line_height: LineHeightValue::default(),
+            letter_spacing: 0.0,
+            word_spacing: 0.0,
             text_align: TextAlignValue::default(),
             text_decoration: TextDecorationValue::default(),
             white_space: WhiteSpaceValue::default(),
@@ -1030,18 +1034,18 @@ impl ComputedStyle {
                 "border-bottom-width" => style.border_bottom_width = parse_lp(value),
                 "border-left-width" => style.border_left_width = parse_lp(value),
 
-                // Border radius (longhands)
+                // Border radius (longhands) - supports percentages
                 "border-top-left-radius" => {
-                    style.border_radius_top_left = parse_px_value(value);
+                    style.border_radius_top_left = parse_lp(value);
                 }
                 "border-top-right-radius" => {
-                    style.border_radius_top_right = parse_px_value(value);
+                    style.border_radius_top_right = parse_lp(value);
                 }
                 "border-bottom-right-radius" => {
-                    style.border_radius_bottom_right = parse_px_value(value);
+                    style.border_radius_bottom_right = parse_lp(value);
                 }
                 "border-bottom-left-radius" => {
-                    style.border_radius_bottom_left = parse_px_value(value);
+                    style.border_radius_bottom_left = parse_lp(value);
                 }
 
                 // Colors
@@ -1064,6 +1068,12 @@ impl ComputedStyle {
                 }
                 "font-style" => style.font_style = FontStyleValue::parse(value),
                 "line-height" => style.line_height = LineHeightValue::parse(value),
+                "letter-spacing" => {
+                    style.letter_spacing = parse_px_value(value);
+                }
+                "word-spacing" => {
+                    style.word_spacing = parse_px_value(value);
+                }
                 "text-align" => style.text_align = TextAlignValue::parse(value),
                 "text-decoration" => style.text_decoration = TextDecorationValue::parse(value),
                 "white-space" => style.white_space = WhiteSpaceValue::parse(value),
@@ -1086,11 +1096,30 @@ impl ComputedStyle {
 
                 // Handle border shorthand for width extraction
                 "border" => {
-                    // Parse border shorthand: "Npx solid color"
-                    for part in value.split_whitespace() {
-                        if let Some(px) = part.strip_suffix("px") {
-                            if let Ok(w) = px.parse::<f32>() {
-                                let lp = LengthPercentageValue::Length(w);
+                    // Handle "border: none" or "border: 0" - sets width to 0
+                    let trimmed = value.trim();
+                    if trimmed == "none" || trimmed == "0" {
+                        let lp = LengthPercentageValue::Length(0.0);
+                        style.border_top_width = lp;
+                        style.border_right_width = lp;
+                        style.border_bottom_width = lp;
+                        style.border_left_width = lp;
+                    } else {
+                        // Parse border shorthand: "Npx solid color"
+                        for part in value.split_whitespace() {
+                            if let Some(px) = part.strip_suffix("px") {
+                                if let Ok(w) = px.parse::<f32>() {
+                                    let lp = LengthPercentageValue::Length(w);
+                                    style.border_top_width = lp;
+                                    style.border_right_width = lp;
+                                    style.border_bottom_width = lp;
+                                    style.border_left_width = lp;
+                                    break;
+                                }
+                            }
+                            // Also handle "none" within border shorthand parts
+                            if part == "none" {
+                                let lp = LengthPercentageValue::Length(0.0);
                                 style.border_top_width = lp;
                                 style.border_right_width = lp;
                                 style.border_bottom_width = lp;
@@ -1098,12 +1127,12 @@ impl ComputedStyle {
                                 break;
                             }
                         }
-                    }
-                    // Also try to extract border-color
-                    for part in value.split_whitespace() {
-                        if let Some(c) = parse_color(part) {
-                            style.border_color = Some(c);
-                            break;
+                        // Also try to extract border-color
+                        for part in value.split_whitespace() {
+                            if let Some(c) = parse_color(part) {
+                                style.border_color = Some(c);
+                                break;
+                            }
                         }
                     }
                 }
@@ -1281,6 +1310,16 @@ impl ComputedStyle {
             builder.push_default(StyleProperty::LineHeight(line_height));
         }
 
+        // Set letter spacing if not zero
+        if self.letter_spacing != 0.0 {
+            builder.push_default(StyleProperty::LetterSpacing(self.letter_spacing));
+        }
+
+        // Set word spacing if not zero
+        if self.word_spacing != 0.0 {
+            builder.push_default(StyleProperty::WordSpacing(self.word_spacing));
+        }
+
         let mut layout = builder.build(text);
         layout.break_all_lines(max_width);
 
@@ -1376,10 +1415,27 @@ impl ComputedStyle {
             left: Self::inset_from_stylo_generic(&position_style.left),
 
             // Border widths (BorderSideWidth is a newtype wrapper around NonNegativeLength)
-            border_top_width: LengthPercentageValue::Length(border.border_top_width.0.to_f32_px()),
-            border_right_width: LengthPercentageValue::Length(border.border_right_width.0.to_f32_px()),
-            border_bottom_width: LengthPercentageValue::Length(border.border_bottom_width.0.to_f32_px()),
-            border_left_width: LengthPercentageValue::Length(border.border_left_width.0.to_f32_px()),
+            // Check border-style: if style is 'none' or 'hidden', width should be 0
+            border_top_width: if Self::border_style_is_none(&border.border_top_style) {
+                LengthPercentageValue::Length(0.0)
+            } else {
+                LengthPercentageValue::Length(border.border_top_width.0.to_f32_px())
+            },
+            border_right_width: if Self::border_style_is_none(&border.border_right_style) {
+                LengthPercentageValue::Length(0.0)
+            } else {
+                LengthPercentageValue::Length(border.border_right_width.0.to_f32_px())
+            },
+            border_bottom_width: if Self::border_style_is_none(&border.border_bottom_style) {
+                LengthPercentageValue::Length(0.0)
+            } else {
+                LengthPercentageValue::Length(border.border_bottom_width.0.to_f32_px())
+            },
+            border_left_width: if Self::border_style_is_none(&border.border_left_style) {
+                LengthPercentageValue::Length(0.0)
+            } else {
+                LengthPercentageValue::Length(border.border_left_width.0.to_f32_px())
+            },
 
             // Border radius
             border_radius_top_left: Self::border_radius_from_stylo(&border.border_top_left_radius),
@@ -1388,9 +1444,19 @@ impl ComputedStyle {
             border_radius_bottom_left: Self::border_radius_from_stylo(&border.border_bottom_left_radius),
 
             // Colors
-            background_color: Self::color_from_stylo(&background.background_color),
+            // Handle currentColor for background-color: resolve to text color
+            background_color: if background.background_color.is_currentcolor() {
+                Self::color_from_absolute(&text.color)
+            } else {
+                Self::color_from_stylo(&background.background_color)
+            },
             color: Self::color_from_absolute(&text.color),
-            border_color: Self::color_from_stylo(&border.border_top_color),
+            // Handle currentColor for border-color: resolve to text color
+            border_color: if border.border_top_color.is_currentcolor() {
+                Self::color_from_absolute(&text.color)
+            } else {
+                Self::color_from_stylo(&border.border_top_color)
+            },
 
             // Visual
             opacity: effects.opacity,
@@ -1401,6 +1467,8 @@ impl ComputedStyle {
             font_family: Self::font_family_from_stylo(&font.font_family),
             font_style: Self::font_style_from_stylo(&font.font_style),
             line_height: Self::line_height_from_stylo(&font.line_height),
+            letter_spacing: Self::letter_spacing_from_stylo(&text.letter_spacing),
+            word_spacing: Self::word_spacing_from_stylo(&text.word_spacing),
             text_align: Self::text_align_from_stylo(&text.text_align),
             text_decoration: TextDecorationValue::default(), // TODO: text-decoration from Stylo
             white_space: Self::white_space_from_stylo(&text.white_space_collapse, &text.text_wrap_mode),
@@ -1649,18 +1717,24 @@ impl ComputedStyle {
         }
     }
 
-    fn border_radius_from_stylo(radius: &style::values::computed::BorderCornerRadius) -> f32 {
+    fn border_radius_from_stylo(radius: &style::values::computed::BorderCornerRadius) -> LengthPercentageValue {
         // BorderCornerRadius is a Size with width and height for elliptical radii
         // We just take the width (horizontal radius) for simplicity
         let width = &radius.0.width;
         if let Some(len) = width.0.to_length() {
-            len.px()
-        } else if let Some(_pct) = width.0.to_percentage() {
-            // For percentage, we'd need the element's dimensions - default to 0 for now
-            0.0
+            LengthPercentageValue::Length(len.px())
+        } else if let Some(pct) = width.0.to_percentage() {
+            // Store the percentage to be resolved at paint time when dimensions are known
+            LengthPercentageValue::Percent(pct.0)
         } else {
-            0.0
+            LengthPercentageValue::Zero
         }
+    }
+
+    /// Check if a border style is 'none' or 'hidden' (meaning no border should be painted).
+    fn border_style_is_none(style: &style::values::computed::BorderStyle) -> bool {
+        use style::values::computed::BorderStyle;
+        matches!(style, BorderStyle::None | BorderStyle::Hidden)
     }
 
     fn color_from_stylo(color: &style::values::computed::Color) -> Option<peniko::Color> {
@@ -1733,6 +1807,20 @@ impl ComputedStyle {
                 LineHeightValue::Absolute(len.0.px())
             }
         }
+    }
+
+    fn letter_spacing_from_stylo(ls: &style::values::computed::text::LetterSpacing) -> f32 {
+        // LetterSpacing wraps a LengthPercentage
+        if let Some(len) = ls.0.to_length() {
+            len.px()
+        } else {
+            0.0
+        }
+    }
+
+    fn word_spacing_from_stylo(ws: &style::values::computed::text::WordSpacing) -> f32 {
+        // WordSpacing wraps a LengthPercentage - use to_length() method
+        ws.to_length().map(|l| l.px()).unwrap_or(0.0)
     }
 
     fn text_align_from_stylo(align: &style::values::computed::TextAlign) -> TextAlignValue {

@@ -1091,3 +1091,28 @@ Source code documentation:
 - `crates/rinch-core/src/dom.rs` - NodeHandle, RenderScope, DomDocument trait
 - `crates/rinch-dom/src/lib.rs` - RinchDocument implementation (Taffy + Parley + Vello)
 - `crates/rinch-macros/src/dom_codegen.rs` - rsx! macro DOM code generation
+
+## Visual Audit Workflow
+
+Use the rinch MCP tools to systematically compare rinch rendering against expected browser rendering.
+
+**Quick start:**
+```
+launch_app(package: "smyeditor")   # Start app
+screenshot()                        # View inline
+query_selector(selector: ".class")  # Find elements
+get_computed_styles(id: 123)        # Check CSS values
+close_app()                         # Done
+```
+
+**Full workflow documented at:** `.claude/skills/visual-audit.md`
+
+**Common issues and fixes:**
+
+| Issue | Check | Fix Location |
+|-------|-------|--------------|
+| Borders appearing unexpectedly | `border_*_width` should be 0 for `border: none` | `computed_style.rs` - check `border-style` |
+| SVG icons 0x0 | Missing inline width/height styles | Add `style="width: Xpx; height: Xpx"` |
+| currentColor not resolving | Check `is_currentcolor()` handling | `computed_style.rs` |
+| Reactive state not updating | Need `{|| expr}` closure syntax | Widget render method |
+| Menu active state stale | Missing reactive effect | Add `create_effect()` for class updates |

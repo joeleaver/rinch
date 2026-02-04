@@ -66,6 +66,7 @@ pub fn styles() -> String {
 .rinch-switch__label {
     font-size: var(--rinch-font-size-sm);
     color: var(--rinch-color-text);
+    white-space: nowrap;
 }
 
 /* Switch sizes */

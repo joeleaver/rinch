@@ -194,8 +194,8 @@ impl Widget for NavLink {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         let base_class = self.base_class_string();
 
-        // Determine if we have a reactive active state
-        let is_active = if let Some(ref active_fn) = self.active_fn {
+        // Determine initial active state
+        let initial_active = if let Some(ref active_fn) = self.active_fn {
             active_fn()
         } else {
             self.active
@@ -299,8 +299,8 @@ impl Widget for NavLink {
             let a = rinch_macros::rsx! { a { class: "rinch-navlink" } };
             a.set_attribute("href", href);
 
-            // Set class (static or reactive would need effect)
-            let class = if is_active {
+            // Set initial class
+            let class = if initial_active {
                 format!("{} rinch-navlink--active", base_class)
             } else {
                 base_class.clone()
@@ -311,6 +311,28 @@ impl Widget for NavLink {
                 class
             };
             a.set_attribute("class", &final_class);
+
+            // Set up reactive effect for active state if active_fn is provided
+            if let Some(ref active_fn) = self.active_fn {
+                let active_fn = active_fn.clone();
+                let base_class = base_class.clone();
+                let disabled = self.disabled;
+                let a_handle = a.clone();
+                __scope.create_effect(move || {
+                    let is_active = active_fn();
+                    let class = if is_active {
+                        format!("{} rinch-navlink--active", base_class)
+                    } else {
+                        base_class.clone()
+                    };
+                    let final_class = if disabled {
+                        format!("{} disabled", class)
+                    } else {
+                        class
+                    };
+                    a_handle.set_attribute("class", &final_class);
+                });
+            }
 
             // Click handler
             if let Some(ref cb) = self.onclick {
@@ -326,13 +348,29 @@ impl Widget for NavLink {
         } else {
             let btn = rinch_macros::rsx! { button { class: "rinch-navlink" } };
 
-            // Set class
-            let class = if is_active {
+            // Set initial class
+            let class = if initial_active {
                 format!("{} rinch-navlink--active", base_class)
             } else {
                 base_class.clone()
             };
             btn.set_attribute("class", &class);
+
+            // Set up reactive effect for active state if active_fn is provided
+            if let Some(ref active_fn) = self.active_fn {
+                let active_fn = active_fn.clone();
+                let base_class = base_class.clone();
+                let btn_handle = btn.clone();
+                __scope.create_effect(move || {
+                    let is_active = active_fn();
+                    let class = if is_active {
+                        format!("{} rinch-navlink--active", base_class)
+                    } else {
+                        base_class.clone()
+                    };
+                    btn_handle.set_attribute("class", &class);
+                });
+            }
 
             if self.disabled {
                 btn.set_attribute("disabled", "");

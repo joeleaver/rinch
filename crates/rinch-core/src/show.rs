@@ -53,6 +53,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::dom::{NodeHandle, RenderScope};
+use crate::hooks::with_render_context;
 use crate::reactive::Effect;
 
 /// Fine-grained conditional rendering that surgically updates the DOM.
@@ -127,7 +128,8 @@ where
     ) {
         if let Some(doc) = doc_weak.upgrade() {
             let mut child_scope = RenderScope::new(doc, parent_id);
-            let content = render_fn(&mut child_scope);
+            // Enable hook context for render functions called during Effects
+            let content = with_render_context(|| render_fn(&mut child_scope));
             marker.insert_after(&content);
             current_content.borrow_mut().push(content);
             *current_scope.borrow_mut() = Some(child_scope);

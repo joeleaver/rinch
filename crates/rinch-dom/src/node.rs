@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicBool;
 use atomic_refcell::AtomicRefCell;
 use bitflags::bitflags;
 use peniko::Brush;
+use peniko::color::{AlphaColor, Srgb};
 use selectors::matching::ElementSelectorFlags;
 use servo_arc::Arc as ServoArc;
 use style::properties::PropertyDeclarationBlock;
@@ -87,6 +88,12 @@ pub struct TextMeasure {
     /// Raw CSS line-height value (e.g. "1.6", "24px", "normal").
     /// Empty means use font metrics default.
     pub line_height_css: String,
+    /// DOM node ID for caching the layout after measurement.
+    pub node_id: usize,
+    /// Text color (inherited from parent).
+    pub color: AlphaColor<Srgb>,
+    /// Whether text wrapping is disabled (white-space: nowrap/pre).
+    pub no_wrap: bool,
 }
 
 /// Layout result for a node after Taffy computation.
@@ -161,6 +168,9 @@ pub struct Node {
     /// Cached Parley inline layout (only set on IFC root nodes).
     /// Derived cache — cleared on any mutation to inline children.
     pub text_layout: Option<Box<InlineLayout>>,
+    /// Cached Parley layout for standalone text nodes (not part of IFC).
+    /// Built after Taffy layout using the computed width.
+    pub cached_text_parley: Option<Box<parley::layout::Layout<Brush>>>,
     /// Cached computed style string (merged class + inline styles).
     /// Populated during style recomputation; used by inline text layout.
     pub computed_style_str: String,
@@ -222,6 +232,7 @@ impl Node {
             display_mode: DisplayMode::Block,
             ifc_root: None,
             text_layout: None,
+            cached_text_parley: None,
             computed_style_str: String::new(),
             is_hovered: false,
             computed_style: ComputedStyle::default(),
@@ -251,6 +262,7 @@ impl Node {
             display_mode,
             ifc_root: None,
             text_layout: None,
+            cached_text_parley: None,
             computed_style_str: String::new(),
             is_hovered: false,
             computed_style: ComputedStyle::default(),
@@ -279,6 +291,7 @@ impl Node {
             display_mode: DisplayMode::Inline,
             ifc_root: None,
             text_layout: None,
+            cached_text_parley: None,
             computed_style_str: String::new(),
             is_hovered: false,
             computed_style: ComputedStyle::default(),
@@ -307,6 +320,7 @@ impl Node {
             display_mode: DisplayMode::Inline,
             ifc_root: None,
             text_layout: None,
+            cached_text_parley: None,
             computed_style_str: String::new(),
             is_hovered: false,
             computed_style: ComputedStyle::default(),
