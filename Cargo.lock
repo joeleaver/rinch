@@ -3692,6 +3692,7 @@ dependencies = [
  "rinch-debug",
  "rinch-dom",
  "rinch-macros",
+ "rinch-platform",
  "rinch-renderer",
  "rinch-theme",
  "rinch-widgets",
@@ -3828,6 +3829,15 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "rinch-platform"
+version = "0.1.0"
+dependencies = [
+ "peniko",
+ "vello",
+ "web-time",
 ]
 
 [[package]]

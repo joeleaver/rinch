@@ -6,36 +6,37 @@ license.workspace = true
 description = "A lightweight cross-platform GUI library for Rust"
 
 [dependencies]
+# Always available (work on all platforms)
 rinch-core.workspace = true
 rinch-dom.workspace = true
 rinch-macros.workspace = true
-rinch-renderer.workspace = true
-anyrender.workspace = true
-anyrender_vello.workspace = true
+rinch-platform = { workspace = true }
 parley = { workspace = true }
 peniko = "0.6"
-pollster = "0.4"
 vello = "0.7"
-wgpu.workspace = true
-winit.workspace = true
-muda.workspace = true
-tokio.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
-futures-util = "0.3"
 serde_json = "1"
-base64 = "0.22"
-png = "0.17"
 
-keyboard-types = "0.7"
+# Desktop-only (optional, enabled by `desktop` feature)
+rinch-renderer = { workspace = true, optional = true }
+anyrender = { workspace = true, optional = true }
+anyrender_vello = { workspace = true, optional = true }
+wgpu = { workspace = true, optional = true }
+winit = { workspace = true, optional = true }
+muda = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+pollster = { version = "0.4", optional = true }
+futures-util = { version = "0.3", optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+png = { version = "0.17", optional = true }
+base64 = { version = "0.22", optional = true }
+keyboard-types = { version = "0.7", optional = true }
+
+# Optional features
 rfd = { workspace = true, optional = true }
 rinch-clipboard = { workspace = true, optional = true }
 tray-icon = { workspace = true, optional = true }
-
-# Optional memory profiling
 memory-stats = { version = "1.2", optional = true }
-
-# Theme and widgets
 rinch-theme = { workspace = true, optional = true }
 rinch-widgets = { workspace = true, optional = true }
 rinch-debug = { path = "../rinch-debug", optional = true }
@@ -44,7 +45,13 @@ rinch-debug = { path = "../rinch-debug", optional = true }
 windows-sys = { version = "0.59", features = ["Win32_Graphics_Gdi", "Win32_Foundation"] }
 
 [features]
-default = []
+default = ["desktop"]
+desktop = [
+    "dep:rinch-renderer", "dep:anyrender", "dep:anyrender_vello",
+    "dep:wgpu", "dep:winit", "dep:muda", "dep:tokio", "dep:pollster",
+    "dep:futures-util", "dep:tracing-subscriber",
+    "dep:png", "dep:base64", "dep:keyboard-types",
+]
 file-dialogs = ["rfd"]
 clipboard = ["dep:rinch-clipboard"]
 system-tray = ["tray-icon"]

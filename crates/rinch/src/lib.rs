@@ -93,9 +93,12 @@
 //! [`use_derived`]: prelude::use_derived
 
 pub mod app;
+#[cfg(feature = "desktop")]
 pub mod menu;
+#[cfg(feature = "desktop")]
 pub mod shell;
 pub mod window;
+#[cfg(feature = "desktop")]
 pub mod windows;
 
 #[cfg(feature = "file-dialogs")]
@@ -108,6 +111,7 @@ pub mod clipboard;
 pub mod tray;
 
 /// Memory profiling utilities (enable with `memory-profile` feature).
+#[cfg(feature = "desktop")]
 pub mod memory {
     pub use crate::shell::memory_profile::*;
 }
@@ -117,6 +121,7 @@ pub mod memory {
 /// This module provides primitives for surgical DOM updates where signal
 /// changes only affect the specific nodes that depend on them.
 pub mod fine_grained {
+    #[cfg(feature = "theme")]
     pub use crate::update_theme;
     pub use rinch_core::dom::{
         DomDocument, DomUpdate, NodeHandle, NodeId, RenderScope, UpdateBatch, clear_render_scope,
@@ -138,6 +143,7 @@ pub mod widgets {
 
 pub mod prelude {
     //! Common imports for rinch applications.
+    #[cfg(feature = "desktop")]
     pub use crate::shell::{run, run_with_theme};
     pub use rinch_core::element::*;
     pub use rinch_core::{Effect, Memo, Scope, Signal, batch, derived, untracked};
@@ -152,6 +158,7 @@ pub mod prelude {
     pub use rinch_core::Icon;
     pub use rinch_macros::rsx;
     // Window control functions
+    #[cfg(feature = "desktop")]
     pub use crate::windows::{
         close_current_window, minimize_current_window, toggle_maximize_current_window,
     };
@@ -185,11 +192,13 @@ pub use rinch_core::element::{
 };
 pub use rinch_core::{Effect, Memo, Scope, Signal, batch, derived, untracked};
 pub use rinch_macros::rsx;
+#[cfg(feature = "desktop")]
 pub use shell::{
     run, run_rinch, run_rinch_with_window_props, run_with_theme, run_with_window_props,
 };
 
 pub use rinch_core as core;
+#[cfg(feature = "desktop")]
 pub use rinch_renderer as renderer;
 
 /// Dynamically update theme CSS at runtime.
