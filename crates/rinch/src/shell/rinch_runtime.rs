@@ -709,17 +709,31 @@ impl RinchRuntime {
                 DebugResult::Json { data: json!({"status": "closing"}) }
             }
             DebugCommandKind::KeyPress { key, shift, ctrl } => {
-                match key.as_str() {
-                    "ArrowUp" => self.handle_arrow_up(shift),
-                    "ArrowDown" => self.handle_arrow_down(shift),
-                    "ArrowLeft" => self.handle_arrow_left(shift, ctrl),
-                    "ArrowRight" => self.handle_arrow_right(shift, ctrl),
-                    "Home" => self.handle_home(shift),
-                    "End" => self.handle_end(shift),
-                    "Enter" => self.handle_enter(),
-                    "Backspace" => self.handle_backspace(),
-                    "Delete" => self.handle_delete(),
-                    _ => {}
+                // First, try to dispatch to the keyboard interceptor (used by rich text editor)
+                let key_data = events::KeyEventData {
+                    key: key.clone(),
+                    code: key.clone(), // Use same as key for debug commands
+                    ctrl,
+                    shift,
+                    alt: false,
+                    meta: false,
+                };
+                let handled = events::dispatch_keyboard_event(&key_data);
+
+                // If not handled by interceptor, fall back to default handling
+                if !handled {
+                    match key.as_str() {
+                        "ArrowUp" => self.handle_arrow_up(shift),
+                        "ArrowDown" => self.handle_arrow_down(shift),
+                        "ArrowLeft" => self.handle_arrow_left(shift, ctrl),
+                        "ArrowRight" => self.handle_arrow_right(shift, ctrl),
+                        "Home" => self.handle_home(shift),
+                        "End" => self.handle_end(shift),
+                        "Enter" => self.handle_enter(),
+                        "Backspace" => self.handle_backspace(),
+                        "Delete" => self.handle_delete(),
+                        _ => {}
+                    }
                 }
                 if let Some(w) = &self.window {
                     w.request_redraw();
@@ -994,6 +1008,39 @@ impl RinchRuntime {
                     // Check for click handler
                     if let Some(rid_str) = node.attributes.get("data-rid") {
                         if let Ok(handler_id) = rid_str.parse::<usize>() {
+                            // Compute text hit info for rich text editor click-to-position
+                            let text_hit = Self::compute_text_hit_info(&d.tree, hit_id, x, y);
+
+                            // Get element bounds for click context
+                            let (elem_x, elem_y, elem_w, elem_h) = {
+                                let mut ax = node.layout.x;
+                                let mut ay = node.layout.y;
+                                let mut pid = node.parent;
+                                while let Some(p) = pid {
+                                    if let Some(pn) = d.tree.get(p) {
+                                        ax += pn.layout.x;
+                                        ay += pn.layout.y;
+                                        ax -= pn.scroll_offset.0 as f32;
+                                        ay -= pn.scroll_offset.1 as f32;
+                                        pid = pn.parent;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                (ax, ay, node.layout.width, node.layout.height)
+                            };
+
+                            // Set click context before dispatching
+                            events::set_click_context(events::ClickContext {
+                                mouse_x: x,
+                                mouse_y: y,
+                                element_x: elem_x,
+                                element_y: elem_y,
+                                element_width: elem_w,
+                                element_height: elem_h,
+                                text_hit,
+                            });
+
                             // Must drop borrow before dispatching (handler may mutate doc)
                             drop(d);
                             // Clear focus when clicking non-input elements
@@ -1032,6 +1079,94 @@ impl RinchRuntime {
             // Clicked on something without a handler - clear focus
             drop(d);
             self.clear_input_focus();
+        }
+    }
+
+    /// Compute text hit info for click-to-position in rich text editors.
+    ///
+    /// Walks up from the hit node to find block index and computes byte offset
+    /// from the text layout at the click position.
+    fn compute_text_hit_info(
+        tree: &rinch_dom::NodeTree,
+        hit_id: usize,
+        click_x: f32,
+        click_y: f32,
+    ) -> events::TextHitInfo {
+        // Walk up from hit node to find block index (data-block-index attribute)
+        let mut block_index = 0usize;
+        let mut block_node_id = None;
+        let mut current = Some(hit_id);
+
+        while let Some(node_id) = current {
+            if let Some(node) = tree.get(node_id) {
+                if let Some(idx_str) = node.attributes.get("data-block-index") {
+                    if let Ok(idx) = idx_str.parse::<usize>() {
+                        block_index = idx;
+                        block_node_id = Some(node_id);
+                        break;
+                    }
+                }
+                current = node.parent;
+            } else {
+                break;
+            }
+        }
+
+        let Some(block_id) = block_node_id else {
+            return events::TextHitInfo::default();
+        };
+
+        // Get the block node and compute click position relative to it
+        let Some(block_node) = tree.get(block_id) else {
+            return events::TextHitInfo::default();
+        };
+
+        // Calculate absolute position of the block node
+        let mut abs_x = block_node.layout.x;
+        let mut abs_y = block_node.layout.y;
+        let mut parent_id = block_node.parent;
+        while let Some(pid) = parent_id {
+            if let Some(pn) = tree.get(pid) {
+                abs_x += pn.layout.x;
+                abs_y += pn.layout.y;
+                abs_x -= pn.scroll_offset.0 as f32;
+                abs_y -= pn.scroll_offset.1 as f32;
+                parent_id = pn.parent;
+            } else {
+                break;
+            }
+        }
+
+        // Calculate click position relative to block
+        let rel_x = (click_x - abs_x).max(0.0);
+        let rel_y = (click_y - abs_y).max(0.0);
+
+        // Try to get text layout from the block node or its first text child
+        let byte_offset = if let Some(ref layout) = block_node.text_layout {
+            // IFC root has text_layout
+            byte_offset_from_position(&layout.layout, rel_x, rel_y)
+        } else if let Some(ref layout) = block_node.cached_text_parley {
+            // Block has cached text layout
+            byte_offset_from_position(layout, rel_x, rel_y)
+        } else {
+            // Check first-level children for text layout (non-IFC case)
+            let mut offset = 0usize;
+            for &child_id in &block_node.children {
+                if let Some(child) = tree.nodes.get(child_id) {
+                    if let Some(ref layout) = child.cached_text_parley {
+                        offset = byte_offset_from_position(layout, rel_x, rel_y);
+                        break;
+                    }
+                }
+            }
+            offset
+        };
+
+        events::TextHitInfo {
+            block_index,
+            byte_offset,
+            inline_root_node_id: block_id,
+            valid: true,
         }
     }
 
@@ -2122,62 +2257,99 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                 let ctrl = self.modifiers.super_key();
                 #[cfg(not(target_os = "macos"))]
                 let ctrl = self.modifiers.control_key();
+                let alt = self.modifiers.alt_key();
 
-                match key_code {
-                    KeyCode::F12 => {
-                        self.devtools.toggle();
-                        tracing::info!("DevTools: {}", if self.devtools.visible { "opened" } else { "closed" });
-                        if let Some(w) = &self.window {
-                            w.request_redraw();
+                // Convert key code to string for interceptor
+                let key_str = match key_code {
+                    KeyCode::ArrowLeft => Some("ArrowLeft"),
+                    KeyCode::ArrowRight => Some("ArrowRight"),
+                    KeyCode::ArrowUp => Some("ArrowUp"),
+                    KeyCode::ArrowDown => Some("ArrowDown"),
+                    KeyCode::Home => Some("Home"),
+                    KeyCode::End => Some("End"),
+                    KeyCode::Enter => Some("Enter"),
+                    KeyCode::Backspace => Some("Backspace"),
+                    KeyCode::Delete => Some("Delete"),
+                    _ => None,
+                };
+
+                // Try keyboard interceptor first for navigation/editing keys
+                let handled_by_interceptor = if let Some(key) = key_str {
+                    let key_data = events::KeyEventData {
+                        key: key.to_string(),
+                        code: key.to_string(),
+                        ctrl,
+                        shift,
+                        alt,
+                        meta: false,
+                    };
+                    events::dispatch_keyboard_event(&key_data)
+                } else {
+                    false
+                };
+
+                // If interceptor handled it, skip default handling (except F12 which is always runtime)
+                if handled_by_interceptor {
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                } else {
+                    match key_code {
+                        KeyCode::F12 => {
+                            self.devtools.toggle();
+                            tracing::info!("DevTools: {}", if self.devtools.visible { "opened" } else { "closed" });
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
                         }
-                    }
-                    KeyCode::Backspace => {
-                        self.handle_backspace();
-                    }
-                    KeyCode::Delete => {
-                        self.handle_delete();
-                    }
-                    KeyCode::ArrowLeft => {
-                        self.handle_arrow_left(shift, ctrl);
-                    }
-                    KeyCode::ArrowRight => {
-                        self.handle_arrow_right(shift, ctrl);
-                    }
-                    KeyCode::Home => {
-                        self.handle_home(shift);
-                    }
-                    KeyCode::End => {
-                        self.handle_end(shift);
-                    }
-                    KeyCode::KeyA if ctrl => {
-                        self.handle_select_all();
-                    }
-                    KeyCode::KeyC if ctrl => {
-                        self.handle_copy();
-                    }
-                    KeyCode::KeyV if ctrl => {
-                        self.handle_paste();
-                    }
-                    KeyCode::KeyX if ctrl => {
-                        self.handle_cut();
-                    }
-                    KeyCode::Enter if !ctrl => {
-                        // Insert newline only for textarea elements
-                        self.handle_enter();
-                    }
-                    KeyCode::ArrowUp => {
-                        self.handle_arrow_up(shift);
-                    }
-                    KeyCode::ArrowDown => {
-                        self.handle_arrow_down(shift);
-                    }
-                    _ => {
-                        // Handle text input for focused input elements
-                        // Skip if Ctrl is held (except for Ctrl+V which is handled above)
-                        if !ctrl {
-                            if let Some(t) = text {
-                                if !t.is_empty() {
-                                    self.handle_text_input(t.as_str());
+                        KeyCode::Backspace => {
+                            self.handle_backspace();
+                        }
+                        KeyCode::Delete => {
+                            self.handle_delete();
+                        }
+                        KeyCode::ArrowLeft => {
+                            self.handle_arrow_left(shift, ctrl);
+                        }
+                        KeyCode::ArrowRight => {
+                            self.handle_arrow_right(shift, ctrl);
+                        }
+                        KeyCode::Home => {
+                            self.handle_home(shift);
+                        }
+                        KeyCode::End => {
+                            self.handle_end(shift);
+                        }
+                        KeyCode::KeyA if ctrl => {
+                            self.handle_select_all();
+                        }
+                        KeyCode::KeyC if ctrl => {
+                            self.handle_copy();
+                        }
+                        KeyCode::KeyV if ctrl => {
+                            self.handle_paste();
+                        }
+                        KeyCode::KeyX if ctrl => {
+                            self.handle_cut();
+                        }
+                        KeyCode::Enter if !ctrl => {
+                            // Insert newline only for textarea elements
+                            self.handle_enter();
+                        }
+                        KeyCode::ArrowUp => {
+                            self.handle_arrow_up(shift);
+                        }
+                        KeyCode::ArrowDown => {
+                            self.handle_arrow_down(shift);
+                        }
+                        _ => {
+                            // Handle text input for focused input elements
+                            // Skip if Ctrl is held (except for Ctrl+V which is handled above)
+                            if !ctrl {
+                                if let Some(t) = text {
+                                    if !t.is_empty() {
+                                        self.handle_text_input(t.as_str());
+                                    }
                                 }
                             }
                         }
@@ -2240,6 +2412,14 @@ fn hit_test_node(
     y: f32,
 ) -> Option<usize> {
     let node = tree.get(node_id)?;
+
+    // Skip elements with pointer-events: none
+    if let Some(style) = node.attributes.get("style") {
+        if style.contains("pointer-events: none") || style.contains("pointer-events:none") {
+            return None;
+        }
+    }
+
     let nx = offset_x + node.layout.x;
     let ny = offset_y + node.layout.y;
     let nw = node.layout.width;

@@ -386,10 +386,7 @@ fn execute_toolbar_command(
             if let Ok(mut ed) = editor.try_borrow_mut() {
                 let mut attrs = HashMap::new();
                 attrs.insert("level".to_string(), level.to_string());
-                let sel = ed.get_selection().clone();
-                if let Ok(rp) = ed.doc.resolve_position(sel.head) {
-                    let _ = ed.doc.set_block_type(rp.block_index, "heading", Some(attrs));
-                }
+                let _ = StructureCommands::set_block_type_with_attrs(&mut ed, "heading", attrs);
             }
         }
         ToolbarControl::Paragraph => {
@@ -463,7 +460,7 @@ fn execute_toolbar_command(
                     let mut attrs = ed.doc.block_attrs(rp.block_index).unwrap_or_default();
                     attrs.remove("align");
                     let block_type = ed.doc.block_type(rp.block_index).unwrap_or_else(|| "paragraph".to_string());
-                    let _ = ed.doc.set_block_type(rp.block_index, &block_type, Some(attrs));
+                    let _ = StructureCommands::set_block_type_with_attrs(&mut ed, &block_type, attrs);
                 }
             }
         }
@@ -474,7 +471,7 @@ fn execute_toolbar_command(
                     let mut attrs = ed.doc.block_attrs(rp.block_index).unwrap_or_default();
                     attrs.insert("align".to_string(), "center".to_string());
                     let block_type = ed.doc.block_type(rp.block_index).unwrap_or_else(|| "paragraph".to_string());
-                    let _ = ed.doc.set_block_type(rp.block_index, &block_type, Some(attrs));
+                    let _ = StructureCommands::set_block_type_with_attrs(&mut ed, &block_type, attrs);
                 }
             }
         }
@@ -485,7 +482,7 @@ fn execute_toolbar_command(
                     let mut attrs = ed.doc.block_attrs(rp.block_index).unwrap_or_default();
                     attrs.insert("align".to_string(), "right".to_string());
                     let block_type = ed.doc.block_type(rp.block_index).unwrap_or_else(|| "paragraph".to_string());
-                    let _ = ed.doc.set_block_type(rp.block_index, &block_type, Some(attrs));
+                    let _ = StructureCommands::set_block_type_with_attrs(&mut ed, &block_type, attrs);
                 }
             }
         }
@@ -496,7 +493,7 @@ fn execute_toolbar_command(
                     let mut attrs = ed.doc.block_attrs(rp.block_index).unwrap_or_default();
                     attrs.insert("align".to_string(), "justify".to_string());
                     let block_type = ed.doc.block_type(rp.block_index).unwrap_or_else(|| "paragraph".to_string());
-                    let _ = ed.doc.set_block_type(rp.block_index, &block_type, Some(attrs));
+                    let _ = StructureCommands::set_block_type_with_attrs(&mut ed, &block_type, attrs);
                 }
             }
         }

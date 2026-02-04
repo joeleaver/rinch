@@ -119,8 +119,19 @@ pub fn apply_changes(editor: &Rc<RefCell<Editor>>, signals: &Rc<BlockSignals>) {
             let mut visual_layer = signals.visual_layer.borrow_mut();
             register_block_nodes(&mut *visual_layer, block_map);
         }
+    }
 
-        // Update cursor position
+    // Force layout resolution before querying cursor position
+    // This ensures text_layout is populated so caret queries work
+    {
+        let mut doc_mut = doc.borrow_mut();
+        // Use a reasonable default viewport size - the actual size will be
+        // corrected by the runtime's resolve_layout call before paint
+        doc_mut.resolve_layout(1200.0, 800.0);
+    }
+
+    // Update cursor position (needs editor borrow)
+    if let Ok(ed) = editor.try_borrow() {
         update_cursor_after_changes(&ed, signals);
     }
 
@@ -213,6 +224,13 @@ fn update_cursor_after_changes(editor: &Editor, signals: &BlockSignals) {
     if let Some(rp) = resolved {
         if let Some(block_node) = block_nodes.get(&rp.block_index) {
             if let Some((x, y)) = block_node.query_caret_position(rp.text_offset) {
+                // Add block's layout position to get coordinates relative to wrapper
+                let (block_x, block_y) = block_node.get_layout_bounds()
+                    .map(|(bx, by, _, _)| (bx, by))
+                    .unwrap_or((0.0, 0.0));
+                let cursor_x = block_x + x;
+                let cursor_y = block_y + y;
+
                 if let Some(cursor_node) = &visual_layer.cursor_node {
                     let height = 20.0; // TODO: Get actual line height
                     let style = format!(
@@ -224,7 +242,7 @@ fn update_cursor_after_changes(editor: &Editor, signals: &BlockSignals) {
                          background-color: var(--rinch-primary-color, #228be6); \
                          pointer-events: none; \
                          animation: editor-cursor-blink 1s step-end infinite;",
-                        x, y, height
+                        cursor_x, cursor_y, height
                     );
                     cursor_node.set_attribute("style", &style);
                 }
@@ -301,6 +319,13 @@ pub fn render_document_reactive(
             if let Some(rp) = resolved {
                 if let Some(block_node) = block_nodes.get(&rp.block_index) {
                     if let Some((x, y)) = block_node.query_caret_position(rp.text_offset) {
+                        // Add block's layout position to get coordinates relative to wrapper
+                        let (block_x, block_y) = block_node.get_layout_bounds()
+                            .map(|(bx, by, _, _)| (bx, by))
+                            .unwrap_or((0.0, 0.0));
+                        let cursor_x = block_x + x;
+                        let cursor_y = block_y + y;
+
                         if let Some(cursor_node) = &visual_layer.cursor_node {
                             let height = 20.0;
                             let style = format!(
@@ -312,7 +337,7 @@ pub fn render_document_reactive(
                                  background-color: var(--rinch-primary-color, #228be6); \
                                  pointer-events: none; \
                                  animation: editor-cursor-blink 1s step-end infinite;",
-                                x, y, height
+                                cursor_x, cursor_y, height
                             );
                             cursor_node.set_attribute("style", &style);
                         }

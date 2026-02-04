@@ -98,6 +98,7 @@ pub fn editor_section(__scope: &mut RenderScope) -> NodeHandle {
     {
         let editor_for_click = editor.clone();
         let focus_textarea_for_click = focus_textarea.clone();
+        let on_change_for_click = on_change.clone();
         let handler_id = __scope.register_handler(move || {
             // Focus the hidden textarea so keyboard input is captured
             focus_textarea_for_click();
@@ -261,10 +262,9 @@ pub fn editor_section(__scope: &mut RenderScope) -> NodeHandle {
                             );
                         }
                     }
-                    // Don't bump signals here on mousedown — that would re-render the DOM
-                    // and destroy blitz's selection anchor node, breaking drag-to-select.
-                    // The cursor/selection re-render is deferred to mouseup via the
-                    // selection sync callback.
+                    // Update cursor visual after click-to-position
+                    // (In rinch-dom we handle cursor rendering ourselves, not via blitz selection)
+                    on_change_for_click();
                 }
             }
         });

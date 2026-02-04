@@ -27,7 +27,33 @@ impl StructureCommands {
             old_attrs,
             new_attrs: HashMap::new(),
         });
-        editor.mark_block_changed(resolved.block_index);
+        // Use mark_structure_changed because changing block type requires replacing
+        // the DOM element (e.g., <p> to <h1>), not just updating content
+        editor.mark_structure_changed();
+        Ok(())
+    }
+
+    /// Set the block type with custom attributes at the current cursor position.
+    pub fn set_block_type_with_attrs(
+        editor: &mut Editor,
+        node_type: &str,
+        attrs: HashMap<String, String>,
+    ) -> Result<(), EditorError> {
+        let sel = editor.get_selection().clone();
+        let resolved = editor.doc.resolve_position(sel.head)?;
+        let old_type = editor.doc.block_type(resolved.block_index).unwrap_or_default();
+        let old_attrs = editor.doc.block_attrs(resolved.block_index).unwrap_or_default();
+        editor.doc.set_block_type(resolved.block_index, node_type, Some(attrs.clone()))?;
+        editor.record_undo(UndoOperation::SetBlockType {
+            block_index: resolved.block_index,
+            old_type,
+            new_type: node_type.to_string(),
+            old_attrs,
+            new_attrs: attrs,
+        });
+        // Use mark_structure_changed because changing block type requires replacing
+        // the DOM element (e.g., <p> to <h1>), not just updating content
+        editor.mark_structure_changed();
         Ok(())
     }
 
@@ -56,12 +82,9 @@ impl StructureCommands {
 
         let curr_text = editor.doc.block_text(block_idx).unwrap_or_default();
 
-        // Calculate absolute position of end of previous block
-        let mut abs_prev_end = 0;
-        for i in 0..block_idx {
-            abs_prev_end += editor.doc.block_text(i).map(|t| t.len()).unwrap_or(0);
-            if i > 0 { abs_prev_end += 1; } // newline between blocks
-        }
+        // Calculate position at end of previous block using canonical helper
+        let prev_block_len = editor.doc.block_text(block_idx - 1).map(|t| t.len()).unwrap_or(0);
+        let abs_prev_end = editor.doc.block_start_position(block_idx - 1) + prev_block_len;
         // Delete the newline separator and merge
         let delete_start = abs_prev_end;
         let delete_end = abs_prev_end + 1; // the newline

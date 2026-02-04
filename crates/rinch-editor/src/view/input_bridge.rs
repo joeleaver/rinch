@@ -67,7 +67,7 @@ pub fn create_input_bridge(
     set_keyboard_interceptor(move |data: &KeyEventData| {
         let handled = handle_key_event(&editor_for_keys, data, &*on_change_for_keys);
         // Sync textarea after cursor movement keys
-        if handled && is_cursor_movement(&data.key) {
+        if handled && should_sync_textarea(&data.key) {
             if let Ok(ed) = editor_for_keys.try_borrow() {
                 sync_textarea_with_editor(&ed, &textarea_for_keys);
             }
@@ -151,6 +151,7 @@ fn handle_textarea_input(
                         }
                         let _ = ed.doc.delete_range(Range::new(abs, abs + 3));
                         let _ = ed.doc.set_block_type(rp.block_index, "code_block", None);
+                        ed.mark_structure_changed();
                         ed.set_selection(Selection::cursor(Position::new(abs)));
                     }
                 }
@@ -206,10 +207,14 @@ fn clear_desired_column() {
     });
 }
 
-/// Check if a key is a cursor movement key.
-fn is_cursor_movement(key: &str) -> bool {
-    matches!(key, "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown" |
-                  "Home" | "End" | "PageUp" | "PageDown")
+/// Keys that require textarea sync after handling.
+/// Includes cursor movement AND structural changes that move the cursor.
+fn should_sync_textarea(key: &str) -> bool {
+    matches!(key,
+        "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown" |
+        "Home" | "End" | "PageUp" | "PageDown" |
+        "Enter" | "Backspace" | "Delete"
+    )
 }
 
 /// Sync the hidden textarea value and cursor with editor state.
@@ -411,11 +416,7 @@ fn handle_key_event(
                         let target_offset = desired_col.min(prev_len);
 
                         // Calculate absolute position
-                        let mut abs = 0;
-                        for i in 0..prev_block {
-                            abs += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
-                        }
-                        abs += target_offset;
+                        let abs = ed.doc.block_start_position(prev_block) + target_offset;
 
                         move_or_extend(&mut ed, Position::new(abs), data.shift);
                     }
@@ -435,11 +436,7 @@ fn handle_key_event(
                         let target_offset = desired_col.min(next_len);
 
                         // Calculate absolute position
-                        let mut abs = 0;
-                        for i in 0..next_block {
-                            abs += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
-                        }
-                        abs += target_offset;
+                        let abs = ed.doc.block_start_position(next_block) + target_offset;
 
                         move_or_extend(&mut ed, Position::new(abs), data.shift);
                     }
@@ -487,10 +484,7 @@ fn handle_key_event(
             if let Ok(mut ed) = editor.try_borrow_mut() {
                 let sel = ed.get_selection().clone();
                 if let Ok(rp) = ed.doc.resolve_position(sel.head) {
-                    let mut abs = 0;
-                    for i in 0..rp.block_index {
-                        abs += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
-                    }
+                    let abs = ed.doc.block_start_position(rp.block_index);
                     move_or_extend(&mut ed, Position::new(abs), data.shift);
                 }
             }
@@ -501,11 +495,8 @@ fn handle_key_event(
             if let Ok(mut ed) = editor.try_borrow_mut() {
                 let sel = ed.get_selection().clone();
                 if let Ok(rp) = ed.doc.resolve_position(sel.head) {
-                    let mut abs = 0;
-                    for i in 0..rp.block_index {
-                        abs += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
-                    }
-                    abs += ed.doc.block_text(rp.block_index).map(|t| t.len()).unwrap_or(0);
+                    let block_len = ed.doc.block_text(rp.block_index).map(|t| t.len()).unwrap_or(0);
+                    let abs = ed.doc.block_start_position(rp.block_index) + block_len;
                     move_or_extend(&mut ed, Position::new(abs), data.shift);
                 }
             }
@@ -530,11 +521,7 @@ fn handle_key_event(
                     let target_block = rp.block_index.saturating_sub(20);
                     let target_len = ed.doc.block_text(target_block).map(|t| t.len()).unwrap_or(0);
                     let target_offset = rp.text_offset.min(target_len);
-                    let mut abs = 0;
-                    for i in 0..target_block {
-                        abs += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
-                    }
-                    abs += target_offset;
+                    let abs = ed.doc.block_start_position(target_block) + target_offset;
                     move_or_extend(&mut ed, Position::new(abs), data.shift);
                 }
             }
@@ -549,11 +536,7 @@ fn handle_key_event(
                     let target_block = (rp.block_index + 20).min(block_count.saturating_sub(1));
                     let target_len = ed.doc.block_text(target_block).map(|t| t.len()).unwrap_or(0);
                     let target_offset = rp.text_offset.min(target_len);
-                    let mut abs = 0;
-                    for i in 0..target_block {
-                        abs += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
-                    }
-                    abs += target_offset;
+                    let abs = ed.doc.block_start_position(target_block) + target_offset;
                     move_or_extend(&mut ed, Position::new(abs), data.shift);
                 }
             }
@@ -579,6 +562,7 @@ fn handle_key_event(
                                     }
                                     let _ = ed.doc.delete_range(Range::new(abs_start, abs_start + 3));
                                     let _ = ed.doc.set_block_type(rp.block_index, "code_block", None);
+                                    ed.mark_structure_changed();
                                     ed.set_selection(Selection::cursor(Position::new(abs_start)));
                                 }
                             }
@@ -976,6 +960,7 @@ fn apply_heading_rule(editor: &mut Editor, block_index: usize, level: u8, prefix
     let mut attrs = std::collections::HashMap::new();
     attrs.insert("level".to_string(), level.to_string());
     let _ = editor.doc.set_block_type(block_index, "heading", Some(attrs));
+    editor.mark_structure_changed();
 
     // Update cursor position (moved back by prefix_len)
     let new_pos = abs_start;
@@ -993,6 +978,7 @@ fn apply_block_rule(editor: &mut Editor, block_index: usize, block_type: &str, p
 
     // Set block type
     let _ = editor.doc.set_block_type(block_index, block_type, None);
+    editor.mark_structure_changed();
 
     // Update cursor position
     let new_pos = abs_start;

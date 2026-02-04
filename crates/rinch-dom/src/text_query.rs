@@ -44,6 +44,16 @@ pub fn caret_position_for_offset(
         return Some(caret_position_for_offset_layout(layout, byte_offset));
     }
 
+    // For block elements with a single text child (non-IFC case),
+    // check the first text child's cached layout
+    for &child_id in &node.children {
+        if let Some(child) = doc.tree.nodes.get(child_id) {
+            if let Some(ref layout) = child.cached_text_parley {
+                return Some(caret_position_for_offset_layout(layout, byte_offset));
+            }
+        }
+    }
+
     None
 }
 
@@ -74,6 +84,16 @@ pub fn glyph_bounds_for_offset(
     // Check cached standalone text layout
     if let Some(ref layout) = node.cached_text_parley {
         return glyph_bounds_for_offset_layout(layout, byte_offset);
+    }
+
+    // For block elements with a single text child (non-IFC case),
+    // check the first text child's cached layout
+    for &child_id in &node.children {
+        if let Some(child) = doc.tree.nodes.get(child_id) {
+            if let Some(ref layout) = child.cached_text_parley {
+                return glyph_bounds_for_offset_layout(layout, byte_offset);
+            }
+        }
     }
 
     None

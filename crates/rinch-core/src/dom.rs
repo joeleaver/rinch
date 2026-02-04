@@ -474,6 +474,14 @@ impl NodeHandle {
         let doc = self.doc.upgrade()?;
         doc.borrow().query_glyph_bounds(self.node_id.0 as u64, byte_offset)
     }
+
+    /// Get the layout bounds of this node relative to its parent.
+    ///
+    /// Returns (x, y, width, height) if the node has been laid out.
+    pub fn get_layout_bounds(&self) -> Option<(f32, f32, f32, f32)> {
+        let doc = self.doc.upgrade()?;
+        doc.borrow().query_node_layout(self.node_id.0 as u64)
+    }
 }
 
 impl std::fmt::Debug for NodeHandle {
@@ -685,6 +693,21 @@ pub trait DomDocument {
     /// # Arguments
     /// * `node_id` - The ID of the element to focus
     fn focus_element(&mut self, node_id: NodeId);
+
+    /// Resolve layout for the document at the given viewport size.
+    ///
+    /// This computes Taffy layout and builds text layouts (IFC) for all dirty nodes.
+    /// Must be called before querying caret positions or glyph bounds.
+    ///
+    /// # Arguments
+    /// * `width` - Viewport width in pixels
+    /// * `height` - Viewport height in pixels
+    fn resolve_layout(&mut self, width: f32, height: f32);
+
+    /// Query the layout bounds of a node relative to its parent.
+    ///
+    /// Returns the (x, y, width, height) of the node's layout box.
+    fn query_node_layout(&self, node_id: u64) -> Option<(f32, f32, f32, f32)>;
 }
 
 /// Context for building DOM trees with automatic effect tracking.

@@ -278,6 +278,8 @@ impl DomDocument for RinchDocument {
             self.tree.nodes[c].taffy_id,
         ) {
             let _ = self.tree.taffy.add_child(parent_taffy, child_taffy);
+            // Mark child as dirty so it gets measured during next layout pass
+            let _ = self.tree.taffy.mark_dirty(child_taffy);
         }
         // Invalidate parent's IFC (structure changed)
         self.invalidate_parent_ifc(p);
@@ -722,6 +724,16 @@ impl DomDocument for RinchDocument {
     fn focus_element(&mut self, node_id: NodeId) {
         // Request focus via the event system - the runtime will apply it
         rinch_core::request_focus(node_id.0);
+    }
+
+    fn resolve_layout(&mut self, width: f32, height: f32) {
+        // Delegate to the existing implementation method
+        RinchDocument::resolve_layout(self, width, height);
+    }
+
+    fn query_node_layout(&self, node_id: u64) -> Option<(f32, f32, f32, f32)> {
+        let node = self.tree.nodes.get(node_id as usize)?;
+        Some((node.layout.x, node.layout.y, node.layout.width, node.layout.height))
     }
 }
 

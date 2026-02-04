@@ -293,6 +293,21 @@ impl EditorDocument {
         total
     }
 
+    /// Calculate absolute position for the start of a block.
+    /// This is the canonical formula: sum of (block_text_len + 1) for all preceding blocks.
+    ///
+    /// Examples:
+    /// - block_start_position(0) = 0 (first block starts at 0)
+    /// - block_start_position(1) = len(block_0) + 1 (after block 0 text + newline)
+    /// - block_start_position(2) = len(block_0) + 1 + len(block_1) + 1
+    pub fn block_start_position(&self, block_index: usize) -> usize {
+        let mut abs = 0;
+        for i in 0..block_index {
+            abs += self.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
+        }
+        abs
+    }
+
     /// Get all text as a single string (blocks separated by newlines).
     pub fn to_text(&self) -> String {
         let count = self.block_count();
