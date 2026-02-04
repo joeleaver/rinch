@@ -1,87 +1,179 @@
 # Rinch
 
-A lightweight cross-platform GUI library for Rust, built on top of [blitz](https://github.com/DioxusLabs/blitz).
+A lightweight cross-platform GUI library for Rust with fine-grained reactive rendering.
 
-Rinch provides a reactive GUI framework using HTML/CSS for layout with a Vello-based GPU renderer.
+Rinch provides a declarative UI framework using HTML/CSS for layout and GPU rendering via Vello. Instead of virtual DOM diffing and full re-renders, Rinch uses fine-grained reactivity—signals and effects—to surgically update only the DOM nodes that changed.
+
+## Architecture Highlights
+
+**Fine-Grained Reactivity**
+
+Signals and effects provide surgical DOM updates without full re-renders:
+
+```
+Signal.set() → Effect runs → NodeHandle.set_text() → Minimal re-layout
+```
+
+Unlike virtual DOM approaches, Rinch tracks which signals each reactive expression depends on. When a signal changes, only the Effects that read that signal re-run and update their target nodes.
+
+**HTML/CSS Rendering**
+
+- **Stylo** CSS engine for style computation
+- **Taffy** layout engine for flexbox
+- **Parley** for text shaping and layout
+- **Vello** for GPU-accelerated 2D rendering via wgpu
+
+**Platform Abstraction**
+
+- **Desktop**: winit for windowing, wgpu for rendering
+- **Web**: WASM target ready (Stylo compiles to wasm32-unknown-unknown)
 
 ## Features
 
-- **Declarative UI** - React-style component model with hooks API
-- **HTML/CSS Rendering** - Full HTML/CSS support via Stylo and Taffy
-- **GPU Accelerated** - Fast 2D rendering via Vello and wgpu
-- **Transparent Windows** - VS Code-style frameless windows with transparency (Windows)
-- **Native Menus** - Cross-platform menu support via muda
-- **Window Controls** - Programmatic minimize/maximize/close for custom chrome
-- **DevTools** - Built-in developer tools for debugging
+- **Fine-Grained Reactivity** — Signals, Effects, Memos. Only changed DOM nodes update.
+- **55+ Widgets** — Mantine-inspired UI components (buttons, inputs, cards, navigation, overlays, etc.)
+- **HTML/CSS Rendering** — Stylo CSS engine, Taffy flexbox, Parley text shaping
+- **React-Style Hooks** — `use_signal`, `use_effect`, `use_memo`, `use_context`, `use_derived`, and more
+- **RSX Macro** — JSX-like syntax with reactive closures for declarative UIs
+- **Theme System** — CSS variables, 20 color palettes, dark mode support, spacing/radius/typography scales
+- **5000+ Icons** — Tabler Icons with type-safe enum API
+- **Rich-Text Editor** — CRDT-backed editor (Automerge), 22 extensions, markdown shortcuts
+- **Native Integration** — Menus (muda), file dialogs, clipboard, system tray
+- **Transparent Windows** — Borderless frameless windows with custom chrome (Windows)
+- **DevTools** — F12 inspector, layout debug overlay, performance stats
+- **MCP Debug Server** — Screenshot, DOM inspection, input simulation for AI-assisted development
+- **Cross-Platform** — Desktop (Windows, macOS, Linux) and WASM
 
 ## Quick Start
+
+### Installation
+
+Add to `Cargo.toml`:
+
+```toml
+[dependencies]
+rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["widgets", "theme"] }
+```
+
+### Basic Counter Example
 
 ```rust
 use rinch::prelude::*;
 
-fn app() -> Element {
+fn app(__scope: &mut RenderScope) -> NodeHandle {
     let count = use_signal(|| 0);
     let count_inc = count.clone();
 
     rsx! {
-        Window { title: "Counter", width: 400, height: 300,
-            div {
-                h1 { "Count: " {count.get()} }
-                button { onclick: move || count_inc.update(|n| *n += 1),
-                    "Increment"
-                }
+        div {
+            h1 { "Count: " {|| count.get().to_string()} }
+            button { onclick: move || count_inc.update(|n| *n += 1),
+                "Increment"
             }
         }
     }
 }
 
 fn main() {
-    rinch::run(app);
+    run("Counter", 400, 300, app);
 }
 ```
 
-## Documentation
+**Key API Points:**
 
-- [**Getting Started Guide**](https://joeleaver.github.io/wrinch/guide/getting-started.html)
-- [**API Reference**](https://joeleaver.github.io/wrinch/api/rinch/)
+- Component signature: `fn name(__scope: &mut RenderScope) -> NodeHandle`
+- Entry point: `run("title", width, height, component_fn)`
+- Reactive expressions use closure syntax: `{|| expr}` (without closure = captured once at initial render)
+- Clone signals before using in multiple closures to avoid borrow issues
 
-## Transparent Windows (Windows)
-
-Rinch supports true window transparency on Windows, enabling VS Code-style frameless windows with custom chrome:
-
-```rust
-Window {
-    title: "My App",
-    borderless: true,      // Remove native decorations
-    transparent: true,     // Enable transparency
-    // ... your custom titlebar and controls
-}
-```
-
-For custom window controls, use the provided functions:
+### Component with Multiple Signals
 
 ```rust
 use rinch::prelude::*;
 
-button { onclick: || minimize_current_window(), "−" }
-button { onclick: || toggle_maximize_current_window(), "□" }
-button { onclick: || close_current_window(), "×" }
+fn app(__scope: &mut RenderScope) -> NodeHandle {
+    let name = use_signal(|| String::from("World"));
+    let count = use_signal(|| 0);
+
+    let count_inc = count.clone();
+    let name_update = name.clone();
+
+    rsx! {
+        div {
+            input {
+                onchange: move |ev: String| name_update.set(ev),
+                placeholder: "Enter your name"
+            }
+            h1 { "Hello, " {|| name.get()} "!" }
+            p { "Count: " {|| count.get().to_string()} }
+            button { onclick: move || count_inc.update(|n| *n += 1),
+                "Increment"
+            }
+        }
+    }
+}
+
+fn main() {
+    run("Hello App", 500, 300, app);
+}
 ```
 
-### wgpu Fork Requirement
+## Crate Structure
 
-Transparent windows on Windows require a patched version of wgpu to enable Rgba8Unorm storage textures for Vello rendering with DX12/DirectComposition. This is handled automatically via `[patch.crates-io]` in `Cargo.toml`:
+Rinch is organized as a workspace of specialized crates:
 
-```toml
-[patch.crates-io]
-wgpu = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
-wgpu-core = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
-wgpu-hal = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
-wgpu-types = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
-naga = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
+| Layer | Crates | Purpose |
+|-------|--------|---------|
+| **Core** | rinch, rinch-core, rinch-macros, rinch-dom | Foundation types, hooks, reactive primitives, rsx! macro, DOM implementation |
+| **Platform** | rinch-platform, rinch-web | Platform abstraction traits, WASM backend |
+| **UI** | rinch-widgets, rinch-theme, rinch-tabler-icons | 55+ widgets, theme system, 5000+ icons |
+| **Editor** | rinch-editor, rinch-editor-macros, rinch-editor-widgets, rinch-editable | Rich-text editor with CRDT backing, editing utilities |
+| **Tooling** | rinch-debug, rinch-mcp-server, rinch-clipboard | IPC debug server, Claude MCP integration, clipboard support |
+| **Rendering** | rinch-renderer | (Placeholder for custom rendering) |
+
+## Examples
+
+### smyeditor
+
+A rich-text editor with formatting toolbar and markdown shortcuts:
+
+```bash
+cargo run -p smyeditor
 ```
 
-A PR has been submitted upstream: [gfx-rs/wgpu#8908](https://github.com/gfx-rs/wgpu/pull/8908)
+Features:
+- CRDT-backed document (Automerge)
+- 22 formatting extensions (bold, italic, strikethrough, code blocks, etc.)
+- Markdown input rules (e.g., `# ` → heading)
+- Syntax highlighting
+- Find & replace
+
+### ui-zoo
+
+Interactive widget showcase displaying all 55+ Rinch components:
+
+```bash
+cargo run -p ui-zoo
+```
+
+Perfect for exploring the widget library and theme customization.
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `F12` | Toggle DevTools window |
+| `Alt+D` | Toggle layout debug overlay |
+| `Alt+I` | Toggle inspect mode (hover highlight for element info) |
+| `Alt+P` | Toggle performance stats console logging |
+| `Alt+T` | Print Taffy layout tree to console |
+| `Ctrl/Cmd + +/-/0` | Zoom in/out/reset |
+
+## Documentation
+
+- **Getting Started Guide**: https://joeleaver.github.io/rinch/
+- **API Documentation**: Run `cargo doc --open`
+- **Architecture Overview**: See `CLAUDE.md` in the repository
 
 ## Development Setup
 
@@ -90,26 +182,117 @@ A PR has been submitted upstream: [gfx-rs/wgpu#8908](https://github.com/gfx-rs/w
 git clone git@github.com:joeleaver/rinch.git
 cd rinch
 
-# Build
+# Build all crates
 cargo build
 
-# Run the example editor
+# Run the rich-text editor example
 cargo run -p smyeditor
 
-# Build documentation locally
+# Run the widget showcase
+cargo run -p ui-zoo
+
+# Build and open API docs
 cargo doc --open
+
+# Run tests
+cargo test
+
+# Lint and format
+cargo clippy
+cargo fmt
 ```
 
-## Keyboard Shortcuts
+## Transparent Windows (Windows)
 
-| Shortcut | Action |
-|----------|--------|
-| `F12` | Toggle DevTools window |
-| `Alt+D` | Toggle layout debug overlay |
-| `Alt+I` | Toggle inspect mode |
-| `Alt+T` | Print Taffy layout tree |
-| `Ctrl/Cmd + +/-/0` | Zoom in/out/reset |
+Rinch supports true window transparency on Windows via DX12 + DirectComposition, enabling VS Code-style frameless windows with custom chrome:
+
+```rust
+use rinch::prelude::*;
+
+fn app(__scope: &mut RenderScope) -> NodeHandle {
+    rsx! {
+        BorderlessWindow {
+            title: "My App",
+            radius: "md",
+            // Custom content
+            div { "Hello from transparent window!" }
+        }
+    }
+}
+
+fn main() {
+    run("Transparent App", 800, 600, app);
+}
+```
+
+For custom window controls in your titlebar:
+
+```rust
+button { onclick: || minimize_current_window(), "−" }
+button { onclick: || toggle_maximize_current_window(), "□" }
+button { onclick: || close_current_window(), "×" }
+```
+
+### Requirements
+
+Transparent windows on Windows require a patched wgpu to enable Rgba8Unorm storage textures for Vello rendering with DX12. This is automatically applied via `[patch.crates-io]` in `Cargo.toml`:
+
+- **Repository**: https://github.com/joeleaver/wgpu-fork
+- **Branch**: `rinch-patch`
+- **Upstream PR**: https://github.com/gfx-rs/wgpu/pull/8908
+
+## AI-Assisted Development with MCP
+
+Rinch integrates with Claude via an MCP (Model Context Protocol) debug server for AI-assisted development. Enable the `debug` feature and use MCP tools to:
+
+- **Screenshot** — Capture and view rendered output inline
+- **DOM Inspection** — Query the DOM tree with computed styles
+- **Input Simulation** — Click, type, and trigger events
+- **Performance Profiling** — Measure frame times and render performance
+
+Configure in `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "rinch": {
+      "command": "/path/to/rinch/target/debug/rinch-mcp-server",
+      "args": [],
+      "cwd": "/path/to/rinch"
+    }
+  }
+}
+```
+
+Build the MCP server first:
+
+```bash
+cargo build -p rinch-mcp-server
+```
+
+## Contributing
+
+Contributions are welcome! Please:
+
+1. Fork the repository
+2. Create a feature branch
+3. Run `cargo fmt` and `cargo clippy` before committing
+4. Write tests for new functionality
+5. Update documentation as needed
 
 ## License
 
 MIT
+
+## Acknowledgments
+
+Rinch builds on excellent projects:
+
+- [Stylo](https://github.com/servo/stylo) — CSS engine (via rinch-dom)
+- [Taffy](https://github.com/DioxusLabs/taffy) — Flexbox layout engine
+- [Parley](https://github.com/linebender/parley) — Text shaping and layout
+- [Vello](https://github.com/linebender/vello) — GPU rendering
+- [winit](https://github.com/rust-windowing/winit) — Cross-platform windowing
+- [muda](https://github.com/tauri-apps/muda) — Native menus
+- [Automerge](https://automerge.org/) — CRDT for rich-text editor
+- [Tabler Icons](https://tabler.io/icons) — Icon library
