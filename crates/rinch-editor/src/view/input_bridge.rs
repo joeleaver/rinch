@@ -63,8 +63,16 @@ pub fn create_input_bridge(
     // Keep keyboard interceptor for navigation and shortcuts ONLY
     let editor_for_keys = editor.clone();
     let on_change_for_keys = on_change.clone();
+    let textarea_for_keys = textarea.clone();
     set_keyboard_interceptor(move |data: &KeyEventData| {
-        handle_key_event(&editor_for_keys, data, &*on_change_for_keys)
+        let handled = handle_key_event(&editor_for_keys, data, &*on_change_for_keys);
+        // Sync textarea after cursor movement keys
+        if handled && is_cursor_movement(&data.key) {
+            if let Ok(ed) = editor_for_keys.try_borrow() {
+                sync_textarea_with_editor(&ed, &textarea_for_keys);
+            }
+        }
+        handled
     });
 
     // Create focus callback that can be called from editor click handler
@@ -196,6 +204,24 @@ fn clear_desired_column() {
     DESIRED_COLUMN.with(|dc| {
         *dc.borrow_mut() = None;
     });
+}
+
+/// Check if a key is a cursor movement key.
+fn is_cursor_movement(key: &str) -> bool {
+    matches!(key, "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown" |
+                  "Home" | "End" | "PageUp" | "PageDown")
+}
+
+/// Sync the hidden textarea value and cursor with editor state.
+/// Call this after cursor navigation to ensure text input goes to the right place.
+fn sync_textarea_with_editor(editor: &Editor, textarea: &NodeHandle) {
+    let sel = editor.get_selection();
+    if let Ok(rp) = editor.doc.resolve_position(sel.head) {
+        let block_text = editor.doc.block_text(rp.block_index).unwrap_or_default();
+        textarea.set_attribute("value", &block_text);
+        textarea.set_attribute("data-cursor-pos", &rp.text_offset.to_string());
+        textarea.set_attribute("data-selection-start", &rp.text_offset.to_string());
+    }
 }
 
 /// Find the previous word boundary from a position.
