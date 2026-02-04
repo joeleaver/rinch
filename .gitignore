@@ -1,5 +1,6 @@
 # Build artifacts
 /target
+docs/book/
 
 # IDE
 .idea/
@@ -7,9 +8,26 @@
 *.swp
 *.swo
 
+# AI tools
+.claude/
+.mcp.json
+.omc/
+
 # OS
 .DS_Store
 Thumbs.db
+nul
 
 # Rust
 **/*.rs.bk
+
+# Debug & log output
+crash_output*.txt
+debug_theme_css.txt
+smyeditor_*.log
+smyeditor_*.txt
+
+# Generated review/summary files
+security-review-*.md
+CURSOR_SYNC_FIX_SUMMARY.md
+docs/fixes/
