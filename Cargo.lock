@@ -3695,6 +3695,7 @@ dependencies = [
  "rinch-platform",
  "rinch-renderer",
  "rinch-theme",
+ "rinch-web",
  "rinch-widgets",
  "serde_json",
  "tokio",
@@ -3864,6 +3865,19 @@ dependencies = [
 [[package]]
 name = "rinch-theme"
 version = "0.1.0"
+
+[[package]]
+name = "rinch-web"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "peniko",
+ "rinch-platform",
+ "tracing",
+ "vello",
+ "wasm-bindgen",
+ "web-sys",
+]
 
 [[package]]
 name = "rinch-widgets"

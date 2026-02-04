@@ -40,6 +40,7 @@ memory-stats = { version = "1.2", optional = true }
 rinch-theme = { workspace = true, optional = true }
 rinch-widgets = { workspace = true, optional = true }
 rinch-debug = { path = "../rinch-debug", optional = true }
+rinch-web = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Graphics_Gdi", "Win32_Foundation"] }
@@ -59,3 +60,4 @@ memory-profile = ["memory-stats"]
 theme = ["dep:rinch-theme", "rinch-core/theme"]
 widgets = ["theme", "dep:rinch-widgets"]
 debug = ["dep:rinch-debug"]
+web = ["dep:rinch-web"]

@@ -30,6 +30,7 @@ rinch-editor-widgets = { path = "crates/rinch-editor-widgets" }
 rinch-debug = { path = "crates/rinch-debug" }
 rinch-platform = { path = "crates/rinch-platform" }
 rinch-visual-test = { path = "crates/rinch-visual-test" }
+rinch-web = { path = "crates/rinch-web" }
 
 # Rendering
 anyrender = "0.7"
