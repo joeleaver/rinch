@@ -1,0 +1,11 @@
+[package]
+name = "ui-zoo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "UI Zoo - Interactive showcase of all rinch widgets"
+
+[dependencies]
+rinch = { workspace = true, features = ["widgets", "theme"] }
+rinch-core = { workspace = true }
+rinch-macros = { workspace = true }
