@@ -6,7 +6,6 @@ members = [
 ]
 exclude = [
     "crates/rinch-visual-test",
-    "examples/gen_browser_screenshot",
 ]
 
 [workspace.package]

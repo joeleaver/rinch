@@ -55,6 +55,7 @@ The visual test system works by:
 | `runner.rs` | Test orchestration |
 | `report.rs` | HTML report generation |
 | `bin/visual_test.rs` | CLI binary |
+| `examples/gen_browser_screenshot.rs` | Standalone tool to generate a browser screenshot from a DOM dump |
 
 ## Prerequisites
 
@@ -86,7 +87,7 @@ cargo build -p rinch-visual-test --release
 
 ### 1. Create Test Configuration
 
-Create `tests/visual/tests.json`:
+The default config lives at `tests/visual/tests.json` within this crate:
 
 ```json
 {

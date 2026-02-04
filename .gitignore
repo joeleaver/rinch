@@ -31,3 +31,7 @@ smyeditor_*.txt
 security-review-*.md
 CURSOR_SYNC_FIX_SUMMARY.md
 docs/fixes/
+
+# Visual test output (generated screenshots, diffs, reports)
+**/tests/visual/output/
+node_modules/

@@ -1,0 +1,66 @@
+{
+  "viewport": [1200, 800],
+  "background": "#ffffff",
+  "tests": [
+    {
+      "name": "00_overview",
+      "threshold": 0.90,
+      "setup_clicks": []
+    },
+    {
+      "name": "01_buttons",
+      "threshold": 0.90,
+      "setup_clicks": [[27, 17], [140, 163]]
+    },
+    {
+      "name": "02_inputs",
+      "threshold": 0.90,
+      "setup_clicks": [[27, 17], [140, 220]]
+    },
+    {
+      "name": "03_typography",
+      "threshold": 0.90,
+      "setup_clicks": [[27, 17], [140, 278]]
+    },
+    {
+      "name": "04_layout",
+      "threshold": 0.90,
+      "setup_clicks": [[27, 17], [140, 336]]
+    },
+    {
+      "name": "05_navigation",
+      "threshold": 0.90,
+      "setup_clicks": [[27, 17], [140, 394]]
+    },
+    {
+      "name": "06_data_display",
+      "threshold": 0.90,
+      "setup_clicks": [[27, 17], [140, 452]]
+    },
+    {
+      "name": "07_feedback",
+      "threshold": 0.90,
+      "setup_clicks": [[27, 17], [140, 510]]
+    },
+    {
+      "name": "08_overlays",
+      "threshold": 0.90,
+      "setup_clicks": [[27, 17], [140, 568]]
+    },
+    {
+      "name": "09_icons",
+      "threshold": 0.90,
+      "setup_clicks": [[27, 17], [140, 625]]
+    },
+    {
+      "name": "10_tree",
+      "threshold": 0.90,
+      "setup_clicks": [[27, 17], [140, 682]]
+    },
+    {
+      "name": "11_editor",
+      "threshold": 0.90,
+      "setup_clicks": [[27, 17], [140, 740]]
+    }
+  ]
+}

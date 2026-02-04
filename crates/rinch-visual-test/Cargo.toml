@@ -1,0 +1,24 @@
+[package]
+name = "rinch-visual-test"
+version = "0.1.0"
+edition = "2021"
+description = "Visual regression testing for rinch"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+image = "0.25"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+base64 = "0.22"
+dirs = "5"
+
+[[bin]]
+name = "visual-test"
+path = "src/bin/visual_test.rs"
+
+[[example]]
+name = "gen_browser_screenshot"
+
+[dev-dependencies]
+tempfile = "3"

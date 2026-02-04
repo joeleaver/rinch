@@ -60,7 +60,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: visual-test-results
-          path: tests/visual/output/
+          path: crates/rinch-visual-test/tests/visual/output/
           retention-days: 30
 
       - name: Upload HTML report
@@ -68,5 +68,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: visual-test-report
-          path: tests/visual/output/report.html
+          path: crates/rinch-visual-test/tests/visual/output/report.html
           retention-days: 30
