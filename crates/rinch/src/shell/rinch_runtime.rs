@@ -38,6 +38,7 @@ use rinch_core::dom::{clear_render_scope, set_render_scope, DomDocument, NodeHan
 use rinch_core::events;
 use rinch_core::hooks::{begin_render, clear_hooks, end_render};
 use rinch_dom::RinchDocument;
+use rinch_dom::text_query::{byte_offset_from_position, caret_position_for_offset, glyph_bounds_for_offset};
 
 use super::devtools::DevToolsState;
 
@@ -717,6 +718,168 @@ impl RinchRuntime {
                     w.request_redraw();
                 }
                 DebugResult::Json { data: json!(null) }
+            }
+            DebugCommandKind::GetCaretPosition { node_id, byte_offset } => {
+                let Some(doc) = &self.doc else {
+                    return DebugResult::Error { message: "No document".into() };
+                };
+
+                let scale = self.window.as_ref()
+                    .map(|w| w.scale_factor() as f32)
+                    .unwrap_or(1.0);
+
+                let d = doc.borrow();
+                let Some(node) = d.tree.get(node_id) else {
+                    return DebugResult::Error { message: format!("Node {} not found", node_id) };
+                };
+
+                // Calculate absolute position by walking up the tree
+                let mut abs_x = node.layout.x as f64;
+                let mut abs_y = node.layout.y as f64;
+                let mut parent_id = node.parent;
+                while let Some(pid) = parent_id {
+                    if let Some(parent_node) = d.tree.get(pid) {
+                        abs_x += parent_node.layout.x as f64;
+                        abs_y += parent_node.layout.y as f64;
+                        abs_x -= parent_node.scroll_offset.0;
+                        abs_y -= parent_node.scroll_offset.1;
+                        parent_id = parent_node.parent;
+                    } else {
+                        break;
+                    }
+                }
+
+                // Check if this is an input/textarea - build layout from value
+                let tag = node.tag();
+                if matches!(tag, Some("input" | "textarea")) {
+                    let value = node.attributes.get("value").cloned().unwrap_or_default();
+                    if value.is_empty() {
+                        let padding_left = node.computed_style.padding_left.to_px() as f64 * scale as f64;
+                        let padding_top = node.computed_style.padding_top.to_px() as f64 * scale as f64;
+                        return DebugResult::Json { data: json!({
+                            "x": abs_x + padding_left,
+                            "y": abs_y + padding_top,
+                        })};
+                    }
+
+                    let computed_style = node.computed_style.clone();
+                    let input_width = node.layout.width;
+                    drop(d);
+
+                    let layout = computed_style.build_parley_layout(
+                        &value,
+                        scale,
+                        &mut self.hit_test_font_cx,
+                        &mut self.paint_layout_cx,
+                        Some(input_width),
+                    );
+
+                    let (x, y) = caret_position_for_offset(&layout, byte_offset);
+                    let padding_left = computed_style.padding_left.to_px() as f64 * scale as f64;
+                    let padding_top = computed_style.padding_top.to_px() as f64 * scale as f64;
+
+                    return DebugResult::Json { data: json!({
+                        "x": abs_x + padding_left + x as f64,
+                        "y": abs_y + padding_top + y as f64,
+                    })};
+                }
+
+                // Check if node has inline text layout (IFC text)
+                if let Some(ref inline_layout) = node.text_layout {
+                    let (x, y) = caret_position_for_offset(&inline_layout.layout, byte_offset);
+                    return DebugResult::Json { data: json!({
+                        "x": abs_x + x as f64,
+                        "y": abs_y + y as f64,
+                    })};
+                }
+
+                DebugResult::Error { message: "Node does not have text layout".into() }
+            }
+            DebugCommandKind::GetGlyphBounds { node_id, byte_offset } => {
+                let Some(doc) = &self.doc else {
+                    return DebugResult::Error { message: "No document".into() };
+                };
+
+                let scale = self.window.as_ref()
+                    .map(|w| w.scale_factor() as f32)
+                    .unwrap_or(1.0);
+
+                let d = doc.borrow();
+                let Some(node) = d.tree.get(node_id) else {
+                    return DebugResult::Error { message: format!("Node {} not found", node_id) };
+                };
+
+                // Calculate absolute position by walking up the tree
+                let mut abs_x = node.layout.x as f64;
+                let mut abs_y = node.layout.y as f64;
+                let mut parent_id = node.parent;
+                while let Some(pid) = parent_id {
+                    if let Some(parent_node) = d.tree.get(pid) {
+                        abs_x += parent_node.layout.x as f64;
+                        abs_y += parent_node.layout.y as f64;
+                        abs_x -= parent_node.scroll_offset.0;
+                        abs_y -= parent_node.scroll_offset.1;
+                        parent_id = parent_node.parent;
+                    } else {
+                        break;
+                    }
+                }
+
+                // Check if this is an input/textarea - build layout from value
+                let tag = node.tag();
+                if matches!(tag, Some("input" | "textarea")) {
+                    let value = node.attributes.get("value").cloned().unwrap_or_default();
+                    if value.is_empty() {
+                        return DebugResult::Error { message: "No text content".into() };
+                    }
+
+                    let computed_style = node.computed_style.clone();
+                    let input_width = node.layout.width;
+                    drop(d);
+
+                    let layout = computed_style.build_parley_layout(
+                        &value,
+                        scale,
+                        &mut self.hit_test_font_cx,
+                        &mut self.paint_layout_cx,
+                        Some(input_width),
+                    );
+
+                    match glyph_bounds_for_offset(&layout, byte_offset) {
+                        Some(bounds) => {
+                            let padding_left = computed_style.padding_left.to_px() as f64 * scale as f64;
+                            let padding_top = computed_style.padding_top.to_px() as f64 * scale as f64;
+                            return DebugResult::Json { data: json!({
+                                "x": abs_x + padding_left + bounds.x as f64,
+                                "y": abs_y + padding_top + bounds.y as f64,
+                                "width": bounds.width,
+                                "height": bounds.height,
+                            })};
+                        }
+                        None => {
+                            return DebugResult::Error { message: "Byte offset out of bounds".into() };
+                        }
+                    }
+                }
+
+                // Check if node has inline text layout (IFC text)
+                if let Some(ref inline_layout) = node.text_layout {
+                    match glyph_bounds_for_offset(&inline_layout.layout, byte_offset) {
+                        Some(bounds) => {
+                            return DebugResult::Json { data: json!({
+                                "x": abs_x + bounds.x as f64,
+                                "y": abs_y + bounds.y as f64,
+                                "width": bounds.width,
+                                "height": bounds.height,
+                            })};
+                        }
+                        None => {
+                            return DebugResult::Error { message: "Byte offset out of bounds".into() };
+                        }
+                    }
+                }
+
+                DebugResult::Error { message: "Node does not have text layout".into() }
             }
         }
     }
@@ -1640,71 +1803,7 @@ impl RinchRuntime {
         click_x: f32,
         click_y: f32,
     ) -> usize {
-        if click_x <= 0.0 && click_y <= 0.0 {
-            return 0;
-        }
-
-        // First, find which line was clicked based on Y coordinate
-        let mut target_line_idx = 0usize;
-        let mut cumulative_height = 0.0f32;
-
-        for (idx, line) in layout.lines().enumerate() {
-            let line_height = line.metrics().line_height;
-            if click_y < cumulative_height + line_height {
-                target_line_idx = idx;
-                break;
-            }
-            cumulative_height += line_height;
-            target_line_idx = idx; // Default to last line if click is below all lines
-        }
-
-        // Now find the character position within that line
-        let mut best_offset = 0usize;
-
-        for (line_idx, line) in layout.lines().enumerate() {
-            if line_idx < target_line_idx {
-                // Track the end of previous lines
-                for item in line.items() {
-                    if let parley::layout::PositionedLayoutItem::GlyphRun(glyph_run) = item {
-                        let run = glyph_run.run();
-                        best_offset = run.text_range().end;
-                    }
-                }
-                continue;
-            }
-
-            if line_idx > target_line_idx {
-                break;
-            }
-
-            // This is the target line - find the character position based on X
-            for item in line.items() {
-                if let parley::layout::PositionedLayoutItem::GlyphRun(glyph_run) = item {
-                    let run = glyph_run.run();
-                    let mut gx = glyph_run.offset();
-
-                    for cluster in run.cluster_range() {
-                        let Some(cluster_data) = run.get(cluster) else {
-                            continue;
-                        };
-                        let cluster_start = cluster_data.text_range().start;
-                        let advance = cluster_data.advance();
-
-                        let mid_x = gx + advance / 2.0;
-
-                        if click_x <= mid_x {
-                            return cluster_start;
-                        }
-
-                        gx += advance;
-                        best_offset = cluster_data.text_range().end;
-                    }
-                }
-            }
-            break;
-        }
-
-        best_offset
+        byte_offset_from_position(layout, click_x, click_y)
     }
 }
 

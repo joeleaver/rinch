@@ -92,6 +92,22 @@ pub struct LaunchAppParams {
     pub extra_args: Option<String>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CaretPositionParams {
+    /// The DOM node ID
+    pub node_id: u64,
+    /// Byte offset in the node's text content
+    pub byte_offset: u64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GlyphBoundsParams {
+    /// The DOM node ID
+    pub node_id: u64,
+    /// Byte offset in the node's text content
+    pub byte_offset: u64,
+}
+
 #[tool_router]
 impl RinchMcpServer {
     pub fn new() -> Self {
@@ -471,6 +487,30 @@ impl RinchMcpServer {
                 package, e
             ))])),
         }
+    }
+
+    #[tool(description = "Get the screen position of a text caret at a given byte offset in a node")]
+    async fn get_caret_position(
+        &self,
+        params: Parameters<CaretPositionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.forward_json_command(DebugCommandKind::GetCaretPosition {
+            node_id: params.0.node_id as usize,
+            byte_offset: params.0.byte_offset as usize,
+        })
+        .await
+    }
+
+    #[tool(description = "Get the bounding box of a glyph cluster at a given byte offset in a node")]
+    async fn get_glyph_bounds(
+        &self,
+        params: Parameters<GlyphBoundsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.forward_json_command(DebugCommandKind::GetGlyphBounds {
+            node_id: params.0.node_id as usize,
+            byte_offset: params.0.byte_offset as usize,
+        })
+        .await
     }
 }
 

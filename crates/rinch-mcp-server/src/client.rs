@@ -34,6 +34,10 @@ pub enum DebugCommandKind {
     Scroll { x: f32, y: f32, delta_x: f64, delta_y: f64 },
     #[serde(rename = "key_press")]
     KeyPress { key: String, shift: bool, ctrl: bool },
+    #[serde(rename = "get_caret_position")]
+    GetCaretPosition { node_id: usize, byte_offset: usize },
+    #[serde(rename = "get_glyph_bounds")]
+    GetGlyphBounds { node_id: usize, byte_offset: usize },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

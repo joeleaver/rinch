@@ -11,6 +11,7 @@ use vello::Scene;
 use crate::computed_style::OverflowValue;
 use crate::layout::parse_color;
 use crate::node::{Node, NodeKind, NodeTree, RawNodeId};
+use crate::text_query::caret_position_for_offset;
 
 /// Paint the entire document to a Vello scene.
 ///
@@ -869,82 +870,14 @@ fn paint_input_value(
     };
     let text_x = x + padding_left;
 
-    // Helper to get (x, y) position for a byte offset in text layout.
-    // For multi-line text, y is the top of the line containing the offset.
-    let get_position_for_offset = |layout: &parley::layout::Layout<Brush>, byte_offset: usize| -> (f32, f32) {
-        // Get first line metrics for default values
-        let first_line_top = layout.lines().next()
-            .map(|line| line.metrics().baseline - line.metrics().ascent)
-            .unwrap_or(0.0);
-
-        if byte_offset == 0 {
-            return (0.0, first_line_top);
-        }
-
-        let mut last_x = 0.0f32;
-        let mut last_y = first_line_top;
-
-        for line in layout.lines() {
-            let line_metrics = line.metrics();
-            let line_y = line_metrics.baseline - line_metrics.ascent;
-
-            for item in line.items() {
-                if let parley::layout::PositionedLayoutItem::GlyphRun(glyph_run) = item {
-                    let run = glyph_run.run();
-                    let run_start = run.text_range().start;
-                    let run_end = run.text_range().end;
-
-                    if byte_offset <= run_start {
-                        return (glyph_run.offset(), line_y);
-                    }
-
-                    if byte_offset <= run_end {
-                        // Byte offset is within this run - iterate glyphs
-                        let mut gx = glyph_run.offset();
-                        for cluster in run.cluster_range() {
-                            let Some(cluster_data) = run.get(cluster) else { continue };
-                            let cluster_start = cluster_data.text_range().start;
-                            let cluster_end = cluster_data.text_range().end;
-
-                            if byte_offset <= cluster_start {
-                                return (gx, line_y);
-                            }
-                            if byte_offset < cluster_end {
-                                // Strictly within this cluster - return start of cluster
-                                return (gx, line_y);
-                            }
-                            // byte_offset == cluster_end means after this cluster
-                            gx += cluster_data.advance();
-                        }
-                        return (gx, line_y);
-                    }
-
-                    // Track end position
-                    last_x = glyph_run.offset();
-                    for cluster in run.cluster_range() {
-                        if let Some(cluster_data) = run.get(cluster) {
-                            last_x += cluster_data.advance();
-                        }
-                    }
-                    last_y = line_y;
-                }
-            }
-        }
-        (last_x, last_y)
-    };
-
-    // Wrapper for backward compatibility - returns just x offset
-    let _get_x_for_offset = |layout: &parley::layout::Layout<Brush>, byte_offset: usize| -> f32 {
-        get_position_for_offset(layout, byte_offset).0
-    };
 
     // Draw selection highlight if there's a selection
     if is_focused && cursor_pos != selection_start && !is_placeholder && !text.is_empty() {
         let sel_start_byte = cursor_pos.min(selection_start).min(text.len());
         let sel_end_byte = cursor_pos.max(selection_start).min(text.len());
 
-        let (start_x, start_y) = get_position_for_offset(&text_layout, sel_start_byte);
-        let (end_x, end_y) = get_position_for_offset(&text_layout, sel_end_byte);
+        let (start_x, start_y) = caret_position_for_offset(&text_layout, sel_start_byte);
+        let (end_x, end_y) = caret_position_for_offset(&text_layout, sel_end_byte);
 
         let sel_color = AlphaColor::<Srgb>::from_rgba8(51, 154, 240, 100); // Blue with alpha
         let line_height = scaled_font_size as f64 * 1.2;
@@ -1004,7 +937,7 @@ fn paint_input_value(
         let (caret_offset_x, caret_offset_y) = if text.is_empty() {
             (0.0, 0.0)
         } else {
-            get_position_for_offset(&text_layout, caret_pos)
+            caret_position_for_offset(&text_layout, caret_pos)
         };
         let caret_x = text_x + caret_offset_x as f64;
         let caret_y = text_y + caret_offset_y as f64;
