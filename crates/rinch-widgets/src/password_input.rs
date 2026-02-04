@@ -130,7 +130,10 @@ impl std::fmt::Debug for PasswordInput {
             .field("value", &self.value.as_ref().map(|_| "[REDACTED]"))
             .field("value_fn", &self.value_fn.as_ref().map(|_| "<reactive>"))
             .field("visible", &self.visible)
-            .field("visible_fn", &self.visible_fn.as_ref().map(|_| "<reactive>"))
+            .field(
+                "visible_fn",
+                &self.visible_fn.as_ref().map(|_| "<reactive>"),
+            )
             .field("disabled", &self.disabled)
             .field("required", &self.required)
             .field("autofocus", &self.autofocus)
@@ -229,8 +232,7 @@ impl Widget for PasswordInput {
         if let Some(label_text) = &self.label {
             let required_mark = if self.required { " *" } else { "" };
             let label = rinch_macros::rsx! { label { class: "rinch-password-input__label" } };
-            let label_text_node =
-                __scope.create_text(&format!("{}{}", label_text, required_mark));
+            let label_text_node = __scope.create_text(&format!("{}{}", label_text, required_mark));
             label.append_child(&label_text_node);
             container.append_child(&label);
         }

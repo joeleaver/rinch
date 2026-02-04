@@ -7,5 +7,6 @@ pub fn styles() -> String {
     padding: 0 0.125rem;
     border-radius: var(--rinch-radius-xs);
 }
-"#.to_string()
+"#
+    .to_string()
 }

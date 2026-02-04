@@ -27,7 +27,9 @@ pub enum RinchEvent {
     /// Toggle the DevTools window.
     ToggleDevTools { source_window: WindowId },
     /// Update DevTools with hovered element info.
-    UpdateDevToolsHover { element_info: Option<HoveredElementInfo> },
+    UpdateDevToolsHover {
+        element_info: Option<HoveredElementInfo>,
+    },
     /// A keyboard shortcut was pressed - check against menu shortcuts.
     KeyboardShortcut {
         ctrl: bool,

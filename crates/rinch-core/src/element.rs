@@ -52,9 +52,12 @@ pub trait Widget: std::fmt::Debug + 'static {
     ///
     /// # Returns
     /// A handle to the root DOM node created by this widget
-    fn render(&self, scope: &mut crate::dom::RenderScope, children: &[crate::dom::NodeHandle]) -> crate::dom::NodeHandle;
+    fn render(
+        &self,
+        scope: &mut crate::dom::RenderScope,
+        children: &[crate::dom::NodeHandle],
+    ) -> crate::dom::NodeHandle;
 }
-
 
 /// A node in the UI tree.
 ///
@@ -244,10 +247,7 @@ macro_rules! impl_into_element_for_display {
 }
 
 impl_into_element_for_display!(
-    i8, i16, i32, i64, i128, isize,
-    u8, u16, u32, u64, u128, usize,
-    f32, f64,
-    bool, char
+    i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, f32, f64, bool, char
 );
 
 // IntoDom implementations
@@ -298,21 +298,23 @@ macro_rules! impl_into_dom_for_display {
 }
 
 impl_into_dom_for_display!(
-    i8, i16, i32, i64, i128, isize,
-    u8, u16, u32, u64, u128, usize,
-    f32, f64,
-    bool, char
+    i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, f32, f64, bool, char
 );
 
 /// Recursively render an Element tree into the DOM.
-fn render_element_to_dom(element: &Element, scope: &mut crate::dom::RenderScope, parent: &crate::dom::NodeHandle) {
+fn render_element_to_dom(
+    element: &Element,
+    scope: &mut crate::dom::RenderScope,
+    parent: &crate::dom::NodeHandle,
+) {
     match element {
         Element::Html(html) => {
             // Parse HTML and insert into DOM
             // Try parse_html first, get the ID (drops borrow), then append
-            let parsed_id = scope.doc_weak().upgrade().and_then(|doc| {
-                doc.borrow_mut().parse_html(html)
-            });
+            let parsed_id = scope
+                .doc_weak()
+                .upgrade()
+                .and_then(|doc| doc.borrow_mut().parse_html(html));
             if let Some(parsed_id) = parsed_id {
                 let parsed_handle = crate::dom::NodeHandle::new(parsed_id, scope.doc_weak());
                 parent.append_child(&parsed_handle);
@@ -496,9 +498,7 @@ impl ForItem {
 
 impl std::fmt::Debug for ForItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ForItem")
-            .field("key", &self.key)
-            .finish()
+        f.debug_struct("ForItem").field("key", &self.key).finish()
     }
 }
 

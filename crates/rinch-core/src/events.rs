@@ -96,7 +96,7 @@ pub struct DragState {
 
 // Thread-local storage for active drag state.
 thread_local! {
-    static ACTIVE_DRAG: RefCell<Option<DragState>> = RefCell::new(None);
+    static ACTIVE_DRAG: RefCell<Option<DragState>> = const { RefCell::new(None) };
 }
 
 /// Start a drag operation.
@@ -121,13 +121,21 @@ thread_local! {
 ///     }
 /// );
 /// ```
-pub fn start_drag<F>(element_x: f32, element_y: f32, element_width: f32, element_height: f32, on_drag: F)
-where
+pub fn start_drag<F>(
+    element_x: f32,
+    element_y: f32,
+    element_width: f32,
+    element_height: f32,
+    on_drag: F,
+) where
     F: Fn(f32, f32) + 'static,
 {
     tracing::info!(
         "DRAG: start_drag called with bounds: ({}, {}, {}x{})",
-        element_x, element_y, element_width, element_height
+        element_x,
+        element_y,
+        element_width,
+        element_height
     );
     ACTIVE_DRAG.with(|drag| {
         *drag.borrow_mut() = Some(DragState {
@@ -171,9 +179,14 @@ pub fn update_drag(mouse_x: f32, mouse_y: f32) -> bool {
             };
             tracing::debug!(
                 "DRAG: mouse=({}, {}), element=({}, {}, {}x{}), percent=({:.2}, {:.2})",
-                mouse_x, mouse_y,
-                state.element_x, state.element_y, state.element_width, state.element_height,
-                percent_x, percent_y
+                mouse_x,
+                mouse_y,
+                state.element_x,
+                state.element_y,
+                state.element_width,
+                state.element_height,
+                percent_x,
+                percent_y
             );
             (state.on_drag)(percent_x, percent_y);
             true
@@ -365,8 +378,12 @@ pub fn dispatch_event(id: EventHandlerId) -> bool {
             let ids: Vec<_> = reg.handlers.keys().cloned().collect();
             (ids.len(), ids)
         });
-        tracing::error!("dispatch_event: handler {:?} NOT FOUND. Registry has {} handlers: {:?}",
-                  id, count, handler_ids);
+        tracing::error!(
+            "dispatch_event: handler {:?} NOT FOUND. Registry has {} handlers: {:?}",
+            id,
+            count,
+            handler_ids
+        );
         false
     }
 }
@@ -526,7 +543,7 @@ pub type SelectionCallback = Rc<dyn Fn(SelectionAction) -> Vec<(usize, usize, us
 
 thread_local! {
     static SELECTION_CALLBACK: RefCell<Option<SelectionCallback>> = RefCell::new(None);
-    static SAVED_SELECTION: RefCell<Vec<(usize, usize, usize)>> = RefCell::new(Vec::new());
+    static SAVED_SELECTION: RefCell<Vec<(usize, usize, usize)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Set the global text selection callback.
@@ -740,7 +757,10 @@ mod tests {
         let data = KeyEventData {
             key: "Enter".into(),
             code: "Enter".into(),
-            ctrl: false, shift: false, alt: false, meta: false,
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
         };
         assert!(dispatch_keyboard_event(&data));
         assert!(called.get());
@@ -753,7 +773,10 @@ mod tests {
         let data = KeyEventData {
             key: "a".into(),
             code: "KeyA".into(),
-            ctrl: false, shift: false, alt: false, meta: false,
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
         };
         assert!(!dispatch_keyboard_event(&data));
     }
@@ -765,7 +788,10 @@ mod tests {
         let data = KeyEventData {
             key: "a".into(),
             code: "KeyA".into(),
-            ctrl: false, shift: false, alt: false, meta: false,
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
         };
         assert!(!dispatch_keyboard_event(&data));
         clear_keyboard_interceptor();
@@ -779,7 +805,10 @@ mod tests {
         let data = KeyEventData {
             key: "a".into(),
             code: "KeyA".into(),
-            ctrl: false, shift: false, alt: false, meta: false,
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
         };
         assert!(dispatch_keyboard_event(&data));
         clear_keyboard_interceptor();

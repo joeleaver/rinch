@@ -42,5 +42,6 @@ pub fn styles() -> String {
     padding: 0.25rem 0.625rem;
     min-width: 2rem;
 }
-"#.to_string()
+"#
+    .to_string()
 }

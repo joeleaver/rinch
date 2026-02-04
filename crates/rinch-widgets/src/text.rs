@@ -2,8 +2,8 @@
 //!
 //! A typography component for displaying text with various styles.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// Text size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -160,10 +160,10 @@ impl Text {
         }
 
         // Weight class
-        if let Some(ref weight) = self.weight {
-            if let Ok(w) = weight.parse::<TextWeight>() {
-                classes.push(w.class_name());
-            }
+        if let Some(ref weight) = self.weight
+            && let Ok(w) = weight.parse::<TextWeight>()
+        {
+            classes.push(w.class_name());
         }
 
         // Color class
@@ -191,10 +191,10 @@ impl Text {
         }
 
         // Alignment class
-        if let Some(ref align) = self.align {
-            if let Ok(a) = align.parse::<TextAlign>() {
-                classes.push(a.class_name());
-            }
+        if let Some(ref align) = self.align
+            && let Ok(a) = align.parse::<TextAlign>()
+        {
+            classes.push(a.class_name());
         }
 
         classes.join(" ")

@@ -5,7 +5,7 @@ pub mod server;
 pub use protocol::{DebugCommand, DebugCommandKind, DebugResult};
 pub use server::DebugServer;
 
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 
 pub struct CommandSender {
     tx: mpsc::Sender<DebugCommand>,
@@ -15,10 +15,7 @@ pub struct CommandSender {
 impl CommandSender {
     pub fn execute(&self, kind: DebugCommandKind) -> DebugResult {
         let (response_tx, response_rx) = mpsc::channel();
-        let cmd = DebugCommand {
-            kind,
-            response_tx,
-        };
+        let cmd = DebugCommand { kind, response_tx };
         if self.tx.send(cmd).is_err() {
             return DebugResult::Error {
                 message: "Runtime shut down".into(),

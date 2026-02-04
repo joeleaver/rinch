@@ -2,8 +2,8 @@
 //!
 //! Highlights matching substrings within text.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// Highlights matching parts of text.
 ///

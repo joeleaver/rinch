@@ -84,11 +84,11 @@ fn generate_child_code(
     ctx: &mut DomCodegenContext,
 ) -> TokenStream2 {
     match child {
-        RsxNode::Element(el) if el.name.to_string() == "Show" => {
+        RsxNode::Element(el) if el.name == "Show" => {
             // Show inserts marker + content directly into parent
             element_to_dom_show(el, ctx, parent_var)
         }
-        RsxNode::Element(el) if el.name.to_string() == "For" => {
+        RsxNode::Element(el) if el.name == "For" => {
             // For inserts marker + items directly into parent
             element_to_dom_for(el, ctx, parent_var)
         }
@@ -180,7 +180,10 @@ fn element_to_dom_fragment(element: &RsxElement, ctx: &mut DomCodegenContext) ->
 ///
 /// ThemeProvider accepts reactive props for theme values and creates an Effect
 /// that updates the theme CSS when those values change.
-fn element_to_dom_theme_provider(element: &RsxElement, ctx: &mut DomCodegenContext) -> TokenStream2 {
+fn element_to_dom_theme_provider(
+    element: &RsxElement,
+    ctx: &mut DomCodegenContext,
+) -> TokenStream2 {
     let container_var = ctx.next_var("theme_container");
 
     // Find reactive props
@@ -350,7 +353,11 @@ fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) -> Tok
 ///
 /// Generates a call to `show_dom()` which inserts a comment marker and content
 /// directly into the parent element. No wrapper span is created.
-fn element_to_dom_show(element: &RsxElement, ctx: &mut DomCodegenContext, parent_var: &syn::Ident) -> TokenStream2 {
+fn element_to_dom_show(
+    element: &RsxElement,
+    ctx: &mut DomCodegenContext,
+    parent_var: &syn::Ident,
+) -> TokenStream2 {
     // Find the 'when' prop
     let when_prop = element.props.iter().find(|p| p.name == "when");
 
@@ -465,7 +472,11 @@ fn element_to_dom_show(element: &RsxElement, ctx: &mut DomCodegenContext, parent
 ///
 /// Generates a call to `for_each_dom()` which inserts a comment marker and items
 /// directly into the parent element. No wrapper span is created.
-fn element_to_dom_for(element: &RsxElement, ctx: &mut DomCodegenContext, parent_var: &syn::Ident) -> TokenStream2 {
+fn element_to_dom_for(
+    element: &RsxElement,
+    ctx: &mut DomCodegenContext,
+    parent_var: &syn::Ident,
+) -> TokenStream2 {
     // Find the 'each' prop (returns Vec<ForItem>)
     let each_prop = element.props.iter().find(|p| p.name == "each");
 
@@ -609,6 +620,7 @@ fn element_to_dom_widget(element: &RsxElement, ctx: &mut DomCodegenContext) -> T
     quote! {
         {
             // Construct widget
+            #[allow(clippy::needless_update)]
             let #widget_var = #widget_name {
                 #(#field_assignments,)*
                 ..Default::default()
@@ -710,10 +722,7 @@ pub fn is_likely_reactive(expr: &Expr) -> bool {
 /// }
 /// ```
 #[allow(dead_code)]
-pub fn generate_component_wrapper(
-    body: TokenStream2,
-    has_children: bool,
-) -> TokenStream2 {
+pub fn generate_component_wrapper(body: TokenStream2, has_children: bool) -> TokenStream2 {
     if has_children {
         quote! {
             |__scope: &mut ::rinch::core::RenderScope, __children: &[::rinch::core::NodeHandle]| -> ::rinch::core::NodeHandle {

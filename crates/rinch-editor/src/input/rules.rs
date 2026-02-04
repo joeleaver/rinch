@@ -1,7 +1,7 @@
 //! Input rules for automatic transformations.
 
-use crate::error::EditorError;
 use crate::editor::Editor;
+use crate::error::EditorError;
 use regex::Regex;
 
 /// Handler function type for input rules.
@@ -94,8 +94,8 @@ impl InputRuleSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::Schema;
     use crate::editor::EditorConfig;
+    use crate::schema::Schema;
 
     fn test_editor() -> Editor {
         Editor::new(Schema::starter_kit(), EditorConfig::default()).unwrap()
@@ -103,35 +103,29 @@ mod tests {
 
     #[test]
     fn input_rule_matches_pattern() {
-        let rule = InputRule::new(
-            Regex::new(r"^# ").unwrap(),
-            "Heading",
-            |_editor, _caps| Ok(()),
-        );
+        let rule = InputRule::new(Regex::new(r"^# ").unwrap(), "Heading", |_editor, _caps| {
+            Ok(())
+        });
         assert!(rule.matches("# Hello").is_some());
         assert!(rule.matches("Hello").is_none());
     }
 
     #[test]
     fn input_rule_no_match_returns_false() {
-        let rule = InputRule::new(
-            Regex::new(r"^# ").unwrap(),
-            "Heading",
-            |_editor, _caps| Ok(()),
-        );
+        let rule = InputRule::new(Regex::new(r"^# ").unwrap(), "Heading", |_editor, _caps| {
+            Ok(())
+        });
         let mut editor = test_editor();
-        assert_eq!(rule.apply(&mut editor, "Hello").unwrap(), false);
+        assert!(!rule.apply(&mut editor, "Hello").unwrap());
     }
 
     #[test]
     fn input_rule_match_returns_true() {
-        let rule = InputRule::new(
-            Regex::new(r"^# ").unwrap(),
-            "Heading",
-            |_editor, _caps| Ok(()),
-        );
+        let rule = InputRule::new(Regex::new(r"^# ").unwrap(), "Heading", |_editor, _caps| {
+            Ok(())
+        });
         let mut editor = test_editor();
-        assert_eq!(rule.apply(&mut editor, "# Hello").unwrap(), true);
+        assert!(rule.apply(&mut editor, "# Hello").unwrap());
     }
 
     #[test]
@@ -149,7 +143,7 @@ mod tests {
         ));
         let mut editor = test_editor();
         // "## " matches first rule
-        assert_eq!(set.check_and_apply(&mut editor, "## Hello").unwrap(), true);
+        assert!(set.check_and_apply(&mut editor, "## Hello").unwrap());
     }
 
     #[test]
@@ -161,7 +155,7 @@ mod tests {
             |_editor, _caps| Ok(()),
         ));
         let mut editor = test_editor();
-        assert_eq!(set.check_and_apply(&mut editor, "Hello").unwrap(), false);
+        assert!(!set.check_and_apply(&mut editor, "Hello").unwrap());
     }
 
     #[test]
@@ -173,11 +167,7 @@ mod tests {
 
     #[test]
     fn input_rule_debug() {
-        let rule = InputRule::new(
-            Regex::new(r"^# ").unwrap(),
-            "Heading rule",
-            |_e, _c| Ok(()),
-        );
+        let rule = InputRule::new(Regex::new(r"^# ").unwrap(), "Heading rule", |_e, _c| Ok(()));
         let dbg = format!("{:?}", rule);
         assert!(dbg.contains("Heading rule"));
     }

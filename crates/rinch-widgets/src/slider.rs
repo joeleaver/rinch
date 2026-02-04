@@ -3,8 +3,9 @@
 //! A range input slider with fine-grained reactive updates.
 
 use rinch_core::{
+    Signal, ValueCallback, Widget,
     dom::{NodeHandle, RenderScope},
-    get_click_context, start_drag, Signal, ValueCallback, Widget,
+    get_click_context, start_drag,
 };
 
 /// Slider size.
@@ -112,7 +113,10 @@ impl std::fmt::Debug for Slider {
             .field("min", &self.min)
             .field("max", &self.max)
             .field("value", &self.value)
-            .field("value_signal", &self.value_signal.as_ref().map(|_| "Signal<f64>"))
+            .field(
+                "value_signal",
+                &self.value_signal.as_ref().map(|_| "Signal<f64>"),
+            )
             .field("disabled", &self.disabled)
             .finish_non_exhaustive()
     }
@@ -245,7 +249,7 @@ impl Widget for Slider {
                 }
                 val.clamp(min, max)
             };
-            let calc_value_drag = calc_value.clone();
+            let calc_value_drag = calc_value;
 
             // Create the click handler that manages drag
             let handler_id = scope.register_handler(move || {
@@ -255,7 +259,7 @@ impl Widget for Slider {
 
                 // Start drag - the drag callback will continue updating
                 let drag_cb = value_cb_drag.clone();
-                let calc = calc_value_drag.clone();
+                let calc = calc_value_drag;
                 start_drag(
                     ctx.element_x,
                     ctx.element_y,

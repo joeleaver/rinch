@@ -147,5 +147,6 @@ pub fn styles() -> String {
 .rinch-popover--shadow-md .rinch-popover__dropdown { box-shadow: var(--rinch-shadow-md); }
 .rinch-popover--shadow-lg .rinch-popover__dropdown { box-shadow: var(--rinch-shadow-lg); }
 .rinch-popover--shadow-xl .rinch-popover__dropdown { box-shadow: var(--rinch-shadow-xl); }
-"#.to_string()
+"#
+    .to_string()
 }

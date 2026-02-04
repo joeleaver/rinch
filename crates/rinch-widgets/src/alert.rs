@@ -182,10 +182,10 @@ impl Alert {
         classes.push(color.class_name());
 
         // Radius class (only if non-default)
-        if let Some(ref r) = self.radius {
-            if let Ok(radius) = r.parse::<AlertRadius>() {
-                classes.push(radius.class_name());
-            }
+        if let Some(ref r) = self.radius
+            && let Ok(radius) = r.parse::<AlertRadius>()
+        {
+            classes.push(radius.class_name());
         }
 
         // With title
@@ -237,7 +237,8 @@ impl Widget for Alert {
 
         // Close button
         if self.with_close_button {
-            let btn = rinch_macros::rsx! { button { class: "rinch-alert__close", r#type: "button" } };
+            let btn =
+                rinch_macros::rsx! { button { class: "rinch-alert__close", r#type: "button" } };
             btn.set_attribute("aria-label", "Close");
             let close_icon = crate::icons::close_icon_dom(__scope, "14");
             btn.append_child(&close_icon);

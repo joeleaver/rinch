@@ -121,13 +121,13 @@ impl Default for WindowState {
 
 thread_local! {
     /// Pending window requests to be processed by the runtime.
-    static WINDOW_REQUESTS: RefCell<Vec<WindowRequest>> = RefCell::new(Vec::new());
+    static WINDOW_REQUESTS: RefCell<Vec<WindowRequest>> = const { RefCell::new(Vec::new()) };
     /// Event loop proxy for triggering re-renders after window operations.
-    static EVENT_PROXY: RefCell<Option<EventLoopProxy<RinchEvent>>> = RefCell::new(None);
+    static EVENT_PROXY: RefCell<Option<EventLoopProxy<RinchEvent>>> = const { RefCell::new(None) };
     /// Current state of all windows, updated by the runtime.
     static WINDOW_STATES: RefCell<HashMap<WindowHandle, WindowState>> = RefCell::new(HashMap::new());
     /// The window ID that is currently handling an event (set by runtime during event dispatch).
-    static CURRENT_WINDOW_ID: RefCell<Option<WindowId>> = RefCell::new(None);
+    static CURRENT_WINDOW_ID: RefCell<Option<WindowId>> = const { RefCell::new(None) };
 }
 
 /// Window request types.
@@ -200,12 +200,7 @@ pub fn get_window_state(handle: WindowHandle) -> Option<WindowState> {
 ///
 /// Returns a vector of (handle, state) pairs for all windows opened programmatically.
 pub fn get_all_window_states() -> Vec<(WindowHandle, WindowState)> {
-    WINDOW_STATES.with(|s| {
-        s.borrow()
-            .iter()
-            .map(|(h, s)| (*h, *s))
-            .collect()
-    })
+    WINDOW_STATES.with(|s| s.borrow().iter().map(|(h, s)| (*h, *s)).collect())
 }
 
 /// Open a new window with the given properties and HTML content.
@@ -262,7 +257,8 @@ pub fn open_window(props: WindowProps, html_content: String) -> WindowHandle {
 /// ```
 pub fn close_window(handle: WindowHandle) {
     WINDOW_REQUESTS.with(|r| {
-        r.borrow_mut().push(WindowRequest::Close(CloseWindowRequest { handle }));
+        r.borrow_mut()
+            .push(WindowRequest::Close(CloseWindowRequest { handle }));
     });
 
     // Trigger processing of window requests
@@ -387,7 +383,9 @@ pub fn minimize_current_window() {
         }
         false
     });
-    if sent { return; }
+    if sent {
+        return;
+    }
 
     // Fallback to RinchEvent proxy (blitz-based runtime)
     if let Some(window_id) = get_current_window_id() {
@@ -418,7 +416,9 @@ pub fn toggle_maximize_current_window() {
         }
         false
     });
-    if sent { return; }
+    if sent {
+        return;
+    }
 
     // Fallback to RinchEvent proxy (blitz-based runtime)
     if let Some(window_id) = get_current_window_id() {
@@ -449,7 +449,9 @@ pub fn close_current_window() {
         }
         false
     });
-    if sent { return; }
+    if sent {
+        return;
+    }
 
     // Fallback to RinchEvent proxy (blitz-based runtime)
     if let Some(window_id) = get_current_window_id() {

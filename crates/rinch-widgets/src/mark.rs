@@ -2,8 +2,8 @@
 //!
 //! Highlighted/marked text.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// Marked/highlighted text component.
 ///

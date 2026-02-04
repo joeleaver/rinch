@@ -221,4 +221,3 @@ mod tests {
         assert_eq!(history.undo_count(), 2);
     }
 }
-

@@ -141,15 +141,14 @@ mod tests {
 
     #[test]
     fn builder_extensions_batch() {
-        let config = RichTextEditorConfig::new()
-            .with_extensions(["starterKit", "table", "highlight"]);
+        let config =
+            RichTextEditorConfig::new().with_extensions(["starterKit", "table", "highlight"]);
         assert_eq!(config.extensions.len(), 3);
     }
 
     #[test]
     fn builder_with_minimal_toolbar() {
-        let config = RichTextEditorConfig::new()
-            .with_toolbar(ToolbarConfig::default_minimal());
+        let config = RichTextEditorConfig::new().with_toolbar(ToolbarConfig::default_minimal());
         assert!(config.toolbar.control_count() < 10);
     }
 

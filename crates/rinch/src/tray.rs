@@ -238,7 +238,12 @@ impl TrayMenu {
         self
     }
 
-    fn build(mut self) -> TrayResult<(Menu, Vec<(tray_icon::menu::MenuId, String, Option<TrayCallback>)>)> {
+    fn build(
+        mut self,
+    ) -> TrayResult<(
+        Menu,
+        Vec<(tray_icon::menu::MenuId, String, Option<TrayCallback>)>,
+    )> {
         let menu = Menu::new();
 
         for entry in self.menu_items {
@@ -270,7 +275,10 @@ impl TrayMenu {
     }
 
     /// Build menu items directly into a submenu.
-    fn build_into(mut self, submenu: &Submenu) -> TrayResult<Vec<(tray_icon::menu::MenuId, String, Option<TrayCallback>)>> {
+    fn build_into(
+        mut self,
+        submenu: &Submenu,
+    ) -> TrayResult<Vec<(tray_icon::menu::MenuId, String, Option<TrayCallback>)>> {
         for entry in self.menu_items {
             match entry {
                 TrayMenuEntry::Item {

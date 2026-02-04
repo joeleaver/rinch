@@ -87,11 +87,11 @@ impl LocalUndoStack {
     /// Used for grouping consecutive typing into a single undo step.
     /// Returns true if merge was successful.
     pub fn merge_last(&mut self, new_op: &UndoOperation) -> bool {
-        if let Some(last_item) = self.undo_stack.last_mut() {
-            if last_item.operation.can_merge(new_op) {
-                last_item.operation.merge(new_op);
-                return true;
-            }
+        if let Some(last_item) = self.undo_stack.last_mut()
+            && last_item.operation.can_merge(new_op)
+        {
+            last_item.operation.merge(new_op);
+            return true;
         }
         false
     }
@@ -285,11 +285,7 @@ mod tests {
         let item3 = stack.undo().unwrap().unwrap();
         let item2 = stack.undo().unwrap().unwrap();
 
-        match (
-            &item2.operation,
-            &item3.operation,
-            &item4.operation,
-        ) {
+        match (&item2.operation, &item3.operation, &item4.operation) {
             (
                 UndoOperation::InsertText { text: t2, .. },
                 UndoOperation::InsertText { text: t3, .. },
@@ -442,7 +438,10 @@ mod tests {
         let inv = item.inverse();
 
         match &inv.operation {
-            UndoOperation::DeleteText { range, deleted_text } => {
+            UndoOperation::DeleteText {
+                range,
+                deleted_text,
+            } => {
                 assert_eq!(range.start, Position(5));
                 assert_eq!(range.end, Position(9));
                 assert_eq!(deleted_text, "test");
@@ -451,4 +450,3 @@ mod tests {
         }
     }
 }
-

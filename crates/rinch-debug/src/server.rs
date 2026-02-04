@@ -1,10 +1,10 @@
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use crate::protocol::*;
-use crate::{discovery, CommandSender};
+use crate::{CommandSender, discovery};
 
 pub struct DebugServer {
     port: u16,
@@ -109,8 +109,9 @@ impl DebugServer {
         };
 
         if handshake.protocol != "rinch-debug" || handshake.version != 1 {
-            let err = serde_json::to_vec(&serde_json::json!({"error": "unsupported protocol/version"}))
-                .unwrap();
+            let err =
+                serde_json::to_vec(&serde_json::json!({"error": "unsupported protocol/version"}))
+                    .unwrap();
             let _ = write_frame(&mut stream, &err);
             return;
         }

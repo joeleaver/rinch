@@ -107,10 +107,10 @@ impl Pagination {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-pagination"];
 
-        if let Some(ref s) = self.size {
-            if let Ok(size) = s.parse::<PaginationSize>() {
-                classes.push(size.class_name());
-            }
+        if let Some(ref s) = self.size
+            && let Ok(size) = s.parse::<PaginationSize>()
+        {
+            classes.push(size.class_name());
         }
 
         if let Some(ref r) = self.radius {
@@ -190,7 +190,10 @@ impl Pagination {
         }
 
         // Right boundary pages
-        let start = total.saturating_sub(boundaries).saturating_add(1).max(boundaries.saturating_add(1));
+        let start = total
+            .saturating_sub(boundaries)
+            .saturating_add(1)
+            .max(boundaries.saturating_add(1));
         for i in start..=total {
             if i > 0 && i > boundaries {
                 pages.push(PageItem::Page(i));
@@ -255,12 +258,12 @@ impl Widget for Pagination {
             }
 
             // Register click handler for first page
-            if let Some(ref cb) = self.onchange {
-                if !first_disabled {
-                    let cb = cb.clone();
-                    let handler_id = __scope.register_handler(move || cb.invoke(1));
-                    first_btn.set_attribute("data-rid", &handler_id.0.to_string());
-                }
+            if let Some(ref cb) = self.onchange
+                && !first_disabled
+            {
+                let cb = cb.clone();
+                let handler_id = __scope.register_handler(move || cb.invoke(1));
+                first_btn.set_attribute("data-rid", &handler_id.0.to_string());
             }
             controls.append_child(&first_btn);
         }
@@ -285,13 +288,13 @@ impl Widget for Pagination {
             }
 
             // Register click handler for previous page
-            if let Some(ref cb) = self.onchange {
-                if !prev_disabled {
-                    let cb = cb.clone();
-                    let prev_page = self.value.saturating_sub(1).max(1);
-                    let handler_id = __scope.register_handler(move || cb.invoke(prev_page));
-                    prev_btn.set_attribute("data-rid", &handler_id.0.to_string());
-                }
+            if let Some(ref cb) = self.onchange
+                && !prev_disabled
+            {
+                let cb = cb.clone();
+                let prev_page = self.value.saturating_sub(1).max(1);
+                let handler_id = __scope.register_handler(move || cb.invoke(prev_page));
+                prev_btn.set_attribute("data-rid", &handler_id.0.to_string());
             }
             controls.append_child(&prev_btn);
         }
@@ -307,7 +310,8 @@ impl Widget for Pagination {
                         page_class.push_str(" rinch-pagination__item--active");
                     }
 
-                    let page_btn = rinch_macros::rsx! { button { class: "rinch-pagination__item" } };
+                    let page_btn =
+                        rinch_macros::rsx! { button { class: "rinch-pagination__item" } };
                     page_btn.set_attribute("class", &page_class);
                     page_btn.set_attribute("data-page", &n.to_string());
 
@@ -319,12 +323,12 @@ impl Widget for Pagination {
                     }
 
                     // Register click handler for this page
-                    if let Some(ref cb) = self.onchange {
-                        if !self.disabled {
-                            let cb = cb.clone();
-                            let handler_id = __scope.register_handler(move || cb.invoke(n));
-                            page_btn.set_attribute("data-rid", &handler_id.0.to_string());
-                        }
+                    if let Some(ref cb) = self.onchange
+                        && !self.disabled
+                    {
+                        let cb = cb.clone();
+                        let handler_id = __scope.register_handler(move || cb.invoke(n));
+                        page_btn.set_attribute("data-rid", &handler_id.0.to_string());
                     }
                     items_container.append_child(&page_btn);
                 }
@@ -358,13 +362,13 @@ impl Widget for Pagination {
             }
 
             // Register click handler for next page
-            if let Some(ref cb) = self.onchange {
-                if !next_disabled {
-                    let cb = cb.clone();
-                    let next_page = (self.value + 1).min(self.total);
-                    let handler_id = __scope.register_handler(move || cb.invoke(next_page));
-                    next_btn.set_attribute("data-rid", &handler_id.0.to_string());
-                }
+            if let Some(ref cb) = self.onchange
+                && !next_disabled
+            {
+                let cb = cb.clone();
+                let next_page = (self.value + 1).min(self.total);
+                let handler_id = __scope.register_handler(move || cb.invoke(next_page));
+                next_btn.set_attribute("data-rid", &handler_id.0.to_string());
             }
             controls.append_child(&next_btn);
         }
@@ -389,13 +393,13 @@ impl Widget for Pagination {
             }
 
             // Register click handler for last page
-            if let Some(ref cb) = self.onchange {
-                if !last_disabled {
-                    let cb = cb.clone();
-                    let total = self.total;
-                    let handler_id = __scope.register_handler(move || cb.invoke(total));
-                    last_btn.set_attribute("data-rid", &handler_id.0.to_string());
-                }
+            if let Some(ref cb) = self.onchange
+                && !last_disabled
+            {
+                let cb = cb.clone();
+                let total = self.total;
+                let handler_id = __scope.register_handler(move || cb.invoke(total));
+                last_btn.set_attribute("data-rid", &handler_id.0.to_string());
             }
             controls.append_child(&last_btn);
         }

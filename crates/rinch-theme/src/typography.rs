@@ -88,11 +88,11 @@ impl Default for FontSizeScale {
 
 /// Default font size scale (matches Mantine).
 pub const DEFAULT_FONT_SIZES: FontSizeScale = FontSizeScale {
-    xs: "0.75rem",   // 12px
-    sm: "0.875rem",  // 14px
-    md: "1rem",      // 16px
-    lg: "1.125rem",  // 18px
-    xl: "1.25rem",   // 20px
+    xs: "0.75rem",  // 12px
+    sm: "0.875rem", // 14px
+    md: "1rem",     // 16px
+    lg: "1.125rem", // 18px
+    xl: "1.25rem",  // 20px
 };
 
 /// The line height scale.
@@ -212,41 +212,39 @@ impl Default for HeadingStyles {
 /// Default heading styles (matches Mantine).
 pub const DEFAULT_HEADINGS: HeadingStyles = HeadingStyles {
     h1: HeadingStyle {
-        font_size: "2.125rem",  // 34px
+        font_size: "2.125rem", // 34px
         line_height: "1.3",
         font_weight: "700",
     },
     h2: HeadingStyle {
-        font_size: "1.625rem",  // 26px
+        font_size: "1.625rem", // 26px
         line_height: "1.35",
         font_weight: "700",
     },
     h3: HeadingStyle {
-        font_size: "1.375rem",  // 22px
+        font_size: "1.375rem", // 22px
         line_height: "1.4",
         font_weight: "700",
     },
     h4: HeadingStyle {
-        font_size: "1.125rem",  // 18px
+        font_size: "1.125rem", // 18px
         line_height: "1.45",
         font_weight: "700",
     },
     h5: HeadingStyle {
-        font_size: "1rem",      // 16px
+        font_size: "1rem", // 16px
         line_height: "1.5",
         font_weight: "700",
     },
     h6: HeadingStyle {
-        font_size: "0.875rem",  // 14px
+        font_size: "0.875rem", // 14px
         line_height: "1.5",
         font_weight: "700",
     },
 };
 
 /// Default font family stack.
-pub const DEFAULT_FONT_FAMILY: &str =
-    "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji'";
+pub const DEFAULT_FONT_FAMILY: &str = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji'";
 
 /// Default monospace font family stack.
-pub const DEFAULT_FONT_FAMILY_MONOSPACE: &str =
-    "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace";
+pub const DEFAULT_FONT_FAMILY_MONOSPACE: &str = "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace";

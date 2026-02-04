@@ -19,32 +19,32 @@
 //! - [`Extension`] - Plugin system for nodes, marks, and functionality
 //! - [`Commands`] - All document mutations go through commands
 
-pub mod document;
-pub mod schema;
 pub mod commands;
-pub mod selection;
-pub mod history;
-pub mod input;
-pub mod extensions;
-pub mod view;
-pub mod events;
+pub mod document;
 pub mod editor;
 pub mod error;
+pub mod events;
+pub mod extensions;
+pub mod history;
+pub mod input;
+pub mod schema;
+pub mod selection;
+pub mod view;
 
 #[cfg(test)]
 pub mod testing;
 
-pub use editor::{Editor, EditorChanges};
 pub use document::{EditorDocument, MarkData, Position, Range};
-pub use schema::Schema;
+pub use editor::{Editor, EditorChanges};
 pub use error::EditorError;
 pub use extensions::CommandRegistration;
+pub use schema::Schema;
 
 /// Prelude module for convenient imports
 pub mod prelude {
-    pub use crate::editor::{Editor, EditorConfig, AutoFocus, EditorChanges};
     pub use crate::document::{EditorDocument, MarkData, Position, Range};
-    pub use crate::schema::Schema;
-    pub use crate::extensions::{Extension, StarterKit};
+    pub use crate::editor::{AutoFocus, Editor, EditorChanges, EditorConfig};
     pub use crate::error::EditorError;
+    pub use crate::extensions::{Extension, StarterKit};
+    pub use crate::schema::Schema;
 }

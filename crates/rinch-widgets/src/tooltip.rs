@@ -2,8 +2,8 @@
 //!
 //! Shows additional information on hover.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// Tooltip position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -140,7 +140,8 @@ impl Widget for Tooltip {
         root.append_child(&target);
 
         // Content element
-        let content = rinch_macros::rsx! { div { class: "rinch-tooltip__content", role: "tooltip" } };
+        let content =
+            rinch_macros::rsx! { div { class: "rinch-tooltip__content", role: "tooltip" } };
         let label_text = __scope.create_text(label);
         content.append_child(&label_text);
         root.append_child(&content);

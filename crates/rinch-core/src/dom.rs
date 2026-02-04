@@ -210,10 +210,17 @@ impl NodeHandle {
     /// For element nodes, this replaces all children with a single text node.
     pub fn set_text(&self, text: &str) {
         if let Some(doc) = self.doc.upgrade() {
-            tracing::debug!("NodeHandle::set_text(node={}, text_len={})", self.node_id.0, text.len());
+            tracing::debug!(
+                "NodeHandle::set_text(node={}, text_len={})",
+                self.node_id.0,
+                text.len()
+            );
             doc.borrow_mut().set_text_content(self.node_id, text);
         } else {
-            tracing::warn!("NodeHandle::set_text FAILED - doc Weak reference is dead (node={})", self.node_id.0);
+            tracing::warn!(
+                "NodeHandle::set_text FAILED - doc Weak reference is dead (node={})",
+                self.node_id.0
+            );
         }
     }
 
@@ -321,7 +328,8 @@ impl NodeHandle {
             if let Some(parent_id) = parent_id {
                 let next = doc.borrow().next_sibling(self.node_id);
                 if let Some(next_id) = next {
-                    doc.borrow_mut().insert_before(parent_id, new_node.node_id, next_id);
+                    doc.borrow_mut()
+                        .insert_before(parent_id, new_node.node_id, next_id);
                 } else {
                     doc.borrow_mut().append_child(parent_id, new_node.node_id);
                 }
@@ -442,7 +450,8 @@ impl NodeHandle {
     /// Query all child nodes matching the selector.
     pub fn query_selector_all(&self, selector: &str) -> Vec<NodeHandle> {
         if let Some(doc) = self.doc.upgrade() {
-            doc.borrow().query_selector_all(selector)
+            doc.borrow()
+                .query_selector_all(selector)
                 .into_iter()
                 .map(|id| NodeHandle::new(id, self.doc.clone()))
                 .collect()
@@ -460,7 +469,8 @@ impl NodeHandle {
     /// Some((x, y)) if the node has text layout and the offset is valid, None otherwise
     pub fn query_caret_position(&self, byte_offset: usize) -> Option<(f32, f32)> {
         let doc = self.doc.upgrade()?;
-        doc.borrow().query_caret_position(self.node_id.0 as u64, byte_offset)
+        doc.borrow()
+            .query_caret_position(self.node_id.0 as u64, byte_offset)
     }
 
     /// Query the bounding box of a glyph cluster at the given byte offset.
@@ -472,7 +482,8 @@ impl NodeHandle {
     /// Some(GlyphBounds) if the node has text layout and the offset is valid, None otherwise
     pub fn query_glyph_bounds(&self, byte_offset: usize) -> Option<GlyphBounds> {
         let doc = self.doc.upgrade()?;
-        doc.borrow().query_glyph_bounds(self.node_id.0 as u64, byte_offset)
+        doc.borrow()
+            .query_glyph_bounds(self.node_id.0 as u64, byte_offset)
     }
 
     /// Get the layout bounds of this node relative to its parent.
@@ -545,10 +556,7 @@ macro_rules! impl_into_node_for_display {
 }
 
 impl_into_node_for_display!(
-    i8, i16, i32, i64, i128, isize,
-    u8, u16, u32, u64, u128, usize,
-    f32, f64,
-    bool, char
+    i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, f32, f64, bool, char
 );
 
 /// Bounding box for a glyph cluster.
@@ -791,7 +799,11 @@ impl RenderScope {
         tracing::debug!(
             "Created reactive text: id={}, initial='{}', span_id={:?}",
             reactive_id,
-            if initial_text.len() > 20 { &initial_text[..20] } else { initial_text },
+            if initial_text.len() > 20 {
+                &initial_text[..20]
+            } else {
+                initial_text
+            },
             span_id
         );
 
@@ -809,10 +821,7 @@ impl RenderScope {
     ///
     /// Child scopes are cleaned up when the parent scope is disposed.
     pub fn child_scope(&mut self, parent: &NodeHandle) -> &mut RenderScope {
-        let scope = RenderScope::new(
-            self.doc().expect("Document dropped"),
-            parent.node_id,
-        );
+        let scope = RenderScope::new(self.doc().expect("Document dropped"), parent.node_id);
         self.children.push(scope);
         self.children.last_mut().unwrap()
     }
@@ -897,7 +906,10 @@ impl RenderScope {
     /// });
     /// element.set_attribute("data-rid", &handler_id.to_string());
     /// ```
-    pub fn register_handler<F: Fn() + 'static>(&mut self, callback: F) -> crate::events::EventHandlerId {
+    pub fn register_handler<F: Fn() + 'static>(
+        &mut self,
+        callback: F,
+    ) -> crate::events::EventHandlerId {
         crate::events::register_handler(std::rc::Rc::new(callback))
     }
 
@@ -914,7 +926,10 @@ impl RenderScope {
     /// });
     /// element.set_attribute("data-oninput", &handler_id.to_string());
     /// ```
-    pub fn register_input_handler<F: Fn(String) + 'static>(&mut self, callback: F) -> crate::events::EventHandlerId {
+    pub fn register_input_handler<F: Fn(String) + 'static>(
+        &mut self,
+        callback: F,
+    ) -> crate::events::EventHandlerId {
         crate::events::register_input_handler(crate::events::InputCallback::new(callback))
     }
 
@@ -952,14 +967,41 @@ pub struct UpdateBatch {
 /// A single DOM update operation.
 #[derive(Debug)]
 pub enum DomUpdate {
-    SetText { node: NodeId, text: String },
-    SetAttribute { node: NodeId, name: String, value: String },
-    RemoveAttribute { node: NodeId, name: String },
-    AppendChild { parent: NodeId, child: NodeId },
-    RemoveChild { parent: NodeId, child: NodeId },
-    InsertBefore { parent: NodeId, child: NodeId, reference: NodeId },
-    ReplaceNode { old: NodeId, new: NodeId },
-    SetStyle { node: NodeId, property: String, value: String },
+    SetText {
+        node: NodeId,
+        text: String,
+    },
+    SetAttribute {
+        node: NodeId,
+        name: String,
+        value: String,
+    },
+    RemoveAttribute {
+        node: NodeId,
+        name: String,
+    },
+    AppendChild {
+        parent: NodeId,
+        child: NodeId,
+    },
+    RemoveChild {
+        parent: NodeId,
+        child: NodeId,
+    },
+    InsertBefore {
+        parent: NodeId,
+        child: NodeId,
+        reference: NodeId,
+    },
+    ReplaceNode {
+        old: NodeId,
+        new: NodeId,
+    },
+    SetStyle {
+        node: NodeId,
+        property: String,
+        value: String,
+    },
 }
 
 impl UpdateBatch {
@@ -1053,11 +1095,18 @@ struct MockNode {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]  // tag is stored for debugging but not read
+#[allow(dead_code)] // tag is stored for debugging but not read
 enum MockNodeKind {
     Element(String),
     Text,
     Comment,
+}
+
+#[cfg(test)]
+impl Default for MockDomDocument {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -1154,10 +1203,10 @@ impl DomDocument for MockDomDocument {
     }
 
     fn insert_before(&mut self, parent: NodeId, child: NodeId, reference: NodeId) {
-        if let Some(node) = self.nodes.get_mut(&parent) {
-            if let Some(pos) = node.children.iter().position(|&c| c == reference) {
-                node.children.insert(pos, child);
-            }
+        if let Some(node) = self.nodes.get_mut(&parent)
+            && let Some(pos) = node.children.iter().position(|&c| c == reference)
+        {
+            node.children.insert(pos, child);
         }
         if let Some(node) = self.nodes.get_mut(&child) {
             node.parent = Some(parent);
@@ -1168,10 +1217,10 @@ impl DomDocument for MockDomDocument {
     fn replace_node(&mut self, old: NodeId, new: NodeId) {
         let parent = self.nodes.get(&old).and_then(|n| n.parent);
         if let Some(parent_id) = parent {
-            if let Some(parent_node) = self.nodes.get_mut(&parent_id) {
-                if let Some(pos) = parent_node.children.iter().position(|&c| c == old) {
-                    parent_node.children[pos] = new;
-                }
+            if let Some(parent_node) = self.nodes.get_mut(&parent_id)
+                && let Some(pos) = parent_node.children.iter().position(|&c| c == old)
+            {
+                parent_node.children[pos] = new;
             }
             if let Some(node) = self.nodes.get_mut(&new) {
                 node.parent = Some(parent_id);
@@ -1303,6 +1352,26 @@ impl DomDocument for MockDomDocument {
     fn set_inner_html(&mut self, _node: NodeId, _html: &str) {
         // Mock implementation - no-op for tests
     }
+
+    fn query_caret_position(&self, _node_id: u64, _byte_offset: usize) -> Option<(f32, f32)> {
+        None // Mock returns None
+    }
+
+    fn query_glyph_bounds(&self, _node_id: u64, _byte_offset: usize) -> Option<GlyphBounds> {
+        None // Mock returns None
+    }
+
+    fn focus_element(&mut self, _node_id: NodeId) {
+        // Mock does nothing
+    }
+
+    fn resolve_layout(&mut self, _width: f32, _height: f32) {
+        // Mock does nothing
+    }
+
+    fn query_node_layout(&self, _node_id: u64) -> Option<(f32, f32, f32, f32)> {
+        None // Mock returns None
+    }
 }
 
 #[cfg(test)]
@@ -1318,7 +1387,7 @@ mod tests {
         text.set_text("World");
 
         // Verify the text was updated
-        assert!(doc.borrow_mut().take_dirty_nodes().len() > 0);
+        assert!(!doc.borrow_mut().take_dirty_nodes().is_empty());
     }
 
     #[test]
@@ -1373,7 +1442,7 @@ mod tests {
         container.append_child(&inner);
 
         // Verify the hierarchy was created
-        assert!(doc.borrow_mut().take_dirty_nodes().len() > 0);
+        assert!(!doc.borrow_mut().take_dirty_nodes().is_empty());
     }
 
     #[test]
@@ -1395,6 +1464,9 @@ mod tests {
         assert_eq!(batch.len(), 2);
         batch.apply(&mut doc);
 
-        assert_eq!(doc.get_attribute(node_id, "class"), Some("test".to_string()));
+        assert_eq!(
+            doc.get_attribute(node_id, "class"),
+            Some("test".to_string())
+        );
     }
 }

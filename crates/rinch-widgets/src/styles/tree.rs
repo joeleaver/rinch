@@ -126,5 +126,6 @@ pub fn styles() -> String {
 .rinch-tree__node-content--selected .rinch-tree__chevron {
     color: var(--rinch-primary-color);
 }
-"#.to_string()
+"#
+    .to_string()
 }

@@ -1,4 +1,4 @@
-//! StarterKit: 22 default extensions for a full-featured rich-text editor.
+//! StarterKit: 23 default extensions for a full-featured rich-text editor.
 //!
 //! Modeled after TipTap/Mantine's StarterKit, this module provides all the
 //! standard node and mark extensions with keyboard shortcuts, commands,
@@ -7,11 +7,11 @@
 use regex::Regex;
 use std::collections::HashMap;
 
+use super::{CommandRegistration, Extension};
 use crate::commands::{FormattingCommands, StructureCommands, TextCommands};
 use crate::input::{InputRule, KeyboardShortcut};
-use crate::schema::node::{AttrSpec, MarkSet, NodeSpec};
 use crate::schema::mark::MarkSpec;
-use super::{CommandRegistration, Extension};
+use crate::schema::node::{AttrSpec, MarkSet, NodeSpec};
 
 // =============================================================================
 // Node Extensions
@@ -22,8 +22,12 @@ use super::{CommandRegistration, Extension};
 pub struct DocumentExt;
 
 impl Extension for DocumentExt {
-    fn name(&self) -> &str { "document" }
-    fn priority(&self) -> i32 { 0 }
+    fn name(&self) -> &str {
+        "document"
+    }
+    fn priority(&self) -> i32 {
+        0
+    }
 
     fn nodes(&self) -> Vec<NodeSpec> {
         vec![NodeSpec::builder("doc").content("block+").build()]
@@ -35,15 +39,21 @@ impl Extension for DocumentExt {
 pub struct ParagraphExt;
 
 impl Extension for ParagraphExt {
-    fn name(&self) -> &str { "paragraph" }
-    fn priority(&self) -> i32 { 10 }
+    fn name(&self) -> &str {
+        "paragraph"
+    }
+    fn priority(&self) -> i32 {
+        10
+    }
 
     fn nodes(&self) -> Vec<NodeSpec> {
-        vec![NodeSpec::builder("paragraph")
-            .content("inline*")
-            .group("block")
-            .parse_html(vec!["p".into()])
-            .build()]
+        vec![
+            NodeSpec::builder("paragraph")
+                .content("inline*")
+                .group("block")
+                .parse_html(vec!["p".into()])
+                .build(),
+        ]
     }
 
     fn commands(&self) -> Vec<CommandRegistration> {
@@ -65,14 +75,15 @@ impl Extension for ParagraphExt {
 pub struct TextExt;
 
 impl Extension for TextExt {
-    fn name(&self) -> &str { "text" }
-    fn priority(&self) -> i32 { 10 }
+    fn name(&self) -> &str {
+        "text"
+    }
+    fn priority(&self) -> i32 {
+        10
+    }
 
     fn nodes(&self) -> Vec<NodeSpec> {
-        vec![NodeSpec::builder("text")
-            .group("inline")
-            .inline()
-            .build()]
+        vec![NodeSpec::builder("text").group("inline").inline().build()]
     }
 }
 
@@ -81,18 +92,26 @@ impl Extension for TextExt {
 pub struct HeadingExt;
 
 impl Extension for HeadingExt {
-    fn name(&self) -> &str { "heading" }
+    fn name(&self) -> &str {
+        "heading"
+    }
 
     fn nodes(&self) -> Vec<NodeSpec> {
-        vec![NodeSpec::builder("heading")
-            .content("inline*")
-            .group("block")
-            .attr("level", AttrSpec::optional("1"))
-            .parse_html(vec![
-                "h1".into(), "h2".into(), "h3".into(),
-                "h4".into(), "h5".into(), "h6".into(),
-            ])
-            .build()]
+        vec![
+            NodeSpec::builder("heading")
+                .content("inline*")
+                .group("block")
+                .attr("level", AttrSpec::optional("1"))
+                .parse_html(vec![
+                    "h1".into(),
+                    "h2".into(),
+                    "h3".into(),
+                    "h4".into(),
+                    "h5".into(),
+                    "h6".into(),
+                ])
+                .build(),
+        ]
     }
 
     fn commands(&self) -> Vec<CommandRegistration> {
@@ -128,12 +147,30 @@ impl Extension for HeadingExt {
 
     fn keyboard_shortcuts(&self) -> Vec<(KeyboardShortcut, String)> {
         vec![
-            (KeyboardShortcut::new("Mod-Alt-1", "Heading 1"), "set_heading_1".into()),
-            (KeyboardShortcut::new("Mod-Alt-2", "Heading 2"), "set_heading_2".into()),
-            (KeyboardShortcut::new("Mod-Alt-3", "Heading 3"), "set_heading_3".into()),
-            (KeyboardShortcut::new("Mod-Alt-4", "Heading 4"), "set_heading_4".into()),
-            (KeyboardShortcut::new("Mod-Alt-5", "Heading 5"), "set_heading_5".into()),
-            (KeyboardShortcut::new("Mod-Alt-6", "Heading 6"), "set_heading_6".into()),
+            (
+                KeyboardShortcut::new("Mod-Alt-1", "Heading 1"),
+                "set_heading_1".into(),
+            ),
+            (
+                KeyboardShortcut::new("Mod-Alt-2", "Heading 2"),
+                "set_heading_2".into(),
+            ),
+            (
+                KeyboardShortcut::new("Mod-Alt-3", "Heading 3"),
+                "set_heading_3".into(),
+            ),
+            (
+                KeyboardShortcut::new("Mod-Alt-4", "Heading 4"),
+                "set_heading_4".into(),
+            ),
+            (
+                KeyboardShortcut::new("Mod-Alt-5", "Heading 5"),
+                "set_heading_5".into(),
+            ),
+            (
+                KeyboardShortcut::new("Mod-Alt-6", "Heading 6"),
+                "set_heading_6".into(),
+            ),
         ]
     }
 
@@ -178,14 +215,18 @@ impl Extension for HeadingExt {
 pub struct BlockquoteExt;
 
 impl Extension for BlockquoteExt {
-    fn name(&self) -> &str { "blockquote" }
+    fn name(&self) -> &str {
+        "blockquote"
+    }
 
     fn nodes(&self) -> Vec<NodeSpec> {
-        vec![NodeSpec::builder("blockquote")
-            .content("block+")
-            .group("block")
-            .parse_html(vec!["blockquote".into()])
-            .build()]
+        vec![
+            NodeSpec::builder("blockquote")
+                .content("block+")
+                .group("block")
+                .parse_html(vec!["blockquote".into()])
+                .build(),
+        ]
     }
 
     fn commands(&self) -> Vec<CommandRegistration> {
@@ -220,14 +261,18 @@ impl Extension for BlockquoteExt {
 pub struct BulletListExt;
 
 impl Extension for BulletListExt {
-    fn name(&self) -> &str { "bullet_list" }
+    fn name(&self) -> &str {
+        "bullet_list"
+    }
 
     fn nodes(&self) -> Vec<NodeSpec> {
-        vec![NodeSpec::builder("bullet_list")
-            .content("list_item+")
-            .group("block")
-            .parse_html(vec!["ul".into()])
-            .build()]
+        vec![
+            NodeSpec::builder("bullet_list")
+                .content("list_item+")
+                .group("block")
+                .parse_html(vec!["ul".into()])
+                .build(),
+        ]
     }
 
     fn commands(&self) -> Vec<CommandRegistration> {
@@ -269,15 +314,19 @@ impl Extension for BulletListExt {
 pub struct OrderedListExt;
 
 impl Extension for OrderedListExt {
-    fn name(&self) -> &str { "ordered_list" }
+    fn name(&self) -> &str {
+        "ordered_list"
+    }
 
     fn nodes(&self) -> Vec<NodeSpec> {
-        vec![NodeSpec::builder("ordered_list")
-            .content("list_item+")
-            .group("block")
-            .attr("start", AttrSpec::optional("1"))
-            .parse_html(vec!["ol".into()])
-            .build()]
+        vec![
+            NodeSpec::builder("ordered_list")
+                .content("list_item+")
+                .group("block")
+                .attr("start", AttrSpec::optional("1"))
+                .parse_html(vec!["ol".into()])
+                .build(),
+        ]
     }
 
     fn commands(&self) -> Vec<CommandRegistration> {
@@ -312,13 +361,17 @@ impl Extension for OrderedListExt {
 pub struct ListItemExt;
 
 impl Extension for ListItemExt {
-    fn name(&self) -> &str { "list_item" }
+    fn name(&self) -> &str {
+        "list_item"
+    }
 
     fn nodes(&self) -> Vec<NodeSpec> {
-        vec![NodeSpec::builder("list_item")
-            .content("block+")
-            .parse_html(vec!["li".into()])
-            .build()]
+        vec![
+            NodeSpec::builder("list_item")
+                .content("block+")
+                .parse_html(vec!["li".into()])
+                .build(),
+        ]
     }
 }
 
@@ -327,16 +380,20 @@ impl Extension for ListItemExt {
 pub struct CodeBlockExt;
 
 impl Extension for CodeBlockExt {
-    fn name(&self) -> &str { "code_block" }
+    fn name(&self) -> &str {
+        "code_block"
+    }
 
     fn nodes(&self) -> Vec<NodeSpec> {
-        vec![NodeSpec::builder("code_block")
-            .content("text*")
-            .group("block")
-            .marks(MarkSet::None)
-            .attr("language", AttrSpec::optional(""))
-            .parse_html(vec!["pre".into()])
-            .build()]
+        vec![
+            NodeSpec::builder("code_block")
+                .content("text*")
+                .group("block")
+                .marks(MarkSet::None)
+                .attr("language", AttrSpec::optional(""))
+                .parse_html(vec!["pre".into()])
+                .build(),
+        ]
     }
 
     fn commands(&self) -> Vec<CommandRegistration> {
@@ -371,7 +428,9 @@ impl Extension for CodeBlockExt {
 pub struct HorizontalRuleExt;
 
 impl Extension for HorizontalRuleExt {
-    fn name(&self) -> &str { "horizontal_rule" }
+    fn name(&self) -> &str {
+        "horizontal_rule"
+    }
 
     fn nodes(&self) -> Vec<NodeSpec> {
         let mut spec = NodeSpec::atom("horizontal_rule");
@@ -400,7 +459,9 @@ impl Extension for HorizontalRuleExt {
 pub struct HardBreakExt;
 
 impl Extension for HardBreakExt {
-    fn name(&self) -> &str { "hard_break" }
+    fn name(&self) -> &str {
+        "hard_break"
+    }
 
     fn nodes(&self) -> Vec<NodeSpec> {
         let mut spec = NodeSpec::atom("hard_break");
@@ -429,7 +490,9 @@ impl Extension for HardBreakExt {
 pub struct ImageExt;
 
 impl Extension for ImageExt {
-    fn name(&self) -> &str { "image" }
+    fn name(&self) -> &str {
+        "image"
+    }
 
     fn nodes(&self) -> Vec<NodeSpec> {
         let mut spec = NodeSpec::atom("image");
@@ -460,7 +523,9 @@ impl Extension for ImageExt {
 pub struct BoldExt;
 
 impl Extension for BoldExt {
-    fn name(&self) -> &str { "bold" }
+    fn name(&self) -> &str {
+        "bold"
+    }
 
     fn marks(&self) -> Vec<MarkSpec> {
         let mut spec = MarkSpec::simple("bold");
@@ -495,7 +560,9 @@ impl Extension for BoldExt {
 pub struct ItalicExt;
 
 impl Extension for ItalicExt {
-    fn name(&self) -> &str { "italic" }
+    fn name(&self) -> &str {
+        "italic"
+    }
 
     fn marks(&self) -> Vec<MarkSpec> {
         let mut spec = MarkSpec::simple("italic");
@@ -530,7 +597,9 @@ impl Extension for ItalicExt {
 pub struct StrikeExt;
 
 impl Extension for StrikeExt {
-    fn name(&self) -> &str { "strike" }
+    fn name(&self) -> &str {
+        "strike"
+    }
 
     fn marks(&self) -> Vec<MarkSpec> {
         let mut spec = MarkSpec::simple("strike");
@@ -565,7 +634,9 @@ impl Extension for StrikeExt {
 pub struct CodeExt;
 
 impl Extension for CodeExt {
-    fn name(&self) -> &str { "code" }
+    fn name(&self) -> &str {
+        "code"
+    }
 
     fn marks(&self) -> Vec<MarkSpec> {
         let mut spec = MarkSpec::simple("code");
@@ -593,7 +664,9 @@ impl Extension for CodeExt {
 pub struct UnderlineExt;
 
 impl Extension for UnderlineExt {
-    fn name(&self) -> &str { "underline" }
+    fn name(&self) -> &str {
+        "underline"
+    }
 
     fn marks(&self) -> Vec<MarkSpec> {
         let mut spec = MarkSpec::simple("underline");
@@ -620,7 +693,9 @@ impl Extension for UnderlineExt {
 pub struct LinkExt;
 
 impl Extension for LinkExt {
-    fn name(&self) -> &str { "link" }
+    fn name(&self) -> &str {
+        "link"
+    }
 
     fn marks(&self) -> Vec<MarkSpec> {
         let mut attrs = HashMap::new();
@@ -651,7 +726,9 @@ impl Extension for LinkExt {
 pub struct HighlightExt;
 
 impl Extension for HighlightExt {
-    fn name(&self) -> &str { "highlight" }
+    fn name(&self) -> &str {
+        "highlight"
+    }
 
     fn marks(&self) -> Vec<MarkSpec> {
         let mut attrs = HashMap::new();
@@ -680,7 +757,9 @@ impl Extension for HighlightExt {
 pub struct SubscriptExt;
 
 impl Extension for SubscriptExt {
-    fn name(&self) -> &str { "subscript" }
+    fn name(&self) -> &str {
+        "subscript"
+    }
 
     fn marks(&self) -> Vec<MarkSpec> {
         let mut spec = MarkSpec::simple("subscript");
@@ -708,7 +787,9 @@ impl Extension for SubscriptExt {
 pub struct SuperscriptExt;
 
 impl Extension for SuperscriptExt {
-    fn name(&self) -> &str { "superscript" }
+    fn name(&self) -> &str {
+        "superscript"
+    }
 
     fn marks(&self) -> Vec<MarkSpec> {
         let mut spec = MarkSpec::simple("superscript");
@@ -736,7 +817,9 @@ impl Extension for SuperscriptExt {
 pub struct TextColorExt;
 
 impl Extension for TextColorExt {
-    fn name(&self) -> &str { "text_color" }
+    fn name(&self) -> &str {
+        "text_color"
+    }
 
     fn marks(&self) -> Vec<MarkSpec> {
         let mut attrs = HashMap::new();
@@ -757,11 +840,87 @@ impl Extension for TextColorExt {
     }
 }
 
+/// Text alignment extension (block-level attribute).
+#[derive(Debug)]
+pub struct TextAlignExt;
+
+impl Extension for TextAlignExt {
+    fn name(&self) -> &str {
+        "text_align"
+    }
+
+    fn commands(&self) -> Vec<CommandRegistration> {
+        vec![
+            CommandRegistration::new("align_left", |editor| {
+                StructureCommands::set_block_attr(editor, "text_align", "left")
+            }),
+            CommandRegistration::new("align_center", |editor| {
+                StructureCommands::set_block_attr(editor, "text_align", "center")
+            }),
+            CommandRegistration::new("align_right", |editor| {
+                StructureCommands::set_block_attr(editor, "text_align", "right")
+            }),
+            CommandRegistration::new("align_justify", |editor| {
+                StructureCommands::set_block_attr(editor, "text_align", "justify")
+            }),
+        ]
+    }
+
+    fn keyboard_shortcuts(&self) -> Vec<(KeyboardShortcut, String)> {
+        vec![
+            (
+                KeyboardShortcut::new("Mod-Shift-L", "Align left"),
+                "align_left".into(),
+            ),
+            (
+                KeyboardShortcut::new("Mod-Shift-E", "Align center"),
+                "align_center".into(),
+            ),
+            (
+                KeyboardShortcut::new("Mod-Shift-R", "Align right"),
+                "align_right".into(),
+            ),
+            (
+                KeyboardShortcut::new("Mod-Shift-J", "Align justify"),
+                "align_justify".into(),
+            ),
+        ]
+    }
+}
+
+// =============================================================================
+// History Extension
+// =============================================================================
+
+/// History extension for undo/redo functionality.
+#[derive(Debug)]
+pub struct HistoryExt;
+
+impl Extension for HistoryExt {
+    fn name(&self) -> &str {
+        "history"
+    }
+
+    fn commands(&self) -> Vec<CommandRegistration> {
+        vec![
+            CommandRegistration::new("undo", |editor| editor.undo().map(|_| ())),
+            CommandRegistration::new("redo", |editor| editor.redo().map(|_| ())),
+        ]
+    }
+
+    fn keyboard_shortcuts(&self) -> Vec<(KeyboardShortcut, String)> {
+        vec![
+            (KeyboardShortcut::new("Mod-Z", "Undo"), "undo".into()),
+            (KeyboardShortcut::new("Mod-Shift-Z", "Redo"), "redo".into()),
+        ]
+    }
+}
+
 // =============================================================================
 // StarterKit Bundle
 // =============================================================================
 
-/// StarterKit bundles all 22 default extensions.
+/// StarterKit bundles all 24 default extensions.
 ///
 /// This provides the same default editing experience as TipTap/Mantine's
 /// StarterKit, including paragraph, headings, lists, blockquotes, code blocks,
@@ -771,7 +930,7 @@ impl Extension for TextColorExt {
 pub struct StarterKit;
 
 impl StarterKit {
-    /// Get all 22 starter kit extensions as boxed trait objects.
+    /// Get all 24 starter kit extensions as boxed trait objects.
     pub fn extensions() -> Vec<Box<dyn Extension>> {
         vec![
             // Node extensions
@@ -798,12 +957,16 @@ impl StarterKit {
             Box::new(SubscriptExt),
             Box::new(SuperscriptExt),
             Box::new(TextColorExt),
+            // Block attribute extensions
+            Box::new(TextAlignExt),
+            // History extension
+            Box::new(HistoryExt),
         ]
     }
 
     /// Get the number of extensions in the starter kit.
     pub fn count() -> usize {
-        22
+        24
     }
 }
 
@@ -818,10 +981,10 @@ mod tests {
     // ---- StarterKit bundle tests ----
 
     #[test]
-    fn starter_kit_has_22_extensions() {
+    fn starter_kit_has_24_extensions() {
         let exts = StarterKit::extensions();
-        assert_eq!(exts.len(), 22);
-        assert_eq!(StarterKit::count(), 22);
+        assert_eq!(exts.len(), 24);
+        assert_eq!(StarterKit::count(), 24);
     }
 
     #[test]
@@ -860,6 +1023,8 @@ mod tests {
         assert!(names.contains(&"subscript"));
         assert!(names.contains(&"superscript"));
         assert!(names.contains(&"text_color"));
+        assert!(names.contains(&"text_align"));
+        assert!(names.contains(&"history"));
     }
 
     // ---- Node extension tests ----
@@ -913,7 +1078,12 @@ mod tests {
         assert_eq!(shortcuts.len(), 6);
         for (i, (shortcut, cmd)) in shortcuts.iter().enumerate() {
             let expected_key = format!("Ctrl+Alt+{}", i + 1);
-            assert!(shortcut.matches(&expected_key), "Shortcut {} should match {}", shortcut.key, expected_key);
+            assert!(
+                shortcut.matches(&expected_key),
+                "Shortcut {} should match {}",
+                shortcut.key,
+                expected_key
+            );
             assert_eq!(*cmd, format!("set_heading_{}", i + 1));
         }
     }
@@ -1134,33 +1304,91 @@ mod tests {
         assert!(marks[0].attrs["color"].required);
     }
 
+    #[test]
+    fn history_ext_has_undo_redo_commands() {
+        let ext = HistoryExt;
+        assert_eq!(ext.name(), "history");
+        let cmds = ext.commands();
+        assert_eq!(cmds.len(), 2);
+        assert_eq!(cmds[0].name, "undo");
+        assert_eq!(cmds[1].name, "redo");
+    }
+
+    #[test]
+    fn history_ext_shortcuts() {
+        let ext = HistoryExt;
+        let shortcuts = ext.keyboard_shortcuts();
+        assert_eq!(shortcuts.len(), 2);
+        assert!(shortcuts[0].0.matches("Ctrl-Z"));
+        assert_eq!(shortcuts[0].1, "undo");
+        assert!(shortcuts[1].0.matches("Ctrl-Shift-Z"));
+        assert_eq!(shortcuts[1].1, "redo");
+    }
+
+    #[test]
+    fn history_ext_no_nodes_or_marks() {
+        let ext = HistoryExt;
+        assert!(ext.nodes().is_empty());
+        assert!(ext.marks().is_empty());
+    }
+
     // ---- Aggregate tests ----
 
     #[test]
     fn all_node_extensions_provide_nodes() {
         let node_exts: Vec<Box<dyn Extension>> = vec![
-            Box::new(DocumentExt), Box::new(ParagraphExt), Box::new(TextExt),
-            Box::new(HeadingExt), Box::new(BlockquoteExt), Box::new(BulletListExt),
-            Box::new(OrderedListExt), Box::new(ListItemExt), Box::new(CodeBlockExt),
-            Box::new(HorizontalRuleExt), Box::new(HardBreakExt), Box::new(ImageExt),
+            Box::new(DocumentExt),
+            Box::new(ParagraphExt),
+            Box::new(TextExt),
+            Box::new(HeadingExt),
+            Box::new(BlockquoteExt),
+            Box::new(BulletListExt),
+            Box::new(OrderedListExt),
+            Box::new(ListItemExt),
+            Box::new(CodeBlockExt),
+            Box::new(HorizontalRuleExt),
+            Box::new(HardBreakExt),
+            Box::new(ImageExt),
         ];
         for ext in &node_exts {
-            assert!(!ext.nodes().is_empty(), "{} should provide nodes", ext.name());
-            assert!(ext.marks().is_empty(), "{} should not provide marks", ext.name());
+            assert!(
+                !ext.nodes().is_empty(),
+                "{} should provide nodes",
+                ext.name()
+            );
+            assert!(
+                ext.marks().is_empty(),
+                "{} should not provide marks",
+                ext.name()
+            );
         }
     }
 
     #[test]
     fn all_mark_extensions_provide_marks() {
         let mark_exts: Vec<Box<dyn Extension>> = vec![
-            Box::new(BoldExt), Box::new(ItalicExt), Box::new(StrikeExt),
-            Box::new(CodeExt), Box::new(UnderlineExt), Box::new(LinkExt),
-            Box::new(HighlightExt), Box::new(SubscriptExt), Box::new(SuperscriptExt),
+            Box::new(BoldExt),
+            Box::new(ItalicExt),
+            Box::new(StrikeExt),
+            Box::new(CodeExt),
+            Box::new(UnderlineExt),
+            Box::new(LinkExt),
+            Box::new(HighlightExt),
+            Box::new(SubscriptExt),
+            Box::new(SuperscriptExt),
             Box::new(TextColorExt),
         ];
         for ext in &mark_exts {
-            assert!(!ext.marks().is_empty(), "{} should provide marks", ext.name());
-            assert!(ext.nodes().is_empty(), "{} should not provide nodes", ext.name());
+            assert!(
+                !ext.marks().is_empty(),
+                "{} should provide marks",
+                ext.name()
+            );
+            assert!(
+                ext.nodes().is_empty(),
+                "{} should not provide nodes",
+                ext.name()
+            );
         }
     }
 
@@ -1187,6 +1415,43 @@ mod tests {
         let total: usize = exts.iter().map(|e| e.input_rules().len()).sum();
         // headings (6) + blockquote (1) + bullet_list (2) + ordered_list (1) +
         // code_block (1) + hr (1) + bold (1) + italic (1) + strike (1) = 15
-        assert!(total >= 14, "Expected at least 14 input rules, got {}", total);
+        assert!(
+            total >= 14,
+            "Expected at least 14 input rules, got {}",
+            total
+        );
+    }
+
+    #[test]
+    fn text_align_ext_has_four_commands() {
+        let ext = TextAlignExt;
+        let cmds = ext.commands();
+        assert_eq!(cmds.len(), 4);
+        assert_eq!(cmds[0].name, "align_left");
+        assert_eq!(cmds[1].name, "align_center");
+        assert_eq!(cmds[2].name, "align_right");
+        assert_eq!(cmds[3].name, "align_justify");
+    }
+
+    #[test]
+    fn text_align_ext_has_four_shortcuts() {
+        let ext = TextAlignExt;
+        let shortcuts = ext.keyboard_shortcuts();
+        assert_eq!(shortcuts.len(), 4);
+        assert!(shortcuts[0].0.matches("Ctrl-Shift-L"));
+        assert_eq!(shortcuts[0].1, "align_left");
+        assert!(shortcuts[1].0.matches("Ctrl-Shift-E"));
+        assert_eq!(shortcuts[1].1, "align_center");
+        assert!(shortcuts[2].0.matches("Ctrl-Shift-R"));
+        assert_eq!(shortcuts[2].1, "align_right");
+        assert!(shortcuts[3].0.matches("Ctrl-Shift-J"));
+        assert_eq!(shortcuts[3].1, "align_justify");
+    }
+
+    #[test]
+    fn text_align_ext_no_nodes_or_marks() {
+        let ext = TextAlignExt;
+        assert!(ext.nodes().is_empty());
+        assert!(ext.marks().is_empty());
     }
 }

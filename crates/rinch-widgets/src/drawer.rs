@@ -19,8 +19,8 @@
 //! }
 //! ```
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 use std::rc::Rc;
 
 /// Drawer position.
@@ -217,10 +217,10 @@ impl Drawer {
             classes.push(DrawerPosition::Left.class_name());
         }
 
-        if let Some(ref s) = self.size {
-            if let Ok(size) = s.parse::<DrawerSize>() {
-                classes.push(size.class_name());
-            }
+        if let Some(ref s) = self.size
+            && let Ok(size) = s.parse::<DrawerSize>()
+        {
+            classes.push(size.class_name());
         }
 
         if opened {
@@ -274,10 +274,10 @@ impl Widget for Drawer {
             if let Some(ref style) = overlay_style {
                 overlay.set_attribute("style", style);
             }
-            if self.close_on_click_outside {
-                if let Some(handler_id) = close_handler_id {
-                    overlay.set_attribute("data-rid", &handler_id.to_string());
-                }
+            if self.close_on_click_outside
+                && let Some(handler_id) = close_handler_id
+            {
+                overlay.set_attribute("data-rid", &handler_id.to_string());
             }
             root.append_child(&overlay);
         }
@@ -338,11 +338,13 @@ impl Widget for Drawer {
                 let is_open = opened_fn();
                 if is_open {
                     root_clone.set_attribute("class", "rinch-drawer__root");
-                    drawer_clone.set_attribute("class", &format!("{} rinch-drawer--opened", base_class));
+                    drawer_clone
+                        .set_attribute("class", &format!("{} rinch-drawer--opened", base_class));
                     // Reset scroll position on drawer body when opening
                     body_clone.set_scroll_top(0.0);
                 } else {
-                    root_clone.set_attribute("class", "rinch-drawer__root rinch-drawer__root--hidden");
+                    root_clone
+                        .set_attribute("class", "rinch-drawer__root rinch-drawer__root--hidden");
                     drawer_clone.set_attribute("class", &base_class);
                 }
             });

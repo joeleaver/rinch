@@ -99,26 +99,20 @@ pub fn generate_css_variables(theme: &Theme) -> String {
         let name = level.css_name();
         css.push_str(&format!(
             "  --rinch-{}-font-size: {};\n",
-            name,
-            style.font_size
+            name, style.font_size
         ));
         css.push_str(&format!(
             "  --rinch-{}-line-height: {};\n",
-            name,
-            style.line_height
+            name, style.line_height
         ));
         css.push_str(&format!(
             "  --rinch-{}-font-weight: {};\n",
-            name,
-            style.font_weight
+            name, style.font_weight
         ));
     }
 
     // Font families
-    css.push_str(&format!(
-        "  --rinch-font-family: {};\n",
-        theme.font_family
-    ));
+    css.push_str(&format!("  --rinch-font-family: {};\n", theme.font_family));
     css.push_str(&format!(
         "  --rinch-font-family-monospace: {};\n",
         theme.font_family_monospace

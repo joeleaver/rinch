@@ -2,8 +2,8 @@
 //!
 //! Styled link component.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// A styled anchor/link element.
 #[derive(Debug, Default)]

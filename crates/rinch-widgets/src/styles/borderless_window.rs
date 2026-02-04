@@ -208,5 +208,6 @@ pub fn styles() -> String {
 .rinch-borderlesswindow--radius-xl .rinch-borderlesswindow__control--close {
     border-top-right-radius: 16px;
 }
-"#.to_string()
+"#
+    .to_string()
 }

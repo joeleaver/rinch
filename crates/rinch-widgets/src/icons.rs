@@ -2,8 +2,8 @@
 //!
 //! Using structured nodes instead of HTML strings enables differential updates.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Icon;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 // =============================================================================
 // DOM Rendering Variants (for fine-grained rendering)
@@ -430,11 +430,17 @@ pub fn render_icon(scope: &mut RenderScope, icon: Icon) -> NodeHandle {
         Icon::Edit => {
             let svg = svg_base_dom(scope);
             let path1 = scope.create_element("path");
-            path1.set_attribute("d", "M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7");
+            path1.set_attribute(
+                "d",
+                "M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7",
+            );
             svg.append_child(&path1);
 
             let path2 = scope.create_element("path");
-            path2.set_attribute("d", "M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z");
+            path2.set_attribute(
+                "d",
+                "M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z",
+            );
             svg.append_child(&path2);
             svg
         }
@@ -445,7 +451,10 @@ pub fn render_icon(scope: &mut RenderScope, icon: Icon) -> NodeHandle {
             svg.append_child(&polyline);
 
             let path = scope.create_element("path");
-            path.set_attribute("d", "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2");
+            path.set_attribute(
+                "d",
+                "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2",
+            );
             svg.append_child(&path);
 
             let line1 = scope.create_element("line");
@@ -477,7 +486,10 @@ pub fn render_icon(scope: &mut RenderScope, icon: Icon) -> NodeHandle {
         Icon::Mail => {
             let svg = svg_base_dom(scope);
             let path = scope.create_element("path");
-            path.set_attribute("d", "M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z");
+            path.set_attribute(
+                "d",
+                "M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z",
+            );
             svg.append_child(&path);
 
             let polyline = scope.create_element("polyline");
@@ -541,7 +553,10 @@ pub fn render_icon(scope: &mut RenderScope, icon: Icon) -> NodeHandle {
         Icon::File => {
             let svg = svg_base_dom(scope);
             let path = scope.create_element("path");
-            path.set_attribute("d", "M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z");
+            path.set_attribute(
+                "d",
+                "M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z",
+            );
             svg.append_child(&path);
 
             let polyline = scope.create_element("polyline");
@@ -552,7 +567,10 @@ pub fn render_icon(scope: &mut RenderScope, icon: Icon) -> NodeHandle {
         Icon::Folder => {
             let svg = svg_base_dom(scope);
             let path = scope.create_element("path");
-            path.set_attribute("d", "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z");
+            path.set_attribute(
+                "d",
+                "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z",
+            );
             svg.append_child(&path);
             svg
         }
@@ -581,18 +599,27 @@ pub fn render_icon(scope: &mut RenderScope, icon: Icon) -> NodeHandle {
         Icon::Link => {
             let svg = svg_base_dom(scope);
             let path1 = scope.create_element("path");
-            path1.set_attribute("d", "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71");
+            path1.set_attribute(
+                "d",
+                "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71",
+            );
             svg.append_child(&path1);
 
             let path2 = scope.create_element("path");
-            path2.set_attribute("d", "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71");
+            path2.set_attribute(
+                "d",
+                "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71",
+            );
             svg.append_child(&path2);
             svg
         }
         Icon::ExternalLink => {
             let svg = svg_base_dom(scope);
             let path = scope.create_element("path");
-            path.set_attribute("d", "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6");
+            path.set_attribute(
+                "d",
+                "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6",
+            );
             svg.append_child(&path);
 
             let polyline = scope.create_element("polyline");

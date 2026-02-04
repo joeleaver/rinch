@@ -47,5 +47,6 @@ pub fn styles() -> String {
 .rinch-loading-overlay--radius-md { border-radius: var(--rinch-radius-md); }
 .rinch-loading-overlay--radius-lg { border-radius: var(--rinch-radius-lg); }
 .rinch-loading-overlay--radius-xl { border-radius: var(--rinch-radius-xl); }
-"#.to_string()
+"#
+    .to_string()
 }

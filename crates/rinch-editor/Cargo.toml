@@ -7,11 +7,18 @@ description = "Rich-text editor for Rinch with CRDT collaboration support"
 
 [dependencies]
 rinch-core = { workspace = true }
+rinch-editable = { path = "../rinch-editable" }
 rinch-editor-macros = { path = "../rinch-editor-macros" }
 automerge = "0.5"
 regex = "1"
 thiserror.workspace = true
 tracing.workspace = true
+rinch-clipboard = { workspace = true }
+
+# On WASM, uuid needs a JS randomness source
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { version = "1", features = ["js"] }
+getrandom = { version = "0.2", features = ["js"] }
 
 [dev-dependencies]
 pretty_assertions = "1"

@@ -180,5 +180,6 @@ pub fn styles() -> String {
     width: 1rem;
     height: 1rem;
 }
-"#.to_string()
+"#
+    .to_string()
 }

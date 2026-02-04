@@ -2,7 +2,7 @@ use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
 use rmcp::schemars;
-use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError};
+use rmcp::{ErrorData as McpError, tool, tool_handler, tool_router};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -157,7 +157,7 @@ impl RinchMcpServer {
         let apps = discovery::list_apps();
         if apps.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
-                "No rinch applications found. Make sure your app has rinch-debug enabled and is running."
+                "No rinch applications found. Make sure your app has rinch-debug enabled and is running.",
             )]));
         }
         let info: Vec<serde_json::Value> = apps
@@ -176,10 +176,7 @@ impl RinchMcpServer {
     }
 
     #[tool(description = "Connect to a specific rinch application by name or PID.")]
-    async fn connect(
-        &self,
-        params: Parameters<ConnectParams>,
-    ) -> Result<CallToolResult, McpError> {
+    async fn connect(&self, params: Parameters<ConnectParams>) -> Result<CallToolResult, McpError> {
         let apps = discovery::list_apps();
         if apps.is_empty() {
             return Ok(CallToolResult::error(vec![Content::text(
@@ -201,7 +198,7 @@ impl RinchMcpServer {
                     return Ok(CallToolResult::error(vec![Content::text(format!(
                         "No app matching '{}' found",
                         t
-                    ))]))
+                    ))]));
                 }
             }
         } else if apps.len() == 1 {
@@ -258,10 +255,7 @@ impl RinchMcpServer {
     }
 
     #[tool(description = "Get detailed information about a specific DOM node by ID.")]
-    async fn get_node(
-        &self,
-        params: Parameters<NodeIdParams>,
-    ) -> Result<CallToolResult, McpError> {
+    async fn get_node(&self, params: Parameters<NodeIdParams>) -> Result<CallToolResult, McpError> {
         self.forward_json_command(DebugCommandKind::GetNode {
             id: params.0.id as usize,
         })
@@ -288,7 +282,9 @@ impl RinchMcpServer {
         .await
     }
 
-    #[tool(description = "Simulate mouse movement to the given coordinates. Triggers hover effects.")]
+    #[tool(
+        description = "Simulate mouse movement to the given coordinates. Triggers hover effects."
+    )]
     async fn mouse_move(
         &self,
         params: Parameters<MouseMoveParams>,
@@ -301,10 +297,7 @@ impl RinchMcpServer {
     }
 
     #[tool(description = "Simulate a scroll wheel event at the given coordinates.")]
-    async fn scroll(
-        &self,
-        params: Parameters<ScrollParams>,
-    ) -> Result<CallToolResult, McpError> {
+    async fn scroll(&self, params: Parameters<ScrollParams>) -> Result<CallToolResult, McpError> {
         self.forward_json_command(DebugCommandKind::Scroll {
             x: params.0.x as f32,
             y: params.0.y as f32,
@@ -325,7 +318,9 @@ impl RinchMcpServer {
         .await
     }
 
-    #[tool(description = "Simulate a key press (for special keys like arrows, Enter, Backspace, etc).")]
+    #[tool(
+        description = "Simulate a key press (for special keys like arrows, Enter, Backspace, etc)."
+    )]
     async fn key_press(
         &self,
         params: Parameters<KeyPressParams>,
@@ -386,35 +381,37 @@ impl RinchMcpServer {
         }
 
         match tcp_result {
-            Ok(DebugResult::Json { data }) => {
-                Ok(CallToolResult::success(vec![Content::text(
-                    format!("App closed: {}", data),
-                )]))
-            }
+            Ok(DebugResult::Json { data }) => Ok(CallToolResult::success(vec![Content::text(
+                format!("App closed: {}", data),
+            )])),
             Ok(DebugResult::Error { message }) => {
                 Ok(CallToolResult::error(vec![Content::text(message)]))
             }
-            Err(_) => {
-                Ok(CallToolResult::success(vec![Content::text("App closed")]))
-            }
-            _ => {
-                Ok(CallToolResult::success(vec![Content::text("App closed")]))
-            }
+            Err(_) => Ok(CallToolResult::success(vec![Content::text("App closed")])),
+            _ => Ok(CallToolResult::success(vec![Content::text("App closed")])),
         }
     }
 
-    #[tool(description = "Disconnect from the currently connected rinch application without closing it.")]
+    #[tool(
+        description = "Disconnect from the currently connected rinch application without closing it."
+    )]
     async fn disconnect(&self) -> Result<CallToolResult, McpError> {
         let mut client = self.client.lock().unwrap();
         if client.is_some() {
             *client = None;
-            Ok(CallToolResult::success(vec![Content::text("Disconnected from app.")]))
+            Ok(CallToolResult::success(vec![Content::text(
+                "Disconnected from app.",
+            )]))
         } else {
-            Ok(CallToolResult::success(vec![Content::text("No app connected.")]))
+            Ok(CallToolResult::success(vec![Content::text(
+                "No app connected.",
+            )]))
         }
     }
 
-    #[tool(description = "Launch a rinch application via cargo run. Waits for it to register with the debug server, then auto-connects.")]
+    #[tool(
+        description = "Launch a rinch application via cargo run. Waits for it to register with the debug server, then auto-connects."
+    )]
     async fn launch_app(
         &self,
         params: Parameters<LaunchAppParams>,
@@ -452,7 +449,6 @@ impl RinchMcpServer {
                 self.spawned_processes.lock().unwrap().insert(pid, child);
 
                 // Wait for the app to register with debug server (poll for up to 30 seconds)
-                let mut connected = false;
                 for _ in 0..60 {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     let apps = discovery::list_apps();
@@ -465,7 +461,6 @@ impl RinchMcpServer {
                                     c.app_name, pid, app.port
                                 );
                                 *self.client.lock().unwrap() = Some(c);
-                                connected = true;
                                 return Ok(CallToolResult::success(vec![Content::text(msg)]));
                             }
                             Err(_) => continue,
@@ -473,14 +468,10 @@ impl RinchMcpServer {
                     }
                 }
 
-                if !connected {
-                    Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Launched {} (PID {}) but could not auto-connect. The app may not have debug enabled. Use 'list_apps' to check.",
-                        package, pid
-                    ))]))
-                } else {
-                    unreachable!()
-                }
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Launched {} (PID {}) but could not auto-connect. The app may not have debug enabled. Use 'list_apps' to check.",
+                    package, pid
+                ))]))
             }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Failed to launch {}: {}",
@@ -489,7 +480,9 @@ impl RinchMcpServer {
         }
     }
 
-    #[tool(description = "Get the screen position of a text caret at a given byte offset in a node")]
+    #[tool(
+        description = "Get the screen position of a text caret at a given byte offset in a node"
+    )]
     async fn get_caret_position(
         &self,
         params: Parameters<CaretPositionParams>,
@@ -501,7 +494,9 @@ impl RinchMcpServer {
         .await
     }
 
-    #[tool(description = "Get the bounding box of a glyph cluster at a given byte offset in a node")]
+    #[tool(
+        description = "Get the bounding box of a glyph cluster at a given byte offset in a node"
+    )]
     async fn get_glyph_bounds(
         &self,
         params: Parameters<GlyphBoundsParams>,
@@ -521,8 +516,7 @@ impl RinchMcpServer {
     ) -> Result<CallToolResult, McpError> {
         match self.execute_command(cmd) {
             Ok(DebugResult::Json { data }) => {
-                let text =
-                    serde_json::to_string_pretty(&data).unwrap_or_else(|_| data.to_string());
+                let text = serde_json::to_string_pretty(&data).unwrap_or_else(|_| data.to_string());
                 Ok(CallToolResult::success(vec![Content::text(text)]))
             }
             Ok(DebugResult::Bytes { data }) => Ok(CallToolResult::success(vec![Content::text(

@@ -2,7 +2,7 @@ use rinch::prelude::*;
 
 fn app(__scope: &mut RenderScope) -> NodeHandle {
     let count = use_signal(|| 0);
-    let count_inc = count.clone();
+    let count_inc = count;
 
     rsx! {
         div { style: "display: flex; flex-direction: column; padding: 20px; gap: 10px; width: 600px",

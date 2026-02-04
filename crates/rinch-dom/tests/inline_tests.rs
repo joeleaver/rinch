@@ -288,7 +288,7 @@ fn test_ifc_invalidated_on_text_change() {
     doc.append_child(span, t2);
 
     doc.resolve_layout(800.0, 600.0);
-    let h1 = doc.tree.get(div.0).unwrap().layout.height;
+    let _h1 = doc.tree.get(div.0).unwrap().layout.height;
 
     // Change text content — should invalidate and rebuild IFC
     doc.set_text_content(t2, "a much longer replacement text that is wider");
@@ -298,7 +298,10 @@ fn test_ifc_invalidated_on_text_change() {
     // The layout should have been rebuilt (may or may not change height,
     // but it should not panic and IFC should still be valid)
     let div_node = doc.tree.get(div.0).unwrap();
-    assert!(div_node.text_layout.is_some(), "IFC should be rebuilt after text change");
+    assert!(
+        div_node.text_layout.is_some(),
+        "IFC should be rebuilt after text change"
+    );
     assert!(h2 > 0.0);
 }
 
@@ -354,7 +357,10 @@ fn test_ifc_invalidated_on_child_addition() {
     doc.resolve_layout(800.0, 600.0);
 
     let div_node = doc.tree.get(div.0).unwrap();
-    assert!(div_node.text_layout.is_some(), "IFC should be rebuilt after child addition");
+    assert!(
+        div_node.text_layout.is_some(),
+        "IFC should be rebuilt after child addition"
+    );
     assert!(div_node.layout.height > 0.0);
 }
 
@@ -421,7 +427,10 @@ fn test_no_stale_refs_after_rapid_mutations() {
 
     // Should not have panicked. Final layout should be valid.
     let div_layout = doc.tree.get(div.0).unwrap().layout;
-    assert!(div_layout.height > 0.0, "layout should be valid after rapid mutations");
+    assert!(
+        div_layout.height > 0.0,
+        "layout should be valid after rapid mutations"
+    );
 }
 
 #[test]
@@ -643,7 +652,11 @@ fn test_inline_block_in_text_flow() {
         "inline-block button should have x > 0 (after 'Click '), got {}",
         btn_layout.x
     );
-    assert!(btn_layout.y.is_finite(), "button y should be finite, got {}", btn_layout.y);
+    assert!(
+        btn_layout.y.is_finite(),
+        "button y should be finite, got {}",
+        btn_layout.y
+    );
 }
 
 #[test]
@@ -656,7 +669,11 @@ fn test_inline_block_preserves_dimensions() {
 
     let t1 = doc.create_text("Before ");
     let inline_div = doc.create_element("div");
-    doc.set_attribute(inline_div, "style", "display: inline-block; width: 80px; height: 30px; background-color: red");
+    doc.set_attribute(
+        inline_div,
+        "style",
+        "display: inline-block; width: 80px; height: 30px; background-color: red",
+    );
     let t2 = doc.create_text(" after");
     doc.append_child(div, t1);
     doc.append_child(div, inline_div);
@@ -688,7 +705,11 @@ fn test_inline_block_ifc_root_height_includes_block() {
 
     let t1 = doc.create_text("Text ");
     let big_box = doc.create_element("div");
-    doc.set_attribute(big_box, "style", "display: inline-block; width: 50px; height: 50px");
+    doc.set_attribute(
+        big_box,
+        "style",
+        "display: inline-block; width: 50px; height: 50px",
+    );
     let t2 = doc.create_text(" more text");
     doc.append_child(div, t1);
     doc.append_child(div, big_box);

@@ -1,7 +1,7 @@
 //! Table data model for representing tables in the document.
 
-use std::collections::HashMap;
 use crate::error::EditorError;
+use std::collections::HashMap;
 
 /// A table in the document model.
 #[derive(Debug, Clone)]
@@ -76,7 +76,12 @@ impl TableRow {
     /// Create a header row with the given number of empty cells.
     pub fn header(cols: usize) -> Self {
         Self {
-            cells: (0..cols).map(|_| TableCell { is_header: true, ..Default::default() }).collect(),
+            cells: (0..cols)
+                .map(|_| TableCell {
+                    is_header: true,
+                    ..Default::default()
+                })
+                .collect(),
         }
     }
 }
@@ -145,7 +150,10 @@ impl TableModel {
             let at = at.min(row.cells.len());
             let is_header = i < self.header_rows;
             let cell = if is_header {
-                TableCell { is_header: true, ..Default::default() }
+                TableCell {
+                    is_header: true,
+                    ..Default::default()
+                }
             } else {
                 TableCell::default()
             };
@@ -260,9 +268,7 @@ impl TableModel {
             .ok_or_else(|| EditorError::CommandFailed("Cell not found".into()))?;
 
         if cell.colspan == 1 && cell.rowspan == 1 {
-            return Err(EditorError::CommandFailed(
-                "Cell is not merged".into(),
-            ));
+            return Err(EditorError::CommandFailed("Cell is not merged".into()));
         }
 
         let colspan = cell.colspan;

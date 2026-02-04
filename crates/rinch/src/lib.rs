@@ -117,11 +117,11 @@ pub mod memory {
 /// This module provides primitives for surgical DOM updates where signal
 /// changes only affect the specific nodes that depend on them.
 pub mod fine_grained {
-    pub use rinch_core::dom::{
-        clear_render_scope, has_render_scope, set_render_scope, try_with_render_scope,
-        with_render_scope, DomDocument, DomUpdate, NodeHandle, NodeId, RenderScope, UpdateBatch,
-    };
     pub use crate::update_theme;
+    pub use rinch_core::dom::{
+        DomDocument, DomUpdate, NodeHandle, NodeId, RenderScope, UpdateBatch, clear_render_scope,
+        has_render_scope, set_render_scope, try_with_render_scope, with_render_scope,
+    };
 }
 
 /// Theme system (enable with `theme` feature).
@@ -140,14 +140,14 @@ pub mod prelude {
     //! Common imports for rinch applications.
     pub use crate::shell::{run, run_with_theme};
     pub use rinch_core::element::*;
-    pub use rinch_core::{batch, derived, untracked, Effect, Memo, Scope, Signal};
+    pub use rinch_core::{Effect, Memo, Scope, Signal, batch, derived, untracked};
     // Hooks for ergonomic state management
     pub use rinch_core::{
-        create_context, use_callback, use_context, use_derived, use_effect, use_effect_cleanup,
-        use_memo, use_mount, use_ref, use_signal, use_state, RefHandle,
+        RefHandle, create_context, use_callback, use_context, use_derived, use_effect,
+        use_effect_cleanup, use_memo, use_mount, use_ref, use_signal, use_state,
     };
     // Event handling - click context, drag support, and input callbacks
-    pub use rinch_core::{get_click_context, start_drag, ClickContext, InputCallback};
+    pub use rinch_core::{ClickContext, InputCallback, get_click_context, start_drag};
     // Icon enum for type-safe icons
     pub use rinch_core::Icon;
     pub use rinch_macros::rsx;
@@ -157,14 +157,14 @@ pub mod prelude {
     };
     // Fine-grained rendering types
     pub use rinch_core::dom::{
-        has_render_scope, try_with_render_scope, with_render_scope, NodeHandle, RenderScope,
+        NodeHandle, RenderScope, has_render_scope, try_with_render_scope, with_render_scope,
     };
     // Widget trait for fine-grained widgets
     pub use rinch_core::Widget;
     // Show for reactive conditional rendering
-    pub use rinch_core::{show_dom, FineShowBuilder};
+    pub use rinch_core::{FineShowBuilder, show_dom};
     // For for reactive list rendering
-    pub use rinch_core::{for_each_dom, to_for_items, FineForBuilder, ForItem};
+    pub use rinch_core::{FineForBuilder, ForItem, for_each_dom, to_for_items};
 
     // Re-export theme types when the theme feature is enabled
     #[cfg(feature = "theme")]
@@ -183,9 +183,11 @@ pub mod prelude {
 pub use rinch_core::element::{
     AppMenuProps, Children, Element, MenuItemProps, MenuProps, ThemeProviderProps, WindowProps,
 };
-pub use rinch_core::{batch, derived, untracked, Effect, Memo, Scope, Signal};
+pub use rinch_core::{Effect, Memo, Scope, Signal, batch, derived, untracked};
 pub use rinch_macros::rsx;
-pub use shell::{run, run_rinch, run_rinch_with_window_props, run_with_theme, run_with_window_props};
+pub use shell::{
+    run, run_rinch, run_rinch_with_window_props, run_with_theme, run_with_window_props,
+};
 
 pub use rinch_core as core;
 pub use rinch_renderer as renderer;
@@ -193,20 +195,20 @@ pub use rinch_renderer as renderer;
 /// Dynamically update theme CSS at runtime.
 #[cfg(feature = "theme")]
 pub fn update_theme(props: &ThemeProviderProps) {
-    use rinch_theme::{generate_theme_css, ColorName, RadiusSize, Theme};
+    use rinch_theme::{ColorName, RadiusSize, Theme, generate_theme_css};
 
     let mut builder = Theme::builder();
 
-    if let Some(ref color) = props.primary_color {
-        if let Ok(name) = color.parse::<ColorName>() {
-            builder = builder.primary_color(name);
-        }
+    if let Some(ref color) = props.primary_color
+        && let Ok(name) = color.parse::<ColorName>()
+    {
+        builder = builder.primary_color(name);
     }
 
-    if let Some(ref radius) = props.default_radius {
-        if let Ok(size) = radius.parse::<RadiusSize>() {
-            builder = builder.default_radius(size);
-        }
+    if let Some(ref radius) = props.default_radius
+        && let Ok(size) = radius.parse::<RadiusSize>()
+    {
+        builder = builder.default_radius(size);
     }
 
     if let Some(ref family) = props.font_family {

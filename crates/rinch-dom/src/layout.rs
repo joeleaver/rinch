@@ -16,9 +16,17 @@ pub struct Viewport {
 /// Resolve a viewport unit (vh/vw) to px if applicable, otherwise return None.
 fn resolve_viewport_unit(value: &str, viewport: &Viewport) -> Option<f32> {
     if let Some(num_str) = value.strip_suffix("vh") {
-        num_str.trim().parse::<f32>().ok().map(|v| v * viewport.height / 100.0)
+        num_str
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|v| v * viewport.height / 100.0)
     } else if let Some(num_str) = value.strip_suffix("vw") {
-        num_str.trim().parse::<f32>().ok().map(|v| v * viewport.width / 100.0)
+        num_str
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|v| v * viewport.width / 100.0)
     } else {
         None
     }
@@ -37,11 +45,20 @@ pub fn parse_dimension_with_viewport(value: &str, viewport: &Viewport) -> Dimens
     } else if let Some(px) = resolve_viewport_unit(value, viewport) {
         Dimension::length(px)
     } else if let Some(pct) = value.strip_suffix('%') {
-        pct.trim().parse::<f32>().map(|v| Dimension::percent(v / 100.0)).unwrap_or(Dimension::auto())
+        pct.trim()
+            .parse::<f32>()
+            .map(|v| Dimension::percent(v / 100.0))
+            .unwrap_or(Dimension::auto())
     } else if let Some(px) = value.strip_suffix("px") {
-        px.trim().parse::<f32>().map(Dimension::length).unwrap_or(Dimension::auto())
+        px.trim()
+            .parse::<f32>()
+            .map(Dimension::length)
+            .unwrap_or(Dimension::auto())
     } else {
-        value.parse::<f32>().map(Dimension::length).unwrap_or(Dimension::auto())
+        value
+            .parse::<f32>()
+            .map(Dimension::length)
+            .unwrap_or(Dimension::auto())
     }
 }
 
@@ -56,31 +73,53 @@ pub fn parse_length_percentage_with_viewport(value: &str, viewport: &Viewport) -
     if let Some(px) = resolve_viewport_unit(value, viewport) {
         LengthPercentage::length(px)
     } else if let Some(pct) = value.strip_suffix('%') {
-        pct.trim().parse::<f32>().map(|v| LengthPercentage::percent(v / 100.0)).unwrap_or(LengthPercentage::length(0.0))
+        pct.trim()
+            .parse::<f32>()
+            .map(|v| LengthPercentage::percent(v / 100.0))
+            .unwrap_or(LengthPercentage::length(0.0))
     } else if let Some(px) = value.strip_suffix("px") {
-        px.trim().parse::<f32>().map(LengthPercentage::length).unwrap_or(LengthPercentage::length(0.0))
+        px.trim()
+            .parse::<f32>()
+            .map(LengthPercentage::length)
+            .unwrap_or(LengthPercentage::length(0.0))
     } else {
-        value.parse::<f32>().map(LengthPercentage::length).unwrap_or(LengthPercentage::length(0.0))
+        value
+            .parse::<f32>()
+            .map(LengthPercentage::length)
+            .unwrap_or(LengthPercentage::length(0.0))
     }
 }
 
 /// Parse a CSS length-percentage-auto value.
+#[allow(dead_code)]
 fn parse_length_percentage_auto(value: &str) -> LengthPercentageAuto {
     parse_length_percentage_auto_with_viewport(value, &Viewport::default())
 }
 
-fn parse_length_percentage_auto_with_viewport(value: &str, viewport: &Viewport) -> LengthPercentageAuto {
+fn parse_length_percentage_auto_with_viewport(
+    value: &str,
+    viewport: &Viewport,
+) -> LengthPercentageAuto {
     let value = value.trim();
     if value == "auto" {
         LengthPercentageAuto::auto()
     } else if let Some(px) = resolve_viewport_unit(value, viewport) {
         LengthPercentageAuto::length(px)
     } else if let Some(pct) = value.strip_suffix('%') {
-        pct.trim().parse::<f32>().map(|v| LengthPercentageAuto::percent(v / 100.0)).unwrap_or(LengthPercentageAuto::auto())
+        pct.trim()
+            .parse::<f32>()
+            .map(|v| LengthPercentageAuto::percent(v / 100.0))
+            .unwrap_or(LengthPercentageAuto::auto())
     } else if let Some(px) = value.strip_suffix("px") {
-        px.trim().parse::<f32>().map(LengthPercentageAuto::length).unwrap_or(LengthPercentageAuto::auto())
+        px.trim()
+            .parse::<f32>()
+            .map(LengthPercentageAuto::length)
+            .unwrap_or(LengthPercentageAuto::auto())
     } else {
-        value.parse::<f32>().map(LengthPercentageAuto::length).unwrap_or(LengthPercentageAuto::auto())
+        value
+            .parse::<f32>()
+            .map(LengthPercentageAuto::length)
+            .unwrap_or(LengthPercentageAuto::auto())
     }
 }
 
@@ -93,36 +132,39 @@ fn parse_length_percentage_auto_with_viewport(value: &str, viewport: &Viewport) 
 /// - `Npx Npx ...` → explicit pixel tracks
 /// - `1fr 1fr ...` → explicit fr tracks
 fn parse_grid_template(value: &str) -> Vec<taffy::GridTemplateComponent<String>> {
-    use taffy::style_helpers::repeat;
     use taffy::RepetitionCount;
+    use taffy::style_helpers::repeat;
 
     let value = value.trim();
 
     // Handle repeat(...)
-    if let Some(inner) = value.strip_prefix("repeat(").and_then(|s| s.strip_suffix(')')) {
-        if let Some((count_str, tracks_str)) = inner.split_once(',') {
-            let count_str = count_str.trim();
-            let tracks_str = tracks_str.trim();
+    if let Some(inner) = value
+        .strip_prefix("repeat(")
+        .and_then(|s| s.strip_suffix(')'))
+        && let Some((count_str, tracks_str)) = inner.split_once(',')
+    {
+        let count_str = count_str.trim();
+        let tracks_str = tracks_str.trim();
 
-            let repetition = match count_str {
-                "auto-fill" => RepetitionCount::AutoFill,
-                "auto-fit" => RepetitionCount::AutoFit,
-                _ => {
-                    if let Ok(n) = count_str.parse::<u16>() {
-                        RepetitionCount::Count(n)
-                    } else {
-                        return Vec::new();
-                    }
+        let repetition = match count_str {
+            "auto-fill" => RepetitionCount::AutoFill,
+            "auto-fit" => RepetitionCount::AutoFit,
+            _ => {
+                if let Ok(n) = count_str.parse::<u16>() {
+                    RepetitionCount::Count(n)
+                } else {
+                    return Vec::new();
                 }
-            };
+            }
+        };
 
-            let track = parse_single_track(tracks_str);
-            return vec![repeat(repetition, vec![track])];
-        }
+        let track = parse_single_track(tracks_str);
+        return vec![repeat(repetition, vec![track])];
     }
 
     // Handle space-separated track list: "1fr 1fr 1fr" or "100px 200px"
-    value.split_whitespace()
+    value
+        .split_whitespace()
         .map(|part| taffy::GridTemplateComponent::Single(parse_single_track(part)))
         .collect()
 }
@@ -134,12 +176,14 @@ fn parse_single_track(value: &str) -> taffy::TrackSizingFunction {
     let value = value.trim();
 
     // Handle minmax(min, max)
-    if let Some(inner) = value.strip_prefix("minmax(").and_then(|s| s.strip_suffix(')')) {
-        if let Some((min_str, max_str)) = inner.split_once(',') {
-            let min = parse_min_track(min_str.trim());
-            let max = parse_max_track(max_str.trim());
-            return minmax(min, max);
-        }
+    if let Some(inner) = value
+        .strip_prefix("minmax(")
+        .and_then(|s| s.strip_suffix(')'))
+        && let Some((min_str, max_str)) = inner.split_once(',')
+    {
+        let min = parse_min_track(min_str.trim());
+        let max = parse_max_track(max_str.trim());
+        return minmax(min, max);
     }
 
     parse_non_repeated_track(value)
@@ -152,21 +196,39 @@ fn parse_non_repeated_track(value: &str) -> taffy::TrackSizingFunction {
     let value = value.trim();
     if let Some(fr_val) = value.strip_suffix("fr") {
         let f = fr_val.trim().parse::<f32>().unwrap_or(1.0);
-        minmax(taffy::MinTrackSizingFunction::auto(), taffy::MaxTrackSizingFunction::fr(f))
+        minmax(
+            taffy::MinTrackSizingFunction::auto(),
+            taffy::MaxTrackSizingFunction::fr(f),
+        )
     } else if value == "auto" {
-        minmax(taffy::MinTrackSizingFunction::auto(), taffy::MaxTrackSizingFunction::auto())
+        minmax(
+            taffy::MinTrackSizingFunction::auto(),
+            taffy::MaxTrackSizingFunction::auto(),
+        )
     } else if value == "min-content" {
-        minmax(taffy::MinTrackSizingFunction::min_content(), taffy::MaxTrackSizingFunction::min_content())
+        minmax(
+            taffy::MinTrackSizingFunction::min_content(),
+            taffy::MaxTrackSizingFunction::min_content(),
+        )
     } else if value == "max-content" {
-        minmax(taffy::MinTrackSizingFunction::max_content(), taffy::MaxTrackSizingFunction::max_content())
+        minmax(
+            taffy::MinTrackSizingFunction::max_content(),
+            taffy::MaxTrackSizingFunction::max_content(),
+        )
     } else if let Some(pct) = value.strip_suffix('%') {
         let p = pct.trim().parse::<f32>().unwrap_or(0.0) / 100.0;
-        minmax(taffy::MinTrackSizingFunction::percent(p), taffy::MaxTrackSizingFunction::percent(p))
+        minmax(
+            taffy::MinTrackSizingFunction::percent(p),
+            taffy::MaxTrackSizingFunction::percent(p),
+        )
     } else {
         // Assume px value
         let px = value.strip_suffix("px").unwrap_or(value);
         let v = px.trim().parse::<f32>().unwrap_or(0.0);
-        minmax(taffy::MinTrackSizingFunction::length(v), taffy::MaxTrackSizingFunction::length(v))
+        minmax(
+            taffy::MinTrackSizingFunction::length(v),
+            taffy::MaxTrackSizingFunction::length(v),
+        )
     }
 }
 
@@ -216,7 +278,9 @@ pub fn parse_style_string(style: &str) -> HashMap<String, String> {
     let mut result = HashMap::new();
     for part in style.split(';') {
         let part = part.trim();
-        if part.is_empty() { continue; }
+        if part.is_empty() {
+            continue;
+        }
         if let Some((key, value)) = part.split_once(':') {
             result.insert(key.trim().to_string(), value.trim().to_string());
         }
@@ -245,12 +309,19 @@ pub enum DefaultDisplay {
 }
 
 /// Build a Taffy Style from parsed CSS properties with viewport unit support.
-pub fn build_taffy_style_from_props_with_viewport(props: &HashMap<String, String>, vp: &Viewport) -> Style {
+pub fn build_taffy_style_from_props_with_viewport(
+    props: &HashMap<String, String>,
+    vp: &Viewport,
+) -> Style {
     build_taffy_style_full(props, vp, DefaultDisplay::Block)
 }
 
 /// Build a Taffy Style from parsed CSS properties with viewport and default display.
-pub fn build_taffy_style_full(props: &HashMap<String, String>, vp: &Viewport, default_display: DefaultDisplay) -> Style {
+pub fn build_taffy_style_full(
+    props: &HashMap<String, String>,
+    vp: &Viewport,
+    default_display: DefaultDisplay,
+) -> Style {
     // Shadow parse functions with viewport-aware versions
     let parse_dimension = |v: &str| parse_dimension_with_viewport(v, vp);
     let parse_length_percentage = |v: &str| parse_length_percentage_with_viewport(v, vp);
@@ -288,7 +359,7 @@ pub fn build_taffy_style_full(props: &HashMap<String, String>, vp: &Viewport, de
                     "block" => Display::Block,
                     "none" => Display::None,
                     "contents" => Display::Flex, // transparent container: children participate in layout
-                    "inline" => Display::Block, // inline layout handled by IFC, Taffy sees block
+                    "inline" => Display::Block,  // inline layout handled by IFC, Taffy sees block
                     "inline-block" => Display::Flex, // inline-block: Taffy handles internal layout
                     _ => Display::default(),
                 };
@@ -321,12 +392,22 @@ pub fn build_taffy_style_full(props: &HashMap<String, String>, vp: &Viewport, de
                 match parts.len() {
                     1 => {
                         let lp = parse_length_percentage(parts[0]);
-                        style.padding = Rect { top: lp, right: lp, bottom: lp, left: lp };
+                        style.padding = Rect {
+                            top: lp,
+                            right: lp,
+                            bottom: lp,
+                            left: lp,
+                        };
                     }
                     2 => {
                         let tb = parse_length_percentage(parts[0]);
                         let lr = parse_length_percentage(parts[1]);
-                        style.padding = Rect { top: tb, right: lr, bottom: tb, left: lr };
+                        style.padding = Rect {
+                            top: tb,
+                            right: lr,
+                            bottom: tb,
+                            left: lr,
+                        };
                     }
                     4 => {
                         style.padding = Rect {
@@ -338,7 +419,12 @@ pub fn build_taffy_style_full(props: &HashMap<String, String>, vp: &Viewport, de
                     }
                     _ => {
                         let lp = parse_length_percentage(value);
-                        style.padding = Rect { top: lp, right: lp, bottom: lp, left: lp };
+                        style.padding = Rect {
+                            top: lp,
+                            right: lp,
+                            bottom: lp,
+                            left: lp,
+                        };
                     }
                 }
             }
@@ -351,12 +437,22 @@ pub fn build_taffy_style_full(props: &HashMap<String, String>, vp: &Viewport, de
                 match parts.len() {
                     1 => {
                         let lpa = parse_length_percentage_auto(parts[0]);
-                        style.margin = Rect { top: lpa, right: lpa, bottom: lpa, left: lpa };
+                        style.margin = Rect {
+                            top: lpa,
+                            right: lpa,
+                            bottom: lpa,
+                            left: lpa,
+                        };
                     }
                     2 => {
                         let tb = parse_length_percentage_auto(parts[0]);
                         let lr = parse_length_percentage_auto(parts[1]);
-                        style.margin = Rect { top: tb, right: lr, bottom: tb, left: lr };
+                        style.margin = Rect {
+                            top: tb,
+                            right: lr,
+                            bottom: tb,
+                            left: lr,
+                        };
                     }
                     4 => {
                         style.margin = Rect {
@@ -368,7 +464,12 @@ pub fn build_taffy_style_full(props: &HashMap<String, String>, vp: &Viewport, de
                     }
                     _ => {
                         let lpa = parse_length_percentage_auto(value);
-                        style.margin = Rect { top: lpa, right: lpa, bottom: lpa, left: lpa };
+                        style.margin = Rect {
+                            top: lpa,
+                            right: lpa,
+                            bottom: lpa,
+                            left: lpa,
+                        };
                     }
                 }
             }
@@ -378,7 +479,10 @@ pub fn build_taffy_style_full(props: &HashMap<String, String>, vp: &Viewport, de
             "margin-left" => style.margin.left = parse_length_percentage_auto(value),
             "gap" => {
                 let lp = parse_length_percentage(value);
-                style.gap = Size { width: lp, height: lp };
+                style.gap = Size {
+                    width: lp,
+                    height: lp,
+                };
             }
             "row-gap" => style.gap.height = parse_length_percentage(value),
             "column-gap" => style.gap.width = parse_length_percentage(value),
@@ -505,23 +609,38 @@ pub fn build_taffy_style_full(props: &HashMap<String, String>, vp: &Viewport, de
             "left" => style.inset.left = parse_length_percentage_auto(value),
             "inset" => {
                 let lpa = parse_length_percentage_auto(value);
-                style.inset = Rect { top: lpa, right: lpa, bottom: lpa, left: lpa };
+                style.inset = Rect {
+                    top: lpa,
+                    right: lpa,
+                    bottom: lpa,
+                    left: lpa,
+                };
             }
             "border" => {
                 // Parse border shorthand: "Npx solid color" -> extract width
                 for part in value.split_whitespace() {
-                    if let Some(px) = part.strip_suffix("px") {
-                        if let Ok(w) = px.parse::<f32>() {
-                            let lp = LengthPercentage::length(w);
-                            style.border = Rect { top: lp, right: lp, bottom: lp, left: lp };
-                            break;
-                        }
+                    if let Some(px) = part.strip_suffix("px")
+                        && let Ok(w) = px.parse::<f32>()
+                    {
+                        let lp = LengthPercentage::length(w);
+                        style.border = Rect {
+                            top: lp,
+                            right: lp,
+                            bottom: lp,
+                            left: lp,
+                        };
+                        break;
                     }
                 }
             }
             "border-width" => {
                 let lp = parse_length_percentage(value);
-                style.border = Rect { top: lp, right: lp, bottom: lp, left: lp };
+                style.border = Rect {
+                    top: lp,
+                    right: lp,
+                    bottom: lp,
+                    left: lp,
+                };
             }
             "grid-template-columns" => {
                 style.grid_template_columns = parse_grid_template(value);
@@ -612,7 +731,10 @@ pub fn parse_color(value: &str) -> Option<peniko::Color> {
     }
 
     // rgb(r, g, b) and rgba(r, g, b, a)
-    if let Some(inner) = value.strip_prefix("rgba(").and_then(|s| s.strip_suffix(')')) {
+    if let Some(inner) = value
+        .strip_prefix("rgba(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
         let parts: Vec<&str> = inner.split(',').collect();
         if parts.len() == 4 {
             let r = parts[0].trim().parse::<u8>().ok()?;
@@ -723,10 +845,10 @@ pub fn css_line_height_to_parley(css: &str) -> Option<parley::style::LineHeight>
     if css.is_empty() || css == "normal" {
         return None;
     }
-    if let Some(px) = css.strip_suffix("px") {
-        if let Ok(v) = px.trim().parse::<f32>() {
-            return Some(parley::style::LineHeight::Absolute(v));
-        }
+    if let Some(px) = css.strip_suffix("px")
+        && let Ok(v) = px.trim().parse::<f32>()
+    {
+        return Some(parley::style::LineHeight::Absolute(v));
     }
     // Unitless = font-size relative multiplier
     if let Ok(v) = css.parse::<f32>() {
@@ -749,7 +871,8 @@ pub fn parse_white_space(style_str: &str) -> Option<String> {
 
 /// Convert a HashMap of CSS properties to an inline style string.
 pub fn props_to_style_string(props: &HashMap<String, String>) -> String {
-    props.iter()
+    props
+        .iter()
         .map(|(k, v)| format!("{}: {}", k, v))
         .collect::<Vec<_>>()
         .join("; ")

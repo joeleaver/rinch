@@ -117,10 +117,10 @@ impl Accordion {
             }
         }
 
-        if let Some(ref cp) = self.chevron_position {
-            if let Ok(ChevronPosition::Left) = cp.parse() {
-                classes.push("rinch-accordion--chevron-left");
-            }
+        if let Some(ref cp) = self.chevron_position
+            && let Ok(ChevronPosition::Left) = cp.parse()
+        {
+            classes.push("rinch-accordion--chevron-left");
         }
 
         classes.join(" ")
@@ -210,14 +210,14 @@ impl Widget for AccordionControl {
         }
 
         // Register click handler if provided
-        if let Some(ref cb) = self.onclick {
-            if !self.disabled {
-                let handler_id = __scope.register_handler({
-                    let cb = cb.clone();
-                    move || cb.invoke()
-                });
-                btn.set_attribute("data-rid", &handler_id.0.to_string());
-            }
+        if let Some(ref cb) = self.onclick
+            && !self.disabled
+        {
+            let handler_id = __scope.register_handler({
+                let cb = cb.clone();
+                move || cb.invoke()
+            });
+            btn.set_attribute("data-rid", &handler_id.0.to_string());
         }
 
         // Label span

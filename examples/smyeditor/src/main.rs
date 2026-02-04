@@ -6,8 +6,8 @@
 mod sections;
 
 use rinch::prelude::*;
-use rinch::{run_rinch_with_window_props, WindowProps};
-use rinch_tabler_icons::{render_tabler_icon, TablerIcon, TablerIconStyle};
+use rinch::{WindowProps, run_rinch_with_window_props};
+use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use sections::*;
 use std::rc::Rc;
 
@@ -40,9 +40,7 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 
     // Color picker helper
     #[allow(unused_variables)]
-    let set_color = |color: &'static str| {
-        move || primary_color.set(color)
-    };
+    let set_color = |color: &'static str| move || primary_color.set(color);
 
     // Dark mode toggle
     #[allow(unused_variables)]
@@ -209,24 +207,19 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 fn overlays_demo_overlays(__scope: &mut RenderScope) -> NodeHandle {
     let state = use_context::<OverlaysSectionState>();
 
-    let (
-        modal_opened,
-        modal_lg_opened,
-        drawer_opened,
-        drawer_right_opened,
-        notification_visible,
-    ) = match state {
-        Some(s) => (
-            s.modal_opened,
-            s.modal_lg_opened,
-            s.drawer_opened,
-            s.drawer_right_opened,
-            s.notification_visible,
-        ),
-        None => {
-            return rsx! { div { } };
-        }
-    };
+    let (modal_opened, modal_lg_opened, drawer_opened, drawer_right_opened, notification_visible) =
+        match state {
+            Some(s) => (
+                s.modal_opened,
+                s.modal_lg_opened,
+                s.drawer_opened,
+                s.drawer_right_opened,
+                s.notification_visible,
+            ),
+            None => {
+                return rsx! { div { } };
+            }
+        };
 
     rsx! {
         Fragment {

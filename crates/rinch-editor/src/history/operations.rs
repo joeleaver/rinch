@@ -11,10 +11,7 @@ pub enum UndoOperation {
     InsertText { position: Position, text: String },
 
     /// Delete text in a range.
-    DeleteText {
-        range: Range,
-        deleted_text: String,
-    },
+    DeleteText { range: Range, deleted_text: String },
 
     /// Add a mark to a range.
     AddMark {
@@ -60,7 +57,10 @@ impl UndoOperation {
                 deleted_text: text.clone(),
             },
 
-            UndoOperation::DeleteText { range, deleted_text } => UndoOperation::InsertText {
+            UndoOperation::DeleteText {
+                range,
+                deleted_text,
+            } => UndoOperation::InsertText {
                 position: range.start,
                 text: deleted_text.clone(),
             },

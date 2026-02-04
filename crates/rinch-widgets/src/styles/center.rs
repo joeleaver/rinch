@@ -11,5 +11,6 @@ pub fn styles() -> String {
 .rinch-center--inline {
     display: inline-flex;
 }
-"#.to_string()
+"#
+    .to_string()
 }

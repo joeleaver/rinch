@@ -28,5 +28,6 @@ pub fn styles() -> String {
 .rinch-anchor--inherit {
     color: inherit;
 }
-"#.to_string()
+"#
+    .to_string()
 }

@@ -69,5 +69,6 @@ pub fn styles() -> String {
 .rinch-list__item-content {
     flex: 1;
 }
-"#.to_string()
+"#
+    .to_string()
 }

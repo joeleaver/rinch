@@ -244,7 +244,10 @@ impl Widget for Notification {
                 if is_open {
                     root_clone.set_attribute("class", &base_class_clone);
                 } else {
-                    root_clone.set_attribute("class", &format!("{} rinch-notification--hidden", base_class_clone));
+                    root_clone.set_attribute(
+                        "class",
+                        &format!("{} rinch-notification--hidden", base_class_clone),
+                    );
                 }
             });
         }

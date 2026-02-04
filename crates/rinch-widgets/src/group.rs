@@ -2,8 +2,8 @@
 //!
 //! A horizontal flex container with consistent spacing.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// Group gap size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -159,10 +159,10 @@ impl Group {
         classes.push(align.class_name());
 
         // Justification class
-        if let Some(ref justify) = self.justify {
-            if let Ok(j) = justify.parse::<GroupJustify>() {
-                classes.push(j.class_name());
-            }
+        if let Some(ref justify) = self.justify
+            && let Ok(j) = justify.parse::<GroupJustify>()
+        {
+            classes.push(j.class_name());
         }
 
         // Wrap

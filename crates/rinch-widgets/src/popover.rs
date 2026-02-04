@@ -2,8 +2,8 @@
 //!
 //! Positioned popup content relative to a target element.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// Popover position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

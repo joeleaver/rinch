@@ -53,5 +53,6 @@ pub fn styles() -> String {
 .rinch-blockquote--radius-md { border-radius: var(--rinch-radius-md); }
 .rinch-blockquote--radius-lg { border-radius: var(--rinch-radius-lg); }
 .rinch-blockquote--radius-xl { border-radius: var(--rinch-radius-xl); }
-"#.to_string()
+"#
+    .to_string()
 }

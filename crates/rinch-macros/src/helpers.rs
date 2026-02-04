@@ -20,12 +20,11 @@ pub fn get_closure_expr(expr: &Expr) -> Option<&Expr> {
         Expr::Closure(_) => Some(expr),
         Expr::Block(block) => {
             // Check if block contains exactly one statement that is a closure expression
-            if block.block.stmts.len() == 1 {
-                if let syn::Stmt::Expr(inner, None) = &block.block.stmts[0] {
-                    if matches!(inner, Expr::Closure(_)) {
-                        return Some(inner);
-                    }
-                }
+            if block.block.stmts.len() == 1
+                && let syn::Stmt::Expr(inner, None) = &block.block.stmts[0]
+                && matches!(inner, Expr::Closure(_))
+            {
+                return Some(inner);
             }
             None
         }
@@ -66,7 +65,19 @@ pub fn expr_to_string(expr: &Expr) -> String {
 pub fn is_void_element(tag: &str) -> bool {
     matches!(
         tag,
-        "area" | "base" | "br" | "col" | "embed" | "hr" | "img" | "input" | "link" | "meta"
-            | "param" | "source" | "track" | "wbr"
+        "area"
+            | "base"
+            | "br"
+            | "col"
+            | "embed"
+            | "hr"
+            | "img"
+            | "input"
+            | "link"
+            | "meta"
+            | "param"
+            | "source"
+            | "track"
+            | "wbr"
     )
 }

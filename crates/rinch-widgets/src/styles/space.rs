@@ -18,5 +18,6 @@ pub fn styles() -> String {
 .rinch-space--h-md { height: var(--rinch-spacing-md); }
 .rinch-space--h-lg { height: var(--rinch-spacing-lg); }
 .rinch-space--h-xl { height: var(--rinch-spacing-xl); }
-"#.to_string()
+"#
+    .to_string()
 }

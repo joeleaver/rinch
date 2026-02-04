@@ -2,8 +2,8 @@
 //!
 //! Centers content horizontally and vertically.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// A centering container.
 #[derive(Debug, Default)]

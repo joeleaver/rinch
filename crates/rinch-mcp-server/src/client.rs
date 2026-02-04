@@ -31,9 +31,18 @@ pub enum DebugCommandKind {
     #[serde(rename = "mouse_move")]
     MouseMove { x: f32, y: f32 },
     #[serde(rename = "scroll")]
-    Scroll { x: f32, y: f32, delta_x: f64, delta_y: f64 },
+    Scroll {
+        x: f32,
+        y: f32,
+        delta_x: f64,
+        delta_y: f64,
+    },
     #[serde(rename = "key_press")]
-    KeyPress { key: String, shift: bool, ctrl: bool },
+    KeyPress {
+        key: String,
+        shift: bool,
+        ctrl: bool,
+    },
     #[serde(rename = "get_caret_position")]
     GetCaretPosition { node_id: usize, byte_offset: usize },
     #[serde(rename = "get_glyph_bounds")]
@@ -142,16 +151,13 @@ impl DebugClient {
         let mut stream = self.stream.lock().unwrap();
         let mut id = self.next_id.lock().unwrap();
 
-        let request = Request {
-            id: *id,
-            command,
-        };
+        let request = Request { id: *id, command };
         *id += 1;
 
         let data = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
-        write_frame(&mut *stream, &data).map_err(|e| format!("Write failed: {}", e))?;
+        write_frame(&mut stream, &data).map_err(|e| format!("Write failed: {}", e))?;
 
-        let resp_data = read_frame(&mut *stream).map_err(|e| format!("Read failed: {}", e))?;
+        let resp_data = read_frame(&mut stream).map_err(|e| format!("Read failed: {}", e))?;
         let response: Response =
             serde_json::from_slice(&resp_data).map_err(|e| format!("Invalid response: {}", e))?;
 

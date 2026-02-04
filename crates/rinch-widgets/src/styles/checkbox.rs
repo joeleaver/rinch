@@ -106,5 +106,6 @@ pub fn styles() -> String {
     opacity: 1;
     transform: scale(1);
 }
-"#.to_string()
+"#
+    .to_string()
 }

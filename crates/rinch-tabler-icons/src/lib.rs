@@ -130,7 +130,10 @@ pub fn render_tabler_icon_with_options(
                 svg.set_attribute("viewBox", "0 0 24 24");
                 svg.set_attribute("width", &size.to_string());
                 svg.set_attribute("height", &size.to_string());
-                svg.set_attribute("style", &format!("width: {}px; height: {}px; flex-shrink: 0;", size, size));
+                svg.set_attribute(
+                    "style",
+                    &format!("width: {}px; height: {}px; flex-shrink: 0;", size, size),
+                );
                 return svg;
             }
         }
@@ -145,7 +148,10 @@ pub fn render_tabler_icon_with_options(
                 svg.set_attribute("viewBox", "0 0 24 24");
                 svg.set_attribute("width", &size.to_string());
                 svg.set_attribute("height", &size.to_string());
-                svg.set_attribute("style", &format!("width: {}px; height: {}px; flex-shrink: 0;", size, size));
+                svg.set_attribute(
+                    "style",
+                    &format!("width: {}px; height: {}px; flex-shrink: 0;", size, size),
+                );
                 return svg;
             }
         }
@@ -158,7 +164,10 @@ pub fn render_tabler_icon_with_options(
     svg.set_attribute("width", &size.to_string());
     svg.set_attribute("height", &size.to_string());
     // Also set inline styles for width/height - SVG attributes alone don't affect CSS layout
-    svg.set_attribute("style", &format!("width: {}px; height: {}px; flex-shrink: 0;", size, size));
+    svg.set_attribute(
+        "style",
+        &format!("width: {}px; height: {}px; flex-shrink: 0;", size, size),
+    );
 
     if is_filled {
         // Filled style: use fill, no stroke
@@ -225,7 +234,7 @@ mod tests {
 
     #[test]
     fn test_icon_count() {
-        assert!(ICON_COUNT > 4000, "Expected 4000+ icons, got {}", ICON_COUNT);
+        const { assert!(ICON_COUNT > 4000) };
     }
 
     #[test]

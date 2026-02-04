@@ -64,5 +64,6 @@ pub fn styles() -> String {
 .rinch-divider--label-left .rinch-divider__label { padding-left: 0; }
 .rinch-divider--label-right::after { display: none; }
 .rinch-divider--label-right .rinch-divider__label { padding-right: 0; }
-"#.to_string()
+"#
+    .to_string()
 }

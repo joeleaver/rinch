@@ -48,5 +48,6 @@ pub fn styles() -> String {
 .rinch-title--left { text-align: left; }
 .rinch-title--center { text-align: center; }
 .rinch-title--right { text-align: right; }
-"#.to_string()
+"#
+    .to_string()
 }

@@ -2,8 +2,8 @@
 //!
 //! A small status indicator with text.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// Badge variant styles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

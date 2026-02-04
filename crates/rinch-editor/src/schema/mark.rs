@@ -1,7 +1,7 @@
 //! Mark types and specifications.
 
-use std::collections::HashMap;
 use super::node::AttrSpec;
+use std::collections::HashMap;
 
 /// Trait for mark types (formatting that spans ranges of text).
 pub trait Mark: std::fmt::Debug {

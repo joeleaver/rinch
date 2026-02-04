@@ -15,8 +15,16 @@ fn test_text_node_has_nonzero_size() {
     doc.resolve_layout(800.0, 600.0);
 
     let layout = doc.tree.get(text.0).unwrap().layout;
-    assert!(layout.width > 0.0, "text width should be > 0, got {}", layout.width);
-    assert!(layout.height > 0.0, "text height should be > 0, got {}", layout.height);
+    assert!(
+        layout.width > 0.0,
+        "text width should be > 0, got {}",
+        layout.width
+    );
+    assert!(
+        layout.height > 0.0,
+        "text height should be > 0, got {}",
+        layout.height
+    );
 }
 
 #[test]
@@ -24,7 +32,11 @@ fn test_longer_text_is_wider() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let container = doc.create_element("div");
-    doc.set_attribute(container, "style", "display: flex; flex-direction: column; width: 800px");
+    doc.set_attribute(
+        container,
+        "style",
+        "display: flex; flex-direction: column; width: 800px",
+    );
     doc.append_child(body, container);
 
     let short = doc.create_text("Hi");
@@ -42,7 +54,12 @@ fn test_longer_text_is_wider() {
 
     let short_w = doc.tree.get(short.0).unwrap().layout.width;
     let long_w = doc.tree.get(long.0).unwrap().layout.width;
-    assert!(long_w > short_w, "longer text ({}) should be wider than short text ({})", long_w, short_w);
+    assert!(
+        long_w > short_w,
+        "longer text ({}) should be wider than short text ({})",
+        long_w,
+        short_w
+    );
 }
 
 #[test]
@@ -53,16 +70,26 @@ fn test_text_wraps_in_constrained_width() {
     doc.set_attribute(container, "style", "width: 80px");
     doc.append_child(body, container);
 
-    let text = doc.create_text("This is a long sentence that should wrap to multiple lines in a narrow container.");
+    let text = doc.create_text(
+        "This is a long sentence that should wrap to multiple lines in a narrow container.",
+    );
     doc.append_child(container, text);
 
     doc.resolve_layout(800.0, 600.0);
 
     let layout = doc.tree.get(text.0).unwrap().layout;
     // Text should wrap - height should be more than a single line
-    assert!(layout.height > 30.0, "wrapped text height should be > 30, got {}", layout.height);
+    assert!(
+        layout.height > 30.0,
+        "wrapped text height should be > 30, got {}",
+        layout.height
+    );
     // Width should not exceed container
-    assert!(layout.width <= 80.0, "text width ({}) should fit in container (80px)", layout.width);
+    assert!(
+        layout.width <= 80.0,
+        "text width ({}) should fit in container (80px)",
+        layout.width
+    );
 }
 
 #[test]
@@ -71,13 +98,21 @@ fn test_font_size_affects_text_height() {
     let body = doc.body();
 
     let small = doc.create_element("div");
-    doc.set_attribute(small, "style", "display: flex; font-size: 12px; width: 400px");
+    doc.set_attribute(
+        small,
+        "style",
+        "display: flex; font-size: 12px; width: 400px",
+    );
     doc.append_child(body, small);
     let small_text = doc.create_text("Hello");
     doc.append_child(small, small_text);
 
     let large = doc.create_element("div");
-    doc.set_attribute(large, "style", "display: flex; font-size: 32px; width: 400px");
+    doc.set_attribute(
+        large,
+        "style",
+        "display: flex; font-size: 32px; width: 400px",
+    );
     doc.append_child(body, large);
     let large_text = doc.create_text("Hello");
     doc.append_child(large, large_text);
@@ -86,7 +121,12 @@ fn test_font_size_affects_text_height() {
 
     let small_h = doc.tree.get(small_text.0).unwrap().layout.height;
     let large_h = doc.tree.get(large_text.0).unwrap().layout.height;
-    assert!(large_h > small_h, "larger font ({}) should produce taller text ({})", large_h, small_h);
+    assert!(
+        large_h > small_h,
+        "larger font ({}) should produce taller text ({})",
+        large_h,
+        small_h
+    );
 }
 
 #[test]
@@ -94,7 +134,11 @@ fn test_text_next_to_element() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let container = doc.create_element("div");
-    doc.set_attribute(container, "style", "display: flex; flex-direction: row; width: 400px");
+    doc.set_attribute(
+        container,
+        "style",
+        "display: flex; flex-direction: row; width: 400px",
+    );
     doc.append_child(body, container);
 
     let box_el = doc.create_element("div");
@@ -109,7 +153,11 @@ fn test_text_next_to_element() {
     let box_layout = doc.tree.get(box_el.0).unwrap().layout;
     let text_layout = doc.tree.get(text.0).unwrap().layout;
     assert_eq!(box_layout.x, 0.0);
-    assert!(text_layout.x >= 50.0, "text x ({}) should be >= box width (50)", text_layout.x);
+    assert!(
+        text_layout.x >= 50.0,
+        "text x ({}) should be >= box width (50)",
+        text_layout.x
+    );
     assert!(text_layout.width > 0.0);
 }
 
@@ -147,13 +195,18 @@ fn test_set_text_content_updates_measurement() {
     doc.resolve_layout(800.0, 600.0);
     let w2 = doc.tree.get(text.0).unwrap().layout.width;
 
-    assert!(w2 > w1, "updated text ({}) should be wider than original ({})", w2, w1);
+    assert!(
+        w2 > w1,
+        "updated text ({}) should be wider than original ({})",
+        w2,
+        w1
+    );
 }
 
 #[test]
 fn test_nested_flex_column_layout() {
     let mut doc = RinchDocument::new();
-    
+
     // Load CSS matching widget styles
     doc.load_css(r#"
         .rinch-borderlesswindow { display: flex; flex-direction: column; height: 100vh; width: 100vw; }
@@ -163,52 +216,73 @@ fn test_nested_flex_column_layout() {
         .rinch-stack--gap-md { gap: 16px; }
         .rinch-title--1 { font-size: 34px; font-weight: 700; }
     "#);
-    
+
     let body = doc.body();
-    
+
     let bw = doc.create_element("div");
     doc.set_attribute(bw, "class", "rinch-borderlesswindow");
     doc.append_child(body, bw);
-    
+
     let content = doc.create_element("div");
     doc.set_attribute(content, "class", "rinch-borderlesswindow__content");
     doc.append_child(bw, content);
-    
+
     let center = doc.create_element("div");
     doc.set_attribute(center, "class", "rinch-center");
     doc.append_child(content, center);
-    
+
     let stack = doc.create_element("div");
     doc.set_attribute(stack, "class", "rinch-stack rinch-stack--gap-md");
     doc.append_child(center, stack);
-    
+
     let h1 = doc.create_element("h1");
     doc.set_attribute(h1, "class", "rinch-title--1");
     doc.append_child(stack, h1);
-    
+
     let text = doc.create_text("Hello World");
     doc.append_child(h1, text);
-    
+
     doc.resolve_layout(1200.0, 800.0);
-    
+
     // Print all layouts for debugging
     for (id, node) in doc.tree.nodes.iter() {
-        let tag = node.tag().unwrap_or(if node.is_text() { "#text" } else { "?" });
-        let cls = node.attributes.get("class").map(|s| s.as_str()).unwrap_or("");
+        let tag = node
+            .tag()
+            .unwrap_or(if node.is_text() { "#text" } else { "?" });
+        let cls = node
+            .attributes
+            .get("class")
+            .map(|s| s.as_str())
+            .unwrap_or("");
         let l = &node.layout;
-        eprintln!("  id={id} {tag}.{cls} {:.0}x{:.0} @{:.0},{:.0}", l.width, l.height, l.x, l.y);
+        eprintln!(
+            "  id={id} {tag}.{cls} {:.0}x{:.0} @{:.0},{:.0}",
+            l.width, l.height, l.x, l.y
+        );
     }
-    
+
     let text_layout = doc.tree.get(text.0).unwrap().layout;
-    assert!(text_layout.width > 0.0, "text width = {}", text_layout.width);
-    assert!(text_layout.height > 0.0, "text height = {}", text_layout.height);
-    
+    assert!(
+        text_layout.width > 0.0,
+        "text width = {}",
+        text_layout.width
+    );
+    assert!(
+        text_layout.height > 0.0,
+        "text height = {}",
+        text_layout.height
+    );
+
     let h1_layout = doc.tree.get(h1.0).unwrap().layout;
     assert!(h1_layout.width > 0.0, "h1 width = {}", h1_layout.width);
     assert!(h1_layout.height > 0.0, "h1 height = {}", h1_layout.height);
-    
+
     let content_layout = doc.tree.get(content.0).unwrap().layout;
-    assert!(content_layout.height > 0.0, "content height = {}", content_layout.height);
+    assert!(
+        content_layout.height > 0.0,
+        "content height = {}",
+        content_layout.height
+    );
 }
 
 #[test]
@@ -248,19 +322,44 @@ fn test_style_tag_then_widget_nodes() {
     doc.resolve_layout(1200.0, 800.0);
 
     for (id, node) in doc.tree.nodes.iter() {
-        let tag = node.tag().unwrap_or(if node.is_text() { "#text" } else { "?" });
-        let cls = node.attributes.get("class").map(|s| s.as_str()).unwrap_or("");
+        let tag = node
+            .tag()
+            .unwrap_or(if node.is_text() { "#text" } else { "?" });
+        let cls = node
+            .attributes
+            .get("class")
+            .map(|s| s.as_str())
+            .unwrap_or("");
         let l = &node.layout;
-        eprintln!("  id={id} {tag}.{cls} {:.0}x{:.0} @{:.0},{:.0}", l.width, l.height, l.x, l.y);
+        eprintln!(
+            "  id={id} {tag}.{cls} {:.0}x{:.0} @{:.0},{:.0}",
+            l.width, l.height, l.x, l.y
+        );
     }
 
     let text_layout = doc.tree.get(text.0).unwrap().layout;
-    assert!(text_layout.width > 0.0, "text width = {}", text_layout.width);
-    assert!(text_layout.height > 0.0, "text height = {}", text_layout.height);
+    assert!(
+        text_layout.width > 0.0,
+        "text width = {}",
+        text_layout.width
+    );
+    assert!(
+        text_layout.height > 0.0,
+        "text height = {}",
+        text_layout.height
+    );
 
     let center_layout = doc.tree.get(center.0).unwrap().layout;
-    assert!(center_layout.width > 0.0, "center width = {}", center_layout.width);
-    assert!(center_layout.height > 0.0, "center height = {}", center_layout.height);
+    assert!(
+        center_layout.width > 0.0,
+        "center width = {}",
+        center_layout.width
+    );
+    assert!(
+        center_layout.height > 0.0,
+        "center height = {}",
+        center_layout.height
+    );
 }
 
 #[test]
@@ -301,16 +400,37 @@ fn test_fragment_span_wrapper() {
     doc.resolve_layout(1200.0, 800.0);
 
     for (id, node) in doc.tree.nodes.iter() {
-        let tag = node.tag().unwrap_or(if node.is_text() { "#text" } else { "?" });
-        let cls = node.attributes.get("class").map(|s| s.as_str()).unwrap_or("");
+        let tag = node
+            .tag()
+            .unwrap_or(if node.is_text() { "#text" } else { "?" });
+        let cls = node
+            .attributes
+            .get("class")
+            .map(|s| s.as_str())
+            .unwrap_or("");
         let l = &node.layout;
-        eprintln!("  id={id} {tag}.{cls} {:.0}x{:.0} @{:.0},{:.0}", l.width, l.height, l.x, l.y);
+        eprintln!(
+            "  id={id} {tag}.{cls} {:.0}x{:.0} @{:.0},{:.0}",
+            l.width, l.height, l.x, l.y
+        );
     }
 
     let text_layout = doc.tree.get(text.0).unwrap().layout;
-    assert!(text_layout.width > 0.0, "text width = {}", text_layout.width);
+    assert!(
+        text_layout.width > 0.0,
+        "text width = {}",
+        text_layout.width
+    );
 
     let frag_layout = doc.tree.get(frag.0).unwrap().layout;
-    assert!(frag_layout.width > 0.0, "fragment span width = {}", frag_layout.width);
-    assert!(frag_layout.height > 0.0, "fragment span height = {}", frag_layout.height);
+    assert!(
+        frag_layout.width > 0.0,
+        "fragment span width = {}",
+        frag_layout.width
+    );
+    assert!(
+        frag_layout.height > 0.0,
+        "fragment span height = {}",
+        frag_layout.height
+    );
 }

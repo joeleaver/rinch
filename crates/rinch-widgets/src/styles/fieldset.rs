@@ -36,5 +36,6 @@ pub fn styles() -> String {
 
 .rinch-fieldset--xl { padding: var(--rinch-spacing-xl); }
 .rinch-fieldset--xl .rinch-fieldset__legend { font-size: var(--rinch-font-size-lg); }
-"#.to_string()
+"#
+    .to_string()
 }

@@ -154,10 +154,10 @@ impl Tabs {
             classes.push(TabsOrientation::Horizontal.class_name());
         }
 
-        if let Some(ref p) = self.position {
-            if let Ok(position) = p.parse::<TabsPosition>() {
-                classes.push(position.class_name());
-            }
+        if let Some(ref p) = self.position
+            && let Ok(position) = p.parse::<TabsPosition>()
+        {
+            classes.push(position.class_name());
         }
 
         if self.grow {
@@ -272,14 +272,14 @@ impl Widget for Tab {
         }
 
         // Register click handler
-        if let Some(ref cb) = self.onclick {
-            if !self.disabled {
-                let handler_id = __scope.register_handler({
-                    let cb = cb.clone();
-                    move || cb.invoke()
-                });
-                btn.set_attribute("data-rid", &handler_id.0.to_string());
-            }
+        if let Some(ref cb) = self.onclick
+            && !self.disabled
+        {
+            let handler_id = __scope.register_handler({
+                let cb = cb.clone();
+                move || cb.invoke()
+            });
+            btn.set_attribute("data-rid", &handler_id.0.to_string());
         }
 
         // Left section icon

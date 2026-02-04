@@ -26,26 +26,21 @@ pub fn init_navigation_state() {
 pub fn navigation_section(__scope: &mut RenderScope) -> NodeHandle {
     let state = use_context::<NavigationSectionState>();
 
-    let (
-        pagination_page,
-        pagination_with_edges_page,
-        stepper_active,
-        tabs_value,
-        tabs_pills_value,
-    ) = match state {
-        Some(s) => (
-            s.pagination_page,
-            s.pagination_with_edges_page,
-            s.stepper_active,
-            s.tabs_value,
-            s.tabs_pills_value,
-        ),
-        None => {
-            return rsx! {
-                div { "Error: NavigationSectionState not initialized" }
-            };
-        }
-    };
+    let (pagination_page, pagination_with_edges_page, stepper_active, tabs_value, tabs_pills_value) =
+        match state {
+            Some(s) => (
+                s.pagination_page,
+                s.pagination_with_edges_page,
+                s.stepper_active,
+                s.tabs_value,
+                s.tabs_pills_value,
+            ),
+            None => {
+                return rsx! {
+                    div { "Error: NavigationSectionState not initialized" }
+                };
+            }
+        };
 
     rsx! {
         Fragment {
@@ -342,25 +337,21 @@ pub fn navigation_section(__scope: &mut RenderScope) -> NodeHandle {
 /// Demo: Basic file tree
 fn tree_demo(__scope: &mut RenderScope) -> NodeHandle {
     let data = vec![
-        TreeNodeData::new("src", "src")
-            .with_children(vec![
-                TreeNodeData::new("components", "components")
-                    .with_children(vec![
-                        TreeNodeData::new("Button.tsx", "Button.tsx"),
-                        TreeNodeData::new("Input.tsx", "Input.tsx"),
-                    ]),
-                TreeNodeData::new("hooks", "hooks")
-                    .with_children(vec![
-                        TreeNodeData::new("useAuth.ts", "useAuth.ts"),
-                        TreeNodeData::new("useTheme.ts", "useTheme.ts"),
-                    ]),
-                TreeNodeData::new("main.tsx", "main.tsx"),
+        TreeNodeData::new("src", "src").with_children(vec![
+            TreeNodeData::new("components", "components").with_children(vec![
+                TreeNodeData::new("Button.tsx", "Button.tsx"),
+                TreeNodeData::new("Input.tsx", "Input.tsx"),
             ]),
-        TreeNodeData::new("public", "public")
-            .with_children(vec![
-                TreeNodeData::new("index.html", "index.html"),
-                TreeNodeData::new("favicon.ico", "favicon.ico"),
+            TreeNodeData::new("hooks", "hooks").with_children(vec![
+                TreeNodeData::new("useAuth.ts", "useAuth.ts"),
+                TreeNodeData::new("useTheme.ts", "useTheme.ts"),
             ]),
+            TreeNodeData::new("main.tsx", "main.tsx"),
+        ]),
+        TreeNodeData::new("public", "public").with_children(vec![
+            TreeNodeData::new("index.html", "index.html"),
+            TreeNodeData::new("favicon.ico", "favicon.ico"),
+        ]),
         TreeNodeData::new("package.json", "package.json"),
         TreeNodeData::new("README.md", "README.md"),
     ];
@@ -382,24 +373,20 @@ fn tree_demo(__scope: &mut RenderScope) -> NodeHandle {
 /// Demo: Tree with selection
 fn tree_selection_demo(__scope: &mut RenderScope) -> NodeHandle {
     let data = vec![
-        TreeNodeData::new("documents", "Documents")
-            .with_children(vec![
-                TreeNodeData::new("reports", "Reports")
-                    .with_children(vec![
-                        TreeNodeData::new("q1-2024", "Q1 2024.pdf"),
-                        TreeNodeData::new("q2-2024", "Q2 2024.pdf"),
-                    ]),
-                TreeNodeData::new("invoices", "Invoices")
-                    .with_children(vec![
-                        TreeNodeData::new("inv-001", "INV-001.pdf"),
-                        TreeNodeData::new("inv-002", "INV-002.pdf"),
-                    ]),
+        TreeNodeData::new("documents", "Documents").with_children(vec![
+            TreeNodeData::new("reports", "Reports").with_children(vec![
+                TreeNodeData::new("q1-2024", "Q1 2024.pdf"),
+                TreeNodeData::new("q2-2024", "Q2 2024.pdf"),
             ]),
-        TreeNodeData::new("images", "Images")
-            .with_children(vec![
-                TreeNodeData::new("photo1", "vacation.jpg"),
-                TreeNodeData::new("photo2", "profile.png"),
+            TreeNodeData::new("invoices", "Invoices").with_children(vec![
+                TreeNodeData::new("inv-001", "INV-001.pdf"),
+                TreeNodeData::new("inv-002", "INV-002.pdf"),
             ]),
+        ]),
+        TreeNodeData::new("images", "Images").with_children(vec![
+            TreeNodeData::new("photo1", "vacation.jpg"),
+            TreeNodeData::new("photo2", "profile.png"),
+        ]),
     ];
 
     let tree = use_tree(UseTreeOptions {

@@ -77,6 +77,7 @@ impl std::str::FromStr for RadioSize {
 ///     Radio { name: "color", value: "green", label: "Green" }
 /// }
 /// ```
+#[derive(Default)]
 pub struct Radio {
     /// Input name (for grouping).
     pub name: Option<String>,
@@ -111,31 +112,16 @@ impl std::fmt::Debug for Radio {
             .field("label", &self.label)
             .field("description", &self.description)
             .field("checked", &self.checked)
-            .field("checked_fn", &self.checked_fn.as_ref().map(|_| "<reactive>"))
+            .field(
+                "checked_fn",
+                &self.checked_fn.as_ref().map(|_| "<reactive>"),
+            )
             .field("disabled", &self.disabled)
             .field("size", &self.size)
             .field("color", &self.color)
             .field("error", &self.error)
             .field("onchange", &self.onchange.as_ref().map(|_| "<callback>"))
             .finish()
-    }
-}
-
-impl Default for Radio {
-    fn default() -> Self {
-        Self {
-            name: None,
-            value: None,
-            label: None,
-            description: None,
-            checked: false,
-            checked_fn: None,
-            disabled: false,
-            size: None,
-            color: None,
-            error: false,
-            onchange: None,
-        }
     }
 }
 
@@ -276,7 +262,8 @@ impl Widget for Radio {
             scope.create_effect(move || {
                 let is_checked = checked_fn();
                 if is_checked {
-                    label_clone.set_attribute("class", &format!("{} rinch-radio--checked", base_class));
+                    label_clone
+                        .set_attribute("class", &format!("{} rinch-radio--checked", base_class));
                 } else {
                     label_clone.set_attribute("class", &base_class);
                 }

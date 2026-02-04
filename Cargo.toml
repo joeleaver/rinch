@@ -4,6 +4,10 @@ members = [
     "crates/*",
     "examples/*",
 ]
+exclude = [
+    "crates/rinch-visual-test",
+    "examples/gen_browser_screenshot",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -49,6 +53,7 @@ rfd = "0.15"
 
 # Clipboard
 arboard = "3"
+rinch-clipboard = { path = "crates/rinch-clipboard" }
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

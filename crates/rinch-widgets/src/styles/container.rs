@@ -18,5 +18,6 @@ pub fn styles() -> String {
 
 /* Fluid container (no max-width) */
 .rinch-container--fluid { max-width: none; }
-"#.to_string()
+"#
+    .to_string()
 }

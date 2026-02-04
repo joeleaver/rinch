@@ -193,20 +193,26 @@ impl SignalStore {
     }
 
     fn get_slot(&self, id: u32, generation: u32) -> Option<&SignalSlot> {
-        self.slots.get(id as usize)?.as_ref().filter(|s| s.generation == generation)
+        self.slots
+            .get(id as usize)?
+            .as_ref()
+            .filter(|s| s.generation == generation)
     }
 
     fn get_slot_mut(&mut self, id: u32, generation: u32) -> Option<&mut SignalSlot> {
-        self.slots.get_mut(id as usize)?.as_mut().filter(|s| s.generation == generation)
+        self.slots
+            .get_mut(id as usize)?
+            .as_mut()
+            .filter(|s| s.generation == generation)
     }
 
     #[allow(dead_code)]
     fn free(&mut self, id: u32, generation: u32) {
-        if let Some(slot) = self.slots.get(id as usize) {
-            if slot.as_ref().is_some_and(|s| s.generation == generation) {
-                self.slots[id as usize] = None;
-                self.free_list.push(id);
-            }
+        if let Some(slot) = self.slots.get(id as usize)
+            && slot.as_ref().is_some_and(|s| s.generation == generation)
+        {
+            self.slots[id as usize] = None;
+            self.free_list.push(id);
         }
     }
 }
@@ -272,9 +278,7 @@ impl<T: 'static> Signal<T> {
 
     /// Subscribe the current observer (if any) to this signal.
     fn track(&self) {
-        let observer = RUNTIME.with(|rt| {
-            rt.borrow().observer_stack.last().copied()
-        });
+        let observer = RUNTIME.with(|rt| rt.borrow().observer_stack.last().copied());
         if let Some(observer) = observer {
             SIGNAL_STORE.with(|store| {
                 if let Some(slot) = store.borrow_mut().get_slot_mut(self.id, self.generation) {
@@ -287,13 +291,18 @@ impl<T: 'static> Signal<T> {
     /// Notify all subscribers that the value has changed.
     fn notify(&self) {
         let subscribers: Vec<ObserverId> = SIGNAL_STORE.with(|store| {
-            store.borrow()
+            store
+                .borrow()
                 .get_slot(self.id, self.generation)
                 .map(|slot| slot.subscribers.iter().copied().collect())
                 .unwrap_or_default()
         });
 
-        tracing::debug!("Signal({}).notify(): {} subscribers", self.id, subscribers.len());
+        tracing::debug!(
+            "Signal({}).notify(): {} subscribers",
+            self.id,
+            subscribers.len()
+        );
 
         RUNTIME.with(|rt| {
             let mut rt = rt.borrow_mut();
@@ -307,7 +316,12 @@ impl<T: 'static> Signal<T> {
                 }
             }
 
-            tracing::debug!("Signal({}).notify(): batching={}, pending_effects={}", self.id, rt.batching, rt.pending_effects.len());
+            tracing::debug!(
+                "Signal({}).notify(): batching={}, pending_effects={}",
+                self.id,
+                rt.batching,
+                rt.pending_effects.len()
+            );
 
             // If not batching, flush immediately
             // Effects must run BEFORE on_signal_change callback so fine-grained
@@ -318,9 +332,7 @@ impl<T: 'static> Signal<T> {
                 flush_effects();
 
                 // Invoke the UI re-render callback AFTER Effects have run
-                let callback = RUNTIME.with(|rt| {
-                    rt.borrow().on_signal_change.clone()
-                });
+                let callback = RUNTIME.with(|rt| rt.borrow().on_signal_change.clone());
                 if let Some(callback) = callback {
                     callback();
                 }
@@ -342,9 +354,11 @@ impl<T: Clone + 'static> Signal<T> {
         self.track();
         SIGNAL_STORE.with(|store| {
             let store = store.borrow();
-            let slot = store.get_slot(self.id, self.generation)
+            let slot = store
+                .get_slot(self.id, self.generation)
                 .expect("Signal::get() on freed signal");
-            slot.value.downcast_ref::<T>()
+            slot.value
+                .downcast_ref::<T>()
                 .expect("Signal type mismatch (internal error)")
                 .clone()
         })
@@ -360,9 +374,12 @@ impl<T: 'static> Signal<T> {
         self.track();
         SIGNAL_STORE.with(|store| {
             let store = store.borrow();
-            let slot = store.get_slot(self.id, self.generation)
+            let slot = store
+                .get_slot(self.id, self.generation)
                 .expect("Signal::with() on freed signal");
-            f(slot.value.downcast_ref::<T>()
+            f(slot
+                .value
+                .downcast_ref::<T>()
                 .expect("Signal type mismatch (internal error)"))
         })
     }
@@ -373,7 +390,8 @@ impl<T: 'static> Signal<T> {
     pub fn set(&self, value: T) {
         SIGNAL_STORE.with(|store| {
             let mut store = store.borrow_mut();
-            let slot = store.get_slot_mut(self.id, self.generation)
+            let slot = store
+                .get_slot_mut(self.id, self.generation)
                 .expect("Signal::set() on freed signal");
             slot.value = Box::new(value);
         });
@@ -386,9 +404,12 @@ impl<T: 'static> Signal<T> {
     pub fn update(&self, f: impl FnOnce(&mut T)) {
         SIGNAL_STORE.with(|store| {
             let mut store = store.borrow_mut();
-            let slot = store.get_slot_mut(self.id, self.generation)
+            let slot = store
+                .get_slot_mut(self.id, self.generation)
                 .expect("Signal::update() on freed signal");
-            let value = slot.value.downcast_mut::<T>()
+            let value = slot
+                .value
+                .downcast_mut::<T>()
                 .expect("Signal type mismatch (internal error)");
             f(value);
         });
@@ -404,7 +425,9 @@ impl<T: fmt::Debug + 'static> fmt::Debug for Signal<T> {
                 if let Some(value) = slot.value.downcast_ref::<T>() {
                     f.debug_struct("Signal").field("value", value).finish()
                 } else {
-                    f.debug_struct("Signal").field("error", &"type mismatch").finish()
+                    f.debug_struct("Signal")
+                        .field("error", &"type mismatch")
+                        .finish()
                 }
             } else {
                 f.debug_struct("Signal").field("error", &"freed").finish()
@@ -436,7 +459,7 @@ impl<T: fmt::Display + 'static> fmt::Display for Signal<T> {
 
 // Storage for all effects (needed because effects reference themselves)
 thread_local! {
-    static EFFECTS: RefCell<Vec<Option<Rc<EffectInner>>>> = RefCell::new(Vec::new());
+    static EFFECTS: RefCell<Vec<Option<Rc<EffectInner>>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// A side-effect that re-runs when its dependencies change.
@@ -543,7 +566,6 @@ impl Effect {
             }
         });
     }
-
 }
 
 impl Drop for Effect {
@@ -555,9 +577,7 @@ impl Drop for Effect {
 
 /// Run a specific effect by ID
 fn run_effect(id: ObserverId) {
-    let effect = EFFECTS.with(|effects| {
-        effects.borrow().get(id.0).and_then(|e| e.clone())
-    });
+    let effect = EFFECTS.with(|effects| effects.borrow().get(id.0).and_then(|e| e.clone()));
 
     if let Some(inner) = effect {
         if inner.disposed.get() {
@@ -671,7 +691,8 @@ impl<T: Clone + 'static> Memo<T> {
                 f: RefCell::new(Box::new(move || {
                     memo_inner.dirty.set(true);
                     // Notify memo's subscribers
-                    let subscribers: Vec<_> = memo_inner.subscribers.borrow().iter().copied().collect();
+                    let subscribers: Vec<_> =
+                        memo_inner.subscribers.borrow().iter().copied().collect();
                     RUNTIME.with(|rt| {
                         let mut rt = rt.borrow_mut();
                         for observer in subscribers {
@@ -714,7 +735,11 @@ impl<T: Clone + 'static> Memo<T> {
             });
         }
 
-        self.inner.value.borrow().clone().expect("memo should have value after get")
+        self.inner
+            .value
+            .borrow()
+            .clone()
+            .expect("memo should have value after get")
     }
 }
 
@@ -773,9 +798,7 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     // This allows fine-grained updates to be queued before the callback checks
     // Clone the callback first and drop the borrow before calling it
     // to avoid borrow conflicts if the callback accesses the runtime
-    let callback = RUNTIME.with(|rt| {
-        rt.borrow().on_signal_change.clone()
-    });
+    let callback = RUNTIME.with(|rt| rt.borrow().on_signal_change.clone());
     if let Some(callback) = callback {
         callback();
     }
@@ -856,10 +879,9 @@ impl Scope {
     /// parent.dispose(); // Also disposes child and its effects
     /// ```
     pub fn child_scope(&self) -> Scope {
-        let child = Scope::new();
         // We return the child and expect the caller to manage it
         // The parent stores a reference for cleanup
-        child
+        Scope::new()
     }
 
     /// Add a child scope to be disposed with this scope.
@@ -911,9 +933,8 @@ impl Scope {
         if is_root {
             // We are the outermost dispose call. Process the queue iteratively.
             loop {
-                let batch: Vec<Effect> = DISPOSE_QUEUE.with(|q| {
-                    std::mem::take(q.borrow_mut().as_mut().unwrap())
-                });
+                let batch: Vec<Effect> =
+                    DISPOSE_QUEUE.with(|q| std::mem::take(q.borrow_mut().as_mut().unwrap()));
                 if batch.is_empty() {
                     break;
                 }
@@ -932,7 +953,10 @@ impl Scope {
 
     /// Mark this scope as disposed and push its effects onto the disposal queue.
     /// Also iteratively processes all child scopes.
-    fn dispose_into_queue(&self, queue: &'static std::thread::LocalKey<RefCell<Option<Vec<Effect>>>>) {
+    fn dispose_into_queue(
+        &self,
+        queue: &'static std::thread::LocalKey<RefCell<Option<Vec<Effect>>>>,
+    ) {
         if self.disposed.get() {
             return;
         }
@@ -1036,9 +1060,7 @@ pub fn derived<T: Clone + 'static>(f: impl Fn() -> T + 'static) -> Memo<T> {
 /// Useful for reading signals without creating subscriptions.
 pub fn untracked<R>(f: impl FnOnce() -> R) -> R {
     // Temporarily remove the current observer
-    let observer = RUNTIME.with(|rt| {
-        rt.borrow_mut().observer_stack.pop()
-    });
+    let observer = RUNTIME.with(|rt| rt.borrow_mut().observer_stack.pop());
 
     let result = f();
 

@@ -169,5 +169,6 @@ pub fn styles() -> String {
 .rinch-tabs--grow .rinch-tabs__tab {
     flex: 1;
 }
-"#.to_string()
+"#
+    .to_string()
 }

@@ -1,0 +1,22 @@
+[package]
+name = "rinch-clipboard"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-platform clipboard abstraction for rinch (native + WASM)"
+
+[dependencies]
+# Native clipboard (not available on WASM)
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+arboard = "3"
+
+# WASM clipboard via web-sys
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Navigator",
+    "Clipboard",
+    "ClipboardEvent",
+] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"

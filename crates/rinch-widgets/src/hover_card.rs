@@ -2,8 +2,8 @@
 //!
 //! A card that appears on hover.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// HoverCard position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

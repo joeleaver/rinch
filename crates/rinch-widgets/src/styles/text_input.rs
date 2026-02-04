@@ -78,5 +78,6 @@ pub fn styles() -> String {
 .rinch-text-input--error .rinch-text-input__input {
     border-color: var(--rinch-color-red-6);
 }
-"#.to_string()
+"#
+    .to_string()
 }

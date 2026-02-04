@@ -94,4 +94,3 @@ pub fn rsx(input: TokenStream) -> TokenStream {
     let mut ctx = dom_codegen::DomCodegenContext::new();
     dom_codegen::node_to_dom(&node, &mut ctx).into()
 }
-

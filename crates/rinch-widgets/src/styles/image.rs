@@ -35,5 +35,6 @@ pub fn styles() -> String {
     text-align: center;
     margin-top: var(--rinch-spacing-xs);
 }
-"#.to_string()
+"#
+    .to_string()
 }

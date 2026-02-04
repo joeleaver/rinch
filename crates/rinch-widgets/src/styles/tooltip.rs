@@ -127,5 +127,6 @@ pub fn styles() -> String {
 .rinch-tooltip--disabled .rinch-tooltip__content {
     display: none;
 }
-"#.to_string()
+"#
+    .to_string()
 }

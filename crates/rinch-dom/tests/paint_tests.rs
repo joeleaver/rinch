@@ -30,7 +30,11 @@ fn test_paint_colored_box() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let div = doc.create_element("div");
-    doc.set_attribute(div, "style", "background-color: red; width: 100px; height: 100px");
+    doc.set_attribute(
+        div,
+        "style",
+        "background-color: red; width: 100px; height: 100px",
+    );
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
 

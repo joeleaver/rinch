@@ -120,5 +120,6 @@ pub fn styles() -> String {
     pointer-events: none;
     cursor: default;
 }
-"#.to_string()
+"#
+    .to_string()
 }

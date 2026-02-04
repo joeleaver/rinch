@@ -2,8 +2,8 @@
 //!
 //! Form grouping component with legend.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// A fieldset for grouping form elements.
 #[derive(Debug, Default)]

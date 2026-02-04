@@ -87,57 +87,70 @@ impl ToolbarConfig {
             sticky: true,
             style: ToolbarStyle::Fixed,
             groups: vec![
-                ToolbarGroup::new("History", vec![
-                    ToolbarControl::Undo,
-                    ToolbarControl::Redo,
-                ]),
-                ToolbarGroup::new("Text Formatting", vec![
-                    ToolbarControl::Bold,
-                    ToolbarControl::Italic,
-                    ToolbarControl::Underline,
-                    ToolbarControl::Strike,
-                    ToolbarControl::Code,
-                    ToolbarControl::Highlight,
-                    ToolbarControl::Subscript,
-                    ToolbarControl::Superscript,
-                ]),
-                ToolbarGroup::new("Headings", vec![
-                    ToolbarControl::Heading(1),
-                    ToolbarControl::Heading(2),
-                    ToolbarControl::Heading(3),
-                    ToolbarControl::Heading(4),
-                    ToolbarControl::Heading(5),
-                    ToolbarControl::Heading(6),
-                    ToolbarControl::Paragraph,
-                ]),
-                ToolbarGroup::new("Lists", vec![
-                    ToolbarControl::BulletList,
-                    ToolbarControl::OrderedList,
-                    ToolbarControl::Blockquote,
-                ]),
-                ToolbarGroup::new("Alignment", vec![
-                    ToolbarControl::AlignLeft,
-                    ToolbarControl::AlignCenter,
-                    ToolbarControl::AlignRight,
-                    ToolbarControl::AlignJustify,
-                ]),
-                ToolbarGroup::new("Insert", vec![
-                    ToolbarControl::Link,
-                    ToolbarControl::HorizontalRule,
-                    ToolbarControl::HardBreak,
-                    ToolbarControl::CodeBlock,
-                    ToolbarControl::InsertTable,
-                ]),
-                ToolbarGroup::new("Color", vec![
-                    ToolbarControl::TextColor("red".into()),
-                    ToolbarControl::TextColor("blue".into()),
-                    ToolbarControl::TextColor("green".into()),
-                    ToolbarControl::TextColor("orange".into()),
-                    ToolbarControl::TextColor("purple".into()),
-                ]),
-                ToolbarGroup::new("Clear", vec![
-                    ToolbarControl::ClearFormatting,
-                ]),
+                ToolbarGroup::new("History", vec![ToolbarControl::Undo, ToolbarControl::Redo]),
+                ToolbarGroup::new(
+                    "Text Formatting",
+                    vec![
+                        ToolbarControl::Bold,
+                        ToolbarControl::Italic,
+                        ToolbarControl::Underline,
+                        ToolbarControl::Strike,
+                        ToolbarControl::Code,
+                        ToolbarControl::Highlight,
+                        ToolbarControl::Subscript,
+                        ToolbarControl::Superscript,
+                    ],
+                ),
+                ToolbarGroup::new(
+                    "Headings",
+                    vec![
+                        ToolbarControl::Heading(1),
+                        ToolbarControl::Heading(2),
+                        ToolbarControl::Heading(3),
+                        ToolbarControl::Heading(4),
+                        ToolbarControl::Heading(5),
+                        ToolbarControl::Heading(6),
+                        ToolbarControl::Paragraph,
+                    ],
+                ),
+                ToolbarGroup::new(
+                    "Lists",
+                    vec![
+                        ToolbarControl::BulletList,
+                        ToolbarControl::OrderedList,
+                        ToolbarControl::Blockquote,
+                    ],
+                ),
+                ToolbarGroup::new(
+                    "Alignment",
+                    vec![
+                        ToolbarControl::AlignLeft,
+                        ToolbarControl::AlignCenter,
+                        ToolbarControl::AlignRight,
+                        ToolbarControl::AlignJustify,
+                    ],
+                ),
+                ToolbarGroup::new(
+                    "Insert",
+                    vec![
+                        ToolbarControl::Link,
+                        ToolbarControl::HorizontalRule,
+                        ToolbarControl::HardBreak,
+                        ToolbarControl::CodeBlock,
+                        ToolbarControl::InsertTable,
+                    ],
+                ),
+                ToolbarGroup::new(
+                    "Color",
+                    vec![
+                        ToolbarControl::TextColor("red".into()),
+                        ToolbarControl::TextColor("blue".into()),
+                        ToolbarControl::TextColor("green".into()),
+                        ToolbarControl::TextColor("orange".into()),
+                        ToolbarControl::TextColor("purple".into()),
+                    ],
+                ),
+                ToolbarGroup::new("Clear", vec![ToolbarControl::ClearFormatting]),
             ],
         }
     }
@@ -148,16 +161,22 @@ impl ToolbarConfig {
             sticky: true,
             style: ToolbarStyle::Fixed,
             groups: vec![
-                ToolbarGroup::new("Formatting", vec![
-                    ToolbarControl::Bold,
-                    ToolbarControl::Italic,
-                    ToolbarControl::Link,
-                ]),
-                ToolbarGroup::new("Headings", vec![
-                    ToolbarControl::Heading(1),
-                    ToolbarControl::Heading(2),
-                    ToolbarControl::Heading(3),
-                ]),
+                ToolbarGroup::new(
+                    "Formatting",
+                    vec![
+                        ToolbarControl::Bold,
+                        ToolbarControl::Italic,
+                        ToolbarControl::Link,
+                    ],
+                ),
+                ToolbarGroup::new(
+                    "Headings",
+                    vec![
+                        ToolbarControl::Heading(1),
+                        ToolbarControl::Heading(2),
+                        ToolbarControl::Heading(3),
+                    ],
+                ),
             ],
         }
     }
@@ -168,32 +187,38 @@ impl ToolbarConfig {
             sticky: true,
             style: ToolbarStyle::Fixed,
             groups: vec![
-                ToolbarGroup::new("Formatting", vec![
-                    ToolbarControl::Bold,
-                    ToolbarControl::Italic,
-                    ToolbarControl::Strike,
-                    ToolbarControl::Code,
-                ]),
-                ToolbarGroup::new("Headings", vec![
-                    ToolbarControl::Heading(1),
-                    ToolbarControl::Heading(2),
-                    ToolbarControl::Heading(3),
-                    ToolbarControl::Paragraph,
-                ]),
-                ToolbarGroup::new("Blocks", vec![
-                    ToolbarControl::BulletList,
-                    ToolbarControl::OrderedList,
-                    ToolbarControl::Blockquote,
-                    ToolbarControl::CodeBlock,
-                ]),
-                ToolbarGroup::new("Insert", vec![
-                    ToolbarControl::Link,
-                    ToolbarControl::HorizontalRule,
-                ]),
-                ToolbarGroup::new("History", vec![
-                    ToolbarControl::Undo,
-                    ToolbarControl::Redo,
-                ]),
+                ToolbarGroup::new(
+                    "Formatting",
+                    vec![
+                        ToolbarControl::Bold,
+                        ToolbarControl::Italic,
+                        ToolbarControl::Strike,
+                        ToolbarControl::Code,
+                    ],
+                ),
+                ToolbarGroup::new(
+                    "Headings",
+                    vec![
+                        ToolbarControl::Heading(1),
+                        ToolbarControl::Heading(2),
+                        ToolbarControl::Heading(3),
+                        ToolbarControl::Paragraph,
+                    ],
+                ),
+                ToolbarGroup::new(
+                    "Blocks",
+                    vec![
+                        ToolbarControl::BulletList,
+                        ToolbarControl::OrderedList,
+                        ToolbarControl::Blockquote,
+                        ToolbarControl::CodeBlock,
+                    ],
+                ),
+                ToolbarGroup::new(
+                    "Insert",
+                    vec![ToolbarControl::Link, ToolbarControl::HorizontalRule],
+                ),
+                ToolbarGroup::new("History", vec![ToolbarControl::Undo, ToolbarControl::Redo]),
             ],
         }
     }
@@ -211,7 +236,11 @@ mod tests {
     #[test]
     fn default_full_has_at_least_35_controls() {
         let config = ToolbarConfig::default_full();
-        assert!(config.control_count() >= 35, "full toolbar has {} controls", config.control_count());
+        assert!(
+            config.control_count() >= 35,
+            "full toolbar has {} controls",
+            config.control_count()
+        );
     }
 
     #[test]
@@ -269,7 +298,12 @@ mod tests {
             command: "insertEmoji".into(),
             icon: Some("emoji".into()),
         };
-        if let ToolbarControl::Custom { label, command, icon } = &c {
+        if let ToolbarControl::Custom {
+            label,
+            command,
+            icon,
+        } = &c
+        {
             assert_eq!(label, "Emoji");
             assert_eq!(command, "insertEmoji");
             assert_eq!(icon.as_deref(), Some("emoji"));

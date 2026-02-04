@@ -39,5 +39,6 @@ pub fn styles() -> String {
 .rinch-close-button--radius-md { border-radius: var(--rinch-radius-md); }
 .rinch-close-button--radius-lg { border-radius: var(--rinch-radius-lg); }
 .rinch-close-button--radius-xl { border-radius: var(--rinch-radius-xl); }
-"#.to_string()
+"#
+    .to_string()
 }

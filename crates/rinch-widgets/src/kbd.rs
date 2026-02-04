@@ -2,8 +2,8 @@
 //!
 //! Keyboard key display element.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// A keyboard key indicator.
 #[derive(Debug, Default)]

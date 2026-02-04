@@ -2,8 +2,8 @@
 //!
 //! Heading component with semantic h1-h6 levels.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// A heading element (h1-h6).
 #[derive(Debug, Default)]

@@ -33,8 +33,7 @@ pub fn write_discovery_file(app_name: &str, port: u16) -> std::io::Result<()> {
         started_at: format!("{:?}", std::time::SystemTime::now()),
     };
 
-    let data = serde_json::to_string_pretty(&entry)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let data = serde_json::to_string_pretty(&entry).map_err(std::io::Error::other)?;
     std::fs::write(discovery_file_path(), data)
 }
 

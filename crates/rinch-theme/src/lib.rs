@@ -107,12 +107,12 @@ pub mod typography;
 // Re-export main types at crate root
 pub use colors::{Color, ColorName, ColorPalette, ColorPalettes, DEFAULT_COLORS};
 pub use css::{generate_base_styles, generate_css_variables, generate_theme_css};
-pub use radius::{RadiusScale, RadiusSize, DEFAULT_RADIUS};
-pub use shadows::{ShadowScale, ShadowSize, DEFAULT_SHADOWS};
-pub use spacing::{SpacingScale, SpacingSize, DEFAULT_SPACING};
+pub use radius::{DEFAULT_RADIUS, RadiusScale, RadiusSize};
+pub use shadows::{DEFAULT_SHADOWS, ShadowScale, ShadowSize};
+pub use spacing::{DEFAULT_SPACING, SpacingScale, SpacingSize};
 pub use theme::{CursorType, FocusRing, Theme, ThemeBuilder};
 pub use typography::{
-    FontSize, FontSizeScale, HeadingLevel, HeadingStyle, HeadingStyles, LineHeightScale,
     DEFAULT_FONT_FAMILY, DEFAULT_FONT_FAMILY_MONOSPACE, DEFAULT_FONT_SIZES, DEFAULT_HEADINGS,
-    DEFAULT_LINE_HEIGHTS,
+    DEFAULT_LINE_HEIGHTS, FontSize, FontSizeScale, HeadingLevel, HeadingStyle, HeadingStyles,
+    LineHeightScale,
 };

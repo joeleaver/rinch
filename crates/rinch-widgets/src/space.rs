@@ -2,8 +2,8 @@
 //!
 //! Adds horizontal or vertical spacing.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// A spacing element.
 #[derive(Debug, Default)]

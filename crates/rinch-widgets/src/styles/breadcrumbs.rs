@@ -72,5 +72,6 @@ pub fn styles() -> String {
     color: var(--rinch-color-text);
     font-weight: 500;
 }
-"#.to_string()
+"#
+    .to_string()
 }

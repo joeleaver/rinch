@@ -9,7 +9,10 @@ use atomic_refcell::{AtomicRef, AtomicRefMut};
 // Use selectors re-exported from style to ensure version compatibility
 use style::applicable_declarations::ApplicableDeclarationBlock;
 use style::context::{QuirksMode, SharedStyleContext};
-use style::dom::{AttributeProvider, LayoutIterator, NodeInfo, OpaqueNode, TDocument, TElement, TNode, TShadowRoot};
+use style::dom::{
+    AttributeProvider, LayoutIterator, NodeInfo, OpaqueNode, TDocument, TElement, TNode,
+    TShadowRoot,
+};
 use style::properties::{ComputedValues, PropertyDeclarationBlock};
 use style::selector_parser::{NonTSPseudoClass, PseudoElement, SelectorImpl};
 use style::servo_arc::{Arc, ArcBorrow};
@@ -57,7 +60,10 @@ impl<'a> RinchNode<'a> {
 
     /// Create a RinchNode for a different node in the same tree.
     pub fn with(&self, id: RawNodeId) -> Self {
-        Self { id, tree: self.tree }
+        Self {
+            id,
+            tree: self.tree,
+        }
     }
 
     /// Navigate forward by n siblings.
@@ -84,9 +90,7 @@ impl<'a> RinchNode<'a> {
 
 impl std::fmt::Debug for RinchNode<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RinchNode")
-            .field("id", &self.id)
-            .finish()
+        f.debug_struct("RinchNode").field("id", &self.id).finish()
     }
 }
 
@@ -335,9 +339,9 @@ impl<'a> Element for RinchNode<'a> {
                 let value = value.as_ref();
                 match operator {
                     AttrSelectorOperator::Equal => attr_value == value,
-                    AttrSelectorOperator::Includes => {
-                        attr_value.split_ascii_whitespace().any(|word| word == value)
-                    }
+                    AttrSelectorOperator::Includes => attr_value
+                        .split_ascii_whitespace()
+                        .any(|word| word == value),
                     AttrSelectorOperator::DashMatch => {
                         attr_value.starts_with(value)
                             && (attr_value.len() == value.len()
@@ -374,7 +378,9 @@ impl<'a> Element for RinchNode<'a> {
                 // Is this an <a> or <area> with href?
                 self.node()
                     .tag()
-                    .map(|tag| (tag == "a" || tag == "area") && self.node().attributes.contains_key("href"))
+                    .map(|tag| {
+                        (tag == "a" || tag == "area") && self.node().attributes.contains_key("href")
+                    })
                     .unwrap_or(false)
             }
             NonTSPseudoClass::Visited => false, // We don't track visited links
@@ -397,18 +403,15 @@ impl<'a> Element for RinchNode<'a> {
         }
 
         let parent_flags = flags.for_parent();
-        if !parent_flags.is_empty() {
-            if let Some(parent) = self.parent_node() {
-                *parent.node().selector_flags.borrow_mut() |= parent_flags;
-            }
+        if !parent_flags.is_empty()
+            && let Some(parent) = self.parent_node()
+        {
+            *parent.node().selector_flags.borrow_mut() |= parent_flags;
         }
     }
 
     fn is_link(&self) -> bool {
-        self.node()
-            .tag()
-            .map(|tag| tag == "a")
-            .unwrap_or(false)
+        self.node().tag().map(|tag| tag == "a").unwrap_or(false)
     }
 
     fn is_html_slot_element(&self) -> bool {
@@ -426,7 +429,11 @@ impl<'a> Element for RinchNode<'a> {
             .unwrap_or(false)
     }
 
-    fn has_class(&self, name: &AtomIdent, case_sensitivity: selectors::attr::CaseSensitivity) -> bool {
+    fn has_class(
+        &self,
+        name: &AtomIdent,
+        case_sensitivity: selectors::attr::CaseSensitivity,
+    ) -> bool {
         let Some(class_attr) = self.node().attributes.get("class") else {
             return false;
         };
@@ -466,8 +473,8 @@ impl<'a> Element for RinchNode<'a> {
     }
 
     fn add_element_unique_hashes(&self, filter: &mut selectors::bloom::BloomFilter) -> bool {
-        use style::bloom::each_relevant_element_hash;
         use selectors::bloom::BLOOM_HASH_MASK;
+        use style::bloom::each_relevant_element_hash;
         each_relevant_element_hash(*self, |hash| filter.insert_hash(hash & BLOOM_HASH_MASK));
         true
     }
@@ -581,10 +588,11 @@ impl<'a> TElement for RinchNode<'a> {
 
     fn has_dirty_descendants(&self) -> bool {
         // Check if any child has STYLE dirty flag
-        self.node()
-            .children
-            .iter()
-            .any(|&id| self.tree.nodes[id].dirty.contains(crate::node::DirtyFlags::STYLE))
+        self.node().children.iter().any(|&id| {
+            self.tree.nodes[id]
+                .dirty
+                .contains(crate::node::DirtyFlags::STYLE)
+        })
     }
 
     fn has_snapshot(&self) -> bool {
@@ -863,9 +871,11 @@ impl<'a> TElement for RinchNode<'a> {
 
     fn relative_selector_search_direction(&self) -> ElementSelectorFlags {
         let flags = self.node().selector_flags.borrow();
-        if flags.contains(ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR_SIBLING) {
+        if flags.contains(ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR_SIBLING)
+        {
             ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR_SIBLING
-        } else if flags.contains(ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR) {
+        } else if flags.contains(ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR)
+        {
             ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR
         } else if flags.contains(ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_SIBLING) {
             ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_SIBLING

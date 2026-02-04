@@ -144,5 +144,6 @@ pub fn styles() -> String {
 .rinch-notification--loading .rinch-notification__icon {
     color: transparent;
 }
-"#.to_string()
+"#
+    .to_string()
 }

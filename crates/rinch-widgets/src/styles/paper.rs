@@ -31,5 +31,6 @@ pub fn styles() -> String {
 .rinch-paper--radius-md { border-radius: var(--rinch-radius-md); }
 .rinch-paper--radius-lg { border-radius: var(--rinch-radius-lg); }
 .rinch-paper--radius-xl { border-radius: var(--rinch-radius-xl); }
-"#.to_string()
+"#
+    .to_string()
 }

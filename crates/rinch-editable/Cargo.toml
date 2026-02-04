@@ -1,0 +1,8 @@
+[package]
+name = "rinch-editable"
+version = "0.1.0"
+edition = "2021"
+description = "Generic text editing primitives for rinch"
+
+[dependencies]
+# Minimal dependencies - this crate should be lightweight

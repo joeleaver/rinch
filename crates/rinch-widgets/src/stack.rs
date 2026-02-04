@@ -2,8 +2,8 @@
 //!
 //! A vertical flex container with consistent spacing.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// Stack gap size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -144,17 +144,17 @@ impl Stack {
         classes.push(gap.class_name());
 
         // Alignment class
-        if let Some(ref align) = self.align {
-            if let Ok(a) = align.parse::<StackAlign>() {
-                classes.push(a.class_name());
-            }
+        if let Some(ref align) = self.align
+            && let Ok(a) = align.parse::<StackAlign>()
+        {
+            classes.push(a.class_name());
         }
 
         // Justification class
-        if let Some(ref justify) = self.justify {
-            if let Ok(j) = justify.parse::<StackJustify>() {
-                classes.push(j.class_name());
-            }
+        if let Some(ref justify) = self.justify
+            && let Ok(j) = justify.parse::<StackJustify>()
+        {
+            classes.push(j.class_name());
         }
 
         classes.join(" ")

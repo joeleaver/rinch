@@ -1,6 +1,6 @@
 //! Selection state management.
 
-use crate::selection::Selection;
+use rinch_editable::Selection;
 
 /// Manages selection state for the editor.
 #[derive(Debug, Clone)]

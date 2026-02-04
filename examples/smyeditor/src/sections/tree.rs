@@ -49,7 +49,10 @@ pub fn init_tree_state() {
             ..Default::default()
         }),
         disabled_tree: UseTreeReturn::new(UseTreeOptions {
-            initial_expanded: get_tree_expanded_state(&disabled_nodes_data(), &["settings", "advanced"]),
+            initial_expanded: get_tree_expanded_state(
+                &disabled_nodes_data(),
+                &["settings", "advanced"],
+            ),
             ..Default::default()
         }),
         level_tree_xs: UseTreeReturn::new(UseTreeOptions {
@@ -106,7 +109,6 @@ pub fn tree_section(__scope: &mut RenderScope) -> NodeHandle {
             };
         }
     };
-
 
     rsx! {
         Fragment {
@@ -256,37 +258,31 @@ pub fn tree_section(__scope: &mut RenderScope) -> NodeHandle {
 /// Data for basic file tree demo
 fn basic_data() -> Vec<TreeNodeData> {
     vec![
-        TreeNodeData::new("src", "src")
-            .with_children(vec![
-                TreeNodeData::new("components", "components")
-                    .with_children(vec![
-                        TreeNodeData::new("Button.tsx", "Button.tsx"),
-                        TreeNodeData::new("Input.tsx", "Input.tsx"),
-                        TreeNodeData::new("Modal.tsx", "Modal.tsx"),
-                    ]),
-                TreeNodeData::new("hooks", "hooks")
-                    .with_children(vec![
-                        TreeNodeData::new("useAuth.ts", "useAuth.ts"),
-                        TreeNodeData::new("useTheme.ts", "useTheme.ts"),
-                    ]),
-                TreeNodeData::new("utils", "utils")
-                    .with_children(vec![
-                        TreeNodeData::new("helpers.ts", "helpers.ts"),
-                        TreeNodeData::new("constants.ts", "constants.ts"),
-                    ]),
-                TreeNodeData::new("main.tsx", "main.tsx"),
-                TreeNodeData::new("App.tsx", "App.tsx"),
+        TreeNodeData::new("src", "src").with_children(vec![
+            TreeNodeData::new("components", "components").with_children(vec![
+                TreeNodeData::new("Button.tsx", "Button.tsx"),
+                TreeNodeData::new("Input.tsx", "Input.tsx"),
+                TreeNodeData::new("Modal.tsx", "Modal.tsx"),
             ]),
-        TreeNodeData::new("public", "public")
-            .with_children(vec![
-                TreeNodeData::new("index.html", "index.html"),
-                TreeNodeData::new("favicon.ico", "favicon.ico"),
-                TreeNodeData::new("assets", "assets")
-                    .with_children(vec![
-                        TreeNodeData::new("logo.svg", "logo.svg"),
-                        TreeNodeData::new("styles.css", "styles.css"),
-                    ]),
+            TreeNodeData::new("hooks", "hooks").with_children(vec![
+                TreeNodeData::new("useAuth.ts", "useAuth.ts"),
+                TreeNodeData::new("useTheme.ts", "useTheme.ts"),
             ]),
+            TreeNodeData::new("utils", "utils").with_children(vec![
+                TreeNodeData::new("helpers.ts", "helpers.ts"),
+                TreeNodeData::new("constants.ts", "constants.ts"),
+            ]),
+            TreeNodeData::new("main.tsx", "main.tsx"),
+            TreeNodeData::new("App.tsx", "App.tsx"),
+        ]),
+        TreeNodeData::new("public", "public").with_children(vec![
+            TreeNodeData::new("index.html", "index.html"),
+            TreeNodeData::new("favicon.ico", "favicon.ico"),
+            TreeNodeData::new("assets", "assets").with_children(vec![
+                TreeNodeData::new("logo.svg", "logo.svg"),
+                TreeNodeData::new("styles.css", "styles.css"),
+            ]),
+        ]),
         TreeNodeData::new("package.json", "package.json"),
         TreeNodeData::new("tsconfig.json", "tsconfig.json"),
         TreeNodeData::new("README.md", "README.md"),
@@ -309,43 +305,41 @@ fn basic_file_tree_demo(__scope: &mut RenderScope, tree: UseTreeReturn) -> NodeH
 /// Data for selection tree demo
 fn selection_data() -> Vec<TreeNodeData> {
     vec![
-        TreeNodeData::new("documents", "Documents")
-            .with_children(vec![
-                TreeNodeData::new("reports", "Reports")
-                    .with_children(vec![
-                        TreeNodeData::new("q1-report", "Q1 2024.pdf"),
-                        TreeNodeData::new("q2-report", "Q2 2024.pdf"),
-                        TreeNodeData::new("q3-report", "Q3 2024.pdf"),
-                        TreeNodeData::new("annual-report", "Annual Summary.pdf"),
-                    ]),
-                TreeNodeData::new("invoices", "Invoices")
-                    .with_children(vec![
-                        TreeNodeData::new("inv-001", "INV-001.pdf"),
-                        TreeNodeData::new("inv-002", "INV-002.pdf"),
-                        TreeNodeData::new("inv-003", "INV-003.pdf"),
-                    ]),
-                TreeNodeData::new("contracts", "Contracts")
-                    .with_children(vec![
-                        TreeNodeData::new("nda", "NDA.docx"),
-                        TreeNodeData::new("sow", "SOW.docx"),
-                    ]),
+        TreeNodeData::new("documents", "Documents").with_children(vec![
+            TreeNodeData::new("reports", "Reports").with_children(vec![
+                TreeNodeData::new("q1-report", "Q1 2024.pdf"),
+                TreeNodeData::new("q2-report", "Q2 2024.pdf"),
+                TreeNodeData::new("q3-report", "Q3 2024.pdf"),
+                TreeNodeData::new("annual-report", "Annual Summary.pdf"),
             ]),
-        TreeNodeData::new("images", "Images")
-            .with_children(vec![
-                TreeNodeData::new("vacation", "vacation.jpg"),
-                TreeNodeData::new("profile", "profile.png"),
-                TreeNodeData::new("screenshot", "screenshot.png"),
+            TreeNodeData::new("invoices", "Invoices").with_children(vec![
+                TreeNodeData::new("inv-001", "INV-001.pdf"),
+                TreeNodeData::new("inv-002", "INV-002.pdf"),
+                TreeNodeData::new("inv-003", "INV-003.pdf"),
             ]),
-        TreeNodeData::new("downloads", "Downloads")
-            .with_children(vec![
-                TreeNodeData::new("installer", "setup.exe"),
-                TreeNodeData::new("archive", "backup.zip"),
+            TreeNodeData::new("contracts", "Contracts").with_children(vec![
+                TreeNodeData::new("nda", "NDA.docx"),
+                TreeNodeData::new("sow", "SOW.docx"),
             ]),
+        ]),
+        TreeNodeData::new("images", "Images").with_children(vec![
+            TreeNodeData::new("vacation", "vacation.jpg"),
+            TreeNodeData::new("profile", "profile.png"),
+            TreeNodeData::new("screenshot", "screenshot.png"),
+        ]),
+        TreeNodeData::new("downloads", "Downloads").with_children(vec![
+            TreeNodeData::new("installer", "setup.exe"),
+            TreeNodeData::new("archive", "backup.zip"),
+        ]),
     ]
 }
 
 /// Demo: Tree with selection and badge display
-fn selection_tree_demo(__scope: &mut RenderScope, tree: UseTreeReturn, selected_signal: Signal<Option<String>>) -> NodeHandle {
+fn selection_tree_demo(
+    __scope: &mut RenderScope,
+    tree: UseTreeReturn,
+    selected_signal: Signal<Option<String>>,
+) -> NodeHandle {
     let data = selection_data();
 
     rsx! {
@@ -364,42 +358,30 @@ fn selection_tree_demo(__scope: &mut RenderScope, tree: UseTreeReturn, selected_
 /// Data for expand/collapse demo
 fn expand_collapse_data() -> Vec<TreeNodeData> {
     vec![
-        TreeNodeData::new("company", "Acme Corporation")
-            .with_children(vec![
-                TreeNodeData::new("engineering", "Engineering")
-                    .with_children(vec![
-                        TreeNodeData::new("frontend", "Frontend Team")
-                            .with_children(vec![
-                                TreeNodeData::new("alice", "Alice Johnson"),
-                                TreeNodeData::new("bob", "Bob Smith"),
-                            ]),
-                        TreeNodeData::new("backend", "Backend Team")
-                            .with_children(vec![
-                                TreeNodeData::new("charlie", "Charlie Brown"),
-                                TreeNodeData::new("diana", "Diana Prince"),
-                            ]),
-                        TreeNodeData::new("devops", "DevOps Team")
-                            .with_children(vec![
-                                TreeNodeData::new("eve", "Eve Williams"),
-                            ]),
-                    ]),
-                TreeNodeData::new("marketing", "Marketing")
-                    .with_children(vec![
-                        TreeNodeData::new("content", "Content Team")
-                            .with_children(vec![
-                                TreeNodeData::new("frank", "Frank Miller"),
-                            ]),
-                        TreeNodeData::new("seo", "SEO Team")
-                            .with_children(vec![
-                                TreeNodeData::new("grace", "Grace Lee"),
-                            ]),
-                    ]),
-                TreeNodeData::new("sales", "Sales")
-                    .with_children(vec![
-                        TreeNodeData::new("henry", "Henry Ford"),
-                        TreeNodeData::new("iris", "Iris Chen"),
-                    ]),
+        TreeNodeData::new("company", "Acme Corporation").with_children(vec![
+            TreeNodeData::new("engineering", "Engineering").with_children(vec![
+                TreeNodeData::new("frontend", "Frontend Team").with_children(vec![
+                    TreeNodeData::new("alice", "Alice Johnson"),
+                    TreeNodeData::new("bob", "Bob Smith"),
+                ]),
+                TreeNodeData::new("backend", "Backend Team").with_children(vec![
+                    TreeNodeData::new("charlie", "Charlie Brown"),
+                    TreeNodeData::new("diana", "Diana Prince"),
+                ]),
+                TreeNodeData::new("devops", "DevOps Team")
+                    .with_children(vec![TreeNodeData::new("eve", "Eve Williams")]),
             ]),
+            TreeNodeData::new("marketing", "Marketing").with_children(vec![
+                TreeNodeData::new("content", "Content Team")
+                    .with_children(vec![TreeNodeData::new("frank", "Frank Miller")]),
+                TreeNodeData::new("seo", "SEO Team")
+                    .with_children(vec![TreeNodeData::new("grace", "Grace Lee")]),
+            ]),
+            TreeNodeData::new("sales", "Sales").with_children(vec![
+                TreeNodeData::new("henry", "Henry Ford"),
+                TreeNodeData::new("iris", "Iris Chen"),
+            ]),
+        ]),
     ]
 }
 
@@ -410,8 +392,8 @@ fn expand_collapse_demo(__scope: &mut RenderScope, tree: UseTreeReturn) -> NodeH
     // Clone data for the controller buttons
     let data_for_expand = data.clone();
 
-    let controller_expand = tree.controller.clone();
-    let controller_collapse = tree.controller.clone();
+    let controller_expand = tree.controller;
+    let controller_collapse = tree.controller;
 
     rsx! {
         Stack { gap: "md",
@@ -448,24 +430,34 @@ struct FileInfo {
 /// Data for custom render demo
 fn custom_render_data() -> Vec<TreeNodeData> {
     vec![
-        TreeNodeData::new("project", "my-project")
-            .with_children(vec![
-                TreeNodeData::new("src", "src")
-                    .with_children(vec![
-                        TreeNodeData::new("main.rs", "main.rs")
-                            .with_payload(FileInfo { size: "2.4 KB".into(), modified: "2 hours ago".into() }),
-                        TreeNodeData::new("lib.rs", "lib.rs")
-                            .with_payload(FileInfo { size: "8.1 KB".into(), modified: "yesterday".into() }),
-                        TreeNodeData::new("utils.rs", "utils.rs")
-                            .with_payload(FileInfo { size: "1.2 KB".into(), modified: "3 days ago".into() }),
-                    ]),
-                TreeNodeData::new("Cargo.toml", "Cargo.toml")
-                    .with_payload(FileInfo { size: "456 B".into(), modified: "1 week ago".into() }),
-                TreeNodeData::new("Cargo.lock", "Cargo.lock")
-                    .with_payload(FileInfo { size: "42 KB".into(), modified: "2 hours ago".into() }),
-                TreeNodeData::new("README.md", "README.md")
-                    .with_payload(FileInfo { size: "3.2 KB".into(), modified: "1 month ago".into() }),
+        TreeNodeData::new("project", "my-project").with_children(vec![
+            TreeNodeData::new("src", "src").with_children(vec![
+                TreeNodeData::new("main.rs", "main.rs").with_payload(FileInfo {
+                    size: "2.4 KB".into(),
+                    modified: "2 hours ago".into(),
+                }),
+                TreeNodeData::new("lib.rs", "lib.rs").with_payload(FileInfo {
+                    size: "8.1 KB".into(),
+                    modified: "yesterday".into(),
+                }),
+                TreeNodeData::new("utils.rs", "utils.rs").with_payload(FileInfo {
+                    size: "1.2 KB".into(),
+                    modified: "3 days ago".into(),
+                }),
             ]),
+            TreeNodeData::new("Cargo.toml", "Cargo.toml").with_payload(FileInfo {
+                size: "456 B".into(),
+                modified: "1 week ago".into(),
+            }),
+            TreeNodeData::new("Cargo.lock", "Cargo.lock").with_payload(FileInfo {
+                size: "42 KB".into(),
+                modified: "2 hours ago".into(),
+            }),
+            TreeNodeData::new("README.md", "README.md").with_payload(FileInfo {
+                size: "3.2 KB".into(),
+                modified: "1 month ago".into(),
+            }),
+        ]),
     ]
 }
 
@@ -486,9 +478,14 @@ fn custom_render_demo(__scope: &mut RenderScope, tree: UseTreeReturn) -> NodeHan
         label_wrapper.append_child(&label);
 
         // Show file info if available (only for leaf nodes)
-        if !payload.has_children && let Some(info) = payload.node.downcast_payload::<FileInfo>() {
+        if !payload.has_children
+            && let Some(info) = payload.node.downcast_payload::<FileInfo>()
+        {
             let meta = scope.create_element("span");
-            meta.set_attribute("style", "color: var(--rinch-color-dimmed); font-size: var(--rinch-font-size-xs);");
+            meta.set_attribute(
+                "style",
+                "color: var(--rinch-color-dimmed); font-size: var(--rinch-font-size-xs);",
+            );
             let meta_text = scope.create_text(&format!("{} - {}", info.size, info.modified));
             meta.append_child(&meta_text);
             label_wrapper.append_child(&meta);
@@ -516,36 +513,27 @@ fn icons_data() -> Vec<TreeNodeData> {
                 TreeNodeData::new("src", "Source Files")
                     .with_icon(Icon::Folder)
                     .with_children(vec![
-                        TreeNodeData::new("main.rs", "main.rs")
-                            .with_icon(Icon::File),
-                        TreeNodeData::new("config.rs", "config.rs")
-                            .with_icon(Icon::Settings),
-                        TreeNodeData::new("user.rs", "user.rs")
-                            .with_icon(Icon::User),
+                        TreeNodeData::new("main.rs", "main.rs").with_icon(Icon::File),
+                        TreeNodeData::new("config.rs", "config.rs").with_icon(Icon::Settings),
+                        TreeNodeData::new("user.rs", "user.rs").with_icon(Icon::User),
                     ]),
                 TreeNodeData::new("docs", "Documentation")
                     .with_icon(Icon::Folder)
                     .with_children(vec![
-                        TreeNodeData::new("readme", "README.md")
-                            .with_icon(Icon::File),
-                        TreeNodeData::new("api", "API Reference")
-                            .with_icon(Icon::Link),
+                        TreeNodeData::new("readme", "README.md").with_icon(Icon::File),
+                        TreeNodeData::new("api", "API Reference").with_icon(Icon::Link),
                     ]),
                 TreeNodeData::new("assets", "Assets")
                     .with_icon(Icon::Folder)
                     .with_children(vec![
-                        TreeNodeData::new("logo", "logo.png")
-                            .with_icon(Icon::Image),
-                        TreeNodeData::new("banner", "banner.jpg")
-                            .with_icon(Icon::Image),
+                        TreeNodeData::new("logo", "logo.png").with_icon(Icon::Image),
+                        TreeNodeData::new("banner", "banner.jpg").with_icon(Icon::Image),
                     ]),
                 TreeNodeData::new("contacts", "Contacts")
                     .with_icon(Icon::Mail)
                     .with_children(vec![
-                        TreeNodeData::new("support", "support@example.com")
-                            .with_icon(Icon::Mail),
-                        TreeNodeData::new("phone", "+1-555-0123")
-                            .with_icon(Icon::Phone),
+                        TreeNodeData::new("support", "support@example.com").with_icon(Icon::Mail),
+                        TreeNodeData::new("phone", "+1-555-0123").with_icon(Icon::Phone),
                     ]),
             ]),
     ]
@@ -567,35 +555,27 @@ fn icons_tree_demo(__scope: &mut RenderScope, tree: UseTreeReturn) -> NodeHandle
 /// Data for disabled nodes demo
 fn disabled_nodes_data() -> Vec<TreeNodeData> {
     vec![
-        TreeNodeData::new("settings", "Settings")
-            .with_children(vec![
-                TreeNodeData::new("general", "General")
-                    .with_children(vec![
-                        TreeNodeData::new("language", "Language"),
-                        TreeNodeData::new("timezone", "Timezone"),
-                    ]),
-                TreeNodeData::new("security", "Security")
-                    .with_children(vec![
-                        TreeNodeData::new("password", "Change Password"),
-                        TreeNodeData::new("2fa", "Two-Factor Auth"),
-                    ]),
-                TreeNodeData::new("billing", "Billing")
-                    .disabled(true)
-                    .with_children(vec![
-                        TreeNodeData::new("payment", "Payment Methods")
-                            .disabled(true),
-                        TreeNodeData::new("invoices", "Invoices")
-                            .disabled(true),
-                    ]),
-                TreeNodeData::new("advanced", "Advanced")
-                    .with_children(vec![
-                        TreeNodeData::new("developer", "Developer Mode"),
-                        TreeNodeData::new("experimental", "Experimental Features")
-                            .disabled(true),
-                        TreeNodeData::new("debug", "Debug Options")
-                            .disabled(true),
-                    ]),
+        TreeNodeData::new("settings", "Settings").with_children(vec![
+            TreeNodeData::new("general", "General").with_children(vec![
+                TreeNodeData::new("language", "Language"),
+                TreeNodeData::new("timezone", "Timezone"),
             ]),
+            TreeNodeData::new("security", "Security").with_children(vec![
+                TreeNodeData::new("password", "Change Password"),
+                TreeNodeData::new("2fa", "Two-Factor Auth"),
+            ]),
+            TreeNodeData::new("billing", "Billing")
+                .disabled(true)
+                .with_children(vec![
+                    TreeNodeData::new("payment", "Payment Methods").disabled(true),
+                    TreeNodeData::new("invoices", "Invoices").disabled(true),
+                ]),
+            TreeNodeData::new("advanced", "Advanced").with_children(vec![
+                TreeNodeData::new("developer", "Developer Mode"),
+                TreeNodeData::new("experimental", "Experimental Features").disabled(true),
+                TreeNodeData::new("debug", "Debug Options").disabled(true),
+            ]),
+        ]),
     ]
 }
 
@@ -617,18 +597,14 @@ fn disabled_nodes_demo(__scope: &mut RenderScope, tree: UseTreeReturn) -> NodeHa
 
 /// Data for level offset demo
 fn level_offset_data() -> Vec<TreeNodeData> {
-    vec![
-        TreeNodeData::new("root", "Root")
-            .with_children(vec![
-                TreeNodeData::new("level1", "Level 1")
-                    .with_children(vec![
+    vec![TreeNodeData::new("root", "Root").with_children(vec![
+        TreeNodeData::new("level1", "Level 1").with_children(vec![
                         TreeNodeData::new("level2", "Level 2")
                             .with_children(vec![
                                 TreeNodeData::new("level3", "Level 3"),
                             ]),
                     ]),
-            ]),
-    ]
+    ])]
 }
 
 /// Demo: Tree with configurable level offset

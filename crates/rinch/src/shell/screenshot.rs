@@ -1,8 +1,8 @@
 //! Screenshot capture via wgpu texture readback.
 
 use wgpu::{
-    BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Device, Extent3d, Queue,
-    Texture, TextureFormat,
+    BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Device, Extent3d, Queue, Texture,
+    TextureFormat,
 };
 
 /// Capture a screenshot from a GPU texture, returning raw RGBA bytes.

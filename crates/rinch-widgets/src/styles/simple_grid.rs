@@ -4,5 +4,6 @@ pub fn styles() -> String {
 .rinch-simple-grid > * {
     min-width: 0;
 }
-"#.to_string()
+"#
+    .to_string()
 }

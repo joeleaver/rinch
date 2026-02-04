@@ -2,8 +2,8 @@
 //!
 //! A loading indicator with multiple animation types.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// Loader type (animation style).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

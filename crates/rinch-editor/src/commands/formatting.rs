@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 
-use crate::error::EditorError;
-use crate::editor::Editor;
 use crate::document::MarkData;
+use crate::editor::Editor;
+use crate::error::EditorError;
 use crate::history::UndoOperation;
 
 /// Commands for applying and removing formatting marks.
@@ -43,11 +43,11 @@ impl FormattingCommands {
         }
 
         // Track affected blocks
-        if let Ok(start_rp) = editor.doc.resolve_position(range.start) {
-            if let Ok(end_rp) = editor.doc.resolve_position(range.end) {
-                for bi in start_rp.block_index..=end_rp.block_index {
-                    editor.mark_block_changed(bi);
-                }
+        if let Ok(start_rp) = editor.doc.resolve_position(range.start)
+            && let Ok(end_rp) = editor.doc.resolve_position(range.end)
+        {
+            for bi in start_rp.block_index..=end_rp.block_index {
+                editor.mark_block_changed(bi);
             }
         }
 
@@ -64,11 +64,11 @@ impl FormattingCommands {
         editor.doc.add_mark(range, MarkData::new(mark_type))?;
 
         // Track affected blocks
-        if let Ok(start_rp) = editor.doc.resolve_position(range.start) {
-            if let Ok(end_rp) = editor.doc.resolve_position(range.end) {
-                for bi in start_rp.block_index..=end_rp.block_index {
-                    editor.mark_block_changed(bi);
-                }
+        if let Ok(start_rp) = editor.doc.resolve_position(range.start)
+            && let Ok(end_rp) = editor.doc.resolve_position(range.end)
+        {
+            for bi in start_rp.block_index..=end_rp.block_index {
+                editor.mark_block_changed(bi);
             }
         }
 
@@ -85,11 +85,11 @@ impl FormattingCommands {
         editor.doc.remove_mark(range, mark_type)?;
 
         // Track affected blocks
-        if let Ok(start_rp) = editor.doc.resolve_position(range.start) {
-            if let Ok(end_rp) = editor.doc.resolve_position(range.end) {
-                for bi in start_rp.block_index..=end_rp.block_index {
-                    editor.mark_block_changed(bi);
-                }
+        if let Ok(start_rp) = editor.doc.resolve_position(range.start)
+            && let Ok(end_rp) = editor.doc.resolve_position(range.end)
+        {
+            for bi in start_rp.block_index..=end_rp.block_index {
+                editor.mark_block_changed(bi);
             }
         }
 
@@ -119,9 +119,9 @@ impl FormattingCommands {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::Schema;
-    use crate::editor::EditorConfig;
     use crate::document::Position;
+    use crate::editor::EditorConfig;
+    use crate::schema::Schema;
     use crate::selection::Selection;
 
     fn editor_with_text(text: &str) -> Editor {

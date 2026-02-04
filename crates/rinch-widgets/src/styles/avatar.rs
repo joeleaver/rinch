@@ -75,5 +75,6 @@ pub fn styles() -> String {
 .rinch-avatar-group > .rinch-avatar:first-child {
     margin-left: 0;
 }
-"#.to_string()
+"#
+    .to_string()
 }

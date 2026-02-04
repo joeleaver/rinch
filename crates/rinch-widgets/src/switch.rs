@@ -26,6 +26,7 @@ use std::rc::Rc;
 pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 
 /// A toggle switch input.
+#[derive(Default)]
 pub struct Switch {
     /// Label displayed next to the switch.
     pub label: Option<String>,
@@ -54,25 +55,13 @@ impl std::fmt::Debug for Switch {
             .field("size", &self.size)
             .field("disabled", &self.disabled)
             .field("checked", &self.checked)
-            .field("checked_fn", &self.checked_fn.as_ref().map(|_| "<reactive>"))
+            .field(
+                "checked_fn",
+                &self.checked_fn.as_ref().map(|_| "<reactive>"),
+            )
             .field("label_position", &self.label_position)
             .field("onchange", &self.onchange.as_ref().map(|_| "<callback>"))
             .finish()
-    }
-}
-
-impl Default for Switch {
-    fn default() -> Self {
-        Self {
-            label: None,
-            description: None,
-            size: None,
-            disabled: false,
-            checked: false,
-            checked_fn: None,
-            label_position: None,
-            onchange: None,
-        }
     }
 }
 
@@ -98,10 +87,10 @@ impl Switch {
         }
 
         // Label position
-        if let Some(pos) = &self.label_position {
-            if pos == "start" {
-                classes.push("rinch-switch--label-start");
-            }
+        if let Some(pos) = &self.label_position
+            && pos == "start"
+        {
+            classes.push("rinch-switch--label-start");
         }
 
         classes.join(" ")
@@ -190,7 +179,8 @@ impl Widget for Switch {
             scope.create_effect(move || {
                 let is_checked = checked_fn();
                 if is_checked {
-                    label_clone.set_attribute("class", &format!("{} rinch-switch--checked", base_class));
+                    label_clone
+                        .set_attribute("class", &format!("{} rinch-switch--checked", base_class));
                 } else {
                     label_clone.set_attribute("class", &base_class);
                 }

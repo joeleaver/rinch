@@ -181,7 +181,6 @@ pub struct Node {
     pub computed_style: ComputedStyle,
 
     // === Stylo CSS engine fields ===
-
     /// Stylo element data containing computed CSS values.
     /// This is the primary source of truth for CSS after Stylo migration.
     pub stylo_element_data: AtomicRefCell<Option<style::data::ElementData>>,
@@ -251,7 +250,9 @@ impl Node {
         let display_mode = default_display_for_tag(tag);
         Self {
             id,
-            kind: NodeKind::Element(ElementData { tag: tag.to_string() }),
+            kind: NodeKind::Element(ElementData {
+                tag: tag.to_string(),
+            }),
             parent: None,
             children: Vec::new(),
             attributes: HashMap::new(),
@@ -280,7 +281,9 @@ impl Node {
     pub fn text(id: RawNodeId, content: &str, guard: SharedRwLock) -> Self {
         Self {
             id,
-            kind: NodeKind::Text(TextData { content: content.to_string() }),
+            kind: NodeKind::Text(TextData {
+                content: content.to_string(),
+            }),
             parent: None,
             children: Vec::new(),
             attributes: HashMap::new(),
@@ -365,7 +368,10 @@ impl Node {
         match &self.kind {
             NodeKind::Text(_) => true,
             NodeKind::Comment(_) => true, // comments are invisible but inline
-            NodeKind::Element(_) => matches!(self.display_mode, DisplayMode::Inline | DisplayMode::InlineBlock),
+            NodeKind::Element(_) => matches!(
+                self.display_mode,
+                DisplayMode::Inline | DisplayMode::InlineBlock
+            ),
             _ => false,
         }
     }
@@ -374,9 +380,9 @@ impl Node {
 /// Default display mode based on HTML tag name.
 fn default_display_for_tag(tag: &str) -> DisplayMode {
     match tag {
-        "span" | "a" | "em" | "strong" | "b" | "i" | "u" | "s" | "sub" | "sup"
-        | "small" | "mark" | "abbr" | "cite" | "code" | "kbd" | "samp" | "var"
-        | "q" | "dfn" | "time" | "label" | "br" | "wbr" => DisplayMode::Inline,
+        "span" | "a" | "em" | "strong" | "b" | "i" | "u" | "s" | "sub" | "sup" | "small"
+        | "mark" | "abbr" | "cite" | "code" | "kbd" | "samp" | "var" | "q" | "dfn" | "time"
+        | "label" | "br" | "wbr" => DisplayMode::Inline,
         "img" | "input" | "button" | "select" | "textarea" => DisplayMode::InlineBlock,
         _ => DisplayMode::Block,
     }
@@ -410,6 +416,12 @@ pub struct NodeTree {
     pub guard: SharedRwLock,
 }
 
+impl Default for NodeTree {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NodeTree {
     /// Create a new node tree with root and body nodes.
     pub fn new() -> Self {
@@ -423,15 +435,17 @@ impl NodeTree {
         // Create root (document) node
         let root_id = nodes.vacant_key();
         let mut root = Node::document(root_id, guard.clone());
-        let root_taffy = taffy.new_leaf(taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
-            ..Default::default()
-        }).unwrap();
+        let root_taffy = taffy
+            .new_leaf(taffy::Style {
+                display: taffy::Display::Flex,
+                flex_direction: taffy::FlexDirection::Column,
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::percent(1.0),
+                },
+                ..Default::default()
+            })
+            .unwrap();
         root.taffy_id = Some(root_taffy);
         taffy_map.insert(root_taffy, root_id);
         nodes.insert(root);
@@ -440,15 +454,17 @@ impl NodeTree {
         let html_id = nodes.vacant_key();
         let mut html = Node::element(html_id, "html", guard.clone());
         html.parent = Some(root_id);
-        let html_taffy = taffy.new_leaf(taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
-            ..Default::default()
-        }).unwrap();
+        let html_taffy = taffy
+            .new_leaf(taffy::Style {
+                display: taffy::Display::Flex,
+                flex_direction: taffy::FlexDirection::Column,
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::percent(1.0),
+                },
+                ..Default::default()
+            })
+            .unwrap();
         html.taffy_id = Some(html_taffy);
         taffy_map.insert(html_taffy, html_id);
         taffy.add_child(root_taffy, html_taffy).unwrap();
@@ -459,16 +475,18 @@ impl NodeTree {
         let body_id = nodes.vacant_key();
         let mut body = Node::element(body_id, "body", guard.clone());
         body.parent = Some(html_id);
-        let body_taffy = taffy.new_leaf(taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::auto(),
-            },
-            flex_grow: 1.0,
-            ..Default::default()
-        }).unwrap();
+        let body_taffy = taffy
+            .new_leaf(taffy::Style {
+                display: taffy::Display::Flex,
+                flex_direction: taffy::FlexDirection::Column,
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::auto(),
+                },
+                flex_grow: 1.0,
+                ..Default::default()
+            })
+            .unwrap();
         body.taffy_id = Some(body_taffy);
         taffy_map.insert(body_taffy, body_id);
         taffy.add_child(html_taffy, body_taffy).unwrap();

@@ -11,18 +11,20 @@
 //! 6. Programmatic DOM manipulation - can we modify content from code?
 
 use rinch::prelude::*;
-use rinch::{run_with_window_props, WindowProps};
+use rinch::{WindowProps, run_with_window_props};
 
 fn app(__scope: &mut RenderScope) -> NodeHandle {
     // State for tracking what happens
-    let event_log = use_signal(|| Vec::<String>::new());
+    let event_log = use_signal(Vec::<String>::new);
     let content_value = use_signal(|| String::from("Initial content"));
     let input_count = use_signal(|| 0_usize);
 
-
     // Build the UI using raw DOM API for more control
     let root = __scope.create_element("div");
-    root.set_attribute("style", "padding: 20px; max-width: 1200px; margin: 0 auto; font-family: sans-serif;");
+    root.set_attribute(
+        "style",
+        "padding: 20px; max-width: 1200px; margin: 0 auto; font-family: sans-serif;",
+    );
 
     // Title
     let title = __scope.create_element("h1");
@@ -31,25 +33,34 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 
     let subtitle = __scope.create_element("p");
     subtitle.set_attribute("style", "color: #666; margin-bottom: 20px;");
-    subtitle.set_text("Testing blitz's support for contenteditable for the rich-text editor project");
+    subtitle
+        .set_text("Testing blitz's support for contenteditable for the rich-text editor project");
     root.append_child(&subtitle);
 
     // Grid container
     let grid = __scope.create_element("div");
-    grid.set_attribute("style", "display: grid; grid-template-columns: 1fr 1fr; gap: 20px;");
+    grid.set_attribute(
+        "style",
+        "display: grid; grid-template-columns: 1fr 1fr; gap: 20px;",
+    );
 
     // === LEFT COLUMN: Tests ===
     let left_col = __scope.create_element("div");
 
     // Test 1: Basic contenteditable
     {
-        let panel = create_panel(__scope, "Test 1: Basic ContentEditable",
-            "A simple div with contenteditable. Try typing, selecting, and formatting.");
+        let panel = create_panel(
+            __scope,
+            "Test 1: Basic ContentEditable",
+            "A simple div with contenteditable. Try typing, selecting, and formatting.",
+        );
 
         let editable = __scope.create_element("div");
         editable.set_attribute("contenteditable", "true");
         editable.set_attribute("style", "border: 2px solid #4c6ef5; padding: 12px; min-height: 100px; border-radius: 4px; background: white; outline: none;");
-        editable.set_text("Initial content - try editing me! Type here to see if contenteditable works.");
+        editable.set_text(
+            "Initial content - try editing me! Type here to see if contenteditable works.",
+        );
         panel.append_child(&editable);
 
         left_col.append_child(&panel);
@@ -57,8 +68,11 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 
     // Test 2: ContentEditable with input handler
     {
-        let panel = create_panel(__scope, "Test 2: ContentEditable with Input Handler",
-            "Testing if blitz emits input events for contenteditable divs.");
+        let panel = create_panel(
+            __scope,
+            "Test 2: ContentEditable with Input Handler",
+            "Testing if blitz emits input events for contenteditable divs.",
+        );
 
         let editable = __scope.create_element("div");
         editable.set_attribute("contenteditable", "true");
@@ -67,11 +81,18 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
         // Register input handler
         let handler_id = __scope.register_input_handler(move |value: String| {
             event_log.update(|l| {
-                l.push(format!("[CONTENTEDITABLE] value.len()={}: \"{}\"",
+                l.push(format!(
+                    "[CONTENTEDITABLE] value.len()={}: \"{}\"",
                     value.len(),
-                    if value.len() > 60 { format!("{}...", &value[..60]) } else { value.clone() }
+                    if value.len() > 60 {
+                        format!("{}...", &value[..60])
+                    } else {
+                        value.clone()
+                    }
                 ));
-                if l.len() > 30 { l.remove(0); }
+                if l.len() > 30 {
+                    l.remove(0);
+                }
             });
             input_count.update(|c| *c += 1);
             content_value.set(value);
@@ -85,8 +106,11 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 
     // Test 3: ContentEditable with HTML content
     {
-        let panel = create_panel(__scope, "Test 3: Pre-formatted Content",
-            "Testing contenteditable with existing HTML formatting.");
+        let panel = create_panel(
+            __scope,
+            "Test 3: Pre-formatted Content",
+            "Testing contenteditable with existing HTML formatting.",
+        );
 
         let editable = __scope.create_element("div");
         editable.set_attribute("contenteditable", "true");
@@ -117,8 +141,11 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 
     // Test 4: Regular input for comparison
     {
-        let panel = create_panel(__scope, "Test 4: Regular Input (Comparison)",
-            "A regular input element - we know blitz handles these correctly.");
+        let panel = create_panel(
+            __scope,
+            "Test 4: Regular Input (Comparison)",
+            "A regular input element - we know blitz handles these correctly.",
+        );
 
         let input = __scope.create_element("input");
         input.set_attribute("type", "text");
@@ -128,7 +155,9 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
         let handler_id = __scope.register_input_handler(move |value: String| {
             event_log.update(|l| {
                 l.push(format!("[REGULAR INPUT] \"{}\"", value));
-                if l.len() > 30 { l.remove(0); }
+                if l.len() > 30 {
+                    l.remove(0);
+                }
             });
         });
         input.set_attribute("data-oninput", &handler_id.to_string());
@@ -139,8 +168,11 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 
     // Test 5: Textarea for comparison
     {
-        let panel = create_panel(__scope, "Test 5: Textarea (Comparison)",
-            "A textarea element - multi-line input that blitz handles.");
+        let panel = create_panel(
+            __scope,
+            "Test 5: Textarea (Comparison)",
+            "A textarea element - multi-line input that blitz handles.",
+        );
 
         let textarea = __scope.create_element("textarea");
         textarea.set_attribute("placeholder", "Type multiple lines here...");
@@ -148,8 +180,14 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 
         let handler_id = __scope.register_input_handler(move |value: String| {
             event_log.update(|l| {
-                l.push(format!("[TEXTAREA] lines={}, len={}", value.lines().count(), value.len()));
-                if l.len() > 30 { l.remove(0); }
+                l.push(format!(
+                    "[TEXTAREA] lines={}, len={}",
+                    value.lines().count(),
+                    value.len()
+                ));
+                if l.len() > 30 {
+                    l.remove(0);
+                }
             });
         });
         textarea.set_attribute("data-oninput", &handler_id.to_string());
@@ -250,11 +288,26 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
         let panel = create_panel(__scope, "Testing Instructions", "");
 
         let instructions = [
-            ("1. Basic Editing:", "Click in Test 1 area and type. Does text appear? Does cursor work?"),
-            ("2. Event Emission:", "Type in Test 2 area. Watch the event log - do [CONTENTEDITABLE] events appear?"),
-            ("3. Selection:", "Try selecting text with mouse drag and Shift+Arrow keys."),
-            ("4. Compare:", "Type in Tests 4 & 5 - these SHOULD show events."),
-            ("5. Keyboard:", "Try Ctrl+A (select all), Ctrl+B, Ctrl+I in contenteditable."),
+            (
+                "1. Basic Editing:",
+                "Click in Test 1 area and type. Does text appear? Does cursor work?",
+            ),
+            (
+                "2. Event Emission:",
+                "Type in Test 2 area. Watch the event log - do [CONTENTEDITABLE] events appear?",
+            ),
+            (
+                "3. Selection:",
+                "Try selecting text with mouse drag and Shift+Arrow keys.",
+            ),
+            (
+                "4. Compare:",
+                "Type in Tests 4 & 5 - these SHOULD show events.",
+            ),
+            (
+                "5. Keyboard:",
+                "Try Ctrl+A (select all), Ctrl+B, Ctrl+I in contenteditable.",
+            ),
         ];
 
         for (title, desc) in instructions {
@@ -304,7 +357,10 @@ fn create_panel(scope: &mut RenderScope, title: &str, description: &str) -> Node
 
     if !description.is_empty() {
         let desc = scope.create_element("p");
-        desc.set_attribute("style", "margin: 0 0 12px 0; color: #868e96; font-size: 13px;");
+        desc.set_attribute(
+            "style",
+            "margin: 0 0 12px 0; color: #868e96; font-size: 13px;",
+        );
         desc.set_text(description);
         panel.append_child(&desc);
     }

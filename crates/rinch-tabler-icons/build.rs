@@ -16,6 +16,9 @@ const OUTLINE_URL: &str = "https://unpkg.com/@tabler/icons@latest/tabler-nodes-o
 const FILLED_URL: &str = "https://unpkg.com/@tabler/icons@latest/tabler-nodes-filled.json";
 const ICONS_JSON_URL: &str = "https://unpkg.com/@tabler/icons@latest/icons.json";
 
+/// Type alias for icon path data: (outline_paths, filled_paths)
+type IconPaths = (Option<Vec<String>>, Option<Vec<String>>);
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
@@ -45,8 +48,7 @@ fn main() {
 
     // Collect all unique icon names with their path data
     // Structure: icon_name -> (outline_paths, filled_paths)
-    let mut all_icons: BTreeMap<String, (Option<Vec<String>>, Option<Vec<String>>)> =
-        BTreeMap::new();
+    let mut all_icons: BTreeMap<String, IconPaths> = BTreeMap::new();
 
     for (name, elements) in &outline {
         if let Some(paths) = extract_paths(elements) {
@@ -127,32 +129,38 @@ fn main() {
 
     // has_filled() method
     output.push_str("    /// Returns true if this icon has a filled variant.\n");
-    output.push_str("    #[allow(unreachable_patterns)]\n");
     output.push_str("    pub const fn has_filled(&self) -> bool {\n");
-    output.push_str("        match self {\n");
-    for (name, (_, filled)) in &all_icons {
-        if filled.is_some() {
-            let variant = to_variant_name(name);
-            output.push_str(&format!("            TablerIcon::{} => true,\n", variant));
-        }
+    let filled_variants: Vec<String> = all_icons
+        .iter()
+        .filter(|(_, (_, filled))| filled.is_some())
+        .map(|(name, _)| format!("TablerIcon::{}", to_variant_name(name)))
+        .collect();
+    if filled_variants.is_empty() {
+        output.push_str("        false\n");
+    } else {
+        output.push_str(&format!(
+            "        matches!(self, {})\n",
+            filled_variants.join("\n            | ")
+        ));
     }
-    output.push_str("            _ => false,\n");
-    output.push_str("        }\n");
     output.push_str("    }\n\n");
 
     // has_outline() method
     output.push_str("    /// Returns true if this icon has an outline variant.\n");
-    output.push_str("    #[allow(unreachable_patterns)]\n");
     output.push_str("    pub const fn has_outline(&self) -> bool {\n");
-    output.push_str("        match self {\n");
-    for (name, (outline, _)) in &all_icons {
-        if outline.is_some() {
-            let variant = to_variant_name(name);
-            output.push_str(&format!("            TablerIcon::{} => true,\n", variant));
-        }
+    let outline_variants: Vec<String> = all_icons
+        .iter()
+        .filter(|(_, (outline, _))| outline.is_some())
+        .map(|(name, _)| format!("TablerIcon::{}", to_variant_name(name)))
+        .collect();
+    if outline_variants.is_empty() {
+        output.push_str("        false\n");
+    } else {
+        output.push_str(&format!(
+            "        matches!(self, {})\n",
+            outline_variants.join("\n            | ")
+        ));
     }
-    output.push_str("            _ => false,\n");
-    output.push_str("        }\n");
     output.push_str("    }\n\n");
 
     // paths() method - returns SVG path data
@@ -287,23 +295,33 @@ fn extract_paths(elements: &Value) -> Option<Vec<String>> {
                     attrs.get("width").and_then(|v| v.as_f64()),
                     attrs.get("height").and_then(|v| v.as_f64()),
                 ) {
-                    let rx = attrs
-                        .get("rx")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0);
+                    let rx = attrs.get("rx").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     if rx > 0.0 {
                         // Rounded rect
                         let d = format!(
                             "M{} {}h{}a{} {} 0 0 1 {} {}v{}a{} {} 0 0 1 {} {}h{}a{} {} 0 0 1 {} {}v{}a{} {} 0 0 1 {} {}z",
-                            x + rx, y,
+                            x + rx,
+                            y,
                             w - 2.0 * rx,
-                            rx, rx, rx, rx,
+                            rx,
+                            rx,
+                            rx,
+                            rx,
                             h - 2.0 * rx,
-                            rx, rx, -rx, rx,
+                            rx,
+                            rx,
+                            -rx,
+                            rx,
                             -(w - 2.0 * rx),
-                            rx, rx, -rx, -rx,
+                            rx,
+                            rx,
+                            -rx,
+                            -rx,
                             -(h - 2.0 * rx),
-                            rx, rx, rx, -rx
+                            rx,
+                            rx,
+                            rx,
+                            -rx
                         );
                         paths.push(d);
                     } else {
@@ -370,11 +388,7 @@ fn extract_paths(elements: &Value) -> Option<Vec<String>> {
         }
     }
 
-    if paths.is_empty() {
-        None
-    } else {
-        Some(paths)
-    }
+    if paths.is_empty() { None } else { Some(paths) }
 }
 
 fn download(url: &str) -> Result<String, Box<dyn std::error::Error>> {

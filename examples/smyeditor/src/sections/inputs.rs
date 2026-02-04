@@ -57,16 +57,46 @@ pub fn inputs_section(__scope: &mut RenderScope) -> NodeHandle {
     let state = use_context::<InputsSectionState>();
 
     let (
-        check1, check2, check_xs, check_sm, check_md, check_lg,
-        switch1, switch2, switch_xs, switch_sm, switch_md, switch_lg,
-        quantity, price, selected_plan, volume, brightness,
-        password_visible_sig, password_value
+        check1,
+        check2,
+        check_xs,
+        check_sm,
+        check_md,
+        check_lg,
+        switch1,
+        switch2,
+        switch_xs,
+        switch_sm,
+        switch_md,
+        switch_lg,
+        quantity,
+        price,
+        selected_plan,
+        volume,
+        brightness,
+        password_visible_sig,
+        password_value,
     ) = match state {
         Some(s) => (
-            s.check1, s.check2, s.check_xs, s.check_sm, s.check_md, s.check_lg,
-            s.switch1, s.switch2, s.switch_xs, s.switch_sm, s.switch_md, s.switch_lg,
-            s.quantity, s.price, s.selected_plan, s.volume, s.brightness,
-            s.password_visible, s.password_value
+            s.check1,
+            s.check2,
+            s.check_xs,
+            s.check_sm,
+            s.check_md,
+            s.check_lg,
+            s.switch1,
+            s.switch2,
+            s.switch_xs,
+            s.switch_sm,
+            s.switch_md,
+            s.switch_lg,
+            s.quantity,
+            s.price,
+            s.selected_plan,
+            s.volume,
+            s.brightness,
+            s.password_visible,
+            s.password_value,
         ),
         None => {
             return rsx! {
@@ -75,9 +105,7 @@ pub fn inputs_section(__scope: &mut RenderScope) -> NodeHandle {
         }
     };
 
-    let toggle = |sig: Signal<bool>| {
-        move || sig.update(|v| *v = !*v)
-    };
+    let toggle = |sig: Signal<bool>| move || sig.update(|v| *v = !*v);
 
     rsx! {
         Fragment {

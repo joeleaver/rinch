@@ -2,8 +2,8 @@
 //!
 //! Centered max-width container.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// A centered container with max-width.
 #[derive(Debug, Default)]

@@ -1,7 +1,7 @@
 //! Rich Text Editor section - Working editor with toolbar, content, and status bar.
 
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Instant;
 
 use rinch::prelude::*;
@@ -9,13 +9,15 @@ use rinch_core::dom::RenderScope as CoreRenderScope;
 use rinch_core::reactive::Effect;
 use rinch_editor::editor::{Editor, EditorConfig};
 use rinch_editor::schema::Schema;
-use rinch_editor::view::{create_input_bridge, render_document_reactive, apply_changes, BlockSignals};
-use rinch_editor_widgets::{ToolbarConfig, ControlButton, render_toolbar, render_status_bar};
+use rinch_editor::view::{
+    BlockSignals, apply_changes, create_input_bridge, render_document_reactive,
+};
+use rinch_editor_widgets::{ControlButton, ToolbarConfig, render_status_bar, render_toolbar};
 
 // Thread-local state for multi-click detection
 thread_local! {
-    static LAST_CLICK: RefCell<Option<Instant>> = RefCell::new(None);
-    static CLICK_COUNT: RefCell<u32> = RefCell::new(0);
+    static LAST_CLICK: RefCell<Option<Instant>> = const { RefCell::new(None) };
+    static CLICK_COUNT: RefCell<u32> = const { RefCell::new(0) };
 }
 
 /// State for the Editor section, stored in context.
@@ -77,31 +79,28 @@ pub fn editor_section(__scope: &mut RenderScope) -> NodeHandle {
         }
     });
 
-
     // Render the working toolbar
     let toolbar_config = get_toolbar_config(toolbar_preset.get());
     let toolbar_node = render_toolbar(__scope, editor.clone(), &toolbar_config, on_change.clone());
 
-    // Create input bridge (hidden textarea + keyboard interceptor) BEFORE click handler
-    // so we can use the focus callback in the click handler
-    let (input_bridge_node, focus_textarea) = create_input_bridge(__scope, editor.clone(), on_change.clone());
+    // Create input bridge (keyboard interceptor) - handles ALL keyboard input
+    create_input_bridge(__scope, editor.clone(), on_change.clone());
 
     // Build reactive content area using Effect pattern (like show_dom)
     let content_div = __scope.create_element("div");
     content_div.set_attribute("class", "editor-content");
-    content_div.set_attribute("style",
+    content_div.set_attribute(
+        "style",
         "min-height: 300px; padding: 16px 24px; background: var(--rinch-color-body); \
          font-size: 16px; line-height: 1.6; color: var(--rinch-color-text); \
-         outline: none; cursor: text;");
+         outline: none; cursor: text;",
+    );
 
     // Register click handler on content area for cursor positioning and multi-click selection
     {
         let editor_for_click = editor.clone();
-        let focus_textarea_for_click = focus_textarea.clone();
         let on_change_for_click = on_change.clone();
         let handler_id = __scope.register_handler(move || {
-            // Focus the hidden textarea so keyboard input is captured
-            focus_textarea_for_click();
             let ctx = rinch_core::events::get_click_context();
 
             // Multi-click detection
@@ -130,8 +129,10 @@ pub fn editor_section(__scope: &mut RenderScope) -> NodeHandle {
                     if let Ok(mut ed) = editor_for_click.try_borrow_mut() {
                         let block_count = ed.doc.block_count();
                         if block_count > 0 && ctx.text_hit.valid {
-                            let block_idx = ctx.text_hit.block_index.min(block_count.saturating_sub(1));
-                            let block_text_len = ed.doc.block_text(block_idx).map(|t| t.len()).unwrap_or(0);
+                            let block_idx =
+                                ctx.text_hit.block_index.min(block_count.saturating_sub(1));
+                            let block_text_len =
+                                ed.doc.block_text(block_idx).map(|t| t.len()).unwrap_or(0);
                             let char_offset = ctx.text_hit.byte_offset.min(block_text_len);
 
                             let mut abs_pos = 0usize;
@@ -159,7 +160,10 @@ pub fn editor_section(__scope: &mut RenderScope) -> NodeHandle {
                             use rinch_editor::document::Position;
                             use rinch_editor::selection::Selection;
                             if start != end {
-                                ed.set_selection(Selection::new(Position::new(start), Position::new(end)));
+                                ed.set_selection(Selection::new(
+                                    Position::new(start),
+                                    Position::new(end),
+                                ));
                             }
                             ed.clear_stored_marks();
 
@@ -174,7 +178,7 @@ pub fn editor_section(__scope: &mut RenderScope) -> NodeHandle {
                                     anchor_offset: sel_start_in_block,
                                     focus_node: node_id,
                                     focus_offset: sel_end_in_block,
-                                }
+                                },
                             );
                         }
                     }
@@ -187,8 +191,10 @@ pub fn editor_section(__scope: &mut RenderScope) -> NodeHandle {
                     if let Ok(mut ed) = editor_for_click.try_borrow_mut() {
                         let block_count = ed.doc.block_count();
                         if block_count > 0 && ctx.text_hit.valid {
-                            let block_idx = ctx.text_hit.block_index.min(block_count.saturating_sub(1));
-                            let block_len = ed.doc.block_text(block_idx).map(|t| t.len()).unwrap_or(0);
+                            let block_idx =
+                                ctx.text_hit.block_index.min(block_count.saturating_sub(1));
+                            let block_len =
+                                ed.doc.block_text(block_idx).map(|t| t.len()).unwrap_or(0);
 
                             let mut abs_start = 0;
                             for i in 0..block_idx {
@@ -198,7 +204,10 @@ pub fn editor_section(__scope: &mut RenderScope) -> NodeHandle {
 
                             use rinch_editor::document::Position;
                             use rinch_editor::selection::Selection;
-                            ed.set_selection(Selection::new(Position::new(abs_start), Position::new(abs_end)));
+                            ed.set_selection(Selection::new(
+                                Position::new(abs_start),
+                                Position::new(abs_end),
+                            ));
                             ed.clear_stored_marks();
 
                             // Set blitz's native text selection for the block
@@ -209,7 +218,7 @@ pub fn editor_section(__scope: &mut RenderScope) -> NodeHandle {
                                     anchor_offset: 0,
                                     focus_node: node_id,
                                     focus_offset: block_len,
-                                }
+                                },
                             );
                         }
                     }
@@ -258,7 +267,7 @@ pub fn editor_section(__scope: &mut RenderScope) -> NodeHandle {
                                 rinch_core::SelectionAction::ExtendToPoint {
                                     x: ctx.mouse_x,
                                     y: ctx.mouse_y,
-                                }
+                                },
                             );
                         }
                     }
@@ -278,46 +287,46 @@ pub fn editor_section(__scope: &mut RenderScope) -> NodeHandle {
         let signals_for_sync = state.block_signals.clone();
         rinch_core::events::set_selection_sync_callback(move |ranges| {
             if !ranges.is_empty() {
-            if let Ok(mut ed) = editor_for_sync.try_borrow_mut() {
-                let block_count = ed.doc.block_count();
-                let doc_len = ed.doc.text_length();
-                if block_count == 0 {
-                    return;
-                }
+                if let Ok(mut ed) = editor_for_sync.try_borrow_mut() {
+                    let block_count = ed.doc.block_count();
+                    let doc_len = ed.doc.text_length();
+                    if block_count == 0 {
+                        return;
+                    }
 
-                use rinch_editor::document::Position;
-                use rinch_editor::selection::Selection;
+                    use rinch_editor::document::Position;
+                    use rinch_editor::selection::Selection;
 
-                // Compute absolute position for the first range's start
-                let (first_bi, first_start, _) = ranges[0];
-                let first_bi = first_bi.min(block_count.saturating_sub(1));
-                let mut abs_start = 0usize;
-                for i in 0..first_bi {
-                    abs_start += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
-                }
-                let first_block_len = ed.doc.block_text(first_bi).map(|t| t.len()).unwrap_or(0);
-                abs_start += first_start.min(first_block_len);
+                    // Compute absolute position for the first range's start
+                    let (first_bi, first_start, _) = ranges[0];
+                    let first_bi = first_bi.min(block_count.saturating_sub(1));
+                    let mut abs_start = 0usize;
+                    for i in 0..first_bi {
+                        abs_start += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
+                    }
+                    let first_block_len = ed.doc.block_text(first_bi).map(|t| t.len()).unwrap_or(0);
+                    abs_start += first_start.min(first_block_len);
 
-                // Compute absolute position for the last range's end
-                let (last_bi, _, last_end) = *ranges.last().unwrap();
-                let last_bi = last_bi.min(block_count.saturating_sub(1));
-                let mut abs_end = 0usize;
-                for i in 0..last_bi {
-                    abs_end += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
-                }
-                let last_block_len = ed.doc.block_text(last_bi).map(|t| t.len()).unwrap_or(0);
-                abs_end += last_end.min(last_block_len);
+                    // Compute absolute position for the last range's end
+                    let (last_bi, _, last_end) = *ranges.last().unwrap();
+                    let last_bi = last_bi.min(block_count.saturating_sub(1));
+                    let mut abs_end = 0usize;
+                    for i in 0..last_bi {
+                        abs_end += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
+                    }
+                    let last_block_len = ed.doc.block_text(last_bi).map(|t| t.len()).unwrap_or(0);
+                    abs_end += last_end.min(last_block_len);
 
-                // Only update if we have a real range (not just a cursor)
-                if abs_start != abs_end {
-                    ed.set_selection(Selection::new(
-                        Position::new(abs_start.min(doc_len)),
-                        Position::new(abs_end.min(doc_len)),
-                    ));
-                    ed.clear_stored_marks();
-                    // Don't call on_change here to avoid re-render that clears blitz selection
+                    // Only update if we have a real range (not just a cursor)
+                    if abs_start != abs_end {
+                        ed.set_selection(Selection::new(
+                            Position::new(abs_start.min(doc_len)),
+                            Position::new(abs_end.min(doc_len)),
+                        ));
+                        ed.clear_stored_marks();
+                        // Don't call on_change here to avoid re-render that clears blitz selection
+                    }
                 }
-            }
             } else {
                 // Empty ranges = single click (no drag selection).
                 // Bump to show the cursor caret that was set on mousedown.
@@ -349,20 +358,17 @@ pub fn editor_section(__scope: &mut RenderScope) -> NodeHandle {
         let current_content: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
         let current_scope: Rc<RefCell<Option<CoreRenderScope>>> = Rc::new(RefCell::new(None));
 
-        // Initial render
-        let initial_status = render_status_bar(__scope, &editor);
-        status_div.append_child(&initial_status);
-
-        let initial_version = version.get();
-        let prev_version: Rc<RefCell<u64>> = Rc::new(RefCell::new(initial_version));
+        // Track version to detect changes
+        let prev_version: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
 
         let effect = Effect::new(move || {
             let v = version.get();
-            let prev = *prev_version.borrow();
-            if v == prev {
+            if let Some(prev) = *prev_version.borrow()
+                && v == prev
+            {
                 return;
             }
-            *prev_version.borrow_mut() = v;
+            *prev_version.borrow_mut() = Some(v);
 
             if let Some(old_scope) = current_scope.borrow_mut().take() {
                 old_scope.dispose();
@@ -428,9 +434,6 @@ pub fn editor_section(__scope: &mut RenderScope) -> NodeHandle {
                 // Status bar (reactive)
                 {status_div}
             }
-
-            // Hidden input bridge (keyboard interceptor)
-            {input_bridge_node}
 
             Space { h: "xl" }
 
@@ -517,7 +520,8 @@ fn render_editor_styles(__scope: &mut RenderScope) -> NodeHandle {
     use rinch_editor::view::cursor_blink_css;
 
     let style = __scope.create_element("style");
-    let mut css = String::from(r#"
+    let mut css = String::from(
+        r#"
         .editor-content p { margin: 0 0 8px 0; }
         .editor-content h1 { font-size: 2em; font-weight: 700; margin: 16px 0 8px 0; }
         .editor-content h2 { font-size: 1.5em; font-weight: 700; margin: 14px 0 6px 0; }
@@ -580,7 +584,8 @@ fn render_editor_styles(__scope: &mut RenderScope) -> NodeHandle {
         .editor-toolbar div:hover {
             background: var(--rinch-color-gray-1);
         }
-    "#);
+    "#,
+    );
 
     // Add cursor blink animation CSS
     css.push_str(cursor_blink_css());
@@ -601,10 +606,12 @@ fn render_shortcuts_list(__scope: &mut RenderScope, preset: Signal<usize>) -> No
             let btn_meta = ControlButton::from_control(control.clone());
             if let Some(shortcut) = btn_meta.shortcut_hint() {
                 let row = __scope.create_element("div");
-                row.set_attribute("style",
+                row.set_attribute(
+                    "style",
                     "display: flex; justify-content: space-between; align-items: center; \
                      padding: 4px 8px; border-radius: 4px; \
-                     background: var(--rinch-color-gray-0);");
+                     background: var(--rinch-color-gray-0);",
+                );
 
                 let label = __scope.create_element("span");
                 label.set_attribute("style", "font-size: 13px;");
@@ -612,11 +619,13 @@ fn render_shortcuts_list(__scope: &mut RenderScope, preset: Signal<usize>) -> No
                 row.append_child(&label);
 
                 let badge = __scope.create_element("span");
-                badge.set_attribute("style",
+                badge.set_attribute(
+                    "style",
                     "font-size: 11px; font-family: monospace; \
                      padding: 2px 8px; border-radius: 4px; \
                      background: var(--rinch-color-gray-2); \
-                     color: var(--rinch-color-text);");
+                     color: var(--rinch-color-text);",
+                );
                 badge.set_text(shortcut);
                 row.append_child(&badge);
 

@@ -54,7 +54,9 @@ impl ControlButton {
 }
 
 /// Returns (label, tooltip, optional shortcut) for a control.
-fn control_metadata(control: &ToolbarControl) -> (&'static str, &'static str, Option<&'static str>) {
+fn control_metadata(
+    control: &ToolbarControl,
+) -> (&'static str, &'static str, Option<&'static str>) {
     match control {
         ToolbarControl::Bold => ("B", "Bold", Some("Ctrl+B")),
         ToolbarControl::Italic => ("I", "Italic", Some("Ctrl+I")),
@@ -250,7 +252,11 @@ mod tests {
         ];
         for c in controls {
             let btn = ControlButton::from_control(c);
-            assert!(btn.icon_name().is_some(), "missing icon for {}", btn.label());
+            assert!(
+                btn.icon_name().is_some(),
+                "missing icon for {}",
+                btn.label()
+            );
         }
     }
 

@@ -141,13 +141,21 @@ where
         let is_showing = *showing.borrow();
         if is_showing {
             insert_content_after_marker(
-                &doc_weak, parent_id, &marker,
-                then_fn.as_ref(), &current_content, &current_scope,
+                &doc_weak,
+                parent_id,
+                &marker,
+                then_fn.as_ref(),
+                &current_content,
+                &current_scope,
             );
         } else if let Some(ref else_fn) = else_fn {
             insert_content_after_marker(
-                &doc_weak, parent_id, &marker,
-                else_fn.as_ref(), &current_content, &current_scope,
+                &doc_weak,
+                parent_id,
+                &marker,
+                else_fn.as_ref(),
+                &current_content,
+                &current_scope,
             );
         }
     }
@@ -184,13 +192,21 @@ where
             // Render new content after marker
             if new_showing {
                 insert_content_after_marker(
-                    &doc_weak_clone, parent_id, &marker_effect,
-                    then_fn_clone.as_ref(), &current_content_clone, &current_scope_clone,
+                    &doc_weak_clone,
+                    parent_id,
+                    &marker_effect,
+                    then_fn_clone.as_ref(),
+                    &current_content_clone,
+                    &current_scope_clone,
                 );
             } else if let Some(ref else_fn) = else_fn_clone {
                 insert_content_after_marker(
-                    &doc_weak_clone, parent_id, &marker_effect,
-                    else_fn.as_ref(), &current_content_clone, &current_scope_clone,
+                    &doc_weak_clone,
+                    parent_id,
+                    &marker_effect,
+                    else_fn.as_ref(),
+                    &current_content_clone,
+                    &current_scope_clone,
                 );
             }
         }
@@ -289,7 +305,9 @@ where
     ///
     /// Panics if `then` was not called.
     pub fn build(self, scope: &mut RenderScope, parent: &NodeHandle) -> NodeHandle {
-        let then_fn = self.then_fn.expect("FineShowBuilder: then() must be called");
+        let then_fn = self
+            .then_fn
+            .expect("FineShowBuilder: then() must be called");
         show_dom(scope, parent, self.when, then_fn, self.else_fn)
     }
 }

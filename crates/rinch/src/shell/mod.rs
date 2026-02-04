@@ -4,16 +4,16 @@ pub mod devtools;
 pub mod devtools_overlay;
 pub mod html_parser;
 pub mod memory_profile;
-pub mod transparent_renderer;
-pub mod types;
 pub mod rinch_runtime;
 #[cfg(feature = "debug")]
 pub mod screenshot;
+pub mod transparent_renderer;
+pub mod types;
 
 pub use devtools::{DevToolsPanel, DevToolsState};
 pub use devtools_overlay::render_overlay;
-pub use types::{ElementLayout, HoveredElementInfo, RinchEvent};
 pub use rinch_runtime::{run_rinch, run_rinch_with_window_props};
+pub use types::{ElementLayout, HoveredElementInfo, RinchEvent};
 
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::element::ThemeProviderProps;
@@ -69,11 +69,8 @@ pub fn run_with_theme<F>(
 use rinch_core::element::WindowProps;
 
 /// Run a rinch application with full window configuration and theme.
-pub fn run_with_window_props<F>(
-    component: F,
-    props: WindowProps,
-    theme: Option<ThemeProviderProps>,
-) where
+pub fn run_with_window_props<F>(component: F, props: WindowProps, theme: Option<ThemeProviderProps>)
+where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
     if let Some(theme) = theme {

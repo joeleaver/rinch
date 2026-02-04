@@ -11,7 +11,6 @@ use vello::Scene;
 use crate::computed_style::OverflowValue;
 use crate::layout::parse_color;
 use crate::node::{Node, NodeKind, NodeTree, RawNodeId};
-use crate::text_query::caret_position_for_offset;
 
 /// Paint the entire document to a Vello scene.
 ///
@@ -26,9 +25,19 @@ pub fn paint_document(
     layout_cx: &mut parley::LayoutContext<Brush>,
 ) {
     scene.reset();
-    paint_node(tree, tree.body_id, scene, scale, 0.0, 0.0, font_cx, layout_cx);
+    paint_node(
+        tree,
+        tree.body_id,
+        scene,
+        scale,
+        0.0,
+        0.0,
+        font_cx,
+        layout_cx,
+    );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_node(
     tree: &NodeTree,
     node_id: RawNodeId,
@@ -44,10 +53,13 @@ fn paint_node(
     };
 
     // Skip hidden elements (display: none, style/script tags)
-    if let NodeKind::Element(ref el) = node.kind {
-        if matches!(el.tag.as_str(), "style" | "script" | "head" | "meta" | "link") {
-            return;
-        }
+    if let NodeKind::Element(ref el) = node.kind
+        && matches!(
+            el.tag.as_str(),
+            "style" | "script" | "head" | "meta" | "link"
+        )
+    {
+        return;
     }
     let layout = &node.layout;
 
@@ -65,7 +77,6 @@ fn paint_node(
     match &node.kind {
         NodeKind::Element(el) if el.tag == "svg" => {
             paint_svg(tree, node, scene, scale, x, y, w, h);
-            return;
         }
         NodeKind::Element(_) => {
             let rect = Rect::new(x, y, x + w, y + h);
@@ -139,7 +150,10 @@ fn paint_node(
 
             // Handle overflow clipping from computed style
             let overflow_y = node.computed_style.overflow_y;
-            let clips = matches!(overflow_y, OverflowValue::Hidden | OverflowValue::Scroll | OverflowValue::Auto);
+            let clips = matches!(
+                overflow_y,
+                OverflowValue::Hidden | OverflowValue::Scroll | OverflowValue::Auto
+            );
 
             if clips {
                 scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &rect);
@@ -153,7 +167,7 @@ fn paint_node(
                 // Still paint non-inline (block) children normally
                 let scroll_x = node.scroll_offset.0 * scale;
                 let scroll_y = node.scroll_offset.1 * scale;
-                let child_ids: Vec<usize> = node.children.iter().copied().collect();
+                let child_ids: Vec<usize> = node.children.to_vec();
                 for child_id in child_ids {
                     let child = match tree.get(child_id) {
                         Some(c) => c,
@@ -178,7 +192,7 @@ fn paint_node(
                 // Normal paint path: recurse into all children
                 let scroll_x = node.scroll_offset.0 * scale;
                 let scroll_y = node.scroll_offset.1 * scale;
-                let child_ids: Vec<usize> = node.children.iter().copied().collect();
+                let child_ids: Vec<usize> = node.children.to_vec();
                 for child_id in child_ids {
                     paint_node(
                         tree,
@@ -238,7 +252,13 @@ fn paint_node(
                         scrollbar_width * 0.5,
                     );
                     let thumb_color = AlphaColor::<Srgb>::new([0.0, 0.0, 0.0, 0.4_f32]);
-                    scene.fill(Fill::NonZero, Affine::IDENTITY, &Brush::Solid(thumb_color.into()), None, &thumb_rect);
+                    scene.fill(
+                        Fill::NonZero,
+                        Affine::IDENTITY,
+                        &Brush::Solid(thumb_color),
+                        None,
+                        &thumb_rect,
+                    );
                 }
             }
 
@@ -260,14 +280,21 @@ fn paint_node(
             }
 
             // Fallback: build layout on demand (should not happen with caching)
-            let parent_computed = node.parent
+            let parent_computed = node
+                .parent
                 .and_then(|p| tree.get(p))
                 .map(|p| &p.computed_style);
 
             let font_size = parent_computed.map(|s| s.font_size).unwrap_or(16.0);
             let font_weight = parent_computed.map(|s| s.font_weight).unwrap_or(400.0);
             let font_family = parent_computed
-                .map(|s| if s.font_family.is_empty() { "sans-serif".to_string() } else { s.font_family.clone() })
+                .map(|s| {
+                    if s.font_family.is_empty() {
+                        "sans-serif".to_string()
+                    } else {
+                        s.font_family.clone()
+                    }
+                })
                 .unwrap_or_else(|| "sans-serif".to_string());
 
             let color = parent_computed
@@ -276,8 +303,7 @@ fn paint_node(
 
             // Build Parley layout with identical parameters to measurement
             let scaled_font_size = font_size * scale as f32;
-            let mut builder =
-                layout_cx.ranged_builder(font_cx, &text_data.content, 1.0, true);
+            let mut builder = layout_cx.ranged_builder(font_cx, &text_data.content, 1.0, true);
             builder.push_default(parley::style::StyleProperty::FontSize(scaled_font_size));
             builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
             builder.push_default(parley::style::StyleProperty::FontStack(
@@ -318,6 +344,7 @@ fn paint_node(
 /// Renders glyph runs directly from the Parley layout. Inline boxes
 /// (inline-block elements) are painted by looking up the child node
 /// and painting it at the Parley-computed position.
+#[allow(clippy::too_many_arguments)]
 fn paint_inline_layout(
     tree: &NodeTree,
     scene: &mut Scene,
@@ -337,7 +364,9 @@ fn paint_inline_layout(
         for item in line.items() {
             if let parley::layout::PositionedLayoutItem::InlineBox(positioned_box) = item {
                 let child_id = positioned_box.id as usize;
-                paint_node(tree, child_id, scene, scale, parent_x, parent_y, font_cx, layout_cx);
+                paint_node(
+                    tree, child_id, scene, scale, parent_x, parent_y, font_cx, layout_cx,
+                );
             }
         }
     }
@@ -347,6 +376,7 @@ fn paint_inline_layout(
 ///
 /// Parses shadow format: `offset-x offset-y blur-radius color`
 /// Approximates blur by drawing expanded, semi-transparent rounded rects.
+#[allow(clippy::too_many_arguments)]
 fn paint_box_shadow(
     scene: &mut Scene,
     shadow_str: &str,
@@ -376,7 +406,10 @@ fn paint_box_shadow(
     // Remaining parts form the color (could be "rgba(0, 0, 0, 0.1)" spread across multiple parts)
     let (spread, color_start) = if parts.len() > 4 {
         // Check if parts[3] is a number (spread-radius) or start of color
-        if parse_px(parts[3]).is_some() && !parts[3].starts_with('#') && !parts[3].starts_with("rgb") {
+        if parse_px(parts[3]).is_some()
+            && !parts[3].starts_with('#')
+            && !parts[3].starts_with("rgb")
+        {
             (parse_px(parts[3]).unwrap_or(0.0) as f64 * scale, 4)
         } else {
             (0.0, 3)
@@ -427,14 +460,22 @@ fn paint_box_shadow(
             );
             let alpha_scale = (1.0 - t * 0.6) / layers as f64;
             let layer_color = AlphaColor::<Srgb>::from_rgba8(
-                0, 0, 0,
+                0,
+                0,
+                0,
                 (color.components[3] * alpha_scale as f32 * 255.0) as u8,
             );
             if radius > 0.0 {
                 let rrect = RoundedRect::from_rect(layer_rect, radius + layer_expand);
                 scene.fill(Fill::NonZero, Affine::IDENTITY, layer_color, None, &rrect);
             } else {
-                scene.fill(Fill::NonZero, Affine::IDENTITY, layer_color, None, &layer_rect);
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    layer_color,
+                    None,
+                    &layer_rect,
+                );
             }
         }
     } else {
@@ -453,6 +494,7 @@ fn paint_box_shadow(
 // =============================================================================
 
 /// Paint an `<svg>` element and its children (path, rect, circle, line, polyline).
+#[allow(clippy::too_many_arguments)]
 fn paint_svg(
     tree: &NodeTree,
     node: &Node,
@@ -464,7 +506,9 @@ fn paint_svg(
     h: f64,
 ) {
     // Parse viewBox (default "0 0 24 24" for most icon SVGs)
-    let viewbox = node.attributes.get("viewBox")
+    let viewbox = node
+        .attributes
+        .get("viewBox")
         .and_then(|v| parse_viewbox(v))
         .unwrap_or((0.0, 0.0, 24.0, 24.0));
 
@@ -487,32 +531,56 @@ fn paint_svg(
     // Parse SVG-level fill/stroke defaults
     let svg_fill = node.attributes.get("fill").map(|v| v.as_str());
     let svg_stroke = node.attributes.get("stroke").map(|v| v.as_str());
-    let svg_stroke_width = node.attributes.get("stroke-width")
+    let svg_stroke_width = node
+        .attributes
+        .get("stroke-width")
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(2.0);
-    let svg_stroke_linecap = node.attributes.get("stroke-linecap")
+    let svg_stroke_linecap = node
+        .attributes
+        .get("stroke-linecap")
         .map(|v| parse_linecap(v))
         .unwrap_or(Cap::Butt);
-    let svg_stroke_linejoin = node.attributes.get("stroke-linejoin")
+    let svg_stroke_linejoin = node
+        .attributes
+        .get("stroke-linejoin")
         .map(|v| parse_linejoin(v))
         .unwrap_or(Join::Miter);
 
     // Paint each child SVG element
-    let child_ids: Vec<usize> = node.children.iter().copied().collect();
+    let child_ids: Vec<usize> = node.children.to_vec();
     for child_id in child_ids {
-        let Some(child) = tree.get(child_id) else { continue };
-        let NodeKind::Element(ref el) = child.kind else { continue };
+        let Some(child) = tree.get(child_id) else {
+            continue;
+        };
+        let NodeKind::Element(ref el) = child.kind else {
+            continue;
+        };
 
         // Per-element fill/stroke (override SVG defaults)
-        let fill_attr = child.attributes.get("fill").map(|v| v.as_str()).or(svg_fill);
-        let stroke_attr = child.attributes.get("stroke").map(|v| v.as_str()).or(svg_stroke);
-        let stroke_w = child.attributes.get("stroke-width")
+        let fill_attr = child
+            .attributes
+            .get("fill")
+            .map(|v| v.as_str())
+            .or(svg_fill);
+        let stroke_attr = child
+            .attributes
+            .get("stroke")
+            .map(|v| v.as_str())
+            .or(svg_stroke);
+        let stroke_w = child
+            .attributes
+            .get("stroke-width")
             .and_then(|v| v.parse::<f64>().ok())
             .unwrap_or(svg_stroke_width);
-        let linecap = child.attributes.get("stroke-linecap")
+        let linecap = child
+            .attributes
+            .get("stroke-linecap")
             .map(|v| parse_linecap(v))
             .unwrap_or(svg_stroke_linecap);
-        let linejoin = child.attributes.get("stroke-linejoin")
+        let linejoin = child
+            .attributes
+            .get("stroke-linejoin")
             .map(|v| parse_linejoin(v))
             .unwrap_or(svg_stroke_linejoin);
 
@@ -521,23 +589,39 @@ fn paint_svg(
 
         match el.tag.as_str() {
             "path" => {
-                if let Some(d) = child.attributes.get("d") {
-                    if let Ok(path) = BezPath::from_svg(d) {
-                        if let Some(fc) = fill_color {
-                            scene.fill(Fill::NonZero, transform, fc, None, &path);
-                        }
-                        if let Some(sc) = stroke_color {
-                            let stroke = Stroke::new(stroke_w).with_caps(linecap).with_join(linejoin);
-                            scene.stroke(&stroke, transform, sc, None, &path);
-                        }
+                if let Some(d) = child.attributes.get("d")
+                    && let Ok(path) = BezPath::from_svg(d)
+                {
+                    if let Some(fc) = fill_color {
+                        scene.fill(Fill::NonZero, transform, fc, None, &path);
+                    }
+                    if let Some(sc) = stroke_color {
+                        let stroke = Stroke::new(stroke_w).with_caps(linecap).with_join(linejoin);
+                        scene.stroke(&stroke, transform, sc, None, &path);
                     }
                 }
             }
             "rect" => {
-                let rx = child.attributes.get("x").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
-                let ry = child.attributes.get("y").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
-                let rw = child.attributes.get("width").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
-                let rh = child.attributes.get("height").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+                let rx = child
+                    .attributes
+                    .get("x")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let ry = child
+                    .attributes
+                    .get("y")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let rw = child
+                    .attributes
+                    .get("width")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let rh = child
+                    .attributes
+                    .get("height")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0);
                 let rect = Rect::new(rx, ry, rx + rw, ry + rh);
                 if let Some(fc) = fill_color {
                     scene.fill(Fill::NonZero, transform, fc, None, &rect);
@@ -548,9 +632,21 @@ fn paint_svg(
                 }
             }
             "circle" => {
-                let cx = child.attributes.get("cx").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
-                let cy = child.attributes.get("cy").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
-                let r = child.attributes.get("r").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+                let cx = child
+                    .attributes
+                    .get("cx")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let cy = child
+                    .attributes
+                    .get("cy")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let r = child
+                    .attributes
+                    .get("r")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0);
                 let circle = peniko::kurbo::Circle::new((cx, cy), r);
                 if let Some(fc) = fill_color {
                     scene.fill(Fill::NonZero, transform, fc, None, &circle);
@@ -561,10 +657,26 @@ fn paint_svg(
                 }
             }
             "line" => {
-                let x1 = child.attributes.get("x1").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
-                let y1 = child.attributes.get("y1").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
-                let x2 = child.attributes.get("x2").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
-                let y2 = child.attributes.get("y2").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+                let x1 = child
+                    .attributes
+                    .get("x1")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let y1 = child
+                    .attributes
+                    .get("y1")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let x2 = child
+                    .attributes
+                    .get("x2")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let y2 = child
+                    .attributes
+                    .get("y2")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0);
                 let line = peniko::kurbo::Line::new((x1, y1), (x2, y2));
                 if let Some(sc) = stroke_color {
                     let stroke = Stroke::new(stroke_w).with_caps(linecap).with_join(linejoin);
@@ -572,15 +684,15 @@ fn paint_svg(
                 }
             }
             "polyline" | "polygon" => {
-                if let Some(points_str) = child.attributes.get("points") {
-                    if let Some(path) = parse_polyline_points(points_str, el.tag == "polygon") {
-                        if let Some(fc) = fill_color {
-                            scene.fill(Fill::NonZero, transform, fc, None, &path);
-                        }
-                        if let Some(sc) = stroke_color {
-                            let stroke = Stroke::new(stroke_w).with_caps(linecap).with_join(linejoin);
-                            scene.stroke(&stroke, transform, sc, None, &path);
-                        }
+                if let Some(points_str) = child.attributes.get("points")
+                    && let Some(path) = parse_polyline_points(points_str, el.tag == "polygon")
+                {
+                    if let Some(fc) = fill_color {
+                        scene.fill(Fill::NonZero, transform, fc, None, &path);
+                    }
+                    if let Some(sc) = stroke_color {
+                        let stroke = Stroke::new(stroke_w).with_caps(linecap).with_join(linejoin);
+                        scene.stroke(&stroke, transform, sc, None, &path);
                     }
                 }
             }
@@ -591,7 +703,8 @@ fn paint_svg(
 
 /// Parse SVG viewBox attribute: "minX minY width height"
 fn parse_viewbox(s: &str) -> Option<(f64, f64, f64, f64)> {
-    let parts: Vec<f64> = s.split_whitespace()
+    let parts: Vec<f64> = s
+        .split_whitespace()
         .flat_map(|p| p.split(','))
         .filter_map(|p| p.parse().ok())
         .collect();
@@ -621,7 +734,10 @@ fn resolve_current_color(tree: &NodeTree, node: &Node) -> AlphaColor<Srgb> {
 }
 
 /// Resolve an SVG color attribute value, handling "none" and "currentColor".
-fn resolve_svg_color(attr: Option<&str>, current_color: AlphaColor<Srgb>) -> Option<AlphaColor<Srgb>> {
+fn resolve_svg_color(
+    attr: Option<&str>,
+    current_color: AlphaColor<Srgb>,
+) -> Option<AlphaColor<Srgb>> {
     match attr {
         None => None,
         Some("none") => None,
@@ -650,11 +766,12 @@ fn parse_linejoin(v: &str) -> Join {
 
 /// Parse SVG polyline/polygon points attribute into a BezPath.
 fn parse_polyline_points(points_str: &str, close: bool) -> Option<BezPath> {
-    let nums: Vec<f64> = points_str.split_whitespace()
+    let nums: Vec<f64> = points_str
+        .split_whitespace()
         .flat_map(|p| p.split(','))
         .filter_map(|p| p.parse().ok())
         .collect();
-    if nums.len() < 4 || nums.len() % 2 != 0 {
+    if nums.len() < 4 || !nums.len().is_multiple_of(2) {
         return None;
     }
     let mut path = BezPath::new();
@@ -689,16 +806,21 @@ fn render_text(scene: &mut Scene, layout: &parley::layout::Layout<Brush>, x: f64
                 static PRINTED: AtomicBool = AtomicBool::new(false);
                 if !PRINTED.swap(true, Ordering::SeqCst) {
                     use read_fonts::TableProvider;
-                    if let Ok(font_ref) = read_fonts::FontRef::from_index(font.data.as_ref(), font.index) {
-                        if let Ok(name_table) = font_ref.name() {
-                            // Try to get font family name (nameID 1) or full name (nameID 4)
-                            for record in name_table.name_record().iter() {
-                                if record.name_id().to_u16() == 1 || record.name_id().to_u16() == 4 {
-                                    if let Ok(name) = record.string(name_table.string_data()) {
-                                        eprintln!("[DEBUG] Font selected: {:?} (nameID={})", name.to_string(), record.name_id().to_u16());
-                                        break;
-                                    }
-                                }
+                    if let Ok(font_ref) =
+                        read_fonts::FontRef::from_index(font.data.as_ref(), font.index)
+                        && let Ok(name_table) = font_ref.name()
+                    {
+                        // Try to get font family name (nameID 1) or full name (nameID 4)
+                        for record in name_table.name_record().iter() {
+                            if (record.name_id().to_u16() == 1 || record.name_id().to_u16() == 4)
+                                && let Ok(name) = record.string(name_table.string_data())
+                            {
+                                eprintln!(
+                                    "[DEBUG] Font selected: {:?} (nameID={})",
+                                    name.to_string(),
+                                    record.name_id().to_u16()
+                                );
+                                break;
                             }
                         }
                     }
@@ -758,7 +880,9 @@ fn render_text(scene: &mut Scene, layout: &parley::layout::Layout<Brush>, x: f64
             // Draw strikethrough decoration
             if let Some(strikethrough) = &style.strikethrough {
                 let run_metrics = run.metrics();
-                let offset = strikethrough.offset.unwrap_or(run_metrics.strikethrough_offset);
+                let offset = strikethrough
+                    .offset
+                    .unwrap_or(run_metrics.strikethrough_offset);
                 let size = strikethrough.size.unwrap_or(run_metrics.strikethrough_size);
                 let dec_brush = &strikethrough.brush;
                 let line_y = (gy - offset) as f64;
@@ -784,10 +908,10 @@ fn get_style_property(node: &Node, property: &str) -> Option<String> {
     if !node.computed_style_str.is_empty() {
         for part in node.computed_style_str.split(';') {
             let part = part.trim();
-            if let Some((key, value)) = part.split_once(':') {
-                if key.trim() == property {
-                    return Some(value.trim().to_string());
-                }
+            if let Some((key, value)) = part.split_once(':')
+                && key.trim() == property
+            {
+                return Some(value.trim().to_string());
             }
         }
         return None;
@@ -797,10 +921,10 @@ fn get_style_property(node: &Node, property: &str) -> Option<String> {
     if let Some(style_str) = node.attributes.get("style") {
         for part in style_str.split(';') {
             let part = part.trim();
-            if let Some((key, value)) = part.split_once(':') {
-                if key.trim() == property {
-                    return Some(value.trim().to_string());
-                }
+            if let Some((key, value)) = part.split_once(':')
+                && key.trim() == property
+            {
+                return Some(value.trim().to_string());
             }
         }
     }
@@ -814,6 +938,7 @@ fn parse_px(value: &str) -> Option<f32> {
 }
 
 /// Paint the value of an input element.
+#[allow(clippy::too_many_arguments)]
 fn paint_input_value(
     node: &Node,
     scene: &mut Scene,
@@ -826,18 +951,36 @@ fn paint_input_value(
     layout_cx: &mut parley::LayoutContext<Brush>,
 ) {
     // Get the value or placeholder
-    let value = node.attributes.get("value").map(|s| s.as_str()).unwrap_or("");
-    let placeholder = node.attributes.get("placeholder").map(|s| s.as_str()).unwrap_or("");
+    let value = node
+        .attributes
+        .get("value")
+        .map(|s| s.as_str())
+        .unwrap_or("");
+    let placeholder = node
+        .attributes
+        .get("placeholder")
+        .map(|s| s.as_str())
+        .unwrap_or("");
 
     // Check if this input is focused
-    let is_focused = node.attributes.get("data-focused").map(|s| s == "true").unwrap_or(false);
-    let cursor_pos = node.attributes.get("data-cursor-pos")
+    let is_focused = node
+        .attributes
+        .get("data-focused")
+        .map(|s| s == "true")
+        .unwrap_or(false);
+    let cursor_pos = node
+        .attributes
+        .get("data-cursor-pos")
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(0);
-    let selection_start = node.attributes.get("data-selection-start")
+    let selection_start = node
+        .attributes
+        .get("data-selection-start")
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(cursor_pos);
-    let cursor_visible = node.attributes.get("data-cursor-visible")
+    let cursor_visible = node
+        .attributes
+        .get("data-cursor-visible")
         .map(|s| s == "true")
         .unwrap_or(true);
 
@@ -857,7 +1000,9 @@ fn paint_input_value(
     };
 
     // Get text color from computed style - dimmed for placeholder
-    let base_color = node.computed_style.color
+    let base_color = node
+        .computed_style
+        .color
         .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(33, 37, 41, 255)); // #212529
 
     let color = if is_placeholder {
@@ -900,14 +1045,15 @@ fn paint_input_value(
     };
     let text_x = x + padding_left;
 
-
     // Draw selection highlight if there's a selection
     if is_focused && cursor_pos != selection_start && !is_placeholder && !text.is_empty() {
         let sel_start_byte = cursor_pos.min(selection_start).min(text.len());
         let sel_end_byte = cursor_pos.max(selection_start).min(text.len());
 
-        let (start_x, start_y) = crate::text_query::caret_position_for_offset_layout(&text_layout, sel_start_byte);
-        let (end_x, end_y) = crate::text_query::caret_position_for_offset_layout(&text_layout, sel_end_byte);
+        let (start_x, start_y) =
+            crate::text_query::caret_position_for_offset_layout(&text_layout, sel_start_byte);
+        let (end_x, end_y) =
+            crate::text_query::caret_position_for_offset_layout(&text_layout, sel_end_byte);
 
         let sel_color = AlphaColor::<Srgb>::from_rgba8(51, 154, 240, 100); // Blue with alpha
         let line_height = scaled_font_size as f64 * 1.2;
@@ -918,8 +1064,15 @@ fn paint_input_value(
             let sel_width = (end_x - start_x) as f64;
             let sel_y = text_y + start_y as f64;
 
-            let sel_rect = vello::kurbo::Rect::new(sel_x, sel_y, sel_x + sel_width, sel_y + line_height);
-            scene.fill(vello::peniko::Fill::NonZero, vello::kurbo::Affine::IDENTITY, sel_color, None, &sel_rect);
+            let sel_rect =
+                vello::kurbo::Rect::new(sel_x, sel_y, sel_x + sel_width, sel_y + line_height);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                vello::kurbo::Affine::IDENTITY,
+                sel_color,
+                None,
+                &sel_rect,
+            );
         } else {
             // Multi-line selection - draw rectangles for each line
             let content_width = (w - padding_left * 2.0) as f32;
@@ -951,7 +1104,13 @@ fn paint_input_value(
                     text_x + rect_end_x as f64,
                     rect_y + line_height,
                 );
-                scene.fill(vello::peniko::Fill::NonZero, vello::kurbo::Affine::IDENTITY, sel_color, None, &sel_rect);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    vello::kurbo::Affine::IDENTITY,
+                    sel_color,
+                    None,
+                    &sel_rect,
+                );
             }
         }
     }
@@ -976,8 +1135,19 @@ fn paint_input_value(
 
         // Draw caret line
         let caret_color = base_color;
-        let caret_rect = vello::kurbo::Rect::new(caret_x, caret_y, caret_x + 1.5 * scale, caret_y + caret_height);
-        scene.fill(vello::peniko::Fill::NonZero, vello::kurbo::Affine::IDENTITY, caret_color, None, &caret_rect);
+        let caret_rect = vello::kurbo::Rect::new(
+            caret_x,
+            caret_y,
+            caret_x + 1.5 * scale,
+            caret_y + caret_height,
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            vello::kurbo::Affine::IDENTITY,
+            caret_color,
+            None,
+            &caret_rect,
+        );
     }
 }
 
@@ -992,5 +1162,4 @@ mod tests {
         assert_eq!(parse_px("0"), Some(0.0));
         assert_eq!(parse_px("abc"), None);
     }
-
 }

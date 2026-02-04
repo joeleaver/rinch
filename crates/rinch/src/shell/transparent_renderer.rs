@@ -37,7 +37,7 @@ struct ActiveRenderState {
 }
 
 enum RenderState {
-    Active(ActiveRenderState),
+    Active(Box<ActiveRenderState>),
     Suspended,
 }
 
@@ -105,10 +105,15 @@ impl TransparentWindowRenderer {
 
         let state = self.create_render_state(&window, width, height, backends);
         self.window_handle = Some(window);
-        self.render_state = RenderState::Active(state);
+        self.render_state = RenderState::Active(Box::new(state));
     }
 
-    fn create_render_texture(device: &Device, format: TextureFormat, width: u32, height: u32) -> Texture {
+    fn create_render_texture(
+        device: &Device,
+        format: TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> Texture {
         device.create_texture(&TextureDescriptor {
             label: Some("vello render texture"),
             size: Extent3d {
@@ -121,7 +126,9 @@ impl TransparentWindowRenderer {
             dimension: TextureDimension::D2,
             format,
             // STORAGE_BINDING for Vello's compute shaders, TEXTURE_BINDING for Vello internals, COPY_SRC to copy to surface
-            usage: TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_SRC,
+            usage: TextureUsages::STORAGE_BINDING
+                | TextureUsages::TEXTURE_BINDING
+                | TextureUsages::COPY_SRC,
             view_formats: &[],
         })
     }
@@ -172,7 +179,9 @@ impl TransparentWindowRenderer {
         // For transparency, we need PreMultiplied alpha mode (supported on DX12 with DirectComposition)
         // Fall back to Auto (usually Opaque) if PreMultiplied isn't available
         let alpha_mode = if self.config.transparent
-            && caps.alpha_modes.contains(&CompositeAlphaMode::PreMultiplied)
+            && caps
+                .alpha_modes
+                .contains(&CompositeAlphaMode::PreMultiplied)
         {
             tracing::info!("Using PreMultiplied alpha mode for transparency");
             CompositeAlphaMode::PreMultiplied
@@ -256,7 +265,10 @@ impl TransparentWindowRenderer {
         )
         .expect("Failed to create Vello renderer");
         #[cfg(feature = "memory-profile")]
-        super::memory_profile::checkpoint_delta("  GPU: Vello renderer (shader compilation)", before);
+        super::memory_profile::checkpoint_delta(
+            "  GPU: Vello renderer (shader compilation)",
+            before,
+        );
 
         tracing::info!(
             "Created renderer: backend={:?}, alpha_mode={:?}, format={:?}",
@@ -283,7 +295,9 @@ impl TransparentWindowRenderer {
         if let RenderState::Active(state) = &mut self.render_state {
             state.surface_config.width = width;
             state.surface_config.height = height;
-            state.surface.configure(&state.device, &state.surface_config);
+            state
+                .surface
+                .configure(&state.device, &state.surface_config);
             // Recreate the render texture with new size
             state.render_texture = Self::create_render_texture(
                 &state.device,

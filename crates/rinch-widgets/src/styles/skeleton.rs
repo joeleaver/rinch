@@ -35,5 +35,6 @@ pub fn styles() -> String {
 .rinch-skeleton--radius-md { border-radius: var(--rinch-radius-md); }
 .rinch-skeleton--radius-lg { border-radius: var(--rinch-radius-lg); }
 .rinch-skeleton--radius-xl { border-radius: var(--rinch-radius-xl); }
-"#.to_string()
+"#
+    .to_string()
 }

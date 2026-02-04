@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 
-use crate::error::EditorError;
-use crate::editor::Editor;
 use crate::document::Position;
+use crate::editor::Editor;
+use crate::error::EditorError;
 use crate::history::UndoOperation;
 use crate::selection::Selection;
 
@@ -17,9 +17,17 @@ impl StructureCommands {
     pub fn set_block_type(editor: &mut Editor, node_type: &str) -> Result<(), EditorError> {
         let sel = editor.get_selection().clone();
         let resolved = editor.doc.resolve_position(sel.head)?;
-        let old_type = editor.doc.block_type(resolved.block_index).unwrap_or_default();
-        let old_attrs = editor.doc.block_attrs(resolved.block_index).unwrap_or_default();
-        editor.doc.set_block_type(resolved.block_index, node_type, None)?;
+        let old_type = editor
+            .doc
+            .block_type(resolved.block_index)
+            .unwrap_or_default();
+        let old_attrs = editor
+            .doc
+            .block_attrs(resolved.block_index)
+            .unwrap_or_default();
+        editor
+            .doc
+            .set_block_type(resolved.block_index, node_type, None)?;
         editor.record_undo(UndoOperation::SetBlockType {
             block_index: resolved.block_index,
             old_type,
@@ -41,9 +49,17 @@ impl StructureCommands {
     ) -> Result<(), EditorError> {
         let sel = editor.get_selection().clone();
         let resolved = editor.doc.resolve_position(sel.head)?;
-        let old_type = editor.doc.block_type(resolved.block_index).unwrap_or_default();
-        let old_attrs = editor.doc.block_attrs(resolved.block_index).unwrap_or_default();
-        editor.doc.set_block_type(resolved.block_index, node_type, Some(attrs.clone()))?;
+        let old_type = editor
+            .doc
+            .block_type(resolved.block_index)
+            .unwrap_or_default();
+        let old_attrs = editor
+            .doc
+            .block_attrs(resolved.block_index)
+            .unwrap_or_default();
+        editor
+            .doc
+            .set_block_type(resolved.block_index, node_type, Some(attrs.clone()))?;
         editor.record_undo(UndoOperation::SetBlockType {
             block_index: resolved.block_index,
             old_type,
@@ -83,14 +99,20 @@ impl StructureCommands {
         let curr_text = editor.doc.block_text(block_idx).unwrap_or_default();
 
         // Calculate position at end of previous block using canonical helper
-        let prev_block_len = editor.doc.block_text(block_idx - 1).map(|t| t.len()).unwrap_or(0);
+        let prev_block_len = editor
+            .doc
+            .block_text(block_idx - 1)
+            .map(|t| t.len())
+            .unwrap_or(0);
         let abs_prev_end = editor.doc.block_start_position(block_idx - 1) + prev_block_len;
         // Delete the newline separator and merge
         let delete_start = abs_prev_end;
         let delete_end = abs_prev_end + 1; // the newline
         if editor.doc.block_count() > 1 {
             // Delete from end of prev block text through start of current block text
-            editor.doc.delete_range(crate::document::Range::new(delete_start, delete_end))?;
+            editor
+                .doc
+                .delete_range(crate::document::Range::new(delete_start, delete_end))?;
         }
 
         editor.record_undo(UndoOperation::JoinBlocks {
@@ -100,6 +122,40 @@ impl StructureCommands {
 
         // Set cursor at join point
         editor.set_selection(Selection::cursor(Position::new(delete_start)));
+        editor.mark_structure_changed();
+        Ok(())
+    }
+
+    /// Set a block attribute without changing the block type.
+    pub fn set_block_attr(editor: &mut Editor, attr: &str, value: &str) -> Result<(), EditorError> {
+        let sel = editor.get_selection().clone();
+        let resolved = editor.doc.resolve_position(sel.head)?;
+        let block_index = resolved.block_index;
+
+        // Get current block type and attrs
+        let block_type = editor
+            .doc
+            .block_type(block_index)
+            .unwrap_or_else(|| "paragraph".into());
+        let mut attrs = editor.doc.block_attrs(block_index).unwrap_or_default();
+        let old_attrs = attrs.clone();
+
+        // Update the attribute
+        attrs.insert(attr.to_string(), value.to_string());
+
+        // Set block type with updated attrs
+        editor
+            .doc
+            .set_block_type(block_index, &block_type, Some(attrs.clone()))?;
+
+        editor.record_undo(UndoOperation::SetBlockType {
+            block_index,
+            old_type: block_type.clone(),
+            new_type: block_type,
+            old_attrs,
+            new_attrs: attrs,
+        });
+
         editor.mark_structure_changed();
         Ok(())
     }
@@ -117,7 +173,10 @@ impl StructureCommands {
 
         // Capture moved text for undo (text after split point in current block)
         let resolved = editor.doc.resolve_position(pos)?;
-        let block_text = editor.doc.block_text(resolved.block_index).unwrap_or_default();
+        let block_text = editor
+            .doc
+            .block_text(resolved.block_index)
+            .unwrap_or_default();
         let moved_text = block_text[resolved.text_offset..].to_string();
 
         editor.doc.split_block(pos)?;
@@ -138,8 +197,8 @@ impl StructureCommands {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::Schema;
     use crate::editor::EditorConfig;
+    use crate::schema::Schema;
 
     fn editor_with_text(text: &str) -> Editor {
         let mut editor = Editor::new(Schema::starter_kit(), EditorConfig::default()).unwrap();

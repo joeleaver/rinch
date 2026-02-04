@@ -34,7 +34,7 @@ use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::element::ValueCallback;
 use rinch_core::hooks::use_signal;
 use rinch_core::reactive::Signal;
-use rinch_core::{show_dom, Icon, Widget};
+use rinch_core::{Icon, Widget, show_dom};
 
 // =============================================================================
 // TreeNodeData
@@ -428,10 +428,7 @@ impl Widget for Tree {
             "xl" => "var(--rinch-spacing-xl)",
             custom => custom,
         };
-        container.set_attribute(
-            "style",
-            &format!("--tree-level-offset: {}", offset_value),
-        );
+        container.set_attribute("style", &format!("--tree-level-offset: {}", offset_value));
 
         // Render root nodes
         for node in &self.data {
@@ -490,7 +487,7 @@ impl Tree {
         content.set_attribute("tabindex", "0");
 
         // Reactive Effect for selected class updates
-        if let Some(ref ts) = tree_state {
+        if let Some(ts) = tree_state {
             let content_clone = content.clone();
             let selected_signal = ts.selected;
             let node_value = node.value.clone();
@@ -529,7 +526,7 @@ impl Tree {
             content.append_child(&chevron);
 
             // Reactive Effect for chevron class updates
-            if let Some(ref ts) = tree_state {
+            if let Some(ts) = tree_state {
                 let chevron_clone = chevron.clone();
                 let expanded_signal = ts.expanded;
                 let node_value = node.value.clone();
@@ -548,14 +545,15 @@ impl Tree {
             }
 
             // Reactive Effect for aria-expanded
-            if let Some(ref ts) = tree_state {
+            if let Some(ts) = tree_state {
                 let li_clone = li.clone();
                 let expanded_signal = ts.expanded;
                 let node_value = node.value.clone();
 
                 scope.create_effect(move || {
                     let is_expanded = expanded_signal.get().contains(&node_value);
-                    li_clone.set_attribute("aria-expanded", if is_expanded { "true" } else { "false" });
+                    li_clone
+                        .set_attribute("aria-expanded", if is_expanded { "true" } else { "false" });
                 });
             }
         } else {
@@ -593,7 +591,9 @@ impl Tree {
         }
 
         // Click handler
-        if !node.disabled && let Some(ref tree_state) = self.tree {
+        if !node.disabled
+            && let Some(ref tree_state) = self.tree
+        {
             let controller = tree_state.controller;
             let expanded_signal = tree_state.expanded;
             let value = node.value.clone();
@@ -630,7 +630,7 @@ impl Tree {
 
         // Children - use show_dom for reactive visibility
         if has_children {
-            if let Some(ref ts) = tree_state {
+            if let Some(ts) = tree_state {
                 let expanded_signal = ts.expanded;
                 let node_value = node.value.clone();
 
@@ -644,7 +644,7 @@ impl Tree {
                 let onselect = self.onselect.clone();
                 let onexpand = self.onexpand.clone();
                 let oncollapse = self.oncollapse.clone();
-                let tree_state_clone = self.tree.clone();
+                let tree_state_clone = self.tree;
 
                 // show_dom inserts marker + content directly into li
                 show_dom(
@@ -660,7 +660,7 @@ impl Tree {
                         for child_node in &children_data {
                             let child_tree = Tree {
                                 data: vec![child_node.clone()],
-                                tree: tree_state_clone.clone(),
+                                tree: tree_state_clone,
                                 level_offset: level_offset.clone(),
                                 expand_on_click,
                                 select_on_click,

@@ -1,8 +1,8 @@
 //! Text manipulation commands.
 
-use crate::document::{Position, Range, MarkData};
-use crate::error::EditorError;
+use crate::document::{MarkData, Position, Range};
 use crate::editor::Editor;
+use crate::error::EditorError;
 use crate::history::UndoOperation;
 use crate::selection::Selection;
 
@@ -139,8 +139,8 @@ impl TextCommands {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::Schema;
     use crate::editor::EditorConfig;
+    use crate::schema::Schema;
 
     fn test_editor() -> Editor {
         Editor::new(Schema::starter_kit(), EditorConfig::default()).unwrap()

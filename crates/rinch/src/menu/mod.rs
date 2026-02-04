@@ -4,8 +4,8 @@
 //! to the fine-grained runtime. Menu support will be added via a builder API.
 
 use muda::{
-    accelerator::Accelerator, Menu, MenuEvent, MenuEventReceiver, MenuItem, PredefinedMenuItem,
-    Submenu,
+    Menu, MenuEvent, MenuEventReceiver, MenuItem, PredefinedMenuItem, Submenu,
+    accelerator::Accelerator,
 };
 use rinch_core::element::{MenuItemCallback, MenuItemProps, MenuProps};
 use std::collections::HashMap;
@@ -99,10 +99,7 @@ impl MenuManager {
     /// Build a MenuItem from MenuItemProps.
     fn build_menu_item(&mut self, props: &MenuItemProps) -> MenuItem {
         // Parse accelerator from shortcut string
-        let accelerator = props
-            .shortcut
-            .as_ref()
-            .and_then(|s| parse_shortcut(s));
+        let accelerator = props.shortcut.as_ref().and_then(|s| parse_shortcut(s));
 
         let item = MenuItem::new(&props.label, props.enabled, accelerator);
 
@@ -115,10 +112,10 @@ impl MenuManager {
         self.item_callbacks.insert(item.id().clone(), callback_idx);
 
         // Store keyboard shortcut for manual matching
-        if let Some(shortcut_str) = &props.shortcut {
-            if let Some(parsed) = parse_shortcut_for_matching(shortcut_str) {
-                self.shortcuts.push((parsed, item.id().clone()));
-            }
+        if let Some(shortcut_str) = &props.shortcut
+            && let Some(parsed) = parse_shortcut_for_matching(shortcut_str)
+        {
+            self.shortcuts.push((parsed, item.id().clone()));
         }
 
         item
@@ -132,13 +129,13 @@ impl MenuManager {
     /// Initialize menu for a window (Windows/Linux).
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     pub fn init_for_window(&self, window: &winit::window::Window) {
-        use winit::raw_window_handle::HasWindowHandle;
-
         if let Some(menu) = &self.menu {
             #[cfg(target_os = "windows")]
             {
+                use winit::raw_window_handle::HasWindowHandle;
                 if let Ok(handle) = window.window_handle() {
-                    if let winit::raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw() {
+                    if let winit::raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw()
+                    {
                         let hwnd = win32.hwnd.get() as isize;
                         let _ = menu.init_for_hwnd(hwnd);
                     }
@@ -149,6 +146,7 @@ impl MenuManager {
             {
                 // Linux requires GTK integration - for now skip
                 // TODO: Implement GTK menu integration
+                let _ = (window, menu); // Silence unused warnings on Linux
             }
         }
     }
@@ -166,13 +164,13 @@ impl MenuManager {
     /// Returns `true` if a callback was invoked (indicating state may have changed
     /// and a re-render may be needed), `false` otherwise.
     pub fn handle_event(&self, event: &MenuEvent) -> bool {
-        if let Some(&callback_idx) = self.item_callbacks.get(event.id()) {
-            if let Some(stored) = self.callbacks.get(callback_idx) {
-                tracing::info!("Menu item activated: {}", stored.label);
-                if let Some(cb) = &stored.callback {
-                    cb.invoke();
-                    return true;
-                }
+        if let Some(&callback_idx) = self.item_callbacks.get(event.id())
+            && let Some(stored) = self.callbacks.get(callback_idx)
+        {
+            tracing::info!("Menu item activated: {}", stored.label);
+            if let Some(cb) = &stored.callback {
+                cb.invoke();
+                return true;
             }
         }
         false
@@ -180,10 +178,10 @@ impl MenuManager {
 
     /// Get the label of a menu item by event, for logging purposes.
     pub fn get_label(&self, event: &MenuEvent) -> Option<&str> {
-        if let Some(&callback_idx) = self.item_callbacks.get(event.id()) {
-            if let Some(stored) = self.callbacks.get(callback_idx) {
-                return Some(&stored.label);
-            }
+        if let Some(&callback_idx) = self.item_callbacks.get(event.id())
+            && let Some(stored) = self.callbacks.get(callback_idx)
+        {
+            return Some(&stored.label);
         }
         None
     }

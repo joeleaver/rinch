@@ -1,14 +1,14 @@
 //! Main editor instance.
 
+use crate::commands::CommandDispatcher;
 use crate::document::{EditorDocument, MarkData, Range};
+use crate::error::EditorError;
+use crate::events::EventDispatcher;
+use crate::extensions::ExtensionRegistry;
+use crate::history::{History, UndoOperation};
+use crate::input::{InputRuleSet, ShortcutRegistry};
 use crate::schema::Schema;
 use crate::selection::{Selection, SelectionState};
-use crate::history::{History, UndoOperation};
-use crate::commands::CommandDispatcher;
-use crate::extensions::ExtensionRegistry;
-use crate::input::{InputRuleSet, ShortcutRegistry};
-use crate::events::EventDispatcher;
-use crate::error::EditorError;
 
 /// Tracks which parts of the document changed during an operation.
 #[derive(Debug, Clone, Default)]
@@ -184,7 +184,11 @@ impl Editor {
                 // Delete can span blocks, so mark structure changed
                 self.mark_structure_changed();
             }
-            UndoOperation::AddMark { range, mark_type, attrs } => {
+            UndoOperation::AddMark {
+                range,
+                mark_type,
+                attrs,
+            } => {
                 let mark = if attrs.is_empty() {
                     MarkData::new(mark_type)
                 } else {
@@ -192,22 +196,22 @@ impl Editor {
                 };
                 self.doc.add_mark(*range, mark)?;
                 // Track changes for affected blocks
-                if let Ok(start_rp) = self.doc.resolve_position(range.start) {
-                    if let Ok(end_rp) = self.doc.resolve_position(range.end) {
-                        for bi in start_rp.block_index..=end_rp.block_index {
-                            self.mark_block_changed(bi);
-                        }
+                if let Ok(start_rp) = self.doc.resolve_position(range.start)
+                    && let Ok(end_rp) = self.doc.resolve_position(range.end)
+                {
+                    for bi in start_rp.block_index..=end_rp.block_index {
+                        self.mark_block_changed(bi);
                     }
                 }
             }
             UndoOperation::RemoveMark { range, mark_type } => {
                 self.doc.remove_mark(*range, mark_type)?;
                 // Track changes for affected blocks
-                if let Ok(start_rp) = self.doc.resolve_position(range.start) {
-                    if let Ok(end_rp) = self.doc.resolve_position(range.end) {
-                        for bi in start_rp.block_index..=end_rp.block_index {
-                            self.mark_block_changed(bi);
-                        }
+                if let Ok(start_rp) = self.doc.resolve_position(range.start)
+                    && let Ok(end_rp) = self.doc.resolve_position(range.end)
+                {
+                    for bi in start_rp.block_index..=end_rp.block_index {
+                        self.mark_block_changed(bi);
                     }
                 }
             }
@@ -218,12 +222,22 @@ impl Editor {
             }
             UndoOperation::JoinBlocks { position, .. } => {
                 // Delete the newline at position to join blocks
-                self.doc.delete_range(Range::new(*position, *position + 1))?;
+                self.doc
+                    .delete_range(Range::new(*position, *position + 1))?;
                 self.set_selection(Selection::cursor(*position));
                 self.mark_structure_changed();
             }
-            UndoOperation::SetBlockType { block_index, new_type, new_attrs, .. } => {
-                let attrs = if new_attrs.is_empty() { None } else { Some(new_attrs.clone()) };
+            UndoOperation::SetBlockType {
+                block_index,
+                new_type,
+                new_attrs,
+                ..
+            } => {
+                let attrs = if new_attrs.is_empty() {
+                    None
+                } else {
+                    Some(new_attrs.clone())
+                };
                 self.doc.set_block_type(*block_index, new_type, attrs)?;
                 self.mark_block_changed(*block_index);
             }
@@ -251,18 +265,13 @@ impl Default for EditorConfig {
 }
 
 /// Auto-focus configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AutoFocus {
     /// Focus on mount
     Start,
     /// Focus at end of document
     End,
     /// Don't auto-focus
+    #[default]
     None,
-}
-
-impl Default for AutoFocus {
-    fn default() -> Self {
-        Self::None
-    }
 }

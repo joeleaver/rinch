@@ -211,5 +211,6 @@ pub fn styles() -> String {
 .rinch-button--white:hover:not(:disabled) {
     background-color: var(--rinch-color-filled);
 }
-"#.to_string()
+"#
+    .to_string()
 }

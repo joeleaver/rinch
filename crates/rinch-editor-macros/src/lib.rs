@@ -5,9 +5,9 @@
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{quote, format_ident};
+use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
-use syn::{Ident, LitStr, Token, Result as SynResult, braced, bracketed, Expr};
+use syn::{Expr, Ident, LitStr, Result as SynResult, Token, braced, bracketed};
 
 struct ExtensionDef {
     name: LitStr,
@@ -196,12 +196,16 @@ pub fn extension(input: TokenStream) -> TokenStream {
     let commands_impl = if def.commands.is_empty() {
         quote! {}
     } else {
-        let cmd_entries: Vec<TokenStream2> = def.commands.iter().map(|(name, handler)| {
-            let name_str = name.to_string();
-            quote! {
-                rinch_editor::extensions::CommandRegistration::new(#name_str, #handler)
-            }
-        }).collect();
+        let cmd_entries: Vec<TokenStream2> = def
+            .commands
+            .iter()
+            .map(|(name, handler)| {
+                let name_str = name.to_string();
+                quote! {
+                    rinch_editor::extensions::CommandRegistration::new(#name_str, #handler)
+                }
+            })
+            .collect();
         quote! {
             fn commands(&self) -> Vec<rinch_editor::extensions::CommandRegistration> {
                 vec![#(#cmd_entries),*]

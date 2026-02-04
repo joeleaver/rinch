@@ -2,8 +2,8 @@
 //!
 //! Navigation trail showing the current page location.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// Breadcrumbs navigation component.
 ///
@@ -18,21 +18,12 @@ use rinch_core::Widget;
 ///     }
 /// }
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Breadcrumbs {
     /// Separator between items.
     pub separator: Option<String>,
     /// Spacing between items.
     pub separator_margin: Option<String>,
-}
-
-impl Default for Breadcrumbs {
-    fn default() -> Self {
-        Self {
-            separator: None,
-            separator_margin: None,
-        }
-    }
 }
 
 impl Widget for Breadcrumbs {

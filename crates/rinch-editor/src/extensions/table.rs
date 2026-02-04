@@ -52,36 +52,16 @@ impl Extension for TableExtension {
                 // Integration with editor document model would go here
                 Ok(())
             }),
-            CommandRegistration::new("delete_table", |_editor| {
-                Ok(())
-            }),
-            CommandRegistration::new("add_row_before", |_editor| {
-                Ok(())
-            }),
-            CommandRegistration::new("add_row_after", |_editor| {
-                Ok(())
-            }),
-            CommandRegistration::new("delete_row", |_editor| {
-                Ok(())
-            }),
-            CommandRegistration::new("add_column_before", |_editor| {
-                Ok(())
-            }),
-            CommandRegistration::new("add_column_after", |_editor| {
-                Ok(())
-            }),
-            CommandRegistration::new("delete_column", |_editor| {
-                Ok(())
-            }),
-            CommandRegistration::new("merge_cells", |_editor| {
-                Ok(())
-            }),
-            CommandRegistration::new("split_cell", |_editor| {
-                Ok(())
-            }),
-            CommandRegistration::new("toggle_header_row", |_editor| {
-                Ok(())
-            }),
+            CommandRegistration::new("delete_table", |_editor| Ok(())),
+            CommandRegistration::new("add_row_before", |_editor| Ok(())),
+            CommandRegistration::new("add_row_after", |_editor| Ok(())),
+            CommandRegistration::new("delete_row", |_editor| Ok(())),
+            CommandRegistration::new("add_column_before", |_editor| Ok(())),
+            CommandRegistration::new("add_column_after", |_editor| Ok(())),
+            CommandRegistration::new("delete_column", |_editor| Ok(())),
+            CommandRegistration::new("merge_cells", |_editor| Ok(())),
+            CommandRegistration::new("split_cell", |_editor| Ok(())),
+            CommandRegistration::new("toggle_header_row", |_editor| Ok(())),
         ]
     }
 

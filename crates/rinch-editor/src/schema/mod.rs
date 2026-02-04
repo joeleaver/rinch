@@ -4,12 +4,12 @@
 //! and how nodes can be nested. It is the source of truth for document
 //! structure validation.
 
-pub mod node;
 pub mod mark;
+pub mod node;
 pub mod validation;
 
-pub use node::{Node, NodeSpec, NodeSpecBuilder, MarkSet, AttrSpec};
 pub use mark::{Mark, MarkSpec, MarkSpecBuilder};
+pub use node::{AttrSpec, MarkSet, Node, NodeSpec, NodeSpecBuilder};
 
 use std::collections::HashMap;
 
@@ -55,76 +55,105 @@ impl Schema {
         // === Nodes ===
 
         // doc - top-level container
-        builder = builder.node("doc", NodeSpec::builder("doc")
-            .content("block+")
-            .build());
+        builder = builder.node("doc", NodeSpec::builder("doc").content("block+").build());
 
         // paragraph
-        builder = builder.node("paragraph", NodeSpec::builder("paragraph")
-            .content("inline*")
-            .group("block")
-            .parse_html(vec!["p".into()])
-            .build());
+        builder = builder.node(
+            "paragraph",
+            NodeSpec::builder("paragraph")
+                .content("inline*")
+                .group("block")
+                .parse_html(vec!["p".into()])
+                .build(),
+        );
 
         // heading
-        builder = builder.node("heading", NodeSpec::builder("heading")
-            .content("inline*")
-            .group("block")
-            .attr("level", AttrSpec::optional("1"))
-            .parse_html(vec![
-                "h1".into(), "h2".into(), "h3".into(),
-                "h4".into(), "h5".into(), "h6".into(),
-            ])
-            .build());
+        builder = builder.node(
+            "heading",
+            NodeSpec::builder("heading")
+                .content("inline*")
+                .group("block")
+                .attr("level", AttrSpec::optional("1"))
+                .parse_html(vec![
+                    "h1".into(),
+                    "h2".into(),
+                    "h3".into(),
+                    "h4".into(),
+                    "h5".into(),
+                    "h6".into(),
+                ])
+                .build(),
+        );
 
         // blockquote
-        builder = builder.node("blockquote", NodeSpec::builder("blockquote")
-            .content("block+")
-            .group("block")
-            .parse_html(vec!["blockquote".into()])
-            .build());
+        builder = builder.node(
+            "blockquote",
+            NodeSpec::builder("blockquote")
+                .content("block+")
+                .group("block")
+                .parse_html(vec!["blockquote".into()])
+                .build(),
+        );
 
         // code_block
-        builder = builder.node("code_block", NodeSpec::builder("code_block")
-            .content("text*")
-            .group("block")
-            .marks(MarkSet::None)
-            .attr("language", AttrSpec::optional(""))
-            .parse_html(vec!["pre".into()])
-            .build());
+        builder = builder.node(
+            "code_block",
+            NodeSpec::builder("code_block")
+                .content("text*")
+                .group("block")
+                .marks(MarkSet::None)
+                .attr("language", AttrSpec::optional(""))
+                .parse_html(vec!["pre".into()])
+                .build(),
+        );
 
         // bullet_list
-        builder = builder.node("bullet_list", NodeSpec::builder("bullet_list")
-            .content("list_item+")
-            .group("block")
-            .parse_html(vec!["ul".into()])
-            .build());
+        builder = builder.node(
+            "bullet_list",
+            NodeSpec::builder("bullet_list")
+                .content("list_item+")
+                .group("block")
+                .parse_html(vec!["ul".into()])
+                .build(),
+        );
 
         // ordered_list
-        builder = builder.node("ordered_list", NodeSpec::builder("ordered_list")
-            .content("list_item+")
-            .group("block")
-            .attr("start", AttrSpec::optional("1"))
-            .parse_html(vec!["ol".into()])
-            .build());
+        builder = builder.node(
+            "ordered_list",
+            NodeSpec::builder("ordered_list")
+                .content("list_item+")
+                .group("block")
+                .attr("start", AttrSpec::optional("1"))
+                .parse_html(vec!["ol".into()])
+                .build(),
+        );
 
         // list_item
-        builder = builder.node("list_item", NodeSpec::builder("list_item")
-            .content("block+")
-            .parse_html(vec!["li".into()])
-            .build());
+        builder = builder.node(
+            "list_item",
+            NodeSpec::builder("list_item")
+                .content("block+")
+                .parse_html(vec!["li".into()])
+                .build(),
+        );
 
         // task_list
-        builder = builder.node("task_list", NodeSpec::builder("task_list")
-            .content("task_item+")
-            .group("block")
-            .build());
+        builder = builder.node(
+            "task_list",
+            NodeSpec::builder("task_list")
+                .content("task_item+")
+                .group("block")
+                .build(),
+        );
 
         // task_item
-        builder = builder.node("task_item", NodeSpec::builder("task_item")
-            .content("block+")
-            .attr("checked", AttrSpec::optional("false"))
-            .build());
+        builder = builder.node(
+            "task_item",
+            NodeSpec::builder("task_item")
+                .content("block+")
+                .attr("checked", AttrSpec::optional("false"))
+                .build(),
+        );
 
         // horizontal_rule
         builder = builder.node("horizontal_rule", {
@@ -144,10 +173,10 @@ impl Schema {
         });
 
         // text
-        builder = builder.node("text", NodeSpec::builder("text")
-            .group("inline")
-            .inline()
-            .build());
+        builder = builder.node(
+            "text",
+            NodeSpec::builder("text").group("inline").inline().build(),
+        );
 
         // image
         builder = builder.node("image", {
@@ -248,7 +277,8 @@ impl Schema {
 
     /// Get all node names that belong to a given group.
     pub fn nodes_in_group(&self, group: &str) -> Vec<&str> {
-        self.nodes.iter()
+        self.nodes
+            .iter()
             .filter(|(_, spec)| spec.group.as_deref() == Some(group))
             .map(|(name, _)| name.as_str())
             .collect()
@@ -295,7 +325,7 @@ impl Schema {
         // Split expression into space-separated parts
         for part in expr.split_whitespace() {
             // Strip quantifier (*, +, ?)
-            let type_or_group = part.trim_end_matches(|c| c == '*' || c == '+' || c == '?');
+            let type_or_group = part.trim_end_matches(['*', '+', '?']);
 
             if type_or_group.is_empty() {
                 continue;
@@ -307,10 +337,10 @@ impl Schema {
             }
 
             // Group match: check if child_type belongs to this group
-            if let Some(child_spec) = self.node(child_type) {
-                if child_spec.group.as_deref() == Some(type_or_group) {
-                    return true;
-                }
+            if let Some(child_spec) = self.node(child_type)
+                && child_spec.group.as_deref() == Some(type_or_group)
+            {
+                return true;
             }
         }
 
@@ -395,9 +425,7 @@ pub fn matches_content(schema: &Schema, expr: &str, children: &[&str]) -> bool {
         // Check all children match the type/group
         let all_match = children.iter().all(|c| {
             type_or_group == *c || {
-                schema.node(c)
-                    .and_then(|s| s.group.as_deref())
-                    .map_or(false, |g| g == type_or_group)
+                schema.node(c).and_then(|s| s.group.as_deref()) == Some(type_or_group)
             }
         });
 
@@ -406,10 +434,10 @@ pub fn matches_content(schema: &Schema, expr: &str, children: &[&str]) -> bool {
         }
 
         match quantifier {
-            '*' => true, // zero or more
+            '*' => true,                 // zero or more
             '+' => !children.is_empty(), // one or more
-            '?' => children.len() <= 1, // zero or one
-            _ => children.len() == 1, // exactly one (no quantifier)
+            '?' => children.len() <= 1,  // zero or one
+            _ => children.len() == 1,    // exactly one (no quantifier)
         }
     } else {
         // Compound expression: try to match parts sequentially
@@ -423,9 +451,7 @@ pub fn matches_content(schema: &Schema, expr: &str, children: &[&str]) -> bool {
 
             let matches_child = |c: &str| -> bool {
                 type_or_group == c || {
-                    schema.node(c)
-                        .and_then(|s| s.group.as_deref())
-                        .map_or(false, |g| g == type_or_group)
+                    schema.node(c).and_then(|s| s.group.as_deref()) == Some(type_or_group)
                 }
             };
 
@@ -507,9 +533,20 @@ mod tests {
     fn starter_kit_has_all_nodes() {
         let schema = Schema::starter_kit();
         let expected_nodes = [
-            "doc", "paragraph", "heading", "blockquote", "code_block",
-            "bullet_list", "ordered_list", "list_item", "task_list",
-            "task_item", "horizontal_rule", "hard_break", "text", "image",
+            "doc",
+            "paragraph",
+            "heading",
+            "blockquote",
+            "code_block",
+            "bullet_list",
+            "ordered_list",
+            "list_item",
+            "task_list",
+            "task_item",
+            "horizontal_rule",
+            "hard_break",
+            "text",
+            "image",
         ];
         for name in &expected_nodes {
             assert!(schema.has_node(name), "missing node: {}", name);
@@ -520,8 +557,16 @@ mod tests {
     fn starter_kit_has_all_marks() {
         let schema = Schema::starter_kit();
         let expected_marks = [
-            "bold", "italic", "underline", "strike", "code",
-            "link", "highlight", "text_color", "subscript", "superscript",
+            "bold",
+            "italic",
+            "underline",
+            "strike",
+            "code",
+            "link",
+            "highlight",
+            "text_color",
+            "subscript",
+            "superscript",
         ];
         for name in &expected_marks {
             assert!(schema.has_mark(name), "missing mark: {}", name);
@@ -655,7 +700,11 @@ mod tests {
     fn matches_content_star_with_items() {
         let schema = Schema::starter_kit();
         assert!(matches_content(&schema, "inline*", &["text"]));
-        assert!(matches_content(&schema, "inline*", &["text", "hard_break", "text"]));
+        assert!(matches_content(
+            &schema,
+            "inline*",
+            &["text", "hard_break", "text"]
+        ));
     }
 
     #[test]
@@ -663,14 +712,22 @@ mod tests {
         let schema = Schema::starter_kit();
         assert!(!matches_content(&schema, "block+", &[]));
         assert!(matches_content(&schema, "block+", &["paragraph"]));
-        assert!(matches_content(&schema, "block+", &["paragraph", "heading"]));
+        assert!(matches_content(
+            &schema,
+            "block+",
+            &["paragraph", "heading"]
+        ));
     }
 
     #[test]
     fn matches_content_specific_type() {
         let schema = Schema::starter_kit();
         assert!(matches_content(&schema, "list_item+", &["list_item"]));
-        assert!(matches_content(&schema, "list_item+", &["list_item", "list_item"]));
+        assert!(matches_content(
+            &schema,
+            "list_item+",
+            &["list_item", "list_item"]
+        ));
         assert!(!matches_content(&schema, "list_item+", &["paragraph"]));
     }
 
@@ -693,7 +750,11 @@ mod tests {
     fn matches_content_compound() {
         let schema = Schema::starter_kit();
         assert!(matches_content(&schema, "paragraph block*", &["paragraph"]));
-        assert!(matches_content(&schema, "paragraph block*", &["paragraph", "heading"]));
+        assert!(matches_content(
+            &schema,
+            "paragraph block*",
+            &["paragraph", "heading"]
+        ));
         assert!(!matches_content(&schema, "paragraph block*", &["heading"]));
     }
 

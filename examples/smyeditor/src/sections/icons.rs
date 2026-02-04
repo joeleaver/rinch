@@ -1,7 +1,7 @@
 //! Icons section - Displays all Tabler Icons organized into pages.
 
 use rinch::prelude::*;
-use rinch_tabler_icons::{render_tabler_icon, TablerIcon, TablerIconStyle, ALL_ICONS, ICON_COUNT};
+use rinch_tabler_icons::{ALL_ICONS, ICON_COUNT, TablerIcon, TablerIconStyle, render_tabler_icon};
 use std::rc::Rc;
 
 /// Number of icons per page (10 rows x 10 columns)
@@ -34,7 +34,7 @@ pub fn icons_section(__scope: &mut RenderScope) -> NodeHandle {
     };
 
     // Calculate total pages
-    let total_pages = (ICON_COUNT + ICONS_PER_PAGE - 1) / ICONS_PER_PAGE;
+    let total_pages = ICON_COUNT.div_ceil(ICONS_PER_PAGE);
 
     rsx! {
         Fragment {
@@ -291,7 +291,7 @@ fn reactive_icon_grid(
                 .iter()
                 .map(|icon| {
                     // Key includes page and style so items change when these change
-                    let key = format!("{}_{}_{}",icon.name(), page, use_filled_val);
+                    let key = format!("{}_{}_{}", icon.name(), page, use_filled_val);
                     ForItem::new(key, IconCellData { icon: *icon, style })
                 })
                 .collect()

@@ -30,5 +30,6 @@ pub fn styles() -> String {
 .rinch-code--sm { font-size: var(--rinch-font-size-sm); }
 .rinch-code--md { font-size: var(--rinch-font-size-md); }
 .rinch-code--lg { font-size: var(--rinch-font-size-lg); }
-"#.to_string()
+"#
+    .to_string()
 }

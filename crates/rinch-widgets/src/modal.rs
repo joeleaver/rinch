@@ -19,8 +19,8 @@
 //! }
 //! ```
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 use std::rc::Rc;
 
 /// Modal size.
@@ -181,10 +181,10 @@ impl Modal {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-modal"];
 
-        if let Some(ref s) = self.size {
-            if let Ok(size) = s.parse::<ModalSize>() {
-                classes.push(size.class_name());
-            }
+        if let Some(ref s) = self.size
+            && let Ok(size) = s.parse::<ModalSize>()
+        {
+            classes.push(size.class_name());
         }
 
         if let Some(ref r) = self.radius {
@@ -261,7 +261,8 @@ impl Widget for Modal {
                 if is_open {
                     root_clone.set_attribute("class", "rinch-modal__root");
                 } else {
-                    root_clone.set_attribute("class", "rinch-modal__root rinch-modal__root--hidden");
+                    root_clone
+                        .set_attribute("class", "rinch-modal__root rinch-modal__root--hidden");
                 }
             });
         }
@@ -272,10 +273,10 @@ impl Widget for Modal {
             if let Some(ref style) = overlay_style {
                 overlay.set_attribute("style", style);
             }
-            if self.close_on_click_outside {
-                if let Some(handler_id) = close_handler_id {
-                    overlay.set_attribute("data-rid", &handler_id.to_string());
-                }
+            if self.close_on_click_outside
+                && let Some(handler_id) = close_handler_id
+            {
+                overlay.set_attribute("data-rid", &handler_id.to_string());
             }
             root.append_child(&overlay);
         }

@@ -22,9 +22,9 @@
 //! }
 //! ```
 
+use rinch_core::Widget;
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::element::WidgetCallback;
-use rinch_core::Widget;
 use std::rc::Rc;
 
 /// Callback type for section renderers.
@@ -212,7 +212,10 @@ impl Widget for BorderlessWindow {
         // Minimize button
         if self.show_minimize {
             let min_btn = __scope.create_element("button");
-            min_btn.set_attribute("class", "rinch-borderlesswindow__control rinch-borderlesswindow__control--minimize");
+            min_btn.set_attribute(
+                "class",
+                "rinch-borderlesswindow__control rinch-borderlesswindow__control--minimize",
+            );
             min_btn.set_attribute("aria-label", "Minimize");
 
             // Create minimize icon (horizontal line)
@@ -242,7 +245,10 @@ impl Widget for BorderlessWindow {
         // Maximize button
         if self.show_maximize {
             let max_btn = __scope.create_element("button");
-            max_btn.set_attribute("class", "rinch-borderlesswindow__control rinch-borderlesswindow__control--maximize");
+            max_btn.set_attribute(
+                "class",
+                "rinch-borderlesswindow__control rinch-borderlesswindow__control--maximize",
+            );
             max_btn.set_attribute("aria-label", "Maximize");
 
             // Create maximize icon (square)
@@ -276,7 +282,10 @@ impl Widget for BorderlessWindow {
         // Close button
         if self.show_close {
             let close_btn = __scope.create_element("button");
-            close_btn.set_attribute("class", "rinch-borderlesswindow__control rinch-borderlesswindow__control--close");
+            close_btn.set_attribute(
+                "class",
+                "rinch-borderlesswindow__control rinch-borderlesswindow__control--close",
+            );
             close_btn.set_attribute("aria-label", "Close");
 
             // Create close icon (X)

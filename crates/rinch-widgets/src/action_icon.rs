@@ -182,7 +182,8 @@ impl ActionIcon {
 
 impl Widget for ActionIcon {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
-        let container = rinch_macros::rsx! { button { class: "rinch-action-icon", r#type: "button" } };
+        let container =
+            rinch_macros::rsx! { button { class: "rinch-action-icon", r#type: "button" } };
         container.set_attribute("class", &self.class_string());
 
         // Color style

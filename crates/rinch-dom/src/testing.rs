@@ -3,7 +3,7 @@
 //! Provides DOM tree serialization, query selectors, and text content extraction
 //! for the rinch test harness.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::node::{NodeKind, NodeTree, RawNodeId};
 
@@ -89,13 +89,16 @@ fn parse_selector(selector: &str) -> Matcher {
         if let Some(eq_pos) = inner.find('=') {
             Matcher::AttrEquals(
                 inner[..eq_pos].to_string(),
-                inner[eq_pos + 1..].trim_matches('"').trim_matches('\'').to_string(),
+                inner[eq_pos + 1..]
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string(),
             )
         } else {
             Matcher::AttrExists(inner.to_string())
         }
-    } else if s.starts_with('.') {
-        Matcher::Class(s[1..].to_string())
+    } else if let Some(class) = s.strip_prefix('.') {
+        Matcher::Class(class.to_string())
     } else {
         Matcher::Tag(s.to_lowercase())
     }
@@ -105,12 +108,15 @@ fn query_walk(tree: &NodeTree, id: RawNodeId, matcher: &Matcher, results: &mut V
     let Some(node) = tree.get(id) else { return };
 
     let matches = match matcher {
-        Matcher::Tag(tag) => node.tag().map(|t| t.to_lowercase() == *tag).unwrap_or(false),
-        Matcher::Class(cls) => {
-            node.attributes.get("class")
-                .map(|c| c.split_whitespace().any(|w| w == cls))
-                .unwrap_or(false)
-        }
+        Matcher::Tag(tag) => node
+            .tag()
+            .map(|t| t.to_lowercase() == *tag)
+            .unwrap_or(false),
+        Matcher::Class(cls) => node
+            .attributes
+            .get("class")
+            .map(|c| c.split_whitespace().any(|w| w == cls))
+            .unwrap_or(false),
         Matcher::AttrExists(attr) => node.attributes.contains_key(attr),
         Matcher::AttrEquals(attr, val) => {
             node.attributes.get(attr).map(|v| v == val).unwrap_or(false)

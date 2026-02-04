@@ -23,7 +23,11 @@ fn test_flex_row() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let container = doc.create_element("div");
-    doc.set_attribute(container, "style", "display: flex; flex-direction: row; width: 300px");
+    doc.set_attribute(
+        container,
+        "style",
+        "display: flex; flex-direction: row; width: 300px",
+    );
     doc.append_child(body, container);
 
     let a = doc.create_element("div");
@@ -49,7 +53,11 @@ fn test_flex_column() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let container = doc.create_element("div");
-    doc.set_attribute(container, "style", "display: flex; flex-direction: column; width: 300px");
+    doc.set_attribute(
+        container,
+        "style",
+        "display: flex; flex-direction: column; width: 300px",
+    );
     doc.append_child(body, container);
 
     let a = doc.create_element("div");
@@ -75,7 +83,11 @@ fn test_flex_gap() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let container = doc.create_element("div");
-    doc.set_attribute(container, "style", "display: flex; flex-direction: row; gap: 10px; width: 300px");
+    doc.set_attribute(
+        container,
+        "style",
+        "display: flex; flex-direction: row; gap: 10px; width: 300px",
+    );
     doc.append_child(body, container);
 
     let a = doc.create_element("div");
@@ -99,7 +111,11 @@ fn test_padding() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let container = doc.create_element("div");
-    doc.set_attribute(container, "style", "display: flex; padding: 20px; width: 200px; height: 100px");
+    doc.set_attribute(
+        container,
+        "style",
+        "display: flex; padding: 20px; width: 200px; height: 100px",
+    );
     doc.append_child(body, container);
 
     let child = doc.create_element("div");
@@ -122,7 +138,11 @@ fn test_margin() {
     doc.append_child(body, container);
 
     let child = doc.create_element("div");
-    doc.set_attribute(child, "style", "width: 50px; height: 50px; margin-left: 10px");
+    doc.set_attribute(
+        child,
+        "style",
+        "width: 50px; height: 50px; margin-left: 10px",
+    );
     doc.append_child(container, child);
 
     doc.resolve_layout(800.0, 600.0);
@@ -161,11 +181,19 @@ fn test_nested_flex() {
     let body = doc.body();
 
     let outer = doc.create_element("div");
-    doc.set_attribute(outer, "style", "display: flex; flex-direction: column; width: 200px");
+    doc.set_attribute(
+        outer,
+        "style",
+        "display: flex; flex-direction: column; width: 200px",
+    );
     doc.append_child(body, outer);
 
     let row1 = doc.create_element("div");
-    doc.set_attribute(row1, "style", "display: flex; flex-direction: row; height: 40px");
+    doc.set_attribute(
+        row1,
+        "style",
+        "display: flex; flex-direction: row; height: 40px",
+    );
     doc.append_child(outer, row1);
 
     let a = doc.create_element("div");
@@ -241,7 +269,11 @@ fn test_align_items_center() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let container = doc.create_element("div");
-    doc.set_attribute(container, "style", "display: flex; align-items: center; width: 200px; height: 100px");
+    doc.set_attribute(
+        container,
+        "style",
+        "display: flex; align-items: center; width: 200px; height: 100px",
+    );
     doc.append_child(body, container);
 
     let child = doc.create_element("div");
@@ -259,7 +291,11 @@ fn test_justify_content_center() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let container = doc.create_element("div");
-    doc.set_attribute(container, "style", "display: flex; justify-content: center; width: 200px; height: 100px");
+    doc.set_attribute(
+        container,
+        "style",
+        "display: flex; justify-content: center; width: 200px; height: 100px",
+    );
     doc.append_child(body, container);
 
     let child = doc.create_element("div");
@@ -277,7 +313,11 @@ fn test_justify_content_space_between() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let container = doc.create_element("div");
-    doc.set_attribute(container, "style", "display: flex; justify-content: space-between; width: 200px");
+    doc.set_attribute(
+        container,
+        "style",
+        "display: flex; justify-content: space-between; width: 200px",
+    );
     doc.append_child(body, container);
 
     let a = doc.create_element("div");
@@ -301,11 +341,19 @@ fn test_absolute_position() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let container = doc.create_element("div");
-    doc.set_attribute(container, "style", "display: flex; width: 200px; height: 200px");
+    doc.set_attribute(
+        container,
+        "style",
+        "display: flex; width: 200px; height: 200px",
+    );
     doc.append_child(body, container);
 
     let abs = doc.create_element("div");
-    doc.set_attribute(abs, "style", "position: absolute; top: 10px; left: 20px; width: 50px; height: 50px");
+    doc.set_attribute(
+        abs,
+        "style",
+        "position: absolute; top: 10px; left: 20px; width: 50px; height: 50px",
+    );
     doc.append_child(container, abs);
 
     doc.resolve_layout(800.0, 600.0);
@@ -320,7 +368,11 @@ fn test_display_contents() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let container = doc.create_element("div");
-    doc.set_attribute(container, "style", "display: flex; flex-direction: row; width: 300px");
+    doc.set_attribute(
+        container,
+        "style",
+        "display: flex; flex-direction: row; width: 300px",
+    );
     doc.append_child(body, container);
 
     let wrapper = doc.create_element("span");

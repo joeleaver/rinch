@@ -3,29 +3,24 @@
 //! The `Theme` struct holds all theme values and can be customized.
 
 use crate::colors::{ColorName, ColorPalettes, DEFAULT_COLORS};
-use crate::radius::{RadiusScale, RadiusSize, DEFAULT_RADIUS};
-use crate::shadows::{ShadowScale, DEFAULT_SHADOWS};
-use crate::spacing::{SpacingScale, DEFAULT_SPACING};
+use crate::radius::{DEFAULT_RADIUS, RadiusScale, RadiusSize};
+use crate::shadows::{DEFAULT_SHADOWS, ShadowScale};
+use crate::spacing::{DEFAULT_SPACING, SpacingScale};
 use crate::typography::{
-    FontSizeScale, HeadingStyles, LineHeightScale, DEFAULT_FONT_FAMILY,
-    DEFAULT_FONT_FAMILY_MONOSPACE, DEFAULT_FONT_SIZES, DEFAULT_HEADINGS, DEFAULT_LINE_HEIGHTS,
+    DEFAULT_FONT_FAMILY, DEFAULT_FONT_FAMILY_MONOSPACE, DEFAULT_FONT_SIZES, DEFAULT_HEADINGS,
+    DEFAULT_LINE_HEIGHTS, FontSizeScale, HeadingStyles, LineHeightScale,
 };
 
 /// Focus ring style configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FocusRing {
     /// Always show focus ring.
     Always,
     /// Show focus ring only on keyboard focus (not mouse).
+    #[default]
     Auto,
     /// Never show focus ring.
     Never,
-}
-
-impl Default for FocusRing {
-    fn default() -> Self {
-        FocusRing::Auto
-    }
 }
 
 /// The complete theme configuration.
@@ -66,18 +61,13 @@ pub struct Theme {
 }
 
 /// Cursor type for interactive elements.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CursorType {
     /// Default cursor.
     Default,
     /// Pointer cursor for clickable elements.
+    #[default]
     Pointer,
-}
-
-impl Default for CursorType {
-    fn default() -> Self {
-        CursorType::Pointer
-    }
 }
 
 impl Default for Theme {

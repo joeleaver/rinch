@@ -2,8 +2,8 @@
 //!
 //! A card-like container with optional shadow and border.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// Paper shadow size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,17 +100,17 @@ impl Paper {
         let mut classes = vec!["rinch-paper"];
 
         // Shadow class
-        if let Some(ref shadow) = self.shadow {
-            if let Ok(s) = shadow.parse::<PaperShadow>() {
-                classes.push(s.class_name());
-            }
+        if let Some(ref shadow) = self.shadow
+            && let Ok(s) = shadow.parse::<PaperShadow>()
+        {
+            classes.push(s.class_name());
         }
 
         // Padding class
-        if let Some(ref p) = self.p {
-            if let Ok(padding) = p.parse::<PaperPadding>() {
-                classes.push(padding.class_name());
-            }
+        if let Some(ref p) = self.p
+            && let Ok(padding) = p.parse::<PaperPadding>()
+        {
+            classes.push(padding.class_name());
         }
 
         // Radius class

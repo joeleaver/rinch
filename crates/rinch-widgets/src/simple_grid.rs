@@ -2,8 +2,8 @@
 //!
 //! A responsive grid layout that distributes children in equal-width columns.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// A responsive grid layout component.
 ///

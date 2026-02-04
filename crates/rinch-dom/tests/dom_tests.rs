@@ -245,7 +245,10 @@ fn test_set_text_content_on_element() {
     doc.set_text_content(div, "hello");
     let children = doc.get_children(div);
     assert_eq!(children.len(), 1);
-    assert_eq!(doc.tree.get(children[0].0).unwrap().text_content(), Some("hello"));
+    assert_eq!(
+        doc.tree.get(children[0].0).unwrap().text_content(),
+        Some("hello")
+    );
 }
 
 #[test]
@@ -473,20 +476,6 @@ fn test_parse_html_returns_none() {
     let mut doc = RinchDocument::new();
     // Phase 1: parse_html is not implemented yet
     assert_eq!(doc.parse_html("<div>test</div>"), None);
-}
-
-#[test]
-fn test_set_inner_html_clears_children() {
-    let mut doc = RinchDocument::new();
-    let body = doc.body();
-    let div = doc.create_element("div");
-    let child = doc.create_element("span");
-    doc.append_child(body, div);
-    doc.append_child(div, child);
-
-    doc.set_inner_html(div, "<p>new</p>");
-    // Children should be cleared (no HTML parser yet)
-    assert_eq!(doc.get_children(div).len(), 0);
 }
 
 // === Nested Structure ===

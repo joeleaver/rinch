@@ -17,9 +17,14 @@ use cssparser::{
 
 use selectors::attr::{AttrSelectorOperation, CaseSensitivity, NamespaceConstraint};
 use selectors::bloom::BloomFilter;
-use selectors::context::{MatchingContext, MatchingForInvalidation, MatchingMode, NeedsSelectorFlags, QuirksMode, SelectorCaches};
-use selectors::matching::{matches_selector_list, ElementSelectorFlags};
-use selectors::parser::{self as sel_parser, NonTSPseudoClass, ParseRelative, PseudoElement, SelectorImpl, SelectorList};
+use selectors::context::{
+    MatchingContext, MatchingForInvalidation, MatchingMode, NeedsSelectorFlags, QuirksMode,
+    SelectorCaches,
+};
+use selectors::matching::{ElementSelectorFlags, matches_selector_list};
+use selectors::parser::{
+    self as sel_parser, NonTSPseudoClass, ParseRelative, PseudoElement, SelectorImpl, SelectorList,
+};
 use selectors::{Element, OpaqueElement};
 
 // ---------------------------------------------------------------------------
@@ -114,7 +119,10 @@ impl NonTSPseudoClass for RinchPseudoClass {
     }
 
     fn is_user_action_state(&self) -> bool {
-        matches!(self, Self::Hover | Self::Active | Self::Focus | Self::FocusVisible)
+        matches!(
+            self,
+            Self::Hover | Self::Active | Self::Focus | Self::FocusVisible
+        )
     }
 }
 
@@ -240,21 +248,38 @@ impl<'a> Element for RinchElement<'a> {
 
     fn parent_element(&self) -> Option<Self> {
         if self.index + 1 < self.chain.len() {
-            Some(RinchElement { index: self.index + 1, chain: self.chain })
+            Some(RinchElement {
+                index: self.index + 1,
+                chain: self.chain,
+            })
         } else {
             None
         }
     }
 
-    fn parent_node_is_shadow_root(&self) -> bool { false }
-    fn containing_shadow_host(&self) -> Option<Self> { None }
-    fn is_pseudo_element(&self) -> bool { false }
+    fn parent_node_is_shadow_root(&self) -> bool {
+        false
+    }
+    fn containing_shadow_host(&self) -> Option<Self> {
+        None
+    }
+    fn is_pseudo_element(&self) -> bool {
+        false
+    }
 
-    fn prev_sibling_element(&self) -> Option<Self> { None }
-    fn next_sibling_element(&self) -> Option<Self> { None }
-    fn first_element_child(&self) -> Option<Self> { None }
+    fn prev_sibling_element(&self) -> Option<Self> {
+        None
+    }
+    fn next_sibling_element(&self) -> Option<Self> {
+        None
+    }
+    fn first_element_child(&self) -> Option<Self> {
+        None
+    }
 
-    fn is_html_element_in_html_document(&self) -> bool { true }
+    fn is_html_element_in_html_document(&self) -> bool {
+        true
+    }
 
     fn has_local_name(&self, local_name: &str) -> bool {
         self.state().tag.as_deref() == Some(local_name)
@@ -282,12 +307,20 @@ impl<'a> Element for RinchElement<'a> {
         let state = self.state();
         match operation {
             AttrSelectorOperation::Exists => state.attributes.contains_key(&local_name.0),
-            AttrSelectorOperation::WithValue { operator, case_sensitivity, value } => {
+            AttrSelectorOperation::WithValue {
+                operator,
+                case_sensitivity,
+                value,
+            } => {
                 if let Some(actual) = state.attributes.get(&local_name.0) {
                     use selectors::attr::AttrSelectorOperator;
                     let sensitive = matches!(case_sensitivity, CaseSensitivity::CaseSensitive);
                     let eq = |a: &str, b: &str| {
-                        if sensitive { a == b } else { a.eq_ignore_ascii_case(b) }
+                        if sensitive {
+                            a == b
+                        } else {
+                            a.eq_ignore_ascii_case(b)
+                        }
                     };
                     match operator {
                         AttrSelectorOperator::Equal => eq(actual, &value.0),
@@ -295,16 +328,36 @@ impl<'a> Element for RinchElement<'a> {
                             actual.split_whitespace().any(|w| eq(w, &value.0))
                         }
                         AttrSelectorOperator::DashMatch => {
-                            eq(actual, &value.0) || (actual.starts_with(&*value.0) && actual.as_bytes().get(value.0.len()) == Some(&b'-'))
+                            eq(actual, &value.0)
+                                || (actual.starts_with(&*value.0)
+                                    && actual.as_bytes().get(value.0.len()) == Some(&b'-'))
                         }
                         AttrSelectorOperator::Prefix => {
-                            if sensitive { actual.starts_with(&*value.0) } else { actual.to_ascii_lowercase().starts_with(&value.0.to_ascii_lowercase()) }
+                            if sensitive {
+                                actual.starts_with(&*value.0)
+                            } else {
+                                actual
+                                    .to_ascii_lowercase()
+                                    .starts_with(&value.0.to_ascii_lowercase())
+                            }
                         }
                         AttrSelectorOperator::Suffix => {
-                            if sensitive { actual.ends_with(&*value.0) } else { actual.to_ascii_lowercase().ends_with(&value.0.to_ascii_lowercase()) }
+                            if sensitive {
+                                actual.ends_with(&*value.0)
+                            } else {
+                                actual
+                                    .to_ascii_lowercase()
+                                    .ends_with(&value.0.to_ascii_lowercase())
+                            }
                         }
                         AttrSelectorOperator::Substring => {
-                            if sensitive { actual.contains(&*value.0) } else { actual.to_ascii_lowercase().contains(&value.0.to_ascii_lowercase()) }
+                            if sensitive {
+                                actual.contains(&*value.0)
+                            } else {
+                                actual
+                                    .to_ascii_lowercase()
+                                    .contains(&value.0.to_ascii_lowercase())
+                            }
                         }
                     }
                 } else {
@@ -346,8 +399,12 @@ impl<'a> Element for RinchElement<'a> {
         // No-op for our use case
     }
 
-    fn is_link(&self) -> bool { false }
-    fn is_html_slot_element(&self) -> bool { false }
+    fn is_link(&self) -> bool {
+        false
+    }
+    fn is_html_slot_element(&self) -> bool {
+        false
+    }
 
     fn has_id(&self, id: &RinchAtom, case_sensitivity: CaseSensitivity) -> bool {
         if let Some(elem_id) = self.state().attributes.get("id") {
@@ -361,19 +418,23 @@ impl<'a> Element for RinchElement<'a> {
     }
 
     fn has_class(&self, name: &RinchAtom, case_sensitivity: CaseSensitivity) -> bool {
-        self.state().classes.iter().any(|c| {
-            match case_sensitivity {
-                CaseSensitivity::CaseSensitive => c == &name.0,
-                CaseSensitivity::AsciiCaseInsensitive => c.eq_ignore_ascii_case(&name.0),
-            }
+        self.state().classes.iter().any(|c| match case_sensitivity {
+            CaseSensitivity::CaseSensitive => c == &name.0,
+            CaseSensitivity::AsciiCaseInsensitive => c.eq_ignore_ascii_case(&name.0),
         })
     }
 
-    fn has_custom_state(&self, _name: &RinchAtom) -> bool { false }
+    fn has_custom_state(&self, _name: &RinchAtom) -> bool {
+        false
+    }
 
-    fn imported_part(&self, _name: &RinchAtom) -> Option<RinchAtom> { None }
+    fn imported_part(&self, _name: &RinchAtom) -> Option<RinchAtom> {
+        None
+    }
 
-    fn is_part(&self, _name: &RinchAtom) -> bool { false }
+    fn is_part(&self, _name: &RinchAtom) -> bool {
+        false
+    }
 
     fn is_empty(&self) -> bool {
         self.state().is_empty
@@ -387,7 +448,9 @@ impl<'a> Element for RinchElement<'a> {
         false
     }
 
-    fn ignores_nth_child_selectors(&self) -> bool { false }
+    fn ignores_nth_child_selectors(&self) -> bool {
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -412,6 +475,12 @@ pub struct Stylesheet {
     pub rules: Vec<CssRule>,
     /// CSS custom properties from `:root` blocks.
     pub variables: HashMap<String, String>,
+}
+
+impl Default for Stylesheet {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Stylesheet {
@@ -527,7 +596,10 @@ impl Stylesheet {
             let inner = &after_var[..end].trim();
             // inner might be `--name` or `--name, fallback`
             let (var_name, fallback) = if let Some(comma_pos) = inner.find(',') {
-                (inner[..comma_pos].trim(), Some(inner[comma_pos + 1..].trim()))
+                (
+                    inner[..comma_pos].trim(),
+                    Some(inner[comma_pos + 1..].trim()),
+                )
             } else {
                 (*inner, None)
             };
@@ -558,14 +630,17 @@ impl Stylesheet {
             return value.to_string();
         }
         // Split on whitespace, convert each part
-        let parts: Vec<String> = value.split_whitespace().map(|part| {
-            if let Some(rem_str) = part.strip_suffix("rem") {
-                if let Ok(num) = rem_str.parse::<f64>() {
+        let parts: Vec<String> = value
+            .split_whitespace()
+            .map(|part| {
+                if let Some(rem_str) = part.strip_suffix("rem")
+                    && let Ok(num) = rem_str.parse::<f64>()
+                {
                     return format!("{}px", num * 16.0);
                 }
-            }
-            part.to_string()
-        }).collect();
+                part.to_string()
+            })
+            .collect();
         parts.join(" ")
     }
 
@@ -615,7 +690,11 @@ impl Stylesheet {
     }
 
     /// Match with both classes and an optional tag name.
-    pub fn match_classes_with_tag(&self, class_attr: &str, tag: Option<&str>) -> HashMap<String, (String, bool)> {
+    pub fn match_classes_with_tag(
+        &self,
+        class_attr: &str,
+        tag: Option<&str>,
+    ) -> HashMap<String, (String, bool)> {
         let classes: Vec<&str> = class_attr.split_whitespace().collect();
         let state = ElementState {
             classes: classes.iter().map(|s| s.to_string()).collect(),
@@ -639,7 +718,10 @@ impl Stylesheet {
         chain.push(element.clone());
         chain.extend_from_slice(ancestors);
 
-        let elem = RinchElement { index: 0, chain: &chain };
+        let elem = RinchElement {
+            index: 0,
+            chain: &chain,
+        };
 
         // Track (value, important, specificity, source_order) per property
         // to implement correct CSS cascade: !important > specificity > source order
@@ -659,28 +741,34 @@ impl Stylesheet {
 
                 if matches_selector_list(selector_list, &elem, &mut context) {
                     // Compute max specificity of matching selectors in this rule
-                    let specificity = selector_list.slice().iter()
+                    let specificity = selector_list
+                        .slice()
+                        .iter()
                         .map(|s| s.specificity())
                         .max()
                         .unwrap_or(0);
 
                     for (k, (v, imp)) in &rule.properties {
-                        let should_insert = if let Some((_, existing_imp, existing_spec, existing_order)) = result.get(k) {
-                            if *imp && !existing_imp {
-                                // New is !important, existing is not -> new wins
-                                true
-                            } else if !imp && *existing_imp {
-                                // Existing is !important, new is not -> existing wins
-                                false
+                        let should_insert =
+                            if let Some((_, existing_imp, existing_spec, existing_order)) =
+                                result.get(k)
+                            {
+                                if *imp && !existing_imp {
+                                    // New is !important, existing is not -> new wins
+                                    true
+                                } else if !imp && *existing_imp {
+                                    // Existing is !important, new is not -> existing wins
+                                    false
+                                } else {
+                                    // Same importance level: higher specificity wins,
+                                    // equal specificity: later source order wins
+                                    specificity > *existing_spec
+                                        || (specificity == *existing_spec
+                                            && rule_index >= *existing_order)
+                                }
                             } else {
-                                // Same importance level: higher specificity wins,
-                                // equal specificity: later source order wins
-                                specificity > *existing_spec
-                                    || (specificity == *existing_spec && rule_index >= *existing_order)
-                            }
-                        } else {
-                            true
-                        };
+                                true
+                            };
 
                         if should_insert {
                             result.insert(k.clone(), (v.clone(), *imp, specificity, rule_index));
@@ -691,7 +779,8 @@ impl Stylesheet {
         }
 
         // Strip specificity/order tracking from result
-        result.into_iter()
+        result
+            .into_iter()
             .map(|(k, (v, imp, _, _))| (k, (v, imp)))
             .collect()
     }
@@ -851,10 +940,8 @@ impl<'i> QualifiedRuleParser<'i> for RinchRuleParser {
         // Parse declarations inside the block
         let mut properties = HashMap::new();
         let mut decl_parser = RinchDeclarationParser;
-        for result in RuleBodyParser::new(input, &mut decl_parser) {
-            if let Ok(decl) = result {
-                properties.insert(decl.name, (decl.value, decl.important));
-            }
+        for decl in RuleBodyParser::new(input, &mut decl_parser).flatten() {
+            properties.insert(decl.name, (decl.value, decl.important));
         }
 
         Ok(RawCssRule {
@@ -870,16 +957,18 @@ fn parse_properties(body: &str) -> HashMap<String, (String, bool)> {
     let mut parser = Parser::new(&mut input);
     let mut decl_parser = RinchDeclarationParser;
     let mut result = HashMap::new();
-    for item in RuleBodyParser::new(&mut parser, &mut decl_parser) {
-        if let Ok(decl) = item {
-            result.insert(decl.name, (decl.value, decl.important));
-        }
+    for decl in RuleBodyParser::new(&mut parser, &mut decl_parser).flatten() {
+        result.insert(decl.name, (decl.value, decl.important));
     }
     result
 }
 
 /// Resolve var() references checking local custom properties first, then global stylesheet variables.
-fn resolve_var_with_locals(value: &str, stylesheet: &Stylesheet, local_vars: &HashMap<String, String>) -> String {
+fn resolve_var_with_locals(
+    value: &str,
+    stylesheet: &Stylesheet,
+    local_vars: &HashMap<String, String>,
+) -> String {
     if !value.contains("var(") {
         return value.to_string();
     }
@@ -920,7 +1009,10 @@ fn resolve_var_with_locals(value: &str, stylesheet: &Stylesheet, local_vars: &Ha
 
         // Split on first comma for fallback
         let (var_name, fallback) = if let Some(comma_pos) = inner.find(',') {
-            (inner[..comma_pos].trim(), Some(inner[comma_pos + 1..].trim()))
+            (
+                inner[..comma_pos].trim(),
+                Some(inner[comma_pos + 1..].trim()),
+            )
         } else {
             (inner.trim(), None)
         };
@@ -995,7 +1087,8 @@ pub fn compute_merged_styles_with_state(
     }
 
     // Build importance map from class props
-    let important_keys: std::collections::HashSet<String> = class_props.iter()
+    let important_keys: std::collections::HashSet<String> = class_props
+        .iter()
         .filter(|(_, (_, imp))| *imp)
         .map(|(k, _)| k.clone())
         .collect();
@@ -1024,7 +1117,10 @@ pub fn compute_merged_styles_with_state(
     for (key, value) in &merged {
         if key.starts_with("--") {
             // Resolve the value using inherited vars + global vars
-            local_vars.insert(key.clone(), resolve_var_with_locals(&stylesheet.resolve_value(value), stylesheet, &local_vars));
+            local_vars.insert(
+                key.clone(),
+                resolve_var_with_locals(&stylesheet.resolve_value(value), stylesheet, &local_vars),
+            );
         }
     }
 
@@ -1041,7 +1137,9 @@ pub fn compute_merged_styles_with_state(
                 }
             }
         }
-        if !changed { break; }
+        if !changed {
+            break;
+        }
     }
 
     // Step 4: Add resolved custom properties back to merged (for inheritance to children)
@@ -1057,7 +1155,9 @@ pub fn compute_merged_styles_with_state(
         for _ in 0..10 {
             let prev = resolved.clone();
             resolved = resolve_var_with_locals(&resolved, stylesheet, &local_vars);
-            if resolved == prev { break; }
+            if resolved == prev {
+                break;
+            }
         }
         // Then resolve rem units
         resolved = Stylesheet::resolve_unit(&resolved);
@@ -1078,7 +1178,10 @@ mod tests {
         assert_eq!(ss.rules.len(), 1);
         let props = ss.match_classes("foo");
         assert_eq!(props.get("color").map(|(v, _)| v.as_str()), Some("red"));
-        assert_eq!(props.get("font-size").map(|(v, _)| v.as_str()), Some("14px"));
+        assert_eq!(
+            props.get("font-size").map(|(v, _)| v.as_str()),
+            Some("14px")
+        );
     }
 
     #[test]
@@ -1090,9 +1193,9 @@ mod tests {
         assert_eq!(props.get("color").map(|(v, _)| v.as_str()), Some("blue"));
         // Only one class — no match
         let props = ss.match_classes("a");
-        assert!(props.get("color").is_none());
+        assert!(!props.contains_key("color"));
         let props = ss.match_classes("b");
-        assert!(props.get("color").is_none());
+        assert!(!props.contains_key("color"));
     }
 
     #[test]
@@ -1131,8 +1234,13 @@ mod tests {
         // Both rules stored
         assert_eq!(ss.rules.len(), 2);
         // match_classes (no state) doesn't match :hover
-        assert!(ss.match_classes("foo").get("color").is_none());
-        assert_eq!(ss.match_classes("bar").get("color").map(|(v, _)| v.as_str()), Some("blue"));
+        assert!(!ss.match_classes("foo").contains_key("color"));
+        assert_eq!(
+            ss.match_classes("bar")
+                .get("color")
+                .map(|(v, _)| v.as_str()),
+            Some("blue")
+        );
         // match_element with hover state matches
         let state = ElementState {
             classes: vec!["foo".into()],
@@ -1148,7 +1256,12 @@ mod tests {
         let css = "@keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } } .foo { color: red; }";
         let ss = Stylesheet::parse(css);
         assert_eq!(ss.rules.len(), 1);
-        assert_eq!(ss.match_classes("foo").get("color").map(|(v, _)| v.as_str()), Some("red"));
+        assert_eq!(
+            ss.match_classes("foo")
+                .get("color")
+                .map(|(v, _)| v.as_str()),
+            Some("red")
+        );
     }
 
     #[test]
@@ -1172,8 +1285,14 @@ mod tests {
     fn test_comma_separated_selectors() {
         let css = ".a, .b { color: red; }";
         let ss = Stylesheet::parse(css);
-        assert_eq!(ss.match_classes("a").get("color").map(|(v, _)| v.as_str()), Some("red"));
-        assert_eq!(ss.match_classes("b").get("color").map(|(v, _)| v.as_str()), Some("red"));
+        assert_eq!(
+            ss.match_classes("a").get("color").map(|(v, _)| v.as_str()),
+            Some("red")
+        );
+        assert_eq!(
+            ss.match_classes("b").get("color").map(|(v, _)| v.as_str()),
+            Some("red")
+        );
     }
 
     #[test]
@@ -1191,7 +1310,10 @@ mod tests {
         assert_eq!(ss.rules.len(), 1);
         let props = ss.match_classes("foo");
         assert_eq!(props.get("color").map(|(v, _)| v.as_str()), Some("red"));
-        assert_eq!(props.get("font-size").map(|(v, _)| v.as_str()), Some("14px"));
+        assert_eq!(
+            props.get("font-size").map(|(v, _)| v.as_str()),
+            Some("14px")
+        );
     }
 
     #[test]
@@ -1200,8 +1322,11 @@ mod tests {
         let ss = Stylesheet::parse(css);
         assert_eq!(ss.rules.len(), 2);
         // match_classes without ancestors doesn't match descendant selector
-        assert!(ss.match_classes("b").get("color").is_none());
-        assert_eq!(ss.match_classes("c").get("color").map(|(v, _)| v.as_str()), Some("blue"));
+        assert!(!ss.match_classes("b").contains_key("color"));
+        assert_eq!(
+            ss.match_classes("c").get("color").map(|(v, _)| v.as_str()),
+            Some("blue")
+        );
         // match_element with proper ancestor chain matches
         let element = ElementState::from_classes("b");
         let parent = ElementState::from_classes("a");
@@ -1215,16 +1340,30 @@ mod tests {
         let ss = Stylesheet::parse(css);
         let props = ss.match_classes("btn");
         // !important should be stripped from all values, but tracked
-        assert_eq!(props.get("color").map(|(v, imp)| (v.as_str(), *imp)), Some(("red", true)));
-        assert_eq!(props.get("background").map(|(v, imp)| (v.as_str(), *imp)), Some(("blue", true)));
-        assert_eq!(props.get("font-size").map(|(v, imp)| (v.as_str(), *imp)), Some(("14px", false)));
+        assert_eq!(
+            props.get("color").map(|(v, imp)| (v.as_str(), *imp)),
+            Some(("red", true))
+        );
+        assert_eq!(
+            props.get("background").map(|(v, imp)| (v.as_str(), *imp)),
+            Some(("blue", true))
+        );
+        assert_eq!(
+            props.get("font-size").map(|(v, imp)| (v.as_str(), *imp)),
+            Some(("14px", false))
+        );
     }
 
     #[test]
     fn test_strip_important_from_inline() {
         let css = ".foo { color: red; }";
         let ss = Stylesheet::parse(css);
-        let merged = compute_merged_styles(&ss, Some("foo"), Some("color: green !important; padding: 10px!important"), None);
+        let merged = compute_merged_styles(
+            &ss,
+            Some("foo"),
+            Some("color: green !important; padding: 10px!important"),
+            None,
+        );
         // Inline styles with !important should also have it stripped and override class styles
         assert_eq!(merged.get("color").unwrap(), "green");
         assert_eq!(merged.get("padding").unwrap(), "10px");
@@ -1247,7 +1386,8 @@ mod tests {
         assert_eq!(merged.get("display").unwrap(), "none");
 
         // Inline !important CAN override class !important
-        let merged = compute_merged_styles(&ss, Some("hidden"), Some("display: flex !important"), None);
+        let merged =
+            compute_merged_styles(&ss, Some("hidden"), Some("display: flex !important"), None);
         assert_eq!(merged.get("display").unwrap(), "flex");
     }
 
@@ -1261,7 +1401,10 @@ mod tests {
 
         // !important in first rule prevents second rule from overriding
         let props = ss.match_classes("first second");
-        assert_eq!(props.get("color").map(|(v, imp)| (v.as_str(), *imp)), Some(("red", true)));
+        assert_eq!(
+            props.get("color").map(|(v, imp)| (v.as_str(), *imp)),
+            Some(("red", true))
+        );
 
         // But if second also has !important, it wins (later rule)
         let css2 = r#"
@@ -1270,7 +1413,10 @@ mod tests {
         "#;
         let ss2 = Stylesheet::parse(css2);
         let props2 = ss2.match_classes("first second");
-        assert_eq!(props2.get("color").map(|(v, imp)| (v.as_str(), *imp)), Some(("blue", true)));
+        assert_eq!(
+            props2.get("color").map(|(v, imp)| (v.as_str(), *imp)),
+            Some(("blue", true))
+        );
     }
 
     #[test]
@@ -1281,12 +1427,18 @@ mod tests {
         // Check that all 3 properties are stored
         let rule_props = &ss.rules[0].properties;
         eprintln!("Universal rule props: {:?}", rule_props);
-        assert!(rule_props.contains_key("box-sizing"), "should have box-sizing");
+        assert!(
+            rule_props.contains_key("box-sizing"),
+            "should have box-sizing"
+        );
         assert!(rule_props.contains_key("margin"), "should have margin");
         assert!(rule_props.contains_key("padding"), "should have padding");
         // Universal selector matches any element with a tag
         let props = ss.match_classes_with_tag("", Some("div"));
-        assert_eq!(props.get("box-sizing").map(|(v, _)| v.as_str()), Some("border-box"));
+        assert_eq!(
+            props.get("box-sizing").map(|(v, _)| v.as_str()),
+            Some("border-box")
+        );
         assert_eq!(props.get("margin").map(|(v, _)| v.as_str()), Some("0"));
         assert_eq!(props.get("padding").map(|(v, _)| v.as_str()), Some("0"));
     }
@@ -1300,7 +1452,10 @@ mod tests {
         let ss = Stylesheet::parse(css);
         let merged = compute_merged_styles(&ss, Some("main-content"), None, Some("div"));
         eprintln!("Merged main-content: {:?}", merged);
-        assert_eq!(merged.get("box-sizing").map(|v| v.as_str()), Some("border-box"));
+        assert_eq!(
+            merged.get("box-sizing").map(|v| v.as_str()),
+            Some("border-box")
+        );
         assert_eq!(merged.get("margin").map(|v| v.as_str()), Some("0"));
         assert_eq!(merged.get("padding").map(|v| v.as_str()), Some("20px"));
     }
@@ -1325,17 +1480,38 @@ mod tests {
             .rinch-borderlesswindow__titlebar { display: flex; height: 40px; }
         "#;
         let ss = Stylesheet::parse(css);
-        assert_eq!(ss.rules.len(), 4, "Expected 4 rules, got {}", ss.rules.len());
+        assert_eq!(
+            ss.rules.len(),
+            4,
+            "Expected 4 rules, got {}",
+            ss.rules.len()
+        );
 
         // Element with two classes
         let props = ss.match_classes("rinch-borderlesswindow rinch-borderlesswindow--radius-md");
-        assert_eq!(props.get("display").map(|(v, _)| v.as_str()), Some("flex"), "display missing");
-        assert_eq!(props.get("height").map(|(v, _)| v.as_str()), Some("100vh"), "height missing");
-        assert_eq!(props.get("border-radius").map(|(v, _)| v.as_str()), Some("8px"), "border-radius missing");
+        assert_eq!(
+            props.get("display").map(|(v, _)| v.as_str()),
+            Some("flex"),
+            "display missing"
+        );
+        assert_eq!(
+            props.get("height").map(|(v, _)| v.as_str()),
+            Some("100vh"),
+            "height missing"
+        );
+        assert_eq!(
+            props.get("border-radius").map(|(v, _)| v.as_str()),
+            Some("8px"),
+            "border-radius missing"
+        );
 
         // Content child
         let props2 = ss.match_classes("rinch-borderlesswindow__content");
-        assert_eq!(props2.get("flex").map(|(v, _)| v.as_str()), Some("1"), "flex missing");
+        assert_eq!(
+            props2.get("flex").map(|(v, _)| v.as_str()),
+            Some("1"),
+            "flex missing"
+        );
     }
 
     #[test]
@@ -1364,7 +1540,8 @@ mod tests {
         "#;
         let ss = Stylesheet::parse(css);
 
-        let inline = "--local-a: var(--base-color); --local-b: var(--local-a); color: var(--local-b)";
+        let inline =
+            "--local-a: var(--base-color); --local-b: var(--local-a); color: var(--local-b)";
         let merged = compute_merged_styles(&ss, None, Some(inline), None);
 
         assert_eq!(merged.get("--local-a").unwrap(), "red");
@@ -1380,7 +1557,8 @@ mod tests {
         "#;
         let ss = Stylesheet::parse(css);
 
-        let inline = "--local-color: var(--undefined, var(--rinch-color-blue)); color: var(--local-color)";
+        let inline =
+            "--local-color: var(--undefined, var(--rinch-color-blue)); color: var(--local-color)";
         let merged = compute_merged_styles(&ss, None, Some(inline), None);
 
         assert_eq!(merged.get("--local-color").unwrap(), "blue");

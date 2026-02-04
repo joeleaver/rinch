@@ -54,5 +54,6 @@ pub fn styles() -> String {
 .rinch-progress--radius-md { border-radius: var(--rinch-radius-md); }
 .rinch-progress--radius-lg { border-radius: var(--rinch-radius-lg); }
 .rinch-progress--radius-xl { border-radius: var(--rinch-radius-xl); }
-"#.to_string()
+"#
+    .to_string()
 }

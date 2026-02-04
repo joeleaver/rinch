@@ -3,17 +3,17 @@
 //! Renders ToolbarConfig groups and controls as interactive buttons
 //! that dispatch editor commands when clicked.
 
-use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
-use rinch_core::dom::{RenderScope, NodeHandle};
+use rinch_core::dom::{NodeHandle, RenderScope};
 
-use crate::{ToolbarConfig, ToolbarGroup, ToolbarControl, ControlButton};
+use crate::{ControlButton, ToolbarConfig, ToolbarControl, ToolbarGroup};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
 use rinch_editor::Editor;
-use rinch_editor::commands::{TextCommands, FormattingCommands, StructureCommands};
+use rinch_editor::commands::{FormattingCommands, StructureCommands, TextCommands};
 use rinch_editor::document::Position;
 use rinch_editor::selection::Selection;
 
@@ -26,16 +26,20 @@ pub fn render_toolbar(
 ) -> NodeHandle {
     let toolbar = scope.create_element("div");
     toolbar.set_attribute("class", "editor-toolbar");
-    toolbar.set_attribute("style",
+    toolbar.set_attribute(
+        "style",
         "display: flex; flex-wrap: wrap; gap: 8px; align-items: center; \
          padding: 8px 12px; border-bottom: 1px solid var(--rinch-color-gray-3); \
-         background: var(--rinch-color-gray-0);");
+         background: var(--rinch-color-gray-0);",
+    );
 
     for (i, group) in config.groups.iter().enumerate() {
         if i > 0 {
             let divider = scope.create_element("div");
-            divider.set_attribute("style",
-                "width: 1px; height: 24px; background: var(--rinch-color-gray-3); margin: 0 4px;");
+            divider.set_attribute(
+                "style",
+                "width: 1px; height: 24px; background: var(--rinch-color-gray-3); margin: 0 4px;",
+            );
             toolbar.append_child(&divider);
         }
 
@@ -141,14 +145,16 @@ fn is_control_active(editor: &Editor, control: &ToolbarControl) -> bool {
         ToolbarControl::Subscript => has_mark("subscript"),
         ToolbarControl::Superscript => has_mark("superscript"),
         ToolbarControl::Heading(level) => {
-            if let Ok(rp) = editor.doc.resolve_position(sel.head) {
-                if let Some(bt) = editor.doc.block_type(rp.block_index) {
-                    if bt == "heading" {
-                        // Check if level matches
-                        if let Some(attrs) = editor.doc.block_attrs(rp.block_index) {
-                            return attrs.get("level").map(|l| l == &level.to_string()).unwrap_or(false);
-                        }
-                    }
+            if let Ok(rp) = editor.doc.resolve_position(sel.head)
+                && let Some(bt) = editor.doc.block_type(rp.block_index)
+                && bt == "heading"
+            {
+                // Check if level matches
+                if let Some(attrs) = editor.doc.block_attrs(rp.block_index) {
+                    return attrs
+                        .get("level")
+                        .map(|l| l == &level.to_string())
+                        .unwrap_or(false);
                 }
             }
             false
@@ -191,28 +197,44 @@ fn is_control_active(editor: &Editor, control: &ToolbarControl) -> bool {
         ToolbarControl::AlignLeft => {
             if let Ok(rp) = editor.doc.resolve_position(sel.head) {
                 let attrs = editor.doc.block_attrs(rp.block_index).unwrap_or_default();
-                !attrs.contains_key("align") || attrs.get("align").map(|a| a == "left").unwrap_or(false)
+                !attrs.contains_key("align")
+                    || attrs.get("align").map(|a| a == "left").unwrap_or(false)
             } else {
                 false
             }
         }
         ToolbarControl::AlignCenter => {
             if let Ok(rp) = editor.doc.resolve_position(sel.head) {
-                editor.doc.block_attrs(rp.block_index).unwrap_or_default().get("align") == Some(&"center".to_string())
+                editor
+                    .doc
+                    .block_attrs(rp.block_index)
+                    .unwrap_or_default()
+                    .get("align")
+                    == Some(&"center".to_string())
             } else {
                 false
             }
         }
         ToolbarControl::AlignRight => {
             if let Ok(rp) = editor.doc.resolve_position(sel.head) {
-                editor.doc.block_attrs(rp.block_index).unwrap_or_default().get("align") == Some(&"right".to_string())
+                editor
+                    .doc
+                    .block_attrs(rp.block_index)
+                    .unwrap_or_default()
+                    .get("align")
+                    == Some(&"right".to_string())
             } else {
                 false
             }
         }
         ToolbarControl::AlignJustify => {
             if let Ok(rp) = editor.doc.resolve_position(sel.head) {
-                editor.doc.block_attrs(rp.block_index).unwrap_or_default().get("align") == Some(&"justify".to_string())
+                editor
+                    .doc
+                    .block_attrs(rp.block_index)
+                    .unwrap_or_default()
+                    .get("align")
+                    == Some(&"justify".to_string())
             } else {
                 false
             }
@@ -273,36 +295,36 @@ fn execute_toolbar_command(
     // query_selection_ranges returns (block_index, start_byte, end_byte) tuples.
     {
         let ranges = rinch_core::events::query_selection_ranges();
-        if !ranges.is_empty() {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let block_count = ed.doc.block_count();
-                let doc_len = ed.doc.text_length();
+        if !ranges.is_empty()
+            && let Ok(mut ed) = editor.try_borrow_mut()
+        {
+            let block_count = ed.doc.block_count();
+            let doc_len = ed.doc.text_length();
 
-                // Compute absolute position for the first range's start
-                let (first_bi, first_start, _) = ranges[0];
-                let first_bi = first_bi.min(block_count.saturating_sub(1));
-                let mut abs_start = 0usize;
-                for i in 0..first_bi {
-                    abs_start += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
-                }
-                let first_block_len = ed.doc.block_text(first_bi).map(|t| t.len()).unwrap_or(0);
-                abs_start += first_start.min(first_block_len);
-
-                // Compute absolute position for the last range's end
-                let (last_bi, _, last_end) = *ranges.last().unwrap();
-                let last_bi = last_bi.min(block_count.saturating_sub(1));
-                let mut abs_end = 0usize;
-                for i in 0..last_bi {
-                    abs_end += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
-                }
-                let last_block_len = ed.doc.block_text(last_bi).map(|t| t.len()).unwrap_or(0);
-                abs_end += last_end.min(last_block_len);
-
-                ed.set_selection(Selection::new(
-                    Position::new(abs_start.min(doc_len)),
-                    Position::new(abs_end.min(doc_len)),
-                ));
+            // Compute absolute position for the first range's start
+            let (first_bi, first_start, _) = ranges[0];
+            let first_bi = first_bi.min(block_count.saturating_sub(1));
+            let mut abs_start = 0usize;
+            for i in 0..first_bi {
+                abs_start += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
             }
+            let first_block_len = ed.doc.block_text(first_bi).map(|t| t.len()).unwrap_or(0);
+            abs_start += first_start.min(first_block_len);
+
+            // Compute absolute position for the last range's end
+            let (last_bi, _, last_end) = *ranges.last().unwrap();
+            let last_bi = last_bi.min(block_count.saturating_sub(1));
+            let mut abs_end = 0usize;
+            for i in 0..last_bi {
+                abs_end += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
+            }
+            let last_block_len = ed.doc.block_text(last_bi).map(|t| t.len()).unwrap_or(0);
+            abs_end += last_end.min(last_block_len);
+
+            ed.set_selection(Selection::new(
+                Position::new(abs_start.min(doc_len)),
+                Position::new(abs_end.min(doc_len)),
+            ));
         }
     }
 
@@ -355,19 +377,26 @@ fn execute_toolbar_command(
                     let _ = TextCommands::insert_text(&mut ed, "link text");
                     // Select the inserted text
                     let end_pos = ed.get_selection().head;
-                    let start_pos = rinch_editor::document::Position::new(end_pos.0 - "link text".len());
+                    let start_pos =
+                        rinch_editor::document::Position::new(end_pos.0 - "link text".len());
                     ed.set_selection(rinch_editor::selection::Selection::new(start_pos, end_pos));
                     // Add link mark
                     let mut attrs = HashMap::new();
                     attrs.insert("href".to_string(), "https://example.com".to_string());
                     let range = ed.get_selection().range();
-                    let _ = ed.doc.add_mark(range, rinch_editor::document::MarkData::with_attrs("link", attrs));
+                    let _ = ed.doc.add_mark(
+                        range,
+                        rinch_editor::document::MarkData::with_attrs("link", attrs),
+                    );
                 } else {
                     // Has selection: add link mark to selected text
                     let range = sel.range();
                     let mut attrs = HashMap::new();
                     attrs.insert("href".to_string(), "https://example.com".to_string());
-                    let _ = ed.doc.add_mark(range, rinch_editor::document::MarkData::with_attrs("link", attrs));
+                    let _ = ed.doc.add_mark(
+                        range,
+                        rinch_editor::document::MarkData::with_attrs("link", attrs),
+                    );
                 }
             }
         }
@@ -378,7 +407,10 @@ fn execute_toolbar_command(
                     let range = sel.range();
                     let mut attrs = HashMap::new();
                     attrs.insert("color".to_string(), color.clone());
-                    let _ = ed.doc.add_mark(range, rinch_editor::document::MarkData::with_attrs("textColor", attrs));
+                    let _ = ed.doc.add_mark(
+                        range,
+                        rinch_editor::document::MarkData::with_attrs("textColor", attrs),
+                    );
                 }
             }
         }
@@ -459,8 +491,12 @@ fn execute_toolbar_command(
                 if let Ok(rp) = ed.doc.resolve_position(sel.head) {
                     let mut attrs = ed.doc.block_attrs(rp.block_index).unwrap_or_default();
                     attrs.remove("align");
-                    let block_type = ed.doc.block_type(rp.block_index).unwrap_or_else(|| "paragraph".to_string());
-                    let _ = StructureCommands::set_block_type_with_attrs(&mut ed, &block_type, attrs);
+                    let block_type = ed
+                        .doc
+                        .block_type(rp.block_index)
+                        .unwrap_or_else(|| "paragraph".to_string());
+                    let _ =
+                        StructureCommands::set_block_type_with_attrs(&mut ed, &block_type, attrs);
                 }
             }
         }
@@ -470,8 +506,12 @@ fn execute_toolbar_command(
                 if let Ok(rp) = ed.doc.resolve_position(sel.head) {
                     let mut attrs = ed.doc.block_attrs(rp.block_index).unwrap_or_default();
                     attrs.insert("align".to_string(), "center".to_string());
-                    let block_type = ed.doc.block_type(rp.block_index).unwrap_or_else(|| "paragraph".to_string());
-                    let _ = StructureCommands::set_block_type_with_attrs(&mut ed, &block_type, attrs);
+                    let block_type = ed
+                        .doc
+                        .block_type(rp.block_index)
+                        .unwrap_or_else(|| "paragraph".to_string());
+                    let _ =
+                        StructureCommands::set_block_type_with_attrs(&mut ed, &block_type, attrs);
                 }
             }
         }
@@ -481,8 +521,12 @@ fn execute_toolbar_command(
                 if let Ok(rp) = ed.doc.resolve_position(sel.head) {
                     let mut attrs = ed.doc.block_attrs(rp.block_index).unwrap_or_default();
                     attrs.insert("align".to_string(), "right".to_string());
-                    let block_type = ed.doc.block_type(rp.block_index).unwrap_or_else(|| "paragraph".to_string());
-                    let _ = StructureCommands::set_block_type_with_attrs(&mut ed, &block_type, attrs);
+                    let block_type = ed
+                        .doc
+                        .block_type(rp.block_index)
+                        .unwrap_or_else(|| "paragraph".to_string());
+                    let _ =
+                        StructureCommands::set_block_type_with_attrs(&mut ed, &block_type, attrs);
                 }
             }
         }
@@ -492,8 +536,12 @@ fn execute_toolbar_command(
                 if let Ok(rp) = ed.doc.resolve_position(sel.head) {
                     let mut attrs = ed.doc.block_attrs(rp.block_index).unwrap_or_default();
                     attrs.insert("align".to_string(), "justify".to_string());
-                    let block_type = ed.doc.block_type(rp.block_index).unwrap_or_else(|| "paragraph".to_string());
-                    let _ = StructureCommands::set_block_type_with_attrs(&mut ed, &block_type, attrs);
+                    let block_type = ed
+                        .doc
+                        .block_type(rp.block_index)
+                        .unwrap_or_else(|| "paragraph".to_string());
+                    let _ =
+                        StructureCommands::set_block_type_with_attrs(&mut ed, &block_type, attrs);
                 }
             }
         }

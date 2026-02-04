@@ -45,6 +45,7 @@ impl std::str::FromStr for TextInputSize {
 }
 
 /// A single-line text input field.
+#[derive(Default)]
 pub struct TextInput {
     /// Input label.
     pub label: Option<String>,
@@ -85,24 +86,6 @@ impl std::fmt::Debug for TextInput {
             .field("value", &self.value)
             .field("oninput", &self.oninput.as_ref().map(|_| "<callback>"))
             .finish()
-    }
-}
-
-impl Default for TextInput {
-    fn default() -> Self {
-        Self {
-            label: None,
-            placeholder: None,
-            description: None,
-            error: None,
-            size: None,
-            disabled: false,
-            required: false,
-            radius: None,
-            input_type: None,
-            value: None,
-            oninput: None,
-        }
     }
 }
 

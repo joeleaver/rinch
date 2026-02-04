@@ -25,5 +25,6 @@ pub fn styles() -> String {
 .rinch-stack--justify-end { justify-content: flex-end; }
 .rinch-stack--justify-between { justify-content: space-between; }
 .rinch-stack--justify-around { justify-content: space-around; }
-"#.to_string()
+"#
+    .to_string()
 }

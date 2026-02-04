@@ -2,8 +2,8 @@
 //!
 //! Inline and block code display.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// A code element for displaying code snippets.
 #[derive(Debug, Default)]
@@ -23,10 +23,10 @@ impl Code {
             classes.push("rinch-code--block");
         }
 
-        if let Some(ref color) = self.color {
-            if color == "primary" {
-                classes.push("rinch-code--primary");
-            }
+        if let Some(ref color) = self.color
+            && color == "primary"
+        {
+            classes.push("rinch-code--primary");
         }
 
         classes.join(" ")

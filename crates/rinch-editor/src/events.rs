@@ -1,7 +1,7 @@
 //! Event handling for editor interactions.
 
-use crate::error::EditorError;
 use crate::editor::Editor;
+use crate::error::EditorError;
 
 /// Editor event types.
 #[derive(Debug, Clone)]

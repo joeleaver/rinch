@@ -3,9 +3,9 @@
 //! This module provides an absolutely-positioned overlay that renders cursor
 //! and selection at correct screen positions using DOM layout queries.
 
-use std::collections::HashMap;
-use rinch_core::dom::{RenderScope, NodeHandle};
 use crate::editor::Editor;
+use rinch_core::dom::{NodeHandle, RenderScope};
+use std::collections::HashMap;
 
 /// Screen-space bounding box for a glyph.
 #[derive(Debug, Clone, Copy)]
@@ -61,14 +61,16 @@ impl Default for VisualLayerState {
 pub fn create_visual_layer(scope: &mut RenderScope) -> (NodeHandle, VisualLayerState) {
     let container = scope.create_element("div");
     container.set_attribute("class", "editor-visual-layer");
-    container.set_attribute("style",
+    container.set_attribute(
+        "style",
         "position: absolute; \
          top: 0; \
          left: 0; \
          width: 100%; \
          height: 100%; \
          pointer-events: none; \
-         z-index: 1;");
+         z-index: 1;",
+    );
 
     // Create cursor element
     let cursor = scope.create_element("div");
@@ -79,14 +81,16 @@ pub fn create_visual_layer(scope: &mut RenderScope) -> (NodeHandle, VisualLayerS
     // Create selection container
     let selection_container = scope.create_element("div");
     selection_container.set_attribute("class", "editor-selection-layer");
-    selection_container.set_attribute("style",
+    selection_container.set_attribute(
+        "style",
         "position: absolute; \
          top: 0; \
          left: 0; \
          width: 100%; \
          height: 100%; \
          pointer-events: none; \
-         z-index: 0;");
+         z-index: 0;",
+    );
     container.append_child(&selection_container);
 
     let state = VisualLayerState {
@@ -169,17 +173,15 @@ pub fn update_cursor_position(
     };
 
     // Query caret position from the DOM
-    let (x, y) = match block_node.query_caret_position(resolved.text_offset) {
-        Some(pos) => pos,
-        None => {
-            // Query failed - use fallback position at start of block
-            (0.0, 0.0)
-        }
-    };
+    let (x, y) = block_node
+        .query_caret_position(resolved.text_offset)
+        .unwrap_or((0.0, 0.0));
 
-    // Get line height - use a default of 20px for now
-    // TODO: Query actual line height from computed styles
-    let height = 20.0;
+    // Get line height from actual text layout
+    let height = block_node
+        .query_glyph_bounds(resolved.text_offset)
+        .map(|bounds| bounds.height)
+        .unwrap_or(20.0);
 
     cursor_node.set_attribute("style", &cursor_style(x, y, height));
 }
@@ -239,7 +241,9 @@ pub fn update_selection_rects(
             end.text_offset
         } else {
             // End of block - get block text length
-            editor.doc.block_text(block_idx)
+            editor
+                .doc
+                .block_text(block_idx)
                 .map(|t| t.len())
                 .unwrap_or(0)
         };
@@ -330,10 +334,7 @@ pub fn update_selection_rects(
 /// This should be called after rendering the document, passing a map from
 /// block index to the rendered DOM node. The visual layer uses these nodes
 /// to query glyph positions.
-pub fn register_block_nodes(
-    state: &mut VisualLayerState,
-    block_nodes: HashMap<usize, NodeHandle>,
-) {
+pub fn register_block_nodes(state: &mut VisualLayerState, block_nodes: HashMap<usize, NodeHandle>) {
     state.block_nodes = block_nodes;
 }
 

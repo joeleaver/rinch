@@ -1,7 +1,7 @@
 //! Command dispatcher for executing document mutations.
 
-use crate::error::EditorError;
 use crate::editor::Editor;
+use crate::error::EditorError;
 
 /// Trait for commands that can be executed on the editor.
 pub trait Command: std::fmt::Debug {
@@ -36,7 +36,11 @@ impl CommandDispatcher {
     }
 
     /// Execute a command and add its inverse to the undo stack.
-    pub fn execute(&mut self, cmd: Box<dyn Command>, editor: &mut Editor) -> Result<(), EditorError> {
+    pub fn execute(
+        &mut self,
+        cmd: Box<dyn Command>,
+        editor: &mut Editor,
+    ) -> Result<(), EditorError> {
         // Capture inverse before executing (state may change)
         let inverse = cmd.inverse(editor);
 
@@ -105,9 +109,9 @@ impl Default for CommandDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::Schema;
-    use crate::editor::EditorConfig;
     use crate::document::Position;
+    use crate::editor::EditorConfig;
+    use crate::schema::Schema;
 
     #[derive(Debug)]
     struct InsertTextCmd {
@@ -119,7 +123,9 @@ mod tests {
         fn execute(&self, editor: &mut Editor) -> Result<(), EditorError> {
             editor.doc.insert_text(Position::new(self.pos), &self.text)
         }
-        fn description(&self) -> &str { "Insert text" }
+        fn description(&self) -> &str {
+            "Insert text"
+        }
         fn inverse(&self, _editor: &Editor) -> Option<Box<dyn Command>> {
             Some(Box::new(DeleteRangeCmd {
                 start: self.pos,
@@ -136,14 +142,25 @@ mod tests {
 
     impl Command for DeleteRangeCmd {
         fn execute(&self, editor: &mut Editor) -> Result<(), EditorError> {
-            editor.doc.delete_range(crate::document::Range::new(self.start, self.end))
+            editor
+                .doc
+                .delete_range(crate::document::Range::new(self.start, self.end))
         }
-        fn description(&self) -> &str { "Delete range" }
+        fn description(&self) -> &str {
+            "Delete range"
+        }
         fn inverse(&self, editor: &Editor) -> Option<Box<dyn Command>> {
             // Capture text before delete for undo
             let text = editor.doc.to_text();
-            let deleted: String = text.chars().skip(self.start).take(self.end - self.start).collect();
-            Some(Box::new(InsertTextCmd { pos: self.start, text: deleted }))
+            let deleted: String = text
+                .chars()
+                .skip(self.start)
+                .take(self.end - self.start)
+                .collect();
+            Some(Box::new(InsertTextCmd {
+                pos: self.start,
+                text: deleted,
+            }))
         }
     }
 
@@ -155,7 +172,10 @@ mod tests {
     fn execute_command() {
         let mut editor = test_editor();
         let mut dispatcher = CommandDispatcher::new();
-        let cmd = Box::new(InsertTextCmd { pos: 0, text: "Hello".into() });
+        let cmd = Box::new(InsertTextCmd {
+            pos: 0,
+            text: "Hello".into(),
+        });
         dispatcher.execute(cmd, &mut editor).unwrap();
         assert_eq!(editor.doc.to_text(), "Hello");
     }
@@ -164,7 +184,10 @@ mod tests {
     fn undo_command() {
         let mut editor = test_editor();
         let mut dispatcher = CommandDispatcher::new();
-        let cmd = Box::new(InsertTextCmd { pos: 0, text: "Hello".into() });
+        let cmd = Box::new(InsertTextCmd {
+            pos: 0,
+            text: "Hello".into(),
+        });
         dispatcher.execute(cmd, &mut editor).unwrap();
         assert!(dispatcher.can_undo());
         dispatcher.undo(&mut editor).unwrap();
@@ -175,7 +198,10 @@ mod tests {
     fn redo_command() {
         let mut editor = test_editor();
         let mut dispatcher = CommandDispatcher::new();
-        let cmd = Box::new(InsertTextCmd { pos: 0, text: "Hello".into() });
+        let cmd = Box::new(InsertTextCmd {
+            pos: 0,
+            text: "Hello".into(),
+        });
         dispatcher.execute(cmd, &mut editor).unwrap();
         dispatcher.undo(&mut editor).unwrap();
         assert!(dispatcher.can_redo());
@@ -203,10 +229,26 @@ mod tests {
     fn new_action_clears_redo() {
         let mut editor = test_editor();
         let mut dispatcher = CommandDispatcher::new();
-        dispatcher.execute(Box::new(InsertTextCmd { pos: 0, text: "A".into() }), &mut editor).unwrap();
+        dispatcher
+            .execute(
+                Box::new(InsertTextCmd {
+                    pos: 0,
+                    text: "A".into(),
+                }),
+                &mut editor,
+            )
+            .unwrap();
         dispatcher.undo(&mut editor).unwrap();
         assert!(dispatcher.can_redo());
-        dispatcher.execute(Box::new(InsertTextCmd { pos: 0, text: "B".into() }), &mut editor).unwrap();
+        dispatcher
+            .execute(
+                Box::new(InsertTextCmd {
+                    pos: 0,
+                    text: "B".into(),
+                }),
+                &mut editor,
+            )
+            .unwrap();
         assert!(!dispatcher.can_redo());
     }
 }

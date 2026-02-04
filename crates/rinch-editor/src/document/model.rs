@@ -73,6 +73,12 @@ pub struct EditorDocument {
     content_id: ObjId,
 }
 
+impl Default for EditorDocument {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EditorDocument {
     /// Create a new empty document with a single empty paragraph.
     pub fn new() -> Self {
@@ -85,9 +91,7 @@ impl EditorDocument {
         doc.put(&block, "type", "paragraph").unwrap();
         doc.put_object(&block, "attrs", ObjType::Map).unwrap();
         let inline_content = doc.put_object(&block, "content", ObjType::List).unwrap();
-        let text_node = doc
-            .insert_object(&inline_content, 0, ObjType::Map)
-            .unwrap();
+        let text_node = doc.insert_object(&inline_content, 0, ObjType::Map).unwrap();
         doc.put(&text_node, "type", "text").unwrap();
         doc.put(&text_node, "text", "").unwrap();
         doc.put_object(&text_node, "marks", ObjType::List).unwrap();
@@ -176,10 +180,10 @@ impl EditorDocument {
             .ok()
             .flatten()
             .and_then(|(val, _)| {
-                if let automerge::Value::Scalar(s) = val {
-                    if let automerge::ScalarValue::Str(smol) = s.as_ref() {
-                        return Some(smol.to_string());
-                    }
+                if let automerge::Value::Scalar(s) = val
+                    && let automerge::ScalarValue::Str(smol) = s.as_ref()
+                {
+                    return Some(smol.to_string());
                 }
                 None
             })
@@ -202,12 +206,11 @@ impl EditorDocument {
             })?;
         let mut result = HashMap::new();
         for key in self.doc.keys(&attrs_id) {
-            if let Some((val, _)) = self.doc.get(&attrs_id, key.as_str()).ok().flatten() {
-                if let automerge::Value::Scalar(s) = val {
-                    if let automerge::ScalarValue::Str(smol) = s.as_ref() {
-                        result.insert(key, smol.to_string());
-                    }
-                }
+            if let Some((val, _)) = self.doc.get(&attrs_id, key.as_str()).ok().flatten()
+                && let automerge::Value::Scalar(s) = val
+                && let automerge::ScalarValue::Str(smol) = s.as_ref()
+            {
+                result.insert(key, smol.to_string());
             }
         }
         Some(result)
@@ -387,21 +390,22 @@ impl EditorDocument {
 
     /// Read marks from an inline node.
     fn read_marks(&self, inline_id: &ObjId) -> Vec<MarkData> {
-        let marks_id = match self
-            .doc
-            .get(inline_id, "marks")
-            .ok()
-            .flatten()
-            .and_then(|(val, id)| {
-                if matches!(val, automerge::Value::Object(ObjType::List)) {
-                    Some(id)
-                } else {
-                    None
-                }
-            }) {
-            Some(id) => id,
-            None => return Vec::new(),
-        };
+        let marks_id =
+            match self
+                .doc
+                .get(inline_id, "marks")
+                .ok()
+                .flatten()
+                .and_then(|(val, id)| {
+                    if matches!(val, automerge::Value::Object(ObjType::List)) {
+                        Some(id)
+                    } else {
+                        None
+                    }
+                }) {
+                Some(id) => id,
+                None => return Vec::new(),
+            };
 
         let mut marks = Vec::new();
         let len = self.doc.length(&marks_id);
@@ -460,7 +464,10 @@ impl EditorDocument {
             if let Some((_, inline_id)) = self.doc.get(&content_id, i).ok().flatten() {
                 let inline_type = self.get_str(&inline_id, "type").unwrap_or_default();
                 let inline_len = match inline_type.as_str() {
-                    "text" => self.get_str(&inline_id, "text").map(|t| t.len()).unwrap_or(0),
+                    "text" => self
+                        .get_str(&inline_id, "text")
+                        .map(|t| t.len())
+                        .unwrap_or(0),
                     "hard_break" => 1,
                     _ => 0,
                 };
@@ -542,7 +549,11 @@ impl EditorDocument {
     }
 
     /// Read inline nodes from a content list starting at `from_index` as (text, marks) pairs.
-    fn collect_inlines(&self, content_id: &ObjId, from_index: usize) -> Vec<(String, Vec<MarkData>)> {
+    fn collect_inlines(
+        &self,
+        content_id: &ObjId,
+        from_index: usize,
+    ) -> Vec<(String, Vec<MarkData>)> {
         let len = self.doc.length(content_id);
         let mut result = Vec::new();
         for i in from_index..len {
@@ -619,16 +630,24 @@ impl EditorDocument {
             let end_content_id = self.block_content_obj(&end_block_id).unwrap();
 
             // Truncate start inline node text to [..start_text_offset]
-            if let Some((_, start_inline_id)) = self.doc.get(&start_content_id, start_resolved.inline_index).ok().flatten() {
+            if let Some((_, start_inline_id)) = self
+                .doc
+                .get(&start_content_id, start_resolved.inline_index)
+                .ok()
+                .flatten()
+            {
                 let text = self.get_str(&start_inline_id, "text").unwrap_or_default();
                 let keep = &text[..start_resolved.text_offset.min(text.len())];
-                self.doc.put(&start_inline_id, "text", keep).map_err(|e| EditorError::Automerge(e.to_string()))?;
+                self.doc
+                    .put(&start_inline_id, "text", keep)
+                    .map_err(|e| EditorError::Automerge(e.to_string()))?;
             }
 
             // Remove all inlines in start block after start_inline_index
             let start_inline_count = self.doc.length(&start_content_id);
             for _ in (start_resolved.inline_index + 1..start_inline_count).rev() {
-                self.doc.delete(&start_content_id, start_resolved.inline_index + 1)
+                self.doc
+                    .delete(&start_content_id, start_resolved.inline_index + 1)
                     .map_err(|e| EditorError::Automerge(e.to_string()))?;
             }
 
@@ -636,7 +655,12 @@ impl EditorDocument {
             // First, read the end inline's remaining text and marks
             let mut end_inlines_to_append: Vec<(String, Vec<MarkData>)> = Vec::new();
 
-            if let Some((_, end_inline_id)) = self.doc.get(&end_content_id, end_resolved.inline_index).ok().flatten() {
+            if let Some((_, end_inline_id)) = self
+                .doc
+                .get(&end_content_id, end_resolved.inline_index)
+                .ok()
+                .flatten()
+            {
                 let text = self.get_str(&end_inline_id, "text").unwrap_or_default();
                 let keep = text[end_resolved.text_offset.min(text.len())..].to_string();
                 let marks = self.read_marks(&end_inline_id);
@@ -651,22 +675,29 @@ impl EditorDocument {
 
             // Append end block's remaining inlines to start block
             // Check if start inline became empty
-            let start_inline_text = if let Some((_, sid)) = self.doc.get(&start_content_id, start_resolved.inline_index).ok().flatten() {
+            let start_inline_text = if let Some((_, sid)) = self
+                .doc
+                .get(&start_content_id, start_resolved.inline_index)
+                .ok()
+                .flatten()
+            {
                 self.get_str(&sid, "text").unwrap_or_default()
             } else {
                 String::new()
             };
 
-            let mut insert_idx = if start_inline_text.is_empty() && !end_inlines_to_append.is_empty() {
-                // Remove empty start inline, we'll replace with end inlines
-                if self.doc.length(&start_content_id) > 0 {
-                    self.doc.delete(&start_content_id, start_resolved.inline_index)
-                        .map_err(|e| EditorError::Automerge(e.to_string()))?;
-                }
-                start_resolved.inline_index
-            } else {
-                start_resolved.inline_index + 1
-            };
+            let mut insert_idx =
+                if start_inline_text.is_empty() && !end_inlines_to_append.is_empty() {
+                    // Remove empty start inline, we'll replace with end inlines
+                    if self.doc.length(&start_content_id) > 0 {
+                        self.doc
+                            .delete(&start_content_id, start_resolved.inline_index)
+                            .map_err(|e| EditorError::Automerge(e.to_string()))?;
+                    }
+                    start_resolved.inline_index
+                } else {
+                    start_resolved.inline_index + 1
+                };
 
             for (text, marks) in &end_inlines_to_append {
                 self.insert_text_inline(&start_content_id, insert_idx, text, marks)?;
@@ -698,30 +729,37 @@ impl EditorDocument {
         end_inline: usize,
         end_offset: usize,
     ) -> Result<(), EditorError> {
-        let block_id = self.block_obj(block_index)
+        let block_id = self
+            .block_obj(block_index)
             .ok_or_else(|| EditorError::CommandFailed("Block not found".into()))?;
-        let content_id = self.block_content_obj(&block_id)
+        let content_id = self
+            .block_content_obj(&block_id)
             .ok_or_else(|| EditorError::CommandFailed("Block content not found".into()))?;
 
         // Truncate start inline node
         if let Some((_, start_id)) = self.doc.get(&content_id, start_inline).ok().flatten() {
             let text = self.get_str(&start_id, "text").unwrap_or_default();
             let keep = &text[..start_offset.min(text.len())];
-            self.doc.put(&start_id, "text", keep).map_err(|e| EditorError::Automerge(e.to_string()))?;
+            self.doc
+                .put(&start_id, "text", keep)
+                .map_err(|e| EditorError::Automerge(e.to_string()))?;
         }
 
         // Truncate end inline node
         if let Some((_, end_id)) = self.doc.get(&content_id, end_inline).ok().flatten() {
             let text = self.get_str(&end_id, "text").unwrap_or_default();
             let keep = text[end_offset.min(text.len())..].to_string();
-            self.doc.put(&end_id, "text", &keep).map_err(|e| EditorError::Automerge(e.to_string()))?;
+            self.doc
+                .put(&end_id, "text", &keep)
+                .map_err(|e| EditorError::Automerge(e.to_string()))?;
         }
 
         // Remove intermediate inline nodes (between start+1 and end-1)
         // Remove in reverse to keep indices stable
         if end_inline > start_inline + 1 {
             for _ in (start_inline + 1..end_inline).rev() {
-                self.doc.delete(&content_id, start_inline + 1)
+                self.doc
+                    .delete(&content_id, start_inline + 1)
                     .map_err(|e| EditorError::Automerge(e.to_string()))?;
             }
         }
@@ -731,27 +769,31 @@ impl EditorDocument {
         let end_new_idx = start_inline + 1;
 
         // Check end node (check it first since removing start would shift it)
-        let end_empty = if let Some((_, eid)) = self.doc.get(&content_id, end_new_idx).ok().flatten() {
-            self.get_str(&eid, "text").unwrap_or_default().is_empty()
-        } else {
-            false
-        };
+        let end_empty =
+            if let Some((_, eid)) = self.doc.get(&content_id, end_new_idx).ok().flatten() {
+                self.get_str(&eid, "text").unwrap_or_default().is_empty()
+            } else {
+                false
+            };
 
-        let start_empty = if let Some((_, sid)) = self.doc.get(&content_id, start_inline).ok().flatten() {
-            self.get_str(&sid, "text").unwrap_or_default().is_empty()
-        } else {
-            false
-        };
+        let start_empty =
+            if let Some((_, sid)) = self.doc.get(&content_id, start_inline).ok().flatten() {
+                self.get_str(&sid, "text").unwrap_or_default().is_empty()
+            } else {
+                false
+            };
 
         let total = self.doc.length(&content_id);
         // Don't remove if it would leave the block with no inlines
         if end_empty && total > 1 {
-            self.doc.delete(&content_id, end_new_idx)
+            self.doc
+                .delete(&content_id, end_new_idx)
                 .map_err(|e| EditorError::Automerge(e.to_string()))?;
         }
         let total = self.doc.length(&content_id);
         if start_empty && total > 1 {
-            self.doc.delete(&content_id, start_inline)
+            self.doc
+                .delete(&content_id, start_inline)
                 .map_err(|e| EditorError::Automerge(e.to_string()))?;
         }
 
@@ -761,6 +803,7 @@ impl EditorDocument {
     /// Set the text of a block (clears all inlines, creates single plain text node).
     /// Only used in tests; production code uses mark-preserving operations.
     #[cfg(test)]
+    #[allow(dead_code)]
     fn set_block_text(&mut self, block_index: usize, text: &str) -> Result<(), EditorError> {
         let block_id = self
             .block_obj(block_index)
@@ -901,10 +944,10 @@ impl EditorDocument {
         // Check if mark already exists
         let len = self.doc.length(&marks_id);
         for i in 0..len {
-            if let Some((_, mid)) = self.doc.get(&marks_id, i).ok().flatten() {
-                if self.get_str(&mid, "type").as_deref() == Some(&mark.mark_type) {
-                    return Ok(()); // Already has this mark
-                }
+            if let Some((_, mid)) = self.doc.get(&marks_id, i).ok().flatten()
+                && self.get_str(&mid, "type").as_deref() == Some(&mark.mark_type)
+            {
+                return Ok(()); // Already has this mark
             }
         }
 
@@ -1049,30 +1092,27 @@ impl EditorDocument {
             let inline_count = self.doc.length(&content_id);
             for inline_idx in 0..inline_count {
                 if let Some((_, inline_id)) = self.doc.get(&content_id, inline_idx).ok().flatten() {
-                    let marks_id = match self
-                        .doc
-                        .get(&inline_id, "marks")
-                        .ok()
-                        .flatten()
-                        .and_then(|(val, id)| {
+                    let marks_id = match self.doc.get(&inline_id, "marks").ok().flatten().and_then(
+                        |(val, id)| {
                             if matches!(val, automerge::Value::Object(ObjType::List)) {
                                 Some(id)
                             } else {
                                 None
                             }
-                        }) {
+                        },
+                    ) {
                         Some(id) => id,
                         None => continue,
                     };
                     // Find and remove the mark
                     let len = self.doc.length(&marks_id);
                     for i in (0..len).rev() {
-                        if let Some((_, mid)) = self.doc.get(&marks_id, i).ok().flatten() {
-                            if self.get_str(&mid, "type").as_deref() == Some(mark_type) {
-                                self.doc
-                                    .delete(&marks_id, i)
-                                    .map_err(|e| EditorError::Automerge(e.to_string()))?;
-                            }
+                        if let Some((_, mid)) = self.doc.get(&marks_id, i).ok().flatten()
+                            && self.get_str(&mid, "type").as_deref() == Some(mark_type)
+                        {
+                            self.doc
+                                .delete(&marks_id, i)
+                                .map_err(|e| EditorError::Automerge(e.to_string()))?;
                         }
                     }
                 }
@@ -1086,11 +1126,15 @@ impl EditorDocument {
     pub fn split_block(&mut self, pos: Position) -> Result<(), EditorError> {
         let resolved = self.resolve_position(pos)?;
         let block_idx = resolved.block_index;
-        let block_type = self.block_type(block_idx).unwrap_or_else(|| "paragraph".into());
+        let block_type = self
+            .block_type(block_idx)
+            .unwrap_or_else(|| "paragraph".into());
 
-        let block_id = self.block_obj(block_idx)
+        let block_id = self
+            .block_obj(block_idx)
             .ok_or_else(|| EditorError::CommandFailed("Block not found".into()))?;
-        let content_id = self.block_content_obj(&block_id)
+        let content_id = self
+            .block_content_obj(&block_id)
             .ok_or_else(|| EditorError::CommandFailed("Block content not found".into()))?;
 
         let split_inline = resolved.inline_index;
@@ -1101,13 +1145,14 @@ impl EditorDocument {
         let mut new_block_inlines: Vec<(String, Vec<MarkData>)> = Vec::new();
 
         // Read the split inline node's text and marks
-        let (split_text, split_marks) = if let Some((_, inline_id)) = self.doc.get(&content_id, split_inline).ok().flatten() {
-            let text = self.get_str(&inline_id, "text").unwrap_or_default();
-            let marks = self.read_marks(&inline_id);
-            (text, marks)
-        } else {
-            (String::new(), Vec::new())
-        };
+        let (split_text, split_marks) =
+            if let Some((_, inline_id)) = self.doc.get(&content_id, split_inline).ok().flatten() {
+                let text = self.get_str(&inline_id, "text").unwrap_or_default();
+                let marks = self.read_marks(&inline_id);
+                (text, marks)
+            } else {
+                (String::new(), Vec::new())
+            };
 
         let split_at_start_of_inline = split_offset == 0;
         let split_at_end_of_inline = split_offset >= split_text.len();
@@ -1138,20 +1183,23 @@ impl EditorDocument {
             // Truncate to before text
             if let Some((_, inline_id)) = self.doc.get(&content_id, split_inline).ok().flatten() {
                 let before_text = &split_text[..split_offset];
-                self.doc.put(&inline_id, "text", before_text)
+                self.doc
+                    .put(&inline_id, "text", before_text)
                     .map_err(|e| EditorError::Automerge(e.to_string()))?;
             }
             // Remove all inlines after split_inline
             let total = self.doc.length(&content_id);
             for _ in (split_inline + 1..total).rev() {
-                self.doc.delete(&content_id, split_inline + 1)
+                self.doc
+                    .delete(&content_id, split_inline + 1)
                     .map_err(|e| EditorError::Automerge(e.to_string()))?;
             }
         } else if split_at_start_of_inline {
             // Remove all inlines from split_inline onward
             let total = self.doc.length(&content_id);
             for _ in (split_inline..total).rev() {
-                self.doc.delete(&content_id, split_inline)
+                self.doc
+                    .delete(&content_id, split_inline)
                     .map_err(|e| EditorError::Automerge(e.to_string()))?;
             }
             // Ensure original block has at least one empty inline
@@ -1162,7 +1210,8 @@ impl EditorDocument {
             // split_at_end_of_inline: remove all inlines after split_inline
             let total = self.doc.length(&content_id);
             for _ in (split_inline + 1..total).rev() {
-                self.doc.delete(&content_id, split_inline + 1)
+                self.doc
+                    .delete(&content_id, split_inline + 1)
                     .map_err(|e| EditorError::Automerge(e.to_string()))?;
             }
         }
@@ -1226,10 +1275,10 @@ impl EditorDocument {
     /// Helper: get a string value from an automerge object.
     fn get_str(&self, obj: &ObjId, key: &str) -> Option<String> {
         self.doc.get(obj, key).ok().flatten().and_then(|(val, _)| {
-            if let automerge::Value::Scalar(s) = val {
-                if let automerge::ScalarValue::Str(smol) = s.as_ref() {
-                    return Some(smol.to_string());
-                }
+            if let automerge::Value::Scalar(s) = val
+                && let automerge::ScalarValue::Str(smol) = s.as_ref()
+            {
+                return Some(smol.to_string());
             }
             None
         })
@@ -1550,8 +1599,11 @@ mod tests {
         doc.insert_text(Position(0), "click here").unwrap();
         let mut attrs = HashMap::new();
         attrs.insert("href".into(), "https://example.com".into());
-        doc.add_mark(Range::new(0usize, 10usize), MarkData::with_attrs("link", attrs))
-            .unwrap();
+        doc.add_mark(
+            Range::new(0usize, 10usize),
+            MarkData::with_attrs("link", attrs),
+        )
+        .unwrap();
         let html = doc.to_html();
         assert!(html.contains("href=\"https://example.com\""));
         assert!(html.contains("click here"));
@@ -1562,14 +1614,19 @@ mod tests {
         // "Hello World" with "World" bolded, delete "lo W" -> "Hel" + "orld"(bold)
         let mut doc = EditorDocument::new();
         doc.insert_text(Position(0), "Hello World").unwrap();
-        doc.add_mark(Range::new(6usize, 11usize), MarkData::new("bold")).unwrap();
+        doc.add_mark(Range::new(6usize, 11usize), MarkData::new("bold"))
+            .unwrap();
         // Now we have: ["Hello "] ["World"(bold)]
         // Delete "lo W" = positions 3..7
         doc.delete_range(Range::new(3usize, 7usize)).unwrap();
         assert_eq!(doc.to_text(), "Helorld");
         // "orld" should still be bold
         let marks = doc.marks_at(Position(3));
-        assert!(marks.iter().any(|m| m.mark_type == "bold"), "marks at pos 3 should include bold, got: {:?}", marks);
+        assert!(
+            marks.iter().any(|m| m.mark_type == "bold"),
+            "marks at pos 3 should include bold, got: {:?}",
+            marks
+        );
     }
 
     #[test]
@@ -1577,7 +1634,8 @@ mod tests {
         // "Hello World" with "World" bolded, split at "Wor|ld"
         let mut doc = EditorDocument::new();
         doc.insert_text(Position(0), "Hello World").unwrap();
-        doc.add_mark(Range::new(6usize, 11usize), MarkData::new("bold")).unwrap();
+        doc.add_mark(Range::new(6usize, 11usize), MarkData::new("bold"))
+            .unwrap();
         // Split at position 9 (inside "World" -> "Wor" | "ld")
         doc.split_block(Position(9)).unwrap();
         assert_eq!(doc.block_count(), 2);
@@ -1585,9 +1643,15 @@ mod tests {
         assert_eq!(doc.block_text(1), Some("ld".into()));
         // Both "Wor" and "ld" should be bold
         let marks_before = doc.marks_at(Position(6)); // "W" in block 0
-        assert!(marks_before.iter().any(|m| m.mark_type == "bold"), "Wor should be bold");
+        assert!(
+            marks_before.iter().any(|m| m.mark_type == "bold"),
+            "Wor should be bold"
+        );
         let marks_after = doc.marks_at(Position(10)); // "l" in block 1 (pos 10 = after newline)
-        assert!(marks_after.iter().any(|m| m.mark_type == "bold"), "ld should be bold");
+        assert!(
+            marks_after.iter().any(|m| m.mark_type == "bold"),
+            "ld should be bold"
+        );
     }
 
     #[test]
@@ -1597,14 +1661,18 @@ mod tests {
         doc.insert_text(Position(0), "Hello").unwrap();
         doc.split_block(Position(5)).unwrap();
         doc.insert_text(Position(6), "World").unwrap();
-        doc.add_mark(Range::new(6usize, 11usize), MarkData::new("bold")).unwrap();
+        doc.add_mark(Range::new(6usize, 11usize), MarkData::new("bold"))
+            .unwrap();
         // Delete from pos 3 to pos 8: "lo\nWo" deleted -> "Hel" + "rld"(bold)
         doc.delete_range(Range::new(3usize, 8usize)).unwrap();
         assert_eq!(doc.block_count(), 1);
         assert_eq!(doc.to_text(), "Helrld");
         // "rld" should be bold (positions 3,4,5)
         let marks = doc.marks_at(Position(3));
-        assert!(marks.iter().any(|m| m.mark_type == "bold"), "rld should be bold after cross-block delete");
+        assert!(
+            marks.iter().any(|m| m.mark_type == "bold"),
+            "rld should be bold after cross-block delete"
+        );
     }
 
     #[test]
@@ -1612,8 +1680,10 @@ mod tests {
         // "AB CD EF" with "AB" bold, "EF" italic, delete "B CD E"
         let mut doc = EditorDocument::new();
         doc.insert_text(Position(0), "AB CD EF").unwrap();
-        doc.add_mark(Range::new(0usize, 2usize), MarkData::new("bold")).unwrap();
-        doc.add_mark(Range::new(6usize, 8usize), MarkData::new("italic")).unwrap();
+        doc.add_mark(Range::new(0usize, 2usize), MarkData::new("bold"))
+            .unwrap();
+        doc.add_mark(Range::new(6usize, 8usize), MarkData::new("italic"))
+            .unwrap();
         // Delete positions 1..7: "B CD E"
         doc.delete_range(Range::new(1usize, 7usize)).unwrap();
         assert_eq!(doc.to_text(), "AF");

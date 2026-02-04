@@ -1,185 +1,46 @@
 //! Input bridge: connects keyboard events to editor commands.
 //!
 //! Registers a global keyboard interceptor that routes key events to
-//! the appropriate editor commands. Also provides a hidden textarea
-//! element for capturing text input and IME.
+//! the appropriate editor commands. The keyboard interceptor handles
+//! ALL input including character insertion.
 
-use std::rc::Rc;
 use std::cell::RefCell;
-use std::cell::RefCell as StdRefCell;
+use std::rc::Rc;
 
-use rinch_core::dom::{RenderScope, NodeHandle};
-use rinch_core::events::{KeyEventData, set_keyboard_interceptor, clear_keyboard_interceptor};
+use rinch_core::dom::RenderScope;
+use rinch_core::events::{KeyEventData, clear_keyboard_interceptor, set_keyboard_interceptor};
 
-use crate::editor::Editor;
-use crate::commands::{TextCommands, FormattingCommands, StructureCommands};
+use crate::commands::{FormattingCommands, StructureCommands, TextCommands};
 use crate::document::{Position, Range};
+use crate::editor::Editor;
 use crate::selection::Selection;
 
 thread_local! {
-    static EDITOR_CLIPBOARD: StdRefCell<String> = StdRefCell::new(String::new());
-    static DESIRED_COLUMN: StdRefCell<Option<usize>> = StdRefCell::new(None);
+    static DESIRED_COLUMN: RefCell<Option<usize>> = const { RefCell::new(None) };
 }
 
-/// Create the input bridge: a hidden textarea and keyboard interceptor.
+/// Create the input bridge: a keyboard interceptor for the editor.
 ///
-/// The hidden textarea captures text input (characters, IME, clipboard paste).
-/// The keyboard interceptor captures special keys (Enter, Backspace, arrows, shortcuts).
-///
-/// Returns (textarea_node, focus_callback). Call focus_callback when the editor content
-/// is clicked to direct keyboard input to the hidden textarea.
+/// The keyboard interceptor captures ALL input including characters,
+/// special keys (Enter, Backspace, arrows), and shortcuts.
 ///
 /// Call `on_change` after every command to trigger re-rendering.
 pub fn create_input_bridge(
-    scope: &mut RenderScope,
+    _scope: &mut RenderScope,
     editor: Rc<RefCell<Editor>>,
     on_change: Rc<dyn Fn()>,
-) -> (NodeHandle, Rc<dyn Fn()>) {
-    // Create hidden textarea for capturing text input
-    let textarea = scope.create_element("textarea");
-    textarea.set_attribute("style", "\
-        position: absolute; \
-        left: -9999px; \
-        top: -9999px; \
-        width: 1px; \
-        height: 1px; \
-        opacity: 0; \
-        pointer-events: none; \
-    ");
-    textarea.set_attribute("autocomplete", "off");
-    textarea.set_attribute("autocorrect", "off");
-    textarea.set_attribute("spellcheck", "false");
-
-    // Register textarea input handler
-    let editor_for_input = editor.clone();
-    let on_change_for_input = on_change.clone();
-    let handler_id = scope.register_input_handler({
-        move |value: String| {
-            handle_textarea_input(&editor_for_input, &value, &*on_change_for_input);
-        }
-    });
-    textarea.set_attribute("data-oninput", &handler_id.to_string());
-
-    // Keep keyboard interceptor for navigation and shortcuts ONLY
+) {
+    // Register keyboard interceptor - this handles ALL input
     let editor_for_keys = editor.clone();
     let on_change_for_keys = on_change.clone();
-    let textarea_for_keys = textarea.clone();
     set_keyboard_interceptor(move |data: &KeyEventData| {
-        let handled = handle_key_event(&editor_for_keys, data, &*on_change_for_keys);
-        // Sync textarea after cursor movement keys
-        if handled && should_sync_textarea(&data.key) {
-            if let Ok(ed) = editor_for_keys.try_borrow() {
-                sync_textarea_with_editor(&ed, &textarea_for_keys);
-            }
-        }
-        handled
+        handle_key_event(&editor_for_keys, data, &*on_change_for_keys)
     });
-
-    // Create focus callback that can be called from editor click handler
-    let textarea_for_focus = textarea.clone();
-    let focus_callback: Rc<dyn Fn()> = Rc::new(move || {
-        textarea_for_focus.focus();
-    });
-
-    (textarea, focus_callback)
 }
 
 /// Cleanup the input bridge (call when editor is unmounted).
 pub fn destroy_input_bridge() {
     clear_keyboard_interceptor();
-}
-
-/// Handle input from the hidden textarea.
-/// The textarea value is diffed against the current block text to find the delta.
-fn handle_textarea_input(
-    editor: &Rc<RefCell<Editor>>,
-    new_value: &str,
-    on_change: &dyn Fn(),
-) {
-    tracing::info!("handle_textarea_input: new_value={:?}", new_value);
-    if let Ok(mut ed) = editor.try_borrow_mut() {
-        tracing::info!("handle_textarea_input: block_count={}", ed.doc.block_count());
-        // Get current selection position to know which block we're in
-        let sel = ed.get_selection().clone();
-        tracing::info!("handle_textarea_input: sel.head={:?}", sel.head);
-        if let Ok(rp) = ed.doc.resolve_position(sel.head) {
-            tracing::info!("handle_textarea_input: resolved block_index={}", rp.block_index);
-            let current_text = ed.doc.block_text(rp.block_index).unwrap_or_default();
-
-            // Diff: find what changed
-            let (prefix_match, suffix_match) = diff_strings(&current_text, new_value);
-            let old_mid = &current_text[prefix_match..current_text.len() - suffix_match];
-            let new_mid = &new_value[prefix_match..new_value.len() - suffix_match];
-
-            if old_mid.is_empty() && new_mid.is_empty() {
-                return; // No change
-            }
-
-            // Calculate absolute position of the change
-            let mut abs_start = 0;
-            for i in 0..rp.block_index {
-                abs_start += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
-            }
-            abs_start += prefix_match;
-
-            // Delete old text if any
-            if !old_mid.is_empty() {
-                let range = Range::new(abs_start, abs_start + old_mid.len());
-                let _ = TextCommands::delete_range(&mut ed, range);
-            }
-
-            // Insert new text if any
-            if !new_mid.is_empty() {
-                ed.set_selection(Selection::cursor(Position::new(abs_start)));
-                let _ = TextCommands::insert_text(&mut ed, new_mid);
-            }
-
-            // Check input rules after space
-            if new_mid.ends_with(' ') {
-                check_input_rules(&mut ed);
-            }
-
-            // Check for ``` code block trigger
-            if new_mid.contains('`') {
-                let sel = ed.get_selection().clone();
-                if let Ok(rp) = ed.doc.resolve_position(sel.head) {
-                    let block_text = ed.doc.block_text(rp.block_index).unwrap_or_default();
-                    if block_text == "```" {
-                        let mut abs = 0;
-                        for i in 0..rp.block_index {
-                            abs += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
-                        }
-                        let _ = ed.doc.delete_range(Range::new(abs, abs + 3));
-                        let _ = ed.doc.set_block_type(rp.block_index, "code_block", None);
-                        ed.mark_structure_changed();
-                        ed.set_selection(Selection::cursor(Position::new(abs)));
-                    }
-                }
-            }
-        }
-    }
-    on_change();
-}
-
-/// Find common prefix and suffix lengths between two strings.
-fn diff_strings(old: &str, new: &str) -> (usize, usize) {
-    let old_bytes = old.as_bytes();
-    let new_bytes = new.as_bytes();
-
-    // Common prefix
-    let prefix = old_bytes.iter().zip(new_bytes.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
-
-    // Common suffix (don't overlap with prefix)
-    let old_remaining = old_bytes.len() - prefix;
-    let new_remaining = new_bytes.len() - prefix;
-    let suffix = old_bytes.iter().rev().zip(new_bytes.iter().rev())
-        .take(old_remaining.min(new_remaining))
-        .take_while(|(a, b)| a == b)
-        .count();
-
-    (prefix, suffix)
 }
 
 /// Get or set desired column for vertical navigation.
@@ -207,40 +68,20 @@ fn clear_desired_column() {
     });
 }
 
-/// Keys that require textarea sync after handling.
-/// Includes cursor movement AND structural changes that move the cursor.
-fn should_sync_textarea(key: &str) -> bool {
-    matches!(key,
-        "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown" |
-        "Home" | "End" | "PageUp" | "PageDown" |
-        "Enter" | "Backspace" | "Delete"
-    )
-}
-
-/// Sync the hidden textarea value and cursor with editor state.
-/// Call this after cursor navigation to ensure text input goes to the right place.
-fn sync_textarea_with_editor(editor: &Editor, textarea: &NodeHandle) {
-    let sel = editor.get_selection();
-    if let Ok(rp) = editor.doc.resolve_position(sel.head) {
-        let block_text = editor.doc.block_text(rp.block_index).unwrap_or_default();
-        textarea.set_attribute("value", &block_text);
-        textarea.set_attribute("data-cursor-pos", &rp.text_offset.to_string());
-        textarea.set_attribute("data-selection-start", &rp.text_offset.to_string());
-    }
-}
-
 /// Find the previous word boundary from a position.
 fn prev_word_boundary(editor: &Editor, pos: Position) -> Position {
-    if pos.0 == 0 { return pos; }
+    if pos.0 == 0 {
+        return pos;
+    }
     let text = editor.doc.to_text();
     let chars: Vec<char> = text.chars().collect();
     let mut i = pos.0;
     // Skip trailing whitespace
-    while i > 0 && chars.get(i - 1).map_or(false, |c| c.is_whitespace()) {
+    while i > 0 && chars.get(i - 1).is_some_and(|c| c.is_whitespace()) {
         i -= 1;
     }
     // Skip word characters
-    while i > 0 && chars.get(i - 1).map_or(false, |c| !c.is_whitespace()) {
+    while i > 0 && chars.get(i - 1).is_some_and(|c| !c.is_whitespace()) {
         i -= 1;
     }
     Position::new(i)
@@ -305,11 +146,15 @@ fn handle_key_event(
                             abs_start += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
                         }
                         let _ = ed.doc.delete_range(Range::new(abs_start, abs_start + 3));
-                        let _ = ed.doc.set_block_type(rp.block_index, "horizontal_rule", None);
+                        let _ = ed
+                            .doc
+                            .set_block_type(rp.block_index, "horizontal_rule", None);
                         // Split to create new paragraph after
                         let _ = StructureCommands::split_block(&mut ed);
-                    } else if matches!(block_type.as_deref(), Some("bullet_list") | Some("ordered_list") | Some("list_item"))
-                        && block_text.is_empty()
+                    } else if matches!(
+                        block_type.as_deref(),
+                        Some("bullet_list") | Some("ordered_list") | Some("list_item")
+                    ) && block_text.is_empty()
                     {
                         // If in an empty list item, exit the list (convert to paragraph)
                         let _ = ed.doc.set_block_type(rp.block_index, "paragraph", None);
@@ -324,7 +169,11 @@ fn handle_key_event(
                                 "heading" | "blockquote" | "code_block" => {
                                     let new_sel = ed.get_selection().clone();
                                     if let Ok(rp) = ed.doc.resolve_position(new_sel.head) {
-                                        let _ = ed.doc.set_block_type(rp.block_index, "paragraph", None);
+                                        let _ = ed.doc.set_block_type(
+                                            rp.block_index,
+                                            "paragraph",
+                                            None,
+                                        );
                                     }
                                 }
                                 _ => {}
@@ -345,8 +194,8 @@ fn handle_key_event(
                     if sel.is_cursor() && rp.text_offset == 0 {
                         let block_type = ed.doc.block_type(rp.block_index);
                         match block_type.as_deref() {
-                            Some("heading") | Some("blockquote") | Some("code_block") |
-                            Some("bullet_list") | Some("ordered_list") | Some("list_item") => {
+                            Some("heading") | Some("blockquote") | Some("code_block")
+                            | Some("bullet_list") | Some("ordered_list") | Some("list_item") => {
                                 // Convert non-paragraph block to paragraph first
                                 let _ = ed.doc.set_block_type(rp.block_index, "paragraph", None);
                             }
@@ -408,18 +257,18 @@ fn handle_key_event(
         "ArrowUp" => {
             if let Ok(mut ed) = editor.try_borrow_mut() {
                 let sel = ed.get_selection().clone();
-                if let Ok(rp) = ed.doc.resolve_position(sel.head) {
-                    if rp.block_index > 0 {
-                        let desired_col = get_or_set_desired_column(&ed);
-                        let prev_block = rp.block_index - 1;
-                        let prev_len = ed.doc.block_text(prev_block).map(|t| t.len()).unwrap_or(0);
-                        let target_offset = desired_col.min(prev_len);
+                if let Ok(rp) = ed.doc.resolve_position(sel.head)
+                    && rp.block_index > 0
+                {
+                    let desired_col = get_or_set_desired_column(&ed);
+                    let prev_block = rp.block_index - 1;
+                    let prev_len = ed.doc.block_text(prev_block).map(|t| t.len()).unwrap_or(0);
+                    let target_offset = desired_col.min(prev_len);
 
-                        // Calculate absolute position
-                        let abs = ed.doc.block_start_position(prev_block) + target_offset;
+                    // Calculate absolute position
+                    let abs = ed.doc.block_start_position(prev_block) + target_offset;
 
-                        move_or_extend(&mut ed, Position::new(abs), data.shift);
-                    }
+                    move_or_extend(&mut ed, Position::new(abs), data.shift);
                 }
             }
             on_change();
@@ -428,18 +277,18 @@ fn handle_key_event(
         "ArrowDown" => {
             if let Ok(mut ed) = editor.try_borrow_mut() {
                 let sel = ed.get_selection().clone();
-                if let Ok(rp) = ed.doc.resolve_position(sel.head) {
-                    if rp.block_index + 1 < ed.doc.block_count() {
-                        let desired_col = get_or_set_desired_column(&ed);
-                        let next_block = rp.block_index + 1;
-                        let next_len = ed.doc.block_text(next_block).map(|t| t.len()).unwrap_or(0);
-                        let target_offset = desired_col.min(next_len);
+                if let Ok(rp) = ed.doc.resolve_position(sel.head)
+                    && rp.block_index + 1 < ed.doc.block_count()
+                {
+                    let desired_col = get_or_set_desired_column(&ed);
+                    let next_block = rp.block_index + 1;
+                    let next_len = ed.doc.block_text(next_block).map(|t| t.len()).unwrap_or(0);
+                    let target_offset = desired_col.min(next_len);
 
-                        // Calculate absolute position
-                        let abs = ed.doc.block_start_position(next_block) + target_offset;
+                    // Calculate absolute position
+                    let abs = ed.doc.block_start_position(next_block) + target_offset;
 
-                        move_or_extend(&mut ed, Position::new(abs), data.shift);
-                    }
+                    move_or_extend(&mut ed, Position::new(abs), data.shift);
                 }
             }
             on_change();
@@ -495,7 +344,11 @@ fn handle_key_event(
             if let Ok(mut ed) = editor.try_borrow_mut() {
                 let sel = ed.get_selection().clone();
                 if let Ok(rp) = ed.doc.resolve_position(sel.head) {
-                    let block_len = ed.doc.block_text(rp.block_index).map(|t| t.len()).unwrap_or(0);
+                    let block_len = ed
+                        .doc
+                        .block_text(rp.block_index)
+                        .map(|t| t.len())
+                        .unwrap_or(0);
                     let abs = ed.doc.block_start_position(rp.block_index) + block_len;
                     move_or_extend(&mut ed, Position::new(abs), data.shift);
                 }
@@ -519,7 +372,11 @@ fn handle_key_event(
                 let sel = ed.get_selection().clone();
                 if let Ok(rp) = ed.doc.resolve_position(sel.head) {
                     let target_block = rp.block_index.saturating_sub(20);
-                    let target_len = ed.doc.block_text(target_block).map(|t| t.len()).unwrap_or(0);
+                    let target_len = ed
+                        .doc
+                        .block_text(target_block)
+                        .map(|t| t.len())
+                        .unwrap_or(0);
                     let target_offset = rp.text_offset.min(target_len);
                     let abs = ed.doc.block_start_position(target_block) + target_offset;
                     move_or_extend(&mut ed, Position::new(abs), data.shift);
@@ -534,7 +391,11 @@ fn handle_key_event(
                 if let Ok(rp) = ed.doc.resolve_position(sel.head) {
                     let block_count = ed.doc.block_count();
                     let target_block = (rp.block_index + 20).min(block_count.saturating_sub(1));
-                    let target_len = ed.doc.block_text(target_block).map(|t| t.len()).unwrap_or(0);
+                    let target_len = ed
+                        .doc
+                        .block_text(target_block)
+                        .map(|t| t.len())
+                        .unwrap_or(0);
                     let target_offset = rp.text_offset.min(target_len);
                     let abs = ed.doc.block_start_position(target_block) + target_offset;
                     move_or_extend(&mut ed, Position::new(abs), data.shift);
@@ -554,14 +415,18 @@ fn handle_key_event(
                         if data.key == "`" {
                             let sel = ed.get_selection().clone();
                             if let Ok(rp) = ed.doc.resolve_position(sel.head) {
-                                let block_text = ed.doc.block_text(rp.block_index).unwrap_or_default();
+                                let block_text =
+                                    ed.doc.block_text(rp.block_index).unwrap_or_default();
                                 if block_text == "```" {
                                     let mut abs_start = 0;
                                     for i in 0..rp.block_index {
-                                        abs_start += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
+                                        abs_start +=
+                                            ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
                                     }
-                                    let _ = ed.doc.delete_range(Range::new(abs_start, abs_start + 3));
-                                    let _ = ed.doc.set_block_type(rp.block_index, "code_block", None);
+                                    let _ =
+                                        ed.doc.delete_range(Range::new(abs_start, abs_start + 3));
+                                    let _ =
+                                        ed.doc.set_block_type(rp.block_index, "code_block", None);
                                     ed.mark_structure_changed();
                                     ed.set_selection(Selection::cursor(Position::new(abs_start)));
                                 }
@@ -647,12 +512,30 @@ fn handle_ctrl_shortcut(
     // Ctrl+Alt combinations (headings)
     if data.alt {
         match key_lower.as_str() {
-            "1" => { set_heading(editor, 1, on_change); return true; }
-            "2" => { set_heading(editor, 2, on_change); return true; }
-            "3" => { set_heading(editor, 3, on_change); return true; }
-            "4" => { set_heading(editor, 4, on_change); return true; }
-            "5" => { set_heading(editor, 5, on_change); return true; }
-            "6" => { set_heading(editor, 6, on_change); return true; }
+            "1" => {
+                set_heading(editor, 1, on_change);
+                return true;
+            }
+            "2" => {
+                set_heading(editor, 2, on_change);
+                return true;
+            }
+            "3" => {
+                set_heading(editor, 3, on_change);
+                return true;
+            }
+            "4" => {
+                set_heading(editor, 4, on_change);
+                return true;
+            }
+            "5" => {
+                set_heading(editor, 5, on_change);
+                return true;
+            }
+            "6" => {
+                set_heading(editor, 6, on_change);
+                return true;
+            }
             "0" => {
                 if let Ok(mut ed) = editor.try_borrow_mut() {
                     let _ = StructureCommands::set_block_type(&mut ed, "paragraph");
@@ -744,9 +627,7 @@ fn handle_ctrl_shortcut(
                 let sel = ed.get_selection().clone();
                 if !sel.is_cursor() {
                     let text = ed.text_in_range(sel.range());
-                    EDITOR_CLIPBOARD.with(|cb| {
-                        *cb.borrow_mut() = text;
-                    });
+                    let _ = rinch_clipboard::copy_text(&text);
                 }
             }
             true
@@ -757,9 +638,7 @@ fn handle_ctrl_shortcut(
                 let sel = ed.get_selection().clone();
                 if !sel.is_cursor() {
                     let text = ed.text_in_range(sel.range());
-                    EDITOR_CLIPBOARD.with(|cb| {
-                        *cb.borrow_mut() = text;
-                    });
+                    let _ = rinch_clipboard::copy_text(&text);
                     let _ = TextCommands::delete_range(&mut ed, sel.range());
                 }
             }
@@ -768,7 +647,7 @@ fn handle_ctrl_shortcut(
         }
         "v" => {
             // Paste
-            let text = EDITOR_CLIPBOARD.with(|cb| cb.borrow().clone());
+            let text = rinch_clipboard::paste_text().unwrap_or_default();
             if !text.is_empty() {
                 if let Ok(mut ed) = editor.try_borrow_mut() {
                     let _ = TextCommands::insert_text(&mut ed, &text);
@@ -817,7 +696,11 @@ fn handle_ctrl_shortcut(
                     for i in 0..rp.block_index {
                         abs += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
                     }
-                    abs += ed.doc.block_text(rp.block_index).map(|t| t.len()).unwrap_or(0);
+                    abs += ed
+                        .doc
+                        .block_text(rp.block_index)
+                        .map(|t| t.len())
+                        .unwrap_or(0);
                     move_or_extend(&mut ed, Position::new(abs), data.shift);
                 }
             }
@@ -878,7 +761,9 @@ fn set_heading(editor: &Rc<RefCell<Editor>>, level: u8, on_change: &dyn Fn()) {
         if let Ok(rp) = ed.doc.resolve_position(sel.head) {
             let mut attrs = std::collections::HashMap::new();
             attrs.insert("level".to_string(), level.to_string());
-            let _ = ed.doc.set_block_type(rp.block_index, "heading", Some(attrs));
+            let _ = ed
+                .doc
+                .set_block_type(rp.block_index, "heading", Some(attrs));
         }
     }
     on_change();
@@ -892,51 +777,52 @@ fn check_input_rules(editor: &mut Editor) -> bool {
     if let Ok(rp) = editor.doc.resolve_position(sel.head) {
         let block_text = editor.doc.block_text(rp.block_index).unwrap_or_default();
 
-        // Get just the beginning of the block text up to cursor
-        let prefix = &block_text[..rp.text_offset];
-
-        match prefix {
-            "###### " => {
-                apply_heading_rule(editor, rp.block_index, 6, 7);
-                return true;
-            }
-            "##### " => {
-                apply_heading_rule(editor, rp.block_index, 5, 6);
-                return true;
-            }
-            "#### " => {
-                apply_heading_rule(editor, rp.block_index, 4, 5);
-                return true;
-            }
-            "### " => {
-                apply_heading_rule(editor, rp.block_index, 3, 4);
-                return true;
-            }
-            "## " => {
-                apply_heading_rule(editor, rp.block_index, 2, 3);
-                return true;
-            }
-            "# " => {
-                apply_heading_rule(editor, rp.block_index, 1, 2);
-                return true;
-            }
-            "- " | "* " => {
-                apply_block_rule(editor, rp.block_index, "bullet_list", 2);
-                return true;
-            }
-            "> " => {
-                apply_block_rule(editor, rp.block_index, "blockquote", 2);
-                return true;
-            }
-            _ => {
-                // Check for "1. " pattern (ordered list)
-                if prefix.len() >= 3 {
-                    let first_char = prefix.chars().next().unwrap_or(' ');
-                    if first_char.is_ascii_digit() && prefix.ends_with(". ") {
-                        // Check it's like "1. " or "2. " etc.
-                        let num_part = &prefix[..prefix.len() - 2];
-                        if num_part.chars().all(|c| c.is_ascii_digit()) {
-                            apply_block_rule(editor, rp.block_index, "ordered_list", prefix.len());
+        // Check for heading patterns at start of block
+        // Pattern must be at the beginning, and cursor must be past the pattern
+        // Check longer patterns first to avoid matching shorter ones incorrectly
+        if block_text.starts_with("###### ") && rp.text_offset >= 7 {
+            apply_heading_rule(editor, rp.block_index, 6, 7);
+            return true;
+        }
+        if block_text.starts_with("##### ") && rp.text_offset >= 6 {
+            apply_heading_rule(editor, rp.block_index, 5, 6);
+            return true;
+        }
+        if block_text.starts_with("#### ") && rp.text_offset >= 5 {
+            apply_heading_rule(editor, rp.block_index, 4, 5);
+            return true;
+        }
+        if block_text.starts_with("### ") && rp.text_offset >= 4 {
+            apply_heading_rule(editor, rp.block_index, 3, 4);
+            return true;
+        }
+        if block_text.starts_with("## ") && rp.text_offset >= 3 {
+            apply_heading_rule(editor, rp.block_index, 2, 3);
+            return true;
+        }
+        if block_text.starts_with("# ") && rp.text_offset >= 2 {
+            apply_heading_rule(editor, rp.block_index, 1, 2);
+            return true;
+        }
+        if (block_text.starts_with("- ") || block_text.starts_with("* ")) && rp.text_offset >= 2 {
+            apply_block_rule(editor, rp.block_index, "bullet_list", 2);
+            return true;
+        }
+        if block_text.starts_with("> ") && rp.text_offset >= 2 {
+            apply_block_rule(editor, rp.block_index, "blockquote", 2);
+            return true;
+        }
+        // Ordered list: "1. ", "2. ", etc.
+        if block_text.len() >= 3 {
+            let first_char = block_text.chars().next().unwrap_or(' ');
+            if first_char.is_ascii_digit() {
+                // Find ". " pattern
+                if let Some(dot_pos) = block_text.find(". ") {
+                    let num_part = &block_text[..dot_pos];
+                    if num_part.chars().all(|c| c.is_ascii_digit()) {
+                        let prefix_len = dot_pos + 2; // "N. "
+                        if rp.text_offset >= prefix_len {
+                            apply_block_rule(editor, rp.block_index, "ordered_list", prefix_len);
                             return true;
                         }
                     }
@@ -954,12 +840,16 @@ fn apply_heading_rule(editor: &mut Editor, block_index: usize, level: u8, prefix
     for i in 0..block_index {
         abs_start += editor.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
     }
-    let _ = editor.doc.delete_range(Range::new(abs_start, abs_start + prefix_len));
+    let _ = editor
+        .doc
+        .delete_range(Range::new(abs_start, abs_start + prefix_len));
 
     // Set block type to heading with level
     let mut attrs = std::collections::HashMap::new();
     attrs.insert("level".to_string(), level.to_string());
-    let _ = editor.doc.set_block_type(block_index, "heading", Some(attrs));
+    let _ = editor
+        .doc
+        .set_block_type(block_index, "heading", Some(attrs));
     editor.mark_structure_changed();
 
     // Update cursor position (moved back by prefix_len)
@@ -974,7 +864,9 @@ fn apply_block_rule(editor: &mut Editor, block_index: usize, block_type: &str, p
     for i in 0..block_index {
         abs_start += editor.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
     }
-    let _ = editor.doc.delete_range(Range::new(abs_start, abs_start + prefix_len));
+    let _ = editor
+        .doc
+        .delete_range(Range::new(abs_start, abs_start + prefix_len));
 
     // Set block type
     let _ = editor.doc.set_block_type(block_index, block_type, None);

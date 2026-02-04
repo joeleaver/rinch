@@ -2,8 +2,8 @@
 //!
 //! A loading placeholder that mimics content shape.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// Skeleton radius.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -88,10 +88,10 @@ impl Skeleton {
 
         if self.circle {
             classes.push("rinch-skeleton--circle");
-        } else if let Some(ref r) = self.radius {
-            if let Ok(radius) = r.parse::<SkeletonRadius>() {
-                classes.push(radius.class_name());
-            }
+        } else if let Some(ref r) = self.radius
+            && let Ok(radius) = r.parse::<SkeletonRadius>()
+        {
+            classes.push(radius.class_name());
         }
 
         if self.animate {

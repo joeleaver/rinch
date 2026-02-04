@@ -36,7 +36,10 @@ pub fn caret_position_for_offset(
 
     // Check inline layout first (IFC root)
     if let Some(ref inline_layout) = node.text_layout {
-        return Some(caret_position_for_offset_layout(&inline_layout.layout, byte_offset));
+        return Some(caret_position_for_offset_layout(
+            &inline_layout.layout,
+            byte_offset,
+        ));
     }
 
     // Check cached standalone text layout
@@ -47,10 +50,10 @@ pub fn caret_position_for_offset(
     // For block elements with a single text child (non-IFC case),
     // check the first text child's cached layout
     for &child_id in &node.children {
-        if let Some(child) = doc.tree.nodes.get(child_id) {
-            if let Some(ref layout) = child.cached_text_parley {
-                return Some(caret_position_for_offset_layout(layout, byte_offset));
-            }
+        if let Some(child) = doc.tree.nodes.get(child_id)
+            && let Some(ref layout) = child.cached_text_parley
+        {
+            return Some(caret_position_for_offset_layout(layout, byte_offset));
         }
     }
 
@@ -89,10 +92,10 @@ pub fn glyph_bounds_for_offset(
     // For block elements with a single text child (non-IFC case),
     // check the first text child's cached layout
     for &child_id in &node.children {
-        if let Some(child) = doc.tree.nodes.get(child_id) {
-            if let Some(ref layout) = child.cached_text_parley {
-                return glyph_bounds_for_offset_layout(layout, byte_offset);
-            }
+        if let Some(child) = doc.tree.nodes.get(child_id)
+            && let Some(ref layout) = child.cached_text_parley
+        {
+            return glyph_bounds_for_offset_layout(layout, byte_offset);
         }
     }
 
@@ -194,6 +197,8 @@ pub fn glyph_bounds_for_offset_layout(
     layout: &parley::layout::Layout<Brush>,
     byte_offset: usize,
 ) -> Option<GlyphBounds> {
+    let mut last_bounds: Option<GlyphBounds> = None;
+
     for line in layout.lines() {
         let line_metrics = line.metrics();
         let line_y = line_metrics.baseline - line_metrics.ascent;
@@ -219,19 +224,30 @@ pub fn glyph_bounds_for_offset_layout(
                     let cluster_start = cluster_data.text_range().start;
                     let cluster_end = cluster_data.text_range().end;
 
+                    // Track last valid bounds for end-of-text handling
+                    let bounds = GlyphBounds {
+                        x: gx,
+                        y: line_y,
+                        width: cluster_data.advance(),
+                        height: line_height,
+                    };
+                    last_bounds = Some(bounds);
+
                     if byte_offset >= cluster_start && byte_offset < cluster_end {
-                        return Some(GlyphBounds {
-                            x: gx,
-                            y: line_y,
-                            width: cluster_data.advance(),
-                            height: line_height,
-                        });
+                        return Some(bounds);
                     }
 
                     gx += cluster_data.advance();
                 }
             }
         }
+    }
+
+    // Handle end-of-text position: return bounds positioned at end of last character
+    if let Some(mut bounds) = last_bounds {
+        bounds.x += bounds.width;
+        bounds.width = 0.0;
+        return Some(bounds);
     }
 
     None
@@ -249,11 +265,7 @@ pub fn glyph_bounds_for_offset_layout(
 ///
 /// # Returns
 /// The byte offset of the character closest to the position
-pub fn byte_offset_from_position(
-    layout: &parley::layout::Layout<Brush>,
-    x: f32,
-    y: f32,
-) -> usize {
+pub fn byte_offset_from_position(layout: &parley::layout::Layout<Brush>, x: f32, y: f32) -> usize {
     if x <= 0.0 && y <= 0.0 {
         return 0;
     }

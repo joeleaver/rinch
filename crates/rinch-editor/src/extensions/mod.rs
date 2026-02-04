@@ -10,10 +10,10 @@ pub use starter_kit::StarterKit;
 pub use table::TableExtension;
 pub use table_model::TableModel;
 
-use crate::schema::{NodeSpec, MarkSpec};
-use crate::input::{InputRule, KeyboardShortcut};
 use crate::editor::Editor;
 use crate::error::EditorError;
+use crate::input::{InputRule, KeyboardShortcut};
+use crate::schema::{MarkSpec, NodeSpec};
 
 /// A command registration: name + handler function.
 #[derive(Clone)]
@@ -26,7 +26,10 @@ pub struct CommandRegistration {
 
 impl CommandRegistration {
     /// Create a new command registration.
-    pub fn new(name: impl Into<String>, handler: fn(&mut Editor) -> Result<(), EditorError>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        handler: fn(&mut Editor) -> Result<(), EditorError>,
+    ) -> Self {
         Self {
             name: name.into(),
             handler,
@@ -98,8 +101,12 @@ mod tests {
     struct TestExtension;
 
     impl Extension for TestExtension {
-        fn name(&self) -> &str { "test" }
-        fn priority(&self) -> i32 { 50 }
+        fn name(&self) -> &str {
+            "test"
+        }
+        fn priority(&self) -> i32 {
+            50
+        }
         fn commands(&self) -> Vec<CommandRegistration> {
             vec![CommandRegistration::new("test_cmd", |_editor| Ok(()))]
         }
@@ -110,7 +117,9 @@ mod tests {
         #[derive(Debug)]
         struct DefaultExt;
         impl Extension for DefaultExt {
-            fn name(&self) -> &str { "default" }
+            fn name(&self) -> &str {
+                "default"
+            }
         }
         let ext = DefaultExt;
         assert_eq!(ext.priority(), 100);
@@ -135,7 +144,9 @@ mod tests {
         #[derive(Debug)]
         struct MinimalExt;
         impl Extension for MinimalExt {
-            fn name(&self) -> &str { "minimal" }
+            fn name(&self) -> &str {
+                "minimal"
+            }
         }
         let ext = MinimalExt;
         assert!(ext.nodes().is_empty());

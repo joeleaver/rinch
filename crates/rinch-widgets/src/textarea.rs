@@ -2,8 +2,8 @@
 //!
 //! Multi-line text input with label and description support.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// A multi-line text input field.
 #[derive(Debug, Default)]

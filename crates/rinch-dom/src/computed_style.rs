@@ -7,19 +7,19 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
-use crate::layout::{parse_color, Viewport};
+use crate::layout::{Viewport, parse_color};
 use style::properties::ComputedValues;
 
 // Stylo grid types
 use style::computed_values::grid_auto_flow::T as GridAutoFlow;
 use style::values::computed::GridTemplateComponent;
-use style::values::generics::grid::{TrackListValue, TrackSize, TrackBreadth, RepeatCount};
+use style::values::generics::grid::{RepeatCount, TrackBreadth, TrackListValue, TrackSize};
 use style::values::specified::GenericGridTemplateComponent;
 
 /// Custom serialization for Option<peniko::Color> as hex string
 mod color_serde {
-    use serde::Serializer;
     use peniko::Color;
+    use serde::Serializer;
 
     pub fn serialize<S>(color: &Option<Color>, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -30,9 +30,13 @@ mod color_serde {
                 // Convert to RGBA8 struct
                 let rgba = c.to_rgba8();
                 if rgba.a == 255 {
-                    serializer.serialize_str(&format!("#{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b))
+                    serializer
+                        .serialize_str(&format!("#{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b))
                 } else {
-                    serializer.serialize_str(&format!("#{:02x}{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b, rgba.a))
+                    serializer.serialize_str(&format!(
+                        "#{:02x}{:02x}{:02x}{:02x}",
+                        rgba.r, rgba.g, rgba.b, rgba.a
+                    ))
                 }
             }
             None => serializer.serialize_none(),
@@ -105,7 +109,7 @@ impl PositionValue {
             "absolute" => Self::Absolute,
             "fixed" => Self::Fixed,
             "static" => Self::Static,
-            "relative" | _ => Self::Relative,
+            _ => Self::Relative,
         }
     }
 
@@ -135,33 +139,33 @@ impl DimensionValue {
             return Self::Auto;
         }
         // Viewport units
-        if let Some(num_str) = value.strip_suffix("vh") {
-            if let Ok(v) = num_str.trim().parse::<f32>() {
-                return Self::Length(v * viewport.height / 100.0);
-            }
+        if let Some(num_str) = value.strip_suffix("vh")
+            && let Ok(v) = num_str.trim().parse::<f32>()
+        {
+            return Self::Length(v * viewport.height / 100.0);
         }
-        if let Some(num_str) = value.strip_suffix("vw") {
-            if let Ok(v) = num_str.trim().parse::<f32>() {
-                return Self::Length(v * viewport.width / 100.0);
-            }
+        if let Some(num_str) = value.strip_suffix("vw")
+            && let Ok(v) = num_str.trim().parse::<f32>()
+        {
+            return Self::Length(v * viewport.width / 100.0);
         }
         // Percentage
-        if let Some(pct) = value.strip_suffix('%') {
-            if let Ok(v) = pct.trim().parse::<f32>() {
-                return Self::Percent(v / 100.0);
-            }
+        if let Some(pct) = value.strip_suffix('%')
+            && let Ok(v) = pct.trim().parse::<f32>()
+        {
+            return Self::Percent(v / 100.0);
         }
         // Pixels
-        if let Some(px) = value.strip_suffix("px") {
-            if let Ok(v) = px.trim().parse::<f32>() {
-                return Self::Length(v);
-            }
+        if let Some(px) = value.strip_suffix("px")
+            && let Ok(v) = px.trim().parse::<f32>()
+        {
+            return Self::Length(v);
         }
         // Rem
-        if let Some(rem_str) = value.strip_suffix("rem") {
-            if let Ok(v) = rem_str.trim().parse::<f32>() {
-                return Self::Length(v * 16.0);
-            }
+        if let Some(rem_str) = value.strip_suffix("rem")
+            && let Ok(v) = rem_str.trim().parse::<f32>()
+        {
+            return Self::Length(v * 16.0);
         }
         // Plain number
         if let Ok(v) = value.parse::<f32>() {
@@ -194,33 +198,33 @@ impl LengthPercentageValue {
     pub fn parse(value: &str, viewport: &Viewport) -> Self {
         let value = value.trim();
         // Viewport units
-        if let Some(num_str) = value.strip_suffix("vh") {
-            if let Ok(v) = num_str.trim().parse::<f32>() {
-                return Self::Length(v * viewport.height / 100.0);
-            }
+        if let Some(num_str) = value.strip_suffix("vh")
+            && let Ok(v) = num_str.trim().parse::<f32>()
+        {
+            return Self::Length(v * viewport.height / 100.0);
         }
-        if let Some(num_str) = value.strip_suffix("vw") {
-            if let Ok(v) = num_str.trim().parse::<f32>() {
-                return Self::Length(v * viewport.width / 100.0);
-            }
+        if let Some(num_str) = value.strip_suffix("vw")
+            && let Ok(v) = num_str.trim().parse::<f32>()
+        {
+            return Self::Length(v * viewport.width / 100.0);
         }
         // Percentage
-        if let Some(pct) = value.strip_suffix('%') {
-            if let Ok(v) = pct.trim().parse::<f32>() {
-                return Self::Percent(v / 100.0);
-            }
+        if let Some(pct) = value.strip_suffix('%')
+            && let Ok(v) = pct.trim().parse::<f32>()
+        {
+            return Self::Percent(v / 100.0);
         }
         // Pixels
-        if let Some(px) = value.strip_suffix("px") {
-            if let Ok(v) = px.trim().parse::<f32>() {
-                return Self::Length(v);
-            }
+        if let Some(px) = value.strip_suffix("px")
+            && let Ok(v) = px.trim().parse::<f32>()
+        {
+            return Self::Length(v);
         }
         // Rem
-        if let Some(rem_str) = value.strip_suffix("rem") {
-            if let Ok(v) = rem_str.trim().parse::<f32>() {
-                return Self::Length(v * 16.0);
-            }
+        if let Some(rem_str) = value.strip_suffix("rem")
+            && let Ok(v) = rem_str.trim().parse::<f32>()
+        {
+            return Self::Length(v * 16.0);
         }
         // Plain number
         if let Ok(v) = value.parse::<f32>() {
@@ -274,33 +278,33 @@ impl LengthPercentageAutoValue {
             return Self::Auto;
         }
         // Viewport units
-        if let Some(num_str) = value.strip_suffix("vh") {
-            if let Ok(v) = num_str.trim().parse::<f32>() {
-                return Self::Length(v * viewport.height / 100.0);
-            }
+        if let Some(num_str) = value.strip_suffix("vh")
+            && let Ok(v) = num_str.trim().parse::<f32>()
+        {
+            return Self::Length(v * viewport.height / 100.0);
         }
-        if let Some(num_str) = value.strip_suffix("vw") {
-            if let Ok(v) = num_str.trim().parse::<f32>() {
-                return Self::Length(v * viewport.width / 100.0);
-            }
+        if let Some(num_str) = value.strip_suffix("vw")
+            && let Ok(v) = num_str.trim().parse::<f32>()
+        {
+            return Self::Length(v * viewport.width / 100.0);
         }
         // Percentage
-        if let Some(pct) = value.strip_suffix('%') {
-            if let Ok(v) = pct.trim().parse::<f32>() {
-                return Self::Percent(v / 100.0);
-            }
+        if let Some(pct) = value.strip_suffix('%')
+            && let Ok(v) = pct.trim().parse::<f32>()
+        {
+            return Self::Percent(v / 100.0);
         }
         // Pixels
-        if let Some(px) = value.strip_suffix("px") {
-            if let Ok(v) = px.trim().parse::<f32>() {
-                return Self::Length(v);
-            }
+        if let Some(px) = value.strip_suffix("px")
+            && let Ok(v) = px.trim().parse::<f32>()
+        {
+            return Self::Length(v);
         }
         // Rem
-        if let Some(rem_str) = value.strip_suffix("rem") {
-            if let Ok(v) = rem_str.trim().parse::<f32>() {
-                return Self::Length(v * 16.0);
-            }
+        if let Some(rem_str) = value.strip_suffix("rem")
+            && let Ok(v) = rem_str.trim().parse::<f32>()
+        {
+            return Self::Length(v * 16.0);
         }
         // Plain number
         if let Ok(v) = value.parse::<f32>() {
@@ -336,7 +340,7 @@ impl FlexDirectionValue {
             "column" => Self::Column,
             "row-reverse" => Self::RowReverse,
             "column-reverse" => Self::ColumnReverse,
-            "row" | _ => Self::Row,
+            _ => Self::Row,
         }
     }
 
@@ -366,7 +370,7 @@ impl FlexWrapValue {
         match value.trim() {
             "wrap" => Self::Wrap,
             "wrap-reverse" => Self::WrapReverse,
-            "nowrap" | _ => Self::NoWrap,
+            _ => Self::NoWrap,
         }
     }
 
@@ -507,7 +511,7 @@ impl OverflowValue {
             "scroll" => Self::Scroll,
             "clip" => Self::Clip,
             "auto" => Self::Auto,
-            "visible" | _ => Self::Visible,
+            _ => Self::Visible,
         }
     }
 
@@ -537,7 +541,7 @@ impl FontStyleValue {
         match value.trim() {
             "italic" => Self::Italic,
             "oblique" => Self::Oblique,
-            "normal" | _ => Self::Normal,
+            _ => Self::Normal,
         }
     }
 
@@ -569,10 +573,10 @@ impl LineHeightValue {
         if value == "normal" || value.is_empty() {
             return Self::Normal;
         }
-        if let Some(px) = value.strip_suffix("px") {
-            if let Ok(v) = px.trim().parse::<f32>() {
-                return Self::Absolute(v);
-            }
+        if let Some(px) = value.strip_suffix("px")
+            && let Ok(v) = px.trim().parse::<f32>()
+        {
+            return Self::Absolute(v);
         }
         // Unitless = relative multiplier
         if let Ok(v) = value.parse::<f32>() {
@@ -608,7 +612,7 @@ impl TextAlignValue {
             "center" => Self::Center,
             "right" | "end" => Self::End,
             "justify" => Self::Justify,
-            "left" | "start" | _ => Self::Start,
+            _ => Self::Start,
         }
     }
 
@@ -660,7 +664,7 @@ impl WhiteSpaceValue {
             "pre" => Self::Pre,
             "pre-wrap" => Self::PreWrap,
             "pre-line" => Self::PreLine,
-            "normal" | _ => Self::Normal,
+            _ => Self::Normal,
         }
     }
 }
@@ -747,8 +751,8 @@ pub struct ComputedStyle {
     pub font_family: String,
     pub font_style: FontStyleValue,
     pub line_height: LineHeightValue,
-    pub letter_spacing: f32,  // in pixels, 0.0 means normal
-    pub word_spacing: f32,  // in pixels, 0.0 means normal
+    pub letter_spacing: f32, // in pixels, 0.0 means normal
+    pub word_spacing: f32,   // in pixels, 0.0 means normal
     pub text_align: TextAlignValue,
     pub text_decoration: TextDecorationValue,
     pub white_space: WhiteSpaceValue,
@@ -1107,15 +1111,15 @@ impl ComputedStyle {
                     } else {
                         // Parse border shorthand: "Npx solid color"
                         for part in value.split_whitespace() {
-                            if let Some(px) = part.strip_suffix("px") {
-                                if let Ok(w) = px.parse::<f32>() {
-                                    let lp = LengthPercentageValue::Length(w);
-                                    style.border_top_width = lp;
-                                    style.border_right_width = lp;
-                                    style.border_bottom_width = lp;
-                                    style.border_left_width = lp;
-                                    break;
-                                }
+                            if let Some(px) = part.strip_suffix("px")
+                                && let Ok(w) = px.parse::<f32>()
+                            {
+                                let lp = LengthPercentageValue::Length(w);
+                                style.border_top_width = lp;
+                                style.border_right_width = lp;
+                                style.border_bottom_width = lp;
+                                style.border_left_width = lp;
+                                break;
                             }
                             // Also handle "none" within border shorthand parts
                             if part == "none" {
@@ -1153,7 +1157,11 @@ impl ComputedStyle {
     ///
     /// `has_explicit_display` should be true when the user explicitly set a display value in CSS.
     /// When false, we use element-type defaults (block elements get flex-column, inline get flex-row).
-    pub fn to_taffy_style_with_explicit(&self, default_display: crate::layout::DefaultDisplay, has_explicit_display: bool) -> taffy::Style {
+    pub fn to_taffy_style_with_explicit(
+        &self,
+        default_display: crate::layout::DefaultDisplay,
+        has_explicit_display: bool,
+    ) -> taffy::Style {
         use taffy::prelude::*;
 
         // Choose defaults based on element type and whether CSS overrides are present
@@ -1170,13 +1178,12 @@ impl ComputedStyle {
             }
         };
 
-        let flex_direction = if self.flex_direction == FlexDirectionValue::Row
-            && !has_explicit_display
-        {
-            default_direction.to_taffy()
-        } else {
-            self.flex_direction.to_taffy()
-        };
+        let flex_direction =
+            if self.flex_direction == FlexDirectionValue::Row && !has_explicit_display {
+                default_direction.to_taffy()
+            } else {
+                self.flex_direction.to_taffy()
+            };
 
         let flex_wrap = if self.flex_wrap == FlexWrapValue::NoWrap && !has_explicit_display {
             default_wrap.to_taffy()
@@ -1439,9 +1446,15 @@ impl ComputedStyle {
 
             // Border radius
             border_radius_top_left: Self::border_radius_from_stylo(&border.border_top_left_radius),
-            border_radius_top_right: Self::border_radius_from_stylo(&border.border_top_right_radius),
-            border_radius_bottom_right: Self::border_radius_from_stylo(&border.border_bottom_right_radius),
-            border_radius_bottom_left: Self::border_radius_from_stylo(&border.border_bottom_left_radius),
+            border_radius_top_right: Self::border_radius_from_stylo(
+                &border.border_top_right_radius,
+            ),
+            border_radius_bottom_right: Self::border_radius_from_stylo(
+                &border.border_bottom_right_radius,
+            ),
+            border_radius_bottom_left: Self::border_radius_from_stylo(
+                &border.border_bottom_left_radius,
+            ),
 
             // Colors
             // Handle currentColor for background-color: resolve to text color
@@ -1471,11 +1484,18 @@ impl ComputedStyle {
             word_spacing: Self::word_spacing_from_stylo(&text.word_spacing),
             text_align: Self::text_align_from_stylo(&text.text_align),
             text_decoration: TextDecorationValue::default(), // TODO: text-decoration from Stylo
-            white_space: Self::white_space_from_stylo(&text.white_space_collapse, &text.text_wrap_mode),
+            white_space: Self::white_space_from_stylo(
+                &text.white_space_collapse,
+                &text.text_wrap_mode,
+            ),
 
             // Grid - extract from Stylo
-            grid_template_columns: Self::grid_template_tracks_from_stylo(&position_style.grid_template_columns),
-            grid_template_rows: Self::grid_template_tracks_from_stylo(&position_style.grid_template_rows),
+            grid_template_columns: Self::grid_template_tracks_from_stylo(
+                &position_style.grid_template_columns,
+            ),
+            grid_template_rows: Self::grid_template_tracks_from_stylo(
+                &position_style.grid_template_rows,
+            ),
             grid_auto_flow: Self::grid_auto_flow_from_stylo(&position_style.grid_auto_flow),
 
             // Display was explicitly set by Stylo
@@ -1575,7 +1595,9 @@ impl ComputedStyle {
         }
     }
 
-    fn flex_direction_from_stylo(dir: &style::properties::longhands::flex_direction::computed_value::T) -> FlexDirectionValue {
+    fn flex_direction_from_stylo(
+        dir: &style::properties::longhands::flex_direction::computed_value::T,
+    ) -> FlexDirectionValue {
         use style::properties::longhands::flex_direction::computed_value::T as FlexDir;
         match *dir {
             FlexDir::Row => FlexDirectionValue::Row,
@@ -1585,7 +1607,9 @@ impl ComputedStyle {
         }
     }
 
-    fn flex_wrap_from_stylo(wrap: &style::properties::longhands::flex_wrap::computed_value::T) -> FlexWrapValue {
+    fn flex_wrap_from_stylo(
+        wrap: &style::properties::longhands::flex_wrap::computed_value::T,
+    ) -> FlexWrapValue {
         use style::properties::longhands::flex_wrap::computed_value::T as FlexWr;
         match *wrap {
             FlexWr::Nowrap => FlexWrapValue::NoWrap,
@@ -1602,34 +1626,48 @@ impl ComputedStyle {
         }
     }
 
-    fn align_items_from_stylo(align: &style::values::computed::ItemPlacement) -> Option<AlignItemsValue> {
+    fn align_items_from_stylo(
+        align: &style::values::computed::ItemPlacement,
+    ) -> Option<AlignItemsValue> {
         use style::values::specified::align::AlignFlags;
         let flags = align.0.value();
-        if flags == AlignFlags::FLEX_START || flags == AlignFlags::START || flags == AlignFlags::SELF_START {
+        if flags == AlignFlags::FLEX_START
+            || flags == AlignFlags::START
+            || flags == AlignFlags::SELF_START
+        {
             Some(AlignItemsValue::FlexStart)
-        } else if flags == AlignFlags::FLEX_END || flags == AlignFlags::END || flags == AlignFlags::SELF_END {
+        } else if flags == AlignFlags::FLEX_END
+            || flags == AlignFlags::END
+            || flags == AlignFlags::SELF_END
+        {
             Some(AlignItemsValue::FlexEnd)
         } else if flags == AlignFlags::CENTER {
             Some(AlignItemsValue::Center)
         } else if flags == AlignFlags::BASELINE {
             Some(AlignItemsValue::Baseline)
-        } else if flags == AlignFlags::STRETCH {
-            Some(AlignItemsValue::Stretch)
-        } else if flags == AlignFlags::NORMAL {
+        } else if flags == AlignFlags::STRETCH || flags == AlignFlags::NORMAL {
             Some(AlignItemsValue::Stretch) // Normal defaults to stretch for flex items
         } else {
             None
         }
     }
 
-    fn align_self_from_stylo(align: &style::values::computed::SelfAlignment) -> Option<AlignSelfValue> {
+    fn align_self_from_stylo(
+        align: &style::values::computed::SelfAlignment,
+    ) -> Option<AlignSelfValue> {
         use style::values::specified::align::AlignFlags;
         let flags = align.0.value();
         if flags == AlignFlags::AUTO {
             None // Auto means inherit from align-items
-        } else if flags == AlignFlags::FLEX_START || flags == AlignFlags::START || flags == AlignFlags::SELF_START {
+        } else if flags == AlignFlags::FLEX_START
+            || flags == AlignFlags::START
+            || flags == AlignFlags::SELF_START
+        {
             Some(AlignSelfValue::FlexStart)
-        } else if flags == AlignFlags::FLEX_END || flags == AlignFlags::END || flags == AlignFlags::SELF_END {
+        } else if flags == AlignFlags::FLEX_END
+            || flags == AlignFlags::END
+            || flags == AlignFlags::SELF_END
+        {
             Some(AlignSelfValue::FlexEnd)
         } else if flags == AlignFlags::CENTER {
             Some(AlignSelfValue::Center)
@@ -1642,7 +1680,9 @@ impl ComputedStyle {
         }
     }
 
-    fn justify_content_from_stylo(justify: &style::values::computed::ContentDistribution) -> Option<JustifyContentValue> {
+    fn justify_content_from_stylo(
+        justify: &style::values::computed::ContentDistribution,
+    ) -> Option<JustifyContentValue> {
         use style::values::specified::align::AlignFlags;
         let flags = justify.primary();
         let value = flags.value();
@@ -1663,7 +1703,9 @@ impl ComputedStyle {
         }
     }
 
-    fn length_percentage_from_stylo(lp: &style::values::computed::NonNegativeLengthPercentage) -> LengthPercentageValue {
+    fn length_percentage_from_stylo(
+        lp: &style::values::computed::NonNegativeLengthPercentage,
+    ) -> LengthPercentageValue {
         if let Some(len) = lp.0.to_length() {
             LengthPercentageValue::Length(len.px())
         } else if let Some(pct) = lp.0.to_percentage() {
@@ -1673,7 +1715,9 @@ impl ComputedStyle {
         }
     }
 
-    fn margin_from_stylo_generic(margin: &style::values::computed::Margin) -> LengthPercentageAutoValue {
+    fn margin_from_stylo_generic(
+        margin: &style::values::computed::Margin,
+    ) -> LengthPercentageAutoValue {
         use style::values::generics::length::GenericMargin;
         match margin {
             GenericMargin::Auto => LengthPercentageAutoValue::Auto,
@@ -1690,7 +1734,9 @@ impl ComputedStyle {
         }
     }
 
-    fn gap_from_stylo(gap: &style::values::computed::length::NonNegativeLengthPercentageOrNormal) -> LengthPercentageValue {
+    fn gap_from_stylo(
+        gap: &style::values::computed::length::NonNegativeLengthPercentageOrNormal,
+    ) -> LengthPercentageValue {
         use style::values::computed::length::NonNegativeLengthPercentageOrNormal;
         match gap {
             NonNegativeLengthPercentageOrNormal::Normal => LengthPercentageValue::Zero,
@@ -1700,7 +1746,9 @@ impl ComputedStyle {
         }
     }
 
-    fn inset_from_stylo_generic(inset: &style::values::computed::Inset) -> LengthPercentageAutoValue {
+    fn inset_from_stylo_generic(
+        inset: &style::values::computed::Inset,
+    ) -> LengthPercentageAutoValue {
         use style::values::generics::position::GenericInset;
         match inset {
             GenericInset::Auto => LengthPercentageAutoValue::Auto,
@@ -1717,7 +1765,9 @@ impl ComputedStyle {
         }
     }
 
-    fn border_radius_from_stylo(radius: &style::values::computed::BorderCornerRadius) -> LengthPercentageValue {
+    fn border_radius_from_stylo(
+        radius: &style::values::computed::BorderCornerRadius,
+    ) -> LengthPercentageValue {
         // BorderCornerRadius is a Size with width and height for elliptical radii
         // We just take the width (horizontal radius) for simplicity
         let width = &radius.0.width;
@@ -1759,7 +1809,7 @@ impl ComputedStyle {
     }
 
     fn font_family_from_stylo(family: &style::values::computed::font::FontFamily) -> String {
-        use style::values::computed::font::{SingleFontFamily, GenericFontFamily};
+        use style::values::computed::font::{GenericFontFamily, SingleFontFamily};
         let mut result = String::new();
         for (i, f) in family.families.iter().enumerate() {
             if i > 0 {
@@ -1785,7 +1835,9 @@ impl ComputedStyle {
         result
     }
 
-    fn font_style_from_stylo(font_style: &style::values::computed::font::FontStyle) -> FontStyleValue {
+    fn font_style_from_stylo(
+        font_style: &style::values::computed::font::FontStyle,
+    ) -> FontStyleValue {
         use style::values::computed::font::FontStyle as StyloFontStyle;
         if *font_style == StyloFontStyle::NORMAL {
             FontStyleValue::Normal
@@ -1840,8 +1892,8 @@ impl ComputedStyle {
         collapse: &style::properties::longhands::white_space_collapse::computed_value::T,
         wrap_mode: &style::properties::longhands::text_wrap_mode::computed_value::T,
     ) -> WhiteSpaceValue {
-        use style::properties::longhands::white_space_collapse::computed_value::T as WSCollapse;
         use style::properties::longhands::text_wrap_mode::computed_value::T as TWMode;
+        use style::properties::longhands::white_space_collapse::computed_value::T as WSCollapse;
         match (*collapse, *wrap_mode) {
             (WSCollapse::Collapse, TWMode::Wrap) => WhiteSpaceValue::Normal,
             (WSCollapse::Collapse, TWMode::Nowrap) => WhiteSpaceValue::NoWrap,
@@ -1883,7 +1935,11 @@ impl ComputedStyle {
                     TrackListValue::TrackRepeat(repeat) => {
                         taffy::GridTemplateComponent::Repeat(taffy::GridTemplateRepetition {
                             count: Self::track_repeat_from_stylo(repeat.count),
-                            tracks: repeat.track_sizes.iter().map(Self::track_size_from_stylo).collect(),
+                            tracks: repeat
+                                .track_sizes
+                                .iter()
+                                .map(Self::track_size_from_stylo)
+                                .collect(),
                             line_names: repeat
                                 .line_names
                                 .iter()
@@ -1913,7 +1969,9 @@ impl ComputedStyle {
         }
     }
 
-    fn track_size_from_stylo(input: &TrackSize<style::values::computed::LengthPercentage>) -> taffy::TrackSizingFunction {
+    fn track_size_from_stylo(
+        input: &TrackSize<style::values::computed::LengthPercentage>,
+    ) -> taffy::TrackSizingFunction {
         match input {
             TrackSize::Breadth(breadth) => taffy::MinMax {
                 min: Self::min_track_from_stylo(breadth),
@@ -1928,7 +1986,9 @@ impl ComputedStyle {
                 max: match limit {
                     TrackBreadth::Breadth(lp) => {
                         use taffy::style_helpers::TaffyFitContent;
-                        taffy::MaxTrackSizingFunction::fit_content(Self::length_percentage_from_stylo_lp(lp))
+                        taffy::MaxTrackSizingFunction::fit_content(
+                            Self::length_percentage_from_stylo_lp(lp),
+                        )
                     }
                     // Fr, Auto, MinContent, MaxContent shouldn't appear in fit-content
                     _ => taffy::MaxTrackSizingFunction::auto(),
@@ -1968,7 +2028,9 @@ impl ComputedStyle {
     /// Convert Stylo LengthPercentage to Taffy LengthPercentage.
     /// This is similar to length_percentage_from_stylo but works with plain LengthPercentage
     /// instead of NonNegativeLengthPercentage.
-    fn length_percentage_from_stylo_lp(lp: &style::values::computed::LengthPercentage) -> taffy::LengthPercentage {
+    fn length_percentage_from_stylo_lp(
+        lp: &style::values::computed::LengthPercentage,
+    ) -> taffy::LengthPercentage {
         if let Some(len) = lp.to_length() {
             taffy::LengthPercentage::length(len.px())
         } else if let Some(pct) = lp.to_percentage() {
@@ -2021,8 +2083,8 @@ fn parse_font_weight_value(value: &str) -> f32 {
 /// - `Npx Npx ...` → explicit pixel tracks
 /// - `1fr 1fr ...` → explicit fr tracks
 fn parse_grid_template(value: &str) -> Vec<taffy::GridTemplateComponent<String>> {
-    use taffy::style_helpers::repeat;
     use taffy::RepetitionCount;
+    use taffy::style_helpers::repeat;
 
     let value = value.trim();
     if value.is_empty() {
@@ -2030,30 +2092,33 @@ fn parse_grid_template(value: &str) -> Vec<taffy::GridTemplateComponent<String>>
     }
 
     // Handle repeat(...)
-    if let Some(inner) = value.strip_prefix("repeat(").and_then(|s| s.strip_suffix(')')) {
-        if let Some((count_str, tracks_str)) = inner.split_once(',') {
-            let count_str = count_str.trim();
-            let tracks_str = tracks_str.trim();
+    if let Some(inner) = value
+        .strip_prefix("repeat(")
+        .and_then(|s| s.strip_suffix(')'))
+        && let Some((count_str, tracks_str)) = inner.split_once(',')
+    {
+        let count_str = count_str.trim();
+        let tracks_str = tracks_str.trim();
 
-            let repetition = match count_str {
-                "auto-fill" => RepetitionCount::AutoFill,
-                "auto-fit" => RepetitionCount::AutoFit,
-                _ => {
-                    if let Ok(n) = count_str.parse::<u16>() {
-                        RepetitionCount::Count(n)
-                    } else {
-                        return Vec::new();
-                    }
+        let repetition = match count_str {
+            "auto-fill" => RepetitionCount::AutoFill,
+            "auto-fit" => RepetitionCount::AutoFit,
+            _ => {
+                if let Ok(n) = count_str.parse::<u16>() {
+                    RepetitionCount::Count(n)
+                } else {
+                    return Vec::new();
                 }
-            };
+            }
+        };
 
-            let track = parse_single_track(tracks_str);
-            return vec![repeat(repetition, vec![track])];
-        }
+        let track = parse_single_track(tracks_str);
+        return vec![repeat(repetition, vec![track])];
     }
 
     // Handle space-separated track list: "1fr 1fr 1fr" or "100px 200px"
-    value.split_whitespace()
+    value
+        .split_whitespace()
         .map(|part| taffy::GridTemplateComponent::Single(parse_single_track(part)))
         .collect()
 }
@@ -2065,12 +2130,14 @@ fn parse_single_track(value: &str) -> taffy::TrackSizingFunction {
     let value = value.trim();
 
     // Handle minmax(min, max)
-    if let Some(inner) = value.strip_prefix("minmax(").and_then(|s| s.strip_suffix(')')) {
-        if let Some((min_str, max_str)) = inner.split_once(',') {
-            let min = parse_min_track(min_str.trim());
-            let max = parse_max_track(max_str.trim());
-            return minmax(min, max);
-        }
+    if let Some(inner) = value
+        .strip_prefix("minmax(")
+        .and_then(|s| s.strip_suffix(')'))
+        && let Some((min_str, max_str)) = inner.split_once(',')
+    {
+        let min = parse_min_track(min_str.trim());
+        let max = parse_max_track(max_str.trim());
+        return minmax(min, max);
     }
 
     // Simple value
@@ -2084,21 +2151,39 @@ fn parse_non_repeated_track(value: &str) -> taffy::TrackSizingFunction {
     let value = value.trim();
     if let Some(fr_val) = value.strip_suffix("fr") {
         let f = fr_val.trim().parse::<f32>().unwrap_or(1.0);
-        minmax(taffy::MinTrackSizingFunction::auto(), taffy::MaxTrackSizingFunction::fr(f))
+        minmax(
+            taffy::MinTrackSizingFunction::auto(),
+            taffy::MaxTrackSizingFunction::fr(f),
+        )
     } else if value == "auto" {
-        minmax(taffy::MinTrackSizingFunction::auto(), taffy::MaxTrackSizingFunction::auto())
+        minmax(
+            taffy::MinTrackSizingFunction::auto(),
+            taffy::MaxTrackSizingFunction::auto(),
+        )
     } else if value == "min-content" {
-        minmax(taffy::MinTrackSizingFunction::min_content(), taffy::MaxTrackSizingFunction::min_content())
+        minmax(
+            taffy::MinTrackSizingFunction::min_content(),
+            taffy::MaxTrackSizingFunction::min_content(),
+        )
     } else if value == "max-content" {
-        minmax(taffy::MinTrackSizingFunction::max_content(), taffy::MaxTrackSizingFunction::max_content())
+        minmax(
+            taffy::MinTrackSizingFunction::max_content(),
+            taffy::MaxTrackSizingFunction::max_content(),
+        )
     } else if let Some(pct) = value.strip_suffix('%') {
         let p = pct.trim().parse::<f32>().unwrap_or(0.0) / 100.0;
-        minmax(taffy::MinTrackSizingFunction::percent(p), taffy::MaxTrackSizingFunction::percent(p))
+        minmax(
+            taffy::MinTrackSizingFunction::percent(p),
+            taffy::MaxTrackSizingFunction::percent(p),
+        )
     } else {
         // Assume px value
         let px = value.strip_suffix("px").unwrap_or(value);
         let v = px.trim().parse::<f32>().unwrap_or(0.0);
-        minmax(taffy::MinTrackSizingFunction::length(v), taffy::MaxTrackSizingFunction::length(v))
+        minmax(
+            taffy::MinTrackSizingFunction::length(v),
+            taffy::MaxTrackSizingFunction::length(v),
+        )
     }
 }
 
@@ -2161,12 +2246,25 @@ mod tests {
             width: 1000.0,
             height: 800.0,
         };
-        assert!(matches!(DimensionValue::parse("auto", &vp), DimensionValue::Auto));
-        assert!(matches!(DimensionValue::parse("100px", &vp), DimensionValue::Length(v) if (v - 100.0).abs() < 0.01));
-        assert!(matches!(DimensionValue::parse("50%", &vp), DimensionValue::Percent(v) if (v - 0.5).abs() < 0.01));
-        assert!(matches!(DimensionValue::parse("10vh", &vp), DimensionValue::Length(v) if (v - 80.0).abs() < 0.01));
-        assert!(matches!(DimensionValue::parse("10vw", &vp), DimensionValue::Length(v) if (v - 100.0).abs() < 0.01));
-        assert!(matches!(DimensionValue::parse("2rem", &vp), DimensionValue::Length(v) if (v - 32.0).abs() < 0.01));
+        assert!(matches!(
+            DimensionValue::parse("auto", &vp),
+            DimensionValue::Auto
+        ));
+        assert!(
+            matches!(DimensionValue::parse("100px", &vp), DimensionValue::Length(v) if (v - 100.0).abs() < 0.01)
+        );
+        assert!(
+            matches!(DimensionValue::parse("50%", &vp), DimensionValue::Percent(v) if (v - 0.5).abs() < 0.01)
+        );
+        assert!(
+            matches!(DimensionValue::parse("10vh", &vp), DimensionValue::Length(v) if (v - 80.0).abs() < 0.01)
+        );
+        assert!(
+            matches!(DimensionValue::parse("10vw", &vp), DimensionValue::Length(v) if (v - 100.0).abs() < 0.01)
+        );
+        assert!(
+            matches!(DimensionValue::parse("2rem", &vp), DimensionValue::Length(v) if (v - 32.0).abs() < 0.01)
+        );
     }
 
     #[test]
@@ -2185,7 +2283,9 @@ mod tests {
         assert_eq!(style.display, DisplayValue::Flex);
         assert!(matches!(style.width, DimensionValue::Length(v) if (v - 100.0).abs() < 0.01));
         assert!((style.flex_grow - 1.0).abs() < 0.01);
-        assert!(matches!(style.padding_top, LengthPercentageValue::Length(v) if (v - 10.0).abs() < 0.01));
+        assert!(
+            matches!(style.padding_top, LengthPercentageValue::Length(v) if (v - 10.0).abs() < 0.01)
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Document fragment for representing parts of documents.
 
-use std::collections::HashMap;
 use super::model::MarkData;
+use std::collections::HashMap;
 
 /// A fragment of document content (for clipboard, drag-drop, etc.).
 #[derive(Clone, Debug)]
@@ -13,9 +13,7 @@ pub struct Fragment {
 impl Fragment {
     /// Create a new empty fragment.
     pub fn empty() -> Self {
-        Self {
-            blocks: Vec::new(),
-        }
+        Self { blocks: Vec::new() }
     }
 
     /// Create a fragment from plain text. Each line becomes a paragraph block.
@@ -83,10 +81,7 @@ impl FragmentBlock {
 #[derive(Clone, Debug)]
 pub enum FragmentInline {
     /// A text run with optional marks.
-    Text {
-        text: String,
-        marks: Vec<MarkData>,
-    },
+    Text { text: String, marks: Vec<MarkData> },
     /// A hard line break.
     HardBreak,
 }

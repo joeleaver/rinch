@@ -133,5 +133,6 @@ pub fn styles() -> String {
 .rinch-hover-card--shadow-md .rinch-hover-card__dropdown { box-shadow: var(--rinch-shadow-md); }
 .rinch-hover-card--shadow-lg .rinch-hover-card__dropdown { box-shadow: var(--rinch-shadow-lg); }
 .rinch-hover-card--shadow-xl .rinch-hover-card__dropdown { box-shadow: var(--rinch-shadow-xl); }
-"#.to_string()
+"#
+    .to_string()
 }

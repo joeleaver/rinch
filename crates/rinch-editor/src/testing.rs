@@ -1,8 +1,8 @@
 //! Test utilities for editor testing.
 
 use crate::editor::{Editor, EditorConfig};
-use crate::schema::Schema;
 use crate::error::EditorError;
+use crate::schema::Schema;
 
 /// Create a test editor with a basic schema.
 pub fn create_test_editor() -> Result<Editor, EditorError> {

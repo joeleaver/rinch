@@ -67,6 +67,7 @@ pub enum ListOp<K> {
 /// # Returns
 ///
 /// A vector of operations that, when applied in order, will transform old into new.
+#[allow(clippy::needless_range_loop)]
 pub fn diff_keyed<K>(old: &[K], new: &[K]) -> Vec<ListOp<K>>
 where
     K: Clone + Eq + Hash,
@@ -146,10 +147,11 @@ where
     // Collect items that exist in both lists (need to check for moves)
     let mut common_items: Vec<(usize, usize)> = Vec::new();
     for i in new_start..new_end {
-        if let Some(&old_idx) = old_map.get(&new[i]) {
-            if old_idx >= old_start && old_idx < old_end {
-                common_items.push((old_idx, i));
-            }
+        if let Some(&old_idx) = old_map.get(&new[i])
+            && old_idx >= old_start
+            && old_idx < old_end
+        {
+            common_items.push((old_idx, i));
         }
     }
 
@@ -264,8 +266,14 @@ mod tests {
         assert_eq!(inserts.len(), 2);
 
         // Verify the keys
-        assert!(ops.iter().any(|op| matches!(op, ListOp::Insert { key, new_index: 3 } if *key == "d")));
-        assert!(ops.iter().any(|op| matches!(op, ListOp::Insert { key, new_index: 4 } if *key == "e")));
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, ListOp::Insert { key, new_index: 3 } if *key == "d"))
+        );
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, ListOp::Insert { key, new_index: 4 } if *key == "e"))
+        );
     }
 
     #[test]
@@ -296,8 +304,14 @@ mod tests {
         assert_eq!(removes.len(), 2);
 
         // Verify the keys
-        assert!(ops.iter().any(|op| matches!(op, ListOp::Remove { key, .. } if *key == "b")));
-        assert!(ops.iter().any(|op| matches!(op, ListOp::Remove { key, .. } if *key == "d")));
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, ListOp::Remove { key, .. } if *key == "b"))
+        );
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, ListOp::Remove { key, .. } if *key == "d"))
+        );
     }
 
     #[test]
@@ -368,10 +382,16 @@ mod tests {
             .collect();
 
         assert_eq!(inserts.len(), 1);
-        assert!(ops.iter().any(|op| matches!(op, ListOp::Insert { key, .. } if *key == "e")));
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, ListOp::Insert { key, .. } if *key == "e"))
+        );
 
         assert_eq!(removes.len(), 1);
-        assert!(ops.iter().any(|op| matches!(op, ListOp::Remove { key, .. } if *key == "d")));
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, ListOp::Remove { key, .. } if *key == "d"))
+        );
     }
 
     #[test]

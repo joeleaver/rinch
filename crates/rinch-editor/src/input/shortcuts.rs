@@ -1,8 +1,8 @@
 //! Keyboard shortcut handling.
 
-use std::collections::HashMap;
-use crate::error::EditorError;
 use crate::editor::Editor;
+use crate::error::EditorError;
+use std::collections::HashMap;
 
 /// Parsed key combination.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -23,7 +23,7 @@ fn parse_key_string(s: &str) -> ParsedKey {
     let mut key = String::new();
 
     // Split by '-' or '+'
-    let parts: Vec<&str> = s.split(|c| c == '-' || c == '+').collect();
+    let parts: Vec<&str> = s.split(['-', '+']).collect();
 
     for part in &parts {
         let lower = part.to_lowercase();
@@ -41,17 +41,31 @@ fn parse_key_string(s: &str) -> ParsedKey {
     // key events will be pre-normalized by the platform layer.
     // The original string with "Mod" sets ctrl=true above.
 
-    ParsedKey { ctrl, shift, alt, meta, key }
+    ParsedKey {
+        ctrl,
+        shift,
+        alt,
+        meta,
+        key,
+    }
 }
 
 /// Normalize a key event string to a canonical form for matching.
 fn normalize_key(s: &str) -> String {
     let parsed = parse_key_string(s);
     let mut parts = Vec::new();
-    if parsed.ctrl { parts.push("ctrl"); }
-    if parsed.shift { parts.push("shift"); }
-    if parsed.alt { parts.push("alt"); }
-    if parsed.meta { parts.push("meta"); }
+    if parsed.ctrl {
+        parts.push("ctrl");
+    }
+    if parsed.shift {
+        parts.push("shift");
+    }
+    if parsed.alt {
+        parts.push("alt");
+    }
+    if parsed.meta {
+        parts.push("meta");
+    }
     parts.push(&parsed.key);
     parts.join("+")
 }

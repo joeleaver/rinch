@@ -2,8 +2,8 @@
 //!
 //! An overlay with a loader that covers its parent container.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// A loading overlay that covers its parent container.
 ///
@@ -26,7 +26,7 @@ use rinch_core::Widget;
 ///     }
 /// }
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct LoadingOverlay {
     /// Whether the overlay is visible.
     pub visible: bool,
@@ -46,22 +46,6 @@ pub struct LoadingOverlay {
     pub z_index: Option<i32>,
     /// Transition duration.
     pub transition_duration: Option<u32>,
-}
-
-impl Default for LoadingOverlay {
-    fn default() -> Self {
-        Self {
-            visible: false,
-            overlay_opacity: None,
-            overlay_blur: None,
-            loader_type: None,
-            loader_size: None,
-            loader_color: None,
-            radius: None,
-            z_index: None,
-            transition_duration: None,
-        }
-    }
 }
 
 impl LoadingOverlay {

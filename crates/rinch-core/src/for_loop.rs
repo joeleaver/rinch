@@ -218,46 +218,49 @@ where
                 }
                 ListOp::Insert { key, new_index } => {
                     // Get the item data
-                    if let Some(&item) = new_items_map.get(&key) {
-                        if let Some(doc) = doc_weak_clone.upgrade() {
-                            let mut child_scope = RenderScope::new(doc, parent_id);
-                            let node = view_clone(item, &mut child_scope);
+                    if let Some(&item) = new_items_map.get(&key)
+                        && let Some(doc) = doc_weak_clone.upgrade()
+                    {
+                        let mut child_scope = RenderScope::new(doc, parent_id);
+                        let node = view_clone(item, &mut child_scope);
 
-                            // Insert at the correct position as sibling.
-                            // Find the node to insert after: either the previous
-                            // sibling in the list or the marker itself.
-                            if new_index == 0 {
-                                marker_effect.insert_after(&node);
+                        // Insert at the correct position as sibling.
+                        // Find the node to insert after: either the previous
+                        // sibling in the list or the marker itself.
+                        if new_index == 0 {
+                            marker_effect.insert_after(&node);
+                        } else {
+                            // Find the key at new_index - 1 in the current keys
+                            // (after processing previous ops)
+                            let prev_key = if new_index - 1 < keys.len() {
+                                Some(keys[new_index - 1].clone())
+                            } else if !keys.is_empty() {
+                                Some(keys.last().unwrap().clone())
                             } else {
-                                // Find the key at new_index - 1 in the current keys
-                                // (after processing previous ops)
-                                let prev_key = if new_index - 1 < keys.len() {
-                                    Some(keys[new_index - 1].clone())
-                                } else if !keys.is_empty() {
-                                    Some(keys.last().unwrap().clone())
-                                } else {
-                                    None
-                                };
+                                None
+                            };
 
-                                if let Some(prev_key) = prev_key {
-                                    if let Some(prev_state) = state.get(&prev_key) {
-                                        prev_state.node.insert_after(&node);
-                                    } else {
-                                        marker_effect.insert_after(&node);
-                                    }
+                            if let Some(prev_key) = prev_key {
+                                if let Some(prev_state) = state.get(&prev_key) {
+                                    prev_state.node.insert_after(&node);
                                 } else {
                                     marker_effect.insert_after(&node);
                                 }
+                            } else {
+                                marker_effect.insert_after(&node);
                             }
+                        }
 
-                            // Update state
-                            let insert_pos = new_index.min(keys.len());
-                            keys.insert(insert_pos, key.clone());
-                            state.insert(key, ItemState {
+                        // Update state
+                        let insert_pos = new_index.min(keys.len());
+                        keys.insert(insert_pos, key.clone());
+                        state.insert(
+                            key,
+                            ItemState {
                                 node,
                                 item: item.clone(),
-                            });
-                        }
+                            },
+                        );
                     }
                 }
                 ListOp::Move { key, new_index, .. } => {
@@ -391,7 +394,7 @@ where
 mod tests {
     use super::*;
     use crate::reactive::Scope;
-    use crate::reconcile::{diff_keyed, ListOp};
+    use crate::reconcile::{ListOp, diff_keyed};
     use std::cell::Cell;
     use std::rc::Rc;
 

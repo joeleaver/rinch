@@ -104,5 +104,6 @@ pub fn styles() -> String {
 .rinch-loader--bars.rinch-loader--sm .rinch-loader__bar { width: 0.125rem; }
 .rinch-loader--bars.rinch-loader--lg .rinch-loader__bar { width: 0.25rem; }
 .rinch-loader--bars.rinch-loader--xl .rinch-loader__bar { width: 0.3125rem; }
-"#.to_string()
+"#
+    .to_string()
 }

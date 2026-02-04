@@ -2,8 +2,8 @@
 //!
 //! Dropdown select input with label support.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// A dropdown select input.
 #[derive(Debug, Default)]

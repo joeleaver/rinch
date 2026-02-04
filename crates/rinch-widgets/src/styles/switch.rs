@@ -88,5 +88,6 @@ pub fn styles() -> String {
 .rinch-switch--label-start {
     flex-direction: row-reverse;
 }
-"#.to_string()
+"#
+    .to_string()
 }

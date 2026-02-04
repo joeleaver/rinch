@@ -2,8 +2,8 @@
 //!
 //! A responsive image component with fallback support.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// Image fit mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

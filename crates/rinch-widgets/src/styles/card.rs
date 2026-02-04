@@ -72,5 +72,6 @@ pub fn styles() -> String {
     display: block;
     width: 100%;
 }
-"#.to_string()
+"#
+    .to_string()
 }

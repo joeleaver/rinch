@@ -745,13 +745,14 @@ where
 {
     // Get or create the effect state
     let state_ref = HOOK_REGISTRY.with(|registry| {
-        registry.borrow_mut().use_hook::<std::rc::Rc<RefCell<EffectState<D>>>>(
-            "use_effect",
-            || std::rc::Rc::new(RefCell::new(EffectState {
-                deps: None,
-                cleanup: None,
-            })),
-        )
+        registry
+            .borrow_mut()
+            .use_hook::<std::rc::Rc<RefCell<EffectState<D>>>>("use_effect", || {
+                std::rc::Rc::new(RefCell::new(EffectState {
+                    deps: None,
+                    cleanup: None,
+                }))
+            })
     });
 
     let mut state = state_ref.borrow_mut();
@@ -801,13 +802,14 @@ where
 {
     // Get or create the effect state
     let state_ref = HOOK_REGISTRY.with(|registry| {
-        registry.borrow_mut().use_hook::<std::rc::Rc<RefCell<EffectState<D>>>>(
-            "use_effect_cleanup",
-            || std::rc::Rc::new(RefCell::new(EffectState {
-                deps: None,
-                cleanup: None,
-            })),
-        )
+        registry
+            .borrow_mut()
+            .use_hook::<std::rc::Rc<RefCell<EffectState<D>>>>("use_effect_cleanup", || {
+                std::rc::Rc::new(RefCell::new(EffectState {
+                    deps: None,
+                    cleanup: None,
+                }))
+            })
     });
 
     let mut state = state_ref.borrow_mut();
@@ -888,13 +890,14 @@ where
 {
     // Get or create the memo state
     let state_ref = HOOK_REGISTRY.with(|registry| {
-        registry.borrow_mut().use_hook::<std::rc::Rc<RefCell<MemoState<T, D>>>>(
-            "use_memo",
-            || std::rc::Rc::new(RefCell::new(MemoState {
-                value: None,
-                deps: None,
-            })),
-        )
+        registry
+            .borrow_mut()
+            .use_hook::<std::rc::Rc<RefCell<MemoState<T, D>>>>("use_memo", || {
+                std::rc::Rc::new(RefCell::new(MemoState {
+                    value: None,
+                    deps: None,
+                }))
+            })
     });
 
     let mut state = state_ref.borrow_mut();

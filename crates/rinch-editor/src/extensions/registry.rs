@@ -1,10 +1,13 @@
 //! Extension registry for managing loaded extensions.
 
-use crate::extensions::Extension;
-use crate::schema::{Schema, SchemaBuilder};
-use crate::input::{InputRuleSet, ShortcutRegistry};
 use crate::error::EditorError;
+use crate::extensions::Extension;
+use crate::input::{InputRuleSet, ShortcutRegistry};
+use crate::schema::{Schema, SchemaBuilder};
 use std::collections::HashMap;
+
+/// Type alias for editor command handler functions.
+type CommandHandler = fn(&mut crate::editor::Editor) -> Result<(), EditorError>;
 
 /// Registry for managing editor extensions.
 #[derive(Debug, Default)]
@@ -12,7 +15,7 @@ pub struct ExtensionRegistry {
     /// Extensions in priority order
     extensions: Vec<Box<dyn Extension>>,
     /// Command handlers by name
-    command_handlers: HashMap<String, fn(&mut crate::editor::Editor) -> Result<(), EditorError>>,
+    command_handlers: HashMap<String, CommandHandler>,
 }
 
 impl ExtensionRegistry {
@@ -30,7 +33,9 @@ impl ExtensionRegistry {
 
         // Insert in priority order
         let priority = extension.priority();
-        let pos = self.extensions.iter()
+        let pos = self
+            .extensions
+            .iter()
             .position(|e| e.priority() > priority)
             .unwrap_or(self.extensions.len());
         self.extensions.insert(pos, extension);
@@ -38,7 +43,8 @@ impl ExtensionRegistry {
 
     /// Get an extension by name.
     pub fn get(&self, name: &str) -> Option<&dyn Extension> {
-        self.extensions.iter()
+        self.extensions
+            .iter()
             .find(|e| e.name() == name)
             .map(|e| e.as_ref())
     }
@@ -49,7 +55,7 @@ impl ExtensionRegistry {
     }
 
     /// Get a command handler by name.
-    pub fn get_command(&self, name: &str) -> Option<fn(&mut crate::editor::Editor) -> Result<(), EditorError>> {
+    pub fn get_command(&self, name: &str) -> Option<CommandHandler> {
         self.command_handlers.get(name).copied()
     }
 
@@ -102,21 +108,28 @@ impl ExtensionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::{Extension, CommandRegistration};
-    use crate::schema::MarkSpec;
+    use crate::extensions::{CommandRegistration, Extension};
     use crate::input::KeyboardShortcut;
+    use crate::schema::MarkSpec;
 
     #[derive(Debug)]
     struct BoldExtension;
 
     impl Extension for BoldExtension {
-        fn name(&self) -> &str { "bold" }
-        fn priority(&self) -> i32 { 10 }
+        fn name(&self) -> &str {
+            "bold"
+        }
+        fn priority(&self) -> i32 {
+            10
+        }
         fn marks(&self) -> Vec<MarkSpec> {
             vec![MarkSpec::simple("bold")]
         }
         fn keyboard_shortcuts(&self) -> Vec<(KeyboardShortcut, String)> {
-            vec![(KeyboardShortcut::new("Mod-b", "Toggle bold"), "toggle_bold".into())]
+            vec![(
+                KeyboardShortcut::new("Mod-b", "Toggle bold"),
+                "toggle_bold".into(),
+            )]
         }
         fn commands(&self) -> Vec<CommandRegistration> {
             vec![CommandRegistration::new("toggle_bold", |_editor| Ok(()))]
@@ -127,8 +140,12 @@ mod tests {
     struct ItalicExtension;
 
     impl Extension for ItalicExtension {
-        fn name(&self) -> &str { "italic" }
-        fn priority(&self) -> i32 { 20 }
+        fn name(&self) -> &str {
+            "italic"
+        }
+        fn priority(&self) -> i32 {
+            20
+        }
         fn marks(&self) -> Vec<MarkSpec> {
             vec![MarkSpec::simple("italic")]
         }
@@ -146,7 +163,7 @@ mod tests {
     fn priority_ordering() {
         let mut reg = ExtensionRegistry::new();
         reg.register(Box::new(ItalicExtension)); // priority 20
-        reg.register(Box::new(BoldExtension));   // priority 10
+        reg.register(Box::new(BoldExtension)); // priority 10
         let all = reg.all();
         assert_eq!(all[0].name(), "bold");
         assert_eq!(all[1].name(), "italic");
@@ -166,7 +183,7 @@ mod tests {
     fn build_shortcuts_collects() {
         let mut reg = ExtensionRegistry::new();
         reg.register(Box::new(BoldExtension));
-        let shortcuts = reg.build_shortcuts();
+        let _shortcuts = reg.build_shortcuts();
         // ShortcutRegistry was built with the bold shortcut
         assert!(!reg.is_empty());
     }

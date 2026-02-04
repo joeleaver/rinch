@@ -1,7 +1,7 @@
 //! RSX node types.
 
 use syn::parse::{Parse, ParseStream};
-use syn::{token, Expr, LitStr, Result};
+use syn::{Expr, LitStr, Result, token};
 
 use crate::element::RsxElement;
 

@@ -2,6 +2,8 @@
 
 Rinch is a lightweight, cross-platform GUI library for Rust that combines the power of web technologies with native performance.
 
+> **[View the UI Zoo - Live Demo](https://joeleaver.github.io/rinch/ui-zoo/)** - See all Rinch widgets and components in action, running in the browser via WebAssembly.
+
 ## Philosophy
 
 - **Declarative UI** - Define your UI as a function of state using RSX syntax
@@ -15,36 +17,42 @@ Rinch is a lightweight, cross-platform GUI library for Rust that combines the po
 ```rust
 use rinch::prelude::*;
 
-fn app() -> Element {
-    let count = Signal::new(0);
+fn app(__scope: &mut RenderScope) -> NodeHandle {
+    let count = use_signal(|| 0);
+    let count_inc = count.clone();
 
     rsx! {
-        Window { title: "Counter",
-            button { onclick: move |_| count.set(count.get() + 1),
-                "Count: " {count}
-            }
+        div {
+            p { "Count: " {|| count.get().to_string()} }
+            button { onclick: move || count_inc.update(|n| *n += 1), "+" }
         }
     }
 }
 
 fn main() {
-    rinch::run(app);
+    run("Counter", 800, 600, app);
 }
 ```
 
 ## Features
 
 - **RSX Macro** - JSX-like syntax for building UI
-- **Reactive Signals** - Automatic UI updates when state changes
+- **Hooks (React-style)** - use_signal, use_effect, use_memo, and more
+- **Fine-grained Reactivity** - Surgical DOM updates with signals and effects
+- **Theme System (Mantine-inspired)** - CSS variables, color palettes, spacing scales
+- **80+ Widgets** - Buttons, inputs, modals, dropdowns, and more
+- **Rich-Text Editor** - Full-featured text editing with selections and formatting
+- **5000+ Tabler Icons** - Type-safe SVG icons from tabler.io
 - **Native Menus** - Platform-native menu bars via muda
-- **HTML/CSS Rendering** - Full CSS support via Stylo (Firefox's engine)
 - **GPU Rendering** - Fast 2D rendering via Vello and wgpu
 
 ## Architecture
 
 Rinch is built on top of several excellent Rust crates:
 
-- [blitz](https://github.com/DioxusLabs/blitz) - HTML/CSS rendering engine
-- [vello](https://github.com/linebender/vello) - GPU 2D rendering
+- [rinch-dom](https://github.com/joeleaver/rinch/tree/main/crates/rinch-dom) - Custom HTML/CSS DOM implementation
+- [Stylo](https://github.com/servo/stylo) - CSS parsing and computed styles (from Servo/Firefox)
+- [Parley](https://github.com/linebender/parley) - Text layout and shaping
+- [Vello](https://github.com/linebender/vello) - GPU 2D rendering
 - [winit](https://github.com/rust-windowing/winit) - Cross-platform windowing
 - [muda](https://github.com/tauri-apps/muda) - Native menu support

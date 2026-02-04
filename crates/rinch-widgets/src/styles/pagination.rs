@@ -154,5 +154,6 @@ pub fn styles() -> String {
     opacity: 0.6;
     pointer-events: none;
 }
-"#.to_string()
+"#
+    .to_string()
 }

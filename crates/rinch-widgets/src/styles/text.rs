@@ -69,5 +69,6 @@ pub fn styles() -> String {
     -webkit-box-orient: vertical;
     overflow: hidden;
 }
-"#.to_string()
+"#
+    .to_string()
 }

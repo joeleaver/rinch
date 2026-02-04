@@ -13,12 +13,12 @@
 //! 4. Custom cursor rendering works alongside textarea input capture
 
 use rinch::prelude::*;
-use rinch::{run_with_window_props, WindowProps};
+use rinch::{WindowProps, run_with_window_props};
 
 fn app(__scope: &mut RenderScope) -> NodeHandle {
-    let content = use_signal(|| String::new());
+    let content = use_signal(String::new);
     let cursor_pos = use_signal(|| 0_usize);
-    let event_log = use_signal(|| Vec::<String>::new());
+    let event_log = use_signal(Vec::<String>::new);
     let input_count = use_signal(|| 0_usize);
 
     let root = __scope.create_element("div");
@@ -37,8 +37,11 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 
     // === SECTION 0: Button Click Test (sanity check) ===
     {
-        let panel = create_panel(__scope, "0. Button Click Test (Sanity Check)",
-            "Click the button to verify reactive text updates work at all.");
+        let panel = create_panel(
+            __scope,
+            "0. Button Click Test (Sanity Check)",
+            "Click the button to verify reactive text updates work at all.",
+        );
 
         let click_count = use_signal(|| 0_usize);
 
@@ -47,7 +50,6 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 
         let display_clone = display.clone();
         __scope.create_effect({
-            let click_count = click_count.clone();
             move || {
                 let count = click_count.get();
                 display_clone.set_text(&format!("Button clicked {} times", count));
@@ -59,7 +61,6 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
         btn.set_text("Click Me!");
 
         let handler_id = __scope.register_handler({
-            let click_count = click_count.clone();
             move || {
                 tracing::info!("BUTTON CLICKED");
                 click_count.update(|c| *c += 1);
@@ -74,25 +75,31 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 
     // === SECTION 1: Input Capture (Textarea) ===
     {
-        let panel = create_panel(__scope, "1. Input Capture (Textarea)",
-            "Type here. The textarea handles input/IME/clipboard natively via blitz.");
+        let panel = create_panel(
+            __scope,
+            "1. Input Capture (Textarea)",
+            "Type here. The textarea handles input/IME/clipboard natively via blitz.",
+        );
 
         let textarea = __scope.create_element("textarea");
         textarea.set_attribute("style", "width: 100%; min-height: 100px; padding: 12px; font-family: monospace; font-size: 16px; border: 2px solid #4c6ef5; border-radius: 4px; box-sizing: border-box;");
         textarea.set_attribute("placeholder", "Type here...");
 
         let handler_id = __scope.register_input_handler({
-            let content = content.clone();
-            let event_log = event_log.clone();
-            let input_count = input_count.clone();
-            let cursor_pos = cursor_pos.clone();
             move |value: String| {
                 let len = value.len();
                 let lines = value.lines().count();
-                tracing::info!("SPIKE INPUT HANDLER: len={}, lines={}, value='{}'", len, lines, &value[..value.len().min(50)]);
+                tracing::info!(
+                    "SPIKE INPUT HANDLER: len={}, lines={}, value='{}'",
+                    len,
+                    lines,
+                    &value[..value.len().min(50)]
+                );
                 event_log.update(|l| {
                     l.push(format!("INPUT: len={}, lines={}", len, lines));
-                    if l.len() > 20 { l.remove(0); }
+                    if l.len() > 20 {
+                        l.remove(0);
+                    }
                 });
                 input_count.update(|c| *c += 1);
                 // Move cursor to end of content on each input
@@ -111,26 +118,30 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
     // === SECTION 1b: HIDDEN Textarea Test ===
     // This is the critical test: can we hide the textarea offscreen and still capture input?
     {
-        let panel = create_panel(__scope, "1b. HIDDEN Textarea Test",
-            "Click the green box below, then type. The textarea is offscreen but should still capture input.");
+        let panel = create_panel(
+            __scope,
+            "1b. HIDDEN Textarea Test",
+            "Click the green box below, then type. The textarea is offscreen but should still capture input.",
+        );
 
-        let hidden_content = use_signal(|| String::new());
+        let hidden_content = use_signal(String::new);
         let hidden_count = use_signal(|| 0_usize);
 
         // The hidden textarea — positioned offscreen
         let hidden_textarea = __scope.create_element("textarea");
-        hidden_textarea.set_attribute("style", "\
+        hidden_textarea.set_attribute(
+            "style",
+            "\
             position: absolute; \
             left: -9999px; \
             top: -9999px; \
             width: 1px; \
             height: 1px; \
             opacity: 0; \
-        ");
+        ",
+        );
 
         let hidden_handler_id = __scope.register_input_handler({
-            let hidden_content = hidden_content.clone();
-            let hidden_count = hidden_count.clone();
             move |value: String| {
                 tracing::info!("HIDDEN TEXTAREA INPUT: len={}", value.len());
                 hidden_count.update(|c| *c += 1);
@@ -141,7 +152,9 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 
         // Visible display area — clicking this should ideally focus the hidden textarea
         let display_area = __scope.create_element("div");
-        display_area.set_attribute("style", "\
+        display_area.set_attribute(
+            "style",
+            "\
             border: 2px solid #40c057; \
             border-radius: 4px; \
             padding: 16px; \
@@ -150,12 +163,11 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
             font-family: monospace; \
             font-size: 16px; \
             cursor: text; \
-        ");
+        ",
+        );
 
         let display_clone = display_area.clone();
         __scope.create_effect({
-            let hidden_content = hidden_content.clone();
-            let hidden_count = hidden_count.clone();
             move || {
                 let text = hidden_content.get();
                 let count = hidden_count.get();
@@ -178,7 +190,9 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 
         // Transparent textarea on top
         let overlay_textarea = __scope.create_element("textarea");
-        overlay_textarea.set_attribute("style", "\
+        overlay_textarea.set_attribute(
+            "style",
+            "\
             position: absolute; \
             top: 0; \
             left: 0; \
@@ -191,13 +205,12 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
             background: transparent; \
             resize: none; \
             cursor: text; \
-        ");
+        ",
+        );
 
-        let overlay_content = use_signal(|| String::new());
+        let overlay_content = use_signal(String::new);
 
         let overlay_handler_id = __scope.register_input_handler({
-            let overlay_content = overlay_content.clone();
-            let hidden_count = hidden_count.clone();
             move |value: String| {
                 tracing::info!("OVERLAY TEXTAREA INPUT: len={}", value.len());
                 hidden_count.update(|c| *c += 1);
@@ -211,7 +224,6 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 
         let overlay_display_clone = overlay_display.clone();
         __scope.create_effect({
-            let overlay_content = overlay_content.clone();
             move || {
                 let text = overlay_content.get();
                 if text.is_empty() {
@@ -233,15 +245,17 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 
     // === SECTION 2: Custom Rendered View ===
     {
-        let panel = create_panel(__scope, "2. Custom Rendered View",
-            "This div renders the SAME content with custom formatting and line numbers. Proves textarea -> custom DOM sync.");
+        let panel = create_panel(
+            __scope,
+            "2. Custom Rendered View",
+            "This div renders the SAME content with custom formatting and line numbers. Proves textarea -> custom DOM sync.",
+        );
 
         let render_container = __scope.create_element("div");
         render_container.set_attribute("style", "border: 2px solid #40c057; border-radius: 4px; padding: 16px; min-height: 120px; background: white; font-family: monospace; font-size: 16px; line-height: 1.6; white-space: pre-wrap;");
 
         let render_clone = render_container.clone();
         __scope.create_effect({
-            let content = content.clone();
             move || {
                 let text = content.get();
                 let display = if text.is_empty() {
@@ -263,16 +277,17 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 
     // === SECTION 3: Cursor Position Tracking ===
     {
-        let panel = create_panel(__scope, "3. Cursor Position Tracking",
-            "Demonstrates custom cursor rendering. Shows text split at cursor position.");
+        let panel = create_panel(
+            __scope,
+            "3. Cursor Position Tracking",
+            "Demonstrates custom cursor rendering. Shows text split at cursor position.",
+        );
 
         let cursor_display = __scope.create_element("div");
         cursor_display.set_attribute("style", "font-family: monospace; font-size: 14px; padding: 12px; background: #f8f9fa; border-radius: 4px; white-space: pre-wrap;");
 
         let cursor_display_clone = cursor_display.clone();
         __scope.create_effect({
-            let cursor_pos = cursor_pos.clone();
-            let content = content.clone();
             move || {
                 let pos = cursor_pos.get();
                 let text = content.get();
@@ -306,8 +321,11 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 
     // === SECTION 4: Visual Cursor Demo ===
     {
-        let panel = create_panel(__scope, "4. Visual Cursor Demo",
-            "Renders text with a blinking cursor at the current position (end of input).");
+        let panel = create_panel(
+            __scope,
+            "4. Visual Cursor Demo",
+            "Renders text with a blinking cursor at the current position (end of input).",
+        );
 
         let cursor_view = __scope.create_element("div");
         cursor_view.set_attribute("style", "border: 2px solid #7950f2; border-radius: 4px; padding: 16px; min-height: 60px; background: white; font-family: monospace; font-size: 16px; line-height: 1.6;");
@@ -316,14 +334,17 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
         let before_span = __scope.create_element("span");
         let cursor_span = __scope.create_element("span");
         // CSS blinking cursor: a zero-width span with a left border
-        cursor_span.set_attribute("style", "\
+        cursor_span.set_attribute(
+            "style",
+            "\
             display: inline-block; \
             width: 0; \
             height: 1.2em; \
             border-left: 2px solid #7950f2; \
             vertical-align: text-bottom; \
             animation: blink 1s step-end infinite;\
-        ");
+        ",
+        );
         let after_span = __scope.create_element("span");
 
         // We also need the @keyframes rule. Inject it via a <style> element.
@@ -337,8 +358,6 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
         let before_clone = before_span.clone();
         let after_clone = after_span.clone();
         __scope.create_effect({
-            let content = content.clone();
-            let cursor_pos = cursor_pos.clone();
             move || {
                 let text = content.get();
                 let pos = cursor_pos.get().min(text.len());
@@ -368,7 +387,6 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 
         let badge_clone = badge.clone();
         __scope.create_effect({
-            let input_count = input_count.clone();
             move || {
                 badge_clone.set_text(&format!("Input Events: {}", input_count.get()));
             }
@@ -387,11 +405,14 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 
         let log_clone = log_box.clone();
         __scope.create_effect({
-            let event_log = event_log.clone();
             move || {
                 let log = event_log.get();
                 let joined = log.join("\n");
-                log_clone.set_text(if log.is_empty() { "No events yet..." } else { &joined });
+                log_clone.set_text(if log.is_empty() {
+                    "No events yet..."
+                } else {
+                    &joined
+                });
             }
         });
 
@@ -404,7 +425,10 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
         let panel = create_panel(__scope, "Architecture Notes", "");
 
         let notes = __scope.create_element("div");
-        notes.set_attribute("style", "font-size: 13px; line-height: 1.6; white-space: pre-wrap;");
+        notes.set_attribute(
+            "style",
+            "font-size: 13px; line-height: 1.6; white-space: pre-wrap;",
+        );
         notes.set_text(
             "KEY CONCEPT:\n\
              1. Textarea handles: typing, IME composition, Ctrl+C/V clipboard, undo (native)\n\
@@ -422,7 +446,7 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
              - Click on content area -> programmatic focus of textarea\n\
              - Rich DOM tree (paragraphs, inline formatting) instead of plain text\n\
              - Custom cursor overlay positioned via text layout metrics\n\
-             - Selection highlighting via computed ranges"
+             - Selection highlighting via computed ranges",
         );
 
         panel.append_child(&notes);
@@ -444,7 +468,10 @@ fn create_panel(scope: &mut RenderScope, title: &str, description: &str) -> Node
 
     if !description.is_empty() {
         let desc = scope.create_element("p");
-        desc.set_attribute("style", "margin: 0 0 12px 0; color: #868e96; font-size: 13px;");
+        desc.set_attribute(
+            "style",
+            "margin: 0 0 12px 0; color: #868e96; font-size: 13px;",
+        );
         desc.set_text(description);
         panel.append_child(&desc);
     }

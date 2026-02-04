@@ -29,7 +29,7 @@ png = "0.17"
 
 keyboard-types = "0.7"
 rfd = { workspace = true, optional = true }
-arboard = { workspace = true, optional = true }
+rinch-clipboard = { workspace = true, optional = true }
 tray-icon = { workspace = true, optional = true }
 
 # Optional memory profiling
@@ -46,7 +46,7 @@ windows-sys = { version = "0.59", features = ["Win32_Graphics_Gdi", "Win32_Found
 [features]
 default = []
 file-dialogs = ["rfd"]
-clipboard = ["arboard"]
+clipboard = ["dep:rinch-clipboard"]
 system-tray = ["tray-icon"]
 memory-profile = ["memory-stats"]
 theme = ["dep:rinch-theme", "rinch-core/theme"]

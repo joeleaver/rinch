@@ -138,5 +138,6 @@ pub fn styles() -> String {
     font-size: var(--rinch-font-size-xs);
     color: var(--rinch-color-red-6);
 }
-"#.to_string()
+"#
+    .to_string()
 }

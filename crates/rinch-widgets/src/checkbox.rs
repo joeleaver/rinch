@@ -26,6 +26,7 @@ use std::rc::Rc;
 pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 
 /// A checkbox input with optional label.
+#[derive(Default)]
 pub struct Checkbox {
     /// Label displayed next to the checkbox.
     pub label: Option<String>,
@@ -54,25 +55,13 @@ impl std::fmt::Debug for Checkbox {
             .field("size", &self.size)
             .field("disabled", &self.disabled)
             .field("checked", &self.checked)
-            .field("checked_fn", &self.checked_fn.as_ref().map(|_| "<reactive>"))
+            .field(
+                "checked_fn",
+                &self.checked_fn.as_ref().map(|_| "<reactive>"),
+            )
             .field("indeterminate", &self.indeterminate)
             .field("onchange", &self.onchange.as_ref().map(|_| "<callback>"))
             .finish()
-    }
-}
-
-impl Default for Checkbox {
-    fn default() -> Self {
-        Self {
-            label: None,
-            description: None,
-            size: None,
-            disabled: false,
-            checked: false,
-            checked_fn: None,
-            indeterminate: false,
-            onchange: None,
-        }
     }
 }
 
@@ -191,7 +180,8 @@ impl Widget for Checkbox {
             scope.create_effect(move || {
                 let is_checked = checked_fn();
                 if is_checked {
-                    label_clone.set_attribute("class", &format!("{} rinch-checkbox--checked", base_class));
+                    label_clone
+                        .set_attribute("class", &format!("{} rinch-checkbox--checked", base_class));
                 } else {
                     label_clone.set_attribute("class", &base_class);
                 }

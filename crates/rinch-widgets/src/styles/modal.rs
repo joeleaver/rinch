@@ -116,5 +116,6 @@ pub fn styles() -> String {
 .rinch-modal--radius-md { border-radius: var(--rinch-radius-md); }
 .rinch-modal--radius-lg { border-radius: var(--rinch-radius-lg); }
 .rinch-modal--radius-xl { border-radius: var(--rinch-radius-xl); }
-"#.to_string()
+"#
+    .to_string()
 }

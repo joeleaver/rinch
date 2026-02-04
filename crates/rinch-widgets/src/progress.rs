@@ -16,8 +16,8 @@
 //! }
 //! ```
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 use std::rc::Rc;
 
 /// Reactive callback type for f32 values.
@@ -114,6 +114,7 @@ impl std::str::FromStr for ProgressRadius {
 ///     Progress { value: 30.0, striped: true, animated: true }
 /// }
 /// ```
+#[derive(Default)]
 pub struct Progress {
     /// Progress value (0-100) - static, for initial render or non-reactive use.
     pub value: Option<f32>,
@@ -146,20 +147,6 @@ impl std::fmt::Debug for Progress {
     }
 }
 
-impl Default for Progress {
-    fn default() -> Self {
-        Self {
-            value: None,
-            value_fn: None,
-            color: None,
-            size: None,
-            radius: None,
-            striped: false,
-            animated: false,
-        }
-    }
-}
-
 impl Progress {
     /// Generate the CSS class string for this progress bar.
     pub fn class_string(&self) -> String {
@@ -174,10 +161,10 @@ impl Progress {
         classes.push(size.class_name());
 
         // Radius class
-        if let Some(ref r) = self.radius {
-            if let Ok(radius) = r.parse::<ProgressRadius>() {
-                classes.push(radius.class_name());
-            }
+        if let Some(ref r) = self.radius
+            && let Ok(radius) = r.parse::<ProgressRadius>()
+        {
+            classes.push(radius.class_name());
         }
 
         classes.join(" ")

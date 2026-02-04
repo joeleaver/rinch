@@ -78,6 +78,7 @@ impl std::str::FromStr for NavLinkVariant {
 ///     }
 /// }
 /// ```
+#[derive(Default)]
 pub struct NavLink {
     /// Link label text.
     pub label: Option<String>,
@@ -131,28 +132,6 @@ impl std::fmt::Debug for NavLink {
             .field("no_wrap", &self.no_wrap)
             .field("onclick", &self.onclick.as_ref().map(|_| "<callback>"))
             .finish()
-    }
-}
-
-impl Default for NavLink {
-    fn default() -> Self {
-        Self {
-            label: None,
-            description: None,
-            href: None,
-            active: false,
-            active_fn: None,
-            variant: None,
-            color: None,
-            left_section: None,
-            right_section: None,
-            disabled: false,
-            children_offset: None,
-            opened: false,
-            default_opened: false,
-            no_wrap: false,
-            onclick: None,
-        }
     }
 }
 
@@ -210,10 +189,7 @@ impl Widget for NavLink {
             if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
                 style_parts.push(format!("--rinch-navlink-color: {}", c));
             } else {
-                style_parts.push(format!(
-                    "--rinch-navlink-color: var(--rinch-color-{}-6)",
-                    c
-                ));
+                style_parts.push(format!("--rinch-navlink-color: var(--rinch-color-{}-6)", c));
             }
         }
         if let Some(ref offset) = self.children_offset {
@@ -398,7 +374,8 @@ impl Widget for NavLink {
             } else {
                 "rinch-navlink__children rinch-navlink__children--collapsed"
             };
-            let children_container = rinch_macros::rsx! { div { class: "rinch-navlink__children" } };
+            let children_container =
+                rinch_macros::rsx! { div { class: "rinch-navlink__children" } };
             children_container.set_attribute("class", collapsed_class);
 
             for child in children {

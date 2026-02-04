@@ -2,8 +2,8 @@
 //!
 //! Horizontal or vertical separator with optional label.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// A horizontal or vertical divider line.
 #[derive(Debug, Default)]

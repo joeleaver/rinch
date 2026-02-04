@@ -40,7 +40,7 @@ pub fn list_apps() -> Vec<DiscoveryEntry> {
     let mut result = vec![];
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().map_or(true, |e| e != "json") {
+        if path.extension().is_none_or(|e| e != "json") {
             continue;
         }
         let Ok(data) = std::fs::read_to_string(&path) else {

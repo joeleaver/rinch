@@ -33,5 +33,6 @@ pub fn styles() -> String {
 
 /* Group grow children */
 .rinch-group--grow > * { flex-grow: 1; }
-"#.to_string()
+"#
+    .to_string()
 }

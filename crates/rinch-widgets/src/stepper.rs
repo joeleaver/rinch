@@ -109,10 +109,10 @@ impl Stepper {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-stepper"];
 
-        if let Some(ref s) = self.size {
-            if let Ok(size) = s.parse::<StepperSize>() {
-                classes.push(size.class_name());
-            }
+        if let Some(ref s) = self.size
+            && let Ok(size) = s.parse::<StepperSize>()
+        {
+            classes.push(size.class_name());
         }
 
         if let Some(ref o) = self.orientation {
@@ -145,10 +145,7 @@ impl Widget for Stepper {
             if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
                 style_parts.push(format!("--rinch-stepper-color: {}", c));
             } else {
-                style_parts.push(format!(
-                    "--rinch-stepper-color: var(--rinch-color-{}-6)",
-                    c
-                ));
+                style_parts.push(format!("--rinch-stepper-color: var(--rinch-color-{}-6)", c));
             }
         }
         if let Some(ref size) = self.icon_size {

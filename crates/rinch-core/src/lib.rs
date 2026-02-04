@@ -13,53 +13,51 @@ pub mod show;
 
 // Re-export element types for convenience
 pub use element::{
-    AppMenuProps, Children, Element, ForItem, HandlerId, IntoDom, IntoElement,
-    MenuItemCallback, MenuItemProps, MenuProps, Reactive, ThemeProviderProps,
-    ValueCallback, Widget, WidgetCallback, WindowProps,
+    AppMenuProps, Children, Element, ForItem, HandlerId, IntoDom, IntoElement, MenuItemCallback,
+    MenuItemProps, MenuProps, Reactive, ThemeProviderProps, ValueCallback, Widget, WidgetCallback,
+    WindowProps,
 };
 
 // Re-export Show and For functions (fine-grained DOM-based)
-pub use for_loop::{for_each_dom, to_for_items, FineForBuilder};
-pub use show::{show_dom, FineShowBuilder};
+pub use for_loop::{FineForBuilder, for_each_dom, to_for_items};
+pub use show::{FineShowBuilder, show_dom};
 
 // Re-export reconciliation types
-pub use reconcile::{diff_keyed, ListOp};
+pub use reconcile::{ListOp, diff_keyed};
 
 // Re-export reactive types for convenience
 pub use reactive::{
-    batch, clear_on_signal_change, clear_signals_changed, derived, set_on_signal_change,
-    signals_changed, untracked, Effect, Memo, Scope, Signal,
+    Effect, Memo, Scope, Signal, batch, clear_on_signal_change, clear_signals_changed, derived,
+    set_on_signal_change, signals_changed, untracked,
 };
 
 // Re-export hooks for ergonomic state management
 pub use hooks::{
-    begin_render, clear_hooks, create_context, end_render, get_hooks_debug_info, use_callback,
-    use_context, use_derived, use_effect, use_effect_cleanup, use_memo, use_mount, use_ref,
-    use_signal, use_state, HookMeta, RefHandle,
+    HookMeta, RefHandle, begin_render, clear_hooks, create_context, end_render,
+    get_hooks_debug_info, use_callback, use_context, use_derived, use_effect, use_effect_cleanup,
+    use_memo, use_mount, use_ref, use_signal, use_state,
 };
 
 // Re-export event handling types
 pub use events::{
-    check_and_clear_input_handled, clear_handlers, dispatch_event, dispatch_input_event,
-    get_click_context, get_input_context, is_dragging, register_handler, register_input_handler,
-    set_click_context, set_input_context, start_drag, stop_drag, update_drag,
-    clear_keyboard_interceptor, dispatch_keyboard_event, set_keyboard_interceptor,
-    get_modifier_state, set_modifier_state,
-    dispatch_selection, set_selection_callback, clear_selection_callback, query_selection_ranges,
-    save_selection_snapshot, clear_selection_snapshot, get_saved_selection,
-    set_selection_sync_callback, clear_selection_sync_callback, fire_selection_sync,
-    request_selection_clear, take_pending_selection_clear,
-    request_focus, take_pending_focus_request,
     ClickContext, EventCallback, EventHandlerId, InputCallback, InputContext, KeyEventData,
-    ModifierState, TextHitInfo, SelectionAction,
+    ModifierState, SelectionAction, TextHitInfo, check_and_clear_input_handled, clear_handlers,
+    clear_keyboard_interceptor, clear_selection_callback, clear_selection_snapshot,
+    clear_selection_sync_callback, dispatch_event, dispatch_input_event, dispatch_keyboard_event,
+    dispatch_selection, fire_selection_sync, get_click_context, get_input_context,
+    get_modifier_state, get_saved_selection, is_dragging, query_selection_ranges, register_handler,
+    register_input_handler, request_focus, request_selection_clear, save_selection_snapshot,
+    set_click_context, set_input_context, set_keyboard_interceptor, set_modifier_state,
+    set_selection_callback, set_selection_sync_callback, start_drag, stop_drag,
+    take_pending_focus_request, take_pending_selection_clear, update_drag,
 };
 
 // Re-export DOM types for fine-grained rendering
 pub use dom::{
+    DomDocument, DomUpdate, IntoNode, NodeHandle, NodeId, RenderScope, UpdateBatch,
     clear_render_scope, has_render_scope, set_render_scope, try_with_render_scope,
-    with_render_scope, DomDocument, DomUpdate, IntoNode, NodeHandle, NodeId, RenderScope, UpdateBatch,
+    with_render_scope,
 };
-
 
 // Re-export icon types
 pub use icon::Icon;
@@ -124,4 +122,3 @@ pub fn set_current_theme_css(css: Option<String>) {
 pub fn get_current_theme_css() -> Option<String> {
     CURRENT_THEME_CSS.with(|theme_css| theme_css.borrow().clone())
 }
-

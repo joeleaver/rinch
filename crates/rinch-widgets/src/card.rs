@@ -2,8 +2,8 @@
 //!
 //! A container component with sections (header, body, footer).
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// Card padding size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

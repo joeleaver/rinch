@@ -31,7 +31,7 @@
 //! }
 //! ```
 
-use rfd::{FileDialog, MessageDialog, MessageButtons};
+use rfd::{FileDialog, MessageButtons, MessageDialog};
 use std::path::{Path, PathBuf};
 
 // Re-export MessageLevel for convenience
@@ -260,18 +260,12 @@ impl MessageDialogBuilder {
 
     /// Show OK/Cancel buttons and return whether OK was clicked.
     pub fn confirm(self) -> bool {
-        self.dialog
-            .set_buttons(MessageButtons::OkCancel)
-            .show()
-            == rfd::MessageDialogResult::Ok
+        self.dialog.set_buttons(MessageButtons::OkCancel).show() == rfd::MessageDialogResult::Ok
     }
 
     /// Show Yes/No buttons and return whether Yes was clicked.
     pub fn ask(self) -> bool {
-        self.dialog
-            .set_buttons(MessageButtons::YesNo)
-            .show()
-            == rfd::MessageDialogResult::Yes
+        self.dialog.set_buttons(MessageButtons::YesNo).show() == rfd::MessageDialogResult::Yes
     }
 }
 

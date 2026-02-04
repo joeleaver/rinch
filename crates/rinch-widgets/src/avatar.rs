@@ -2,8 +2,8 @@
 //!
 //! Displays a user avatar with image or initials fallback.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Widget;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// Avatar size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -206,7 +206,8 @@ impl Widget for Avatar {
             span.append_child(&text_node);
             container.append_child(&span);
         } else {
-            let placeholder = rinch_macros::rsx! { span { class: "rinch-avatar__placeholder-icon" } };
+            let placeholder =
+                rinch_macros::rsx! { span { class: "rinch-avatar__placeholder-icon" } };
             container.append_child(&placeholder);
         }
 
@@ -226,7 +227,10 @@ impl Widget for AvatarGroup {
         let container = rinch_macros::rsx! { div { class: "rinch-avatar-group" } };
 
         if let Some(spacing) = &self.spacing {
-            container.set_attribute("style", &format!("--rinch-avatar-group-spacing: {}", spacing));
+            container.set_attribute(
+                "style",
+                &format!("--rinch-avatar-group-spacing: {}", spacing),
+            );
         }
 
         for child in children {

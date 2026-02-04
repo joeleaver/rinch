@@ -3,9 +3,10 @@
 //! Provides consistent border radius values for rounded corners.
 
 /// A radius size in the theme.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum RadiusSize {
     Xs,
+    #[default]
     Sm,
     Md,
     Lg,
@@ -33,12 +34,6 @@ impl RadiusSize {
             RadiusSize::Lg => "lg",
             RadiusSize::Xl => "xl",
         }
-    }
-}
-
-impl Default for RadiusSize {
-    fn default() -> Self {
-        RadiusSize::Sm
     }
 }
 
@@ -94,9 +89,9 @@ impl Default for RadiusScale {
 
 /// Default border radius scale (matches Mantine).
 pub const DEFAULT_RADIUS: RadiusScale = RadiusScale {
-    xs: "0.125rem",  // 2px
-    sm: "0.25rem",   // 4px
-    md: "0.5rem",    // 8px
-    lg: "1rem",      // 16px
-    xl: "2rem",      // 32px
+    xs: "0.125rem", // 2px
+    sm: "0.25rem",  // 4px
+    md: "0.5rem",   // 8px
+    lg: "1rem",     // 16px
+    xl: "2rem",     // 32px
 };
