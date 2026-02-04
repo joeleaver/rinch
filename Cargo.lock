@@ -5057,6 +5057,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ui-zoo"
+version = "0.1.0"
+dependencies = [
+ "rinch",
+ "rinch-core",
+ "rinch-macros",
+]
+
+[[package]]
 name = "uluru"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

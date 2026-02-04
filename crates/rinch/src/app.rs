@@ -16,7 +16,9 @@ use rinch_dom::RinchDocument;
 use rinch_dom::text_query::byte_offset_from_position;
 #[cfg(feature = "debug")]
 use rinch_dom::text_query::{caret_position_for_offset_layout, glyph_bounds_for_offset_layout};
-use rinch_platform::{AppAction, Instant, KeyCode, Modifiers, MouseButton, PlatformEvent, UserEvent};
+use rinch_platform::{
+    AppAction, Instant, KeyCode, Modifiers, MouseButton, PlatformEvent, UserEvent,
+};
 use vello::Scene;
 
 #[cfg(feature = "desktop")]
@@ -385,8 +387,7 @@ impl RinchApp {
                         let track_top = node_abs_y as f64 + margin;
                         let track_height = container_height - margin * 2.0;
                         let max_scroll = content_height - container_height;
-                        let click_ratio =
-                            ((y as f64 - track_top) / track_height).clamp(0.0, 1.0);
+                        let click_ratio = ((y as f64 - track_top) / track_height).clamp(0.0, 1.0);
                         let new_scroll = click_ratio * max_scroll;
 
                         if let Some(node) = d.tree.nodes.get_mut(node_id) {
@@ -426,8 +427,7 @@ impl RinchApp {
                     let hit_node = hit_test(&doc.borrow().tree, x, y);
                     if let Some(hit_node) = hit_node {
                         let mut doc_mut = doc.borrow_mut();
-                        if let Some(scroll_node_id) =
-                            find_scroll_container(&doc_mut.tree, hit_node)
+                        if let Some(scroll_node_id) = find_scroll_container(&doc_mut.tree, hit_node)
                         {
                             let content_height =
                                 compute_content_height(&doc_mut.tree, scroll_node_id);
@@ -439,8 +439,7 @@ impl RinchApp {
                             let max_scroll = (content_height - container_height).max(0.0);
 
                             if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
-                                let new_y =
-                                    (node.scroll_offset.1 - delta_y).clamp(0.0, max_scroll);
+                                let new_y = (node.scroll_offset.1 - delta_y).clamp(0.0, max_scroll);
                                 if new_y != node.scroll_offset.1 {
                                     node.scroll_offset.1 = new_y;
                                     node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
@@ -502,7 +501,11 @@ impl RinchApp {
                         self.devtools.toggle();
                         tracing::info!(
                             "DevTools: {}",
-                            if self.devtools.visible { "opened" } else { "closed" }
+                            if self.devtools.visible {
+                                "opened"
+                            } else {
+                                "closed"
+                            }
                         );
                         actions.push(AppAction::RequestRedraw);
                         return actions;
@@ -760,8 +763,7 @@ impl RinchApp {
         };
 
         while let Ok(cmd) = rx.0.try_recv() {
-            let response =
-                self.execute_debug_command(cmd.kind, actions, scale_factor, window_size);
+            let response = self.execute_debug_command(cmd.kind, actions, scale_factor, window_size);
             let _ = cmd.response_tx.send(response);
         }
 
@@ -867,8 +869,7 @@ impl RinchApp {
                     let hit_node = hit_test(&doc.borrow().tree, x, y);
                     if let Some(hit_node) = hit_node {
                         let mut doc_mut = doc.borrow_mut();
-                        if let Some(scroll_node_id) =
-                            find_scroll_container(&doc_mut.tree, hit_node)
+                        if let Some(scroll_node_id) = find_scroll_container(&doc_mut.tree, hit_node)
                         {
                             let content_height =
                                 compute_content_height(&doc_mut.tree, scroll_node_id);
@@ -880,8 +881,7 @@ impl RinchApp {
                             let max_scroll = (content_height - container_height).max(0.0);
 
                             if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
-                                let new_y =
-                                    (node.scroll_offset.1 + delta_y).clamp(0.0, max_scroll);
+                                let new_y = (node.scroll_offset.1 + delta_y).clamp(0.0, max_scroll);
                                 if new_y != node.scroll_offset.1 {
                                     node.scroll_offset.1 = new_y;
                                     node.dirty.insert(rinch_dom::DirtyFlags::PAINT);

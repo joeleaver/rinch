@@ -150,7 +150,8 @@ Features:
 
 ### ui-zoo
 
-Interactive widget showcase displaying all 55+ Rinch components:
+Interactive widget showcase displaying all 55+ Rinch components.
+[**Try the live demo**](https://joeleaver.github.io/rinch/ui-zoo/) (requires WebGPU) or run locally:
 
 ```bash
 cargo run -p ui-zoo

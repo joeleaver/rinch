@@ -101,13 +101,12 @@ impl WgpuRenderer {
             .create_surface(window.clone())
             .expect("Failed to create surface");
 
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            }))
-            .expect("Failed to find adapter");
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+        }))
+        .expect("Failed to find adapter");
 
         let caps = surface.get_capabilities(&adapter);
 
@@ -119,16 +118,15 @@ impl WgpuRenderer {
             caps.formats[0]
         };
 
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("rinch-dom device"),
-                required_features: wgpu::Features::default(),
-                required_limits: Limits::default(),
-                memory_hints: MemoryHints::MemoryUsage,
-                trace: wgpu::Trace::default(),
-                experimental_features: wgpu::ExperimentalFeatures::default(),
-            }))
-            .expect("Failed to create device");
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("rinch-dom device"),
+            required_features: wgpu::Features::default(),
+            required_limits: Limits::default(),
+            memory_hints: MemoryHints::MemoryUsage,
+            trace: wgpu::Trace::default(),
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+        }))
+        .expect("Failed to create device");
 
         let surface_config = SurfaceConfiguration {
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_DST,
@@ -197,18 +195,19 @@ impl WgpuRenderer {
     }
 
     /// Paint the given scene to the window surface.
-    pub fn paint(
-        &mut self,
-        scene: &Scene,
-        transparent: bool,
-    ) -> Result<(), String> {
+    pub fn paint(&mut self, scene: &Scene, transparent: bool) -> Result<(), String> {
         let base_color = if transparent {
             Color::TRANSPARENT
         } else {
             Color::WHITE
         };
-        self.render_scene(scene, self.surface_config.width, self.surface_config.height, base_color)
-            .map_err(|e| format!("{e}"))
+        self.render_scene(
+            scene,
+            self.surface_config.width,
+            self.surface_config.height,
+            base_color,
+        )
+        .map_err(|e| format!("{e}"))
     }
 }
 
@@ -218,14 +217,9 @@ impl PlatformRenderer for WgpuRenderer {
         let height = height.max(1);
         self.surface_config.width = width;
         self.surface_config.height = height;
-        self.surface
-            .configure(&self.device, &self.surface_config);
-        self.render_texture = Self::create_render_texture(
-            &self.device,
-            self.surface_config.format,
-            width,
-            height,
-        );
+        self.surface.configure(&self.device, &self.surface_config);
+        self.render_texture =
+            Self::create_render_texture(&self.device, self.surface_config.format, width, height);
     }
 
     fn render_scene(
@@ -309,7 +303,7 @@ impl PlatformRenderer for WgpuRenderer {
                 h,
                 fmt,
             )
-            .map_err(|e| RenderError::Internal(e))?;
+            .map_err(RenderError::Internal)?;
             Ok((w, h, rgba))
         }
         #[cfg(not(feature = "debug"))]

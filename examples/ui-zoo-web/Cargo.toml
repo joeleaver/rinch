@@ -1,0 +1,45 @@
+[package]
+name = "ui-zoo-web"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "UI Zoo WASM build for GitHub Pages deployment"
+
+[dependencies]
+# Shared app logic from ui-zoo (no desktop features)
+ui-zoo = { path = "../ui-zoo", default-features = false }
+
+# Rinch without desktop
+rinch = { path = "../../crates/rinch", default-features = false, features = ["widgets", "theme"] }
+rinch-core = { path = "../../crates/rinch-core" }
+rinch-platform = { path = "../../crates/rinch-platform" }
+
+# Rendering
+vello = "0.7"
+wgpu = "27"
+peniko = "0.6"
+
+# Windowing (winit supports WASM)
+winit = "0.30"
+
+# WASM bindings
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window", "Document", "HtmlCanvasElement", "Element",
+    "console",
+] }
+
+# WASM utilities
+console_error_panic_hook = "0.1"
+console_log = "0.2"
+log = "0.4"
+
+# Use the same wgpu fork as the workspace
+[patch.crates-io]
+wgpu = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
+wgpu-core = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
+wgpu-hal = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
+wgpu-types = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
+naga = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }

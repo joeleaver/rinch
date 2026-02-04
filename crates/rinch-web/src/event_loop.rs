@@ -1,6 +1,6 @@
 //! Web event loop using requestAnimationFrame and DOM event listeners.
 
-use rinch_platform::{PlatformEventLoop, PlatformWaker, PlatformEvent};
+use rinch_platform::{PlatformEvent, PlatformEventLoop, PlatformWaker};
 use std::cell::RefCell;
 use std::rc::Rc;
 

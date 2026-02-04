@@ -6,6 +6,7 @@ members = [
 ]
 exclude = [
     "crates/rinch-visual-test",
+    "examples/ui-zoo-web",
 ]
 
 [workspace.package]
@@ -16,7 +17,7 @@ repository = "https://github.com/user/rinch"
 
 [workspace.dependencies]
 # Internal crates
-rinch = { path = "crates/rinch" }
+rinch = { path = "crates/rinch", default-features = false }
 rinch-core = { path = "crates/rinch-core" }
 rinch-macros = { path = "crates/rinch-macros" }
 rinch-renderer = { path = "crates/rinch-renderer" }

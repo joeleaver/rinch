@@ -40,11 +40,7 @@ use crate::app::RinchApp;
 use super::desktop::{WgpuRenderer, WinitWindow};
 
 #[cfg(feature = "debug")]
-use {
-    super::screenshot,
-    rinch_debug::DebugResult,
-    base64::Engine,
-};
+use {super::screenshot, base64::Engine, rinch_debug::DebugResult};
 
 // ── Thread-local proxy ───────────────────────────────────────────────────────
 
@@ -204,11 +200,7 @@ impl RinchRuntime {
     }
 
     /// Process the actions returned by RinchApp.
-    fn process_actions(
-        &mut self,
-        actions: Vec<AppAction>,
-        event_loop: &ActiveEventLoop,
-    ) {
+    fn process_actions(&mut self, actions: Vec<AppAction>, event_loop: &ActiveEventLoop) {
         for action in actions {
             match action {
                 AppAction::RequestRedraw => {
@@ -370,12 +362,9 @@ impl RinchRuntime {
                     let size = self.window_size();
                     // We need to take the kind out of cmd, but cmd.kind is borrowed above.
                     // Re-dispatch through execute_debug_command on the app.
-                    let result = self.app.execute_debug_command(
-                        cmd.kind.clone(),
-                        &mut actions,
-                        scale,
-                        size,
-                    );
+                    let result =
+                        self.app
+                            .execute_debug_command(cmd.kind.clone(), &mut actions, scale, size);
                     // Process any actions generated
                     for action in actions {
                         match action {
@@ -421,9 +410,7 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                 self.handle_debug_commands_with_renderer();
                 return;
             }
-            RinchNativeEvent::MinimizeWindow => {
-                PlatformEvent::UserEvent(UserEvent::MinimizeWindow)
-            }
+            RinchNativeEvent::MinimizeWindow => PlatformEvent::UserEvent(UserEvent::MinimizeWindow),
             RinchNativeEvent::ToggleMaximizeWindow => {
                 PlatformEvent::UserEvent(UserEvent::ToggleMaximizeWindow)
             }
@@ -567,7 +554,9 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let size = self.window_size();
         let scale = self.scale_factor();
-        let actions = self.app.handle_event(PlatformEvent::AboutToWait, size, scale);
+        let actions = self
+            .app
+            .handle_event(PlatformEvent::AboutToWait, size, scale);
         self.process_actions(actions, event_loop);
     }
 }

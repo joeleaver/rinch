@@ -5,7 +5,20 @@ edition.workspace = true
 license.workspace = true
 description = "UI Zoo - Interactive showcase of all rinch widgets"
 
+[lib]
+name = "ui_zoo"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ui-zoo"
+path = "src/main.rs"
+required-features = ["desktop"]
+
 [dependencies]
 rinch = { workspace = true, features = ["widgets", "theme"] }
 rinch-core = { workspace = true }
 rinch-macros = { workspace = true }
+
+[features]
+default = ["desktop"]
+desktop = ["rinch/desktop"]

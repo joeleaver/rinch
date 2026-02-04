@@ -4,5 +4,5 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-rinch = { workspace = true, features = ["debug"] }
+rinch = { workspace = true, features = ["desktop", "debug"] }
 rinch-core = { workspace = true }

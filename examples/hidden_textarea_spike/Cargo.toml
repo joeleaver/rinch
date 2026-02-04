@@ -6,6 +6,6 @@ license.workspace = true
 description = "Spike: Hidden textarea + custom DOM rendering for rich-text editor"
 
 [dependencies]
-rinch = { workspace = true, features = ["widgets", "debug"] }
+rinch = { workspace = true, features = ["desktop", "widgets", "debug"] }
 tracing.workspace = true
 tracing-subscriber = "0.3"

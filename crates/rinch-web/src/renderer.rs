@@ -3,9 +3,9 @@
 //! A full implementation would use wgpu-on-WebGPU or a canvas 2D fallback.
 //! For now this is a compilation stub that returns errors.
 
+use peniko::Color;
 use rinch_platform::{PlatformRenderer, RenderError};
 use vello::Scene;
-use peniko::Color;
 
 /// Stub web renderer.
 ///
@@ -46,11 +46,15 @@ impl PlatformRenderer for WebRenderer {
         // 1. wgpu with WebGPU backend (modern browsers)
         // 2. wgpu with WebGL backend (fallback)
         // 3. Canvas 2D API (ultimate fallback, limited features)
-        Err(RenderError::Internal("Web renderer not yet implemented".into()))
+        Err(RenderError::Internal(
+            "Web renderer not yet implemented".into(),
+        ))
     }
 
     fn capture_screenshot(&self) -> Result<(u32, u32, Vec<u8>), RenderError> {
         // TODO: Implement screenshot capture via canvas.toDataURL() or similar
-        Err(RenderError::Internal("Screenshots not supported on web yet".into()))
+        Err(RenderError::Internal(
+            "Screenshots not supported on web yet".into(),
+        ))
     }
 }

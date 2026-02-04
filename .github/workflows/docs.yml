@@ -30,9 +30,14 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
 
       - name: Install mdbook
         run: cargo install mdbook --no-default-features
+
+      - name: Install trunk
+        run: cargo install trunk
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -53,6 +58,10 @@ jobs:
         run: |
           cd docs && mdbook build
 
+      - name: Build UI Zoo (WASM)
+        run: |
+          cd examples/ui-zoo-web && trunk build --release --public-url /rinch/ui-zoo/
+
       - name: Combine documentation
         run: |
           # Create output directory
@@ -66,6 +75,9 @@ jobs:
 
           # Create redirect for API docs root
           echo '<meta http-equiv="refresh" content="0; url=rinch/index.html">' > _site/api/index.html
+
+          # Copy UI Zoo WASM build under /ui-zoo
+          cp -r examples/ui-zoo-web/dist _site/ui-zoo
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

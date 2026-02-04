@@ -2,7 +2,7 @@
 
 Rinch is a lightweight, cross-platform GUI library for Rust that combines the power of web technologies with native performance.
 
-> **UI Zoo** — Run `cargo run -p ui-zoo` to explore all Rinch widgets and components interactively.
+> **[UI Zoo Live Demo](https://joeleaver.github.io/rinch/ui-zoo/)** — Try all Rinch widgets in your browser (requires WebGPU). Or run locally: `cargo run -p ui-zoo`
 
 ## Philosophy
 

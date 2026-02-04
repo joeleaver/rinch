@@ -5,6 +5,6 @@ edition = "2024"
 publish = false
 
 [dependencies]
-rinch = { path = "../../crates/rinch" }
+rinch = { path = "../../crates/rinch", features = ["desktop"] }
 rinch-core = { path = "../../crates/rinch-core" }
 tracing-subscriber = "0.3"
