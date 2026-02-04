@@ -1,5 +1,6 @@
 //! Shell module - window management and event loop.
 
+pub mod desktop;
 pub mod devtools;
 pub mod devtools_overlay;
 pub mod html_parser;
