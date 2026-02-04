@@ -26,12 +26,15 @@ thread_local! {
 /// The hidden textarea captures text input (characters, IME, clipboard paste).
 /// The keyboard interceptor captures special keys (Enter, Backspace, arrows, shortcuts).
 ///
+/// Returns (textarea_node, focus_callback). Call focus_callback when the editor content
+/// is clicked to direct keyboard input to the hidden textarea.
+///
 /// Call `on_change` after every command to trigger re-rendering.
 pub fn create_input_bridge(
     scope: &mut RenderScope,
     editor: Rc<RefCell<Editor>>,
     on_change: Rc<dyn Fn()>,
-) -> NodeHandle {
+) -> (NodeHandle, Rc<dyn Fn()>) {
     // Create hidden textarea for capturing text input
     let textarea = scope.create_element("textarea");
     textarea.set_attribute("style", "\
@@ -64,7 +67,13 @@ pub fn create_input_bridge(
         handle_key_event(&editor_for_keys, data, &*on_change_for_keys)
     });
 
-    textarea
+    // Create focus callback that can be called from editor click handler
+    let textarea_for_focus = textarea.clone();
+    let focus_callback: Rc<dyn Fn()> = Rc::new(move || {
+        textarea_for_focus.focus();
+    });
+
+    (textarea, focus_callback)
 }
 
 /// Cleanup the input bridge (call when editor is unmounted).
@@ -79,10 +88,14 @@ fn handle_textarea_input(
     new_value: &str,
     on_change: &dyn Fn(),
 ) {
+    tracing::info!("handle_textarea_input: new_value={:?}", new_value);
     if let Ok(mut ed) = editor.try_borrow_mut() {
+        tracing::info!("handle_textarea_input: block_count={}", ed.doc.block_count());
         // Get current selection position to know which block we're in
         let sel = ed.get_selection().clone();
+        tracing::info!("handle_textarea_input: sel.head={:?}", sel.head);
         if let Ok(rp) = ed.doc.resolve_position(sel.head) {
+            tracing::info!("handle_textarea_input: resolved block_index={}", rp.block_index);
             let current_text = ed.doc.block_text(rp.block_index).unwrap_or_default();
 
             // Diff: find what changed

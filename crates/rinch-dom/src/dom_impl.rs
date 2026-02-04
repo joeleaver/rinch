@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use rinch_core::dom::{DomDocument, NodeId};
 
 use peniko::Brush;
+use peniko::color::{AlphaColor, Srgb};
 use servo_arc::Arc as ServoArc;
 
 // Stylo CSS engine imports
@@ -61,7 +62,7 @@ pub struct RinchDocument {
     /// Parley font context for text shaping.
     pub font_cx: parley::FontContext,
     /// Parley layout context for text measurement.
-    pub layout_cx: parley::LayoutContext<[u8; 4]>,
+    pub layout_cx: parley::LayoutContext<Brush>,
     /// Stylo CSS engine stylist for CSS cascade and selector matching.
     pub stylist: Stylist,
 }
@@ -233,6 +234,9 @@ impl DomDocument for RinchDocument {
             font_weight: 400.0,
             font_family: String::new(),
             line_height_css: String::new(),
+            node_id: id,
+            color: AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255), // default black, updated from parent
+            no_wrap: false, // default, updated from parent
         });
         let taffy_id = self.tree.taffy.new_leaf_with_context(taffy::Style::default(), context).unwrap();
         node.taffy_id = Some(taffy_id);
@@ -447,6 +451,9 @@ impl DomDocument for RinchDocument {
                     font_weight: 400.0,
                     font_family: String::new(),
                     line_height_css: String::new(),
+                    node_id: text_id,
+                    color: AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255),
+                    no_wrap: false,
                 });
                 let taffy_id = self.tree.taffy.new_leaf_with_context(taffy::Style::default(), context).unwrap();
                 text_node.taffy_id = Some(taffy_id);
@@ -588,6 +595,13 @@ impl DomDocument for RinchDocument {
         self.query_recursive(self.tree.root_id, selector).map(NodeId)
     }
 
+    fn query_selector_all(&self, selector: &str) -> Vec<NodeId> {
+        // Query all matching nodes
+        let mut results = Vec::new();
+        self.query_all_recursive(self.tree.root_id, selector, &mut results);
+        results.into_iter().map(NodeId).collect()
+    }
+
     fn get_children(&self, node: NodeId) -> Vec<NodeId> {
         self.tree.nodes.get(node.0)
             .map(|n| n.children.iter().map(|&c| NodeId(c)).collect())
@@ -658,18 +672,56 @@ impl DomDocument for RinchDocument {
         self.push_dirty_flags(node.0, DirtyFlags::PAINT);
     }
 
-    fn set_inner_html(&mut self, node: NodeId, _html: &str) {
-        // Phase 9: HTML parser integration
-        // For now, clear children
+    fn set_inner_html(&mut self, node: NodeId, html: &str) {
+        use crate::html_parser::parse_html_string;
+
+        // Clear existing children (including taffy sync)
         let old_children: Vec<_> = self.tree.nodes[node.0].children.clone();
         for child in old_children {
             self.clear_ifc_root_recursive(child);
+            // Remove from taffy parent
+            if let (Some(parent_taffy), Some(child_taffy)) = (
+                self.tree.nodes[node.0].taffy_id,
+                self.tree.nodes[child].taffy_id,
+            ) {
+                self.taffy_remove_child_safe(parent_taffy, child_taffy);
+            }
             self.tree.nodes[child].parent = None;
             self.tree.remove_subtree(child);
         }
         self.tree.nodes[node.0].children.clear();
+
+        // Parse HTML and create nodes
+        if let Some(parsed_nodes) = parse_html_string(html) {
+            for parsed in parsed_nodes {
+                let child_id = self.create_node_from_parsed(&parsed);
+                self.append_child(node, child_id);
+            }
+        }
+
         self.invalidate_parent_ifc(node.0);
         self.push_dirty_flags(node.0, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
+    }
+
+    fn query_caret_position(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32)> {
+        use crate::text_query::caret_position_for_offset;
+        caret_position_for_offset(self, node_id, byte_offset)
+    }
+
+    fn query_glyph_bounds(&self, node_id: u64, byte_offset: usize) -> Option<rinch_core::dom::GlyphBounds> {
+        use crate::text_query::glyph_bounds_for_offset;
+        let bounds = glyph_bounds_for_offset(self, node_id, byte_offset)?;
+        Some(rinch_core::dom::GlyphBounds {
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: bounds.height,
+        })
+    }
+
+    fn focus_element(&mut self, node_id: NodeId) {
+        // Request focus via the event system - the runtime will apply it
+        rinch_core::request_focus(node_id.0);
     }
 }
 
@@ -680,6 +732,34 @@ impl RinchDocument {
     /// Call this at startup to load theme and widget CSS.
     pub fn load_css(&mut self, css: &str) {
         self.load_stylo_css(css);
+    }
+
+    /// Create a DOM node from a parsed HTML node (recursive).
+    fn create_node_from_parsed(&mut self, parsed: &crate::html_parser::ParsedNode) -> NodeId {
+        use crate::html_parser::ParsedNode;
+        use rinch_core::dom::DomDocument;
+
+        match parsed {
+            ParsedNode::Element { tag, attrs, children } => {
+                let node_id = self.create_element(tag);
+
+                // Set attributes
+                for (name, value) in attrs {
+                    self.set_attribute(node_id, name, value);
+                }
+
+                // Recursively create and append children
+                for child in children {
+                    let child_id = self.create_node_from_parsed(child);
+                    self.append_child(node_id, child_id);
+                }
+
+                node_id
+            }
+            ParsedNode::Text(text) => {
+                self.create_text(text)
+            }
+        }
     }
 
     /// If the given node is a `<style>` element, extract its text children's content
@@ -1251,6 +1331,12 @@ impl RinchDocument {
         let mut paint_layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
         let nodes = &self.tree.nodes;
 
+        // Cache for text layouts built during measurement.
+        // Key: (node_id, wrap_width as bits) - wrap width is part of key since layout depends on it
+        // Value: Parley layout
+        use std::cell::RefCell;
+        let text_layout_cache: RefCell<HashMap<(usize, u32), parley::layout::Layout<Brush>>> = RefCell::new(HashMap::new());
+
         self.tree.taffy.compute_layout_with_measure(
             root_taffy,
             available_space,
@@ -1268,7 +1354,7 @@ impl RinchDocument {
                         }
 
                         let mut builder = layout_cx.ranged_builder(font_cx, &text.content, 1.0, true);
-                        builder.push_default(parley::style::StyleProperty::<[u8; 4]>::FontSize(text.font_size));
+                        builder.push_default(parley::style::StyleProperty::FontSize(text.font_size));
                         if (text.font_weight - 400.0).abs() > 1.0 {
                             builder.push_default(parley::style::StyleProperty::FontWeight(
                                 parley::style::FontWeight::new(text.font_weight),
@@ -1282,16 +1368,32 @@ impl RinchDocument {
                         } else {
                             std::borrow::Cow::Borrowed("sans-serif")
                         };
-                        builder.push_default(parley::style::StyleProperty::<[u8; 4]>::FontStack(
+                        builder.push_default(parley::style::StyleProperty::FontStack(
                             parley::style::FontStack::Source(font_stack),
                         ));
+                        // Add brush so the cached layout can be rendered with color
+                        builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(text.color)));
                         let mut layout = builder.build(&text.content);
-                        let wrap_width = known_dims.width.or(max_width);
+                        // If no_wrap is set (white-space: nowrap), don't constrain width
+                        let wrap_width = if text.no_wrap {
+                            None
+                        } else {
+                            known_dims.width.or(max_width)
+                        };
                         layout.break_all_lines(wrap_width);
 
+                        // Cache the layout for use during paint
+                        // Use wrap_width bits as part of the key since layout depends on it
+                        let wrap_bits = wrap_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
+                        text_layout_cache.borrow_mut().insert((text.node_id, wrap_bits), layout);
+
                         taffy::Size {
-                            width: known_dims.width.unwrap_or(layout.width()),
-                            height: known_dims.height.unwrap_or(layout.height()),
+                            width: known_dims.width.unwrap_or_else(|| {
+                                text_layout_cache.borrow().get(&(text.node_id, wrap_bits)).map(|l| l.width()).unwrap_or(0.0)
+                            }),
+                            height: known_dims.height.unwrap_or_else(|| {
+                                text_layout_cache.borrow().get(&(text.node_id, wrap_bits)).map(|l| l.height()).unwrap_or(0.0)
+                            }),
                         }
                     }
                     Some(NodeContext::InlineRoot(root_id)) => {
@@ -1323,6 +1425,9 @@ impl RinchDocument {
 
         // Build inline layouts for IFC roots (rebuild with final widths and store)
         self.build_ifc_layouts(&mut paint_layout_cx);
+
+        // Copy cached text layouts to nodes (use the exact layouts from measurement)
+        self.copy_cached_text_layouts(text_layout_cache.into_inner());
     }
 
     /// Sync font-size from parent elements into text node contexts.
@@ -1330,9 +1435,10 @@ impl RinchDocument {
     /// Walks all text nodes and updates their `TextMeasure.font_size`
     /// from the parent element's computed style.
     fn sync_text_contexts(&mut self) {
-        let mut updates: Vec<(taffy::NodeId, f32, f32, String, String)> = Vec::new();
+        use crate::computed_style::WhiteSpaceValue;
+        let mut updates: Vec<(taffy::NodeId, usize, f32, f32, String, String, AlphaColor<Srgb>, bool)> = Vec::new();
 
-        for (_id, node) in &self.tree.nodes {
+        for (id, node) in &self.tree.nodes {
             if let NodeKind::Text(_) = &node.kind {
                 let taffy_id = match node.taffy_id {
                     Some(t) => t,
@@ -1340,7 +1446,7 @@ impl RinchDocument {
                 };
 
                 // Read from parent's parsed computed_style instead of parsing CSS strings
-                let (font_size, font_weight, font_family, line_height_css) = node.parent
+                let (font_size, font_weight, font_family, line_height_css, color, no_wrap) = node.parent
                     .and_then(|p| self.tree.nodes.get(p))
                     .map(|parent| {
                         let font_size = parent.computed_style.font_size;
@@ -1355,21 +1461,31 @@ impl RinchDocument {
                             crate::computed_style::LineHeightValue::Absolute(v) => format!("{}px", v),
                             crate::computed_style::LineHeightValue::Relative(v) => v.to_string(),
                         };
-                        (font_size, font_weight, font_family, line_height_css)
+                        let color = parent.computed_style.color
+                            .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255));
+                        // Check if white-space prevents wrapping
+                        let no_wrap = matches!(
+                            parent.computed_style.white_space,
+                            WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
+                        );
+                        (font_size, font_weight, font_family, line_height_css, color, no_wrap)
                     })
-                    .unwrap_or((16.0, 400.0, "sans-serif".to_string(), String::new()));
+                    .unwrap_or((16.0, 400.0, "sans-serif".to_string(), String::new(), AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255), false));
 
-                updates.push((taffy_id, font_size, font_weight, font_family, line_height_css));
+                updates.push((taffy_id, id, font_size, font_weight, font_family, line_height_css, color, no_wrap));
             }
         }
 
-        for (taffy_id, font_size, font_weight, font_family, line_height_css) in updates {
+        for (taffy_id, node_id, font_size, font_weight, font_family, line_height_css, color, no_wrap) in updates {
             if let Some(ctx) = self.tree.taffy.get_node_context_mut(taffy_id) {
                 if let NodeContext::Text(tm) = ctx {
                     tm.font_size = font_size;
                     tm.font_weight = font_weight;
                     tm.font_family = font_family;
                     tm.line_height_css = line_height_css;
+                    tm.node_id = node_id;
+                    tm.color = color;
+                    tm.no_wrap = no_wrap;
                 }
             }
         }
@@ -1553,8 +1669,16 @@ impl RinchDocument {
 
         for root_id in ifc_roots {
             let node = &self.tree.nodes[root_id];
-            let available_width = node.layout.width;
-            let max_width = if available_width > 0.0 { Some(available_width) } else { None };
+            // Only constrain width if the element has an explicit width set.
+            // For auto-width elements, don't re-constrain text to measured width
+            // as floating-point precision can cause unwanted line breaks.
+            let max_width = match node.computed_style.width {
+                crate::computed_style::DimensionValue::Auto => None,
+                _ => {
+                    let available_width = node.layout.width;
+                    if available_width > 0.0 { Some(available_width) } else { None }
+                }
+            };
 
             let inline_layout = Self::build_inline_layout(
                 &self.tree.nodes,
@@ -1570,6 +1694,50 @@ impl RinchDocument {
             self.write_inline_positions(root_id, &inline_layout);
 
             self.tree.nodes[root_id].text_layout = Some(Box::new(inline_layout));
+        }
+    }
+
+    /// Copy cached text layouts from measurement to nodes.
+    ///
+    /// Uses the exact layouts built during Taffy measurement to ensure
+    /// paint uses identical text shaping results.
+    fn copy_cached_text_layouts(&mut self, cache: HashMap<(usize, u32), parley::layout::Layout<Brush>>) {
+        // First collect node IDs and their layouts to apply
+        let updates: Vec<(usize, parley::layout::Layout<Brush>)> = self.tree.nodes.iter()
+            .filter_map(|(id, node)| {
+                if node.ifc_root.is_some() { return None; } // Skip IFC-managed nodes
+                if !matches!(&node.kind, NodeKind::Text(_)) { return None; }
+
+                let width = node.layout.width;
+                let wrap_bits = if width > 0.0 { width.to_bits() } else { u32::MAX };
+
+                // Try to find a cached layout for this node with the final width
+                if let Some(layout) = cache.get(&(id, wrap_bits)) {
+                    return Some((id, layout.clone()));
+                }
+
+                // Fallback: prefer the MaxContent layout (wrap_bits = u32::MAX) which has natural width.
+                // This avoids picking a MinContent layout that was wrapped to 0 width.
+                if let Some(layout) = cache.get(&(id, u32::MAX)) {
+                    return Some((id, layout.clone()));
+                }
+                // Last resort: find any cached layout for this node (prefer widest/tallest ratio)
+                let mut best: Option<&parley::layout::Layout<Brush>> = None;
+                for ((nid, _), layout) in &cache {
+                    if *nid == id {
+                        // Prefer single-line layouts (lower height) over wrapped ones
+                        if best.is_none() || layout.height() < best.unwrap().height() {
+                            best = Some(layout);
+                        }
+                    }
+                }
+                best.map(|layout| (id, layout.clone()))
+            })
+            .collect();
+
+        // Apply the updates
+        for (id, layout) in updates {
+            self.tree.nodes[id].cached_text_parley = Some(Box::new(layout));
         }
     }
 
@@ -1730,7 +1898,7 @@ impl RinchDocument {
                                 return taffy::Size::ZERO;
                             }
                             let mut builder = layout_cx.ranged_builder(font_cx, &text.content, 1.0, true);
-                            builder.push_default(parley::style::StyleProperty::<[u8; 4]>::FontSize(text.font_size));
+                            builder.push_default(parley::style::StyleProperty::FontSize(text.font_size));
                             if (text.font_weight - 400.0).abs() > 1.0 {
                                 builder.push_default(parley::style::StyleProperty::FontWeight(
                                     parley::style::FontWeight::new(text.font_weight),
@@ -1744,11 +1912,16 @@ impl RinchDocument {
                             } else {
                                 std::borrow::Cow::Borrowed("sans-serif")
                             };
-                            builder.push_default(parley::style::StyleProperty::<[u8; 4]>::FontStack(
+                            builder.push_default(parley::style::StyleProperty::FontStack(
                                 parley::style::FontStack::Source(font_stack),
                             ));
                             let mut layout = builder.build(&text.content);
-                            let wrap_width = known_dims.width.or(max_width);
+                            // If no_wrap is set (white-space: nowrap), don't constrain width
+                            let wrap_width = if text.no_wrap {
+                                None
+                            } else {
+                                known_dims.width.or(max_width)
+                            };
                             layout.break_all_lines(wrap_width);
                             taffy::Size {
                                 width: known_dims.width.unwrap_or(layout.width()),
@@ -1968,6 +2141,21 @@ impl RinchDocument {
                 }
             }
         }
+        // Match by attribute selector [attr] or [attr=value]
+        else if let Some(attr_sel) = selector.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            if let Some((attr_name, attr_value)) = attr_sel.split_once('=') {
+                // [attr=value]
+                let value = attr_value.trim_matches('"').trim_matches('\'');
+                if node.attributes.get(attr_name).map(|v| v.as_str()) == Some(value) {
+                    return Some(node_id);
+                }
+            } else {
+                // [attr]
+                if node.attributes.contains_key(attr_sel) {
+                    return Some(node_id);
+                }
+            }
+        }
         // Match by tag name
         else if node.tag() == Some(selector) {
             return Some(node_id);
@@ -1981,6 +2169,45 @@ impl RinchDocument {
             }
         }
         None
+    }
+
+    /// Query all nodes matching a selector.
+    fn query_all_recursive(&self, node_id: usize, selector: &str, results: &mut Vec<usize>) {
+        let Some(node) = self.tree.nodes.get(node_id) else { return };
+
+        let matches = if let Some(id) = selector.strip_prefix('#') {
+            node.attributes.get("id").map(|v| v.as_str()) == Some(id)
+        } else if let Some(class) = selector.strip_prefix('.') {
+            node.attributes.get("class")
+                .map(|classes| classes.split_whitespace().any(|c| c == class))
+                .unwrap_or(false)
+        } else if let Some(attr_sel) = selector.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            if let Some((attr_name, attr_value)) = attr_sel.split_once('=') {
+                let value = attr_value.trim_matches('"').trim_matches('\'');
+                node.attributes.get(attr_name).map(|v| v.as_str()) == Some(value)
+            } else {
+                node.attributes.contains_key(attr_sel)
+            }
+        } else {
+            node.tag() == Some(selector)
+        };
+
+        if matches {
+            results.push(node_id);
+        }
+
+        // Search all children
+        let children: Vec<_> = node.children.clone();
+        for child in children {
+            self.query_all_recursive(child, selector, results);
+        }
+    }
+
+    /// Query all nodes matching a selector, returning a vector of NodeIds.
+    pub fn query_selector_all(&self, selector: &str) -> Vec<NodeId> {
+        let mut results = Vec::new();
+        self.query_all_recursive(self.tree.root_id, selector, &mut results);
+        results.into_iter().map(NodeId).collect()
     }
 }
 

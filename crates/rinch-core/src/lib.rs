@@ -49,6 +49,7 @@ pub use events::{
     save_selection_snapshot, clear_selection_snapshot, get_saved_selection,
     set_selection_sync_callback, clear_selection_sync_callback, fire_selection_sync,
     request_selection_clear, take_pending_selection_clear,
+    request_focus, take_pending_focus_request,
     ClickContext, EventCallback, EventHandlerId, InputCallback, InputContext, KeyEventData,
     ModifierState, TextHitInfo, SelectionAction,
 };

@@ -11,6 +11,7 @@ pub mod testing;
 pub mod computed_style;
 pub mod stylo_impl;
 pub mod text_query;
+pub mod html_parser;
 mod dom_impl;
 
 pub use node::{Node, NodeKind, NodeTree, ElementData, TextData, DirtyFlags, LayoutResult, NodeContext, TextMeasure, DisplayMode, InlineLayout};

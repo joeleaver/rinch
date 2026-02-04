@@ -38,7 +38,7 @@ use rinch_core::dom::{clear_render_scope, set_render_scope, DomDocument, NodeHan
 use rinch_core::events;
 use rinch_core::hooks::{begin_render, clear_hooks, end_render};
 use rinch_dom::RinchDocument;
-use rinch_dom::text_query::{byte_offset_from_position, caret_position_for_offset, glyph_bounds_for_offset};
+use rinch_dom::text_query::{byte_offset_from_position, caret_position_for_offset_layout, glyph_bounds_for_offset_layout};
 
 use super::devtools::DevToolsState;
 
@@ -454,22 +454,22 @@ impl RinchRuntime {
         }
     }
 
-    fn paint(&mut self) {
+    fn paint(&mut self) -> Result<(), String> {
         let Some(state) = &mut self.render_state else {
-            return;
+            return Ok(());
         };
         let Some(doc) = &self.doc else {
-            return;
+            return Ok(());
         };
         let Some(window) = &self.window else {
-            return;
+            return Ok(());
         };
 
         let surface_texture = match state.surface.get_current_texture() {
             Ok(t) => t,
             Err(e) => {
                 tracing::warn!("Failed to get surface texture: {:?}", e);
-                return;
+                return Ok(());
             }
         };
 
@@ -490,7 +490,7 @@ impl RinchRuntime {
                 scale,
                 (size.width as f32, size.height as f32),
                 &mut d.font_cx,
-                &mut self.paint_layout_cx,
+                &mut d.layout_cx,  // Use same LayoutContext as measurement
             );
         }
 
@@ -513,7 +513,7 @@ impl RinchRuntime {
                     antialiasing_method: AaConfig::Msaa16,
                 },
             )
-            .expect("failed to render to texture");
+            .map_err(|e| format!("Failed to render to texture: {:?}", e))?;
 
         // Copy to surface
         let mut encoder = state
@@ -547,7 +547,9 @@ impl RinchRuntime {
         state
             .device
             .poll(wgpu::PollType::wait_indefinitely())
-            .unwrap();
+            .map_err(|e| format!("GPU poll failed: {:?}", e))?;
+
+        Ok(())
     }
 
     #[cfg(feature = "debug")]
@@ -555,8 +557,8 @@ impl RinchRuntime {
         let Some(rx) = self.debug_cmd_rx.take() else { return };
 
         while let Ok(cmd) = rx.0.try_recv() {
-            let result = self.execute_debug_command(cmd.kind);
-            let _ = cmd.response_tx.send(result);
+            let response = self.execute_debug_command(cmd.kind);
+            let _ = cmd.response_tx.send(response);
         }
 
         self.debug_cmd_rx = Some(rx);
@@ -566,16 +568,21 @@ impl RinchRuntime {
     fn execute_debug_command(&mut self, kind: DebugCommandKind) -> DebugResult {
         match kind {
             DebugCommandKind::Screenshot => {
-                self.paint();
+                if let Err(e) = self.paint() {
+                    return DebugResult::Error { message: format!("Paint failed: {}", e) };
+                }
                 let Some(state) = &self.render_state else {
                     return DebugResult::Error { message: "No render state".into() };
                 };
                 let w = state.surface_config.width;
                 let h = state.surface_config.height;
                 let fmt = state.surface_config.format;
-                let rgba = screenshot::capture_texture_rgba(
+                let rgba = match screenshot::capture_texture_rgba(
                     &state.device, &state.queue, &state.render_texture, w, h, fmt,
-                );
+                ) {
+                    Ok(data) => data,
+                    Err(e) => return DebugResult::Error { message: format!("Screenshot capture failed: {}", e) },
+                };
                 let png_bytes = screenshot::encode_png(&rgba, w, h);
                 use base64::Engine;
                 DebugResult::Bytes { data: base64::engine::general_purpose::STANDARD.encode(&png_bytes) }
@@ -774,7 +781,7 @@ impl RinchRuntime {
                         Some(input_width),
                     );
 
-                    let (x, y) = caret_position_for_offset(&layout, byte_offset);
+                    let (x, y) = caret_position_for_offset_layout(&layout, byte_offset);
                     let padding_left = computed_style.padding_left.to_px() as f64 * scale as f64;
                     let padding_top = computed_style.padding_top.to_px() as f64 * scale as f64;
 
@@ -786,7 +793,7 @@ impl RinchRuntime {
 
                 // Check if node has inline text layout (IFC text)
                 if let Some(ref inline_layout) = node.text_layout {
-                    let (x, y) = caret_position_for_offset(&inline_layout.layout, byte_offset);
+                    let (x, y) = caret_position_for_offset_layout(&inline_layout.layout, byte_offset);
                     return DebugResult::Json { data: json!({
                         "x": abs_x + x as f64,
                         "y": abs_y + y as f64,
@@ -845,7 +852,7 @@ impl RinchRuntime {
                         Some(input_width),
                     );
 
-                    match glyph_bounds_for_offset(&layout, byte_offset) {
+                    match glyph_bounds_for_offset_layout(&layout, byte_offset) {
                         Some(bounds) => {
                             let padding_left = computed_style.padding_left.to_px() as f64 * scale as f64;
                             let padding_top = computed_style.padding_top.to_px() as f64 * scale as f64;
@@ -864,7 +871,7 @@ impl RinchRuntime {
 
                 // Check if node has inline text layout (IFC text)
                 if let Some(ref inline_layout) = node.text_layout {
-                    match glyph_bounds_for_offset(&inline_layout.layout, byte_offset) {
+                    match glyph_bounds_for_offset_layout(&inline_layout.layout, byte_offset) {
                         Some(bounds) => {
                             return DebugResult::Json { data: json!({
                                 "x": abs_x + bounds.x as f64,
@@ -997,6 +1004,15 @@ impl RinchRuntime {
                             }
                             events::dispatch_event(events::EventHandlerId(handler_id));
                             crate::windows::set_current_window_id(None);
+                            // Check for pending focus requests from the event handler
+                            if let Some(focus_node_id) = rinch_core::take_pending_focus_request() {
+                                self.focused_input = Some(focus_node_id);
+                                self.input_cursor = 0;
+                                self.input_selection_start = 0;
+                                self.cursor_visible = true;
+                                self.cursor_blink_time = std::time::Instant::now();
+                                tracing::debug!("Applied focus request: node_id={}", focus_node_id);
+                            }
                             return;
                         }
                     }
@@ -1856,7 +1872,9 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                 }
             }
             WindowEvent::RedrawRequested => {
-                self.paint();
+                if let Err(e) = self.paint() {
+                    eprintln!("Paint error: {}", e);
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let x = position.x as f32;

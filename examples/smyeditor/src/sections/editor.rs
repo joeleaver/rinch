@@ -82,6 +82,10 @@ pub fn editor_section(__scope: &mut RenderScope) -> NodeHandle {
     let toolbar_config = get_toolbar_config(toolbar_preset.get());
     let toolbar_node = render_toolbar(__scope, editor.clone(), &toolbar_config, on_change.clone());
 
+    // Create input bridge (hidden textarea + keyboard interceptor) BEFORE click handler
+    // so we can use the focus callback in the click handler
+    let (input_bridge_node, focus_textarea) = create_input_bridge(__scope, editor.clone(), on_change.clone());
+
     // Build reactive content area using Effect pattern (like show_dom)
     let content_div = __scope.create_element("div");
     content_div.set_attribute("class", "editor-content");
@@ -93,7 +97,10 @@ pub fn editor_section(__scope: &mut RenderScope) -> NodeHandle {
     // Register click handler on content area for cursor positioning and multi-click selection
     {
         let editor_for_click = editor.clone();
+        let focus_textarea_for_click = focus_textarea.clone();
         let handler_id = __scope.register_handler(move || {
+            // Focus the hidden textarea so keyboard input is captured
+            focus_textarea_for_click();
             let ctx = rinch_core::events::get_click_context();
 
             // Multi-click detection
@@ -376,9 +383,6 @@ pub fn editor_section(__scope: &mut RenderScope) -> NodeHandle {
         __scope.create_effect_from(effect);
     }
 
-    // Create input bridge (keyboard interceptor)
-    let input_bridge_node = create_input_bridge(__scope, editor.clone(), on_change.clone());
-
     rsx! {
         Fragment {
             Stack { gap: "xs",
@@ -510,8 +514,10 @@ pub fn editor_section(__scope: &mut RenderScope) -> NodeHandle {
 
 /// Render editor-specific CSS styles.
 fn render_editor_styles(__scope: &mut RenderScope) -> NodeHandle {
+    use rinch_editor::view::cursor_blink_css;
+
     let style = __scope.create_element("style");
-    style.set_text(r#"
+    let mut css = String::from(r#"
         .editor-content p { margin: 0 0 8px 0; }
         .editor-content h1 { font-size: 2em; font-weight: 700; margin: 16px 0 8px 0; }
         .editor-content h2 { font-size: 1.5em; font-weight: 700; margin: 14px 0 6px 0; }
@@ -575,6 +581,11 @@ fn render_editor_styles(__scope: &mut RenderScope) -> NodeHandle {
             background: var(--rinch-color-gray-1);
         }
     "#);
+
+    // Add cursor blink animation CSS
+    css.push_str(cursor_blink_css());
+
+    style.set_text(&css);
     style
 }
 

@@ -663,6 +663,26 @@ pub fn take_pending_selection_clear() -> bool {
     })
 }
 
+// --- Focus request mechanism ---
+// Allows the document/editor to request that a specific element be focused.
+// The runtime checks for and applies focus requests during event processing.
+
+thread_local! {
+    static PENDING_FOCUS_REQUEST: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+/// Request that a specific element be focused.
+/// The runtime will apply this focus before the next event processing cycle.
+pub fn request_focus(node_id: usize) {
+    PENDING_FOCUS_REQUEST.with(|c| c.set(Some(node_id)));
+}
+
+/// Check and consume the pending focus request.
+/// Called by the runtime during event processing.
+pub fn take_pending_focus_request() -> Option<usize> {
+    PENDING_FOCUS_REQUEST.with(|c| c.take())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
