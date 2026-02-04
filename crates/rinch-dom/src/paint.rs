@@ -153,8 +153,8 @@ fn paint_node(
                 // Still paint non-inline (block) children normally
                 let scroll_x = node.scroll_offset.0 * scale;
                 let scroll_y = node.scroll_offset.1 * scale;
-                let children: Vec<_> = node.children.clone();
-                for child_id in children {
+                let child_ids: Vec<usize> = node.children.iter().copied().collect();
+                for child_id in child_ids {
                     let child = match tree.get(child_id) {
                         Some(c) => c,
                         None => continue,
@@ -178,8 +178,8 @@ fn paint_node(
                 // Normal paint path: recurse into all children
                 let scroll_x = node.scroll_offset.0 * scale;
                 let scroll_y = node.scroll_offset.1 * scale;
-                let children: Vec<_> = node.children.clone();
-                for child_id in children {
+                let child_ids: Vec<usize> = node.children.iter().copied().collect();
+                for child_id in child_ids {
                     paint_node(
                         tree,
                         child_id,
@@ -254,21 +254,8 @@ fn paint_node(
 
             // Use cached layout if available (built after Taffy layout with final widths)
             if let Some(cached_layout) = &node.cached_text_parley {
-                // Read text-align from parent's computed style
-                let parent_computed = node.parent
-                    .and_then(|p| tree.get(p))
-                    .map(|p| &p.computed_style);
-                let alignment = parent_computed
-                    .map(|s| s.text_align.to_parley())
-                    .unwrap_or(parley::layout::Alignment::Start);
-
-                // Clone the cached layout so we can align it
-                // (align mutates the layout, and we don't want to modify the cache)
-                let mut text_layout = (**cached_layout).clone();
-                text_layout.align(alignment, parley::layout::AlignmentOptions::default());
-
-                // Render text glyphs to scene
-                render_text(scene, &text_layout, x, y);
+                // Layout is already aligned during caching, use it directly
+                render_text(scene, cached_layout, x, y);
                 return;
             }
 
@@ -511,8 +498,8 @@ fn paint_svg(
         .unwrap_or(Join::Miter);
 
     // Paint each child SVG element
-    let children: Vec<_> = node.children.clone();
-    for child_id in children {
+    let child_ids: Vec<usize> = node.children.iter().copied().collect();
+    for child_id in child_ids {
         let Some(child) = tree.get(child_id) else { continue };
         let NodeKind::Element(ref el) = child.kind else { continue };
 

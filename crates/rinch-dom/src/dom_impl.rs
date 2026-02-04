@@ -515,6 +515,7 @@ impl DomDocument for RinchDocument {
         if needs_style_recompute {
             // Invalidate cached Stylo data and resolve styles for this subtree
             *self.tree.nodes[node.0].stylo_element_data.borrow_mut() = None;
+            self.tree.styles_dirty = true;
             self.resolve_styles();
             self.apply_stylo_styles_to_taffy();
             self.push_dirty_flags(node.0, DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT);
@@ -527,6 +528,10 @@ impl DomDocument for RinchDocument {
         self.tree.nodes[node.0].attributes.remove(name);
         if name == "class" || name == "style" {
             self.push_dirty_flags(node.0, DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+            // Invalidate Stylo element data so styles are recomputed
+            *self.tree.nodes[node.0].stylo_element_data.borrow_mut() = None;
+            self.tree.nodes[node.0].style_attribute_cache = None;
+            self.tree.styles_dirty = true;
         } else {
             self.push_dirty(node.0);
         }
@@ -568,6 +573,7 @@ impl DomDocument for RinchDocument {
 
         // Invalidate cached Stylo data and resolve styles
         *self.tree.nodes[node.0].stylo_element_data.borrow_mut() = None;
+        self.tree.styles_dirty = true;
         self.resolve_styles();
         self.apply_stylo_styles_to_taffy();
         self.push_dirty_flags(node.0, DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT);
@@ -794,6 +800,7 @@ impl RinchDocument {
         if !css.is_empty() {
             self.load_stylo_css(&css);
             // Recompute all styles since new CSS rules may affect existing nodes
+            self.tree.styles_dirty = true;
             self.resolve_styles();
             self.apply_stylo_styles_to_taffy();
         }
@@ -1112,6 +1119,7 @@ impl RinchDocument {
         // Recompute styles using Stylo for affected nodes
         // For simplicity, we recompute styles for the entire tree
         // (a more optimized approach would only restyle the affected subtrees)
+        self.tree.styles_dirty = true;
         self.resolve_styles();
         self.apply_stylo_styles_to_taffy();
 
@@ -1147,6 +1155,7 @@ impl RinchDocument {
             *self.tree.nodes[nid].stylo_element_data.borrow_mut() = None;
         }
         // Resolve styles using Stylo
+        self.tree.styles_dirty = true;
         self.resolve_styles();
         self.apply_stylo_styles_to_taffy();
     }
@@ -1156,6 +1165,7 @@ impl RinchDocument {
     fn recompute_all_styles(&mut self) {
         // When viewport changes, Stylo needs to know about it to recalculate vh/vw units
         // For now, just resolve styles and apply to Taffy
+        self.tree.styles_dirty = true;
         self.resolve_styles();
         self.apply_stylo_styles_to_taffy();
     }
@@ -1180,6 +1190,7 @@ impl RinchDocument {
         invalidate_recursive(&mut self.tree, node_id);
 
         // Resolve styles using Stylo
+        self.tree.styles_dirty = true;
         self.resolve_styles();
         self.apply_stylo_styles_to_taffy();
         self.push_dirty_flags(node_id, DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT);
@@ -1309,11 +1320,15 @@ impl RinchDocument {
             for (node_id, _) in self.tree.nodes.iter() {
                 *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
             }
+            self.tree.styles_dirty = true;
         }
 
-        // Resolve Stylo styles and apply to Taffy nodes
-        self.resolve_styles();
-        self.apply_stylo_styles_to_taffy();
+        // Resolve Stylo styles and apply to Taffy nodes (only if dirty)
+        if self.tree.styles_dirty {
+            self.resolve_styles();
+            self.apply_stylo_styles_to_taffy();
+            self.tree.styles_dirty = false;
+        }
 
         let root_taffy = match self.tree.nodes[self.tree.root_id].taffy_id {
             Some(id) => id,
@@ -1340,7 +1355,6 @@ impl RinchDocument {
 
         let font_cx = &mut self.font_cx;
         let layout_cx = &mut self.layout_cx;
-        let mut paint_layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
         let nodes = &self.tree.nodes;
 
         // Cache for text layouts built during measurement.
@@ -1417,7 +1431,7 @@ impl RinchDocument {
                             max_width,
                             1.0,
                             font_cx,
-                            &mut paint_layout_cx,
+                            layout_cx,
                         );
                         let w = inline_layout.layout.width();
                         let h = inline_layout.layout.height();
@@ -1436,7 +1450,10 @@ impl RinchDocument {
         self.read_layout_results(self.tree.root_id);
 
         // Build inline layouts for IFC roots (rebuild with final widths and store)
-        self.build_ifc_layouts(&mut paint_layout_cx);
+        // Temporarily take layout_cx out to avoid borrow conflict
+        let mut temp_layout_cx = std::mem::take(&mut self.layout_cx);
+        self.build_ifc_layouts(&mut temp_layout_cx);
+        self.layout_cx = temp_layout_cx;
 
         // Copy cached text layouts to nodes (use the exact layouts from measurement)
         self.copy_cached_text_layouts(text_layout_cache.into_inner());
@@ -1747,8 +1764,18 @@ impl RinchDocument {
             })
             .collect();
 
-        // Apply the updates
-        for (id, layout) in updates {
+        // Apply the updates with alignment
+        for (id, mut layout) in updates {
+            // Get text-align from parent's computed style
+            let parent_id = self.tree.nodes[id].parent;
+            let alignment = parent_id
+                .and_then(|p| self.tree.nodes.get(p))
+                .map(|p| p.computed_style.text_align.to_parley())
+                .unwrap_or(parley::layout::Alignment::Start);
+
+            // Apply alignment before caching
+            layout.align(alignment, parley::layout::AlignmentOptions::default());
+
             self.tree.nodes[id].cached_text_parley = Some(Box::new(layout));
         }
     }

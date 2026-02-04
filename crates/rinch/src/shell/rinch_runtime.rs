@@ -425,6 +425,7 @@ impl RinchRuntime {
     }
 
     fn resolve_and_repaint(&mut self) {
+        let frame_start = std::time::Instant::now();
         if let (Some(window), Some(doc)) = (&self.window, &self.doc) {
             // Check if theme CSS has changed (e.g. primary color or dark mode toggled)
             #[cfg(feature = "theme")]
@@ -452,9 +453,16 @@ impl RinchRuntime {
 
             window.request_redraw();
         }
+        // Log frame time if RINCH_PERF is set
+        if std::env::var("RINCH_PERF").is_ok() {
+            let elapsed = frame_start.elapsed();
+            let fps = 1.0 / elapsed.as_secs_f64();
+            eprintln!("[PERF] resolve: {:.2}ms ({:.0} fps)", elapsed.as_secs_f64() * 1000.0, fps);
+        }
     }
 
     fn paint(&mut self) -> Result<(), String> {
+        let paint_start = std::time::Instant::now();
         let Some(state) = &mut self.render_state else {
             return Ok(());
         };
@@ -546,8 +554,14 @@ impl RinchRuntime {
         surface_texture.present();
         state
             .device
-            .poll(wgpu::PollType::wait_indefinitely())
+            .poll(wgpu::PollType::Poll)
             .map_err(|e| format!("GPU poll failed: {:?}", e))?;
+
+        // Log paint time if RINCH_PERF is set
+        if std::env::var("RINCH_PERF").is_ok() {
+            let elapsed = paint_start.elapsed();
+            eprintln!("[PERF] paint: {:.2}ms", elapsed.as_secs_f64() * 1000.0);
+        }
 
         Ok(())
     }
@@ -665,7 +679,7 @@ impl RinchRuntime {
                                 if new_y != node.scroll_offset.1 {
                                     node.scroll_offset.1 = new_y;
                                     node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                                    doc.tree.dirty_nodes.push(scroll_node_id);
+                                    doc.tree.dirty_nodes.insert(scroll_node_id);
                                 }
                             }
                         }
@@ -954,7 +968,7 @@ impl RinchRuntime {
                                         prev_node.attributes.remove("data-cursor-pos");
                                         prev_node.attributes.remove("data-selection-start");
                                         prev_node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                                        d.tree.dirty_nodes.push(prev_id);
+                                        d.tree.dirty_nodes.insert(prev_id);
                                     }
                                 }
                             }
@@ -1243,7 +1257,7 @@ impl RinchRuntime {
                     node.attributes.remove("data-selection-start");
                     node.attributes.remove("data-cursor-visible");
                     node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                    d.tree.dirty_nodes.push(focused_id);
+                    d.tree.dirty_nodes.insert(focused_id);
                 }
             }
         }
@@ -1259,7 +1273,7 @@ impl RinchRuntime {
                 node.attributes.insert("data-selection-start".to_string(), self.input_selection_start.to_string());
                 node.attributes.insert("data-cursor-visible".to_string(), self.cursor_visible.to_string());
                 node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                d.tree.dirty_nodes.push(node_id);
+                d.tree.dirty_nodes.insert(node_id);
             }
         }
     }
@@ -1328,7 +1342,7 @@ impl RinchRuntime {
                 node.attributes.insert("data-selection-start".to_string(), self.input_selection_start.to_string());
                 node.attributes.insert("data-cursor-visible".to_string(), "true".to_string());
                 node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                d.tree.dirty_nodes.push(focused_id);
+                d.tree.dirty_nodes.insert(focused_id);
             }
         }
 
@@ -1406,7 +1420,7 @@ impl RinchRuntime {
                 node.attributes.insert("data-selection-start".to_string(), self.input_selection_start.to_string());
                 node.attributes.insert("data-cursor-visible".to_string(), "true".to_string());
                 node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                d.tree.dirty_nodes.push(focused_id);
+                d.tree.dirty_nodes.insert(focused_id);
             }
         }
 
@@ -1474,7 +1488,7 @@ impl RinchRuntime {
                 node.attributes.insert("data-selection-start".to_string(), self.input_selection_start.to_string());
                 node.attributes.insert("data-cursor-visible".to_string(), "true".to_string());
                 node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                d.tree.dirty_nodes.push(focused_id);
+                d.tree.dirty_nodes.insert(focused_id);
             }
         }
 
@@ -1859,7 +1873,7 @@ impl RinchRuntime {
             if let Some(node) = d.tree.nodes.get_mut(focused_id) {
                 node.attributes.insert("value".to_string(), new_value.clone());
                 node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                d.tree.dirty_nodes.push(focused_id);
+                d.tree.dirty_nodes.insert(focused_id);
             }
         }
 
@@ -2030,7 +2044,7 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                         if let Some(node) = d.tree.nodes.get_mut(node_id) {
                             node.scroll_offset.1 = new_scroll;
                             node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                            d.tree.dirty_nodes.push(node_id);
+                            d.tree.dirty_nodes.insert(node_id);
                         }
                     }
                     if let Some(w) = &self.window {
@@ -2168,7 +2182,7 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                             if let Some(node) = d.tree.nodes.get_mut(node_id) {
                                 node.scroll_offset.1 = new_scroll;
                                 node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                                d.tree.dirty_nodes.push(node_id);
+                                d.tree.dirty_nodes.insert(node_id);
                             }
 
                             self.scrollbar_drag = Some(ScrollbarDrag {
@@ -2227,7 +2241,7 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                                 if new_y != node.scroll_offset.1 {
                                     node.scroll_offset.1 = new_y;
                                     node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                                    doc.tree.dirty_nodes.push(scroll_node_id);
+                                    doc.tree.dirty_nodes.insert(scroll_node_id);
                                 }
                             }
                         }
@@ -2379,7 +2393,7 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                             self.cursor_visible.to_string(),
                         );
                         node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                        d.tree.dirty_nodes.push(focused_id);
+                        d.tree.dirty_nodes.insert(focused_id);
                     }
                 }
 

@@ -1,6 +1,6 @@
 //! Node tree data structures for rinch-dom.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 
 use atomic_refcell::AtomicRefCell;
@@ -393,9 +393,11 @@ pub struct NodeTree {
     /// The body element node ID.
     pub body_id: RawNodeId,
     /// IDs of nodes that have been mutated since last take_dirty_nodes.
-    pub dirty_nodes: Vec<RawNodeId>,
+    pub dirty_nodes: HashSet<RawNodeId>,
     /// IDs of nodes whose styles were recomputed and need Taffy sync.
     pub style_dirty_nodes: Vec<RawNodeId>,
+    /// True if any style-affecting change occurred since last resolve.
+    pub styles_dirty: bool,
     /// Taffy layout tree.
     pub taffy: taffy::TaffyTree<NodeContext>,
     /// Reverse map from Taffy node ID to slab node ID.
@@ -478,8 +480,9 @@ impl NodeTree {
             root_id,
             html_id,
             body_id,
-            dirty_nodes: Vec::new(),
+            dirty_nodes: HashSet::new(),
             style_dirty_nodes: Vec::new(),
+            styles_dirty: true, // Initial render needs styles
             taffy,
             taffy_map,
             viewport: crate::layout::Viewport::default(),
@@ -505,9 +508,7 @@ impl NodeTree {
 
     /// Push a node ID to the dirty list (deduplicated).
     pub fn push_dirty(&mut self, id: RawNodeId) {
-        if !self.dirty_nodes.contains(&id) {
-            self.dirty_nodes.push(id);
-        }
+        self.dirty_nodes.insert(id);
     }
 
     /// Remove a node and all its descendants from the slab.
