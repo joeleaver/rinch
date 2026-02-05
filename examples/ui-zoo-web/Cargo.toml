@@ -12,22 +12,18 @@ ui-zoo = { path = "../ui-zoo" }
 
 # Rinch without desktop
 rinch = { path = "../../crates/rinch", default-features = false, features = ["widgets", "theme"] }
-rinch-core = { path = "../../crates/rinch-core" }
-rinch-platform = { path = "../../crates/rinch-platform" }
-
-# Rendering
-vello = "0.7"
-wgpu = "27"
-peniko = "0.6"
-
-# Windowing (winit supports WASM)
-winit = "0.30"
+rinch-core = { path = "../../crates/rinch-core", features = ["theme"] }
 
 # WASM bindings
 wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
 web-sys = { version = "0.3", features = [
-    "Window", "Document", "HtmlCanvasElement", "Element",
+    "Window", "Document", "Element", "HtmlElement", "HtmlInputElement",
+    "HtmlTextAreaElement", "HtmlHeadElement",
+    "Node", "NodeList", "Text", "Comment",
+    "CssStyleDeclaration", "DomRect",
+    "Event", "MouseEvent", "KeyboardEvent", "InputEvent",
+    "EventTarget",
     "console",
 ] }
 
@@ -36,6 +32,12 @@ console_error_panic_hook = "0.1"
 console_log = "0.2"
 log = "0.4"
 
-# NOTE: No [patch.crates-io] here. The workspace wgpu fork patches are for
-# DX12 storage texture support on desktop. On WASM, WebGPU natively supports
-# Rgba8Unorm STORAGE_BINDING, so stock wgpu works correctly.
+# NOTE: This crate uses browser-native DOM rendering.
+# No rinch-dom, Taffy, Parley, Vello, winit, or Canvas 2D needed.
+# The browser handles layout, text rendering, CSS, and painting natively.
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2

@@ -88,6 +88,10 @@ pub struct RinchApp {
     pub(crate) window_props: Option<rinch_core::element::WindowProps>,
     /// Current keyboard modifier state.
     pub(crate) modifiers: Modifiers,
+    /// Whether the Vello scene needs to be rebuilt.
+    pub(crate) scene_dirty: bool,
+    /// Font data to register on the document when it is created (for WASM).
+    pub(crate) pending_fonts: Vec<&'static [u8]>,
     /// Debug command receiver.
     #[cfg(feature = "debug")]
     pub(crate) debug_cmd_rx: Option<CommandReceiver>,
@@ -116,6 +120,8 @@ impl RinchApp {
             hit_test_font_cx: parley::FontContext::new(),
             window_props: None,
             modifiers: Modifiers::default(),
+            scene_dirty: true,
+            pending_fonts: Vec::new(),
             #[cfg(feature = "debug")]
             debug_cmd_rx: None,
             #[cfg(feature = "debug")]
@@ -133,6 +139,81 @@ impl RinchApp {
         self.doc.as_ref()
     }
 
+    /// Register font data for text rendering.
+    ///
+    /// On WASM, system fonts are not available, so fonts must be registered
+    /// explicitly. Call this **before** [`mount_component`] so the fonts are
+    /// available during the initial layout pass.
+    ///
+    /// The data should be a TrueType (.ttf) or OpenType (.otf) font file.
+    /// The font is registered and set as a fallback for all scripts.
+    pub fn register_font_data(&mut self, data: &'static [u8]) {
+        self.pending_fonts.push(data);
+        // Also register immediately on the hit-test font context
+        Self::register_font_on_context(&mut self.hit_test_font_cx, data);
+    }
+
+    /// Register font data on a FontContext (internal helper).
+    fn register_font_on_context(font_cx: &mut parley::FontContext, data: &'static [u8]) {
+        use parley::fontique::{Blob, FallbackKey, GenericFamily, Script};
+        use std::sync::Arc;
+
+        let blob = Blob::new(Arc::new(data));
+        let families = font_cx.collection.register_fonts(blob, None);
+        let family_ids: Vec<_> = families.iter().map(|(id, _)| *id).collect();
+
+        // Set as fallback for all scripts
+        for (script, _) in Script::all_samples() {
+            font_cx
+                .collection
+                .append_fallbacks(FallbackKey::new(*script, None), family_ids.iter().copied());
+        }
+
+        // Map to generic font families so CSS generic names like "sans-serif"
+        // and "system-ui" resolve to this font. Critical for WASM where no
+        // system fonts exist and the default theme font stack ends with
+        // "sans-serif".
+        for generic in [GenericFamily::SansSerif, GenericFamily::SystemUi] {
+            font_cx
+                .collection
+                .append_generic_families(generic, family_ids.iter().copied());
+        }
+    }
+
+    /// Diagnostic: test font resolution by building a small Parley layout.
+    /// Returns a string like "width=X, height=Y, glyphs=N" or error info.
+    pub fn diagnose_fonts(&self, font_stack: &str) -> String {
+        if let Some(doc) = &self.doc {
+            let mut d = doc.borrow_mut();
+            let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
+            let text = "Test";
+            let mut builder = layout_cx.ranged_builder(&mut d.font_cx, text, 1.0, true);
+            builder.push_default(parley::style::StyleProperty::FontSize(16.0));
+            builder.push_default(parley::style::StyleProperty::FontStack(
+                parley::style::FontStack::Source(std::borrow::Cow::Owned(font_stack.to_string())),
+            ));
+            let mut layout = builder.build(text);
+            layout.break_all_lines(None);
+            let mut glyph_count = 0;
+            for line in layout.lines() {
+                for item in line.items() {
+                    if let parley::layout::PositionedLayoutItem::GlyphRun(_run) = item {
+                        glyph_count += _run.glyphs().count();
+                    }
+                }
+            }
+            format!(
+                "font_stack='{}' width={:.1} height={:.1} glyphs={}",
+                font_stack,
+                layout.width(),
+                layout.height(),
+                glyph_count
+            )
+        } else {
+            "no doc mounted".to_string()
+        }
+    }
+
     /// Whether the window should have a transparent background.
     pub fn is_transparent(&self) -> bool {
         self.window_props.as_ref().is_some_and(|p| p.transparent)
@@ -145,6 +226,14 @@ impl RinchApp {
     /// Called once after the window and renderer are ready.
     pub fn mount_component(&mut self, viewport_width: f32, viewport_height: f32) {
         let doc = Rc::new(RefCell::new(RinchDocument::new()));
+
+        // Register any pending fonts on the document's font context (for WASM)
+        if !self.pending_fonts.is_empty() {
+            let mut d = doc.borrow_mut();
+            for font_data in &self.pending_fonts {
+                Self::register_font_on_context(&mut d.font_cx, font_data);
+            }
+        }
 
         // Load theme + widget CSS into the document's stylesheet
         {
@@ -195,6 +284,7 @@ impl RinchApp {
             let _ = d.take_dirty_nodes();
         }
 
+        self.scene_dirty = true;
         self.doc = Some(doc);
         self._render_scope = Some(scope);
     }
@@ -232,6 +322,8 @@ impl RinchApp {
             d.resolve_layout(viewport_width, viewport_height);
         }
 
+        self.scene_dirty = true;
+
         // Log frame time if RINCH_PERF is set
         if std::env::var("RINCH_PERF").is_ok() {
             let elapsed = frame_start.elapsed();
@@ -254,6 +346,7 @@ impl RinchApp {
             let mut d = doc.borrow_mut();
             d.resolve_layout(width as f32, height as f32);
             let _ = d.take_dirty_nodes();
+            self.scene_dirty = true;
         }
     }
 
@@ -261,6 +354,10 @@ impl RinchApp {
     ///
     /// The scene is built into `self.scene` and a reference is returned.
     pub fn build_scene(&mut self, scale: f64, size: (u32, u32)) -> &Scene {
+        if !self.scene_dirty {
+            return &self.scene;
+        }
+
         self.scene.reset();
         if let Some(doc) = &self.doc {
             let mut d = doc.borrow_mut();
@@ -274,6 +371,7 @@ impl RinchApp {
                 &mut d.layout_cx,
             );
         }
+        self.scene_dirty = false;
         &self.scene
     }
 

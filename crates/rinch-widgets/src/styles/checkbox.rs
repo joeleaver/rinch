@@ -7,6 +7,7 @@ pub fn styles() -> String {
     gap: var(--rinch-spacing-sm);
     cursor: pointer;
     user-select: none;
+    position: relative;
 }
 
 .rinch-checkbox--disabled {
