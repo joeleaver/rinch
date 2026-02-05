@@ -36,10 +36,6 @@ console_error_panic_hook = "0.1"
 console_log = "0.2"
 log = "0.4"
 
-# Use the same wgpu fork as the workspace
-[patch.crates-io]
-wgpu = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
-wgpu-core = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
-wgpu-hal = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
-wgpu-types = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
-naga = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
+# NOTE: No [patch.crates-io] here. The workspace wgpu fork patches are for
+# DX12 storage texture support on desktop. On WASM, WebGPU natively supports
+# Rgba8Unorm STORAGE_BINDING, so stock wgpu works correctly.
