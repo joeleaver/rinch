@@ -5049,7 +5049,11 @@ version = "0.1.0"
 dependencies = [
  "rinch",
  "rinch-core",
+ "rinch-editor",
+ "rinch-editor-widgets",
  "rinch-macros",
+ "rinch-platform",
+ "rinch-tabler-icons",
 ]
 
 [[package]]
@@ -5058,11 +5062,9 @@ version = "0.1.0"
 dependencies = [
  "rinch",
  "rinch-core",
- "rinch-editor",
- "rinch-editor-widgets",
- "rinch-tabler-icons",
  "tokio",
  "tracing",
+ "ui-zoo",
 ]
 
 [[package]]

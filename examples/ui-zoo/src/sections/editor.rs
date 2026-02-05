@@ -1,8 +1,8 @@
 //! Rich Text Editor section - Working editor with toolbar, content, and status bar.
 
+use rinch_platform::Instant;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Instant;
 
 use rinch::prelude::*;
 use rinch_core::dom::RenderScope as CoreRenderScope;

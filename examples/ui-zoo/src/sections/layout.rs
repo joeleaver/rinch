@@ -1,4 +1,4 @@
-//! Layout section - Stack, Group, Paper, Divider, Container, and other layout primitives.
+//! Layout section - Layout primitives and containers.
 
 use rinch::prelude::*;
 
@@ -8,18 +8,21 @@ pub fn layout_section(__scope: &mut RenderScope) -> NodeHandle {
             Stack { gap: "xs",
                 Title { order: 1, "Layout" }
                 Text { size: "lg", color: "dimmed",
-                    "Components for organizing and structuring content."
+                    "Components for organizing and structuring content"
                 }
             }
             Space { h: "xl" }
 
-            // Flex layout
+            // ============================================
+            // FLEX LAYOUT
+            // ============================================
             Title { order: 3, "Flex Layout" }
             Space { h: "sm" }
             Text { color: "dimmed", size: "sm", "Stack and Group for vertical and horizontal layouts." }
             Space { h: "md" }
 
             SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+                // Stack
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Text { weight: "600", "Stack (Vertical)" }
@@ -32,6 +35,8 @@ pub fn layout_section(__scope: &mut RenderScope) -> NodeHandle {
                         }
                     }
                 }
+
+                // Group
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Text { weight: "600", "Group (Horizontal)" }
@@ -44,6 +49,8 @@ pub fn layout_section(__scope: &mut RenderScope) -> NodeHandle {
                         }
                     }
                 }
+
+                // Group justify
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Text { weight: "600", "Group Justify" }
@@ -77,6 +84,8 @@ pub fn layout_section(__scope: &mut RenderScope) -> NodeHandle {
                         }
                     }
                 }
+
+                // Center
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Text { weight: "600", "Center" }
@@ -84,7 +93,7 @@ pub fn layout_section(__scope: &mut RenderScope) -> NodeHandle {
                         Divider {}
                         Paper { p: "xl", shadow: "xs", radius: "sm",
                             Center {
-                                Badge { color: "green", size: "lg", "Centered Content" }
+                                Badge { color: "green", size: "lg", "Centered" }
                             }
                         }
                     }
@@ -93,13 +102,16 @@ pub fn layout_section(__scope: &mut RenderScope) -> NodeHandle {
 
             Space { h: "xl" }
 
-            // Spacing and dividers
+            // ============================================
+            // SPACING & DIVIDERS
+            // ============================================
             Title { order: 3, "Spacing & Dividers" }
             Space { h: "sm" }
             Text { color: "dimmed", size: "sm", "Control spacing between elements." }
             Space { h: "md" }
 
             SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+                // Space
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Text { weight: "600", "Space" }
@@ -109,25 +121,27 @@ pub fn layout_section(__scope: &mut RenderScope) -> NodeHandle {
                             Stack { gap: "0",
                                 Text { size: "sm", "Before" }
                                 Space { h: "xs" }
-                                Text { size: "xs", color: "dimmed", "xs spacing" }
+                                Text { size: "xs", color: "dimmed", "↑ xs spacing" }
                             }
                         }
                         Paper { p: "sm", radius: "sm", with_border: true,
                             Stack { gap: "0",
                                 Text { size: "sm", "Before" }
                                 Space { h: "md" }
-                                Text { size: "xs", color: "dimmed", "md spacing" }
+                                Text { size: "xs", color: "dimmed", "↑ md spacing" }
                             }
                         }
                         Paper { p: "sm", radius: "sm", with_border: true,
                             Stack { gap: "0",
                                 Text { size: "sm", "Before" }
                                 Space { h: "xl" }
-                                Text { size: "xs", color: "dimmed", "xl spacing" }
+                                Text { size: "xs", color: "dimmed", "↑ xl spacing" }
                             }
                         }
                     }
                 }
+
+                // Divider
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Text { weight: "600", "Divider" }
@@ -146,13 +160,16 @@ pub fn layout_section(__scope: &mut RenderScope) -> NodeHandle {
 
             Space { h: "xl" }
 
-            // Containers
+            // ============================================
+            // CONTAINERS
+            // ============================================
             Title { order: 3, "Containers" }
             Space { h: "sm" }
             Text { color: "dimmed", size: "sm", "Container components for grouping and styling content." }
             Space { h: "md" }
 
             SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+                // Paper shadows
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Text { weight: "600", "Paper Shadows" }
@@ -166,6 +183,8 @@ pub fn layout_section(__scope: &mut RenderScope) -> NodeHandle {
                         }
                     }
                 }
+
+                // Paper radius
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Text { weight: "600", "Paper Radius" }
@@ -180,6 +199,8 @@ pub fn layout_section(__scope: &mut RenderScope) -> NodeHandle {
                         }
                     }
                 }
+
+                // Fieldset
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Text { weight: "600", "Fieldset" }
@@ -193,29 +214,33 @@ pub fn layout_section(__scope: &mut RenderScope) -> NodeHandle {
                         }
                     }
                 }
+
+                // Container info
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
-                        Text { weight: "600", "SimpleGrid" }
-                        Text { size: "sm", color: "dimmed", "Responsive equal-width column grid" }
+                        Text { weight: "600", "Container" }
+                        Text { size: "sm", color: "dimmed", "Center content with max-width constraint" }
                         Divider {}
-                        SimpleGrid { cols: Some(3), spacing: Some("xs".to_string()),
-                            Paper { p: "sm", shadow: "xs", radius: "sm",
-                                Center { Text { size: "xs", "1" } }
+                        Stack { gap: "xs",
+                            Group { gap: "sm",
+                                Badge { "xs" }
+                                Text { size: "xs", color: "dimmed", "540px" }
                             }
-                            Paper { p: "sm", shadow: "xs", radius: "sm",
-                                Center { Text { size: "xs", "2" } }
+                            Group { gap: "sm",
+                                Badge { "sm" }
+                                Text { size: "xs", color: "dimmed", "720px" }
                             }
-                            Paper { p: "sm", shadow: "xs", radius: "sm",
-                                Center { Text { size: "xs", "3" } }
+                            Group { gap: "sm",
+                                Badge { "md" }
+                                Text { size: "xs", color: "dimmed", "960px" }
                             }
-                            Paper { p: "sm", shadow: "xs", radius: "sm",
-                                Center { Text { size: "xs", "4" } }
+                            Group { gap: "sm",
+                                Badge { "lg" }
+                                Text { size: "xs", color: "dimmed", "1140px" }
                             }
-                            Paper { p: "sm", shadow: "xs", radius: "sm",
-                                Center { Text { size: "xs", "5" } }
-                            }
-                            Paper { p: "sm", shadow: "xs", radius: "sm",
-                                Center { Text { size: "xs", "6" } }
+                            Group { gap: "sm",
+                                Badge { "xl" }
+                                Text { size: "xs", color: "dimmed", "1320px" }
                             }
                         }
                     }

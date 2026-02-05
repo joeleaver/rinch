@@ -1,68 +1,167 @@
-//! Navigation section - Tabs, Accordion, Breadcrumbs, Pagination, and NavLink demos.
+//! Navigation section - Navigation components with interactive state.
 
 use rinch::prelude::*;
 
+/// State for the Navigation section, stored in context.
+#[derive(Clone)]
+pub struct NavigationSectionState {
+    pub pagination_page: Signal<u32>,
+    pub pagination_with_edges_page: Signal<u32>,
+    pub stepper_active: Signal<u32>,
+    pub tabs_value: Signal<String>,
+    pub tabs_pills_value: Signal<String>,
+}
+
+/// Initialize the Navigation section state. Call this from the main app function.
+pub fn init_navigation_state() {
+    create_context(NavigationSectionState {
+        pagination_page: Signal::new(1),
+        pagination_with_edges_page: Signal::new(10),
+        stepper_active: Signal::new(1),
+        tabs_value: Signal::new("gallery".to_string()),
+        tabs_pills_value: Signal::new("one".to_string()),
+    });
+}
+
 pub fn navigation_section(__scope: &mut RenderScope) -> NodeHandle {
+    let state = use_context::<NavigationSectionState>();
+
+    let (pagination_page, pagination_with_edges_page, stepper_active, tabs_value, tabs_pills_value) =
+        match state {
+            Some(s) => (
+                s.pagination_page,
+                s.pagination_with_edges_page,
+                s.stepper_active,
+                s.tabs_value,
+                s.tabs_pills_value,
+            ),
+            None => {
+                return rsx! {
+                    div { "Error: NavigationSectionState not initialized" }
+                };
+            }
+        };
+
     rsx! {
         Fragment {
             Stack { gap: "xs",
                 Title { order: 1, "Navigation" }
                 Text { size: "lg", color: "dimmed",
-                    "Components for organizing content and navigating between views."
+                    "Components for navigating between pages and sections"
                 }
             }
             Space { h: "xl" }
 
-            // Tabs
+            // ============================================
+            // TABS
+            // ============================================
             Title { order: 3, "Tabs" }
             Space { h: "sm" }
-            Text { color: "dimmed", size: "sm", "Tab-based navigation for switching between panels." }
+            Text { color: "dimmed", size: "sm", "Switch between different views within the same context." }
             Space { h: "md" }
 
             SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+                // Interactive tabs
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
-                        Text { weight: "600", "Default Tabs" }
-                        Divider {}
-                        Tabs { default_value: "first",
-                            TabsList {
-                                Tab { value: "first", "First" }
-                                Tab { value: "second", "Second" }
-                                Tab { value: "third", "Third" }
-                            }
-                            TabsPanel { value: "first",
-                                Space { h: "sm" }
-                                Text { size: "sm", "Content of the first tab panel." }
-                            }
-                            TabsPanel { value: "second",
-                                Space { h: "sm" }
-                                Text { size: "sm", "Content of the second tab panel." }
-                            }
-                            TabsPanel { value: "third",
-                                Space { h: "sm" }
-                                Text { size: "sm", "Content of the third tab panel." }
-                            }
+                        Group { justify: "between",
+                            Text { weight: "600", "Default Tabs" }
+                            Badge { color: "blue", variant: "light", {|| tabs_value.get()} }
                         }
-                    }
-                }
-                Paper { p: "xl", radius: "md", with_border: true,
-                    Stack { gap: "md",
-                        Text { weight: "600", "Pills Variant" }
                         Divider {}
-                        Tabs { default_value: "overview", variant: "pills",
+                        Tabs { value: Some(tabs_value.get()),
                             TabsList {
-                                Tab { value: "overview", "Overview" }
-                                Tab { value: "settings", "Settings" }
-                                Tab { value: "disabled", disabled: true, "Disabled" }
+                                Tab { value: "gallery", onclick: move || tabs_value.set("gallery".to_string()), "Gallery" }
+                                Tab { value: "messages", onclick: move || tabs_value.set("messages".to_string()), "Messages" }
+                                Tab { value: "settings", onclick: move || tabs_value.set("settings".to_string()), "Settings" }
                             }
-                            TabsPanel { value: "overview",
-                                Space { h: "sm" }
-                                Text { size: "sm", "Overview content with pills-style tabs." }
+                            TabsPanel { value: "gallery",
+                                Paper { p: "md", radius: "sm", with_border: true,
+                                    Text { size: "sm", color: "dimmed", "Browse and manage your photo gallery." }
+                                }
+                            }
+                            TabsPanel { value: "messages",
+                                Paper { p: "md", radius: "sm", with_border: true,
+                                    Text { size: "sm", color: "dimmed", "View and respond to your messages." }
+                                }
                             }
                             TabsPanel { value: "settings",
-                                Space { h: "sm" }
-                                Text { size: "sm", "Settings panel content." }
+                                Paper { p: "md", radius: "sm", with_border: true,
+                                    Text { size: "sm", color: "dimmed", "Configure your application preferences." }
+                                }
                             }
+                        }
+                    }
+                }
+
+                // Pills variant
+                Paper { p: "xl", radius: "md", with_border: true,
+                    Stack { gap: "md",
+                        Group { justify: "between",
+                            Text { weight: "600", "Pills Variant" }
+                            Badge { color: "violet", variant: "light", {|| tabs_pills_value.get()} }
+                        }
+                        Divider {}
+                        Tabs { variant: "pills", value: Some(tabs_pills_value.get()),
+                            TabsList {
+                                Tab { value: "one", onclick: move || tabs_pills_value.set("one".to_string()), "First" }
+                                Tab { value: "two", onclick: move || tabs_pills_value.set("two".to_string()), "Second" }
+                                Tab { value: "three", onclick: move || tabs_pills_value.set("three".to_string()), "Third" }
+                            }
+                        }
+                        Text { size: "sm", color: "dimmed", "Pills style is great for filters and toggles." }
+                    }
+                }
+            }
+
+            Space { h: "xl" }
+
+            // ============================================
+            // NAV LINKS
+            // ============================================
+            Title { order: 3, "Navigation Links" }
+            Space { h: "sm" }
+            Text { color: "dimmed", size: "sm", "Sidebar and menu navigation items." }
+            Space { h: "md" }
+
+            SimpleGrid { cols: Some(3), spacing: Some("lg".to_string()),
+                // Basic NavLink
+                Paper { p: "xl", radius: "md", with_border: true,
+                    Stack { gap: "md",
+                        Text { weight: "600", "Basic" }
+                        Divider {}
+                        Stack { gap: "0",
+                            NavLink { label: Some("Home".to_string()), active: true }
+                            NavLink { label: Some("Dashboard".to_string()) }
+                            NavLink { label: Some("Settings".to_string()) }
+                            NavLink { label: Some("Profile".to_string()) }
+                        }
+                    }
+                }
+
+                // With description
+                Paper { p: "xl", radius: "md", with_border: true,
+                    Stack { gap: "md",
+                        Text { weight: "600", "With Description" }
+                        Divider {}
+                        Stack { gap: "0",
+                            NavLink { label: Some("Messages".to_string()), description: Some("3 unread".to_string()) }
+                            NavLink { label: Some("Notifications".to_string()), description: Some("12 new".to_string()) }
+                            NavLink { label: Some("Updates".to_string()), description: Some("Available".to_string()) }
+                        }
+                    }
+                }
+
+                // Colors
+                Paper { p: "xl", radius: "md", with_border: true,
+                    Stack { gap: "md",
+                        Text { weight: "600", "Colors" }
+                        Divider {}
+                        Stack { gap: "0",
+                            NavLink { label: Some("Blue".to_string()), color: "blue", active: true }
+                            NavLink { label: Some("Green".to_string()), color: "green", active: true }
+                            NavLink { label: Some("Red".to_string()), color: "red", active: true }
+                            NavLink { label: Some("Violet".to_string()), color: "violet", active: true }
                         }
                     }
                 }
@@ -70,112 +169,237 @@ pub fn navigation_section(__scope: &mut RenderScope) -> NodeHandle {
 
             Space { h: "xl" }
 
-            // Accordion
-            Title { order: 3, "Accordion" }
+            // ============================================
+            // BREADCRUMBS
+            // ============================================
+            Title { order: 3, "Breadcrumbs" }
             Space { h: "sm" }
-            Text { color: "dimmed", size: "sm", "Collapsible content sections." }
+            Text { color: "dimmed", size: "sm", "Show the current location within a hierarchy." }
             Space { h: "md" }
 
             SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
-                        Text { weight: "600", "Default" }
-                        Divider {}
-                        Accordion { default_value: "item1",
-                            AccordionItem { value: "item1",
-                                AccordionControl { "What is Rinch?" }
-                                AccordionPanel {
-                                    Text { size: "sm",
-                                        "Rinch is a lightweight cross-platform GUI library for Rust."
-                                    }
-                                }
-                            }
-                            AccordionItem { value: "item2",
-                                AccordionControl { "How does rendering work?" }
-                                AccordionPanel {
-                                    Text { size: "sm",
-                                        "Rinch uses fine-grained reactive rendering with Vello for GPU-accelerated 2D graphics."
-                                    }
-                                }
-                            }
-                            AccordionItem { value: "item3",
-                                AccordionControl { "What about styling?" }
-                                AccordionPanel {
-                                    Text { size: "sm",
-                                        "Rinch supports HTML/CSS for layout via Taffy and Parley for text."
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                Paper { p: "xl", radius: "md", with_border: true,
-                    Stack { gap: "md",
-                        Text { weight: "600", "Separated Variant" }
-                        Divider {}
-                        Accordion { variant: "separated",
-                            AccordionItem { value: "a",
-                                AccordionControl { "Getting Started" }
-                                AccordionPanel {
-                                    Text { size: "sm", "Add rinch to your Cargo.toml and start building." }
-                                }
-                            }
-                            AccordionItem { value: "b",
-                                AccordionControl { "Widget Library" }
-                                AccordionPanel {
-                                    Text { size: "sm", "Over 55 widgets inspired by Mantine." }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            Space { h: "xl" }
-
-            // Breadcrumbs and Pagination
-            Title { order: 3, "Breadcrumbs & Pagination" }
-            Space { h: "sm" }
-            Text { color: "dimmed", size: "sm", "Navigation trail and page controls." }
-            Space { h: "md" }
-
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
-                Paper { p: "xl", radius: "md", with_border: true,
-                    Stack { gap: "md",
-                        Text { weight: "600", "Breadcrumbs" }
+                        Text { weight: "600", "Default Separator" }
                         Divider {}
                         Breadcrumbs {
-                            BreadcrumbsItem { "Home" }
-                            BreadcrumbsItem { "Components" }
-                            BreadcrumbsItem { "Navigation" }
+                            BreadcrumbsItem { href: "#", "Home" }
+                            BreadcrumbsItem { href: "#", "Products" }
+                            BreadcrumbsItem { href: "#", "Electronics" }
+                            BreadcrumbsItem { "Phones" }
                         }
                     }
                 }
+
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
-                        Text { weight: "600", "Pagination" }
+                        Text { weight: "600", "Custom Separators" }
                         Divider {}
-                        Pagination { total: {10_u32}, value: {3_u32} }
+                        Breadcrumbs { separator: ">",
+                            BreadcrumbsItem { href: "#", "Home" }
+                            BreadcrumbsItem { href: "#", "Library" }
+                            BreadcrumbsItem { "Data" }
+                        }
+                        Space { h: "sm" }
+                        Breadcrumbs { separator: "|",
+                            BreadcrumbsItem { href: "#", "One" }
+                            BreadcrumbsItem { href: "#", "Two" }
+                            BreadcrumbsItem { "Three" }
+                        }
                     }
                 }
             }
 
             Space { h: "xl" }
 
-            // NavLink
-            Title { order: 3, "NavLink" }
+            // ============================================
+            // PAGINATION
+            // ============================================
+            Title { order: 3, "Pagination" }
             Space { h: "sm" }
-            Text { color: "dimmed", size: "sm", "Navigation links with active state." }
+            Text { color: "dimmed", size: "sm", "Navigate through pages of content." }
+            Space { h: "md" }
+
+            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+                // Interactive pagination
+                Paper { p: "xl", radius: "md", with_border: true,
+                    Stack { gap: "md",
+                        Group { justify: "between",
+                            Text { weight: "600", "Basic" }
+                            Badge { color: "blue", variant: "light", {|| format!("Page {}", pagination_page.get())} }
+                        }
+                        Divider {}
+                        Pagination {
+                            total: {10_u32},
+                            value: pagination_page.get(),
+                            siblings: {1_u32},
+                            onchange: move |page| pagination_page.set(page)
+                        }
+                    }
+                }
+
+                // With edges
+                Paper { p: "xl", radius: "md", with_border: true,
+                    Stack { gap: "md",
+                        Group { justify: "between",
+                            Text { weight: "600", "With First/Last" }
+                            Badge { color: "cyan", variant: "light", {|| format!("Page {}", pagination_with_edges_page.get())} }
+                        }
+                        Divider {}
+                        Pagination {
+                            total: {20_u32},
+                            value: pagination_with_edges_page.get(),
+                            siblings: {2_u32},
+                            with_edges: true,
+                            onchange: move |page| pagination_with_edges_page.set(page)
+                        }
+                    }
+                }
+            }
+
+            Space { h: "xl" }
+
+            // ============================================
+            // STEPPER
+            // ============================================
+            Title { order: 3, "Stepper" }
+            Space { h: "sm" }
+            Text { color: "dimmed", size: "sm", "Guide users through multi-step processes." }
             Space { h: "md" }
 
             Paper { p: "xl", radius: "md", with_border: true,
-                Stack { gap: "0",
-                    NavLink { label: Some("Dashboard".to_string()), active: true }
-                    NavLink { label: Some("Analytics".to_string()) }
-                    NavLink { label: Some("Settings".to_string()) }
-                    NavLink { label: Some("Disabled".to_string()), disabled: true }
+                Stack { gap: "lg",
+                    Group { justify: "between",
+                        Text { weight: "600", "Interactive Stepper" }
+                        Badge { color: "green", variant: "light", {|| format!("Step {}", stepper_active.get() + 1)} }
+                    }
+                    Stepper { active: stepper_active.get(),
+                        StepperStep { label: "Account", description: "Create your account" }
+                        StepperStep { label: "Verify", description: "Verify your email" }
+                        StepperStep { label: "Complete", description: "Get started" }
+                    }
+                    Divider {}
+                    Group { justify: "center", gap: "sm",
+                        Button {
+                            variant: "outline",
+                            disabled: stepper_active.get() == 0,
+                            onclick: move || stepper_active.update(|v| *v = v.saturating_sub(1)),
+                            "Previous"
+                        }
+                        Button {
+                            disabled: stepper_active.get() >= 2,
+                            onclick: move || stepper_active.update(|v| *v = (*v + 1).min(2)),
+                            "Next Step"
+                        }
+                        Button {
+                            variant: "subtle",
+                            color: "gray",
+                            onclick: move || stepper_active.set(0),
+                            "Reset"
+                        }
+                    }
                 }
             }
+
+            Space { h: "xl" }
+
+            // ============================================
+            // TREE
+            // ============================================
+            Title { order: 3, "Tree" }
+            Space { h: "sm" }
+            Text { color: "dimmed", size: "sm", "Display hierarchical data with expand/collapse functionality." }
+            Space { h: "md" }
+
+            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+                // Basic Tree
+                Paper { p: "xl", radius: "md", with_border: true,
+                    Stack { gap: "md",
+                        Text { weight: "600", "Basic File Tree" }
+                        Divider {}
+                        {tree_demo(__scope)}
+                    }
+                }
+
+                // Tree with selection
+                Paper { p: "xl", radius: "md", with_border: true,
+                    Stack { gap: "md",
+                        Text { weight: "600", "With Selection" }
+                        Divider {}
+                        {tree_selection_demo(__scope)}
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Demo: Basic file tree
+fn tree_demo(__scope: &mut RenderScope) -> NodeHandle {
+    let data = vec![
+        TreeNodeData::new("src", "src").with_children(vec![
+            TreeNodeData::new("components", "components").with_children(vec![
+                TreeNodeData::new("Button.tsx", "Button.tsx"),
+                TreeNodeData::new("Input.tsx", "Input.tsx"),
+            ]),
+            TreeNodeData::new("hooks", "hooks").with_children(vec![
+                TreeNodeData::new("useAuth.ts", "useAuth.ts"),
+                TreeNodeData::new("useTheme.ts", "useTheme.ts"),
+            ]),
+            TreeNodeData::new("main.tsx", "main.tsx"),
+        ]),
+        TreeNodeData::new("public", "public").with_children(vec![
+            TreeNodeData::new("index.html", "index.html"),
+            TreeNodeData::new("favicon.ico", "favicon.ico"),
+        ]),
+        TreeNodeData::new("package.json", "package.json"),
+        TreeNodeData::new("README.md", "README.md"),
+    ];
+
+    let tree = use_tree(UseTreeOptions {
+        initial_expanded: get_tree_expanded_state(&data, &["src"]),
+        ..Default::default()
+    });
+
+    rsx! {
+        Tree {
+            data: data,
+            tree: Some(tree),
+            level_offset: "md",
+        }
+    }
+}
+
+/// Demo: Tree with selection
+fn tree_selection_demo(__scope: &mut RenderScope) -> NodeHandle {
+    let data = vec![
+        TreeNodeData::new("documents", "Documents").with_children(vec![
+            TreeNodeData::new("reports", "Reports").with_children(vec![
+                TreeNodeData::new("q1-2024", "Q1 2024.pdf"),
+                TreeNodeData::new("q2-2024", "Q2 2024.pdf"),
+            ]),
+            TreeNodeData::new("invoices", "Invoices").with_children(vec![
+                TreeNodeData::new("inv-001", "INV-001.pdf"),
+                TreeNodeData::new("inv-002", "INV-002.pdf"),
+            ]),
+        ]),
+        TreeNodeData::new("images", "Images").with_children(vec![
+            TreeNodeData::new("photo1", "vacation.jpg"),
+            TreeNodeData::new("photo2", "profile.png"),
+        ]),
+    ];
+
+    let tree = use_tree(UseTreeOptions {
+        initial_expanded: get_tree_expanded_state(&data, &["documents"]),
+        ..Default::default()
+    });
+
+    rsx! {
+        Tree {
+            data: data,
+            tree: Some(tree),
+            level_offset: "md",
+            select_on_click: true,
         }
     }
 }

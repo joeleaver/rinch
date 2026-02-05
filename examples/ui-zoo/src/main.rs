@@ -4,10 +4,13 @@ use rinch::prelude::*;
 use rinch::{WindowProps, run_rinch_with_window_props};
 
 fn main() {
+    eprintln!("[DEBUG MAIN] Starting ui-zoo");
     let window_props = WindowProps {
-        title: "UI Zoo - Rinch Widget Showcase".into(),
+        title: "UI Zoo - Rinch Component Library".into(),
         width: 1200,
         height: 800,
+        borderless: true,
+        transparent: true,
         ..Default::default()
     };
 

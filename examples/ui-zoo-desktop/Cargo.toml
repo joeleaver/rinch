@@ -3,13 +3,11 @@ name = "ui-zoo-desktop"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "UI Zoo - A showcase of rinch's theme system and widgets"
+description = "UI Zoo desktop app - comprehensive showcase of rinch widgets"
 
 [dependencies]
+ui-zoo = { path = "../ui-zoo" }
 rinch = { workspace = true, features = ["desktop", "widgets", "debug", "clipboard"] }
-rinch-tabler-icons.workspace = true
 rinch-core = { workspace = true }
-rinch-editor = { path = "../../crates/rinch-editor" }
-rinch-editor-widgets = { path = "../../crates/rinch-editor-widgets" }
 tokio.workspace = true
 tracing.workspace = true

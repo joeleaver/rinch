@@ -1,4 +1,4 @@
-//! Typography section - Text, Title, Code, Badge, and other text components.
+//! Typography section - Text, Title, and other text components.
 
 use rinch::prelude::*;
 
@@ -8,12 +8,14 @@ pub fn typography_section(__scope: &mut RenderScope) -> NodeHandle {
             Stack { gap: "xs",
                 Title { order: 1, "Typography" }
                 Text { size: "lg", color: "dimmed",
-                    "Text components for displaying and formatting content."
+                    "Text components for displaying and formatting content"
                 }
             }
             Space { h: "xl" }
 
-            // Headings
+            // ============================================
+            // HEADINGS
+            // ============================================
             Title { order: 3, "Headings" }
             Space { h: "sm" }
             Text { color: "dimmed", size: "sm", "Six levels of headings for document structure." }
@@ -22,42 +24,42 @@ pub fn typography_section(__scope: &mut RenderScope) -> NodeHandle {
             Paper { p: "xl", radius: "md", with_border: true,
                 Stack { gap: "md",
                     Group { align: "center", gap: "lg",
-                        div { style: "width: 60px;",
+                        div { style: "width: 80px;",
                             Badge { color: "gray", variant: "light", "h1" }
                         }
                         Title { order: 1, "Heading One" }
                     }
                     Divider {}
                     Group { align: "center", gap: "lg",
-                        div { style: "width: 60px;",
+                        div { style: "width: 80px;",
                             Badge { color: "gray", variant: "light", "h2" }
                         }
                         Title { order: 2, "Heading Two" }
                     }
                     Divider {}
                     Group { align: "center", gap: "lg",
-                        div { style: "width: 60px;",
+                        div { style: "width: 80px;",
                             Badge { color: "gray", variant: "light", "h3" }
                         }
                         Title { order: 3, "Heading Three" }
                     }
                     Divider {}
                     Group { align: "center", gap: "lg",
-                        div { style: "width: 60px;",
+                        div { style: "width: 80px;",
                             Badge { color: "gray", variant: "light", "h4" }
                         }
                         Title { order: 4, "Heading Four" }
                     }
                     Divider {}
                     Group { align: "center", gap: "lg",
-                        div { style: "width: 60px;",
+                        div { style: "width: 80px;",
                             Badge { color: "gray", variant: "light", "h5" }
                         }
                         Title { order: 5, "Heading Five" }
                     }
                     Divider {}
                     Group { align: "center", gap: "lg",
-                        div { style: "width: 60px;",
+                        div { style: "width: 80px;",
                             Badge { color: "gray", variant: "light", "h6" }
                         }
                         Title { order: 6, "Heading Six" }
@@ -67,13 +69,16 @@ pub fn typography_section(__scope: &mut RenderScope) -> NodeHandle {
 
             Space { h: "xl" }
 
-            // Text styling
+            // ============================================
+            // TEXT STYLING
+            // ============================================
             Title { order: 3, "Text Styling" }
             Space { h: "sm" }
-            Text { color: "dimmed", size: "sm", "Size, weight, color, and alignment options." }
+            Text { color: "dimmed", size: "sm", "Size, weight, color, and alignment options for text." }
             Space { h: "md" }
 
             SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+                // Sizes
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Text { weight: "600", "Sizes" }
@@ -85,6 +90,8 @@ pub fn typography_section(__scope: &mut RenderScope) -> NodeHandle {
                         Text { size: "xl", "Extra large (xl)" }
                     }
                 }
+
+                // Weights
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Text { weight: "600", "Weights" }
@@ -95,6 +102,8 @@ pub fn typography_section(__scope: &mut RenderScope) -> NodeHandle {
                         Text { weight: "bold", "Bold weight (700)" }
                     }
                 }
+
+                // Colors
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Text { weight: "600", "Colors" }
@@ -103,24 +112,32 @@ pub fn typography_section(__scope: &mut RenderScope) -> NodeHandle {
                         Text { color: "dimmed", "Dimmed text color" }
                         Group { gap: "lg",
                             Text { color: "blue", "Blue" }
-                            Text { color: "red", "Red" }
+                            Text { color: "cyan", "Cyan" }
+                            Text { color: "teal", "Teal" }
                             Text { color: "green", "Green" }
+                        }
+                        Group { gap: "lg",
+                            Text { color: "red", "Red" }
                             Text { color: "orange", "Orange" }
+                            Text { color: "yellow", "Yellow" }
+                            Text { color: "violet", "Violet" }
                         }
                     }
                 }
+
+                // Alignment
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Text { weight: "600", "Alignment" }
                         Divider {}
                         Paper { p: "sm", radius: "sm", with_border: true,
-                            Text { align: "left", "Left aligned" }
+                            Text { align: "left", "Left aligned text" }
                         }
                         Paper { p: "sm", radius: "sm", with_border: true,
-                            Text { align: "center", "Center aligned" }
+                            Text { align: "center", "Center aligned text" }
                         }
                         Paper { p: "sm", radius: "sm", with_border: true,
-                            Text { align: "right", "Right aligned" }
+                            Text { align: "right", "Right aligned text" }
                         }
                     }
                 }
@@ -128,17 +145,20 @@ pub fn typography_section(__scope: &mut RenderScope) -> NodeHandle {
 
             Space { h: "xl" }
 
-            // Code and inline elements
+            // ============================================
+            // CODE & INLINE ELEMENTS
+            // ============================================
             Title { order: 3, "Code & Inline Elements" }
             Space { h: "sm" }
-            Text { color: "dimmed", size: "sm", "Inline elements for code, keyboard shortcuts, and links." }
+            Text { color: "dimmed", size: "sm", "Inline and block elements for code, keyboard shortcuts, and emphasis." }
             Space { h: "md" }
 
             SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+                // Code
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Text { weight: "600", "Code" }
-                        Text { size: "sm", color: "dimmed", "Inline and block code" }
+                        Text { size: "sm", color: "dimmed", "Inline and block code formatting" }
                         Divider {}
                         Text { "Use " Code { "inline code" } " within text." }
                         Space { h: "sm" }
@@ -147,10 +167,12 @@ pub fn typography_section(__scope: &mut RenderScope) -> NodeHandle {
                         }
                     }
                 }
+
+                // Keyboard
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Text { weight: "600", "Keyboard Shortcuts" }
-                        Text { size: "sm", color: "dimmed", "Display key combinations" }
+                        Text { size: "sm", color: "dimmed", "Display keyboard key combinations" }
                         Divider {}
                         Text {
                             "Press " Kbd { "Ctrl" } " + " Kbd { "C" } " to copy"
@@ -159,35 +181,33 @@ pub fn typography_section(__scope: &mut RenderScope) -> NodeHandle {
                             "Press " Kbd { "Ctrl" } " + " Kbd { "V" } " to paste"
                         }
                         Text {
-                            Kbd { "Cmd" } " + " Kbd { "Shift" } " + " Kbd { "P" }
+                            Kbd { "Cmd" } " + " Kbd { "Shift" } " + " Kbd { "P" } " opens palette"
                         }
                     }
                 }
+
+                // Highlight & Mark
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
-                        Text { weight: "600", "Badge" }
-                        Text { size: "sm", color: "dimmed", "Status indicators" }
+                        Text { weight: "600", "Highlight & Mark" }
+                        Text { size: "sm", color: "dimmed", "Emphasize important text" }
                         Divider {}
-                        Group { gap: "sm",
-                            Badge { "Default" }
-                            Badge { variant: "outline", "Outline" }
-                            Badge { variant: "light", "Light" }
-                            Badge { variant: "dot", "Dot" }
+                        Text {
+                            "Use " Highlight { "highlight" } " for important text"
                         }
-                        Group { gap: "sm",
-                            Badge { color: "red", "Error" }
-                            Badge { color: "green", "Success" }
-                            Badge { color: "yellow", "Warning" }
-                            Badge { color: "blue", "Info" }
+                        Text {
+                            Highlight { color: "yellow", "Yellow" } " "
+                            Highlight { color: "cyan", "Cyan" } " "
+                            Highlight { color: "pink", "Pink" } " "
+                            Highlight { color: "lime", "Lime" }
                         }
-                        Group { gap: "sm",
-                            Badge { size: "xs", "XS" }
-                            Badge { size: "sm", "SM" }
-                            Badge { size: "md", "MD" }
-                            Badge { size: "lg", "LG" }
+                        Text {
+                            "The " Mark { "mark element" } " for search results"
                         }
                     }
                 }
+
+                // Links
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Text { weight: "600", "Links" }
@@ -197,7 +217,61 @@ pub fn typography_section(__scope: &mut RenderScope) -> NodeHandle {
                             "Visit " Anchor { href: "https://github.com", "GitHub" } " for source"
                         }
                         Text {
-                            "Check " Anchor { href: "https://rust-lang.org", "Rust" } " docs"
+                            "Check out " Anchor { href: "https://rust-lang.org", "Rust" } " documentation"
+                        }
+                    }
+                }
+            }
+
+            Space { h: "xl" }
+
+            // ============================================
+            // CONTENT BLOCKS
+            // ============================================
+            Title { order: 3, "Content Blocks" }
+            Space { h: "sm" }
+            Text { color: "dimmed", size: "sm", "Block-level typography components for structured content." }
+            Space { h: "md" }
+
+            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+                // Blockquote
+                Paper { p: "xl", radius: "md", with_border: true,
+                    Stack { gap: "md",
+                        Text { weight: "600", "Blockquote" }
+                        Text { size: "sm", color: "dimmed", "Quoted text with attribution" }
+                        Divider {}
+                        Blockquote { cite: "Alan Kay",
+                            "The best way to predict the future is to invent it."
+                        }
+                        Blockquote { cite: "Linus Torvalds", color: "green",
+                            "Talk is cheap. Show me the code."
+                        }
+                    }
+                }
+
+                // Lists
+                Paper { p: "xl", radius: "md", with_border: true,
+                    Stack { gap: "md",
+                        Text { weight: "600", "Lists" }
+                        Text { size: "sm", color: "dimmed", "Ordered and unordered lists" }
+                        Divider {}
+                        Group { align: "start", gap: "xl",
+                            Stack { gap: "xs",
+                                Text { size: "sm", weight: "500", "Unordered" }
+                                List {
+                                    ListItem { "First item" }
+                                    ListItem { "Second item" }
+                                    ListItem { "Third item" }
+                                }
+                            }
+                            Stack { gap: "xs",
+                                Text { size: "sm", weight: "500", "Ordered" }
+                                List { r#type: "ordered",
+                                    ListItem { "Step one" }
+                                    ListItem { "Step two" }
+                                    ListItem { "Step three" }
+                                }
+                            }
                         }
                     }
                 }

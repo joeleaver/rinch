@@ -3,7 +3,7 @@ name = "ui-zoo"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "UI Zoo - Interactive showcase of all rinch widgets"
+description = "UI Zoo - A comprehensive showcase of rinch's theme system and widgets"
 
 [lib]
 name = "ui_zoo"
@@ -18,6 +18,10 @@ required-features = ["desktop"]
 rinch = { workspace = true, features = ["widgets", "theme"] }
 rinch-core = { workspace = true }
 rinch-macros = { workspace = true }
+rinch-tabler-icons.workspace = true
+rinch-platform = { workspace = true }
+rinch-editor = { path = "../../crates/rinch-editor" }
+rinch-editor-widgets = { path = "../../crates/rinch-editor-widgets" }
 
 [features]
 default = ["desktop"]

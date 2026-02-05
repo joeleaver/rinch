@@ -1,4 +1,4 @@
-//! Buttons section - Button, ActionIcon, and CloseButton demos.
+//! Buttons section - Button variants and states with interactive demos.
 
 use rinch::prelude::*;
 
@@ -8,7 +8,7 @@ pub struct ButtonsSectionState {
     pub counter: Signal<i32>,
 }
 
-/// Initialize the Buttons section state.
+/// Initialize the Buttons section state. Call this from the main app function.
 pub fn init_buttons_state() {
     create_context(ButtonsSectionState {
         counter: Signal::new(0),
@@ -16,12 +16,15 @@ pub fn init_buttons_state() {
 }
 
 pub fn buttons_section(__scope: &mut RenderScope) -> NodeHandle {
+    // Get state from context
     let state = use_context::<ButtonsSectionState>();
 
     let counter = match state {
         Some(s) => s.counter,
         None => {
-            return rsx! { div { "Error: ButtonsSectionState not initialized" } };
+            return rsx! {
+                div { "Error: ButtonsSectionState not initialized" }
+            };
         }
     };
 
@@ -30,12 +33,12 @@ pub fn buttons_section(__scope: &mut RenderScope) -> NodeHandle {
             Stack { gap: "xs",
                 Title { order: 1, "Buttons" }
                 Text { size: "lg", color: "dimmed",
-                    "Clickable button components with multiple variants, sizes, and states."
+                    "Button components with multiple variants, sizes, and states."
                 }
             }
             Space { h: "xl" }
 
-            // Interactive counter demo
+            // Interactive Demo - Hero section
             Paper { p: "xl", radius: "md", with_border: true,
                 Center {
                     Stack { align: "center", gap: "lg",
@@ -76,13 +79,13 @@ pub fn buttons_section(__scope: &mut RenderScope) -> NodeHandle {
 
             Space { h: "xl" }
 
-            // Variants
+            // Variants section
             Title { order: 3, "Variants" }
             Space { h: "sm" }
             Text { color: "dimmed", size: "sm", "Different button styles for various use cases." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("md".to_string()),
+            SimpleGrid { cols: Some(3), spacing: Some("md".to_string()),
                 Paper { p: "lg", radius: "md", with_border: true,
                     Stack { gap: "sm",
                         Text { weight: "600", "Filled" }
@@ -121,11 +124,33 @@ pub fn buttons_section(__scope: &mut RenderScope) -> NodeHandle {
                 }
                 Paper { p: "lg", radius: "md", with_border: true,
                     Stack { gap: "sm",
-                        Text { weight: "600", "Subtle & Disabled" }
-                        Text { size: "sm", color: "dimmed", "Minimal styling and non-interactive state" }
+                        Text { weight: "600", "Subtle" }
+                        Text { size: "sm", color: "dimmed", "Minimal styling, text-like" }
                         Space { h: "xs" }
                         Group { gap: "sm",
-                            Button { variant: "subtle", "Subtle" }
+                            Button { variant: "subtle", "Default" }
+                            Button { variant: "subtle", color: "green", "Success" }
+                            Button { variant: "subtle", color: "red", "Danger" }
+                        }
+                    }
+                }
+                Paper { p: "lg", radius: "md", with_border: true,
+                    Stack { gap: "sm",
+                        Text { weight: "600", "Default" }
+                        Text { size: "sm", color: "dimmed", "Neutral gray styling" }
+                        Space { h: "xs" }
+                        Group { gap: "sm",
+                            Button { variant: "default", "Action" }
+                            Button { variant: "default", "Cancel" }
+                        }
+                    }
+                }
+                Paper { p: "lg", radius: "md", with_border: true,
+                    Stack { gap: "sm",
+                        Text { weight: "600", "Disabled" }
+                        Text { size: "sm", color: "dimmed", "Non-interactive state" }
+                        Space { h: "xs" }
+                        Group { gap: "sm",
                             Button { disabled: true, "Disabled" }
                             Button { variant: "outline", disabled: true, "Disabled" }
                         }
@@ -135,7 +160,7 @@ pub fn buttons_section(__scope: &mut RenderScope) -> NodeHandle {
 
             Space { h: "xl" }
 
-            // Sizes
+            // Sizes section
             Title { order: 3, "Sizes" }
             Space { h: "sm" }
             Text { color: "dimmed", size: "sm", "Five size options from extra small to extra large." }
@@ -143,20 +168,35 @@ pub fn buttons_section(__scope: &mut RenderScope) -> NodeHandle {
 
             Paper { p: "lg", radius: "md", with_border: true,
                 Group { align: "end", gap: "md",
-                    Button { size: "xs", "Extra Small" }
-                    Button { size: "sm", "Small" }
-                    Button { size: "md", "Medium" }
-                    Button { size: "lg", "Large" }
-                    Button { size: "xl", "Extra Large" }
+                    Stack { align: "center", gap: "xs",
+                        Button { size: "xs", "Extra Small" }
+                        Text { size: "xs", color: "dimmed", "xs" }
+                    }
+                    Stack { align: "center", gap: "xs",
+                        Button { size: "sm", "Small" }
+                        Text { size: "xs", color: "dimmed", "sm" }
+                    }
+                    Stack { align: "center", gap: "xs",
+                        Button { size: "md", "Medium" }
+                        Text { size: "xs", color: "dimmed", "md" }
+                    }
+                    Stack { align: "center", gap: "xs",
+                        Button { size: "lg", "Large" }
+                        Text { size: "xs", color: "dimmed", "lg" }
+                    }
+                    Stack { align: "center", gap: "xs",
+                        Button { size: "xl", "Extra Large" }
+                        Text { size: "xs", color: "dimmed", "xl" }
+                    }
                 }
             }
 
             Space { h: "xl" }
 
-            // Colors
+            // Colors section
             Title { order: 3, "Colors" }
             Space { h: "sm" }
-            Text { color: "dimmed", size: "sm", "Full color palette across all variants." }
+            Text { color: "dimmed", size: "sm", "Full color palette support across all variants." }
             Space { h: "md" }
 
             Paper { p: "lg", radius: "md", with_border: true,
@@ -175,42 +215,68 @@ pub fn buttons_section(__scope: &mut RenderScope) -> NodeHandle {
                         Button { color: "pink", "Pink" }
                         Button { color: "grape", "Grape" }
                     }
+                    Group { gap: "sm",
+                        Button { color: "violet", "Violet" }
+                        Button { color: "indigo", "Indigo" }
+                        Button { color: "gray", "Gray" }
+                    }
                 }
             }
 
             Space { h: "xl" }
 
-            // ActionIcon and CloseButton
-            Title { order: 3, "ActionIcon & CloseButton" }
+            // Border Radius section
+            Title { order: 3, "Border Radius" }
             Space { h: "sm" }
-            Text { color: "dimmed", size: "sm", "Compact icon-only buttons for toolbar actions." }
+            Text { color: "dimmed", size: "sm", "Customize button corners from sharp to fully rounded." }
+            Space { h: "md" }
+
+            Paper { p: "lg", radius: "md", with_border: true,
+                Group { gap: "md",
+                    Stack { align: "center", gap: "xs",
+                        Button { radius: "xs", "Sharp" }
+                        Text { size: "xs", color: "dimmed", "xs" }
+                    }
+                    Stack { align: "center", gap: "xs",
+                        Button { radius: "sm", "Small" }
+                        Text { size: "xs", color: "dimmed", "sm" }
+                    }
+                    Stack { align: "center", gap: "xs",
+                        Button { radius: "md", "Medium" }
+                        Text { size: "xs", color: "dimmed", "md" }
+                    }
+                    Stack { align: "center", gap: "xs",
+                        Button { radius: "lg", "Large" }
+                        Text { size: "xs", color: "dimmed", "lg" }
+                    }
+                    Stack { align: "center", gap: "xs",
+                        Button { radius: "xl", "Pill" }
+                        Text { size: "xs", color: "dimmed", "xl" }
+                    }
+                }
+            }
+
+            Space { h: "xl" }
+
+            // Full Width section
+            Title { order: 3, "Full Width" }
+            Space { h: "sm" }
+            Text { color: "dimmed", size: "sm", "Buttons that expand to fill their container." }
             Space { h: "md" }
 
             SimpleGrid { cols: Some(2), spacing: Some("md".to_string()),
                 Paper { p: "lg", radius: "md", with_border: true,
                     Stack { gap: "sm",
-                        Text { weight: "600", "ActionIcon Variants" }
-                        Space { h: "xs" }
-                        Group { gap: "sm",
-                            ActionIcon { variant: "filled", "+" }
-                            ActionIcon { variant: "light", "-" }
-                            ActionIcon { variant: "outline", "x" }
-                            ActionIcon { variant: "subtle", "?" }
-                            ActionIcon { variant: "default", "i" }
-                        }
+                        Button { full_width: true, "Full Width Filled" }
+                        Button { full_width: true, variant: "outline", "Full Width Outline" }
+                        Button { full_width: true, variant: "light", "Full Width Light" }
                     }
                 }
                 Paper { p: "lg", radius: "md", with_border: true,
                     Stack { gap: "sm",
-                        Text { weight: "600", "CloseButton Sizes" }
-                        Space { h: "xs" }
-                        Group { gap: "sm",
-                            CloseButton { size: "xs" }
-                            CloseButton { size: "sm" }
-                            CloseButton { size: "md" }
-                            CloseButton { size: "lg" }
-                            CloseButton { size: "xl" }
-                        }
+                        Button { full_width: true, color: "green", "Confirm Action" }
+                        Button { full_width: true, variant: "outline", color: "red", "Cancel" }
+                        Button { full_width: true, variant: "subtle", color: "gray", "Skip for now" }
                     }
                 }
             }
