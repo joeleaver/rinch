@@ -464,14 +464,28 @@ impl ApplicationHandler<WebEvent> for WebRuntime {
                 .create_surface(window_for_init.clone())
                 .expect("Failed to create surface");
 
-            let adapter = instance
+            // Try hardware adapter first, then fall back to software rendering
+            let adapter = match instance
                 .request_adapter(&wgpu::RequestAdapterOptions {
                     power_preference: wgpu::PowerPreference::HighPerformance,
                     compatible_surface: Some(&surface),
                     force_fallback_adapter: false,
                 })
                 .await
-                .expect("No WebGPU adapter found");
+            {
+                Ok(a) => a,
+                Err(e) => {
+                    log::warn!("No hardware WebGPU adapter found ({e}), trying fallback");
+                    instance
+                        .request_adapter(&wgpu::RequestAdapterOptions {
+                            power_preference: wgpu::PowerPreference::LowPower,
+                            compatible_surface: Some(&surface),
+                            force_fallback_adapter: true,
+                        })
+                        .await
+                        .expect("No WebGPU adapter found (tried hardware and fallback). Check chrome://gpu for WebGPU support.")
+                }
+            };
 
             let caps = surface.get_capabilities(&adapter);
 
