@@ -9,20 +9,11 @@ description = "UI Zoo - A comprehensive showcase of rinch's theme system and wid
 name = "ui_zoo"
 path = "src/lib.rs"
 
-[[bin]]
-name = "ui-zoo"
-path = "src/main.rs"
-required-features = ["desktop"]
-
 [dependencies]
-rinch = { workspace = true, features = ["widgets", "theme"] }
+rinch = { workspace = true, default-features = false, features = ["widgets", "theme"] }
 rinch-core = { workspace = true }
 rinch-macros = { workspace = true }
-rinch-tabler-icons.workspace = true
 rinch-platform = { workspace = true }
+rinch-tabler-icons.workspace = true
 rinch-editor = { path = "../../crates/rinch-editor" }
 rinch-editor-widgets = { path = "../../crates/rinch-editor-widgets" }
-
-[features]
-default = ["desktop"]
-desktop = ["rinch/desktop"]

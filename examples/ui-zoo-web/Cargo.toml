@@ -8,7 +8,7 @@ description = "UI Zoo WASM build for GitHub Pages deployment"
 
 [dependencies]
 # Shared app logic from ui-zoo (no desktop features)
-ui-zoo = { path = "../ui-zoo", default-features = false }
+ui-zoo = { path = "../ui-zoo" }
 
 # Rinch without desktop
 rinch = { path = "../../crates/rinch", default-features = false, features = ["widgets", "theme"] }

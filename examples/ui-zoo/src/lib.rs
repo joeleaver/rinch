@@ -1,32 +1,20 @@
 //! UI Zoo - Rinch Component Library Showcase
 //!
-//! A comprehensive demonstration of all rinch widgets organized into sections.
-//! This library exports the app component and section modules so they can be
-//! shared between the desktop binary and the WASM web build.
+//! A platform-agnostic library exporting section components and shared helpers.
+//! Each platform binary (desktop, web) provides its own shell using these exports.
 
 pub mod sections;
 
 use rinch::prelude::*;
-#[cfg(feature = "desktop")]
-use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use sections::*;
 use std::rc::Rc;
 
-/// The main UI Zoo application component.
+/// Initialize all section state contexts.
 ///
-/// On desktop (with `desktop` feature), renders inside a BorderlessWindow with
-/// transparent background, custom titlebar, and drawer-based navigation.
-///
-/// On web (without `desktop` feature), renders with a sidebar navigation layout.
-pub fn app(__scope: &mut RenderScope) -> NodeHandle {
-    let current_section = use_signal(|| 0_usize);
-    let primary_color = use_signal(|| "blue");
-    let dark_mode = use_signal(|| false);
-    let drawer_opened = use_signal(|| false);
-
-    // Initialize section state contexts synchronously.
-    // These must be called BEFORE overlays_demo_overlays() so context is available.
-    // In fine-grained architecture, app() only runs once, so this is safe.
+/// Must be called once before rendering any sections (before `overlays_demo_overlays()`
+/// so that context is available). In fine-grained architecture, app() only runs once,
+/// so this is safe.
+pub fn init_all_sections() {
     init_inputs_state();
     init_overlays_state();
     init_navigation_state();
@@ -35,132 +23,13 @@ pub fn app(__scope: &mut RenderScope) -> NodeHandle {
     init_icons_state();
     init_tree_state();
     init_editor_state();
-
-    #[cfg(feature = "desktop")]
-    {
-        app_desktop(
-            __scope,
-            current_section,
-            primary_color,
-            dark_mode,
-            drawer_opened,
-        )
-    }
-
-    #[cfg(not(feature = "desktop"))]
-    {
-        app_web(
-            __scope,
-            current_section,
-            primary_color,
-            dark_mode,
-            drawer_opened,
-        )
-    }
-}
-
-/// Desktop app shell: BorderlessWindow with drawer navigation.
-#[cfg(feature = "desktop")]
-#[allow(clippy::too_many_arguments)]
-fn app_desktop(
-    __scope: &mut RenderScope,
-    current_section: Signal<usize>,
-    primary_color: Signal<&'static str>,
-    dark_mode: Signal<bool>,
-    drawer_opened: Signal<bool>,
-) -> NodeHandle {
-    // Create left section renderer for menu button
-    let left_section: SectionRenderer = Rc::new(move |__scope| {
-        rsx! {
-            ActionIcon {
-                variant: "subtle",
-                size: "lg",
-                onclick: move || drawer_opened.update(|v| *v = !*v),
-                {render_tabler_icon(__scope, TablerIcon::Menu2, TablerIconStyle::Outline)}
-            }
-        }
-    });
-
-    rsx! {
-        ThemeProvider {
-            primary_color_fn: Rc::new(move || primary_color.get()),
-            dark_mode_fn: Rc::new(move || dark_mode.get()),
-
-            style { {CSS_DESKTOP} }
-
-            BorderlessWindow {
-                title: "UI Zoo",
-                radius: "md",
-                left_section: Some(left_section),
-                on_minimize: || minimize_current_window(),
-                on_maximize: || toggle_maximize_current_window(),
-                on_close: || close_current_window(),
-
-                // Main content area - uses reactive Show for section switching
-                div { class: "main-content",
-                    {section_content(__scope, current_section)}
-                }
-            }
-
-            // Navigation Drawer
-            {nav_drawer(__scope, current_section, primary_color, dark_mode, drawer_opened)}
-
-            // Overlays section demo components (rendered at body level for proper fixed positioning)
-            {overlays_demo_overlays(__scope)}
-        }
-    }
-}
-
-/// Web app shell: sidebar navigation layout (no borderless window).
-#[cfg(not(feature = "desktop"))]
-fn app_web(
-    __scope: &mut RenderScope,
-    current_section: Signal<usize>,
-    primary_color: Signal<&'static str>,
-    dark_mode: Signal<bool>,
-    drawer_opened: Signal<bool>,
-) -> NodeHandle {
-    let nav = move |idx: usize| {
-        move || {
-            current_section.set(idx);
-            drawer_opened.set(false);
-        }
-    };
-
-    rsx! {
-        ThemeProvider {
-            primary_color_fn: Rc::new(move || primary_color.get()),
-            dark_mode_fn: Rc::new(move || dark_mode.get()),
-
-            style { {CSS_WEB} }
-
-            div { class: "app-shell",
-                // Sidebar with navigation
-                div { class: "sidebar",
-                    div { class: "sidebar-header",
-                        Title { order: 3, "UI Zoo" }
-                        Text { size: "xs", color: "dimmed", "Rinch Widget Showcase" }
-                    }
-                    Space { h: "md" }
-                    {nav_links(__scope, current_section, nav)}
-                    Space { h: "xl" }
-                    {theme_controls(__scope, primary_color, dark_mode)}
-                }
-
-                // Main content area
-                div { class: "main-content",
-                    {section_content(__scope, current_section)}
-                }
-            }
-
-            // Overlays section demo components
-            {overlays_demo_overlays(__scope)}
-        }
-    }
 }
 
 /// Render the navigation links list.
-fn nav_links<F: Fn() + 'static>(
+///
+/// Generic over the nav callback so each platform can provide its own
+/// navigation behavior (e.g. closing a drawer on desktop, no-op on web).
+pub fn nav_links<F: Fn() + 'static>(
     __scope: &mut RenderScope,
     current_section: Signal<usize>,
     nav: impl Fn(usize) -> F,
@@ -232,7 +101,7 @@ fn nav_links<F: Fn() + 'static>(
 }
 
 /// Render theme controls (dark mode switch, color pickers).
-fn theme_controls(
+pub fn theme_controls(
     __scope: &mut RenderScope,
     primary_color: Signal<&'static str>,
     dark_mode: Signal<bool>,
@@ -274,7 +143,7 @@ fn theme_controls(
 }
 
 /// Render the section content area with Show components for each section.
-fn section_content(__scope: &mut RenderScope, current_section: Signal<usize>) -> NodeHandle {
+pub fn section_content(__scope: &mut RenderScope, current_section: Signal<usize>) -> NodeHandle {
     rsx! {
         Fragment {
             Show { when: move || current_section.get() == 0, then: |__scope| overview_section(__scope) }
@@ -289,39 +158,6 @@ fn section_content(__scope: &mut RenderScope, current_section: Signal<usize>) ->
             Show { when: move || current_section.get() == 9, then: |__scope| icons_section(__scope) }
             Show { when: move || current_section.get() == 10, then: |__scope| tree_section(__scope) }
             Show { when: move || current_section.get() == 11, then: |__scope| editor_section(__scope) }
-        }
-    }
-}
-
-/// Navigation drawer for the desktop app shell.
-#[cfg(feature = "desktop")]
-fn nav_drawer(
-    __scope: &mut RenderScope,
-    current_section: Signal<usize>,
-    primary_color: Signal<&'static str>,
-    dark_mode: Signal<bool>,
-    drawer_opened: Signal<bool>,
-) -> NodeHandle {
-    let nav = move |idx: usize| {
-        move || {
-            current_section.set(idx);
-            drawer_opened.set(false);
-        }
-    };
-
-    rsx! {
-        Drawer {
-            opened_fn: Some(Rc::new(move || drawer_opened.get())),
-            onclose: move || drawer_opened.set(false),
-            position: "left",
-            size: "xs",
-            title: "UI Zoo",
-            with_overlay: true,
-
-            {nav_links(__scope, current_section, nav)}
-
-            Space { h: "xl" }
-            {theme_controls(__scope, primary_color, dark_mode)}
         }
     }
 }
@@ -426,71 +262,3 @@ pub fn overlays_demo_overlays(__scope: &mut RenderScope) -> NodeHandle {
         }
     }
 }
-
-/// Global CSS for the desktop app layout.
-/// BorderlessWindow widget handles titlebar, window controls, and layout.
-#[cfg(feature = "desktop")]
-pub const CSS_DESKTOP: &str = r#"
-* {
-    box-sizing: border-box;
-    margin: 0;
-    padding: 0;
-}
-
-html, body {
-    height: 100vh;
-}
-
-body {
-    font-family: var(--rinch-font-family);
-    background: transparent; /* For transparent window */
-    color: var(--rinch-color-text);
-    overflow: hidden;
-}
-
-.main-content {
-    padding: var(--rinch-spacing-xl);
-}
-"#;
-
-/// Global CSS for the web app layout with sidebar.
-#[cfg(not(feature = "desktop"))]
-pub const CSS_WEB: &str = r#"
-* {
-    box-sizing: border-box;
-    margin: 0;
-    padding: 0;
-}
-
-html, body {
-    height: 100vh;
-    font-family: var(--rinch-font-family);
-    background: var(--rinch-color-body);
-    color: var(--rinch-color-text);
-    overflow: hidden;
-}
-
-.app-shell {
-    display: flex;
-    height: 100vh;
-}
-
-.sidebar {
-    width: 220px;
-    min-width: 220px;
-    padding: var(--rinch-spacing-md);
-    border-right: 1px solid var(--rinch-color-gray-3);
-    background: var(--rinch-color-body);
-    overflow-y: auto;
-}
-
-.sidebar-header {
-    padding: var(--rinch-spacing-sm) var(--rinch-spacing-xs);
-}
-
-.main-content {
-    flex: 1;
-    padding: var(--rinch-spacing-xl);
-    overflow-y: auto;
-}
-"#;

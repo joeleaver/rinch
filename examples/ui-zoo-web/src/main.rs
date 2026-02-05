@@ -4,6 +4,9 @@
 //! runtime's architecture (winit event loop + wgpu renderer + vello) but uses
 //! WASM-specific async GPU initialization and `spawn_app()` for the non-blocking
 //! web event loop.
+//!
+//! The app shell uses a sidebar layout with navigation links and theme controls
+//! from the shared `ui_zoo` library.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -18,17 +21,108 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
 use rinch::app::RinchApp;
+use rinch::prelude::*;
 use rinch_core::element::ThemeProviderProps;
 use rinch_core::events;
 use rinch_core::hooks::clear_hooks;
 use rinch_platform::{
     AppAction, KeyCode, Modifiers, MouseButton as PlatformMouseButton, PlatformEvent, UserEvent,
 };
+use ui_zoo::{
+    init_all_sections, nav_links, overlays_demo_overlays, section_content, theme_controls,
+};
 use vello::{AaConfig, AaSupport, RenderParams, Renderer as VelloRenderer, RendererOptions};
 use wgpu::{
     CommandEncoderDescriptor, Extent3d, MemoryHints, Texture, TextureDescriptor, TextureDimension,
     TextureFormat, TextureUsages,
 };
+
+/// Global CSS for the web app layout with sidebar.
+const CSS_WEB: &str = r#"
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html, body {
+    height: 100vh;
+    font-family: var(--rinch-font-family);
+    background: var(--rinch-color-body);
+    color: var(--rinch-color-text);
+    overflow: hidden;
+}
+
+.app-shell {
+    display: flex;
+    height: 100vh;
+}
+
+.sidebar {
+    width: 220px;
+    min-width: 220px;
+    padding: var(--rinch-spacing-md);
+    border-right: 1px solid var(--rinch-color-gray-3);
+    background: var(--rinch-color-body);
+    overflow-y: auto;
+}
+
+.sidebar-header {
+    padding: var(--rinch-spacing-sm) var(--rinch-spacing-xs);
+}
+
+.main-content {
+    flex: 1;
+    padding: var(--rinch-spacing-xl);
+    overflow-y: auto;
+}
+"#;
+
+/// The web app shell: sidebar navigation layout.
+fn app(__scope: &mut RenderScope) -> NodeHandle {
+    let current_section = use_signal(|| 0_usize);
+    let primary_color = use_signal(|| "blue");
+    let dark_mode = use_signal(|| false);
+
+    init_all_sections();
+
+    let nav = move |idx: usize| {
+        move || {
+            current_section.set(idx);
+        }
+    };
+
+    rsx! {
+        ThemeProvider {
+            primary_color_fn: Rc::new(move || primary_color.get()),
+            dark_mode_fn: Rc::new(move || dark_mode.get()),
+
+            style { {CSS_WEB} }
+
+            div { class: "app-shell",
+                // Sidebar with navigation
+                div { class: "sidebar",
+                    div { class: "sidebar-header",
+                        Title { order: 3, "UI Zoo" }
+                        Text { size: "xs", color: "dimmed", "Rinch Widget Showcase" }
+                    }
+                    Space { h: "md" }
+                    {nav_links(__scope, current_section, nav)}
+                    Space { h: "xl" }
+                    {theme_controls(__scope, primary_color, dark_mode)}
+                }
+
+                // Main content area
+                div { class: "main-content",
+                    {section_content(__scope, current_section)}
+                }
+            }
+
+            // Overlays section demo components
+            {overlays_demo_overlays(__scope)}
+        }
+    }
+}
 
 // ── Custom event ─────────────────────────────────────────────────────────────
 
@@ -97,7 +191,7 @@ impl GpuState {
 /// [`RinchApp`] for platform-agnostic logic.
 struct WebRuntime {
     /// Platform-agnostic application logic.
-    app: RinchApp,
+    rinch_app: RinchApp,
     /// The winit window (wraps a canvas element).
     window: Option<Arc<Window>>,
     /// GPU state (initialized asynchronously after window creation).
@@ -120,7 +214,7 @@ impl WebRuntime {
         rinch::setup_theme_css(&theme);
 
         Self {
-            app: RinchApp::new(ui_zoo::app),
+            rinch_app: RinchApp::new(app),
             window: None,
             gpu: Rc::new(RefCell::new(None)),
             cursor_pos: (0.0, 0.0),
@@ -155,8 +249,8 @@ impl WebRuntime {
         let width = size.width.max(1);
         let height = size.height.max(1);
 
-        // Build scene from document (borrows self.app)
-        let scene = self.app.build_scene(scale, (width, height));
+        // Build scene from document (borrows self.rinch_app)
+        let scene = self.rinch_app.build_scene(scale, (width, height));
 
         // Now borrow GPU state (independent Rc<RefCell>)
         let mut gpu_ref = self.gpu.borrow_mut();
@@ -358,7 +452,7 @@ impl ApplicationHandler<WebEvent> for WebRuntime {
 
         // Mount the component (builds DOM tree, doesn't need GPU)
         let size = window.inner_size();
-        self.app
+        self.rinch_app
             .mount_component(size.width.max(1) as f32, size.height.max(1) as f32);
 
         // Spawn async GPU initialization
@@ -454,7 +548,7 @@ impl ApplicationHandler<WebEvent> for WebRuntime {
             WebEvent::ReRender => {
                 let size = self.window_size();
                 let scale = self.scale_factor();
-                let actions = self.app.handle_event(
+                let actions = self.rinch_app.handle_event(
                     PlatformEvent::UserEvent(UserEvent::ReRender),
                     size,
                     scale,
@@ -506,7 +600,7 @@ impl ApplicationHandler<WebEvent> for WebRuntime {
                 let (x, y) = self.cursor_pos;
                 let size = self.window_size();
                 let scale = self.scale_factor();
-                let actions = self.app.handle_event(
+                let actions = self.rinch_app.handle_event(
                     PlatformEvent::MouseDown {
                         x,
                         y,
@@ -579,7 +673,7 @@ impl ApplicationHandler<WebEvent> for WebRuntime {
 
         let size = self.window_size();
         let scale = self.scale_factor();
-        let actions = self.app.handle_event(platform_event, size, scale);
+        let actions = self.rinch_app.handle_event(platform_event, size, scale);
         self.process_actions(actions, event_loop);
     }
 
@@ -587,7 +681,7 @@ impl ApplicationHandler<WebEvent> for WebRuntime {
         let size = self.window_size();
         let scale = self.scale_factor();
         let actions = self
-            .app
+            .rinch_app
             .handle_event(PlatformEvent::AboutToWait, size, scale);
         self.process_actions(actions, event_loop);
     }

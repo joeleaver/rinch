@@ -9,5 +9,6 @@ description = "UI Zoo desktop app - comprehensive showcase of rinch widgets"
 ui-zoo = { path = "../ui-zoo" }
 rinch = { workspace = true, features = ["desktop", "widgets", "debug", "clipboard"] }
 rinch-core = { workspace = true }
+rinch-tabler-icons.workspace = true
 tokio.workspace = true
 tracing.workspace = true

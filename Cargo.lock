@@ -5062,6 +5062,7 @@ version = "0.1.0"
 dependencies = [
  "rinch",
  "rinch-core",
+ "rinch-tabler-icons",
  "tokio",
  "tracing",
  "ui-zoo",
