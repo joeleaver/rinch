@@ -23,7 +23,8 @@ pub fn init_navigation_state() {
     });
 }
 
-pub fn navigation_section(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+pub fn navigation_section() -> NodeHandle {
     let state = use_context::<NavigationSectionState>();
 
     let (pagination_page, pagination_with_edges_page, stepper_active, tabs_value, tabs_pills_value) =
@@ -335,7 +336,8 @@ pub fn navigation_section(__scope: &mut RenderScope) -> NodeHandle {
 }
 
 /// Demo: Basic file tree
-fn tree_demo(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn tree_demo() -> NodeHandle {
     let data = vec![
         TreeNodeData::new("src", "src").with_children(vec![
             TreeNodeData::new("components", "components").with_children(vec![
@@ -371,7 +373,8 @@ fn tree_demo(__scope: &mut RenderScope) -> NodeHandle {
 }
 
 /// Demo: Tree with selection
-fn tree_selection_demo(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn tree_selection_demo() -> NodeHandle {
     let data = vec![
         TreeNodeData::new("documents", "Documents").with_children(vec![
             TreeNodeData::new("reports", "Reports").with_children(vec![

@@ -2,7 +2,8 @@
 
 use rinch::prelude::*;
 
-pub fn typography_section(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+pub fn typography_section() -> NodeHandle {
     rsx! {
         Fragment {
             Stack { gap: "xs",

@@ -15,7 +15,8 @@ Widgets are used directly in RSX with a declarative syntax:
 use rinch::prelude::*;
 use rinch_core::element::ThemeProviderProps;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     rsx! {
         Stack { gap: "md",
             Title { order: 1, "Welcome" }
@@ -553,7 +554,8 @@ div { style: "position: relative; height: 200px;",
 use rinch::prelude::*;
 use std::rc::Rc;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     // For custom left section (e.g., menu button)
     let menu_open = use_signal(|| false);
     let menu_toggle = menu_open.clone();
@@ -816,7 +818,8 @@ use rinch::prelude::*;
 use rinch_core::element::ThemeProviderProps;
 use my_widgets::{MyCard, MyButton};
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     rsx! {
         MyCard { title: "Hello", variant: "elevated", shadow: true,
             Text { "Card content here" }
@@ -865,7 +868,8 @@ Rinch provides a type-safe icon system with a curated library of SVG icons. Inst
 use rinch::prelude::*;
 use rinch::widgets::*;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     rsx! {
         Alert { icon: Icon::InfoCircle, color: "blue", title: "Information",
             "This is an informational message."
@@ -1001,7 +1005,8 @@ Checkbox {
 use rinch::prelude::*;
 use std::rc::Rc;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     let current_tab = use_signal(|| 0_usize);
     let is_checked = use_signal(|| false);
     let progress = use_signal(|| 0.0);

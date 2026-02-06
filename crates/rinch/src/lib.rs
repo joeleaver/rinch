@@ -9,7 +9,8 @@
 //! ```ignore
 //! use rinch::prelude::*;
 //!
-//! fn app(__scope: &mut RenderScope) -> NodeHandle {
+//! #[component]
+//! fn app() -> NodeHandle {
 //!     let count = use_signal(|| 0);
 //!     let count_inc = count.clone();
 //!
@@ -50,7 +51,8 @@
 //! ```ignore
 //! use rinch::prelude::*;
 //!
-//! fn counter(__scope: &mut RenderScope) -> NodeHandle {
+//! #[component]
+//! fn counter() -> NodeHandle {
 //!     let count = use_signal(|| 0);
 //!     let name = use_signal(|| String::from("World"));
 //!     let count_inc = count.clone();
@@ -156,7 +158,7 @@ pub mod prelude {
     pub use rinch_core::{ClickContext, InputCallback, get_click_context, start_drag};
     // Icon enum for type-safe icons
     pub use rinch_core::Icon;
-    pub use rinch_macros::rsx;
+    pub use rinch_macros::{component, rsx};
     // Window control functions
     #[cfg(feature = "desktop")]
     pub use crate::windows::{
@@ -191,7 +193,7 @@ pub use rinch_core::element::{
     AppMenuProps, Children, Element, MenuItemProps, MenuProps, ThemeProviderProps, WindowProps,
 };
 pub use rinch_core::{Effect, Memo, Scope, Signal, batch, derived, untracked};
-pub use rinch_macros::rsx;
+pub use rinch_macros::{component, rsx};
 #[cfg(feature = "desktop")]
 pub use shell::{
     run, run_rinch, run_rinch_with_window_props, run_with_theme, run_with_window_props,

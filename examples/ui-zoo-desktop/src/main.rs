@@ -37,7 +37,8 @@ body {
 }
 "#;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     let current_section = use_signal(|| 0_usize);
     let primary_color = use_signal(|| "blue");
     let dark_mode = use_signal(|| false);

@@ -55,7 +55,8 @@ fn preset_name(preset: usize) -> &'static str {
     }
 }
 
-pub fn editor_section(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+pub fn editor_section() -> NodeHandle {
     let state = use_context::<EditorSectionState>();
 
     let state = match state {
@@ -516,7 +517,8 @@ pub fn editor_section(__scope: &mut RenderScope) -> NodeHandle {
 }
 
 /// Render editor-specific CSS styles.
-fn render_editor_styles(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn render_editor_styles() -> NodeHandle {
     use rinch_editor::view::cursor_blink_css;
 
     let style = __scope.create_element("style");
@@ -595,7 +597,8 @@ fn render_editor_styles(__scope: &mut RenderScope) -> NodeHandle {
 }
 
 /// Renders a list of controls that have keyboard shortcuts.
-fn render_shortcuts_list(__scope: &mut RenderScope, preset: Signal<usize>) -> NodeHandle {
+#[component]
+fn render_shortcuts_list(preset: Signal<usize>) -> NodeHandle {
     let config = get_toolbar_config(preset.get());
 
     let container = __scope.create_element("div");

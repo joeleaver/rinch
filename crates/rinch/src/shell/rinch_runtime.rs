@@ -245,7 +245,7 @@ impl RinchRuntime {
             WK::End => KeyCode::End,
             WK::PageUp => KeyCode::PageUp,
             WK::PageDown => KeyCode::PageDown,
-            WK::Enter => KeyCode::Enter,
+            WK::Enter | WK::NumpadEnter => KeyCode::Enter,
             WK::Backspace => KeyCode::Backspace,
             WK::Delete => KeyCode::Delete,
             WK::Tab => KeyCode::Tab,

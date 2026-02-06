@@ -65,7 +65,7 @@ pub trait Widget: std::fmt::Debug + 'static {
 /// Shell constructs (windows, menus, themes) use their Props types directly.
 #[derive(Clone)]
 pub enum Element {
-    /// Raw HTML content to be rendered by blitz.
+    /// Raw HTML content to be rendered by the DOM backend.
     Html(String),
     /// A fragment containing multiple children.
     Fragment(Children),

@@ -151,15 +151,16 @@ if has_image() {
 use rinch::prelude::*;
 use rinch::clipboard::{copy_text, paste_text};
 
-fn app() -> Element {
+#[component]
+fn app() -> NodeHandle {
     let text = use_signal(|| String::new());
     let text_copy = text.clone();
     let text_paste = text.clone();
 
     rsx! {
-        Window { title: "Clipboard Demo",
+        div {
             input {
-                value: {text.get()},
+                value: {|| text.get()},
                 oninput: move |e| text.set(e.value())
             }
             button {

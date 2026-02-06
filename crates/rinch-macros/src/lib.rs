@@ -1,7 +1,7 @@
-//! Procedural macros for rinch - RSX syntax.
+//! Procedural macros for rinch - RSX syntax and component attributes.
 //!
-//! Provides the `rsx!` macro for declarative UI definition with fine-grained
-//! reactive rendering.
+//! Provides the `rsx!` macro and `#[component]` attribute macro for declarative
+//! UI definition with fine-grained reactive rendering.
 //!
 //! The `rsx!` macro generates DOM construction code that creates nodes directly
 //! with Effects for reactive expressions. This enables surgical DOM updates -
@@ -25,7 +25,8 @@ use node::RsxNode;
 ///
 /// # Requirements
 ///
-/// - A `__scope: &mut RenderScope` must be in scope
+/// - A `__scope: &mut RenderScope` must be in scope.
+///   Use `#[component]` on your function to inject this automatically.
 /// - Returns a `NodeHandle`
 ///
 /// # Example
@@ -33,7 +34,8 @@ use node::RsxNode;
 /// ```ignore
 /// use rinch::prelude::*;
 ///
-/// fn counter(__scope: &mut RenderScope) -> NodeHandle {
+/// #[component]
+/// fn counter() -> NodeHandle {
 ///     let count = use_signal(|| 0);
 ///     let count_inc = count.clone();
 ///
@@ -93,4 +95,44 @@ pub fn rsx(input: TokenStream) -> TokenStream {
     let node = syn::parse_macro_input!(input as RsxNode);
     let mut ctx = dom_codegen::DomCodegenContext::new();
     dom_codegen::node_to_dom(&node, &mut ctx).into()
+}
+
+/// Attribute macro that injects `__scope: &mut RenderScope` as the first parameter.
+///
+/// This eliminates the need to manually write the `__scope` parameter in every
+/// component function. The macro transforms:
+///
+/// ```ignore
+/// #[component]
+/// fn app() -> NodeHandle {
+///     rsx! { div { "Hello" } }
+/// }
+/// ```
+///
+/// Into:
+///
+/// ```ignore
+/// fn app(__scope: &mut RenderScope) -> NodeHandle {
+///     rsx! { div { "Hello" } }
+/// }
+/// ```
+///
+/// Functions with existing parameters get `__scope` prepended:
+///
+/// ```ignore
+/// #[component]
+/// fn card(title: &str) -> NodeHandle { ... }
+/// // becomes: fn card(__scope: &mut RenderScope, title: &str) -> NodeHandle { ... }
+/// ```
+#[proc_macro_attribute]
+pub fn component(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let mut func = syn::parse_macro_input!(item as syn::ItemFn);
+
+    // Build `__scope: &mut RenderScope`
+    let scope_param: syn::FnArg = syn::parse_quote!(__scope: &mut RenderScope);
+
+    // Prepend as first parameter
+    func.sig.inputs.insert(0, scope_param);
+
+    quote::quote!(#func).into()
 }

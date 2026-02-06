@@ -60,7 +60,8 @@ rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["widgets",
 ```rust
 use rinch::prelude::*;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     let count = use_signal(|| 0);
     let count_inc = count.clone();
 
@@ -81,7 +82,14 @@ fn main() {
 
 **Key API Points:**
 
-- Component signature: `fn name(__scope: &mut RenderScope) -> NodeHandle`
+- Components use the `#[component]` attribute which auto-injects the render scope:
+  ```rust
+  #[component]
+  fn app() -> NodeHandle {
+      // ...
+  }
+  ```
+  This expands to `fn app(__scope: &mut RenderScope) -> NodeHandle`. The manual signature also works.
 - Entry point: `run("title", width, height, component_fn)`
 - Reactive expressions use closure syntax: `{|| expr}` (without closure = captured once at initial render)
 - Clone signals before using in multiple closures to avoid borrow issues
@@ -91,7 +99,8 @@ fn main() {
 ```rust
 use rinch::prelude::*;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     let name = use_signal(|| String::from("World"));
     let count = use_signal(|| 0);
 
@@ -210,7 +219,8 @@ Rinch supports true window transparency on Windows via DX12 + DirectComposition,
 ```rust
 use rinch::prelude::*;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     rsx! {
         BorderlessWindow {
             title: "My App",

@@ -8,7 +8,8 @@
 //! ```ignore
 //! use rinch::prelude::*;
 //!
-//! fn app(__scope: &mut RenderScope) -> NodeHandle {
+//! #[component]
+//! fn app() -> NodeHandle {
 //!     rsx! {
 //!         BorderlessWindow {
 //!             title: "My App",

@@ -52,6 +52,8 @@ count.set(5);
 count.update(|n| *n += 1);
 ```
 
+> **Note:** `Signal::new()` is the low-level primitive. In component code, prefer the `use_signal()` hook which integrates with the scope lifecycle: `let count = use_signal(|| 0);`
+
 **Tracking:** When `get()` is called inside an Effect, that Effect becomes a subscriber. When `set()` is called, all subscribers are notified and re-run.
 
 ### Effect
@@ -60,10 +62,10 @@ A side-effect that re-runs when its dependencies change.
 
 ```rust
 let count = Signal::new(0);
-let node = scope.create_element("span");
+let node = __scope.create_element("span");
 
 // This Effect will re-run whenever count changes
-scope.create_effect({
+__scope.create_effect({
     let count = count.clone();
     let node = node.clone();
     move || {
@@ -112,7 +114,7 @@ Rinch uses automatic dependency tracking. You don't need to declare dependencies
 let a = Signal::new(1);
 let b = Signal::new(2);
 
-scope.create_effect(move || {
+__scope.create_effect(move || {
     // Both a and b are automatically tracked
     let sum = a.get() + b.get();
     println!("Sum: {}", sum);
@@ -131,7 +133,7 @@ let show_a = Signal::new(true);
 let a = Signal::new("A");
 let b = Signal::new("B");
 
-scope.create_effect(move || {
+__scope.create_effect(move || {
     if show_a.get() {
         println!("{}", a.get());  // Only tracked when show_a is true
     } else {
@@ -147,7 +149,7 @@ scope.create_effect(move || {
 A stable reference to a DOM node that enables surgical updates:
 
 ```rust
-let node = scope.create_element("div");
+let node = __scope.create_element("div");
 
 // Text content
 node.set_text("Hello");
@@ -192,16 +194,16 @@ rsx! {
 Under the hood, this generates:
 
 ```rust
-let div = scope.create_element("div");
+let div = __scope.create_element("div");
 
 // Static text
-let text1 = scope.create_text("Hello, ");
+let text1 = __scope.create_text("Hello, ");
 div.append_child(&text1);
 
 // Reactive text - creates Effect
-let text2 = scope.create_text(&name.get().to_string());
+let text2 = __scope.create_text(&name.get().to_string());
 div.append_child(&text2);
-scope.create_effect({
+__scope.create_effect({
     let name = name.clone();
     let text2 = text2.clone();
     move || {
@@ -210,7 +212,7 @@ scope.create_effect({
 });
 
 // Reactive style - creates Effect
-scope.create_effect({
+__scope.create_effect({
     let color = color.clone();
     let div = div.clone();
     move || {
@@ -239,42 +241,86 @@ batch(|| {
 
 ## Conditional Rendering (Show)
 
-The `show()` function handles conditional rendering with fine-grained updates:
+The `show_dom()` function handles conditional rendering with fine-grained updates:
 
 ```rust
-show(
-    scope,
-    || condition.get(),           // Condition closure
-    |s| rsx_content!(s, div { "Visible" }),  // Then branch
-    Some(|s| rsx_content!(s, span { "Hidden" })),  // Else branch
+show_dom(
+    __scope,
+    &parent,
+    move || condition.get(),                          // Condition closure
+    |scope| {                                         // Then branch
+        let div = scope.create_element("div");
+        div.set_text("Visible");
+        div
+    },
+    Some(|scope| {                                    // Else branch (optional)
+        let span = scope.create_element("span");
+        span.set_text("Hidden");
+        span
+    }),
 )
+```
+
+In RSX, use the `Show` widget instead:
+
+```rust
+rsx! {
+    Show {
+        when: {|| condition.get()},
+        fallback: |__scope| rsx! { span { "Hidden" } },
+        div { "Visible" }
+    }
+}
 ```
 
 When the condition changes:
 1. The Effect runs
-2. Old content is removed from DOM
-3. New content is rendered into a fresh scope
-4. New content is inserted at the anchor point
+2. The old content's scope is disposed (cleaning up nested effects)
+3. Old DOM content nodes are removed
+4. A new child scope is created and new content is rendered after the marker
 
 ## List Rendering (For)
 
-The `for_each()` function handles keyed list rendering:
+The `for_each_dom()` function handles keyed list rendering using `ForItem`:
 
 ```rust
-for_each(
-    scope,
-    || items.get(),                    // Items closure
-    |item| item.id.clone(),            // Key function
-    |item, s| rsx_content!(s, li { {item.name.clone()} }),  // Item renderer
+for_each_dom(
+    __scope,
+    &parent,
+    move || items.get().into_iter().map(|item| {    // Items closure returning Vec<ForItem>
+        ForItem::new(item.id.clone(), item)
+    }).collect(),
+    |item, scope| {                                  // Item renderer
+        let data = item.downcast::<Item>().unwrap();
+        let li = scope.create_element("li");
+        li.set_text(&data.name);
+        li
+    },
 )
 ```
 
+In RSX, use the `For` widget instead:
+
+```rust
+rsx! {
+    For {
+        each: {|| items.get().into_iter().map(|item| {
+            ForItem::new(item.id.clone(), item)
+        }).collect()},
+        |item| {
+            let data = item.downcast::<Item>().unwrap();
+            rsx! { li { {data.name.clone()} } }
+        }
+    }
+}
+```
+
 When items change:
-1. Diff algorithm compares old and new key lists
+1. Diff algorithm (LIS-based) compares old and new key lists
 2. Items with unchanged keys are preserved (not re-rendered)
 3. New items are inserted at correct positions
-4. Removed items are cleaned up
-5. Moved items are repositioned
+4. Removed items have their scopes disposed and nodes cleaned up
+5. Moved items are repositioned in the DOM
 
 ## Comparison with Other Approaches
 

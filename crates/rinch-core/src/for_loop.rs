@@ -47,7 +47,7 @@
 //!         |item| {
 //!             let item = item.downcast::<Item>().unwrap();
 //!             rsx! {
-//!                 div { key: item.id.clone(),
+//!                 div {
 //!                     {|| item.name.clone()}
 //!                 }
 //!             }

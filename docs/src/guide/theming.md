@@ -15,7 +15,8 @@ Configure the theme at the runtime level using `ThemeProviderProps`:
 use rinch::prelude::*;
 use rinch_core::element::ThemeProviderProps;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     rsx! {
         div {
             h1 { "Themed Application" }
@@ -151,7 +152,8 @@ var(--rinch-h1-font-weight)
 use rinch::prelude::*;
 use rinch_core::element::ThemeProviderProps;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     rsx! {
         div { style: "
             background: var(--rinch-color-body);
@@ -226,7 +228,8 @@ When using the `widgets` feature, all components automatically use theme CSS var
 use rinch::prelude::*;
 use rinch_core::element::ThemeProviderProps;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     rsx! {
         Stack { gap: "md",
             // These widgets automatically use theme colors

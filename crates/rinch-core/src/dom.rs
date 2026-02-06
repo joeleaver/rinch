@@ -39,17 +39,27 @@
 //! # Example
 //!
 //! ```ignore
-//! fn counter(scope: &mut RenderScope) -> NodeHandle {
+//! // Using #[component] and rsx! is the idiomatic approach:
+//! #[component]
+//! fn counter() -> NodeHandle {
+//!     let count = use_signal(|| 0);
+//!     rsx! {
+//!         div { "Count: " {|| count.get().to_string()} }
+//!     }
+//! }
+//!
+//! // The lower-level RenderScope API (used internally by rsx!):
+//! fn counter_manual(__scope: &mut RenderScope) -> NodeHandle {
 //!     let count = use_signal(|| 0);
 //!
 //!     // Create static structure once
-//!     let div = scope.create_element("div");
-//!     let text = scope.create_text("Count: ");
-//!     let value = scope.create_text("0");
+//!     let div = __scope.create_element("div");
+//!     let text = __scope.create_text("Count: ");
+//!     let value = __scope.create_text("0");
 //!
 //!     // Set up reactive binding - only updates this text node
 //!     let value_handle = value.clone();
-//!     scope.create_effect(move || {
+//!     __scope.create_effect(move || {
 //!         value_handle.set_text(&count.get().to_string());
 //!     });
 //!

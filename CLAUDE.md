@@ -77,7 +77,13 @@ crates/
 └── rinch-renderer/           # (placeholder for custom rendering)
 
 examples/
-└── ui-zoo-desktop/                # Rich-text editor - primary development target
+├── ui-zoo/                    # Shared widget showcase library
+├── ui-zoo-desktop/            # Desktop entry point - primary development target
+├── ui-zoo-web/                # WASM browser-native DOM entry point
+├── hello_rinch_dom/           # Minimal hello world
+├── fine_grained_window/       # Fine-grained rendering demo
+├── contenteditable_spike/     # ContentEditable investigation
+└── hidden_textarea_spike/     # Hidden textarea rich-text approach
 ```
 
 ## Element Enum
@@ -90,10 +96,11 @@ The Element enum is minimal - only used for content that needs to be embedded in
 
 Shell-level constructs (windows, menus, themes) are handled at the runtime level via props, not as Element variants. See the "Application Entry Point" and "Native Menus" sections below.
 
-DOM content is built using `RenderScope` and `NodeHandle`:
+DOM content is built using `#[component]` functions that return a `NodeHandle`. The `#[component]` macro injects a `RenderScope` (`__scope`) automatically:
 
 ```rust
-fn my_component(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn my_component() -> NodeHandle {
     let div = __scope.create_element("div");
     let text = __scope.create_text("Hello, world!");
     div.append_child(&text);
@@ -121,7 +128,8 @@ rinch-tabler-icons = { workspace = true }
 ```rust
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
-fn my_component(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn my_component() -> NodeHandle {
     rsx! {
         div {
             // Render an icon
@@ -193,7 +201,8 @@ Use the `run` function to start a rinch application:
 ```rust
 use rinch::prelude::*;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     let count = use_signal(|| 0);
     rsx! {
         div {
@@ -208,7 +217,43 @@ fn main() {
 }
 ```
 
-The component function receives a `RenderScope` and returns a `NodeHandle`. The `rsx!` macro requires `__scope` to be in scope.
+The `#[component]` macro auto-injects `__scope: &mut RenderScope` as the first parameter, which is required by the `rsx!` macro. Components return a `NodeHandle`. You can also write `fn app(__scope: &mut RenderScope) -> NodeHandle` manually if preferred.
+
+## Component Macro
+
+Use the `#[component]` attribute macro to define component functions without manually writing the `__scope` parameter:
+
+```rust
+use rinch::prelude::*;
+
+#[component]
+fn app() -> NodeHandle {
+    let count = use_signal(|| 0);
+    rsx! {
+        div {
+            p { "Count: " {|| count.get().to_string()} }
+        }
+    }
+}
+
+fn main() {
+    run("My App", 800, 600, app);
+}
+```
+
+The macro auto-injects `__scope: &mut RenderScope` as the first parameter. `__scope` is still available inside the function body for use with `rsx!` and direct DOM operations.
+
+Functions with additional parameters get `__scope` prepended:
+
+```rust
+#[component]
+fn card(title: &str) -> NodeHandle {
+    rsx! { div { {title} } }
+}
+// Expands to: fn card(__scope: &mut RenderScope, title: &str) -> NodeHandle
+```
+
+Both patterns are supported -- `#[component]` is preferred for new code, and the manual `__scope` parameter continues to work.
 
 ## Widget Trait
 
@@ -307,7 +352,8 @@ Rinch provides a React-style hooks API for managing state. Hooks replace the ver
 ```rust
 use rinch::prelude::*;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     // Persistent state - survives across re-renders
     let count = use_signal(|| 0);
     let name = use_signal(|| String::from("World"));
@@ -332,7 +378,7 @@ fn main() {
 }
 ```
 
-> **Important:** The closure syntax `{|| expr}` is required for fine-grained reactive updates. Without it, values are captured once at initial render and never update. See [RSX Syntax - Reactive Expressions](docs/src/guide/rsx-syntax.md#reactive-expressions).
+> **Important:** The closure syntax `{|| expr}` is required for fine-grained reactive updates. Without it, values are captured once at initial render and never update. See [RSX Syntax - Reactive Expressions](docs/src/guide/rsx-syntax.md#reactive-expressions). The `#[component]` macro injects `__scope` automatically, so the `rsx!` macro works without manually declaring it.
 
 ### Rules of Hooks
 
@@ -340,14 +386,16 @@ fn main() {
 
 ```rust
 // ✅ DO: Call hooks at the top level
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     let count = use_signal(|| 0);
     let name = use_signal(|| String::new());
     rsx! { /* ... */ }
 }
 
 // ❌ DON'T: Call hooks conditionally
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     let show = use_signal(|| false);
     if show.get() {
         let extra = use_signal(|| 0);  // WRONG!
@@ -356,7 +404,8 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 }
 
 // ❌ DON'T: Call hooks in event handlers
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     rsx! {
         button { onclick: || {
             let x = use_signal(|| 0);  // WRONG!
@@ -425,13 +474,15 @@ let result = use_derived(move || count.get() * multiplier.get());
 #[derive(Clone)]
 struct Theme { color: String }
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     // Create context at top level
     create_context(Theme { color: "#007bff".into() });
     // ...
 }
 
-fn child_component(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn child_component() -> NodeHandle {
     // Access context anywhere in tree
     let theme = use_context::<Theme>().unwrap();
     // ...
@@ -447,7 +498,8 @@ use rinch::prelude::*;
 use rinch::menu::{MenuEntry, MenuManager};
 use rinch_core::element::{MenuProps, MenuItemProps, MenuItemCallback};
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     rsx! {
         div { "Application content" }
     }
@@ -479,8 +531,11 @@ fn main() {
         ]),
     ];
 
-    // Run with menu
-    run_with_menu("My App", 800, 600, app, menus);
+    // Menus are configured via FineGrainedApp builder at the runtime level.
+    // There is no standalone run_with_menu convenience function yet.
+    // See examples/ui-zoo-desktop for the full FineGrainedApp builder pattern.
+    // For a simple app without menus, use: run("My App", 800, 600, app);
+    run("My App", 800, 600, app);
 }
 ```
 
@@ -652,7 +707,8 @@ Theme is configured at the runtime level using `ThemeProviderProps`:
 use rinch::prelude::*;
 use rinch_core::element::ThemeProviderProps;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     rsx! {
         div { style: "color: var(--rinch-primary-color);",
             "Uses theme CSS variables"
@@ -690,7 +746,8 @@ Configure via `WindowProps`:
 use rinch::prelude::*;
 use rinch_core::element::WindowProps;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     rsx! {
         div { class: "custom-titlebar",
             // ... your custom titlebar and content
@@ -707,7 +764,7 @@ fn main() {
         ..Default::default()
     };
 
-    run_with_window_props(app, window_props);
+    run_with_window_props(app, window_props, None);
 }
 ```
 
@@ -742,7 +799,8 @@ The `BorderlessWindow` widget provides a complete container for borderless/trans
 ```rust
 use rinch::prelude::*;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     // For custom left section (e.g., menu button)
     let menu_signal = use_signal(|| false);
     let menu_toggle = menu_signal.clone();
@@ -835,12 +893,13 @@ Signal.set() → Effect runs → NodeHandle.set_text() → Minimal re-layout
 
 ### Usage
 
-Components receive a `RenderScope` and return a `NodeHandle`:
+Components use `#[component]` and return a `NodeHandle`:
 
 ```rust
 use rinch::prelude::*;
 
-fn counter(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn counter() -> NodeHandle {
     let count = use_signal(|| 0);
     let count_inc = count.clone();
 

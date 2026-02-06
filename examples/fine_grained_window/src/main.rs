@@ -14,7 +14,8 @@ fn main() {
     run("Fine-Grained Counter", 400, 300, counter_component);
 }
 
-fn counter_component(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn counter_component() -> NodeHandle {
     // Create a signal for the counter
     let count = Signal::new(42);
     let scope = __scope;

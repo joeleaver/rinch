@@ -138,19 +138,23 @@ Effects are scheduled to run after the current synchronous code completes:
 
 ### Scopes
 
-A **Scope** manages the lifetime of reactive primitives:
+A **Scope** manages the lifetime of reactive primitives. In practice, `RenderScope` serves as the scope for component rendering:
 
 ```rust
-let scope = Scope::new();
+// RenderScope is the scope used during rendering.
+// Effects created via __scope.create_effect() are tracked
+// and disposed when the scope is dropped.
 
-scope.run(|| {
-    let signal = Signal::new(0);
-    Effect::new(|| { /* ... */ });
+fn my_component(__scope: &mut RenderScope) -> NodeHandle {
+    let signal = use_signal(|| 0);
+    __scope.create_effect(|| { /* tracked by this scope */ });
     // signal and effect belong to this scope
-});
-
-scope.dispose(); // Cleans up signal and effect
+    rsx! { div { } }
+}
+// When __scope is disposed, all its effects are cleaned up
 ```
+
+> **Note:** `Scope::new()` and `Scope::run()` exist in the codebase but are currently placeholders. The active scope mechanism is `RenderScope`, which tracks effects and child scopes for automatic cleanup.
 
 ### Ownership
 
@@ -162,21 +166,22 @@ scope.dispose(); // Cleans up signal and effect
 
 The reactive system integrates with the rendering pipeline:
 
-1. **Component functions** run inside a scope
-2. **RSX expressions** can include signal reads: `{count.get()}`
-3. **When signals change**, affected parts of the DOM are updated
-4. **Fine-grained updates** - only changed nodes are re-rendered
+1. **Component functions** run inside a `RenderScope`
+2. **RSX expressions** use closure syntax for reactive reads: `{|| count.get().to_string()}`
+3. **When signals change**, Effects re-run and surgically update affected DOM nodes
+4. **Fine-grained updates** - only the specific nodes bound to changed signals are updated
 
 ```rust
-fn counter() -> Element {
-    let count = Signal::new(0);
+#[component]
+fn counter() -> NodeHandle {
+    let count = use_signal(|| 0);
 
     rsx! {
         div {
-            // This text updates when count changes
-            "Count: " {count.get()}
+            // Reactive text - closure syntax {|| ...} creates an Effect
+            "Count: " {|| count.get().to_string()}
 
-            button { onclick: move |_| count.update(|n| *n += 1),
+            button { onclick: move || count.update(|n| *n += 1),
                 "Increment"
             }
         }
@@ -184,13 +189,16 @@ fn counter() -> Element {
 }
 ```
 
+> **Note:** `Signal::new()` is the low-level primitive. In component code, prefer the `use_signal()` hook which integrates with the scope lifecycle. The closure syntax `{|| expr}` is required for reactive updates -- without it, values are captured once at initial render and never update.
+
 ## Thread Safety
 
-The current implementation uses `Rc<RefCell<T>>` for single-threaded use. For multi-threaded scenarios, we provide:
+The current implementation uses `Rc<RefCell<T>>` for single-threaded use:
 
-- `Signal::new_sync()` - Uses `Arc<RwLock<T>>`
 - Thread-local runtime by default
-- Optional shared runtime for async contexts
+- All reactive primitives (`Signal`, `Effect`, `Memo`) are `!Send` and `!Sync`
+- This is intentional: GUI frameworks are inherently single-threaded (main thread)
+- The observer stack and effect scheduling are thread-local
 
 ## Comparison with Other Systems
 

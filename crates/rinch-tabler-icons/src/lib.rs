@@ -16,7 +16,8 @@
 //! use rinch::prelude::*;
 //! use rinch_tabler_icons::{TablerIcon, render_tabler_icon};
 //!
-//! fn my_component(__scope: &mut RenderScope) -> NodeHandle {
+//! #[component]
+//! fn my_component() -> NodeHandle {
 //!     rsx! {
 //!         div {
 //!             {render_tabler_icon(__scope, TablerIcon::AlertCircle, Default::default())}

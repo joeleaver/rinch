@@ -15,7 +15,8 @@
 use rinch::prelude::*;
 use rinch::{WindowProps, run_with_window_props};
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     let content = use_signal(String::new);
     let cursor_pos = use_signal(|| 0_usize);
     let event_log = use_signal(Vec::<String>::new);

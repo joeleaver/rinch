@@ -15,7 +15,8 @@ pub fn init_buttons_state() {
     });
 }
 
-pub fn buttons_section(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+pub fn buttons_section() -> NodeHandle {
     // Get state from context
     let state = use_context::<ButtonsSectionState>();
 

@@ -562,25 +562,56 @@ impl RinchApp {
                 let ctrl = modifiers.primary();
                 let alt = modifiers.alt;
 
-                // Convert KeyCode to string for the keyboard interceptor
-                let key_str = match key {
-                    KeyCode::ArrowLeft => Some("ArrowLeft"),
-                    KeyCode::ArrowRight => Some("ArrowRight"),
-                    KeyCode::ArrowUp => Some("ArrowUp"),
-                    KeyCode::ArrowDown => Some("ArrowDown"),
-                    KeyCode::Home => Some("Home"),
-                    KeyCode::End => Some("End"),
-                    KeyCode::Enter => Some("Enter"),
-                    KeyCode::Backspace => Some("Backspace"),
-                    KeyCode::Delete => Some("Delete"),
-                    _ => None,
+                // Build key string for keyboard interceptor - handle ALL key types
+                let key_str: Option<String> = match key {
+                    // Named keys
+                    KeyCode::ArrowLeft => Some("ArrowLeft".into()),
+                    KeyCode::ArrowRight => Some("ArrowRight".into()),
+                    KeyCode::ArrowUp => Some("ArrowUp".into()),
+                    KeyCode::ArrowDown => Some("ArrowDown".into()),
+                    KeyCode::Home => Some("Home".into()),
+                    KeyCode::End => Some("End".into()),
+                    KeyCode::Enter => Some("Enter".into()),
+                    KeyCode::Backspace => Some("Backspace".into()),
+                    KeyCode::Delete => Some("Delete".into()),
+                    KeyCode::Tab => Some("Tab".into()),
+                    KeyCode::Escape => Some("Escape".into()),
+                    KeyCode::PageUp => Some("PageUp".into()),
+                    KeyCode::PageDown => Some("PageDown".into()),
+                    KeyCode::Space => Some("Space".into()),
+                    // Ctrl+key combos: derive key letter from KeyCode
+                    KeyCode::KeyA if ctrl => Some("a".into()),
+                    KeyCode::KeyB if ctrl => Some("b".into()),
+                    KeyCode::KeyC if ctrl => Some("c".into()),
+                    KeyCode::KeyD if ctrl => Some("d".into()),
+                    KeyCode::KeyE if ctrl => Some("e".into()),
+                    KeyCode::KeyH if ctrl => Some("h".into()),
+                    KeyCode::KeyI if ctrl => Some("i".into()),
+                    KeyCode::KeyU if ctrl => Some("u".into()),
+                    KeyCode::KeyV if ctrl => Some("v".into()),
+                    KeyCode::KeyX if ctrl => Some("x".into()),
+                    KeyCode::KeyY if ctrl => Some("y".into()),
+                    KeyCode::KeyZ if ctrl => Some("z".into()),
+                    // Regular character input: use text field (filter control chars)
+                    _ => text.as_ref().and_then(|t| {
+                        if !t.is_empty() && t.chars().all(|c| !c.is_control()) {
+                            Some(t.clone())
+                        } else {
+                            None
+                        }
+                    }),
                 };
 
-                // Try keyboard interceptor first
-                let handled_by_interceptor = if let Some(ks) = key_str {
+                tracing::trace!(
+                    ?key, ?text, ?key_str, shift, ctrl, alt,
+                    "KeyDown event"
+                );
+
+                // Try keyboard interceptor first for ALL keys
+                let handled_by_interceptor = if let Some(ref ks) = key_str {
                     let key_data = events::KeyEventData {
-                        key: ks.to_string(),
-                        code: ks.to_string(),
+                        key: ks.clone(),
+                        code: format!("{:?}", key),
                         ctrl,
                         shift,
                         alt,
@@ -994,7 +1025,27 @@ impl RinchApp {
                 DebugResult::Json { data: json!(null) }
             }
             DebugCommandKind::TypeText { text } => {
-                self.handle_text_input(&text);
+                for ch in text.chars() {
+                    let key = match ch {
+                        ' ' => "Space".to_string(),
+                        '\n' => "Enter".to_string(),
+                        '\t' => "Tab".to_string(),
+                        c => c.to_string(),
+                    };
+                    let key_data = events::KeyEventData {
+                        key: key.clone(),
+                        code: key,
+                        ctrl: false,
+                        shift: false,
+                        alt: false,
+                        meta: false,
+                    };
+                    let handled = events::dispatch_keyboard_event(&key_data);
+                    if !handled {
+                        // Fallback to handle_text_input for non-intercepted chars
+                        self.handle_text_input(&ch.to_string());
+                    }
+                }
                 actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
             }

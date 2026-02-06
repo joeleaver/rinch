@@ -29,8 +29,8 @@ pub fn init_all_sections() {
 ///
 /// Generic over the nav callback so each platform can provide its own
 /// navigation behavior (e.g. closing a drawer on desktop, no-op on web).
+#[component]
 pub fn nav_links<F: Fn() + 'static>(
-    __scope: &mut RenderScope,
     current_section: Signal<usize>,
     nav: impl Fn(usize) -> F,
 ) -> NodeHandle {
@@ -101,8 +101,8 @@ pub fn nav_links<F: Fn() + 'static>(
 }
 
 /// Render theme controls (dark mode switch, color pickers).
+#[component]
 pub fn theme_controls(
-    __scope: &mut RenderScope,
     primary_color: Signal<&'static str>,
     dark_mode: Signal<bool>,
 ) -> NodeHandle {

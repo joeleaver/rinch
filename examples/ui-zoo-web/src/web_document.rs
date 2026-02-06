@@ -182,6 +182,57 @@ impl WebDocument {
     }
 }
 
+/// Walk a DOM subtree depth-first to find the text node containing the given UTF-8 byte offset.
+/// Returns `(text_node, utf16_offset_within_node)`.
+fn find_text_node_at_byte_offset(
+    node: &web_sys::Node,
+    byte_offset: usize,
+) -> Option<(web_sys::Node, u32)> {
+    let mut remaining = byte_offset;
+    find_text_node_recursive(node, &mut remaining)
+}
+
+fn find_text_node_recursive(
+    node: &web_sys::Node,
+    remaining: &mut usize,
+) -> Option<(web_sys::Node, u32)> {
+    // If this is a text node, check if the offset falls within it
+    if node.node_type() == web_sys::Node::TEXT_NODE {
+        let text = node.text_content().unwrap_or_default();
+        let byte_len = text.len();
+        if *remaining <= byte_len {
+            // Convert remaining UTF-8 byte offset to UTF-16 code unit offset
+            let utf16_offset = utf8_byte_to_utf16_offset(&text, *remaining);
+            return Some((node.clone(), utf16_offset as u32));
+        }
+        *remaining -= byte_len;
+        return None;
+    }
+
+    // Recurse into children
+    let children = node.child_nodes();
+    for i in 0..children.length() {
+        if let Some(child) = children.item(i) {
+            if let Some(result) = find_text_node_recursive(&child, remaining) {
+                return Some(result);
+            }
+        }
+    }
+    None
+}
+
+/// Convert a UTF-8 byte offset to a UTF-16 code unit offset within a string.
+fn utf8_byte_to_utf16_offset(text: &str, byte_offset: usize) -> usize {
+    let mut utf16_offset = 0;
+    for (i, ch) in text.char_indices() {
+        if i >= byte_offset {
+            break;
+        }
+        utf16_offset += ch.len_utf16();
+    }
+    utf16_offset
+}
+
 impl DomDocument for WebDocument {
     fn create_element(&mut self, tag: &str) -> NodeId {
         let el = if is_svg_tag(tag) {
@@ -403,14 +454,53 @@ impl DomDocument for WebDocument {
         }
     }
 
-    fn query_caret_position(&self, _node_id: u64, _byte_offset: usize) -> Option<(f32, f32)> {
-        // TODO: implement via Range API
-        None
+    fn query_caret_position(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32)> {
+        let n = self.nodes.get(&(node_id as usize))?;
+        let (text_node, utf16_offset) = find_text_node_at_byte_offset(n, byte_offset)?;
+        let range = self.browser_doc.create_range().ok()?;
+        range.set_start(&text_node, utf16_offset).ok()?;
+        range.set_end(&text_node, utf16_offset).ok()?;
+        let rect = range.get_bounding_client_rect();
+        // Get the block element's rect to compute relative coordinates
+        let el: web_sys::Element = n.clone().dyn_into().ok()?;
+        let block_rect = el.get_bounding_client_rect();
+        Some((
+            (rect.x() - block_rect.x()) as f32,
+            (rect.y() - block_rect.y()) as f32,
+        ))
     }
 
-    fn query_glyph_bounds(&self, _node_id: u64, _byte_offset: usize) -> Option<GlyphBounds> {
-        // TODO: implement via Range API
-        None
+    fn query_glyph_bounds(&self, node_id: u64, byte_offset: usize) -> Option<GlyphBounds> {
+        let n = self.nodes.get(&(node_id as usize))?;
+        let (text_node, utf16_offset) = find_text_node_at_byte_offset(n, byte_offset)?;
+        let text_content = text_node.text_content().unwrap_or_default();
+        let text_utf16_len: usize = text_content.encode_utf16().count();
+
+        let range = self.browser_doc.create_range().ok()?;
+        // If we're at the end of text, use the last character's bounds
+        if utf16_offset as usize >= text_utf16_len {
+            if text_utf16_len == 0 {
+                return None;
+            }
+            range
+                .set_start(&text_node, (text_utf16_len - 1) as u32)
+                .ok()?;
+            range.set_end(&text_node, text_utf16_len as u32).ok()?;
+        } else {
+            range.set_start(&text_node, utf16_offset).ok()?;
+            range.set_end(&text_node, utf16_offset + 1).ok()?;
+        }
+
+        let rect = range.get_bounding_client_rect();
+        let el: web_sys::Element = n.clone().dyn_into().ok()?;
+        let block_rect = el.get_bounding_client_rect();
+
+        Some(GlyphBounds {
+            x: (rect.x() - block_rect.x()) as f32,
+            y: (rect.y() - block_rect.y()) as f32,
+            width: rect.width() as f32,
+            height: rect.height() as f32,
+        })
     }
 
     fn focus_element(&mut self, node_id: NodeId) {
@@ -427,13 +517,24 @@ impl DomDocument for WebDocument {
 
     fn query_node_layout(&self, node_id: u64) -> Option<(f32, f32, f32, f32)> {
         let n = self.nodes.get(&(node_id as usize))?;
-        let el: web_sys::Element = n.clone().dyn_into().ok()?;
-        let rect = el.get_bounding_client_rect();
-        Some((
-            rect.x() as f32,
-            rect.y() as f32,
-            rect.width() as f32,
-            rect.height() as f32,
-        ))
+        // Try HtmlElement.offset* for parent-relative coordinates (needed by editor)
+        if let Ok(el) = n.clone().dyn_into::<web_sys::HtmlElement>() {
+            Some((
+                el.offset_left() as f32,
+                el.offset_top() as f32,
+                el.offset_width() as f32,
+                el.offset_height() as f32,
+            ))
+        } else {
+            // Fallback for non-HTML elements (SVG, etc.)
+            let el: web_sys::Element = n.clone().dyn_into().ok()?;
+            let rect = el.get_bounding_client_rect();
+            Some((
+                rect.x() as f32,
+                rect.y() as f32,
+                rect.width() as f32,
+                rect.height() as f32,
+            ))
+        }
     }
 }

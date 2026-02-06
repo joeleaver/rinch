@@ -2,7 +2,8 @@
 
 use rinch::prelude::*;
 
-pub fn data_display_section(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+pub fn data_display_section() -> NodeHandle {
     rsx! {
         Fragment {
             Stack { gap: "xs",

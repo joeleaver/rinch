@@ -21,9 +21,10 @@ web-sys = { version = "0.3", features = [
     "Window", "Document", "Element", "HtmlElement", "HtmlInputElement",
     "HtmlTextAreaElement", "HtmlHeadElement",
     "Node", "NodeList", "Text", "Comment",
-    "CssStyleDeclaration", "DomRect",
+    "CssStyleDeclaration", "DomRect", "DomRectList",
     "Event", "MouseEvent", "KeyboardEvent", "InputEvent",
     "EventTarget",
+    "Range", "Selection", "CharacterData",
     "console",
 ] }
 

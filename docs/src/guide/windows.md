@@ -7,7 +7,8 @@ Rinch supports multi-window applications with window configuration at the runtim
 ```rust
 use rinch::prelude::*;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     rsx! {
         div {
             h1 { "Window Content" }
@@ -28,9 +29,9 @@ Configure windows using `WindowProps`:
 ```rust
 use rinch::prelude::*;
 use rinch_core::element::WindowProps;
-use rinch::fine_grained::run_fine_grained;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     rsx! {
         div { "Content" }
     }
@@ -51,7 +52,7 @@ fn main() {
         resize_inset: None,     // No custom resize handles
     };
 
-    run_fine_grained(props, app);
+    run_with_window_props(app, props, None);
 }
 ```
 
@@ -76,9 +77,9 @@ Create frameless windows for custom title bars and window chrome using `borderle
 ```rust
 use rinch::prelude::*;
 use rinch_core::element::WindowProps;
-use rinch::fine_grained::run_fine_grained;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     rsx! {
         div { class: "custom-titlebar",
             "My Custom Title Bar"
@@ -98,7 +99,7 @@ fn main() {
         ..Default::default()
     };
 
-    run_fine_grained(props, app);
+    run_with_window_props(app, props, None);
 }
 ```
 
@@ -108,7 +109,8 @@ fn main() {
 use rinch::prelude::*;
 use rinch_core::element::WindowProps;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     rsx! {
         style {
             "
@@ -197,7 +199,8 @@ For windows with transparency (useful for rounded corners or non-rectangular sha
 use rinch::prelude::*;
 use rinch_core::element::WindowProps;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     rsx! {
         style {
             "
@@ -228,7 +231,7 @@ fn main() {
         ..Default::default()
     };
 
-    rinch::fine_grained::run_fine_grained(props, app);
+    run_with_window_props(app, props, None);
 }
 ```
 
@@ -247,7 +250,8 @@ The `resize_inset` value defines the distance (in logical pixels) from the windo
 
 **Example with shadow:**
 ```rust
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     rsx! {
         style {
             "
@@ -274,7 +278,7 @@ fn main() {
         resize_inset: Some(12.0),  // Match CSS margin
         ..Default::default()
     };
-    rinch::fine_grained::run_fine_grained(props, app);
+    run_with_window_props(app, props, None);
 }
 ```
 
@@ -289,7 +293,8 @@ use rinch::prelude::*;
 use rinch::windows::{open_window, WindowHandle};
 use rinch_core::element::WindowProps;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     let settings_handle = use_signal(|| None::<WindowHandle>);
     let handle_clone = settings_handle.clone();
 
@@ -361,7 +366,8 @@ let handle = WindowBuilder::new()
 use rinch::prelude::*;
 use rinch::windows::{open_window, close_window, WindowBuilder, WindowHandle};
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     let dialogs = use_signal(|| Vec::<WindowHandle>::new());
     let dialogs_open = dialogs.clone();
     let dialogs_close = dialogs.clone();

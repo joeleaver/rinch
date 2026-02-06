@@ -30,21 +30,18 @@ Replace the contents of `src/main.rs`:
 ```rust
 use rinch::prelude::*;
 
-fn app() -> Element {
+#[component]
+fn app() -> NodeHandle {
     rsx! {
-        Window { title: "My First Rinch App", width: 800, height: 600,
-            html {
-                body {
-                    h1 { "Hello, Rinch!" }
-                    p { "Welcome to your first rinch application." }
-                }
-            }
+        div {
+            h1 { "Hello, Rinch!" }
+            p { "Welcome to your first rinch application." }
         }
     }
 }
 
 fn main() {
-    rinch::run(app);
+    run("My First App", 800, 600, app);
 }
 ```
 

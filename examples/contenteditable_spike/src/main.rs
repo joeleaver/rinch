@@ -13,7 +13,8 @@
 use rinch::prelude::*;
 use rinch::{WindowProps, run_with_window_props};
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     // State for tracking what happens
     let event_log = use_signal(Vec::<String>::new);
     let content_value = use_signal(|| String::from("Initial content"));

@@ -74,7 +74,8 @@ pub fn init_tree_state() {
     });
 }
 
-pub fn tree_section(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+pub fn tree_section() -> NodeHandle {
     let state = use_context::<TreeSectionState>();
 
     let (
@@ -290,7 +291,8 @@ fn basic_data() -> Vec<TreeNodeData> {
 }
 
 /// Demo: Basic file tree with expand/collapse
-fn basic_file_tree_demo(__scope: &mut RenderScope, tree: UseTreeReturn) -> NodeHandle {
+#[component]
+fn basic_file_tree_demo(tree: UseTreeReturn) -> NodeHandle {
     let data = basic_data();
 
     rsx! {
@@ -335,8 +337,8 @@ fn selection_data() -> Vec<TreeNodeData> {
 }
 
 /// Demo: Tree with selection and badge display
+#[component]
 fn selection_tree_demo(
-    __scope: &mut RenderScope,
     tree: UseTreeReturn,
     selected_signal: Signal<Option<String>>,
 ) -> NodeHandle {
@@ -386,7 +388,8 @@ fn expand_collapse_data() -> Vec<TreeNodeData> {
 }
 
 /// Demo: Programmatic expand/collapse with controller buttons
-fn expand_collapse_demo(__scope: &mut RenderScope, tree: UseTreeReturn) -> NodeHandle {
+#[component]
+fn expand_collapse_demo(tree: UseTreeReturn) -> NodeHandle {
     let data = expand_collapse_data();
 
     // Clone data for the controller buttons
@@ -462,7 +465,8 @@ fn custom_render_data() -> Vec<TreeNodeData> {
 }
 
 /// Demo: Custom rendering with file sizes
-fn custom_render_demo(__scope: &mut RenderScope, tree: UseTreeReturn) -> NodeHandle {
+#[component]
+fn custom_render_demo(tree: UseTreeReturn) -> NodeHandle {
     let data = custom_render_data();
 
     // Custom render function to show file info
@@ -540,7 +544,8 @@ fn icons_data() -> Vec<TreeNodeData> {
 }
 
 /// Demo: Tree with icons for different node types
-fn icons_tree_demo(__scope: &mut RenderScope, tree: UseTreeReturn) -> NodeHandle {
+#[component]
+fn icons_tree_demo(tree: UseTreeReturn) -> NodeHandle {
     let data = icons_data();
 
     rsx! {
@@ -580,7 +585,8 @@ fn disabled_nodes_data() -> Vec<TreeNodeData> {
 }
 
 /// Demo: Tree with some disabled nodes
-fn disabled_nodes_demo(__scope: &mut RenderScope, tree: UseTreeReturn) -> NodeHandle {
+#[component]
+fn disabled_nodes_demo(tree: UseTreeReturn) -> NodeHandle {
     let data = disabled_nodes_data();
 
     rsx! {
@@ -608,7 +614,8 @@ fn level_offset_data() -> Vec<TreeNodeData> {
 }
 
 /// Demo: Tree with configurable level offset
-fn level_offset_demo(__scope: &mut RenderScope, tree: UseTreeReturn, offset: &str) -> NodeHandle {
+#[component]
+fn level_offset_demo(tree: UseTreeReturn, offset: &str) -> NodeHandle {
     let data = level_offset_data();
 
     let offset_owned = offset.to_string();

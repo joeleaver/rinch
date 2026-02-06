@@ -13,26 +13,28 @@ This enables fine-grained reactive updates - when a signal changes, only the aff
 
 ## Component Signature
 
-Components receive a `RenderScope` and return a `NodeHandle`:
+Components use the `#[component]` attribute macro and return a `NodeHandle`:
 
 ```rust
 use rinch::prelude::*;
 
-fn my_component(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn my_component() -> NodeHandle {
     rsx! {
         div { "Hello from my component!" }
     }
 }
 ```
 
-The `__scope` parameter is used by the macro to create DOM nodes and Effects.
+The `#[component]` macro injects the `__scope: &mut RenderScope` parameter automatically, which is used by `rsx!` to create DOM nodes and Effects.
 
 ## Basic Syntax
 
 ```rust
 use rinch::prelude::*;
 
-fn example(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn example() -> NodeHandle {
     rsx! {
         div {
             h1 { "Hello, World!" }
@@ -340,13 +342,15 @@ Show {
 This example shows why lazy evaluation is important:
 
 ```rust
-fn section_with_hooks(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn section_with_hooks() -> NodeHandle {
     // This would panic if evaluated when section is hidden
     let local_state = use_signal(|| 0);
     rsx! { div { {|| local_state.get().to_string()} } }
 }
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     let current_section = use_signal(|| 1);
 
     rsx! {
@@ -473,11 +477,12 @@ For {
 Events use the `onevent: handler` syntax:
 
 ```rust
-let count = Signal::new(0);
+// Inside a #[component] function:
+let count = use_signal(|| 0);
 
 rsx! {
     button {
-        onclick: move |_| count.update(|n| *n += 1),
+        onclick: move || count.update(|n| *n += 1),
         "Increment"
     }
 }

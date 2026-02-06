@@ -29,7 +29,7 @@
 //! rsx! {
 //!     Show {
 //!         when: {|| visible.get()},
-//!         fallback: |scope| rsx! { div { "Hidden" } },
+//!         fallback: |__scope| rsx! { div { "Hidden" } },
 //!         div { "Shown!" }
 //!     }
 //! }

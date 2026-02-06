@@ -52,7 +52,8 @@ pub fn init_inputs_state() {
     });
 }
 
-pub fn inputs_section(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+pub fn inputs_section() -> NodeHandle {
     // Get state from context (initialized in main app)
     let state = use_context::<InputsSectionState>();
 

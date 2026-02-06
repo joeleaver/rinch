@@ -14,15 +14,16 @@
 //! ```ignore
 //! use rinch::prelude::*;
 //!
-//! fn app() -> Element {
+//! #[component]
+//! fn app() -> NodeHandle {
 //!     // Create persistent state with use_signal
 //!     let count = use_signal(|| 0);
 //!     let name = use_signal(|| String::from("World"));
 //!
 //!     rsx! {
 //!         div {
-//!             h1 { "Hello, " {name.get()} "!" }
-//!             p { "Count: " {count.get()} }
+//!             h1 { "Hello, " {|| name.get()} "!" }
+//!             p { "Count: " {|| count.get().to_string()} }
 //!             button { onclick: move || count.update(|n| *n += 1),
 //!                 "Increment"
 //!             }
@@ -43,13 +44,15 @@
 //! | [`use_mount`] | One-time effect on first render |
 //! | [`use_memo`] | Memoized expensive computations |
 //! | [`use_callback`] | Memoized callbacks |
+//! | [`use_derived`] | Auto-tracking computed values (uses reactive Memo) |
+//! | [`create_context`] / [`use_context`] | Shared state across components |
 //!
 //! # Before and After
 //!
 //! Hooks dramatically simplify state management. Compare the old approach:
 //!
 //! ```ignore
-//! // OLD: Verbose thread_local! pattern (DON'T DO THIS)
+//! // OLD (obsolete): Verbose thread_local! pattern (DON'T DO THIS)
 //! use std::cell::RefCell;
 //!
 //! thread_local! {
@@ -88,7 +91,8 @@
 //!
 //! ```ignore
 //! // NEW: Clean hooks API (DO THIS)
-//! fn app() -> Element {
+//! #[component]
+//! fn app() -> NodeHandle {
 //!     let count = use_signal(|| 0);
 //!     let text = use_signal(|| String::from("Hello"));
 //!     // ...
@@ -104,7 +108,8 @@
 //! ## ✅ DO: Call hooks at the top level
 //!
 //! ```ignore
-//! fn app() -> Element {
+//! #[component]
+//! fn app() -> NodeHandle {
 //!     // Good: hooks called unconditionally at the top
 //!     let count = use_signal(|| 0);
 //!     let name = use_signal(|| String::new());
@@ -117,7 +122,8 @@
 //! ## ❌ DON'T: Call hooks conditionally
 //!
 //! ```ignore
-//! fn app() -> Element {
+//! #[component]
+//! fn app() -> NodeHandle {
 //!     let show_extra = use_signal(|| false);
 //!
 //!     // BAD: Hook inside a conditional!
@@ -132,7 +138,8 @@
 //! ## ❌ DON'T: Call hooks in loops
 //!
 //! ```ignore
-//! fn app() -> Element {
+//! #[component]
+//! fn app() -> NodeHandle {
 //!     let items = vec!["a", "b", "c"];
 //!
 //!     // BAD: Hook inside a loop!
@@ -147,7 +154,8 @@
 //! ## ❌ DON'T: Call hooks after early returns
 //!
 //! ```ignore
-//! fn app() -> Element {
+//! #[component]
+//! fn app() -> NodeHandle {
 //!     let loading = use_signal(|| true);
 //!
 //!     if loading.get() {
@@ -164,7 +172,8 @@
 //! ## ❌ DON'T: Call hooks in event handlers
 //!
 //! ```ignore
-//! fn app() -> Element {
+//! #[component]
+//! fn app() -> NodeHandle {
 //!     let count = use_signal(|| 0);
 //!
 //!     rsx! {
@@ -227,7 +236,8 @@
 //! ```ignore
 //! use rinch::prelude::*;
 //!
-//! fn app() -> Element {
+//! #[component]
+//! fn app() -> NodeHandle {
 //!     // Reactive state
 //!     let count = use_signal(|| 0);
 //!     let items = use_signal(|| vec!["Apple", "Banana", "Cherry"]);
@@ -275,7 +285,7 @@
 //! }
 //!
 //! fn main() {
-//!     rinch::run(app);
+//!     run("Hooks Demo", 800, 600, app);
 //! }
 //! ```
 
@@ -482,7 +492,8 @@ thread_local! {
 ///     font_size: u32,
 /// }
 ///
-/// fn app() -> Element {
+/// #[component]
+/// fn app() -> NodeHandle {
 ///     // Create the context at the top of your app
 ///     let theme = create_context(Theme {
 ///         primary_color: "#007bff".into(),
@@ -490,18 +501,19 @@ thread_local! {
 ///     });
 ///
 ///     rsx! {
-///         Window { title: "Themed App",
+///         div {
 ///             // Child components can access the theme via use_context
 ///         }
 ///     }
 /// }
 ///
-/// fn themed_button() -> Element {
+/// #[component]
+/// fn themed_button() -> NodeHandle {
 ///     // Access the theme from anywhere in the component tree
 ///     let theme = use_context::<Theme>().expect("Theme context not found");
 ///
 ///     rsx! {
-///         button { style: format!("color: {}", theme.primary_color),
+///         button { style: {|| format!("color: {}", theme.primary_color)},
 ///             "Click me"
 ///         }
 ///     }
@@ -530,7 +542,8 @@ pub fn create_context<T: Clone + 'static>(value: T) -> T {
 ///     is_admin: bool,
 /// }
 ///
-/// fn user_info() -> Element {
+/// #[component]
+/// fn user_info() -> NodeHandle {
 ///     let user = use_context::<UserContext>();
 ///
 ///     match user {
@@ -614,12 +627,13 @@ pub fn get_hooks_debug_info() -> Vec<HookMeta> {
 /// # Example
 ///
 /// ```ignore
-/// fn app() -> Element {
+/// #[component]
+/// fn app() -> NodeHandle {
 ///     let count = use_signal(|| 0);
 ///
 ///     rsx! {
 ///         button { onclick: move || count.update(|n| *n += 1),
-///             "Count: " {count.get()}
+///             "Count: " {|| count.get().to_string()}
 ///         }
 ///     }
 /// }
@@ -640,12 +654,13 @@ pub fn use_signal<T: Clone + 'static>(init: impl FnOnce() -> T) -> Signal<T> {
 /// # Example
 ///
 /// ```ignore
-/// fn app() -> Element {
+/// #[component]
+/// fn app() -> NodeHandle {
 ///     let (count, set_count) = use_state(|| 0);
 ///
 ///     rsx! {
 ///         button { onclick: move || set_count(count + 1),
-///             "Count: " {count}
+///             "Count: " {count.to_string()}
 ///         }
 ///     }
 /// }
@@ -667,9 +682,10 @@ pub fn use_state<T: Clone + 'static>(init: impl FnOnce() -> T) -> (T, impl Fn(T)
 /// # Example
 ///
 /// ```ignore
-/// fn app() -> Element {
+/// #[component]
+/// fn app() -> NodeHandle {
 ///     let render_count = use_ref(|| 0);
-///     render_count.borrow_mut().map(|mut n| *n += 1);
+///     *render_count.borrow_mut() += 1;
 ///
 ///     // render_count changes don't cause re-renders
 /// }
@@ -728,7 +744,8 @@ struct EffectState<D> {
 /// # Example
 ///
 /// ```ignore
-/// fn app() -> Element {
+/// #[component]
+/// fn app() -> NodeHandle {
 ///     let count = use_signal(|| 0);
 ///
 ///     use_effect(|| {
@@ -785,7 +802,8 @@ where
 /// # Example
 ///
 /// ```ignore
-/// fn app() -> Element {
+/// #[component]
+/// fn app() -> NodeHandle {
 ///     let id = use_signal(|| 1);
 ///
 ///     use_effect_cleanup(|| {
@@ -843,7 +861,8 @@ where
 /// # Example
 ///
 /// ```ignore
-/// fn app() -> Element {
+/// #[component]
+/// fn app() -> NodeHandle {
 ///     use_mount(|| {
 ///         println!("Component mounted!");
 ///         || println!("Component unmounted!")
@@ -873,7 +892,8 @@ struct MemoState<T, D> {
 /// # Example
 ///
 /// ```ignore
-/// fn app() -> Element {
+/// #[component]
+/// fn app() -> NodeHandle {
 ///     let items = use_signal(|| vec![1, 2, 3, 4, 5]);
 ///
 ///     // Only recomputes when items change
@@ -928,7 +948,8 @@ where
 /// # Example
 ///
 /// ```ignore
-/// fn app() -> Element {
+/// #[component]
+/// fn app() -> NodeHandle {
 ///     let count = use_signal(|| 0);
 ///
 ///     let increment = use_callback(|| {
@@ -953,7 +974,8 @@ where
 /// # Example
 ///
 /// ```ignore
-/// fn app() -> Element {
+/// #[component]
+/// fn app() -> NodeHandle {
 ///     let count = use_signal(|| 0);
 ///     let multiplier = use_signal(|| 2);
 ///
@@ -961,7 +983,7 @@ where
 ///     let doubled = use_derived(move || count.get() * multiplier.get());
 ///
 ///     rsx! {
-///         p { "Result: " {doubled.get()} }
+///         p { "Result: " {|| doubled.get().to_string()} }
 ///     }
 /// }
 /// ```

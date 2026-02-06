@@ -20,7 +20,8 @@ pub fn init_feedback_state() {
     });
 }
 
-pub fn feedback_section(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+pub fn feedback_section() -> NodeHandle {
     let state = use_context::<FeedbackSectionState>();
 
     let (progress_value, notification_visible, notification_error_visible) = match state {

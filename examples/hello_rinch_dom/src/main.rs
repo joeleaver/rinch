@@ -1,6 +1,7 @@
 use rinch::prelude::*;
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     let count = use_signal(|| 0);
     let count_inc = count;
 

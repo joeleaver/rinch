@@ -27,7 +27,8 @@ pub fn init_overlays_state() {
     });
 }
 
-pub fn overlays_section(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+pub fn overlays_section() -> NodeHandle {
     let state = use_context::<OverlaysSectionState>();
 
     let (

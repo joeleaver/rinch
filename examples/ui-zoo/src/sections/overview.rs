@@ -2,7 +2,8 @@
 
 use rinch::prelude::*;
 
-pub fn overview_section(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+pub fn overview_section() -> NodeHandle {
     rsx! {
         Fragment {
             // Hero section

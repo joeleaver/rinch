@@ -11,70 +11,20 @@ use rinch::prelude::*;
 use rinch::menu::MenuEntry;
 use rinch_core::element::{MenuProps, MenuItemProps, MenuItemCallback};
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     rsx! {
         div { "Application content" }
     }
 }
 
 fn main() {
-    let menus = vec![
-        (MenuProps { label: "File".into() }, vec![
-            MenuEntry::Item(MenuItemProps {
-                label: "New".into(),
-                shortcut: Some("Cmd+N".into()),
-                ..Default::default()
-            }),
-            MenuEntry::Item(MenuItemProps {
-                label: "Open...".into(),
-                shortcut: Some("Cmd+O".into()),
-                ..Default::default()
-            }),
-            MenuEntry::Separator,
-            MenuEntry::Item(MenuItemProps {
-                label: "Save".into(),
-                shortcut: Some("Cmd+S".into()),
-                ..Default::default()
-            }),
-            MenuEntry::Separator,
-            MenuEntry::Item(MenuItemProps {
-                label: "Exit".into(),
-                shortcut: Some("Alt+F4".into()),
-                ..Default::default()
-            }),
-        ]),
-        (MenuProps { label: "Edit".into() }, vec![
-            MenuEntry::Item(MenuItemProps {
-                label: "Undo".into(),
-                shortcut: Some("Cmd+Z".into()),
-                ..Default::default()
-            }),
-            MenuEntry::Item(MenuItemProps {
-                label: "Redo".into(),
-                shortcut: Some("Cmd+Shift+Z".into()),
-                ..Default::default()
-            }),
-            MenuEntry::Separator,
-            MenuEntry::Item(MenuItemProps {
-                label: "Cut".into(),
-                shortcut: Some("Cmd+X".into()),
-                ..Default::default()
-            }),
-            MenuEntry::Item(MenuItemProps {
-                label: "Copy".into(),
-                shortcut: Some("Cmd+C".into()),
-                ..Default::default()
-            }),
-            MenuEntry::Item(MenuItemProps {
-                label: "Paste".into(),
-                shortcut: Some("Cmd+V".into()),
-                ..Default::default()
-            }),
-        ]),
-    ];
+    // Menus are configured via the FineGrainedApp builder when you need
+    // native menu bars. For a simple app without menus:
+    run("My App", 800, 600, app);
 
-    // Run with menus
-    run_with_menu("My App", 800, 600, app, menus);
+    // To add menus, use the FineGrainedApp builder API which accepts
+    // a Vec<(MenuProps, Vec<MenuEntry>)> for menu configuration.
 }
 ```
 
@@ -134,7 +84,8 @@ Use `MenuItemCallback` to handle menu item activation:
 ```rust
 use rinch_core::element::{MenuItemProps, MenuItemCallback};
 
-let count = use_signal(|| 0);
+// Signal created inside a component or with Signal::new() outside render context
+let count = Signal::new(0);
 let count_reset = count.clone();
 
 let menu_item = MenuItemProps {
@@ -257,7 +208,8 @@ use rinch::prelude::*;
 use rinch::menu::MenuEntry;
 use rinch_core::element::{MenuProps, MenuItemProps, MenuItemCallback};
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     let file_path = use_signal(|| None::<String>);
     let show_about = use_signal(|| false);
     let file_path_display = file_path.clone();
@@ -282,9 +234,9 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 }
 
 fn main() {
-    // State signals for menu callbacks
-    let file_path = use_signal(|| None::<String>);
-    let show_about = use_signal(|| false);
+    // State signals for menu callbacks (use Signal::new outside render context)
+    let file_path = Signal::new(None::<String>);
+    let show_about = Signal::new(false);
 
     let file_new = file_path.clone();
     let file_open = file_path.clone();
@@ -395,6 +347,8 @@ fn main() {
         ]),
     ];
 
-    run_with_menu("My App", 800, 600, app, menus);
+    // Menus are configured via the FineGrainedApp builder.
+    // For a simple app without menus, use: run("My App", 800, 600, app);
+    run("My App", 800, 600, app);
 }
 ```

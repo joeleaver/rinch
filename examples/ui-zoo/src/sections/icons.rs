@@ -23,7 +23,8 @@ pub fn init_icons_state() {
 }
 
 /// Icons section component
-pub fn icons_section(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+pub fn icons_section() -> NodeHandle {
     let state = use_context::<IconsSectionState>();
 
     let (current_page, use_filled) = match state {
@@ -256,8 +257,8 @@ struct IconCellData {
 }
 
 /// Renders the icon grid reactively using for_each_dom
+#[component]
 fn reactive_icon_grid(
-    __scope: &mut RenderScope,
     current_page: Signal<usize>,
     use_filled: Signal<bool>,
 ) -> NodeHandle {

@@ -36,8 +36,8 @@ rinch/
 │   ├── rinch-debug/        # Debug IPC server
 │   └── rinch-mcp-server/   # MCP server for Claude
 └── examples/
-    ├── ui-zoo-desktop/          # Rich-text editor
-    └── ui-zoo/             # Widget showcase (upcoming)
+    ├── ui-zoo-desktop/     # Desktop widget showcase + rich-text editor
+    └── ui-zoo-web/         # Web (WASM) widget showcase using browser-native DOM
 ```
 
 ## Layer Diagram
@@ -101,7 +101,7 @@ impl RinchApp {
 
 **Platform backends** implement traits from `rinch-platform`:
 - `PlatformWindow` - Window creation, properties, frame buffer access
-- `PlatformRenderer` - GPU rendering (wgpu for desktop, WebGL for web)
+- `PlatformRenderer` - GPU rendering (wgpu for desktop, browser-native DOM for web)
 - `PlatformEventLoop` - Event loop integration
 - `PlatformMenu` - Native menu support
 
@@ -128,7 +128,7 @@ The foundation layer containing:
 
 ### rinch-macros
 
-The `rsx!` proc macro that generates DOM construction code:
+The `#[component]` attribute macro and `rsx!` proc macro that generate DOM construction code:
 
 ```rust
 // This RSX syntax:
@@ -149,8 +149,8 @@ rsx! {
 The main crate that ties everything together:
 
 - **RinchApp** (`app.rs`) - Platform-agnostic application logic
-- **Desktop backend** (`shell/desktop.rs`) - `WinitWindow`, `WgpuRenderer`
-- **Event loop** (`shell/rinch_runtime.rs`) - Thin winit glue layer
+- **Desktop backend** (`shell/window_manager.rs`) - `ManagedWindow`, `BlitzDocumentAdapter`
+- **Event loop** (`shell/rinch_runtime.rs`) - Desktop runtime: event loop, window creation, rendering
 - **Menu Manager** - Native menu support via muda
 
 ### rinch-platform
@@ -170,13 +170,14 @@ HTML/CSS DOM implementation:
 - **Styling** - Stylo for CSS parsing and computed styles
 - **Rendering** - Vello for GPU-accelerated 2D graphics
 
-### rinch-web
+### rinch-web / ui-zoo-web
 
-WASM backend stubs for web platform:
+WASM backend using browser-native DOM:
 
-- **WebWindow** - Browser window abstraction
-- **WebRenderer** - WebGL rendering backend
-- **WebEventLoop** - Browser event loop integration
+- **WebDocument** - Implements `DomDocument` via `web_sys`, creating real browser DOM elements
+- **No Taffy/Parley/Vello** - The browser handles layout, text shaping, and painting natively
+- **Event delegation** - Document-level listeners dispatch via `data-rid` attributes
+- **Smaller binary** - ~3.2MB WASM (vs 11MB+ with Vello rendering)
 
 ### rinch-theme
 

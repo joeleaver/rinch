@@ -9,7 +9,8 @@ Create a new editor with the StarterKit (22 default extensions):
 ```rust
 use rinch_editor::prelude::*;
 
-fn editor_component(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn editor_component() -> NodeHandle {
     // Create schema with all standard editing features
     let schema = Schema::starter_kit();
     let config = EditorConfig::default();
@@ -529,7 +530,8 @@ fn test_bold_toggle() {
 For embedding the editor in your Rinch app, implement DOM rendering:
 
 ```rust
-fn render_editor(__scope: &mut RenderScope, editor: &Editor) -> NodeHandle {
+#[component]
+fn render_editor(editor: &Editor) -> NodeHandle {
     let div = __scope.create_element("div");
     div.set_attribute("class", "editor");
 

@@ -29,7 +29,8 @@ Rinch provides three core reactive primitives:
 ```rust
 use rinch::prelude::*;
 
-fn counter(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn counter() -> NodeHandle {
     // Create reactive state
     let count = use_signal(|| 0);
 

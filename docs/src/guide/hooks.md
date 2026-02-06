@@ -12,7 +12,8 @@ Hooks provide:
 ```rust
 use rinch::prelude::*;
 
-fn counter(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn counter() -> NodeHandle {
     let count = use_signal(|| 0);
     let count_inc = count.clone();
 
@@ -23,6 +24,8 @@ fn counter(__scope: &mut RenderScope) -> NodeHandle {
     }
 }
 ```
+
+> **Note:** The `#[component]` attribute macro is the recommended way to define components. It automatically injects the `__scope: &mut RenderScope` parameter needed by `rsx!`.
 
 ## Available Hooks
 
@@ -58,7 +61,8 @@ The initialization function only runs on the first render. Subsequent renders re
 ### Example: Toggle
 
 ```rust
-fn toggle(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn toggle() -> NodeHandle {
     let enabled = use_signal(|| false);
     let enabled_toggle = enabled.clone();
 
@@ -234,7 +238,8 @@ struct Theme {
     background: String,
 }
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     // Create context available to all descendants
     create_context(Theme {
         primary: "#007bff".into(),
@@ -254,7 +259,8 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 In any descendant component:
 
 ```rust
-fn themed_button(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn themed_button() -> NodeHandle {
     let theme: Option<Theme> = use_context();
 
     let bg = theme.map(|t| t.primary).unwrap_or("#ccc".into());
@@ -296,7 +302,8 @@ Hooks must be called **in the same order** every render. This is how rinch track
 ### Do: Call at Top Level
 
 ```rust
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     let count = use_signal(|| 0);      // Always first
     let name = use_signal(|| "".into()); // Always second
 
@@ -307,7 +314,8 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 ### Don't: Call Conditionally
 
 ```rust
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     let show = use_signal(|| false);
 
     // BAD: Hook order changes based on condition
@@ -322,7 +330,8 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 ### Don't: Call in Loops
 
 ```rust
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     // BAD: Number of hooks depends on items length
     for i in 0..items.len() {
         let state = use_signal(|| i);  // Wrong!
@@ -335,7 +344,8 @@ fn app(__scope: &mut RenderScope) -> NodeHandle {
 ### Don't: Call in Event Handlers
 
 ```rust
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     rsx! {
         button { onclick: || {
             let x = use_signal(|| 0);  // Wrong! Not during render
@@ -356,7 +366,8 @@ struct AppSettings {
     dark_mode: bool,
 }
 
-fn app(__scope: &mut RenderScope) -> NodeHandle {
+#[component]
+fn app() -> NodeHandle {
     // Create shared settings context
     create_context(AppSettings { dark_mode: false });
 
