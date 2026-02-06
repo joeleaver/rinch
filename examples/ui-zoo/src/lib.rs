@@ -102,10 +102,7 @@ pub fn nav_links<F: Fn() + 'static>(
 
 /// Render theme controls (dark mode switch, color pickers).
 #[component]
-pub fn theme_controls(
-    primary_color: Signal<&'static str>,
-    dark_mode: Signal<bool>,
-) -> NodeHandle {
+pub fn theme_controls(primary_color: Signal<&'static str>, dark_mode: Signal<bool>) -> NodeHandle {
     let set_color = |color: &'static str| move || primary_color.set(color);
     let toggle_dark = move || dark_mode.update(|v| *v = !*v);
 

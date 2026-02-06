@@ -338,10 +338,7 @@ fn selection_data() -> Vec<TreeNodeData> {
 
 /// Demo: Tree with selection and badge display
 #[component]
-fn selection_tree_demo(
-    tree: UseTreeReturn,
-    selected_signal: Signal<Option<String>>,
-) -> NodeHandle {
+fn selection_tree_demo(tree: UseTreeReturn, selected_signal: Signal<Option<String>>) -> NodeHandle {
     let data = selection_data();
 
     rsx! {

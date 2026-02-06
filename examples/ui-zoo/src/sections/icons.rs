@@ -258,10 +258,7 @@ struct IconCellData {
 
 /// Renders the icon grid reactively using for_each_dom
 #[component]
-fn reactive_icon_grid(
-    current_page: Signal<usize>,
-    use_filled: Signal<bool>,
-) -> NodeHandle {
+fn reactive_icon_grid(current_page: Signal<usize>, use_filled: Signal<bool>) -> NodeHandle {
     // Create a grid container for the icon list
     let grid_container = __scope.create_element("div");
     grid_container.set_attribute(

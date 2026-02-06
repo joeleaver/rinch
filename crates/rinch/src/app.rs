@@ -602,10 +602,7 @@ impl RinchApp {
                     }),
                 };
 
-                tracing::trace!(
-                    ?key, ?text, ?key_str, shift, ctrl, alt,
-                    "KeyDown event"
-                );
+                tracing::trace!(?key, ?text, ?key_str, shift, ctrl, alt, "KeyDown event");
 
                 // Try keyboard interceptor first for ALL keys
                 let handled_by_interceptor = if let Some(ref ks) = key_str {
