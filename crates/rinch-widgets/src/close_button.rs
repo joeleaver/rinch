@@ -2,8 +2,8 @@
 //!
 //! A button with a close/X icon for dismissing elements.
 
-use rinch_core::Widget;
 use rinch_core::dom::{NodeHandle, RenderScope};
+use rinch_core::{Widget, WidgetCallback};
 
 /// CloseButton size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -67,7 +67,7 @@ impl std::str::FromStr for CloseButtonSize {
 ///     CloseButton { size: "lg" }
 /// }
 /// ```
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct CloseButton {
     /// Button size (xs, sm, md, lg, xl).
     pub size: Option<String>,
@@ -77,6 +77,20 @@ pub struct CloseButton {
     pub disabled: bool,
     /// Custom icon size in pixels.
     pub icon_size: Option<u32>,
+    /// Click handler.
+    pub onclick: Option<WidgetCallback>,
+}
+
+impl std::fmt::Debug for CloseButton {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CloseButton")
+            .field("size", &self.size)
+            .field("radius", &self.radius)
+            .field("disabled", &self.disabled)
+            .field("icon_size", &self.icon_size)
+            .field("onclick", &self.onclick.as_ref().map(|_| "<callback>"))
+            .finish()
+    }
 }
 
 impl CloseButton {
@@ -126,6 +140,16 @@ impl Widget for CloseButton {
         }
 
         container.append_child(&icon_span);
+
+        // Click handler
+        if let Some(cb) = &self.onclick {
+            let handler_id = __scope.register_handler({
+                let cb = cb.clone();
+                move || cb.invoke()
+            });
+            container.set_attribute("data-rid", &handler_id.0.to_string());
+        }
+
         container
     }
 }

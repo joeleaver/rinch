@@ -111,8 +111,6 @@ pub struct Popover {
     pub z_index: Option<i32>,
     /// Whether to trap focus.
     pub trap_focus: bool,
-    /// Callback when popover should close.
-    pub onclose: Option<rinch_core::WidgetCallback>,
 }
 
 impl Default for Popover {
@@ -131,7 +129,6 @@ impl Default for Popover {
             width: None,
             z_index: None,
             trap_focus: false,
-            onclose: None,
         }
     }
 }

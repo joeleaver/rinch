@@ -201,8 +201,10 @@ The `rinch` crate re-exports everything through its prelude. You do NOT need sep
 ```toml
 # Cargo.toml - this is all you need:
 [dependencies]
-rinch = { workspace = true, features = ["widgets", "theme"] }
+rinch = { workspace = true, features = ["desktop", "widgets", "theme"] }
 ```
+
+**Important:** The workspace dependency uses `default-features = false`, so `"desktop"` must be listed explicitly. Without it, `run()` and other desktop APIs won't be available.
 
 ```rust
 // In your code - prelude includes all widgets:
@@ -214,7 +216,7 @@ use rinch::prelude::*;
 
 ## Application Entry Point
 
-Use the `run` function to start a rinch application:
+Use the `run` function to start a rinch application. **`run()` automatically loads theme and widget CSS** when those features are enabled, so widgets work out of the box:
 
 ```rust
 use rinch::prelude::*;
@@ -231,7 +233,22 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
+    // This works with widgets - theme CSS is auto-loaded
     run("My App", 800, 600, app);
+}
+```
+
+To customize the theme (colors, radius, dark mode), use `run_with_theme()`:
+
+```rust
+fn main() {
+    let theme = ThemeProviderProps {
+        primary_color: Some("cyan".into()),
+        default_radius: Some("md".into()),
+        dark_mode: false,
+        ..Default::default()
+    };
+    run_with_theme("My App", 800, 600, app, theme);
 }
 ```
 
@@ -1100,29 +1117,57 @@ rsx! {
 }
 ```
 
-### RSX Prop Transformation Rules
+### RSX Prop Transformation Rules (IMPORTANT - Read Before Using Widgets)
 
-The `rsx!` macro applies automatic transformations when setting widget props:
+The `rsx!` macro **automatically wraps** widget prop values. You must NOT manually wrap them or you'll get confusing type errors from double-wrapping.
 
-| Prop pattern | Value type | Generated code | Example |
-|---|---|---|---|
-| `oninput` | any | `Some(InputCallback::new(value))` | `oninput: handler` |
-| `on*` (events) | any | `Some((value).into())` | `onclick: \|\| do_thing()` |
-| `icon`, `*_icon` | any | `Some(value)` | `icon: Icon::Check` |
-| bool literal | `true`/`false` | `value` (no wrapping) | `disabled: true` |
-| int literal | number | `Some(value)` | `size: 42` |
-| string literal | `"text"` | `Some(String::from(value))` | `variant: "filled"` |
-| any other expression | any | `value` (pass-through) | `variant: my_var` |
+| Prop pattern | What you write | What the macro generates |
+|---|---|---|
+| `oninput` | `oninput: move \|val\| do_thing(val)` | `Some(InputCallback::new(move \|val\| do_thing(val)))` |
+| `on*` (events) | `onclick: move \|\| do_thing()` | `Some((move \|\| do_thing()).into())` |
+| `icon`, `*_icon` | `icon: Icon::Check` | `Some(Icon::Check)` |
+| bool literal | `disabled: true` | `true` (no wrapping) |
+| int literal | `size: 42` | `Some(42)` |
+| string literal | `variant: "filled"` | `Some(String::from("filled"))` |
+| any other expr | `variant: my_var` | `my_var` (pass-through) |
 
-**Important notes:**
-- String literals are auto-wrapped in `Some(String::from(...))`, but expression props are passed through as-is
+**Common mistakes (DO NOT do these):**
+
+```rust
+// WRONG - double-wraps into Some(Some(InputCallback::new(...)))
+TextInput { oninput: Some(InputCallback::new(move |val| ...)) }
+// RIGHT - macro adds Some(InputCallback::new(...)) for you
+TextInput { oninput: move |val: String| input_signal.set(val) }
+
+// WRONG - double-wraps into Some(Some((...).into()))
+Button { onclick: Some(WidgetCallback::new(|| ...)) }
+// RIGHT - macro adds Some((...).into()) for you
+Button { onclick: move || do_something() }
+
+// WRONG - double-wraps into Some(Some(Icon::Check))
+Alert { icon: Some(Icon::Check) }
+// RIGHT - macro adds Some(...) for you
+Alert { icon: Icon::Check }
+
+// WRONG - double-wraps into Some(Some(String::from("filled")))
+Button { variant: Some(String::from("filled")) }
+// RIGHT - macro adds Some(String::from(...)) for you
+Button { variant: "filled" }
+```
+
+**Additional notes:**
 - For expression props where the widget expects `Option<String>`, wrap explicitly: `prop: Some("value".into())`
-- Don't double-wrap: `icon: Icon::Check` works (auto-wrapped), but `icon: Some(Icon::Check)` becomes `Some(Some(...))`
-- `_fn` suffix props (e.g., `checked_fn`, `value_fn`) have no special macro handling -- they follow the same rules
+- `_fn` suffix props (e.g., `checked_fn`, `value_fn`) follow the same rules — pass the value directly, don't wrap in Some
 
 **Widget Props vs HTML Attributes:**
 
-- **HTML elements** (`div`, `span`, `p`, etc.) accept any attribute as a string: `style:`, `class:`, `id:`, custom `data-*`, etc. They also support reactive closures `{|| expr}` on any attribute.
+- **HTML elements** (`div`, `span`, `p`, etc.) accept any attribute as a string: `style:`, `class:`, `id:`, custom `data-*`, etc. They also support reactive closures `{|| expr}` on any attribute. **`oninput` and `onchange` on `<input>`/`<textarea>` elements** receive the input value as a `String` — use `Fn(String)` closures, not `Fn()`:
+  ```rust
+  input {
+      oninput: move |value: String| name_signal.set(value),
+      placeholder: "Type here...",
+  }
+  ```
 - **Widgets** (`Button`, `TextInput`, `Stack`, etc.) accept their declared struct fields as props. Additionally, all widgets support these universal props:
   - `style:` — Applied to the widget's root DOM element after rendering. Supports static strings and reactive closures.
   - `class:` — Merged with the widget's own CSS classes (additive, not replacing). Supports static strings and reactive closures.

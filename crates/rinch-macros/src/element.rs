@@ -158,10 +158,8 @@ mod tests {
 
     #[test]
     fn parse_props_before_children() {
-        let el: RsxElement = parse_str(
-            r#"div { class: "container", id: "main", "content" }"#,
-        )
-        .unwrap();
+        let el: RsxElement =
+            parse_str(r#"div { class: "container", id: "main", "content" }"#).unwrap();
         assert_eq!(el.props.len(), 2);
         assert_eq!(el.children.len(), 1);
     }
@@ -210,10 +208,8 @@ mod tests {
 
     #[test]
     fn parse_multiple_sibling_elements() {
-        let el: RsxElement = parse_str(
-            r#"div { p { "one" } span { "two" } p { "three" } }"#,
-        )
-        .unwrap();
+        let el: RsxElement =
+            parse_str(r#"div { p { "one" } span { "two" } p { "three" } }"#).unwrap();
         assert_eq!(el.children.len(), 3);
     }
 
@@ -250,10 +246,8 @@ mod tests {
 
     #[test]
     fn parse_event_handler() {
-        let el: RsxElement = parse_str(
-            r#"button { onclick: move || count.update(|n| *n += 1), "Click" }"#,
-        )
-        .unwrap();
+        let el: RsxElement =
+            parse_str(r#"button { onclick: move || count.update(|n| *n += 1), "Click" }"#).unwrap();
         assert_eq!(el.name.to_string(), "button");
         assert_eq!(el.props.len(), 1);
         assert_eq!(el.props[0].name.to_string(), "onclick");
@@ -264,10 +258,8 @@ mod tests {
     fn parse_event_handler_no_trailing_comma() {
         // Event handler followed directly by text child (no comma after closure)
         // syn parses `move || do_thing()` as the expression, then "Click" is next
-        let el: RsxElement = parse_str(
-            r#"button { onclick: move || do_thing(), "Click" }"#,
-        )
-        .unwrap();
+        let el: RsxElement =
+            parse_str(r#"button { onclick: move || do_thing(), "Click" }"#).unwrap();
         assert_eq!(el.props.len(), 1);
         assert_eq!(el.children.len(), 1);
     }
@@ -276,8 +268,7 @@ mod tests {
 
     #[test]
     fn parse_for_with_bare_closure() {
-        let el: RsxElement =
-            parse_str(r#"For { each: {|| vec![]}, |item| { item } }"#).unwrap();
+        let el: RsxElement = parse_str(r#"For { each: {|| vec![]}, |item| { item } }"#).unwrap();
         assert_eq!(el.name.to_string(), "For");
         assert_eq!(el.props.len(), 1);
         assert_eq!(el.props[0].name.to_string(), "each");
@@ -313,8 +304,7 @@ mod tests {
 
     #[test]
     fn parse_show_eager_with_children() {
-        let el: RsxElement =
-            parse_str(r#"Show { when: {|| true}, div { "visible" } }"#).unwrap();
+        let el: RsxElement = parse_str(r#"Show { when: {|| true}, div { "visible" } }"#).unwrap();
         assert_eq!(el.name.to_string(), "Show");
         assert_eq!(el.props.len(), 1);
         assert_eq!(el.children.len(), 1);
@@ -348,10 +338,8 @@ mod tests {
 
     #[test]
     fn parse_widget_with_reactive_style() {
-        let el: RsxElement = parse_str(
-            r#"Button { style: {|| "color: red".to_string()}, "Click" }"#,
-        )
-        .unwrap();
+        let el: RsxElement =
+            parse_str(r#"Button { style: {|| "color: red".to_string()}, "Click" }"#).unwrap();
         assert_eq!(el.name.to_string(), "Button");
         assert_eq!(el.props.len(), 1);
         assert_eq!(el.props[0].name.to_string(), "style");
@@ -360,10 +348,9 @@ mod tests {
 
     #[test]
     fn parse_widget_with_reactive_class() {
-        let el: RsxElement = parse_str(
-            r#"Button { class: {|| if active { "on" } else { "off" }}, "Click" }"#,
-        )
-        .unwrap();
+        let el: RsxElement =
+            parse_str(r#"Button { class: {|| if active { "on" } else { "off" }}, "Click" }"#)
+                .unwrap();
         assert_eq!(el.name.to_string(), "Button");
         assert_eq!(el.props.len(), 1);
         assert_eq!(el.props[0].name.to_string(), "class");
@@ -436,20 +423,14 @@ mod tests {
 
     #[test]
     fn parse_element_only_props_no_children() {
-        let el: RsxElement = parse_str(
-            r#"input { class: "field", id: "name" }"#,
-        )
-        .unwrap();
+        let el: RsxElement = parse_str(r#"input { class: "field", id: "name" }"#).unwrap();
         assert_eq!(el.props.len(), 2);
         assert!(el.children.is_empty());
     }
 
     #[test]
     fn parse_element_only_children_no_props() {
-        let el: RsxElement = parse_str(
-            r#"div { "one" "two" "three" }"#,
-        )
-        .unwrap();
+        let el: RsxElement = parse_str(r#"div { "one" "two" "three" }"#).unwrap();
         assert!(el.props.is_empty());
         assert_eq!(el.children.len(), 3);
     }

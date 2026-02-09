@@ -2,11 +2,14 @@
 //!
 //! Multi-line text input with label and description support.
 
-use rinch_core::Widget;
 use rinch_core::dom::{NodeHandle, RenderScope};
+use rinch_core::{InputCallback, Widget};
+use std::rc::Rc;
+
+pub type ReactiveString = Rc<dyn Fn() -> String>;
 
 /// A multi-line text input field.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Textarea {
     /// Label displayed above the textarea.
     pub label: Option<String>,
@@ -28,6 +31,32 @@ pub struct Textarea {
     pub min_rows: Option<u32>,
     /// Maximum number of rows.
     pub max_rows: Option<u32>,
+    /// Current value.
+    pub value: Option<String>,
+    /// Reactive value getter for fine-grained updates.
+    pub value_fn: Option<ReactiveString>,
+    /// Callback when textarea content changes.
+    pub oninput: Option<InputCallback>,
+}
+
+impl std::fmt::Debug for Textarea {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Textarea")
+            .field("label", &self.label)
+            .field("description", &self.description)
+            .field("error", &self.error)
+            .field("placeholder", &self.placeholder)
+            .field("size", &self.size)
+            .field("disabled", &self.disabled)
+            .field("required", &self.required)
+            .field("autosize", &self.autosize)
+            .field("min_rows", &self.min_rows)
+            .field("max_rows", &self.max_rows)
+            .field("value", &self.value)
+            .field("value_fn", &self.value_fn.as_ref().map(|_| "<reactive>"))
+            .field("oninput", &self.oninput.as_ref().map(|_| "<callback>"))
+            .finish()
+    }
 }
 
 impl Textarea {
@@ -95,6 +124,30 @@ impl Widget for Textarea {
         }
         if let Some(rows) = self.min_rows {
             textarea.set_attribute("rows", &rows.to_string());
+        }
+
+        // Reactive value binding
+        if let Some(ref value_fn) = self.value_fn {
+            let initial_value = value_fn();
+            textarea.set_attribute("value", &initial_value);
+
+            let value_fn = value_fn.clone();
+            let textarea_clone = textarea.clone();
+            __scope.create_effect(move || {
+                let current_value = value_fn();
+                textarea_clone.set_attribute("value", &current_value);
+            });
+        } else if let Some(value) = &self.value {
+            textarea.set_attribute("value", value);
+        }
+
+        // Input handler
+        if let Some(callback) = &self.oninput {
+            let callback = callback.clone();
+            let handler_id = __scope.register_input_handler(move |value| {
+                callback.invoke(value);
+            });
+            textarea.set_attribute("data-oninput", &handler_id.to_string());
         }
 
         container.append_child(&textarea);

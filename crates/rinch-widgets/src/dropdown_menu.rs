@@ -106,8 +106,6 @@ pub struct DropdownMenu {
     pub width: Option<String>,
     /// Z-index.
     pub z_index: Option<i32>,
-    /// Close callback.
-    pub onclose: Option<rinch_core::WidgetCallback>,
 }
 
 impl Default for DropdownMenu {
@@ -122,7 +120,6 @@ impl Default for DropdownMenu {
             close_on_item_click: true,
             width: None,
             z_index: None,
-            onclose: None,
         }
     }
 }

@@ -2,11 +2,14 @@
 //!
 //! Dropdown select input with label support.
 
-use rinch_core::Widget;
 use rinch_core::dom::{NodeHandle, RenderScope};
+use rinch_core::{InputCallback, Widget};
+use std::rc::Rc;
+
+pub type ReactiveString = Rc<dyn Fn() -> String>;
 
 /// A dropdown select input.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Select {
     /// Label displayed above the select.
     pub label: Option<String>,
@@ -22,6 +25,29 @@ pub struct Select {
     pub disabled: bool,
     /// Whether the select is required.
     pub required: bool,
+    /// Currently selected value.
+    pub value: Option<String>,
+    /// Reactive value getter for fine-grained updates.
+    pub value_fn: Option<ReactiveString>,
+    /// Callback when selection changes (receives selected value).
+    pub onchange: Option<InputCallback>,
+}
+
+impl std::fmt::Debug for Select {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Select")
+            .field("label", &self.label)
+            .field("description", &self.description)
+            .field("error", &self.error)
+            .field("placeholder", &self.placeholder)
+            .field("size", &self.size)
+            .field("disabled", &self.disabled)
+            .field("required", &self.required)
+            .field("value", &self.value)
+            .field("value_fn", &self.value_fn.as_ref().map(|_| "<reactive>"))
+            .field("onchange", &self.onchange.as_ref().map(|_| "<callback>"))
+            .finish()
+    }
 }
 
 impl Select {
@@ -78,6 +104,30 @@ impl Widget for Select {
         }
         if self.required {
             select.set_attribute("required", "");
+        }
+
+        // Reactive value binding
+        if let Some(ref value_fn) = self.value_fn {
+            let initial_value = value_fn();
+            select.set_attribute("value", &initial_value);
+
+            let value_fn = value_fn.clone();
+            let select_clone = select.clone();
+            __scope.create_effect(move || {
+                let current_value = value_fn();
+                select_clone.set_attribute("value", &current_value);
+            });
+        } else if let Some(value) = &self.value {
+            select.set_attribute("value", value);
+        }
+
+        // Change handler
+        if let Some(callback) = &self.onchange {
+            let callback = callback.clone();
+            let handler_id = __scope.register_input_handler(move |value| {
+                callback.invoke(value);
+            });
+            select.set_attribute("data-oninput", &handler_id.to_string());
         }
 
         // Append children (option elements)

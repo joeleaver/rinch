@@ -225,6 +225,17 @@ impl Widget for Progress {
         );
         bar.set_attribute("style", &bar_style);
 
+        // Create reactive effect for value_fn
+        if let Some(ref value_fn) = self.value_fn {
+            let value_fn = value_fn.clone();
+            let bar_clone = bar.clone();
+            let color_style = color_prefix.clone().unwrap_or_default();
+            __scope.create_effect(move || {
+                let v = value_fn().clamp(0.0, 100.0);
+                bar_clone.set_attribute("style", &format!("width: {}%;{}", v, color_style));
+            });
+        }
+
         container.append_child(&bar);
         container
     }

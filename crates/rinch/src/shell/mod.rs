@@ -49,6 +49,13 @@ pub fn run<F>(title: &str, width: u32, height: u32, component: F)
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
+    // Auto-load default theme CSS when theme feature is enabled
+    // This ensures widgets are visible even without run_with_theme()
+    #[cfg(feature = "theme")]
+    {
+        crate::setup_theme_css(&rinch_core::element::ThemeProviderProps::default());
+    }
+
     rinch_runtime::run_rinch(title, width, height, component);
 }
 
@@ -78,8 +85,17 @@ pub fn run_with_window_props<F>(component: F, props: WindowProps, theme: Option<
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    if let Some(theme) = theme {
-        crate::setup_theme_css(&theme);
+    #[cfg(feature = "theme")]
+    {
+        if let Some(theme) = theme {
+            crate::setup_theme_css(&theme);
+        } else {
+            crate::setup_theme_css(&rinch_core::element::ThemeProviderProps::default());
+        }
+    }
+    #[cfg(not(feature = "theme"))]
+    {
+        let _ = theme; // suppress unused warning
     }
     rinch_runtime::run_rinch_with_window_props(component, props);
 }

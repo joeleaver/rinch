@@ -125,10 +125,7 @@ mod tests {
 
     #[test]
     fn parse_bare_closure_with_body() {
-        assert_eq!(
-            parse_variant("|item| { item.name.clone() }"),
-            "Expr"
-        );
+        assert_eq!(parse_variant("|item| { item.name.clone() }"), "Expr");
     }
 
     #[test]

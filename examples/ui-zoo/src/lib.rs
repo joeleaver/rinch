@@ -143,18 +143,18 @@ pub fn theme_controls(primary_color: Signal<&'static str>, dark_mode: Signal<boo
 pub fn section_content(__scope: &mut RenderScope, current_section: Signal<usize>) -> NodeHandle {
     rsx! {
         Fragment {
-            Show { when: move || current_section.get() == 0, then: |__scope| overview_section(__scope) }
-            Show { when: move || current_section.get() == 1, then: |__scope| buttons_section(__scope) }
-            Show { when: move || current_section.get() == 2, then: |__scope| inputs_section(__scope) }
-            Show { when: move || current_section.get() == 3, then: |__scope| typography_section(__scope) }
-            Show { when: move || current_section.get() == 4, then: |__scope| layout_section(__scope) }
-            Show { when: move || current_section.get() == 5, then: |__scope| navigation_section(__scope) }
-            Show { when: move || current_section.get() == 6, then: |__scope| data_display_section(__scope) }
-            Show { when: move || current_section.get() == 7, then: |__scope| feedback_section(__scope) }
-            Show { when: move || current_section.get() == 8, then: |__scope| overlays_section(__scope) }
-            Show { when: move || current_section.get() == 9, then: |__scope| icons_section(__scope) }
-            Show { when: move || current_section.get() == 10, then: |__scope| tree_section(__scope) }
-            Show { when: move || current_section.get() == 11, then: |__scope| editor_section(__scope) }
+            Show { when: move || current_section.get() == 0, then: overview_section }
+            Show { when: move || current_section.get() == 1, then: buttons_section }
+            Show { when: move || current_section.get() == 2, then: inputs_section }
+            Show { when: move || current_section.get() == 3, then: typography_section }
+            Show { when: move || current_section.get() == 4, then: layout_section }
+            Show { when: move || current_section.get() == 5, then: navigation_section }
+            Show { when: move || current_section.get() == 6, then: data_display_section }
+            Show { when: move || current_section.get() == 7, then: feedback_section }
+            Show { when: move || current_section.get() == 8, then: overlays_section }
+            Show { when: move || current_section.get() == 9, then: icons_section }
+            Show { when: move || current_section.get() == 10, then: tree_section }
+            Show { when: move || current_section.get() == 11, then: editor_section }
         }
     }
 }

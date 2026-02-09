@@ -3,7 +3,7 @@
 //! Displays a message with contextual feedback (info, success, warning, error).
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Icon, Widget};
+use rinch_core::{Icon, Widget, WidgetCallback};
 
 /// Alert variant styles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -144,7 +144,7 @@ impl std::str::FromStr for AlertRadius {
 ///     }
 /// }
 /// ```
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Alert {
     /// Alert color (blue, green, yellow, red, gray, primary).
     pub color: Option<String>,
@@ -158,6 +158,22 @@ pub struct Alert {
     pub with_close_button: bool,
     /// Icon to display (optional).
     pub icon: Option<Icon>,
+    /// Callback when close button is clicked.
+    pub onclose: Option<WidgetCallback>,
+}
+
+impl std::fmt::Debug for Alert {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Alert")
+            .field("color", &self.color)
+            .field("variant", &self.variant)
+            .field("title", &self.title)
+            .field("radius", &self.radius)
+            .field("with_close_button", &self.with_close_button)
+            .field("icon", &self.icon)
+            .field("onclose", &self.onclose.as_ref().map(|_| "<callback>"))
+            .finish()
+    }
 }
 
 impl Alert {
@@ -242,6 +258,15 @@ impl Widget for Alert {
             btn.set_attribute("aria-label", "Close");
             let close_icon = crate::icons::close_icon_dom(__scope, "14");
             btn.append_child(&close_icon);
+
+            if let Some(cb) = &self.onclose {
+                let handler_id = __scope.register_handler({
+                    let cb = cb.clone();
+                    move || cb.invoke()
+                });
+                btn.set_attribute("data-rid", &handler_id.0.to_string());
+            }
+
             container.append_child(&btn);
         }
 

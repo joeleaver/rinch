@@ -3,7 +3,7 @@
 //! A numeric input field with increment/decrement controls.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Widget, WidgetCallback};
+use rinch_core::{InputCallback, Widget, WidgetCallback};
 
 /// NumberInput size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -56,7 +56,7 @@ impl std::str::FromStr for NumberInputSize {
 ///     NumberInput { label: "Price", value: 9.99, decimal_scale: 2, prefix: "$" }
 /// }
 /// ```
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct NumberInput {
     /// Input label.
     pub label: Option<String>,
@@ -97,7 +97,40 @@ pub struct NumberInput {
     /// Callback when decrement button is clicked.
     pub ondecrement: Option<WidgetCallback>,
     /// Callback when value changes (from direct input).
-    pub onchange: Option<WidgetCallback>,
+    pub oninput: Option<InputCallback>,
+}
+
+impl std::fmt::Debug for NumberInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NumberInput")
+            .field("label", &self.label)
+            .field("description", &self.description)
+            .field("error", &self.error)
+            .field("placeholder", &self.placeholder)
+            .field("value", &self.value)
+            .field("default_value", &self.default_value)
+            .field("min", &self.min)
+            .field("max", &self.max)
+            .field("step", &self.step)
+            .field("decimal_scale", &self.decimal_scale)
+            .field("prefix", &self.prefix)
+            .field("suffix", &self.suffix)
+            .field("disabled", &self.disabled)
+            .field("hide_controls", &self.hide_controls)
+            .field("required", &self.required)
+            .field("size", &self.size)
+            .field("radius", &self.radius)
+            .field(
+                "onincrement",
+                &self.onincrement.as_ref().map(|_| "<callback>"),
+            )
+            .field(
+                "ondecrement",
+                &self.ondecrement.as_ref().map(|_| "<callback>"),
+            )
+            .field("oninput", &self.oninput.as_ref().map(|_| "<callback>"))
+            .finish()
+    }
 }
 
 impl NumberInput {
@@ -189,6 +222,15 @@ impl Widget for NumberInput {
         }
 
         wrapper.append_child(&input);
+
+        // Input handler for direct text entry
+        if let Some(callback) = &self.oninput {
+            let callback = callback.clone();
+            let handler_id = __scope.register_input_handler(move |value| {
+                callback.invoke(value);
+            });
+            input.set_attribute("data-oninput", &handler_id.to_string());
+        }
 
         // Suffix
         if let Some(suffix) = &self.suffix {

@@ -310,10 +310,22 @@ fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) -> Tok
         .iter()
         .map(|prop| {
             let handler = &prop.value;
-            quote! {
-                {
-                    let __handler_id = ::rinch::core::register_handler(std::rc::Rc::new(#handler));
-                    #elem_var.set_attribute("data-rid", &__handler_id.0.to_string());
+            let event_name = prop.name.to_string();
+            if event_name == "oninput" || event_name == "onchange" {
+                // Input events use register_input_handler with Fn(String)
+                quote! {
+                    {
+                        let __handler_id = __scope.register_input_handler(#handler);
+                        #elem_var.set_attribute("data-oninput", &__handler_id.0.to_string());
+                    }
+                }
+            } else {
+                // Click and other events use register_handler with Fn()
+                quote! {
+                    {
+                        let __handler_id = ::rinch::core::register_handler(std::rc::Rc::new(#handler));
+                        #elem_var.set_attribute("data-rid", &__handler_id.0.to_string());
+                    }
                 }
             }
         })
@@ -405,7 +417,7 @@ fn element_to_dom_show(
         } else if children_code.len() == 1 {
             let child = &children_code[0];
             quote! {
-                |__child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
+                move |__child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
                     // Temporarily swap in child scope as the active render scope
                     let __scope = __child_scope;
                     #child
@@ -413,7 +425,7 @@ fn element_to_dom_show(
             }
         } else {
             quote! {
-                |__child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
+                move |__child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
                     // Temporarily swap in child scope as the active render scope
                     let __scope = __child_scope;
                     let #wrapper_var = __scope.create_element("div");
@@ -516,7 +528,7 @@ fn element_to_dom_for(
                 __scope,
                 &#parent_var,
                 __each_closure,
-                |__item: &::rinch::core::ForItem, __child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
+                move |__item: &::rinch::core::ForItem, __child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
                     let __scope = __child_scope;
                     let mut __view_fn = #view_closure;
                     __view_fn(__item)

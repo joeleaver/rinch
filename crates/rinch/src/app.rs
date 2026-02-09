@@ -90,6 +90,10 @@ pub struct RinchApp {
     pub(crate) modifiers: Modifiers,
     /// Whether the Vello scene needs to be rebuilt.
     pub(crate) scene_dirty: bool,
+    /// The data-oninput handler ID for the currently focused text input.
+    pub(crate) focused_input_handler_id: Option<usize>,
+    /// Current accumulated text value for the focused text input.
+    pub(crate) focused_input_value: String,
     /// Font data to register on the document when it is created (for WASM).
     pub(crate) pending_fonts: Vec<&'static [u8]>,
     /// Debug command receiver.
@@ -121,6 +125,8 @@ impl RinchApp {
             window_props: None,
             modifiers: Modifiers::default(),
             scene_dirty: true,
+            focused_input_handler_id: None,
+            focused_input_value: String::new(),
             pending_fonts: Vec::new(),
             #[cfg(feature = "debug")]
             debug_cmd_rx: None,
@@ -711,6 +717,33 @@ impl RinchApp {
         let d = doc.borrow();
 
         if let Some(hit_id) = hit_test(&d.tree, x, y) {
+            // Walk up from hit target to detect text input focus (data-oninput).
+            // This must happen before the data-rid walk which may return early.
+            let mut found_input_focus = false;
+            {
+                let mut check = Some(hit_id);
+                while let Some(nid) = check {
+                    if let Some(node) = d.tree.get(nid) {
+                        if let Some(oninput_str) = node.attributes.get("data-oninput") {
+                            if let Ok(handler_id) = oninput_str.parse::<usize>() {
+                                self.focused_input_handler_id = Some(handler_id);
+                                self.focused_input_value =
+                                    node.attributes.get("value").cloned().unwrap_or_default();
+                                found_input_focus = true;
+                            }
+                            break;
+                        }
+                        check = node.parent;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            if !found_input_focus {
+                self.focused_input_handler_id = None;
+                self.focused_input_value.clear();
+            }
+
             let mut current = Some(hit_id);
             while let Some(node_id) = current {
                 if let Some(node) = d.tree.get(node_id) {
@@ -850,8 +883,22 @@ impl RinchApp {
     // The keyboard interceptor handles all input; these are stubs for
     // the fallback path when no interceptor is registered.
 
-    fn handle_text_input(&mut self, _text: &str) {}
-    fn handle_backspace(&mut self) {}
+    fn handle_text_input(&mut self, text: &str) {
+        if let Some(handler_id) = self.focused_input_handler_id {
+            self.focused_input_value.push_str(text);
+            let value = self.focused_input_value.clone();
+            self.update_focused_input_dom_value(handler_id, &value);
+            events::dispatch_input_event(events::EventHandlerId(handler_id), value);
+        }
+    }
+    fn handle_backspace(&mut self) {
+        if let Some(handler_id) = self.focused_input_handler_id {
+            self.focused_input_value.pop();
+            let value = self.focused_input_value.clone();
+            self.update_focused_input_dom_value(handler_id, &value);
+            events::dispatch_input_event(events::EventHandlerId(handler_id), value);
+        }
+    }
     fn handle_delete(&mut self) {}
     fn handle_arrow_left(&mut self, _shift: bool, _ctrl: bool) {}
     fn handle_arrow_right(&mut self, _shift: bool, _ctrl: bool) {}
@@ -864,6 +911,34 @@ impl RinchApp {
     fn handle_copy(&mut self) {}
     fn handle_paste(&mut self) {}
     fn handle_cut(&mut self) {}
+
+    /// Update the DOM `value` attribute on the focused input element.
+    ///
+    /// This keeps the DOM in sync with the accumulated text so that
+    /// subsequent clicks re-read the correct value, and the renderer
+    /// paints the current text.
+    fn update_focused_input_dom_value(&self, handler_id: usize, value: &str) {
+        if let Some(doc) = &self.doc {
+            let mut d = doc.borrow_mut();
+            // Find the node ID first (immutable scan)
+            let target_id = d.tree.nodes.iter().find_map(|(id, node)| {
+                node.attributes
+                    .get("data-oninput")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .filter(|&h| h == handler_id)
+                    .map(|_| id)
+            });
+            // Then mutate with the known ID
+            if let Some(node_id) = target_id {
+                if let Some(node) = d.tree.nodes.get_mut(node_id) {
+                    node.attributes
+                        .insert("value".to_string(), value.to_string());
+                    node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+                }
+                d.tree.dirty_nodes.insert(node_id);
+            }
+        }
+    }
 
     /// Calculate byte offset from click coordinates relative to text start.
     #[allow(dead_code)]

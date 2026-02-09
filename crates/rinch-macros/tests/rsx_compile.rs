@@ -9,6 +9,8 @@
 //! the parser unit tests in `node.rs` and `element.rs` are the primary test
 //! suite and do not require any external dependencies.
 
+#![allow(dead_code, unused_imports, unexpected_cfgs)]
+
 use rinch::prelude::*;
 use std::rc::Rc;
 
