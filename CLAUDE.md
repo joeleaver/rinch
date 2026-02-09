@@ -948,7 +948,7 @@ rsx! {
     Show {
         when: {|| visible.get()},
         then: |__scope| rsx! { div { "Visible!" } },
-        fallback: || rsx! { div { "Hidden" } },
+        fallback: |__scope| rsx! { div { "Hidden" } },
     }
 }
 ```
@@ -960,7 +960,7 @@ let visible = use_signal(|| true);
 rsx! {
     Show {
         when: {|| visible.get()},
-        fallback: || rsx! { div { "Hidden" } },
+        fallback: |__scope| rsx! { div { "Hidden" } },
         div { "Visible!" }
     }
 }
@@ -991,13 +991,14 @@ For programmatic usage, use `show_dom()` directly:
 ```rust
 show_dom(
     __scope,
-    move || visible.get(),              // Condition closure
-    |scope| {                            // Then branch
+    &parent,                                // Parent node
+    move || visible.get(),                  // Condition closure
+    |scope| {                               // Then branch
         let div = scope.create_element("div");
         div.set_text("Visible!");
         div
     },
-    Some(|scope| {                       // Else branch (optional)
+    Some(|scope| {                          // Else branch (optional)
         let div = scope.create_element("div");
         div.set_text("Hidden");
         div
@@ -1038,8 +1039,9 @@ For programmatic usage, use `for_each_dom()` directly:
 ```rust
 for_each_dom(
     __scope,
-    move || items.get(),                    // Items closure
-    |item, scope| {                          // View function
+    &parent,                                    // Parent node
+    move || items.get(),                        // Items closure
+    |item, scope| {                             // View function
         let data = item.downcast::<Item>().unwrap();
         let div = scope.create_element("div");
         div.set_text(&data.name);
@@ -1047,6 +1049,26 @@ for_each_dom(
     },
 )
 ```
+
+### RSX Prop Transformation Rules
+
+The `rsx!` macro applies automatic transformations when setting widget props:
+
+| Prop pattern | Value type | Generated code | Example |
+|---|---|---|---|
+| `oninput` | any | `Some(InputCallback::new(value))` | `oninput: handler` |
+| `on*` (events) | any | `Some((value).into())` | `onclick: \|\| do_thing()` |
+| `icon`, `*_icon` | any | `Some(value)` | `icon: Icon::Check` |
+| bool literal | `true`/`false` | `value` (no wrapping) | `disabled: true` |
+| int literal | number | `Some(value)` | `size: 42` |
+| string literal | `"text"` | `Some(String::from(value))` | `variant: "filled"` |
+| any other expression | any | `value` (pass-through) | `variant: my_var` |
+
+**Important notes:**
+- String literals are auto-wrapped in `Some(String::from(...))`, but expression props are passed through as-is
+- For expression props where the widget expects `Option<String>`, wrap explicitly: `prop: Some("value".into())`
+- Don't double-wrap: `icon: Icon::Check` works (auto-wrapped), but `icon: Some(Icon::Check)` becomes `Some(Some(...))`
+- `_fn` suffix props (e.g., `checked_fn`) have no special macro handling -- they follow the same rules
 
 ## Iterative Development with MCP (IMPORTANT)
 

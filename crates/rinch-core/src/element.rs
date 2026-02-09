@@ -301,6 +301,13 @@ impl_into_dom_for_display!(
     i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, f32, f64, bool, char
 );
 
+impl IntoDom for crate::dom::NodeHandle {
+    #[inline]
+    fn render_to_dom(&self, _scope: &mut crate::dom::RenderScope, parent: &crate::dom::NodeHandle) {
+        parent.append_child(self);
+    }
+}
+
 /// Recursively render an Element tree into the DOM.
 fn render_element_to_dom(
     element: &Element,

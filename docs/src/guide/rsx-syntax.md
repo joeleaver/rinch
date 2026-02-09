@@ -262,7 +262,7 @@ rsx! {
     Show {
         when: {|| visible.get()},
         then: |__scope| rsx! { div { "This is shown when visible is true!" } },
-        fallback: || rsx! { div { "Hidden" } },
+        fallback: |__scope| rsx! { div { "Hidden" } },
     }
 }
 ```
@@ -282,7 +282,7 @@ let visible = use_signal(|| true);
 rsx! {
     Show {
         when: {|| visible.get()},
-        fallback: || rsx! { div { "Hidden" } },
+        fallback: |__scope| rsx! { div { "Hidden" } },
 
         div { "This is shown when visible is true!" }
     }
@@ -297,7 +297,7 @@ rsx! {
 |------|------|-------------|
 | `when` | `{|| bool}` | Reactive condition closure |
 | `then` | `\|__scope\| Element` (optional) | Lazy-evaluated content to show when true |
-| `fallback` | `\|\| Element` (optional) | Content to show when false |
+| `fallback` | `\|__scope\| NodeHandle` (optional) | Content to show when false |
 | Children | Elements | Content to show when true (eager evaluation, not used with `then:`) |
 
 ### Show with Nested Reactivity

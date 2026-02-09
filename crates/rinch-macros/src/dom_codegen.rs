@@ -439,14 +439,8 @@ fn element_to_dom_show(
         quote! {
             Some(|__child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
                 let __scope = __child_scope;
-                // Call the fallback closure and render its result
                 let __fallback_fn = #fallback_expr;
-                let __fallback_element = __fallback_fn();
-                // Convert Element to NodeHandle via IntoDom
-                let __wrapper = __scope.create_element("div");
-                __wrapper.set_attribute("data-show-fallback", "true");
-                ::rinch::core::IntoDom::render_to_dom(&__fallback_element, __scope, &__wrapper);
-                __wrapper
+                __fallback_fn(__scope)
             })
         }
     } else {
@@ -474,7 +468,7 @@ fn element_to_dom_show(
 /// directly into the parent element. No wrapper span is created.
 fn element_to_dom_for(
     element: &RsxElement,
-    ctx: &mut DomCodegenContext,
+    _ctx: &mut DomCodegenContext,
     parent_var: &syn::Ident,
 ) -> TokenStream2 {
     // Find the 'each' prop (returns Vec<ForItem>)
@@ -517,28 +511,19 @@ fn element_to_dom_for(
         }
     };
 
-    let _wrapper_var = ctx.next_var("for_wrapper");
-
     // Generate call to for_each_dom - inserts marker + items into parent directly
-    // The view function needs to be wrapped to take (&ForItem, &mut RenderScope) -> NodeHandle
+    // The view function is constructed inside the callback so it captures the child scope
     quote! {
         {
             let __each_closure = #each_expr;
-            let __view_fn = #view_closure;
             ::rinch::core::for_each_dom(
                 __scope,
                 &#parent_var,
                 __each_closure,
                 |__item: &::rinch::core::ForItem, __child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
-                    // Swap in child scope as the active render scope
                     let __scope = __child_scope;
-                    // Call the view closure with the item
-                    let __element = __view_fn(__item);
-                    // Convert Element to NodeHandle via IntoDom
-                    let __wrapper = __scope.create_element("div");
-                    __wrapper.set_attribute("data-for-item", &__item.key);
-                    ::rinch::core::IntoDom::render_to_dom(&__element, __scope, &__wrapper);
-                    __wrapper
+                    let __view_fn = #view_closure;
+                    __view_fn(__item)
                 }
             )
         }
