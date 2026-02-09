@@ -260,9 +260,9 @@ let visible = use_signal(|| true);
 
 rsx! {
     Show {
-        when: {|| visible.get()},
-        then: |__scope| rsx! { div { "This is shown when visible is true!" } },
-        fallback: |__scope| rsx! { div { "Hidden" } },
+        when: {move || visible.get()},
+        then: |__scope: &mut RenderScope| rsx! { div { "This is shown when visible is true!" } },
+        fallback: |__scope: &mut RenderScope| rsx! { div { "Hidden" } },
     }
 }
 ```
@@ -281,8 +281,8 @@ let visible = use_signal(|| true);
 
 rsx! {
     Show {
-        when: {|| visible.get()},
-        fallback: |__scope| rsx! { div { "Hidden" } },
+        when: {move || visible.get()},
+        fallback: |__scope: &mut RenderScope| rsx! { div { "Hidden" } },
 
         div { "This is shown when visible is true!" }
     }
@@ -310,8 +310,8 @@ let count = use_signal(|| 0);
 
 rsx! {
     Show {
-        when: {|| visible.get()},
-        then: |__scope| rsx! {
+        when: {move || visible.get()},
+        then: |__scope: &mut RenderScope| rsx! {
             // This reactive text updates independently of Show
             p { "Count: " {|| count.get().to_string()} }
             button { onclick: move || count.update(|n| *n += 1), "Increment" }
@@ -326,8 +326,8 @@ When Show toggles, nested effects are automatically cleaned up:
 
 ```rust
 Show {
-    when: {|| active.get()},
-    then: |__scope| {
+    when: {move || active.get()},
+    then: |__scope: &mut RenderScope| {
         // When Show toggles to false:
         // - This component's effects are disposed
         // - Cleanup functions run
@@ -355,7 +355,7 @@ fn app() -> NodeHandle {
 
     rsx! {
         Show {
-            when: {|| current_section.get() == 1},
+            when: {move || current_section.get() == 1},
             // Use lazy evaluation to prevent hook panic
             then: |__scope| section_with_hooks(__scope),
         }
@@ -376,11 +376,11 @@ let items = use_signal(|| vec![
 
 rsx! {
     For {
-        each: {|| items.get().into_iter().map(|item| {
+        each: {move || items.get().into_iter().map(|item| {
             ForItem::new(item.id.clone(), item)
         }).collect()},
 
-        |item| {
+        |item: &ForItem| {
             let data = item.downcast::<Item>().unwrap();
             rsx! {
                 div { class: "list-item",
@@ -456,8 +456,8 @@ Items can contain their own reactive content:
 
 ```rust
 For {
-    each: {|| ...},
-    |item| {
+    each: {move || ...},
+    |item: &ForItem| {
         let data = item.downcast::<Item>().unwrap();
 
         // This effect is scoped to this item

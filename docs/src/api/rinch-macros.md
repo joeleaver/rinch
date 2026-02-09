@@ -45,8 +45,8 @@ rsx! {
     TextInput { placeholder: "Enter text..." }
     Stack { }
     Group { }
-    Show { when: {|| visible.get()}, div { "Visible!" } }
-    For { each: {|| items.get()}, |item| rsx! { div { } } }
+    Show { when: {move || visible.get()}, div { "Visible!" } }
+    For { each: {move || items.get()}, |item: &ForItem| rsx! { div { } } }
     Fragment { }
 }
 ```

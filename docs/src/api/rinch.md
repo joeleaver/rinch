@@ -171,7 +171,7 @@ Application runtime and event loop:
 - `run()` - Entry point function
 - `run_with_theme()` - Entry point with theme configuration
 - `run_with_window_props()` - Entry point with full window props
-- `run_rinch()`, `run_rinch_with_window_props()` - Lower-level runtime entry points
+- `run_rinch()`, `run_rinch_with_window_props()` - Lower-level runtime entry points (deprecated in favor of `run()` and `run_with_window_props()`)
 
 ### `rinch::menu`
 

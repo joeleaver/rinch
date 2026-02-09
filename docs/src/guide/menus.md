@@ -86,12 +86,11 @@ use rinch_core::element::{MenuItemProps, MenuItemCallback};
 
 // Signal created inside a component or with Signal::new() outside render context
 let count = Signal::new(0);
-let count_reset = count.clone();
 
 let menu_item = MenuItemProps {
     label: "Reset Counter".into(),
     onclick: Some(MenuItemCallback::new(move || {
-        count_reset.set(0);
+        count.set(0);
         println!("Counter reset!");
     })),
     ..Default::default()
@@ -212,18 +211,15 @@ use rinch_core::element::{MenuProps, MenuItemProps, MenuItemCallback};
 fn app() -> NodeHandle {
     let file_path = use_signal(|| None::<String>);
     let show_about = use_signal(|| false);
-    let file_path_display = file_path.clone();
-    let show_about_display = show_about.clone();
-
     rsx! {
         div {
             h1 { "Application with Menus" }
             p {
                 "Current file: "
-                {|| file_path_display.get().unwrap_or_else(|| "Untitled".into())}
+                {|| file_path.get().unwrap_or_else(|| "Untitled".into())}
             }
             Show {
-                when: {|| show_about_display.get()},
+                when: {move || show_about.get()},
                 div {
                     h2 { "About My App" }
                     p { "Built with Rinch" }
@@ -238,17 +234,13 @@ fn main() {
     let file_path = Signal::new(None::<String>);
     let show_about = Signal::new(false);
 
-    let file_new = file_path.clone();
-    let file_open = file_path.clone();
-    let about_toggle = show_about.clone();
-
     let menus = vec![
         (MenuProps { label: "File".into() }, vec![
             MenuEntry::Item(MenuItemProps {
                 label: "New".into(),
                 shortcut: Some("Cmd+N".into()),
                 onclick: Some(MenuItemCallback::new(move || {
-                    file_new.set(None);
+                    file_path.set(None);
                     println!("New file created");
                 })),
                 ..Default::default()
@@ -257,7 +249,7 @@ fn main() {
                 label: "Open...".into(),
                 shortcut: Some("Cmd+O".into()),
                 onclick: Some(MenuItemCallback::new(move || {
-                    file_open.set(Some("example.txt".into()));
+                    file_path.set(Some("example.txt".into()));
                     println!("Opening file...");
                 })),
                 ..Default::default()
@@ -340,7 +332,7 @@ fn main() {
             MenuEntry::Item(MenuItemProps {
                 label: "About".into(),
                 onclick: Some(MenuItemCallback::new(move || {
-                    about_toggle.update(|v| *v = !*v);
+                    show_about.update(|v| *v = !*v);
                 })),
                 ..Default::default()
             }),

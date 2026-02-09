@@ -194,6 +194,24 @@ The `Icon` enum in rinch-core provides a smaller curated set of ~40 icons. These
 | `DropdownMenuItem` | `left_section`, `right_section: Option<Icon>` |
 | `Tab` | `left_section`, `right_section: Option<Icon>` |
 
+## Dependencies and Imports
+
+The `rinch` crate re-exports everything through its prelude. You do NOT need separate dependencies on `rinch-widgets` or `rinch-theme`:
+
+```toml
+# Cargo.toml - this is all you need:
+[dependencies]
+rinch = { workspace = true, features = ["widgets", "theme"] }
+```
+
+```rust
+// In your code - prelude includes all widgets:
+use rinch::prelude::*;
+
+// DO NOT add redundant imports:
+// use rinch_widgets::*;  // Not needed! Already in prelude
+```
+
 ## Application Entry Point
 
 Use the `run` function to start a rinch application:
@@ -937,9 +955,9 @@ let visible = use_signal(|| true);
 
 rsx! {
     Show {
-        when: {|| visible.get()},
-        then: |__scope| rsx! { div { "Visible!" } },
-        fallback: |__scope| rsx! { div { "Hidden" } },
+        when: {move || visible.get()},
+        then: |__scope: &mut RenderScope| rsx! { div { "Visible!" } },
+        fallback: |__scope: &mut RenderScope| rsx! { div { "Hidden" } },
     }
 }
 ```
@@ -950,8 +968,8 @@ let visible = use_signal(|| true);
 
 rsx! {
     Show {
-        when: {|| visible.get()},
-        fallback: |__scope| rsx! { div { "Hidden" } },
+        when: {move || visible.get()},
+        fallback: |__scope: &mut RenderScope| rsx! { div { "Hidden" } },
         div { "Visible!" }
     }
 }
@@ -1003,16 +1021,16 @@ Use `For` in RSX for keyed list rendering with fine-grained updates:
 
 ```rust
 let items = use_signal(|| vec![
-    Item { id: "1", name: "Alice" },
-    Item { id: "2", name: "Bob" },
+    Item { id: 1, name: "Alice" },
+    Item { id: 2, name: "Bob" },
 ]);
 
 rsx! {
     For {
-        each: {|| items.get().into_iter().map(|item| {
-            ForItem::new(item.id.clone(), item)
+        each: {move || items.get().into_iter().map(|item| {
+            ForItem::new(item.id.to_string(), item)
         }).collect()},
-        |item| {
+        |item: &ForItem| {
             let data = item.downcast::<Item>().unwrap();
             rsx! { div { {data.name.clone()} } }
         }
@@ -1101,6 +1119,34 @@ The `rsx!` macro applies automatic transformations when setting widget props:
 - For expression props where the widget expects `Option<String>`, wrap explicitly: `prop: Some("value".into())`
 - Don't double-wrap: `icon: Icon::Check` works (auto-wrapped), but `icon: Some(Icon::Check)` becomes `Some(Some(...))`
 - `_fn` suffix props (e.g., `checked_fn`, `value_fn`) have no special macro handling -- they follow the same rules
+
+**Widget Props vs HTML Attributes:**
+
+- **HTML elements** (`div`, `span`, `p`, etc.) accept any attribute as a string: `style:`, `class:`, `id:`, custom `data-*`, etc. They also support reactive closures `{|| expr}` on any attribute.
+- **Widgets** (`Button`, `TextInput`, `Stack`, etc.) accept their declared struct fields as props. Additionally, all widgets support these universal props:
+  - `style:` — Applied to the widget's root DOM element after rendering. Supports static strings and reactive closures.
+  - `class:` — Merged with the widget's own CSS classes (additive, not replacing). Supports static strings and reactive closures.
+
+```rust
+// style: and class: work on all widgets
+Button {
+    variant: "filled",
+    style: "margin-top: 8px",           // Static style
+    class: "my-custom-button",          // Merged with widget classes
+    onclick: || do_something(),
+    "Click me"
+}
+
+// Reactive closures also work on widget style/class
+Text {
+    color: "dimmed",
+    style: {|| if highlighted.get() { "background: yellow" } else { "" }},
+    class: {|| if active.get() { "active" } else { "" }},
+    "Dynamic styling"
+}
+```
+
+**Widget props are static by default.** Props like `color:`, `variant:`, `size:` are set once at render time. Only `style:` and `class:` support reactive closures on widgets. For reactive widget-specific props, use `_fn` variants where available (e.g., `checked_fn`, `value_fn`).
 
 ## Iterative Development with MCP (IMPORTANT)
 

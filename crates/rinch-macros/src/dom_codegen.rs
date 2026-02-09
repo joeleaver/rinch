@@ -383,17 +383,11 @@ fn element_to_dom_show(
 
     // Build the then closure - either from explicit prop or from children
     let then_closure = if let Some(then_prop) = then_prop {
-        // Lazy mode: use the 'then' prop closure directly
-        // The closure should be: |__scope| rsx! { ... } or similar that returns NodeHandle
-        // We need to wrap it to take RenderScope parameter
+        // Lazy mode: pass the user's closure directly to show_dom
+        // The user provides: |__scope| rsx! { ... } which already matches
+        // the Fn(&mut RenderScope) -> NodeHandle signature
         let then_expr = &then_prop.value;
-        quote! {
-            |__child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
-                // Call the user's closure with the child scope
-                let __then_fn = #then_expr;
-                __then_fn(__child_scope)
-            }
-        }
+        quote! { #then_expr }
     } else {
         // Eager mode (backwards compatible): generate code from children
         let children_code: Vec<TokenStream2> = element
@@ -439,13 +433,7 @@ fn element_to_dom_show(
     // Build the else closure if fallback prop exists
     let else_option = if let Some(fallback) = fallback_prop {
         let fallback_expr = &fallback.value;
-        quote! {
-            Some(|__child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
-                let __scope = __child_scope;
-                let __fallback_fn = #fallback_expr;
-                __fallback_fn(__scope)
-            })
-        }
+        quote! { Some(#fallback_expr) }
     } else {
         quote! { None::<fn(&mut ::rinch::core::dom::RenderScope) -> ::rinch::core::dom::NodeHandle> }
     };
@@ -530,7 +518,7 @@ fn element_to_dom_for(
                 __each_closure,
                 |__item: &::rinch::core::ForItem, __child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
                     let __scope = __child_scope;
-                    let __view_fn = #view_closure;
+                    let mut __view_fn = #view_closure;
                     __view_fn(__item)
                 }
             );
@@ -572,9 +560,26 @@ fn element_to_dom_widget(element: &RsxElement, ctx: &mut DomCodegenContext) -> T
     let widget_var = ctx.next_var("widget");
     let result_var = ctx.next_var("result");
 
-    // Generate field assignments for each prop (same logic as gen_widget in element.rs)
-    let field_assignments: Vec<TokenStream2> = element
-        .props
+    // Separate style/class props from widget struct props.
+    // style: and class: are applied to the rendered NodeHandle AFTER Widget::render(),
+    // not as fields on the widget struct.
+    let mut style_prop = None;
+    let mut class_prop = None;
+    let mut widget_props = Vec::new();
+
+    for prop in &element.props {
+        let name_str = prop.name.to_string();
+        if name_str == "style" {
+            style_prop = Some(prop);
+        } else if name_str == "class" {
+            class_prop = Some(prop);
+        } else {
+            widget_props.push(prop);
+        }
+    }
+
+    // Generate field assignments only for widget props (not style/class)
+    let field_assignments: Vec<TokenStream2> = widget_props
         .iter()
         .map(|prop| {
             let name = &prop.name;
@@ -610,6 +615,108 @@ fn element_to_dom_widget(element: &RsxElement, ctx: &mut DomCodegenContext) -> T
         .map(|child| generate_child_code(child, &temp_var, ctx))
         .collect();
 
+    // Generate post-render style application code
+    let style_code = if let Some(prop) = style_prop {
+        let value = &prop.value;
+        if is_literal_expr(value) {
+            // Static style string - set once
+            let value_str = crate::helpers::expr_to_string(value);
+            quote! {
+                #result_var.set_attribute("style", #value_str);
+            }
+        } else if let Some(closure) = get_closure_expr(value) {
+            // Reactive closure - create effect
+            let handle_var = ctx.next_var("style_handle");
+            quote! {
+                {
+                    let #handle_var = #result_var.clone();
+                    __scope.create_effect(move || {
+                        #handle_var.set_attribute("style", &::std::string::ToString::to_string(&(#closure)()));
+                    });
+                }
+            }
+        } else {
+            // Dynamic expression - wrap in effect
+            let handle_var = ctx.next_var("style_handle");
+            quote! {
+                {
+                    let #handle_var = #result_var.clone();
+                    __scope.create_effect(move || {
+                        #handle_var.set_attribute("style", &::std::string::ToString::to_string(&#value));
+                    });
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    // Generate post-render class application code.
+    // Uses add_class to merge with any classes the widget itself sets.
+    let class_code = if let Some(prop) = class_prop {
+        let value = &prop.value;
+        if is_literal_expr(value) {
+            // Static class string - add once
+            let value_str = crate::helpers::expr_to_string(value);
+            quote! {
+                #result_var.add_class(#value_str);
+            }
+        } else if let Some(closure) = get_closure_expr(value) {
+            // Reactive closure - create effect that updates class.
+            // We track the previous extra class to remove it before adding the new one.
+            let handle_var = ctx.next_var("class_handle");
+            let prev_var = ctx.next_var("prev_class");
+            quote! {
+                {
+                    let #handle_var = #result_var.clone();
+                    let #prev_var = ::std::cell::RefCell::new(String::new());
+                    __scope.create_effect(move || {
+                        let __old = #prev_var.borrow().clone();
+                        if !__old.is_empty() {
+                            for __c in __old.split_whitespace() {
+                                #handle_var.remove_class(__c);
+                            }
+                        }
+                        let __new_class = ::std::string::ToString::to_string(&(#closure)());
+                        if !__new_class.is_empty() {
+                            for __c in __new_class.split_whitespace() {
+                                #handle_var.add_class(__c);
+                            }
+                        }
+                        *#prev_var.borrow_mut() = __new_class;
+                    });
+                }
+            }
+        } else {
+            // Dynamic expression - wrap in effect with tracking
+            let handle_var = ctx.next_var("class_handle");
+            let prev_var = ctx.next_var("prev_class");
+            quote! {
+                {
+                    let #handle_var = #result_var.clone();
+                    let #prev_var = ::std::cell::RefCell::new(String::new());
+                    __scope.create_effect(move || {
+                        let __old = #prev_var.borrow().clone();
+                        if !__old.is_empty() {
+                            for __c in __old.split_whitespace() {
+                                #handle_var.remove_class(__c);
+                            }
+                        }
+                        let __new_class = ::std::string::ToString::to_string(&#value);
+                        if !__new_class.is_empty() {
+                            for __c in __new_class.split_whitespace() {
+                                #handle_var.add_class(__c);
+                            }
+                        }
+                        *#prev_var.borrow_mut() = __new_class;
+                    });
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     quote! {
         {
             // Construct widget
@@ -626,6 +733,11 @@ fn element_to_dom_widget(element: &RsxElement, ctx: &mut DomCodegenContext) -> T
 
             // Render widget directly
             let #result_var = ::rinch::core::Widget::render(&#widget_var, __scope, &#children_var);
+
+            // Apply style/class props to the rendered NodeHandle
+            #style_code
+            #class_code
+
             #result_var
         }
     }

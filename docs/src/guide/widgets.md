@@ -456,14 +456,12 @@ Stepper { active: step.get(),
 ```rust
 // Modal
 let modal_open = use_signal(|| false);
-let open = modal_open.clone();
-let close = modal_open.clone();
 
-Button { onclick: move || open.set(true), "Open Modal" }
+Button { onclick: move || modal_open.set(true), "Open Modal" }
 
 Modal {
     opened: modal_open.get(),
-    onclose: move || close.set(false),
+    onclose: move || modal_open.set(false),
     title: "Confirm Action",
     size: "md",
 
@@ -558,11 +556,9 @@ use std::rc::Rc;
 fn app() -> NodeHandle {
     // For custom left section (e.g., menu button)
     let menu_open = use_signal(|| false);
-    let menu_toggle = menu_open.clone();
     let left_section: SectionRenderer = Rc::new(move |__scope| {
-        let mt = menu_toggle.clone();
         rsx! {
-            ActionIcon { onclick: move || mt.update(|v| *v = !*v),
+            ActionIcon { onclick: move || menu_open.update(|v| *v = !*v),
                 "☰"
             }
         }
@@ -981,7 +977,7 @@ Checkbox { checked: my_signal.get(), ... }
 
 // Reactive (updates automatically when signal changes):
 Checkbox {
-    checked_fn: Some(Rc::new({ let s = my_signal.clone(); move || s.get() })),
+    checked_fn: Some(Rc::new(move || my_signal.get())),
     ...
 }
 ```
@@ -1015,20 +1011,20 @@ fn app() -> NodeHandle {
         // NavLink with reactive active state
         NavLink {
             label: Some("Home".to_string()),
-            active_fn: Some(Rc::new({ let s = current_tab.clone(); move || s.get() == 0 })),
+            active_fn: Some(Rc::new(move || current_tab.get() == 0)),
             onclick: move || current_tab.set(0)
         }
 
         // Checkbox with reactive checked state
         Checkbox {
             label: "Enable feature",
-            checked_fn: Some(Rc::new({ let s = is_checked.clone(); move || s.get() })),
+            checked_fn: Some(Rc::new(move || is_checked.get())),
             onchange: move || is_checked.update(|v| *v = !*v)
         }
 
         // Progress with reactive value
         Progress {
-            value_fn: Some(Rc::new({ let s = progress.clone(); move || s.get() }))
+            value_fn: Some(Rc::new(move || progress.get()))
         }
     }
 }

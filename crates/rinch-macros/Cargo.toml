@@ -12,3 +12,10 @@ proc-macro = true
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
+
+[dev-dependencies]
+# Integration tests need the full rinch crate to verify rsx! macro codegen.
+# Note: This pulls in desktop dependencies (winit, wgpu, vello). If integration
+# tests fail to compile due to windowing/GPU deps in headless environments,
+# the parser unit tests in node.rs and element.rs are the primary test suite.
+rinch = { path = "../rinch", features = ["widgets", "theme"] }

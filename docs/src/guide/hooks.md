@@ -15,10 +15,9 @@ use rinch::prelude::*;
 #[component]
 fn counter() -> NodeHandle {
     let count = use_signal(|| 0);
-    let count_inc = count.clone();
 
     rsx! {
-        button { onclick: move || count_inc.update(|n| *n += 1),
+        button { onclick: move || count.update(|n| *n += 1),
             "Count: " {|| count.get().to_string()}
         }
     }
@@ -64,10 +63,9 @@ The initialization function only runs on the first render. Subsequent renders re
 #[component]
 fn toggle() -> NodeHandle {
     let enabled = use_signal(|| false);
-    let enabled_toggle = enabled.clone();
 
     rsx! {
-        button { onclick: move || enabled_toggle.update(|b| *b = !*b),
+        button { onclick: move || enabled.update(|b| *b = !*b),
             {|| if enabled.get() { "ON" } else { "OFF" }}
         }
     }
@@ -388,33 +386,28 @@ fn app() -> NodeHandle {
         || println!("App closing...")
     });
 
-    let todos_add = todos.clone();
-    let input_submit = input.clone();
-    let input_change = input.clone();
-    let count_display = count.clone();
-
     rsx! {
         div {
-            h1 { "Todos (" {|| count_display.get().to_string()} ")" }
+            h1 { "Todos (" {|| count.get().to_string()} ")" }
 
             input {
                 value: {|| input.get()},
-                oninput: move |e| input_change.set(e.value())
+                oninput: move |e| input.set(e.value())
             }
 
             button { onclick: move || {
-                let text = input_submit.get();
+                let text = input.get();
                 if !text.is_empty() {
-                    todos_add.update(|t| t.push(text.clone()));
-                    input_submit.set(String::new());
+                    todos.update(|t| t.push(text.clone()));
+                    input.set(String::new());
                 }
             }, "Add" }
 
             For {
-                each: {|| todos.get().into_iter().enumerate().map(|(i, t)| {
+                each: {move || todos.get().into_iter().enumerate().map(|(i, t)| {
                     ForItem::new(i.to_string(), t)
                 }).collect()},
-                |item| {
+                |item: &ForItem| {
                     let text = item.downcast::<String>().unwrap().clone();
                     rsx! { li { {text} } }
                 }

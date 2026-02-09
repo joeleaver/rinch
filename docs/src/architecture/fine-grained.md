@@ -266,8 +266,8 @@ In RSX, use the `Show` widget instead:
 ```rust
 rsx! {
     Show {
-        when: {|| condition.get()},
-        fallback: |__scope| rsx! { span { "Hidden" } },
+        when: {move || condition.get()},
+        fallback: |__scope: &mut RenderScope| rsx! { span { "Hidden" } },
         div { "Visible" }
     }
 }
@@ -304,10 +304,10 @@ In RSX, use the `For` widget instead:
 ```rust
 rsx! {
     For {
-        each: {|| items.get().into_iter().map(|item| {
+        each: {move || items.get().into_iter().map(|item| {
             ForItem::new(item.id.clone(), item)
         }).collect()},
-        |item| {
+        |item: &ForItem| {
             let data = item.downcast::<Item>().unwrap();
             rsx! { li { {data.name.clone()} } }
         }

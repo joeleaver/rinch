@@ -86,3 +86,380 @@ impl RsxElement {
         self.is_core_component() || self.is_widget()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node::RsxNode;
+    use syn::parse_str;
+
+    // ── Empty and basic elements ─────────────────────────────────
+
+    #[test]
+    fn parse_empty_element() {
+        let el: RsxElement = parse_str("div {}").unwrap();
+        assert_eq!(el.name.to_string(), "div");
+        assert!(el.props.is_empty());
+        assert!(el.children.is_empty());
+    }
+
+    #[test]
+    fn parse_element_with_text_child() {
+        let el: RsxElement = parse_str(r#"div { "hello" }"#).unwrap();
+        assert_eq!(el.name.to_string(), "div");
+        assert!(el.props.is_empty());
+        assert_eq!(el.children.len(), 1);
+        assert!(matches!(&el.children[0], RsxNode::Text(lit) if lit.value() == "hello"));
+    }
+
+    #[test]
+    fn parse_element_with_multiple_text_children() {
+        let el: RsxElement = parse_str(r#"div { "Hello, " "world!" }"#).unwrap();
+        assert_eq!(el.name.to_string(), "div");
+        assert_eq!(el.children.len(), 2);
+    }
+
+    // ── Props parsing ────────────────────────────────────────────
+
+    #[test]
+    fn parse_element_with_single_prop() {
+        let el: RsxElement = parse_str(r#"div { class: "foo" }"#).unwrap();
+        assert_eq!(el.name.to_string(), "div");
+        assert_eq!(el.props.len(), 1);
+        assert_eq!(el.props[0].name.to_string(), "class");
+        assert!(el.children.is_empty());
+    }
+
+    #[test]
+    fn parse_element_with_multiple_props() {
+        let el: RsxElement = parse_str(r#"div { class: "foo", id: "bar" }"#).unwrap();
+        assert_eq!(el.name.to_string(), "div");
+        assert_eq!(el.props.len(), 2);
+        assert_eq!(el.props[0].name.to_string(), "class");
+        assert_eq!(el.props[1].name.to_string(), "id");
+    }
+
+    #[test]
+    fn parse_prop_with_trailing_comma() {
+        let el: RsxElement = parse_str(r#"div { class: "foo", }"#).unwrap();
+        assert_eq!(el.props.len(), 1);
+        assert!(el.children.is_empty());
+    }
+
+    // ── Mixed props and children ─────────────────────────────────
+
+    #[test]
+    fn parse_element_with_mixed_props_and_children() {
+        let el: RsxElement = parse_str(r#"div { class: "foo", "hello" "world" }"#).unwrap();
+        assert_eq!(el.name.to_string(), "div");
+        assert_eq!(el.props.len(), 1);
+        assert_eq!(el.children.len(), 2);
+    }
+
+    #[test]
+    fn parse_props_before_children() {
+        let el: RsxElement = parse_str(
+            r#"div { class: "container", id: "main", "content" }"#,
+        )
+        .unwrap();
+        assert_eq!(el.props.len(), 2);
+        assert_eq!(el.children.len(), 1);
+    }
+
+    // ── Nested elements ──────────────────────────────────────────
+
+    #[test]
+    fn parse_element_with_nested_element() {
+        let el: RsxElement = parse_str(r#"div { p { "hello" } }"#).unwrap();
+        assert_eq!(el.name.to_string(), "div");
+        assert_eq!(el.children.len(), 1);
+        match &el.children[0] {
+            RsxNode::Element(child) => {
+                assert_eq!(child.name.to_string(), "p");
+                assert_eq!(child.children.len(), 1);
+            }
+            _ => panic!("Expected Element child"),
+        }
+    }
+
+    #[test]
+    fn parse_deeply_nested() {
+        let el: RsxElement = parse_str(r#"div { div { div { p { "deep" } } } }"#).unwrap();
+        assert_eq!(el.name.to_string(), "div");
+        assert_eq!(el.children.len(), 1);
+        // Verify we can traverse the nesting
+        match &el.children[0] {
+            RsxNode::Element(c1) => {
+                assert_eq!(c1.name.to_string(), "div");
+                match &c1.children[0] {
+                    RsxNode::Element(c2) => {
+                        assert_eq!(c2.name.to_string(), "div");
+                        match &c2.children[0] {
+                            RsxNode::Element(c3) => {
+                                assert_eq!(c3.name.to_string(), "p");
+                            }
+                            _ => panic!("Expected Element"),
+                        }
+                    }
+                    _ => panic!("Expected Element"),
+                }
+            }
+            _ => panic!("Expected Element"),
+        }
+    }
+
+    #[test]
+    fn parse_multiple_sibling_elements() {
+        let el: RsxElement = parse_str(
+            r#"div { p { "one" } span { "two" } p { "three" } }"#,
+        )
+        .unwrap();
+        assert_eq!(el.children.len(), 3);
+    }
+
+    // ── Expression children ──────────────────────────────────────
+
+    #[test]
+    fn parse_element_with_braced_expr() {
+        let el: RsxElement = parse_str("div { {count.get()} }").unwrap();
+        assert_eq!(el.name.to_string(), "div");
+        assert_eq!(el.children.len(), 1);
+        assert!(matches!(&el.children[0], RsxNode::Expr(_)));
+    }
+
+    #[test]
+    fn parse_element_with_reactive_closure() {
+        let el: RsxElement = parse_str("div { {|| count.get().to_string()} }").unwrap();
+        assert_eq!(el.name.to_string(), "div");
+        assert_eq!(el.children.len(), 1);
+        assert!(matches!(&el.children[0], RsxNode::Expr(_)));
+    }
+
+    #[test]
+    fn parse_multiple_children_types() {
+        // Mix of text, elements, and expressions
+        let el: RsxElement = parse_str(r#"div { "text" p { "child" } {expr} }"#).unwrap();
+        assert_eq!(el.name.to_string(), "div");
+        assert_eq!(el.children.len(), 3);
+        assert!(matches!(&el.children[0], RsxNode::Text(_)));
+        assert!(matches!(&el.children[1], RsxNode::Element(_)));
+        assert!(matches!(&el.children[2], RsxNode::Expr(_)));
+    }
+
+    // ── Event handlers ───────────────────────────────────────────
+
+    #[test]
+    fn parse_event_handler() {
+        let el: RsxElement = parse_str(
+            r#"button { onclick: move || count.update(|n| *n += 1), "Click" }"#,
+        )
+        .unwrap();
+        assert_eq!(el.name.to_string(), "button");
+        assert_eq!(el.props.len(), 1);
+        assert_eq!(el.props[0].name.to_string(), "onclick");
+        assert_eq!(el.children.len(), 1);
+    }
+
+    #[test]
+    fn parse_event_handler_no_trailing_comma() {
+        // Event handler followed directly by text child (no comma after closure)
+        // syn parses `move || do_thing()` as the expression, then "Click" is next
+        let el: RsxElement = parse_str(
+            r#"button { onclick: move || do_thing(), "Click" }"#,
+        )
+        .unwrap();
+        assert_eq!(el.props.len(), 1);
+        assert_eq!(el.children.len(), 1);
+    }
+
+    // ── For component ────────────────────────────────────────────
+
+    #[test]
+    fn parse_for_with_bare_closure() {
+        let el: RsxElement =
+            parse_str(r#"For { each: {|| vec![]}, |item| { item } }"#).unwrap();
+        assert_eq!(el.name.to_string(), "For");
+        assert_eq!(el.props.len(), 1);
+        assert_eq!(el.props[0].name.to_string(), "each");
+        assert_eq!(el.children.len(), 1);
+        assert!(matches!(&el.children[0], RsxNode::Expr(_)));
+    }
+
+    #[test]
+    fn parse_for_with_move_closure() {
+        let el: RsxElement =
+            parse_str(r#"For { each: {|| vec![]}, move |item| { item } }"#).unwrap();
+        assert_eq!(el.name.to_string(), "For");
+        assert_eq!(el.props.len(), 1);
+        assert_eq!(el.children.len(), 1);
+        assert!(matches!(&el.children[0], RsxNode::Expr(_)));
+    }
+
+    // ── Show component ───────────────────────────────────────────
+
+    #[test]
+    fn parse_show_with_then_and_fallback() {
+        let el: RsxElement = parse_str(
+            r#"Show { when: {|| true}, then: |s| s.create_element("div"), fallback: |s| s.create_element("span") }"#,
+        )
+        .unwrap();
+        assert_eq!(el.name.to_string(), "Show");
+        assert_eq!(el.props.len(), 3);
+        assert_eq!(el.props[0].name.to_string(), "when");
+        assert_eq!(el.props[1].name.to_string(), "then");
+        assert_eq!(el.props[2].name.to_string(), "fallback");
+        assert!(el.children.is_empty());
+    }
+
+    #[test]
+    fn parse_show_eager_with_children() {
+        let el: RsxElement =
+            parse_str(r#"Show { when: {|| true}, div { "visible" } }"#).unwrap();
+        assert_eq!(el.name.to_string(), "Show");
+        assert_eq!(el.props.len(), 1);
+        assert_eq!(el.children.len(), 1);
+        match &el.children[0] {
+            RsxNode::Element(child) => assert_eq!(child.name.to_string(), "div"),
+            _ => panic!("Expected Element child"),
+        }
+    }
+
+    #[test]
+    fn parse_show_with_only_when() {
+        let el: RsxElement = parse_str(r#"Show { when: {|| true} }"#).unwrap();
+        assert_eq!(el.name.to_string(), "Show");
+        assert_eq!(el.props.len(), 1);
+        assert_eq!(el.props[0].name.to_string(), "when");
+        assert!(el.children.is_empty());
+    }
+
+    // ── Widget parsing ───────────────────────────────────────────
+
+    #[test]
+    fn parse_widget_with_style_and_class() {
+        let el: RsxElement = parse_str(
+            r#"Button { variant: "filled", style: "margin: 10px", class: "my-btn", "Click" }"#,
+        )
+        .unwrap();
+        assert_eq!(el.name.to_string(), "Button");
+        assert_eq!(el.props.len(), 3);
+        assert_eq!(el.children.len(), 1);
+    }
+
+    #[test]
+    fn parse_widget_with_reactive_style() {
+        let el: RsxElement = parse_str(
+            r#"Button { style: {|| "color: red".to_string()}, "Click" }"#,
+        )
+        .unwrap();
+        assert_eq!(el.name.to_string(), "Button");
+        assert_eq!(el.props.len(), 1);
+        assert_eq!(el.props[0].name.to_string(), "style");
+        assert_eq!(el.children.len(), 1);
+    }
+
+    #[test]
+    fn parse_widget_with_reactive_class() {
+        let el: RsxElement = parse_str(
+            r#"Button { class: {|| if active { "on" } else { "off" }}, "Click" }"#,
+        )
+        .unwrap();
+        assert_eq!(el.name.to_string(), "Button");
+        assert_eq!(el.props.len(), 1);
+        assert_eq!(el.props[0].name.to_string(), "class");
+        assert_eq!(el.children.len(), 1);
+    }
+
+    // ── is_rinch_component / is_core_component / is_widget ──────
+
+    #[test]
+    fn is_core_component_show() {
+        let el: RsxElement = parse_str(r#"Show { when: {|| true} }"#).unwrap();
+        assert!(el.is_rinch_component());
+    }
+
+    #[test]
+    fn is_core_component_for() {
+        let el: RsxElement = parse_str(r#"For { each: {|| vec![]} }"#).unwrap();
+        assert!(el.is_rinch_component());
+    }
+
+    #[test]
+    fn is_core_component_fragment() {
+        let el: RsxElement = parse_str("Fragment {}").unwrap();
+        assert!(el.is_rinch_component());
+    }
+
+    #[test]
+    fn is_core_component_window() {
+        let el: RsxElement = parse_str("Window {}").unwrap();
+        assert!(el.is_rinch_component());
+    }
+
+    #[test]
+    fn is_core_component_theme_provider() {
+        let el: RsxElement = parse_str("ThemeProvider {}").unwrap();
+        assert!(el.is_rinch_component());
+    }
+
+    #[test]
+    fn is_widget_button() {
+        let el: RsxElement = parse_str(r#"Button { variant: "filled" }"#).unwrap();
+        assert!(el.is_rinch_component());
+    }
+
+    #[test]
+    fn is_widget_custom_component() {
+        let el: RsxElement = parse_str("MyCustomWidget {}").unwrap();
+        assert!(el.is_rinch_component());
+    }
+
+    #[test]
+    fn is_not_rinch_component_div() {
+        let el: RsxElement = parse_str("div {}").unwrap();
+        assert!(!el.is_rinch_component());
+    }
+
+    #[test]
+    fn is_not_rinch_component_span() {
+        let el: RsxElement = parse_str("span {}").unwrap();
+        assert!(!el.is_rinch_component());
+    }
+
+    #[test]
+    fn is_not_rinch_component_p() {
+        let el: RsxElement = parse_str("p {}").unwrap();
+        assert!(!el.is_rinch_component());
+    }
+
+    // ── Edge cases ───────────────────────────────────────────────
+
+    #[test]
+    fn parse_element_only_props_no_children() {
+        let el: RsxElement = parse_str(
+            r#"input { class: "field", id: "name" }"#,
+        )
+        .unwrap();
+        assert_eq!(el.props.len(), 2);
+        assert!(el.children.is_empty());
+    }
+
+    #[test]
+    fn parse_element_only_children_no_props() {
+        let el: RsxElement = parse_str(
+            r#"div { "one" "two" "three" }"#,
+        )
+        .unwrap();
+        assert!(el.props.is_empty());
+        assert_eq!(el.children.len(), 3);
+    }
+
+    #[test]
+    fn parse_path_expression_not_confused_with_prop() {
+        // `foo::bar` should NOT be parsed as prop `foo:` with value `:`
+        // because we check peek2(Token![:]) && !peek2(Token![::])
+        let el: RsxElement = parse_str("div { {foo::bar()} }").unwrap();
+        assert!(el.props.is_empty());
+        assert_eq!(el.children.len(), 1);
+    }
+}

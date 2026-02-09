@@ -164,10 +164,9 @@ impl<T: Clone> Signal<T> {
 #[component]
 fn counter() -> NodeHandle {
     let count = use_signal(|| 0);
-    let count_inc = count.clone();
     rsx! {
         p { {|| count.get().to_string()} }
-        button { onclick: move || count_inc.update(|n| *n += 1), "+" }
+        button { onclick: move || count.update(|n| *n += 1), "+" }
     }
 }
 ```
@@ -267,7 +266,7 @@ fn example() -> NodeHandle {
     let visible = use_signal(|| true);
     rsx! {
         Show {
-            when: {|| visible.get()},
+            when: {move || visible.get()},
             div { "Visible!" }
         }
     }
@@ -284,8 +283,8 @@ fn example() -> NodeHandle {
     let items = use_signal(|| vec!["a", "b", "c"]);
     rsx! {
         For {
-            each: {|| items.get().into_iter().map(|s| ForItem::new(s, s)).collect()},
-            |item| rsx! { div { {item.downcast::<&str>().unwrap()} } }
+            each: {move || items.get().into_iter().map(|s| ForItem::new(s, s)).collect()},
+            |item: &ForItem| rsx! { div { {item.downcast::<&str>().unwrap()} } }
         }
     }
 }
