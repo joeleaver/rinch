@@ -12,14 +12,13 @@
 //! #[component]
 //! fn app() -> NodeHandle {
 //!     let count = use_signal(|| 0);
-//!     let count_inc = count.clone();
 //!
 //!     rsx! {
 //!         div {
 //!             // Closure syntax {|| ...} creates reactive Effects
 //!             p { "Count: " {|| count.get().to_string()} }
 //!             button {
-//!                 onclick: move || count_inc.update(|n| *n += 1),
+//!                 onclick: move || count.update(|n| *n += 1),
 //!                 "Increment"
 //!             }
 //!         }
@@ -55,7 +54,6 @@
 //! fn counter() -> NodeHandle {
 //!     let count = use_signal(|| 0);
 //!     let name = use_signal(|| String::from("World"));
-//!     let count_inc = count.clone();
 //!
 //!     rsx! {
 //!         div {
@@ -64,7 +62,7 @@
 //!             // Reactive formatted text
 //!             p { {|| format!("Count: {}", count.get())} }
 //!             button {
-//!                 onclick: move || count_inc.update(|n| *n += 1),
+//!                 onclick: move || count.update(|n| *n += 1),
 //!                 "Increment"
 //!             }
 //!         }
@@ -195,6 +193,7 @@ pub use rinch_core::element::{
 pub use rinch_core::{Effect, Memo, Scope, Signal, batch, derived, untracked};
 pub use rinch_macros::{component, rsx};
 #[cfg(feature = "desktop")]
+#[allow(deprecated)]
 pub use shell::{
     run, run_rinch, run_rinch_with_window_props, run_with_theme, run_with_window_props,
 };

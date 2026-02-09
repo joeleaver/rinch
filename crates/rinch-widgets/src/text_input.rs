@@ -4,6 +4,10 @@
 
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::{InputCallback, Widget};
+use std::rc::Rc;
+
+/// Reactive callback type for string state.
+pub type ReactiveString = Rc<dyn Fn() -> String>;
 
 /// TextInput size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -67,6 +71,9 @@ pub struct TextInput {
     pub input_type: Option<String>,
     /// Current value.
     pub value: Option<String>,
+    /// Reactive value getter - use this for fine-grained updates.
+    /// When provided, the input value updates automatically when the signal changes.
+    pub value_fn: Option<ReactiveString>,
     /// Callback when input value changes.
     pub oninput: Option<InputCallback>,
 }
@@ -84,6 +91,7 @@ impl std::fmt::Debug for TextInput {
             .field("radius", &self.radius)
             .field("input_type", &self.input_type)
             .field("value", &self.value)
+            .field("value_fn", &self.value_fn.as_ref().map(|_| "<reactive>"))
             .field("oninput", &self.oninput.as_ref().map(|_| "<callback>"))
             .finish()
     }
@@ -139,9 +147,24 @@ impl Widget for TextInput {
         if let Some(placeholder) = &self.placeholder {
             input.set_attribute("placeholder", placeholder);
         }
-        if let Some(value) = &self.value {
+
+        // Reactive value binding
+        if let Some(ref value_fn) = self.value_fn {
+            // Set initial value
+            let initial_value = value_fn();
+            input.set_attribute("value", &initial_value);
+
+            // Create Effect for reactive updates
+            let value_fn = value_fn.clone();
+            let input_clone = input.clone();
+            __scope.create_effect(move || {
+                let current_value = value_fn();
+                input_clone.set_attribute("value", &current_value);
+            });
+        } else if let Some(value) = &self.value {
             input.set_attribute("value", value);
         }
+
         if self.disabled {
             input.set_attribute("disabled", "");
         }

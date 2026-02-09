@@ -206,7 +206,7 @@ pub use stepper::{Stepper, StepperCompleted, StepperStep};
 pub use switch::Switch;
 pub use tabs::{Tab, Tabs, TabsList, TabsPanel};
 pub use text::Text;
-pub use text_input::TextInput;
+pub use text_input::{ReactiveString, TextInput};
 pub use textarea::Textarea;
 pub use title::Title;
 pub use tooltip::Tooltip;

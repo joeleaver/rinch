@@ -592,6 +592,7 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
 ///     rinch::run_rinch("Counter", 800, 600, app);
 /// }
 /// ```
+#[deprecated(since = "0.2.0", note = "Use `run` instead")]
 pub fn run_rinch<F>(title: &str, width: u32, height: u32, component: F)
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
@@ -645,6 +646,7 @@ where
 }
 
 /// Run a rinch-dom application with full window configuration.
+#[deprecated(since = "0.2.0", note = "Use `run_with_window_props` instead")]
 pub fn run_rinch_with_window_props<F>(component: F, props: rinch_core::element::WindowProps)
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,

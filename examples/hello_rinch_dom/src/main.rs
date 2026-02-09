@@ -78,5 +78,5 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    rinch::run_rinch("Hello rinch-dom", 800, 600, app);
+    rinch::run("Hello rinch-dom", 800, 600, app);
 }

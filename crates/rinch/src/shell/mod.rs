@@ -13,6 +13,7 @@ pub mod types;
 
 pub use devtools::{DevToolsPanel, DevToolsState};
 pub use devtools_overlay::render_overlay;
+#[allow(deprecated)]
 pub use rinch_runtime::{run_rinch, run_rinch_with_window_props};
 pub use types::{ElementLayout, HoveredElementInfo, RinchEvent};
 
@@ -43,6 +44,7 @@ use rinch_core::element::ThemeProviderProps;
 ///     run("My App", 800, 600, app);
 /// }
 /// ```
+#[allow(deprecated)]
 pub fn run<F>(title: &str, width: u32, height: u32, component: F)
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
@@ -54,6 +56,7 @@ where
 ///
 /// This sets up theme CSS variables before running the application, making them
 /// available throughout the component tree.
+#[allow(deprecated)]
 pub fn run_with_theme<F>(
     title: &str,
     width: u32,
@@ -70,6 +73,7 @@ pub fn run_with_theme<F>(
 use rinch_core::element::WindowProps;
 
 /// Run a rinch application with full window configuration and theme.
+#[allow(deprecated)]
 pub fn run_with_window_props<F>(component: F, props: WindowProps, theme: Option<ThemeProviderProps>)
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,

@@ -7,7 +7,7 @@
 use std::rc::Rc;
 
 use rinch::prelude::*;
-use rinch::{WindowProps, run_rinch_with_window_props};
+use rinch::{WindowProps, run_with_window_props};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use ui_zoo::{
     init_all_sections, nav_links, overlays_demo_overlays, section_content, theme_controls,
@@ -127,5 +127,5 @@ fn main() {
     // Set up theme CSS (loads into thread-local, picked up by rinch-dom runtime)
     rinch::setup_theme_css(&theme);
 
-    run_rinch_with_window_props(app, window_props);
+    run_with_window_props(app, window_props, Some(theme));
 }

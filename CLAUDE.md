@@ -314,16 +314,14 @@ rsx! {
 }
 ```
 
-**Important:** Clone signals before using in multiple closures:
+**Note:** `Signal` implements `Copy` — you can use the same signal variable in multiple closures without `.clone()`:
 
 ```rust
 let count = use_signal(|| 0);
-let count_display = count.clone();  // Clone for reactive display
-let count_click = count.clone();    // Clone for click handler
 
 rsx! {
-    p { {|| count_display.get().to_string()} }
-    button { onclick: move || count_click.update(|n| *n += 1), "+" }
+    p { {|| count.get().to_string()} }
+    button { onclick: move || count.update(|n| *n += 1), "+" }
 }
 ```
 
@@ -358,15 +356,12 @@ fn app() -> NodeHandle {
     let count = use_signal(|| 0);
     let name = use_signal(|| String::from("World"));
 
-    // Clone for event handlers
-    let count_inc = count.clone();
-
     rsx! {
         div {
             // Use closure syntax {|| ...} for reactive text updates
             h1 { "Hello, " {|| name.get()} "!" }
             p { "Count: " {|| count.get().to_string()} }
-            button { onclick: move || count_inc.update(|n| *n += 1),
+            button { onclick: move || count.update(|n| *n += 1),
                 "Increment"
             }
         }
@@ -539,16 +534,15 @@ fn main() {
 }
 ```
 
-Menu callbacks can modify signals:
+Menu callbacks can modify signals (Signal is Copy, so no clone needed):
 
 ```rust
 let count = use_signal(|| 0);
-let count_reset = count.clone();
 
 // In menu construction:
 MenuEntry::Item(MenuItemProps {
     label: "Reset Counter".into(),
-    onclick: Some(MenuItemCallback::new(move || count_reset.set(0))),
+    onclick: Some(MenuItemCallback::new(move || count.set(0))),
     ..Default::default()
 })
 ```
@@ -803,11 +797,9 @@ use rinch::prelude::*;
 fn app() -> NodeHandle {
     // For custom left section (e.g., menu button)
     let menu_signal = use_signal(|| false);
-    let menu_toggle = menu_signal.clone();
     let left_section: SectionRenderer = Rc::new(move |__scope| {
-        let mt = menu_toggle.clone();
         rsx! {
-            ActionIcon { onclick: move || mt.update(|v| *v = !*v) }
+            ActionIcon { onclick: move || menu_signal.update(|v| *v = !*v) }
         }
     });
 
@@ -901,7 +893,6 @@ use rinch::prelude::*;
 #[component]
 fn counter() -> NodeHandle {
     let count = use_signal(|| 0);
-    let count_inc = count.clone();
 
     rsx! {
         div {
@@ -914,7 +905,7 @@ fn counter() -> NodeHandle {
                 "Progress bar"
             }
 
-            button { onclick: move || count_inc.update(|n| *n += 1),
+            button { onclick: move || count.update(|n| *n += 1),
                 "Increment"
             }
         }
@@ -1050,6 +1041,47 @@ for_each_dom(
 )
 ```
 
+For programmatic `for_each_dom` usage, you can use `rsx!` inside the view closure by binding `__scope`:
+
+```rust
+for_each_dom(
+    __scope,
+    &parent,
+    move || items.get(),
+    |item, __child_scope| {
+        let __scope = __child_scope;  // Enable rsx! in this closure
+        let data = item.downcast::<Item>().unwrap();
+        rsx! { div { {data.name.clone()} } }
+    },
+)
+```
+
+### Reactive Widget Bindings
+
+Some widgets support reactive value binding via `_fn` props:
+
+| Widget | Prop | Type | Purpose |
+|--------|------|------|---------|
+| `Checkbox` | `checked_fn` | `Option<ReactiveBool>` (`Rc<dyn Fn() -> bool>`) | Reactive checked state |
+| `TextInput` | `value_fn` | `Option<ReactiveString>` (`Rc<dyn Fn() -> String>`) | Reactive value binding |
+
+Example - clearing a TextInput after form submission:
+```rust
+let input_text = use_signal(|| String::new());
+
+rsx! {
+    TextInput {
+        placeholder: "Type here...",
+        value_fn: Some(Rc::new(move || input_text.get()) as ReactiveString),
+        oninput: move |value: String| input_text.set(value),
+    }
+    Button {
+        onclick: move || input_text.set(String::new()),  // Clears the input
+        "Clear"
+    }
+}
+```
+
 ### RSX Prop Transformation Rules
 
 The `rsx!` macro applies automatic transformations when setting widget props:
@@ -1068,7 +1100,7 @@ The `rsx!` macro applies automatic transformations when setting widget props:
 - String literals are auto-wrapped in `Some(String::from(...))`, but expression props are passed through as-is
 - For expression props where the widget expects `Option<String>`, wrap explicitly: `prop: Some("value".into())`
 - Don't double-wrap: `icon: Icon::Check` works (auto-wrapped), but `icon: Some(Icon::Check)` becomes `Some(Some(...))`
-- `_fn` suffix props (e.g., `checked_fn`) have no special macro handling -- they follow the same rules
+- `_fn` suffix props (e.g., `checked_fn`, `value_fn`) have no special macro handling -- they follow the same rules
 
 ## Iterative Development with MCP (IMPORTANT)
 

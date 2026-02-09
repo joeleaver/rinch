@@ -36,7 +36,7 @@
 //! Components must accept a `&mut RenderScope` parameter and return a `NodeHandle`.
 
 use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
+use quote::{quote, quote_spanned};
 use syn::Expr;
 
 use crate::element::RsxElement;
@@ -358,13 +358,16 @@ fn element_to_dom_show(
     ctx: &mut DomCodegenContext,
     parent_var: &syn::Ident,
 ) -> TokenStream2 {
+    // Get the span of the "Show" identifier for better error reporting
+    let span = element.name.span();
+
     // Find the 'when' prop
     let when_prop = element.props.iter().find(|p| p.name == "when");
 
     let when_expr = match when_prop {
         Some(prop) => &prop.value,
         None => {
-            return quote! {
+            return quote_spanned! {span=>
                 compile_error!("Show component requires 'when' prop")
             };
         }
@@ -448,7 +451,8 @@ fn element_to_dom_show(
     };
 
     // Generate call to show_dom - inserts marker + content into parent directly
-    quote! {
+    // Use quote_spanned to point errors at the Show keyword
+    quote_spanned! {span=>
         {
             let __when_closure = #when_expr;
             ::rinch::core::show_dom(
@@ -471,13 +475,16 @@ fn element_to_dom_for(
     _ctx: &mut DomCodegenContext,
     parent_var: &syn::Ident,
 ) -> TokenStream2 {
+    // Get the span of the "For" identifier for better error reporting
+    let span = element.name.span();
+
     // Find the 'each' prop (returns Vec<ForItem>)
     let each_prop = element.props.iter().find(|p| p.name == "each");
 
     let each_expr = match each_prop {
         Some(prop) => &prop.value,
         None => {
-            return quote! {
+            return quote_spanned! {span=>
                 compile_error!("For component requires 'each' prop")
             };
         }
@@ -487,7 +494,7 @@ fn element_to_dom_for(
     // In RSX: For { each: ..., |item| rsx! { ... } }
     // This is represented as a child expression containing the closure
     if element.children.is_empty() {
-        return quote! {
+        return quote_spanned! {span=>
             compile_error!("For component requires a view function as child: |item| rsx! { ... }")
         };
     }
@@ -505,7 +512,7 @@ fn element_to_dom_for(
             }
         }
         _ => {
-            return quote! {
+            return quote_spanned! {span=>
                 compile_error!("For component view must be a closure: |item| rsx! { ... }")
             };
         }
@@ -513,7 +520,8 @@ fn element_to_dom_for(
 
     // Generate call to for_each_dom - inserts marker + items into parent directly
     // The view function is constructed inside the callback so it captures the child scope
-    quote! {
+    // Use quote_spanned to point errors at the For keyword
+    quote_spanned! {span=>
         {
             let __each_closure = #each_expr;
             ::rinch::core::for_each_dom(
@@ -525,7 +533,7 @@ fn element_to_dom_for(
                     let __view_fn = #view_closure;
                     __view_fn(__item)
                 }
-            )
+            );
         }
     }
 }
