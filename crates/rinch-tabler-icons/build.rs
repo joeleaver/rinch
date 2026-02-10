@@ -12,9 +12,9 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-const OUTLINE_URL: &str = "https://unpkg.com/@tabler/icons@latest/tabler-nodes-outline.json";
-const FILLED_URL: &str = "https://unpkg.com/@tabler/icons@latest/tabler-nodes-filled.json";
-const ICONS_JSON_URL: &str = "https://unpkg.com/@tabler/icons@latest/icons.json";
+const OUTLINE_URL: &str = "https://unpkg.com/@tabler/icons@3.36.1/tabler-nodes-outline.json";
+const FILLED_URL: &str = "https://unpkg.com/@tabler/icons@3.36.1/tabler-nodes-filled.json";
+const ICONS_JSON_URL: &str = "https://unpkg.com/@tabler/icons@3.36.1/icons.json";
 
 /// Type alias for icon path data: (outline_paths, filled_paths)
 type IconPaths = (Option<Vec<String>>, Option<Vec<String>>);
@@ -392,8 +392,38 @@ fn extract_paths(elements: &Value) -> Option<Vec<String>> {
 }
 
 fn download(url: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let response = ureq::get(url).call()?;
-    Ok(response.into_body().read_to_string()?)
+    let mut last_err = None;
+    for attempt in 1..=3 {
+        match ureq::get(url).call() {
+            Ok(response) => match response.into_body().read_to_string() {
+                Ok(body) => {
+                    // Validate it's complete JSON before accepting
+                    if serde_json::from_str::<serde_json::Value>(&body).is_ok() {
+                        return Ok(body);
+                    }
+                    let msg = format!(
+                        "Attempt {}: truncated response ({} bytes)",
+                        attempt,
+                        body.len()
+                    );
+                    eprintln!("{}", msg);
+                    last_err = Some(msg);
+                }
+                Err(e) => {
+                    eprintln!("Attempt {}: read error: {}", attempt, e);
+                    last_err = Some(e.to_string());
+                }
+            },
+            Err(e) => {
+                eprintln!("Attempt {}: request error: {}", attempt, e);
+                last_err = Some(e.to_string());
+            }
+        }
+        if attempt < 3 {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    }
+    Err(format!("Failed after 3 attempts: {}", last_err.unwrap_or_default()).into())
 }
 
 fn to_variant_name(name: &str) -> String {
