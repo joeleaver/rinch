@@ -605,6 +605,10 @@ fn element_to_dom_widget(element: &RsxElement, ctx: &mut DomCodegenContext) -> T
                 quote! { #name: Some((#value).into()) }
             } else if name_str == "icon" || name_str.ends_with("_icon") {
                 quote! { #name: Some(#value) }
+            } else if name_str.ends_with("_fn") {
+                // Auto-wrap _fn reactive props: closure → Some(Rc::new(closure))
+                // Rust's type coercion handles Rc<closure> → Rc<dyn Fn() -> T>
+                quote! { #name: Some(std::rc::Rc::new(#value)) }
             } else if crate::helpers::is_literal_bool(value) {
                 quote! { #name: #value }
             } else if crate::helpers::is_literal_int(value) {

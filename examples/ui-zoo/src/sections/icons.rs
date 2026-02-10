@@ -2,7 +2,6 @@
 
 use rinch::prelude::*;
 use rinch_tabler_icons::{ALL_ICONS, ICON_COUNT, TablerIcon, TablerIconStyle, render_tabler_icon};
-use std::rc::Rc;
 
 /// Number of icons per page (10 rows x 10 columns)
 const ICONS_PER_PAGE: usize = 100;
@@ -69,7 +68,7 @@ pub fn icons_section() -> NodeHandle {
                     // Style toggle
                     Switch {
                         label: Some("Filled Style".to_string()),
-                        checked_fn: Some(Rc::new(move || use_filled.get())),
+                        checked_fn: move || use_filled.get(),
                         onchange: move || use_filled.update(|v| *v = !*v)
                     }
                 }

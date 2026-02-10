@@ -88,7 +88,7 @@ fn app() -> NodeHandle {
 
             // Navigation Drawer
             Drawer {
-                opened_fn: Some(Rc::new(move || drawer_opened.get())),
+                opened_fn: move || drawer_opened.get(),
                 onclose: move || drawer_opened.set(false),
                 position: "left",
                 size: "xs",

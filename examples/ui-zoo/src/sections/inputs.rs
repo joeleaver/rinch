@@ -1,7 +1,6 @@
 //! Inputs section - Form controls and input components.
 
 use rinch::prelude::*;
-use std::rc::Rc;
 
 /// State for the Inputs section, stored in context.
 #[derive(Clone)]
@@ -191,8 +190,8 @@ pub fn inputs_section() -> NodeHandle {
                         PasswordInput {
                             label: "Password",
                             placeholder: "Enter password",
-                            value_fn: Some(std::rc::Rc::new(move || password_value.get())),
-                            visible_fn: Some(std::rc::Rc::new(move || password_visible_sig.get())),
+                            value_fn: move || password_value.get(),
+                            visible_fn: move || password_visible_sig.get(),
                             oninput: move |new_value| password_value.set(new_value),
                             ontoggle: move || password_visible_sig.update(|v| *v = !*v)
                         }
@@ -249,12 +248,12 @@ pub fn inputs_section() -> NodeHandle {
                         Space { h: "xs" }
                         Checkbox {
                             label: "Accept terms",
-                            checked_fn: Some(Rc::new(move || check1.get())),
+                            checked_fn: move || check1.get(),
                             onchange: toggle(check1)
                         }
                         Checkbox {
                             label: "Newsletter",
-                            checked_fn: Some(Rc::new(move || check2.get())),
+                            checked_fn: move || check2.get(),
                             onchange: toggle(check2)
                         }
                         Checkbox { label: "Disabled", disabled: true }
@@ -270,22 +269,22 @@ pub fn inputs_section() -> NodeHandle {
                         Space { h: "xs" }
                         Checkbox {
                             label: "Extra small", size: "xs",
-                            checked_fn: Some(Rc::new(move || check_xs.get())),
+                            checked_fn: move || check_xs.get(),
                             onchange: toggle(check_xs)
                         }
                         Checkbox {
                             label: "Small", size: "sm",
-                            checked_fn: Some(Rc::new(move || check_sm.get())),
+                            checked_fn: move || check_sm.get(),
                             onchange: toggle(check_sm)
                         }
                         Checkbox {
                             label: "Medium", size: "md",
-                            checked_fn: Some(Rc::new(move || check_md.get())),
+                            checked_fn: move || check_md.get(),
                             onchange: toggle(check_md)
                         }
                         Checkbox {
                             label: "Large", size: "lg",
-                            checked_fn: Some(Rc::new(move || check_lg.get())),
+                            checked_fn: move || check_lg.get(),
                             onchange: toggle(check_lg)
                         }
                     }
@@ -300,17 +299,17 @@ pub fn inputs_section() -> NodeHandle {
                         RadioGroup { label: "Select a plan",
                             Radio {
                                 name: "plan", value: "free", label: "Free - $0/mo",
-                                checked_fn: Some(Rc::new(move || selected_plan.get() == "free")),
+                                checked_fn: move || selected_plan.get() == "free",
                                 onchange: move || selected_plan.set("free".to_string())
                             }
                             Radio {
                                 name: "plan", value: "pro", label: "Pro - $10/mo",
-                                checked_fn: Some(Rc::new(move || selected_plan.get() == "pro")),
+                                checked_fn: move || selected_plan.get() == "pro",
                                 onchange: move || selected_plan.set("pro".to_string())
                             }
                             Radio {
                                 name: "plan", value: "enterprise", label: "Enterprise - $50/mo",
-                                checked_fn: Some(Rc::new(move || selected_plan.get() == "enterprise")),
+                                checked_fn: move || selected_plan.get() == "enterprise",
                                 onchange: move || selected_plan.set("enterprise".to_string())
                             }
                         }
@@ -325,12 +324,12 @@ pub fn inputs_section() -> NodeHandle {
                         Space { h: "xs" }
                         Switch {
                             label: "Notifications",
-                            checked_fn: Some(Rc::new(move || switch1.get())),
+                            checked_fn: move || switch1.get(),
                             onchange: toggle(switch1)
                         }
                         Switch {
                             label: "Dark mode",
-                            checked_fn: Some(Rc::new(move || switch2.get())),
+                            checked_fn: move || switch2.get(),
                             onchange: toggle(switch2)
                         }
                         Switch { label: "Disabled", disabled: true }
@@ -345,22 +344,22 @@ pub fn inputs_section() -> NodeHandle {
                         Space { h: "xs" }
                         Switch {
                             label: "Extra small", size: "xs",
-                            checked_fn: Some(Rc::new(move || switch_xs.get())),
+                            checked_fn: move || switch_xs.get(),
                             onchange: toggle(switch_xs)
                         }
                         Switch {
                             label: "Small", size: "sm",
-                            checked_fn: Some(Rc::new(move || switch_sm.get())),
+                            checked_fn: move || switch_sm.get(),
                             onchange: toggle(switch_sm)
                         }
                         Switch {
                             label: "Medium", size: "md",
-                            checked_fn: Some(Rc::new(move || switch_md.get())),
+                            checked_fn: move || switch_md.get(),
                             onchange: toggle(switch_md)
                         }
                         Switch {
                             label: "Large", size: "lg",
-                            checked_fn: Some(Rc::new(move || switch_lg.get())),
+                            checked_fn: move || switch_lg.get(),
                             onchange: toggle(switch_lg)
                         }
                     }

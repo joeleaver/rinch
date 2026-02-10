@@ -1,7 +1,6 @@
 //! Feedback section - Alert, Progress, Loader, Skeleton with interactive demos.
 
 use rinch::prelude::*;
-use std::rc::Rc;
 
 /// State for the Feedback section, stored in context.
 #[derive(Clone)]
@@ -182,7 +181,7 @@ pub fn feedback_section() -> NodeHandle {
                         }
                     }
                     Notification {
-                        opened_fn: Some(Rc::new(move || notification_visible.get())),
+                        opened_fn: move || notification_visible.get(),
                         onclose: move || notification_visible.set(false),
                         title: "Saved!",
                         color: "green",
@@ -190,7 +189,7 @@ pub fn feedback_section() -> NodeHandle {
                         "Your changes have been saved successfully."
                     }
                     Notification {
-                        opened_fn: Some(Rc::new(move || notification_error_visible.get())),
+                        opened_fn: move || notification_error_visible.get(),
                         onclose: move || notification_error_visible.set(false),
                         title: "Error",
                         color: "red",

@@ -7,7 +7,6 @@ pub mod sections;
 
 use rinch::prelude::*;
 use sections::*;
-use std::rc::Rc;
 
 /// Initialize all section state contexts.
 ///
@@ -38,62 +37,62 @@ pub fn nav_links<F: Fn() + 'static>(
         Stack { gap: "0",
             NavLink {
                 label: Some("Overview".to_string()),
-                active_fn: Some(Rc::new(move || current_section.get() == 0)),
+                active_fn: move || current_section.get() == 0,
                 onclick: nav(0)
             }
             NavLink {
                 label: Some("Buttons".to_string()),
-                active_fn: Some(Rc::new(move || current_section.get() == 1)),
+                active_fn: move || current_section.get() == 1,
                 onclick: nav(1)
             }
             NavLink {
                 label: Some("Inputs".to_string()),
-                active_fn: Some(Rc::new(move || current_section.get() == 2)),
+                active_fn: move || current_section.get() == 2,
                 onclick: nav(2)
             }
             NavLink {
                 label: Some("Typography".to_string()),
-                active_fn: Some(Rc::new(move || current_section.get() == 3)),
+                active_fn: move || current_section.get() == 3,
                 onclick: nav(3)
             }
             NavLink {
                 label: Some("Layout".to_string()),
-                active_fn: Some(Rc::new(move || current_section.get() == 4)),
+                active_fn: move || current_section.get() == 4,
                 onclick: nav(4)
             }
             NavLink {
                 label: Some("Navigation".to_string()),
-                active_fn: Some(Rc::new(move || current_section.get() == 5)),
+                active_fn: move || current_section.get() == 5,
                 onclick: nav(5)
             }
             NavLink {
                 label: Some("Data Display".to_string()),
-                active_fn: Some(Rc::new(move || current_section.get() == 6)),
+                active_fn: move || current_section.get() == 6,
                 onclick: nav(6)
             }
             NavLink {
                 label: Some("Feedback".to_string()),
-                active_fn: Some(Rc::new(move || current_section.get() == 7)),
+                active_fn: move || current_section.get() == 7,
                 onclick: nav(7)
             }
             NavLink {
                 label: Some("Overlays".to_string()),
-                active_fn: Some(Rc::new(move || current_section.get() == 8)),
+                active_fn: move || current_section.get() == 8,
                 onclick: nav(8)
             }
             NavLink {
                 label: Some("Icons".to_string()),
-                active_fn: Some(Rc::new(move || current_section.get() == 9)),
+                active_fn: move || current_section.get() == 9,
                 onclick: nav(9)
             }
             NavLink {
                 label: Some("Tree".to_string()),
-                active_fn: Some(Rc::new(move || current_section.get() == 10)),
+                active_fn: move || current_section.get() == 10,
                 onclick: nav(10)
             }
             NavLink {
                 label: Some("Rich Text Editor".to_string()),
-                active_fn: Some(Rc::new(move || current_section.get() == 11)),
+                active_fn: move || current_section.get() == 11,
                 onclick: nav(11)
             }
         }
@@ -113,7 +112,7 @@ pub fn theme_controls(primary_color: Signal<&'static str>, dark_mode: Signal<boo
 
             Switch {
                 label: Some("Dark Mode".to_string()),
-                checked_fn: Some(Rc::new(move || dark_mode.get())),
+                checked_fn: move || dark_mode.get(),
                 onchange: toggle_dark
             }
 
@@ -182,7 +181,7 @@ pub fn overlays_demo_overlays(__scope: &mut RenderScope) -> NodeHandle {
         Fragment {
             // Basic Modal
             Modal {
-                opened_fn: Some(Rc::new(move || modal_opened.get())),
+                opened_fn: move || modal_opened.get(),
                 onclose: move || modal_opened.set(false),
                 title: "Welcome!",
 
@@ -198,7 +197,7 @@ pub fn overlays_demo_overlays(__scope: &mut RenderScope) -> NodeHandle {
 
             // Large Modal
             Modal {
-                opened_fn: Some(Rc::new(move || modal_lg_opened.get())),
+                opened_fn: move || modal_lg_opened.get(),
                 onclose: move || modal_lg_opened.set(false),
                 title: "Large Modal",
                 size: "lg",
@@ -217,7 +216,7 @@ pub fn overlays_demo_overlays(__scope: &mut RenderScope) -> NodeHandle {
 
             // Left Drawer
             Drawer {
-                opened_fn: Some(Rc::new(move || drawer_opened.get())),
+                opened_fn: move || drawer_opened.get(),
                 onclose: move || drawer_opened.set(false),
                 title: "Navigation",
                 position: "left",
@@ -232,7 +231,7 @@ pub fn overlays_demo_overlays(__scope: &mut RenderScope) -> NodeHandle {
 
             // Right Drawer
             Drawer {
-                opened_fn: Some(Rc::new(move || drawer_right_opened.get())),
+                opened_fn: move || drawer_right_opened.get(),
                 onclose: move || drawer_right_opened.set(false),
                 title: "Details Panel",
                 position: "right",
@@ -249,7 +248,7 @@ pub fn overlays_demo_overlays(__scope: &mut RenderScope) -> NodeHandle {
 
             // Notification
             Notification {
-                opened_fn: Some(Rc::new(move || notification_visible.get())),
+                opened_fn: move || notification_visible.get(),
                 onclose: move || notification_visible.set(false),
                 title: "Success!",
                 color: "green",

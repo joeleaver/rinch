@@ -902,7 +902,32 @@ impl RinchApp {
     fn handle_delete(&mut self) {}
     fn handle_arrow_left(&mut self, _shift: bool, _ctrl: bool) {}
     fn handle_arrow_right(&mut self, _shift: bool, _ctrl: bool) {}
-    fn handle_enter(&mut self) {}
+    fn handle_enter(&mut self) {
+        // Check if a text input is focused and has an onsubmit handler
+        if self.focused_input_handler_id.is_some()
+            && let Some(doc) = &self.doc
+        {
+            let d = doc.borrow();
+            // Find the focused input node by its data-oninput handler
+            let submit_handler_id = d.tree.nodes.iter().find_map(|(_, node)| {
+                // Find node with matching data-oninput
+                node.attributes
+                    .get("data-oninput")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .filter(|&h| Some(h) == self.focused_input_handler_id)
+                    .and_then(|_| {
+                        // Found the focused input - check for data-onsubmit
+                        node.attributes
+                            .get("data-onsubmit")
+                            .and_then(|s| s.parse::<usize>().ok())
+                    })
+            });
+            drop(d);
+            if let Some(handler_id) = submit_handler_id {
+                events::dispatch_event(events::EventHandlerId(handler_id));
+            }
+        }
+    }
     fn handle_arrow_up(&mut self, _shift: bool) {}
     fn handle_arrow_down(&mut self, _shift: bool) {}
     fn handle_home(&mut self, _shift: bool) {}

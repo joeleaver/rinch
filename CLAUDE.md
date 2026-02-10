@@ -349,13 +349,16 @@ rsx! {
 }
 ```
 
-**Note:** `Signal` implements `Copy` — you can use the same signal variable in multiple closures without `.clone()`:
+**Note:** Both `Signal` and `Memo` implement `Copy` — no `.clone()` needed before closures:
 
 ```rust
 let count = use_signal(|| 0);
+let doubled = use_derived(move || count.get() * 2);
 
 rsx! {
+    // Both count (Signal) and doubled (Memo) can be used in multiple closures without .clone()
     p { {|| count.get().to_string()} }
+    p { {|| doubled.get().to_string()} }
     button { onclick: move || count.update(|n| *n += 1), "+" }
 }
 ```
@@ -896,6 +899,8 @@ The patches:
 2. `device/resource.rs` - Use hardware format features instead of WebGPU defaults
 3. `present.rs` - Use adapter format features for surface textures
 
+**Downstream projects** must copy the `[patch.crates-io]` section from the workspace `Cargo.toml` into their own `Cargo.toml` for transparent windows to work on Windows. This is required because Cargo patches are not transitive — they only apply to the workspace that declares them.
+
 ## Fine-Grained Reactive Rendering
 
 Rinch uses fine-grained reactive rendering for surgical DOM updates. Instead of regenerating HTML on every signal change, reactive expressions become Effects that update specific DOM nodes.
@@ -1059,6 +1064,7 @@ When the list changes, `For` uses keyed reconciliation (LIS algorithm) to comput
 - **Insert**: New items are rendered and added at the correct position
 - **Remove**: Deleted items have their DOM nodes removed
 - **Move**: Reordered items are repositioned without re-rendering
+- **Update**: Items with matching keys but changed data are re-rendered in place
 
 For programmatic usage, use `for_each_dom()` directly:
 
@@ -1093,7 +1099,7 @@ for_each_dom(
 
 ### Reactive Widget Bindings
 
-Some widgets support reactive value binding via `_fn` props:
+Some widgets support reactive value binding via `_fn` props. The `rsx!` macro auto-wraps `_fn` props — just pass a closure:
 
 | Widget | Prop | Type | Purpose |
 |--------|------|------|---------|
@@ -1107,8 +1113,9 @@ let input_text = use_signal(|| String::new());
 rsx! {
     TextInput {
         placeholder: "Type here...",
-        value_fn: Some(Rc::new(move || input_text.get()) as ReactiveString),
+        value_fn: move || input_text.get(),  // Macro auto-wraps in Some(Rc::new(...))
         oninput: move |value: String| input_text.set(value),
+        onsubmit: move || println!("Submitted: {}", input_text.get()),
     }
     Button {
         onclick: move || input_text.set(String::new()),  // Clears the input
@@ -1125,6 +1132,7 @@ The `rsx!` macro **automatically wraps** widget prop values. You must NOT manual
 |---|---|---|
 | `oninput` | `oninput: move \|val\| do_thing(val)` | `Some(InputCallback::new(move \|val\| do_thing(val)))` |
 | `on*` (events) | `onclick: move \|\| do_thing()` | `Some((move \|\| do_thing()).into())` |
+| `*_fn` (reactive) | `value_fn: move \|\| text.get()` | `Some(Rc::new(move \|\| text.get()))` |
 | `icon`, `*_icon` | `icon: Icon::Check` | `Some(Icon::Check)` |
 | bool literal | `disabled: true` | `true` (no wrapping) |
 | int literal | `size: 42` | `Some(42)` |
@@ -1157,7 +1165,8 @@ Button { variant: "filled" }
 
 **Additional notes:**
 - For expression props where the widget expects `Option<String>`, wrap explicitly: `prop: Some("value".into())`
-- `_fn` suffix props (e.g., `checked_fn`, `value_fn`) follow the same rules — pass the value directly, don't wrap in Some
+- `_fn` suffix props (e.g., `checked_fn`, `value_fn`) are auto-wrapped — just pass the closure directly, don't wrap in `Some(Rc::new(...))`
+- **Note:** ThemeProvider props (`primary_color_fn`, `dark_mode_fn`) use a different codegen path and still require manual `Rc::new()` wrapping
 
 **Widget Props vs HTML Attributes:**
 
@@ -1192,6 +1201,8 @@ Text {
 ```
 
 **Widget props are static by default.** Props like `color:`, `variant:`, `size:` are set once at render time. Only `style:` and `class:` support reactive closures on widgets. For reactive widget-specific props, use `_fn` variants where available (e.g., `checked_fn`, `value_fn`).
+
+> **Reactive Props Pitfall:** If you pass a signal value like `variant: my_signal.get()` to a widget, the value is captured once at render time and will NOT update when the signal changes. To make widget props reactive, use `_fn` variants where available, or use reactive `style:`/`class:` closures for visual changes. Only HTML element attributes support arbitrary reactive closures via `{|| expr}`.
 
 ## Iterative Development with MCP (IMPORTANT)
 

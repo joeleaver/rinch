@@ -218,6 +218,62 @@ impl SignalStore {
 }
 
 // ============================================================================
+// Memo Storage
+// ============================================================================
+
+thread_local! {
+    static MEMO_STORE: RefCell<MemoStore> = RefCell::new(MemoStore::new());
+}
+
+struct MemoSlot {
+    inner: Rc<dyn Any>, // Type-erased Rc<MemoInner<T>>
+    generation: u32,
+}
+
+struct MemoStore {
+    slots: Vec<Option<MemoSlot>>,
+    free_list: Vec<u32>,
+    next_gen: u32,
+}
+
+impl MemoStore {
+    fn new() -> Self {
+        Self {
+            slots: Vec::new(),
+            free_list: Vec::new(),
+            next_gen: 1,
+        }
+    }
+
+    fn alloc(&mut self, inner: Rc<dyn Any>) -> (u32, u32) {
+        let generation = self.next_gen;
+        self.next_gen = self.next_gen.wrapping_add(1);
+        if self.next_gen == 0 {
+            self.next_gen = 1;
+        }
+
+        let slot = MemoSlot { inner, generation };
+
+        if let Some(idx) = self.free_list.pop() {
+            self.slots[idx as usize] = Some(slot);
+            (idx, generation)
+        } else {
+            let idx = self.slots.len() as u32;
+            self.slots.push(Some(slot));
+            (idx, generation)
+        }
+    }
+
+    fn get_inner(&self, id: u32, generation: u32) -> Option<Rc<dyn Any>> {
+        self.slots
+            .get(id as usize)?
+            .as_ref()
+            .filter(|s| s.generation == generation)
+            .map(|s| Rc::clone(&s.inner))
+    }
+}
+
+// ============================================================================
 // Signal
 // ============================================================================
 
@@ -648,8 +704,19 @@ fn flush_effects() {
 /// doubled.get(); // Returns 6 (recomputed)
 /// doubled.get(); // Returns 6 (cached)
 /// ```
-pub struct Memo<T> {
-    inner: Rc<MemoInner<T>>,
+pub struct Memo<T: 'static> {
+    id: u32,
+    generation: u32,
+    _phantom: PhantomData<T>,
+}
+
+// Manual Copy/Clone because PhantomData<T> would require T: Copy for derive
+impl<T: 'static> Copy for Memo<T> {}
+
+impl<T: 'static> Clone for Memo<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 
 struct MemoInner<T> {
@@ -706,36 +773,55 @@ impl<T: Clone + 'static> Memo<T> {
             }));
         });
 
-        Self { inner }
+        // Store in MEMO_STORE and return Copy handle
+        let (store_id, generation) =
+            MEMO_STORE.with(|store| store.borrow_mut().alloc(inner as Rc<dyn Any>));
+
+        Self {
+            id: store_id,
+            generation,
+            _phantom: PhantomData,
+        }
     }
 
     /// Get the current value, recomputing if necessary.
     pub fn get(&self) -> T {
+        // Clone Rc out of store, releasing the borrow immediately
+        let inner_any = MEMO_STORE.with(|store| {
+            store
+                .borrow()
+                .get_inner(self.id, self.generation)
+                .expect("Memo::get() on freed memo")
+        });
+
+        let inner = inner_any
+            .downcast::<MemoInner<T>>()
+            .expect("Memo type mismatch (internal error)");
+
         // Subscribe current observer to this memo
         RUNTIME.with(|rt| {
             let rt = rt.borrow();
             if let Some(&observer) = rt.observer_stack.last() {
-                self.inner.subscribers.borrow_mut().insert(observer);
+                inner.subscribers.borrow_mut().insert(observer);
             }
         });
 
         // Recompute if dirty
-        if self.inner.dirty.get() {
-            // Push memo as observer while computing
+        if inner.dirty.get() {
             RUNTIME.with(|rt| {
-                rt.borrow_mut().observer_stack.push(self.inner.id);
+                rt.borrow_mut().observer_stack.push(inner.id);
             });
 
-            let value = (self.inner.f.borrow())();
-            *self.inner.value.borrow_mut() = Some(value);
-            self.inner.dirty.set(false);
+            let value = (inner.f.borrow())();
+            *inner.value.borrow_mut() = Some(value);
+            inner.dirty.set(false);
 
             RUNTIME.with(|rt| {
                 rt.borrow_mut().observer_stack.pop();
             });
         }
 
-        self.inner
+        inner
             .value
             .borrow()
             .clone()
@@ -743,20 +829,19 @@ impl<T: Clone + 'static> Memo<T> {
     }
 }
 
-impl<T> Clone for Memo<T> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Rc::clone(&self.inner),
-        }
-    }
-}
-
 impl<T: fmt::Debug + Clone + 'static> fmt::Debug for Memo<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Memo")
-            .field("value", &*self.inner.value.borrow())
-            .field("dirty", &self.inner.dirty.get())
-            .finish()
+        let inner_any = MEMO_STORE.with(|store| store.borrow().get_inner(self.id, self.generation));
+        if let Some(inner_any) = inner_any
+            && let Ok(inner) = inner_any.downcast::<MemoInner<T>>()
+        {
+            return f
+                .debug_struct("Memo")
+                .field("value", &*inner.value.borrow())
+                .field("dirty", &inner.dirty.get())
+                .finish();
+        }
+        f.debug_struct("Memo").field("error", &"freed").finish()
     }
 }
 
@@ -1279,5 +1364,21 @@ mod tests {
 
         // Cleanup should only run once
         assert_eq!(cleanup_count.get(), 1);
+    }
+
+    #[test]
+    fn memo_is_copy() {
+        let count = Signal::new(2);
+        let doubled = Memo::new(move || count.get() * 2);
+
+        // Memo is Copy - can use in multiple closures without .clone()
+        let a = doubled;
+        let b = doubled;
+        assert_eq!(a.get(), 4);
+        assert_eq!(b.get(), 4);
+
+        count.set(5);
+        assert_eq!(a.get(), 10);
+        assert_eq!(b.get(), 10);
     }
 }

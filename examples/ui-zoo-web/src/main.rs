@@ -278,6 +278,22 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
         if events::dispatch_keyboard_event(&key_data) {
             event.prevent_default();
             event.stop_propagation();
+        } else if event.key() == "Enter" {
+            // Check if the target element (or ancestor) has data-onsubmit
+            if let Some(target) = event.target() {
+                if let Ok(el) = target.dyn_into::<web_sys::Element>() {
+                    let mut current: Option<web_sys::Element> = Some(el);
+                    while let Some(el) = current {
+                        if let Some(handler_str) = el.get_attribute("data-onsubmit") {
+                            if let Ok(handler_id) = handler_str.parse::<usize>() {
+                                events::dispatch_event(events::EventHandlerId(handler_id));
+                                break;
+                            }
+                        }
+                        current = el.parent_element();
+                    }
+                }
+            }
         }
     }) as Box<dyn FnMut(_)>);
     browser_doc

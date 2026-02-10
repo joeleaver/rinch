@@ -93,7 +93,6 @@ struct ItemState {
     /// The root node handle for this item.
     node: NodeHandle,
     /// The ForItem data (stored for re-rendering if needed).
-    #[allow(dead_code)]
     item: ForItem,
 }
 
@@ -191,8 +190,21 @@ where
         let new_items_map: HashMap<String, &ForItem> =
             new_items.iter().map(|i| (i.key.clone(), i)).collect();
 
-        // Skip if keys haven't changed
+        // Keys match — re-render each item with new data
         if old_keys == new_keys {
+            let mut state = items_state_clone.borrow_mut();
+            for item in &new_items {
+                if let Some(old_state) = state.get_mut(&item.key)
+                    && let Some(doc) = doc_weak_clone.upgrade()
+                {
+                    let mut child_scope = RenderScope::new(doc, parent_id);
+                    let new_node = view_clone(item, &mut child_scope);
+                    old_state.node.insert_after(&new_node);
+                    old_state.node.remove();
+                    old_state.node = new_node;
+                    old_state.item = item.clone();
+                }
+            }
             return;
         }
 

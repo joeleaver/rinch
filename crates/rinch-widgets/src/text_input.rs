@@ -3,7 +3,7 @@
 //! A single-line text input field with label and error support.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{InputCallback, Widget};
+use rinch_core::{InputCallback, Widget, WidgetCallback};
 use std::rc::Rc;
 
 /// Reactive callback type for string state.
@@ -76,6 +76,8 @@ pub struct TextInput {
     pub value_fn: Option<ReactiveString>,
     /// Callback when input value changes.
     pub oninput: Option<InputCallback>,
+    /// Callback when Enter is pressed (form submission).
+    pub onsubmit: Option<WidgetCallback>,
 }
 
 impl std::fmt::Debug for TextInput {
@@ -93,6 +95,7 @@ impl std::fmt::Debug for TextInput {
             .field("value", &self.value)
             .field("value_fn", &self.value_fn.as_ref().map(|_| "<reactive>"))
             .field("oninput", &self.oninput.as_ref().map(|_| "<callback>"))
+            .field("onsubmit", &self.onsubmit.as_ref().map(|_| "<callback>"))
             .finish()
     }
 }
@@ -179,6 +182,15 @@ impl Widget for TextInput {
                 callback.invoke(value);
             });
             input.set_attribute("data-oninput", &handler_id.to_string());
+        }
+
+        // Submit handler (Enter key)
+        if let Some(callback) = &self.onsubmit {
+            let callback = callback.clone();
+            let handler_id = __scope.register_handler(move || {
+                callback.invoke();
+            });
+            input.set_attribute("data-onsubmit", &handler_id.0.to_string());
         }
 
         container.append_child(&input);
