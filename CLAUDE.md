@@ -330,6 +330,17 @@ impl Widget for MyButton {
 }
 ```
 
+## Widget Props
+
+For a complete reference of every widget's props (fields, types, defaults), see [`docs/src/guide/widget-props.md`](docs/src/guide/widget-props.md).
+
+**Key points:**
+- CSS shorthand props (`w`, `h`, `m`, `p`, `maw`, `px`, `my`, etc.) work on all HTML elements and widgets. They expand to `set_style()` calls. Spacing scale values (`xs`, `sm`, `md`, `lg`, `xl`) auto-resolve to `var(--rinch-spacing-{value})`. Example: `div { p: "md", maw: "600px" }`. See `docs/src/guide/rsx-syntax.md#style-shorthands` for the full list.
+- `Stack` and `Group` both have `align` and `justify` props for flex alignment — no need for `style:` for those.
+- All widget props accept reactive closures `{|| expr}` for automatic re-rendering when signals change.
+- `_fn` suffix props (e.g., `value_fn`, `checked_fn`, `opened_fn`) provide surgical DOM updates without full widget re-render.
+- The `rsx!` macro auto-wraps prop values — do NOT manually wrap in `Some(...)`, `Rc::new(...)`, or `WidgetCallback::new(...)`.
+
 ## Reactive Patterns in RSX
 
 Use closure syntax `{|| expr}` for reactive expressions that update automatically:
@@ -347,6 +358,20 @@ rsx! {
     // Reactive attribute
     div { class: {|| if count.get() > 5 { "high" } else { "low" }}, "Value" }
 }
+```
+
+**Important:** The `{|| ...}` pattern requires the closure to be the direct expression inside the braces. Multi-statement block expressions that evaluate to a closure are NOT treated as reactive:
+
+```rust
+// ✅ CORRECT: closure is the direct expression
+div { style: {|| format!("width: {}px", count.get() * 10)} }
+
+// ❌ WRONG: block with multiple statements — not detected as reactive
+div { style: { let m = 10; move || format!("width: {}px", count.get() * m) } }
+
+// ✅ FIX: compute intermediate values outside RSX or inside the closure body
+let m = 10;
+rsx! { div { style: {move || format!("width: {}px", count.get() * m)} } }
 ```
 
 **Note:** Both `Signal` and `Memo` implement `Copy` — no `.clone()` needed before closures:

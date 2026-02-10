@@ -40,7 +40,10 @@ use quote::{quote, quote_spanned};
 use syn::Expr;
 
 use crate::element::RsxElement;
-use crate::helpers::{get_closure_expr, is_event_prop, is_literal_expr, is_void_element};
+use crate::helpers::{
+    expand_style_shorthand, get_closure_expr, is_event_prop, is_literal_expr, is_void_element,
+    resolve_spacing_value,
+};
 use crate::node::RsxNode;
 
 /// Context for DOM code generation.
@@ -260,11 +263,21 @@ fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) -> Tok
     let tag = element.name.to_string();
     let elem_var = ctx.next_var("elem");
 
-    // Separate event handlers from regular attributes
-    let (event_props, attr_props): (Vec<_>, Vec<_>) = element
-        .props
-        .iter()
-        .partition(|p| is_event_prop(&p.name.to_string()));
+    // Separate event handlers, shorthands, and regular attributes
+    let mut event_props = Vec::new();
+    let mut shorthand_props = Vec::new();
+    let mut attr_props = Vec::new();
+
+    for prop in &element.props {
+        let name_str = prop.name.to_string();
+        if is_event_prop(&name_str) {
+            event_props.push(prop);
+        } else if expand_style_shorthand(&name_str).is_some() {
+            shorthand_props.push(prop);
+        } else {
+            attr_props.push(prop);
+        }
+    }
 
     // Generate attribute setting code
     let attr_code: Vec<TokenStream2> = attr_props
@@ -331,6 +344,9 @@ fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) -> Tok
         })
         .collect();
 
+    // Generate shorthand style code (e.g., p: "md" -> set_style("padding", ...))
+    let shorthand_code = generate_shorthand_code(&shorthand_props, &elem_var, ctx);
+
     // Generate children - Show/For use marker-based insertion directly into parent
     let children_code: Vec<TokenStream2> = element
         .children
@@ -345,6 +361,7 @@ fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) -> Tok
                 let #elem_var = __scope.create_element(#tag);
                 #(#attr_code)*
                 #(#event_code)*
+                #shorthand_code
                 #elem_var
             }
         }
@@ -354,6 +371,7 @@ fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) -> Tok
                 let #elem_var = __scope.create_element(#tag);
                 #(#attr_code)*
                 #(#event_code)*
+                #shorthand_code
                 #(#children_code)*
                 #elem_var
             }
@@ -586,11 +604,12 @@ fn element_to_dom_component(element: &RsxElement, ctx: &mut DomCodegenContext) -
 fn element_to_dom_widget(element: &RsxElement, ctx: &mut DomCodegenContext) -> TokenStream2 {
     let widget_name = &element.name;
 
-    // Separate style/class props from widget struct props.
+    // Separate style/class/shorthand props from widget struct props.
     // style: and class: are applied to the rendered NodeHandle AFTER Widget::render(),
-    // not as fields on the widget struct.
+    // not as fields on the widget struct. Shorthands become set_style() calls.
     let mut style_prop = None;
     let mut class_prop = None;
+    let mut shorthand_props = Vec::new();
     let mut widget_props = Vec::new();
 
     for prop in &element.props {
@@ -599,6 +618,8 @@ fn element_to_dom_widget(element: &RsxElement, ctx: &mut DomCodegenContext) -> T
             style_prop = Some(prop);
         } else if name_str == "class" {
             class_prop = Some(prop);
+        } else if expand_style_shorthand(&name_str).is_some() {
+            shorthand_props.push(prop);
         } else {
             widget_props.push(prop);
         }
@@ -606,13 +627,21 @@ fn element_to_dom_widget(element: &RsxElement, ctx: &mut DomCodegenContext) -> T
 
     // Check if any non-event, non-style/class, non-_fn prop is a closure.
     // If so, we wrap the entire widget in reactive_widget_dom for re-rendering.
+    // Reactive shorthand closures also trigger this.
     let has_reactive_props = widget_props.iter().any(|p| {
         let name = p.name.to_string();
         !name.starts_with("on") && !name.ends_with("_fn") && get_closure_expr(&p.value).is_some()
     });
 
     if has_reactive_props {
-        return element_to_dom_widget_reactive(element, ctx, &widget_props, style_prop, class_prop);
+        return element_to_dom_widget_reactive(
+            element,
+            ctx,
+            &widget_props,
+            &shorthand_props,
+            style_prop,
+            class_prop,
+        );
     }
 
     // Static path: no reactive widget props
@@ -633,9 +662,10 @@ fn element_to_dom_widget(element: &RsxElement, ctx: &mut DomCodegenContext) -> T
         .map(|child| generate_child_code(child, &temp_var, ctx))
         .collect();
 
-    // Generate post-render style application code
+    // Generate post-render style/class/shorthand application code
     let style_code = generate_style_code(style_prop, &result_var, ctx);
     let class_code = generate_class_code(class_prop, &result_var, ctx);
+    let shorthand_code = generate_shorthand_code(&shorthand_props, &result_var, ctx);
 
     quote! {
         {
@@ -654,9 +684,10 @@ fn element_to_dom_widget(element: &RsxElement, ctx: &mut DomCodegenContext) -> T
             // Render widget directly
             let #result_var = ::rinch::core::Widget::render(&#widget_var, __scope, &#children_var);
 
-            // Apply style/class props to the rendered NodeHandle
+            // Apply style/class/shorthand props to the rendered NodeHandle
             #style_code
             #class_code
+            #shorthand_code
 
             #result_var
         }
@@ -671,6 +702,7 @@ fn element_to_dom_widget_reactive(
     element: &RsxElement,
     ctx: &mut DomCodegenContext,
     widget_props: &[&crate::prop::RsxProp],
+    shorthand_props: &[&crate::prop::RsxProp],
     style_prop: Option<&crate::prop::RsxProp>,
     class_prop: Option<&crate::prop::RsxProp>,
 ) -> TokenStream2 {
@@ -729,6 +761,9 @@ fn element_to_dom_widget_reactive(
         quote! {}
     };
 
+    // Shorthands inside reactive closure invoke closures directly (no separate effects)
+    let shorthand_code = generate_shorthand_code_reactive(shorthand_props, &result_var);
+
     quote! {
         {
             let #wrapper_var = __scope.parent();
@@ -748,6 +783,7 @@ fn element_to_dom_widget_reactive(
                 let #result_var = ::rinch::core::Widget::render(&#widget_var, __scope, &#children_var);
                 #style_code
                 #class_code
+                #shorthand_code
                 #result_var
             })
         }
@@ -795,6 +831,110 @@ fn generate_widget_field_assignments(
             }
         })
         .collect()
+}
+
+/// Generate `set_style()` calls for style shorthand props.
+///
+/// Handles both static values (compile-time spacing resolution) and reactive
+/// closures (runtime `resolve_spacing()`). Used by HTML, widget, and reactive
+/// widget codegen paths.
+fn generate_shorthand_code(
+    shorthand_props: &[&crate::prop::RsxProp],
+    result_var: &syn::Ident,
+    ctx: &mut DomCodegenContext,
+) -> TokenStream2 {
+    let code: Vec<TokenStream2> = shorthand_props
+        .iter()
+        .flat_map(|prop| {
+            let name_str = prop.name.to_string();
+            let css_props = expand_style_shorthand(&name_str).unwrap();
+            let value = &prop.value;
+
+            css_props
+                .iter()
+                .map(|css_prop| {
+                    if is_literal_expr(value) {
+                        // Static value - resolve spacing at compile time
+                        let raw_value = crate::helpers::expr_to_string(value);
+                        let resolved = resolve_spacing_value(&raw_value);
+                        quote! {
+                            #result_var.set_style(#css_prop, #resolved);
+                        }
+                    } else if let Some(closure) = get_closure_expr(value) {
+                        // Reactive closure - use runtime resolve_spacing
+                        let handle_var = ctx.next_var("sh_handle");
+                        quote! {
+                            {
+                                let #handle_var = #result_var.clone();
+                                __scope.create_effect(move || {
+                                    let __val = ::std::string::ToString::to_string(&(#closure)());
+                                    let __resolved = ::rinch::core::resolve_spacing(&__val);
+                                    #handle_var.set_style(#css_prop, &__resolved);
+                                });
+                            }
+                        }
+                    } else {
+                        // Dynamic expression - evaluate once with runtime resolve
+                        let resolved_val = crate::helpers::expr_to_string(value);
+                        let resolved = resolve_spacing_value(&resolved_val);
+                        quote! {
+                            #result_var.set_style(#css_prop, #resolved);
+                        }
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    quote! { #(#code)* }
+}
+
+/// Generate `set_style()` calls for shorthand props inside a reactive widget closure.
+///
+/// Similar to `generate_shorthand_code` but closures are invoked directly (tracking
+/// signals) rather than creating separate effects, since the entire widget re-renders.
+fn generate_shorthand_code_reactive(
+    shorthand_props: &[&crate::prop::RsxProp],
+    result_var: &syn::Ident,
+) -> TokenStream2 {
+    let code: Vec<TokenStream2> = shorthand_props
+        .iter()
+        .flat_map(|prop| {
+            let name_str = prop.name.to_string();
+            let css_props = expand_style_shorthand(&name_str).unwrap();
+            let value = &prop.value;
+
+            css_props
+                .iter()
+                .map(|css_prop| {
+                    if is_literal_expr(value) {
+                        let raw_value = crate::helpers::expr_to_string(value);
+                        let resolved = resolve_spacing_value(&raw_value);
+                        quote! {
+                            #result_var.set_style(#css_prop, #resolved);
+                        }
+                    } else if let Some(closure) = get_closure_expr(value) {
+                        // Inside reactive widget, invoke closure directly (tracks signals)
+                        quote! {
+                            {
+                                let __val = ::std::string::ToString::to_string(&(#closure)());
+                                let __resolved = ::rinch::core::resolve_spacing(&__val);
+                                #result_var.set_style(#css_prop, &__resolved);
+                            }
+                        }
+                    } else {
+                        let resolved_val = crate::helpers::expr_to_string(value);
+                        let resolved = resolve_spacing_value(&resolved_val);
+                        quote! {
+                            #result_var.set_style(#css_prop, #resolved);
+                        }
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    quote! { #(#code)* }
 }
 
 /// Generate post-render style application code for a widget.

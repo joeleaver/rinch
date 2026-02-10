@@ -15,6 +15,7 @@
 - [Hooks](./guide/hooks.md)
 - [Theming](./guide/theming.md)
 - [Widgets](./guide/widgets.md)
+  - [Widget Props Reference](./guide/widget-props.md)
 - [Platform Features](./guide/platform.md)
 - [Rich-Text Editor](./guide/editor.md)
 

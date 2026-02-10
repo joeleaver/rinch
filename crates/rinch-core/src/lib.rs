@@ -65,6 +65,19 @@ pub use icon::Icon;
 
 use std::cell::RefCell;
 
+/// Resolve spacing scale values to CSS custom properties.
+///
+/// Maps `xs`, `sm`, `md`, `lg`, `xl` to `var(--rinch-spacing-{value})`.
+/// Other values are passed through unchanged.
+///
+/// Used by macro-generated code for style shorthand props (e.g., `p: "md"`, `m: "xl"`).
+pub fn resolve_spacing(value: &str) -> String {
+    match value {
+        "xs" | "sm" | "md" | "lg" | "xl" => format!("var(--rinch-spacing-{})", value),
+        _ => value.to_string(),
+    }
+}
+
 // ============================================================================
 // Thread-Local Effect Storage
 // ============================================================================

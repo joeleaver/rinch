@@ -213,6 +213,47 @@ rsx! {
 }
 ```
 
+### Important: Closure Must Be the Direct Expression
+
+The `{|| ...}` pattern requires the closure to be the **direct expression** inside the braces. Block expressions that evaluate to a closure are **not** treated as reactive:
+
+```rust
+let count = use_signal(|| 0);
+
+rsx! {
+    // ✅ CORRECT: Closure is the direct expression
+    div { style: {|| format!("width: {}px", count.get() * 10)} }
+
+    // ✅ CORRECT: Block with a single closure statement
+    div { style: {move || format!("width: {}px", count.get() * 10)} }
+
+    // ❌ WRONG: Block expression with multiple statements — NOT reactive
+    // The macro sees a multi-statement block, not a closure
+    div { style: {
+        let multiplier = 10;
+        move || format!("width: {}px", count.get() * multiplier)
+    }}
+}
+```
+
+If you need intermediate variables, compute them **outside** the RSX or **inside** the closure:
+
+```rust
+// Option 1: Compute outside RSX
+let multiplier = 10;
+rsx! {
+    div { style: {move || format!("width: {}px", count.get() * multiplier)} }
+}
+
+// Option 2: Compute inside the closure
+rsx! {
+    div { style: {move || {
+        let multiplier = 10;
+        format!("width: {}px", count.get() * multiplier)
+    }}}
+}
+```
+
 ### Why Closures?
 
 Rust macros operate on syntax, not types. The macro cannot distinguish between:
@@ -536,6 +577,54 @@ rsx! {
     }
 }
 ```
+
+## Style Shorthands
+
+The `rsx!` macro supports CSS shorthand props on both HTML elements and widgets. Shorthands expand to `set_style()` calls that merge with existing styles.
+
+Spacing scale values (`xs`, `sm`, `md`, `lg`, `xl`) auto-resolve to `var(--rinch-spacing-{value})`.
+
+### Available Shorthands
+
+| Shorthand | CSS Property | Shorthand | CSS Property |
+|-----------|-------------|-----------|-------------|
+| `w` | `width` | `m` | `margin` |
+| `h` | `height` | `mt` | `margin-top` |
+| `miw` | `min-width` | `mb` | `margin-bottom` |
+| `maw` | `max-width` | `ml` | `margin-left` |
+| `mih` | `min-height` | `mr` | `margin-right` |
+| `mah` | `max-height` | `mx` | `margin-left` + `margin-right` |
+| `p` | `padding` | `my` | `margin-top` + `margin-bottom` |
+| `pt` | `padding-top` | `display` | `display` |
+| `pb` | `padding-bottom` | `pos` | `position` |
+| `pl` | `padding-left` | `top` | `top` |
+| `pr` | `padding-right` | `bottom` | `bottom` |
+| `px` | `padding-left` + `padding-right` | `left` | `left` |
+| `py` | `padding-top` + `padding-bottom` | `right` | `right` |
+
+### Usage
+
+```rust
+// On HTML elements
+div { p: "md", m: "lg", w: "200px", "Padded and margined" }
+
+// On widgets
+Stack { gap: "md", p: "xl", maw: "600px",
+    Text { "Constrained content" }
+}
+
+// Reactive shorthands
+let big = use_signal(|| false);
+div { p: {|| if big.get() { "xl" } else { "sm" }}, "Dynamic padding" }
+
+// Spacing scale values auto-resolve
+div { p: "md" }    // becomes: padding: var(--rinch-spacing-md)
+div { p: "20px" }  // becomes: padding: 20px (passed through)
+```
+
+### Application Order
+
+Shorthands are applied via `set_style()` after widget rendering and after the `style:` prop. This means shorthands win over conflicting properties in `style:`.
 
 ## Styling
 
