@@ -1384,6 +1384,58 @@ impl DomDocument for MockDomDocument {
     }
 }
 
+/// Re-render a widget whenever signals read inside `render_fn` change.
+///
+/// This uses the same marker + Effect + DOM swap pattern as `show_dom`.
+/// The entire widget is reconstructed on each signal change — suitable for
+/// widget props that are closures (e.g., `variant: {|| if active.get() { "filled" } else { "light" }}`).
+///
+/// Returns the marker comment node. The caller should NOT append it again.
+pub fn reactive_widget_dom<R>(
+    scope: &mut RenderScope,
+    parent: &NodeHandle,
+    render_fn: R,
+) -> NodeHandle
+where
+    R: Fn(&mut RenderScope) -> NodeHandle + 'static,
+{
+    use crate::hooks::with_render_context;
+
+    let marker = scope.create_comment("widget");
+    parent.append_child(&marker);
+
+    let current_content: Rc<RefCell<Vec<NodeHandle>>> = Rc::new(RefCell::new(Vec::new()));
+    let current_scope: Rc<RefCell<Option<RenderScope>>> = Rc::new(RefCell::new(None));
+    let doc_weak = scope.doc_weak();
+    let parent_id = parent.node_id();
+
+    let cc = current_content.clone();
+    let cs = current_scope.clone();
+    let m = marker.clone();
+
+    let effect = crate::reactive::Effect::new(move || {
+        // Dispose old scope (cleans up nested effects)
+        if let Some(old) = cs.borrow_mut().take() {
+            old.dispose();
+        }
+        // Remove old nodes
+        for node in cc.borrow_mut().drain(..) {
+            node.clear_animations();
+            node.remove();
+        }
+        // Render fresh
+        if let Some(doc) = doc_weak.upgrade() {
+            let mut child_scope = RenderScope::new(doc, parent_id);
+            let node = with_render_context(|| render_fn(&mut child_scope));
+            m.insert_after(&node);
+            cc.borrow_mut().push(node);
+            *cs.borrow_mut() = Some(child_scope);
+        }
+    });
+    scope.create_effect_from(effect);
+    marker
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -367,6 +367,10 @@ fn app() -> NodeHandle {
 
 The `For` component enables efficient list rendering with keyed reconciliation. When the list changes, only affected items are added, removed, or moved - unchanged items keep their DOM nodes and internal state.
 
+### Auto-Downcast Mode (Recommended)
+
+Use a typed parameter to automatically downcast from `ForItem`:
+
 ```rust
 let items = use_signal(|| vec![
     Item { id: "1", name: "Alice" },
@@ -380,11 +384,34 @@ rsx! {
             ForItem::new(item.id.clone(), item)
         }).collect()},
 
-        |item: &ForItem| {
-            let data = item.downcast::<Item>().unwrap();
+        |item: &Item| {
+            // Auto-downcast: no manual downcast_ref needed!
             rsx! {
                 div { class: "list-item",
-                    {|| data.name.clone()}
+                    {item.name.clone()}
+                }
+            }
+        }
+    }
+}
+```
+
+### Manual Mode
+
+You can still use `&ForItem` and manually downcast:
+
+```rust
+rsx! {
+    For {
+        each: {move || items.get().into_iter().map(|item| {
+            ForItem::new(item.id.clone(), item)
+        }).collect()},
+
+        |item: &ForItem| {
+            let data = item.data.downcast_ref::<Item>().unwrap();
+            rsx! {
+                div { class: "list-item",
+                    {data.name.clone()}
                 }
             }
         }
@@ -397,7 +424,8 @@ rsx! {
 | Prop | Type | Description |
 |------|------|-------------|
 | `each` | `{|| Vec<ForItem>}` | Reactive closure returning items |
-| Children | `|item| Element` | Render function for each item |
+| Children | `|item: &T| Element` | Render function for each item (auto-downcast) |
+| Children | `|item: &ForItem| Element` | Render function (manual downcast) |
 
 ### ForItem
 
@@ -410,23 +438,44 @@ let item = ForItem::new("unique-key", my_data);
 // Access the key
 let key = item.key; // "unique-key"
 
-// Downcast to original type
-if let Some(data) = item.downcast::<MyData>() {
+// Manual downcast to original type (when using |item: &ForItem|)
+if let Some(data) = item.data.downcast_ref::<MyData>() {
     // use data
 }
 ```
 
-### Helper: to_for_items
+### Helper: ForItem::from_iter
 
 Convert any iterator to ForItems:
 
 ```rust
 use rinch::prelude::*;
 
-let items = to_for_items(
-    my_vec.into_iter(),
-    |item| item.id.clone(), // key function
-);
+let items = ForItem::from_iter(my_vec, |item| item.id.clone());
+```
+
+The legacy `to_for_items()` function also works but `ForItem::from_iter` is preferred.
+
+### Hooks in For Bodies
+
+Hooks work inside For view closures. Each item gets its own isolated hook scope:
+
+```rust
+For {
+    each: {move || ForItem::from_iter(todos.get(), |t| t.id.to_string())},
+    |item: &Todo| {
+        let editing = use_signal(|| false);
+        rsx! {
+            div {
+                span { {item.name.clone()} }
+                button {
+                    onclick: move || editing.update(|v| *v = !*v),
+                    {|| if editing.get() { "Done" } else { "Edit" }}
+                }
+            }
+        }
+    }
+}
 ```
 
 ### How Keyed Reconciliation Works
@@ -457,15 +506,15 @@ Items can contain their own reactive content:
 ```rust
 For {
     each: {move || ...},
-    |item: &ForItem| {
-        let data = item.downcast::<Item>().unwrap();
+    |item: &Item| {
+        // Auto-downcast: item is already &Item
 
         // This effect is scoped to this item
         // When the item is removed, the effect is disposed
         rsx! {
             div {
                 // Reactive text within the item
-                span { {|| data.count.get().to_string()} }
+                span { {|| item.count.get().to_string()} }
             }
         }
     }

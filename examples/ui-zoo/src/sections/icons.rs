@@ -294,8 +294,9 @@ fn reactive_icon_grid(current_page: Signal<usize>, use_filled: Signal<bool>) -> 
                 .collect()
         },
         // View function - renders a single icon cell
+        // Note: Could also use auto-downcast with typed parameter: |data: &IconCellData, scope|
         |item, scope| {
-            let data = item.downcast::<IconCellData>().unwrap();
+            let data = item.data.downcast_ref::<IconCellData>().unwrap();
 
             let cell = scope.create_element("div");
             cell.set_attribute("class", "icon-cell");

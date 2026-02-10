@@ -34,26 +34,23 @@ fn counter() -> NodeHandle {
     // Create reactive state
     let count = use_signal(|| 0);
 
-    // Create a derived value
+    // Create a derived value (Memo is Copy, just like Signal)
     let doubled = use_derived(move || count.get() * 2);
 
     // Side effect: log when count changes
-    let count_for_effect = count.clone();
     use_effect(|| {
-        println!("Count changed to: {}", count_for_effect.get());
-    }, count_for_effect.get());
-
-    // Clone for event handler
-    let count_inc = count.clone();
+        println!("Count changed to: {}", count.get());
+    }, count.get());
 
     rsx! {
         div {
             // Use closure syntax {|| ...} for reactive updates
+            // Both Signal and Memo are Copy — no .clone() needed
             p { "Count: " {|| count.get().to_string()} }
             p { "Doubled: " {|| doubled.get().to_string()} }
 
             button {
-                onclick: move || count_inc.update(|n| *n += 1),
+                onclick: move || count.update(|n| *n += 1),
                 "Increment"
             }
         }

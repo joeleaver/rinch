@@ -1049,11 +1049,39 @@ let items = use_signal(|| vec![
 
 rsx! {
     For {
-        each: {move || items.get().into_iter().map(|item| {
-            ForItem::new(item.id.to_string(), item)
-        }).collect()},
+        each: {move || ForItem::from_iter(items.get(), |item| item.id.to_string())},
+        |item: &Item| {
+            // Auto-downcast: typed parameter automatically downcasts ForItem
+            rsx! { div { {item.name.clone()} } }
+        }
+    }
+}
+```
+
+**`ForItem::from_iter`**: Converts any iterator to `Vec<ForItem>` with a key function. Preferred over manual `.map(|item| ForItem::new(...)).collect()`.
+
+**Auto-downcast**: When you use a typed parameter like `|item: &Item|`, the macro automatically generates the downcast code. No need to manually call `downcast_ref`.
+
+**Hooks in For bodies**: Hooks work inside For view closures. Each item gets its own isolated hook scope, so per-item state is fully supported:
+
+```rust
+For {
+    each: {move || ForItem::from_iter(todos.get(), |t| t.id.to_string())},
+    |item: &Todo| {
+        let editing = use_signal(|| false);  // Per-item state
+        rsx! { div { {item.name.clone()} } }
+    }
+}
+```
+
+**Manual mode** (still supported for compatibility):
+```rust
+rsx! {
+    For {
+        each: {move || ForItem::from_iter(items.get(), |item| item.id.to_string())},
         |item: &ForItem| {
-            let data = item.downcast::<Item>().unwrap();
+            // Manual downcast when using &ForItem
+            let data = item.data.downcast_ref::<Item>().unwrap();
             rsx! { div { {data.name.clone()} } }
         }
     }
@@ -1074,7 +1102,7 @@ for_each_dom(
     &parent,                                    // Parent node
     move || items.get(),                        // Items closure
     |item, scope| {                             // View function
-        let data = item.downcast::<Item>().unwrap();
+        let data = item.data.downcast_ref::<Item>().unwrap();
         let div = scope.create_element("div");
         div.set_text(&data.name);
         div
@@ -1091,7 +1119,7 @@ for_each_dom(
     move || items.get(),
     |item, __child_scope| {
         let __scope = __child_scope;  // Enable rsx! in this closure
-        let data = item.downcast::<Item>().unwrap();
+        let data = item.data.downcast_ref::<Item>().unwrap();
         rsx! { div { {data.name.clone()} } }
     },
 )
@@ -1106,7 +1134,11 @@ Some widgets support reactive value binding via `_fn` props. The `rsx!` macro au
 | `Checkbox` | `checked_fn` | `Option<ReactiveBool>` (`Rc<dyn Fn() -> bool>`) | Reactive checked state |
 | `TextInput` | `value_fn` | `Option<ReactiveString>` (`Rc<dyn Fn() -> String>`) | Reactive value binding |
 
-Example - clearing a TextInput after form submission:
+**Controlled Input Pattern:** For controlled inputs, use `value_fn` + `oninput` together. `value_fn` keeps the DOM in sync with your signal; `oninput` updates the signal from user input. Without `value_fn`, programmatic `signal.set("")` won't clear the input visually.
+
+**`onsubmit`:** TextInput supports `onsubmit` which fires when the user presses Enter.
+
+Example - controlled TextInput with submit:
 ```rust
 let input_text = use_signal(|| String::new());
 
@@ -1115,11 +1147,10 @@ rsx! {
         placeholder: "Type here...",
         value_fn: move || input_text.get(),  // Macro auto-wraps in Some(Rc::new(...))
         oninput: move |value: String| input_text.set(value),
-        onsubmit: move || println!("Submitted: {}", input_text.get()),
-    }
-    Button {
-        onclick: move || input_text.set(String::new()),  // Clears the input
-        "Clear"
+        onsubmit: move || {
+            println!("Submitted: {}", input_text.get());
+            input_text.set(String::new());  // Clears the input thanks to value_fn
+        },
     }
 }
 ```
@@ -1200,9 +1231,25 @@ Text {
 }
 ```
 
-**Widget props are static by default.** Props like `color:`, `variant:`, `size:` are set once at render time. Only `style:` and `class:` support reactive closures on widgets. For reactive widget-specific props, use `_fn` variants where available (e.g., `checked_fn`, `value_fn`).
+**All widget props support reactive closures.** Pass `{|| expr}` to any widget prop (`variant`, `color`, `size`, `disabled`, etc.) to make it reactive — when signals change, the widget re-renders automatically:
 
-> **Reactive Props Pitfall:** If you pass a signal value like `variant: my_signal.get()` to a widget, the value is captured once at render time and will NOT update when the signal changes. To make widget props reactive, use `_fn` variants where available, or use reactive `style:`/`class:` closures for visual changes. Only HTML element attributes support arbitrary reactive closures via `{|| expr}`.
+```rust
+let active = use_signal(|| false);
+Button {
+    variant: {|| if active.get() { "filled" } else { "light" }},
+    onclick: move || active.update(|v| *v = !*v),
+    "Toggle"
+}
+```
+
+For surgical updates without full widget re-render, use `_fn` props where available (e.g., `checked_fn`, `value_fn`).
+
+| Prop Type | Accepts `{|| ...}` | Update Strategy |
+|---|---|---|
+| HTML element attributes | Yes | Surgical DOM update |
+| Widget `style:`/`class:` | Yes | Surgical DOM update |
+| Widget `_fn` props | Yes (auto-wrapped) | Surgical DOM update |
+| Widget props (all others) | Yes | Full widget re-render |
 
 ## Iterative Development with MCP (IMPORTANT)
 

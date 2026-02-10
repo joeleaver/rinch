@@ -502,15 +502,7 @@ fn element_to_dom_for(
     // Get the view closure from children
     // The view closure is the first child that is an expression containing a closure
     let view_closure = match &element.children[0] {
-        RsxNode::Expr(expr) => {
-            // Check if it's a closure expression
-            if let Some(closure) = get_closure_expr(expr) {
-                closure.clone()
-            } else {
-                // Not a closure, use the expression as-is
-                expr.clone()
-            }
-        }
+        RsxNode::Expr(expr) => expr.clone(),
         _ => {
             return quote_spanned! {span=>
                 compile_error!("For component view must be a closure: |item| rsx! { ... }")
@@ -518,22 +510,46 @@ fn element_to_dom_for(
         }
     };
 
-    // Generate call to for_each_dom - inserts marker + items into parent directly
-    // The view function is constructed inside the callback so it captures the child scope
-    // Use quote_spanned to point errors at the For keyword
-    quote_spanned! {span=>
-        {
-            let __each_closure = #each_expr;
-            ::rinch::core::for_each_dom(
-                __scope,
-                &#parent_var,
-                __each_closure,
-                move |__item: &::rinch::core::ForItem, __child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
-                    let __scope = __child_scope;
-                    let mut __view_fn = #view_closure;
-                    __view_fn(__item)
-                }
-            );
+    // Check if the view closure has a typed parameter for auto-downcast
+    // If user writes |item: &Todo|, we generate automatic downcast
+    let auto_downcast = extract_closure_typed_param(&view_closure);
+
+    if let Some((param_name, param_type)) = auto_downcast {
+        // Auto-downcast mode: user wrote |item: &Todo| { ... }
+        // We need to extract the closure body
+        let closure_body = extract_closure_body(&view_closure);
+        quote_spanned! {span=>
+            {
+                let __each_closure = #each_expr;
+                ::rinch::core::for_each_dom(
+                    __scope,
+                    &#parent_var,
+                    __each_closure,
+                    move |__item: &::rinch::core::ForItem, __child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
+                        let __scope = __child_scope;
+                        let #param_name: &#param_type = __item.data.downcast_ref::<#param_type>()
+                            .expect(concat!("ForItem type mismatch: expected ", stringify!(#param_type)));
+                        #closure_body
+                    }
+                );
+            }
+        }
+    } else {
+        // Standard mode: pass through as-is
+        quote_spanned! {span=>
+            {
+                let __each_closure = #each_expr;
+                ::rinch::core::for_each_dom(
+                    __scope,
+                    &#parent_var,
+                    __each_closure,
+                    move |__item: &::rinch::core::ForItem, __child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
+                        let __scope = __child_scope;
+                        let mut __view_fn = #view_closure;
+                        __view_fn(__item)
+                    }
+                );
+            }
         }
     }
 }
@@ -569,8 +585,6 @@ fn element_to_dom_component(element: &RsxElement, ctx: &mut DomCodegenContext) -
 /// Generate DOM code for a widget (direct construction without Element::Widget).
 fn element_to_dom_widget(element: &RsxElement, ctx: &mut DomCodegenContext) -> TokenStream2 {
     let widget_name = &element.name;
-    let widget_var = ctx.next_var("widget");
-    let result_var = ctx.next_var("result");
 
     // Separate style/class props from widget struct props.
     // style: and class: are applied to the rendered NodeHandle AFTER Widget::render(),
@@ -590,36 +604,24 @@ fn element_to_dom_widget(element: &RsxElement, ctx: &mut DomCodegenContext) -> T
         }
     }
 
-    // Generate field assignments only for widget props (not style/class)
-    let field_assignments: Vec<TokenStream2> = widget_props
-        .iter()
-        .map(|prop| {
-            let name = &prop.name;
-            let name_str = prop.name.to_string();
-            let value = &prop.value;
+    // Check if any non-event, non-style/class, non-_fn prop is a closure.
+    // If so, we wrap the entire widget in reactive_widget_dom for re-rendering.
+    let has_reactive_props = widget_props.iter().any(|p| {
+        let name = p.name.to_string();
+        !name.starts_with("on") && !name.ends_with("_fn") && get_closure_expr(&p.value).is_some()
+    });
 
-            // Handle different prop types
-            if name_str == "oninput" {
-                quote! { #name: Some(InputCallback::new(#value)) }
-            } else if name_str.starts_with("on") {
-                quote! { #name: Some((#value).into()) }
-            } else if name_str == "icon" || name_str.ends_with("_icon") {
-                quote! { #name: Some(#value) }
-            } else if name_str.ends_with("_fn") {
-                // Auto-wrap _fn reactive props: closure → Some(Rc::new(closure))
-                // Rust's type coercion handles Rc<closure> → Rc<dyn Fn() -> T>
-                quote! { #name: Some(std::rc::Rc::new(#value)) }
-            } else if crate::helpers::is_literal_bool(value) {
-                quote! { #name: #value }
-            } else if crate::helpers::is_literal_int(value) {
-                quote! { #name: Some(#value) }
-            } else if crate::helpers::is_literal_string(value) {
-                quote! { #name: Some(String::from(#value)) }
-            } else {
-                quote! { #name: #value }
-            }
-        })
-        .collect();
+    if has_reactive_props {
+        return element_to_dom_widget_reactive(element, ctx, &widget_props, style_prop, class_prop);
+    }
+
+    // Static path: no reactive widget props
+    let widget_var = ctx.next_var("widget");
+    let result_var = ctx.next_var("result");
+
+    // Generate field assignments only for widget props (not style/class)
+    let field_assignments: Vec<TokenStream2> =
+        generate_widget_field_assignments(&widget_props, false);
 
     // Generate children rendering code - Show/For use marker-based insertion
     let children_var = ctx.next_var("children");
@@ -632,106 +634,8 @@ fn element_to_dom_widget(element: &RsxElement, ctx: &mut DomCodegenContext) -> T
         .collect();
 
     // Generate post-render style application code
-    let style_code = if let Some(prop) = style_prop {
-        let value = &prop.value;
-        if is_literal_expr(value) {
-            // Static style string - set once
-            let value_str = crate::helpers::expr_to_string(value);
-            quote! {
-                #result_var.set_attribute("style", #value_str);
-            }
-        } else if let Some(closure) = get_closure_expr(value) {
-            // Reactive closure - create effect
-            let handle_var = ctx.next_var("style_handle");
-            quote! {
-                {
-                    let #handle_var = #result_var.clone();
-                    __scope.create_effect(move || {
-                        #handle_var.set_attribute("style", &::std::string::ToString::to_string(&(#closure)()));
-                    });
-                }
-            }
-        } else {
-            // Dynamic expression - wrap in effect
-            let handle_var = ctx.next_var("style_handle");
-            quote! {
-                {
-                    let #handle_var = #result_var.clone();
-                    __scope.create_effect(move || {
-                        #handle_var.set_attribute("style", &::std::string::ToString::to_string(&#value));
-                    });
-                }
-            }
-        }
-    } else {
-        quote! {}
-    };
-
-    // Generate post-render class application code.
-    // Uses add_class to merge with any classes the widget itself sets.
-    let class_code = if let Some(prop) = class_prop {
-        let value = &prop.value;
-        if is_literal_expr(value) {
-            // Static class string - add once
-            let value_str = crate::helpers::expr_to_string(value);
-            quote! {
-                #result_var.add_class(#value_str);
-            }
-        } else if let Some(closure) = get_closure_expr(value) {
-            // Reactive closure - create effect that updates class.
-            // We track the previous extra class to remove it before adding the new one.
-            let handle_var = ctx.next_var("class_handle");
-            let prev_var = ctx.next_var("prev_class");
-            quote! {
-                {
-                    let #handle_var = #result_var.clone();
-                    let #prev_var = ::std::cell::RefCell::new(String::new());
-                    __scope.create_effect(move || {
-                        let __old = #prev_var.borrow().clone();
-                        if !__old.is_empty() {
-                            for __c in __old.split_whitespace() {
-                                #handle_var.remove_class(__c);
-                            }
-                        }
-                        let __new_class = ::std::string::ToString::to_string(&(#closure)());
-                        if !__new_class.is_empty() {
-                            for __c in __new_class.split_whitespace() {
-                                #handle_var.add_class(__c);
-                            }
-                        }
-                        *#prev_var.borrow_mut() = __new_class;
-                    });
-                }
-            }
-        } else {
-            // Dynamic expression - wrap in effect with tracking
-            let handle_var = ctx.next_var("class_handle");
-            let prev_var = ctx.next_var("prev_class");
-            quote! {
-                {
-                    let #handle_var = #result_var.clone();
-                    let #prev_var = ::std::cell::RefCell::new(String::new());
-                    __scope.create_effect(move || {
-                        let __old = #prev_var.borrow().clone();
-                        if !__old.is_empty() {
-                            for __c in __old.split_whitespace() {
-                                #handle_var.remove_class(__c);
-                            }
-                        }
-                        let __new_class = ::std::string::ToString::to_string(&#value);
-                        if !__new_class.is_empty() {
-                            for __c in __new_class.split_whitespace() {
-                                #handle_var.add_class(__c);
-                            }
-                        }
-                        *#prev_var.borrow_mut() = __new_class;
-                    });
-                }
-            }
-        }
-    } else {
-        quote! {}
-    };
+    let style_code = generate_style_code(style_prop, &result_var, ctx);
+    let class_code = generate_class_code(class_prop, &result_var, ctx);
 
     quote! {
         {
@@ -755,6 +659,244 @@ fn element_to_dom_widget(element: &RsxElement, ctx: &mut DomCodegenContext) -> T
             #class_code
 
             #result_var
+        }
+    }
+}
+
+/// Generate DOM code for a widget with reactive props (wrapped in reactive_widget_dom).
+///
+/// When any widget prop is a closure (e.g., `variant: {|| if active.get() { "filled" } else { "light" }}`),
+/// the entire widget is reconstructed whenever those signals change.
+fn element_to_dom_widget_reactive(
+    element: &RsxElement,
+    ctx: &mut DomCodegenContext,
+    widget_props: &[&crate::prop::RsxProp],
+    style_prop: Option<&crate::prop::RsxProp>,
+    class_prop: Option<&crate::prop::RsxProp>,
+) -> TokenStream2 {
+    let widget_name = &element.name;
+    let wrapper_var = ctx.next_var("reactive_wrapper");
+
+    // Inside the render closure, closure props are called (tracking signal deps),
+    // and the result is used as a static value for the widget struct.
+    let field_assignments: Vec<TokenStream2> =
+        generate_widget_field_assignments(widget_props, true);
+
+    // Generate children code - children are re-rendered each time too
+    let children_var = ctx.next_var("children");
+    let temp_var = ctx.next_var("temp");
+    let widget_var = ctx.next_var("widget");
+    let result_var = ctx.next_var("result");
+
+    let children_code: Vec<TokenStream2> = element
+        .children
+        .iter()
+        .map(|child| generate_child_code(child, &temp_var, ctx))
+        .collect();
+
+    // Style/class inside the reactive closure use simple set (no separate effects needed)
+    let style_code = if let Some(prop) = style_prop {
+        let value = &prop.value;
+        if is_literal_expr(value) {
+            let value_str = crate::helpers::expr_to_string(value);
+            quote! { #result_var.set_attribute("style", #value_str); }
+        } else if let Some(closure) = get_closure_expr(value) {
+            quote! { #result_var.set_attribute("style", &::std::string::ToString::to_string(&(#closure)())); }
+        } else {
+            quote! { #result_var.set_attribute("style", &::std::string::ToString::to_string(&#value)); }
+        }
+    } else {
+        quote! {}
+    };
+
+    let class_code = if let Some(prop) = class_prop {
+        let value = &prop.value;
+        if is_literal_expr(value) {
+            let value_str = crate::helpers::expr_to_string(value);
+            quote! { #result_var.add_class(#value_str); }
+        } else if let Some(closure) = get_closure_expr(value) {
+            quote! {
+                let __cls = ::std::string::ToString::to_string(&(#closure)());
+                if !__cls.is_empty() { for __c in __cls.split_whitespace() { #result_var.add_class(__c); } }
+            }
+        } else {
+            quote! {
+                let __cls = ::std::string::ToString::to_string(&#value);
+                if !__cls.is_empty() { for __c in __cls.split_whitespace() { #result_var.add_class(__c); } }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    quote! {
+        {
+            let #wrapper_var = __scope.parent();
+            ::rinch::core::reactive_widget_dom(__scope, &#wrapper_var, move |__child_scope| {
+                let __scope = __child_scope;
+
+                #[allow(clippy::needless_update)]
+                let #widget_var = #widget_name {
+                    #(#field_assignments,)*
+                    ..Default::default()
+                };
+
+                let #temp_var = __scope.create_element("template");
+                #(#children_code)*
+                let #children_var: Vec<::rinch::core::NodeHandle> = #temp_var.children();
+
+                let #result_var = ::rinch::core::Widget::render(&#widget_var, __scope, &#children_var);
+                #style_code
+                #class_code
+                #result_var
+            })
+        }
+    }
+}
+
+/// Generate field assignment tokens for widget props.
+///
+/// When `invoke_closures` is true (reactive mode), closure props are invoked to get
+/// their current value (tracking signals), then wrapped like static values.
+fn generate_widget_field_assignments(
+    widget_props: &[&crate::prop::RsxProp],
+    invoke_closures: bool,
+) -> Vec<TokenStream2> {
+    widget_props
+        .iter()
+        .map(|prop| {
+            let name = &prop.name;
+            let name_str = prop.name.to_string();
+            let value = &prop.value;
+
+            if name_str == "oninput" {
+                quote! { #name: Some(InputCallback::new(#value)) }
+            } else if name_str.starts_with("on") {
+                quote! { #name: Some((#value).into()) }
+            } else if name_str == "icon" || name_str.ends_with("_icon") {
+                quote! { #name: Some(#value) }
+            } else if name_str.ends_with("_fn") {
+                quote! { #name: Some(std::rc::Rc::new(#value)) }
+            } else if crate::helpers::is_literal_bool(value) {
+                quote! { #name: #value }
+            } else if crate::helpers::is_literal_int(value) {
+                quote! { #name: Some(#value) }
+            } else if crate::helpers::is_literal_string(value) {
+                quote! { #name: Some(String::from(#value)) }
+            } else if invoke_closures {
+                if let Some(closure) = get_closure_expr(value) {
+                    // Invoke the closure to get current value, wrap as Option<String>
+                    quote! { #name: Some(String::from(::std::string::ToString::to_string(&(#closure)()))) }
+                } else {
+                    quote! { #name: #value }
+                }
+            } else {
+                quote! { #name: #value }
+            }
+        })
+        .collect()
+}
+
+/// Generate post-render style application code for a widget.
+fn generate_style_code(
+    style_prop: Option<&crate::prop::RsxProp>,
+    result_var: &syn::Ident,
+    ctx: &mut DomCodegenContext,
+) -> TokenStream2 {
+    let Some(prop) = style_prop else {
+        return quote! {};
+    };
+    let value = &prop.value;
+    if is_literal_expr(value) {
+        let value_str = crate::helpers::expr_to_string(value);
+        quote! {
+            #result_var.set_attribute("style", #value_str);
+        }
+    } else if let Some(closure) = get_closure_expr(value) {
+        let handle_var = ctx.next_var("style_handle");
+        quote! {
+            {
+                let #handle_var = #result_var.clone();
+                __scope.create_effect(move || {
+                    #handle_var.set_attribute("style", &::std::string::ToString::to_string(&(#closure)()));
+                });
+            }
+        }
+    } else {
+        let handle_var = ctx.next_var("style_handle");
+        quote! {
+            {
+                let #handle_var = #result_var.clone();
+                __scope.create_effect(move || {
+                    #handle_var.set_attribute("style", &::std::string::ToString::to_string(&#value));
+                });
+            }
+        }
+    }
+}
+
+/// Generate post-render class application code for a widget.
+fn generate_class_code(
+    class_prop: Option<&crate::prop::RsxProp>,
+    result_var: &syn::Ident,
+    ctx: &mut DomCodegenContext,
+) -> TokenStream2 {
+    let Some(prop) = class_prop else {
+        return quote! {};
+    };
+    let value = &prop.value;
+    if is_literal_expr(value) {
+        let value_str = crate::helpers::expr_to_string(value);
+        quote! {
+            #result_var.add_class(#value_str);
+        }
+    } else if let Some(closure) = get_closure_expr(value) {
+        let handle_var = ctx.next_var("class_handle");
+        let prev_var = ctx.next_var("prev_class");
+        quote! {
+            {
+                let #handle_var = #result_var.clone();
+                let #prev_var = ::std::cell::RefCell::new(String::new());
+                __scope.create_effect(move || {
+                    let __old = #prev_var.borrow().clone();
+                    if !__old.is_empty() {
+                        for __c in __old.split_whitespace() {
+                            #handle_var.remove_class(__c);
+                        }
+                    }
+                    let __new_class = ::std::string::ToString::to_string(&(#closure)());
+                    if !__new_class.is_empty() {
+                        for __c in __new_class.split_whitespace() {
+                            #handle_var.add_class(__c);
+                        }
+                    }
+                    *#prev_var.borrow_mut() = __new_class;
+                });
+            }
+        }
+    } else {
+        let handle_var = ctx.next_var("class_handle");
+        let prev_var = ctx.next_var("prev_class");
+        quote! {
+            {
+                let #handle_var = #result_var.clone();
+                let #prev_var = ::std::cell::RefCell::new(String::new());
+                __scope.create_effect(move || {
+                    let __old = #prev_var.borrow().clone();
+                    if !__old.is_empty() {
+                        for __c in __old.split_whitespace() {
+                            #handle_var.remove_class(__c);
+                        }
+                    }
+                    let __new_class = ::std::string::ToString::to_string(&#value);
+                    if !__new_class.is_empty() {
+                        for __c in __new_class.split_whitespace() {
+                            #handle_var.add_class(__c);
+                        }
+                    }
+                    *#prev_var.borrow_mut() = __new_class;
+                });
+            }
         }
     }
 }
@@ -856,6 +998,61 @@ pub fn generate_component_wrapper(body: TokenStream2, has_children: bool) -> Tok
                 #body
             }
         }
+    }
+}
+
+/// Extract a typed parameter from a closure expression for For auto-downcast.
+///
+/// If the closure is `|item: &Todo| { ... }` where Todo != ForItem,
+/// returns Some((item_ident, Todo_type)).
+fn extract_closure_typed_param(expr: &Expr) -> Option<(syn::Ident, syn::Type)> {
+    let closure = match expr {
+        Expr::Closure(c) => c,
+        _ => return None,
+    };
+
+    // Must have exactly one parameter
+    if closure.inputs.len() != 1 {
+        return None;
+    }
+
+    let param = &closure.inputs[0];
+    // Must be a typed pattern: `item: &Type`
+    let pat_type = match param {
+        syn::Pat::Type(pt) => pt,
+        _ => return None,
+    };
+
+    // Get the parameter name
+    let param_name = match &*pat_type.pat {
+        syn::Pat::Ident(pi) => pi.ident.clone(),
+        _ => return None,
+    };
+
+    // Get the type - must be a reference type &T
+    let inner_type = match &*pat_type.ty {
+        syn::Type::Reference(r) => &*r.elem,
+        _ => return None,
+    };
+
+    // Check if the type is ForItem - if so, don't auto-downcast
+    if let syn::Type::Path(tp) = inner_type {
+        let last_seg = tp.path.segments.last();
+        if let Some(seg) = last_seg
+            && seg.ident == "ForItem"
+        {
+            return None;
+        }
+    }
+
+    Some((param_name, inner_type.clone()))
+}
+
+/// Extract the body of a closure expression.
+fn extract_closure_body(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::Closure(c) => &c.body,
+        _ => expr,
     }
 }
 

@@ -146,6 +146,23 @@ TextInput {
     error: "Password must be at least 8 characters"
 }
 
+// Controlled input (value_fn + oninput)
+let input_text = use_signal(|| String::new());
+TextInput {
+    placeholder: "Type here...",
+    value_fn: move || input_text.get(),
+    oninput: move |value: String| input_text.set(value),
+}
+
+// TextInput with onsubmit (fires on Enter key)
+let search = use_signal(|| String::new());
+TextInput {
+    placeholder: "Search...",
+    value_fn: move || search.get(),
+    oninput: move |value: String| search.set(value),
+    onsubmit: move || println!("Searching: {}", search.get()),
+}
+
 // PasswordInput with visibility toggle
 PasswordInput {
     label: "Password",
@@ -961,80 +978,94 @@ Stepper { active: 1, completed_icon: Icon::CheckCircle,
 3. **Consistency**: All icons use the same SVG style and sizing
 4. **Performance**: Icons render as structured nodes, enabling differential updates instead of full re-renders
 
-## Fine-Grained Reactivity
+## Reactive Widget Props
 
-For optimal performance, many widgets support fine-grained reactive updates via `*_fn` props. These allow widgets to update their visual state without full re-renders.
+Rinch supports two mechanisms for making widget props reactive:
 
-### Reactive Props Pattern
+### 1. Reactive Closures on Any Prop (Re-renders Widget)
 
-Instead of passing static values that are captured at render time, pass a reactive closure:
-
-```rust
-use std::rc::Rc;
-
-// Static (captured at render time - won't update):
-Checkbox { checked: my_signal.get(), ... }
-
-// Reactive (updates automatically when signal changes):
-Checkbox {
-    checked_fn: Some(Rc::new(move || my_signal.get())),
-    ...
-}
-```
-
-### Widgets with Reactive Props
-
-| Widget | Reactive Prop | Purpose |
-|--------|---------------|---------|
-| `Checkbox` | `checked_fn: Option<Rc<dyn Fn() -> bool>>` | Toggle checked class reactively |
-| `Switch` | `checked_fn: Option<Rc<dyn Fn() -> bool>>` | Toggle checked class reactively |
-| `Radio` | `checked_fn: Option<Rc<dyn Fn() -> bool>>` | Toggle checked class reactively |
-| `NavLink` | `active_fn: Option<Rc<dyn Fn() -> bool>>` | Toggle active class reactively |
-| `Progress` | `value_fn: Option<Rc<dyn Fn() -> f32>>` | Update progress bar width reactively |
-| `Modal` | `opened_fn: Option<Rc<dyn Fn() -> bool>>` | Show/hide modal reactively |
-| `Drawer` | `opened_fn: Option<Rc<dyn Fn() -> bool>>` | Show/hide drawer reactively |
-| `Notification` | `opened_fn: Option<Rc<dyn Fn() -> bool>>` | Show/hide notification reactively |
-
-### Examples
+Pass a closure `{|| expr}` to any widget prop (like `variant`, `color`, `size`, `disabled`). When signals inside the closure change, the entire widget re-renders with the new prop values:
 
 ```rust
-use rinch::prelude::*;
-use std::rc::Rc;
+let active = use_signal(|| false);
 
-#[component]
-fn app() -> NodeHandle {
-    let current_tab = use_signal(|| 0_usize);
-    let is_checked = use_signal(|| false);
-    let progress = use_signal(|| 0.0);
-
-    rsx! {
-        // NavLink with reactive active state
-        NavLink {
-            label: Some("Home".to_string()),
-            active_fn: Some(Rc::new(move || current_tab.get() == 0)),
-            onclick: move || current_tab.set(0)
-        }
-
-        // Checkbox with reactive checked state
-        Checkbox {
-            label: "Enable feature",
-            checked_fn: Some(Rc::new(move || is_checked.get())),
-            onchange: move || is_checked.update(|v| *v = !*v)
-        }
-
-        // Progress with reactive value
-        Progress {
-            value_fn: Some(Rc::new(move || progress.get()))
-        }
+rsx! {
+    Button {
+        variant: {|| if active.get() { "filled" } else { "light" }},
+        color: {|| if active.get() { "green" } else { "gray" }},
+        onclick: move || active.update(|v| *v = !*v),
+        "Toggle me"
     }
 }
 ```
 
-### Benefits
+This works on **all widget props** — the macro detects closures and wraps the widget in a reactive scope automatically.
 
-1. **Performance**: Only the affected DOM node updates, not the entire component tree
-2. **Smooth animations**: CSS transitions work correctly since DOM nodes are stable
-3. **Lower memory**: No intermediate re-renders or virtual DOM diffing
+### 2. `_fn` Props (Surgical DOM Updates)
+
+For widgets that support `_fn` props, these provide more efficient updates that only touch the specific DOM node, without re-rendering the entire widget. The `rsx!` macro auto-wraps `_fn` props — just pass a closure directly:
+
+```rust
+let is_checked = use_signal(|| false);
+let input_text = use_signal(|| String::new());
+
+rsx! {
+    // Auto-wrapped: just pass a closure, no Rc::new() needed
+    Checkbox {
+        label: "Enable feature",
+        checked_fn: move || is_checked.get(),
+        onchange: move || is_checked.update(|v| *v = !*v),
+    }
+
+    TextInput {
+        placeholder: "Type here...",
+        value_fn: move || input_text.get(),
+        oninput: move |value: String| input_text.set(value),
+    }
+}
+```
+
+### Reactive Props Summary
+
+| Prop Type | Accepts `{|| ...}` | Update Strategy |
+|---|---|---|
+| HTML element attributes | Yes | Surgical DOM update |
+| Widget `style:`/`class:` | Yes | Surgical DOM update |
+| Widget `_fn` props | Yes (auto-wrapped) | Surgical DOM update |
+| Widget props (all others) | Yes | Full widget re-render |
+
+### Widgets with `_fn` Props
+
+| Widget | Reactive Prop | Purpose |
+|--------|---------------|---------|
+| `Checkbox` | `checked_fn` | Toggle checked class reactively |
+| `Switch` | `checked_fn` | Toggle checked class reactively |
+| `Radio` | `checked_fn` | Toggle checked class reactively |
+| `TextInput` | `value_fn` | Reactive value binding |
+| `NavLink` | `active_fn` | Toggle active class reactively |
+| `Progress` | `value_fn` | Update progress bar width reactively |
+| `Modal` | `opened_fn` | Show/hide modal reactively |
+| `Drawer` | `opened_fn` | Show/hide drawer reactively |
+| `Notification` | `opened_fn` | Show/hide notification reactively |
+
+### Controlled Input Pattern
+
+For controlled inputs, use `value_fn` + `oninput` together. `value_fn` keeps the DOM in sync with your signal; `oninput` updates the signal from user input. Without `value_fn`, programmatic `signal.set("")` won't clear the input visually:
+
+```rust
+let text = use_signal(|| String::new());
+
+rsx! {
+    TextInput {
+        value_fn: move || text.get(),
+        oninput: move |value: String| text.set(value),
+        onsubmit: move || {
+            println!("Submitted: {}", text.get());
+            text.set(String::new());  // Clears the input thanks to value_fn
+        },
+    }
+}
+```
 
 ## Customization
 

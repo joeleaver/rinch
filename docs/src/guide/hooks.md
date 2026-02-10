@@ -291,6 +291,32 @@ println!("Full name: {}", full_name.get());
 
 Unlike `use_memo`, `use_derived` doesn't require explicit dependencies - it automatically tracks any signals read inside the closure.
 
+> **Note:** `use_derived` returns a `Memo<T>`, which implements `Copy` just like `Signal<T>`. You can use it in multiple closures without `.clone()`.
+
+### Hooks in For Bodies
+
+Hooks work inside `For` view closures. Each For item gets its own isolated hook scope, so per-item state is fully supported:
+
+```rust
+For {
+    each: {move || ForItem::from_iter(todos.get(), |t| t.id.to_string())},
+    |item: &Todo| {
+        // Per-item hook state — each item gets its own signal
+        let editing = use_signal(|| false);
+
+        rsx! {
+            div {
+                span { {item.name.clone()} }
+                button {
+                    onclick: move || editing.update(|v| *v = !*v),
+                    {|| if editing.get() { "Done" } else { "Edit" }}
+                }
+            }
+        }
+    }
+}
+```
+
 ---
 
 ## Rules of Hooks
@@ -404,12 +430,12 @@ fn app() -> NodeHandle {
             }, "Add" }
 
             For {
-                each: {move || todos.get().into_iter().enumerate().map(|(i, t)| {
-                    ForItem::new(i.to_string(), t)
-                }).collect()},
-                |item: &ForItem| {
-                    let text = item.downcast::<String>().unwrap().clone();
-                    rsx! { li { {text} } }
+                each: {move || ForItem::from_iter(
+                    todos.get().into_iter().enumerate(),
+                    |(i, _)| i.to_string(),
+                )},
+                |item: &(usize, String)| {
+                    rsx! { li { {item.1.clone()} } }
                 }
             }
         }

@@ -308,9 +308,18 @@ pub struct HookMeta {
 }
 
 /// Internal storage for a single hook.
-struct HookEntry {
+pub struct HookEntry {
     value: Box<dyn Any>,
     meta: HookMeta,
+}
+
+/// Saved hook scope state for nesting (e.g., For item hooks).
+struct SavedHookScope {
+    hooks: Vec<HookEntry>,
+    current_index: usize,
+    expected_count: Option<usize>,
+    render_count: usize,
+    was_rendering: bool,
 }
 
 /// Registry that manages hook state across renders.
@@ -328,6 +337,8 @@ pub struct HookRegistry {
     expected_count: Option<usize>,
     /// Number of completed renders (for debugging)
     render_count: usize,
+    /// Stack of saved scopes for nested hook contexts (e.g., For item hooks)
+    scope_stack: Vec<SavedHookScope>,
 }
 
 impl HookRegistry {
@@ -339,6 +350,7 @@ impl HookRegistry {
             is_rendering: false,
             expected_count: None,
             render_count: 0,
+            scope_stack: Vec::new(),
         }
     }
 
@@ -433,6 +445,49 @@ impl HookRegistry {
         }
     }
 
+    /// Push the current hook state onto the scope stack and start a fresh (or restored) scope.
+    ///
+    /// Used by For loop to give each item its own isolated hook state.
+    /// Pass `saved` from a previous `pop_hook_scope()` call to restore hooks for re-renders,
+    /// or `None` for a fresh item.
+    fn push_hook_scope(&mut self, saved: Option<Vec<HookEntry>>) {
+        self.scope_stack.push(SavedHookScope {
+            hooks: std::mem::take(&mut self.hooks),
+            current_index: self.current_index,
+            expected_count: self.expected_count.take(),
+            render_count: self.render_count,
+            was_rendering: self.is_rendering,
+        });
+
+        if let Some(hooks) = saved {
+            self.hooks = hooks;
+            self.expected_count = Some(self.hooks.len());
+        } else {
+            self.hooks = Vec::new();
+            self.expected_count = None;
+        }
+        self.current_index = 0;
+        self.is_rendering = true;
+        self.render_count = 0;
+    }
+
+    /// Pop the scope stack, saving the current item's hooks and restoring the parent state.
+    ///
+    /// Returns the item's hook entries for storage and later restoration.
+    fn pop_hook_scope(&mut self) -> Vec<HookEntry> {
+        let item_hooks = std::mem::take(&mut self.hooks);
+
+        if let Some(saved) = self.scope_stack.pop() {
+            self.hooks = saved.hooks;
+            self.current_index = saved.current_index;
+            self.expected_count = saved.expected_count;
+            self.render_count = saved.render_count;
+            self.is_rendering = saved.was_rendering;
+        }
+
+        item_hooks
+    }
+
     /// Clear all hooks (for app restart).
     fn clear(&mut self) {
         self.hooks.clear();
@@ -440,6 +495,7 @@ impl HookRegistry {
         self.is_rendering = false;
         self.expected_count = None;
         self.render_count = 0;
+        self.scope_stack.clear();
     }
 }
 
@@ -452,6 +508,21 @@ impl Default for HookRegistry {
 // Thread-local hook registry
 thread_local! {
     static HOOK_REGISTRY: RefCell<HookRegistry> = RefCell::new(HookRegistry::new());
+}
+
+/// Push a new hook scope for isolated hook state (e.g., For loop items).
+///
+/// Pass saved hooks from a previous `pop_hook_scope()` to restore state,
+/// or `None` for a fresh scope.
+pub fn push_hook_scope(saved: Option<Vec<HookEntry>>) {
+    HOOK_REGISTRY.with(|registry| {
+        registry.borrow_mut().push_hook_scope(saved);
+    });
+}
+
+/// Pop the current hook scope, returning the item's hooks for storage.
+pub fn pop_hook_scope() -> Vec<HookEntry> {
+    HOOK_REGISTRY.with(|registry| registry.borrow_mut().pop_hook_scope())
 }
 
 /// Execute a function with render context enabled.

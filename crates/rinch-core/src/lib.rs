@@ -33,9 +33,10 @@ pub use reactive::{
 
 // Re-export hooks for ergonomic state management
 pub use hooks::{
-    HookMeta, RefHandle, begin_render, clear_hooks, create_context, end_render,
-    get_hooks_debug_info, use_callback, use_context, use_derived, use_effect, use_effect_cleanup,
-    use_memo, use_mount, use_ref, use_signal, use_state,
+    HookEntry, HookMeta, RefHandle, begin_render, clear_hooks, create_context, end_render,
+    get_hooks_debug_info, pop_hook_scope, push_hook_scope, use_callback, use_context, use_derived,
+    use_effect, use_effect_cleanup, use_memo, use_mount, use_ref, use_signal, use_state,
+    with_render_context,
 };
 
 // Re-export event handling types
@@ -55,8 +56,8 @@ pub use events::{
 // Re-export DOM types for fine-grained rendering
 pub use dom::{
     DomDocument, DomUpdate, IntoNode, NodeHandle, NodeId, RenderScope, UpdateBatch,
-    clear_render_scope, has_render_scope, set_render_scope, try_with_render_scope,
-    with_render_scope,
+    clear_render_scope, has_render_scope, reactive_widget_dom, set_render_scope,
+    try_with_render_scope, with_render_scope,
 };
 
 // Re-export icon types

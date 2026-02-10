@@ -501,6 +501,29 @@ impl ForItem {
     pub fn downcast<T: 'static>(&self) -> Option<&T> {
         self.data.downcast_ref::<T>()
     }
+
+    /// Create ForItems from an iterator with a key function.
+    ///
+    /// This is the recommended way to build `Vec<ForItem>` for the `For` component.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let items = ForItem::from_iter(todos.get(), |t| t.id.to_string());
+    /// ```
+    pub fn from_iter<I, T, K>(iter: I, key_fn: K) -> Vec<ForItem>
+    where
+        I: IntoIterator<Item = T>,
+        T: Any + 'static,
+        K: Fn(&T) -> String,
+    {
+        iter.into_iter()
+            .map(|item| {
+                let key = key_fn(&item);
+                ForItem::new(key, item)
+            })
+            .collect()
+    }
 }
 
 impl std::fmt::Debug for ForItem {
