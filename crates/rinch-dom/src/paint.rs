@@ -8,7 +8,7 @@ use peniko::kurbo::{Affine, BezPath, Cap, Join, Rect, RoundedRect, Stroke};
 use peniko::{Brush, Fill};
 use vello::Scene;
 
-use crate::computed_style::OverflowValue;
+use crate::computed_style::{LineHeightValue, OverflowValue};
 use crate::layout::parse_color;
 use crate::node::{Node, NodeKind, NodeTree, RawNodeId};
 
@@ -149,6 +149,7 @@ fn paint_node(
             }
 
             // Handle overflow clipping from computed style
+            // Pushed early so CE overlay and children are both clipped
             let overflow_y = node.computed_style.overflow_y;
             let clips = matches!(
                 overflow_y,
@@ -159,14 +160,220 @@ fn paint_node(
                 scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &rect);
             }
 
+            // Render contenteditable cursor/selection overlay
+            if node
+                .attributes
+                .get("data-ce-focused")
+                .map(|s| s == "true")
+                .unwrap_or(false)
+            {
+                // Extract cursor position and selection from attributes
+                let cursor_pos = node
+                    .attributes
+                    .get("data-ce-cursor")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let selection_start = node
+                    .attributes
+                    .get("data-ce-selection-start")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(cursor_pos);
+
+                let padding_left = node.computed_style.padding_left.to_px() as f64 * scale;
+                let content_width =
+                    node.layout.width as f64 * scale - padding_left * 2.0;
+
+                // Account for scroll offset so selection moves with content
+                let ce_scroll_x = node.scroll_offset.0 * scale;
+                let ce_scroll_y = node.scroll_offset.1 * scale;
+
+                // Try to find a Parley layout for cursor rendering:
+                // 1. IFC root: node.text_layout (multi-child inline formatting context)
+                // 2. Single text child: child's cached_text_parley
+                // 3. Block-level children (h2, p, li, etc.)
+                if let Some(ref inline_layout) = node.text_layout {
+                    // IFC layout coords are relative to content box (inside padding+border)
+                    let cs = &node.computed_style;
+                    let pad_x = (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64 * scale;
+                    let pad_y = (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64 * scale;
+                    let text_x = x + pad_x - ce_scroll_x;
+                    let text_y = y + pad_y - ce_scroll_y;
+                    let text_len = inline_layout.text_content.len();
+                    paint_contenteditable_cursor(
+                        node, scene, scale, text_x, text_y,
+                        &inline_layout.layout,
+                        text_len,
+                        cursor_pos.min(selection_start),
+                        cursor_pos.max(selection_start),
+                        Some(cursor_pos),
+                        content_width,
+                    );
+                } else {
+                    // Check for single text child first
+                    let mut handled = false;
+                    for &child_id in &node.children {
+                        if let Some(child) = tree.nodes.get(child_id)
+                            && let Some(ref cached_layout) = child.cached_text_parley
+                        {
+                            let text_len = child.text_content().map(|s| s.len()).unwrap_or(0);
+                            // child.layout positions already account for parent padding
+                            let text_x = x + child.layout.x as f64 * scale - ce_scroll_x;
+                            let text_y = y + child.layout.y as f64 * scale - ce_scroll_y;
+                            paint_contenteditable_cursor(
+                                node, scene, scale, text_x, text_y,
+                                cached_layout,
+                                text_len,
+                                cursor_pos.min(selection_start),
+                                cursor_pos.max(selection_start),
+                                Some(cursor_pos),
+                                content_width,
+                            );
+                            handled = true;
+                            break;
+                        }
+                    }
+
+                    // Block-level children: walk children accumulating text offsets
+                    // Renders selection across ALL blocks in the selection range
+                    if !handled {
+                        let sel_min = cursor_pos.min(selection_start);
+                        let sel_max = cursor_pos.max(selection_start);
+                        let mut accumulated = 0usize;
+                        let mut first_block = true;
+
+                        for &child_id in &node.children {
+                            if let Some(child) = tree.nodes.get(child_id) {
+                                let child_text_len = get_flat_text_len(tree, child_id);
+
+                                // Account for newline separator between blocks
+                                if !first_block {
+                                    accumulated += 1; // \n
+                                }
+                                first_block = false;
+
+                                let block_end = accumulated + child_text_len;
+
+                                // Check if this block overlaps the selection range or contains cursor
+                                let has_cursor = cursor_pos >= accumulated && cursor_pos <= block_end;
+                                let in_selection = sel_min < block_end && sel_max > accumulated && sel_min != sel_max;
+
+                                if has_cursor || in_selection {
+                                    // Compute local selection range within this block
+                                    let local_sel_start = if in_selection {
+                                        sel_min.max(accumulated) - accumulated
+                                    } else { 0 };
+                                    let local_sel_end = if in_selection {
+                                        sel_max.min(block_end) - accumulated
+                                    } else { 0 };
+                                    let caret = if has_cursor {
+                                        Some(cursor_pos - accumulated)
+                                    } else { None };
+
+                                    let child_pad_x =
+                                        child.computed_style.padding_left.to_px() as f64 * scale;
+                                    let child_pad_y =
+                                        child.computed_style.padding_top.to_px() as f64 * scale;
+                                    let child_x =
+                                        x + child.layout.x as f64 * scale + child_pad_x - ce_scroll_x;
+                                    let child_y =
+                                        y + child.layout.y as f64 * scale + child_pad_y - ce_scroll_y;
+
+                                    // Try this child's IFC layout
+                                    if let Some(ref inline_layout) = child.text_layout {
+                                        paint_contenteditable_cursor(
+                                            node, scene, scale,
+                                            child_x, child_y,
+                                            &inline_layout.layout,
+                                            child_text_len,
+                                            local_sel_start.min(child_text_len),
+                                            local_sel_end.min(child_text_len),
+                                            caret.map(|c| c.min(child_text_len)),
+                                            content_width,
+                                        );
+                                    } else {
+                                        // Try child's text children
+                                        let mut found_gc = false;
+                                        for &grandchild_id in &child.children {
+                                            if let Some(grandchild) =
+                                                tree.nodes.get(grandchild_id)
+                                                && let Some(ref cached_layout) =
+                                                    grandchild.cached_text_parley
+                                            {
+                                                let gc_text_len = grandchild
+                                                    .text_content()
+                                                    .map(|s| s.len())
+                                                    .unwrap_or(0);
+                                                paint_contenteditable_cursor(
+                                                    node, scene, scale,
+                                                    child_x, child_y,
+                                                    cached_layout,
+                                                    gc_text_len,
+                                                    local_sel_start.min(gc_text_len),
+                                                    local_sel_end.min(gc_text_len),
+                                                    caret.map(|c| c.min(gc_text_len)),
+                                                    content_width,
+                                                );
+                                                found_gc = true;
+                                                break;
+                                            }
+                                        }
+                                        if !found_gc {
+                                            if child.children.is_empty() {
+                                                // Empty block — draw a simple caret
+                                                if let Some(_) = caret {
+                                                    let cs = &child.computed_style;
+                                                    let font_size = cs.font_size;
+                                                    let line_h = match cs.line_height {
+                                                        LineHeightValue::Relative(r) => font_size * r,
+                                                        LineHeightValue::Absolute(a) => a,
+                                                        LineHeightValue::Normal => font_size * 1.2,
+                                                    };
+                                                    let caret_height = line_h as f64 * scale;
+                                                    let caret_color = cs.color
+                                                        .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(33, 37, 41, 255));
+                                                    let caret_rect = Rect::new(
+                                                        child_x,
+                                                        child_y,
+                                                        child_x + 1.5 * scale,
+                                                        child_y + caret_height,
+                                                    );
+                                                    scene.fill(Fill::NonZero, Affine::IDENTITY, caret_color, None, &caret_rect);
+                                                }
+                                            } else {
+                                                // Recurse into sub-blocks (ul > li, etc.)
+                                                paint_ce_sub_blocks(
+                                                    tree, node, scene, scale,
+                                                    x + child.layout.x as f64 * scale - ce_scroll_x,
+                                                    y + child.layout.y as f64 * scale - ce_scroll_y,
+                                                    &child.children,
+                                                    accumulated,
+                                                    cursor_pos, sel_min, sel_max,
+                                                    content_width,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+
+                                accumulated = block_end;
+                            }
+                        }
+                    }
+                }
+            }
+
             // Check if this is an IFC root with a cached inline layout
             if let Some(inline_layout) = &node.text_layout {
-                // Paint inline content from the Parley layout
-                paint_inline_layout(tree, scene, scale, x, y, inline_layout, font_cx, layout_cx);
-
-                // Still paint non-inline (block) children normally
+                // Paint inline content at the content-box origin (inside padding+border),
+                // accounting for scroll offset.
+                let cs = &node.computed_style;
                 let scroll_x = node.scroll_offset.0 * scale;
                 let scroll_y = node.scroll_offset.1 * scale;
+                let content_x = x + (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64 * scale - scroll_x;
+                let content_y = y + (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64 * scale - scroll_y;
+                paint_inline_layout(tree, scene, scale, content_x, content_y, inline_layout, font_cx, layout_cx);
+
+                // Still paint non-inline (block) children normally
                 let child_ids: Vec<usize> = node.children.to_vec();
                 for child_id in child_ids {
                     let child = match tree.get(child_id) {
@@ -223,14 +430,19 @@ fn paint_node(
                         }
                     }
                 }
-                if content_height > h {
+                // Visible content area = layout height minus padding and border
+                let cs = &node.computed_style;
+                let pad_v = (cs.padding_top.to_px() + cs.padding_bottom.to_px()) as f64 * scale;
+                let border_v = (cs.border_top_width.to_px() + cs.border_bottom_width.to_px()) as f64 * scale;
+                let visible_h = (h - pad_v - border_v).max(0.0);
+                if content_height > visible_h {
                     let scrollbar_width = 6.0 * scale;
                     let scrollbar_margin = 2.0 * scale;
                     let scrollbar_x = x + w - scrollbar_width - scrollbar_margin;
 
                     // Thumb sizing
-                    let visible_ratio = h / content_height;
-                    let max_scroll = content_height - h;
+                    let visible_ratio = visible_h / content_height;
+                    let max_scroll = content_height - visible_h;
                     let scroll_ratio = if max_scroll > 0.0 {
                         (node.scroll_offset.1 * scale / max_scroll).clamp(0.0, 1.0)
                     } else {
@@ -939,6 +1151,318 @@ fn parse_px(value: &str) -> Option<f32> {
 
 /// Paint the value of an input element.
 #[allow(clippy::too_many_arguments)]
+/// Paint the cursor/selection overlay for a contenteditable element.
+///
+/// Uses the IFC inline layout already built for the element to position
+/// the caret and selection highlight. Cursor/selection byte offsets are
+/// read from `data-ce-cursor` and `data-ce-selection-start` attributes.
+/// Check if a tag name represents a block-level element.
+fn is_block_tag(tag: &str) -> bool {
+    matches!(
+        tag,
+        "div" | "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
+            | "li" | "ul" | "ol" | "section" | "article" | "blockquote"
+            | "pre" | "hr" | "table" | "tr" | "header" | "footer"
+            | "main" | "nav" | "aside" | "figure" | "figcaption"
+            | "details" | "summary"
+    )
+}
+
+/// Compute the flat text length for a subtree, matching extract_text_content's logic.
+/// This accounts for `\n` separators between block elements.
+fn get_flat_text_len(tree: &NodeTree, node_id: usize) -> usize {
+    let mut len = 0usize;
+    let mut ends_with_newline = false;
+    collect_text_len_recursive(tree, node_id, &mut len, &mut ends_with_newline);
+    // Strip trailing newline (matching extract_text_content)
+    if ends_with_newline && len > 0 {
+        len -= 1;
+    }
+    len
+}
+
+fn collect_text_len_recursive(
+    tree: &NodeTree,
+    node_id: usize,
+    len: &mut usize,
+    ends_with_newline: &mut bool,
+) {
+    if let Some(node) = tree.nodes.get(node_id) {
+        if let Some(t) = node.text_content() {
+            *len += t.len();
+            *ends_with_newline = t.ends_with('\n');
+        } else if node.tag() == Some("br") {
+            // <br> is inline, contributes 1 byte ("\n") — matches walk_for_global_offset
+            *len += 1;
+            *ends_with_newline = true;
+        } else {
+            let is_block = node.tag().map(|t| is_block_tag(t)).unwrap_or(false);
+            if is_block && *len > 0 && !*ends_with_newline {
+                *len += 1;
+                *ends_with_newline = true;
+            }
+            for &child_id in &node.children {
+                collect_text_len_recursive(tree, child_id, len, ends_with_newline);
+            }
+            // Empty block elements must reset ends_with_newline so consecutive
+            // empty blocks each get a unique offset via their own separator.
+            if is_block && node.children.is_empty() {
+                *ends_with_newline = false;
+            }
+            if is_block && *len > 0 && !*ends_with_newline {
+                *len += 1;
+                *ends_with_newline = true;
+            }
+        }
+    }
+}
+
+/// Render selection/cursor across sub-blocks (e.g. ul > li items).
+/// `parent_x`/`parent_y` are the absolute position of the parent block element.
+/// `children` are the sub-block node IDs. `parent_accumulated` is the global
+/// text offset at the start of the parent block.
+#[allow(clippy::too_many_arguments)]
+fn paint_ce_sub_blocks(
+    tree: &NodeTree,
+    ce_node: &Node,
+    scene: &mut Scene,
+    scale: f64,
+    parent_x: f64,
+    parent_y: f64,
+    children: &[usize],
+    parent_accumulated: usize,
+    cursor_pos: usize,
+    sel_min: usize,
+    sel_max: usize,
+    content_width: f64,
+) {
+    let mut sub_acc = parent_accumulated;
+    let mut sub_first = true;
+
+    for &sub_id in children {
+        if let Some(sub_node) = tree.nodes.get(sub_id) {
+            let sub_text_len = get_flat_text_len(tree, sub_id);
+            if !sub_first {
+                sub_acc += 1; // \n separator
+            }
+            sub_first = false;
+
+            let sub_end = sub_acc + sub_text_len;
+            let has_cursor = cursor_pos >= sub_acc && cursor_pos <= sub_end;
+            let in_selection = sel_min < sub_end && sel_max > sub_acc && sel_min != sel_max;
+
+            if has_cursor || in_selection {
+                let local_sel_start = if in_selection {
+                    sel_min.max(sub_acc) - sub_acc
+                } else { 0 };
+                let local_sel_end = if in_selection {
+                    sel_max.min(sub_end) - sub_acc
+                } else { 0 };
+                let caret = if has_cursor {
+                    Some(cursor_pos - sub_acc)
+                } else { None };
+
+                let sub_pad_x = sub_node.computed_style.padding_left.to_px() as f64 * scale;
+                let sub_pad_y = sub_node.computed_style.padding_top.to_px() as f64 * scale;
+                let sub_x = parent_x + sub_node.layout.x as f64 * scale + sub_pad_x;
+                let sub_y = parent_y + sub_node.layout.y as f64 * scale + sub_pad_y;
+
+                // Try sub-node's IFC layout
+                if let Some(ref il) = sub_node.text_layout {
+                    paint_contenteditable_cursor(
+                        ce_node, scene, scale,
+                        sub_x, sub_y,
+                        &il.layout,
+                        sub_text_len,
+                        local_sel_start.min(sub_text_len),
+                        local_sel_end.min(sub_text_len),
+                        caret.map(|c| c.min(sub_text_len)),
+                        content_width,
+                    );
+                } else if sub_node.children.is_empty() {
+                    // Empty block — draw a simple caret
+                    if let Some(_) = caret {
+                        let cs = &sub_node.computed_style;
+                        let font_size = cs.font_size;
+                        let line_h = match cs.line_height {
+                            LineHeightValue::Relative(r) => font_size * r,
+                            LineHeightValue::Absolute(a) => a,
+                            LineHeightValue::Normal => font_size * 1.2,
+                        };
+                        let caret_height = line_h as f64 * scale;
+                        let caret_color = cs.color
+                            .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(33, 37, 41, 255));
+                        let caret_rect = Rect::new(
+                            sub_x,
+                            sub_y,
+                            sub_x + 1.5 * scale,
+                            sub_y + caret_height,
+                        );
+                        scene.fill(Fill::NonZero, Affine::IDENTITY, caret_color, None, &caret_rect);
+                    }
+                } else {
+                    // Try sub-node's text children
+                    for &gc_id in &sub_node.children {
+                        if let Some(gc) = tree.nodes.get(gc_id)
+                            && let Some(ref cl) = gc.cached_text_parley
+                        {
+                            let gc_len = gc.text_content().map(|s| s.len()).unwrap_or(0);
+                            paint_contenteditable_cursor(
+                                ce_node, scene, scale,
+                                sub_x, sub_y,
+                                cl,
+                                gc_len,
+                                local_sel_start.min(gc_len),
+                                local_sel_end.min(gc_len),
+                                caret.map(|c| c.min(gc_len)),
+                                content_width,
+                            );
+                            break;
+                        }
+                    }
+                }
+            }
+            sub_acc = sub_end;
+        }
+    }
+}
+
+/// Render cursor and selection for a contenteditable element within a single layout.
+///
+/// `sel_start`/`sel_end` define the local selection range within this layout.
+/// `caret_pos` is Some(offset) to draw the cursor caret, None to skip it.
+fn paint_contenteditable_cursor(
+    node: &Node,
+    scene: &mut Scene,
+    scale: f64,
+    text_x: f64,
+    text_y: f64,
+    layout: &parley::layout::Layout<Brush>,
+    text_len: usize,
+    sel_start: usize,
+    sel_end: usize,
+    caret_pos: Option<usize>,
+    content_width: f64,
+) {
+    let font_size = node.computed_style.font_size;
+    let scaled_font_size = font_size * scale as f32;
+    let line_height_multiplier = match node.computed_style.line_height {
+        LineHeightValue::Relative(r) => r as f64,
+        LineHeightValue::Absolute(abs) => (abs / font_size) as f64,
+        LineHeightValue::Normal => 1.2, // Default fallback
+    };
+    let line_height = scaled_font_size as f64 * line_height_multiplier;
+
+    // Draw selection highlight if there's a selection range
+    if sel_start != sel_end {
+        let sel_start_byte = sel_start.min(text_len);
+        let sel_end_byte = sel_end.min(text_len);
+
+        let (start_x, start_y) =
+            crate::text_query::caret_position_for_offset_layout(layout, sel_start_byte);
+        let (end_x, end_y) =
+            crate::text_query::caret_position_for_offset_layout(layout, sel_end_byte);
+
+        let sel_color = AlphaColor::<Srgb>::from_rgba8(51, 154, 240, 100);
+
+        if (start_y - end_y).abs() < 0.1 {
+            // Same line
+            let sel_rect = Rect::new(
+                text_x + start_x as f64,
+                text_y + start_y as f64,
+                text_x + end_x as f64,
+                text_y + start_y as f64 + line_height,
+            );
+            scene.fill(Fill::NonZero, Affine::IDENTITY, sel_color, None, &sel_rect);
+        } else {
+            // Multi-line selection: cursor.geometry().y0 returns the line BOX
+            // top (including half-leading), not baseline - ascent (glyph top).
+            // Compute line box bounds to match cursor geometry coordinates.
+            for line in layout.lines() {
+                let line_metrics = line.metrics();
+                let glyph_top = line_metrics.baseline - line_metrics.ascent;
+                // Line box top accounts for half-leading (space distributed
+                // above and below glyphs when line-height > natural height)
+                let half_leading = (line_metrics.line_height
+                    - line_metrics.ascent
+                    - line_metrics.descent)
+                    / 2.0;
+                let line_box_top = glyph_top - half_leading;
+                let line_box_bottom = line_box_top + line_metrics.line_height;
+
+                // Skip lines entirely outside the selection
+                if line_box_bottom <= start_y || line_box_top > end_y + 0.5 {
+                    continue;
+                }
+
+                // Check if this line contains the start/end positions
+                let is_start_line =
+                    start_y >= line_box_top - 0.5 && start_y < line_box_bottom;
+                let is_end_line =
+                    end_y >= line_box_top - 0.5 && end_y < line_box_bottom;
+
+                let rect_y = text_y + glyph_top as f64;
+                let (rect_start_x, rect_end_x) = if is_start_line && is_end_line
+                {
+                    // Both on same line (fallback for edge cases)
+                    (start_x as f64, end_x as f64)
+                } else if is_start_line {
+                    (start_x as f64, content_width)
+                } else if is_end_line {
+                    (0.0, end_x as f64)
+                } else {
+                    // Middle line: full width
+                    (0.0, content_width)
+                };
+                let sel_rect = Rect::new(
+                    text_x + rect_start_x,
+                    rect_y,
+                    text_x + rect_end_x,
+                    rect_y + line_height,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    sel_color,
+                    None,
+                    &sel_rect,
+                );
+            }
+        }
+    }
+
+    // Draw cursor/caret only if requested
+    if let Some(caret) = caret_pos {
+        let caret_byte = caret.min(text_len);
+        let (caret_offset_x, caret_offset_y) = if text_len == 0 {
+            (0.0, 0.0)
+        } else {
+            crate::text_query::caret_position_for_offset_layout(layout, caret_byte)
+        };
+        let caret_x = text_x + caret_offset_x as f64;
+        let caret_y = text_y + caret_offset_y as f64;
+        let caret_height = line_height;
+
+        let caret_color = node
+            .computed_style
+            .color
+            .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(33, 37, 41, 255));
+        let caret_rect = Rect::new(
+            caret_x,
+            caret_y,
+            caret_x + 1.5 * scale,
+            caret_y + caret_height,
+        );
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            caret_color,
+            None,
+            &caret_rect,
+        );
+    }
+}
+
 fn paint_input_value(
     node: &Node,
     scene: &mut Scene,

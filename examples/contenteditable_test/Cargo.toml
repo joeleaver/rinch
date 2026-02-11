@@ -1,0 +1,9 @@
+[package]
+name = "contenteditable-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Test harness for contentEditable implementation"
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop", "widgets", "theme", "debug", "clipboard"] }

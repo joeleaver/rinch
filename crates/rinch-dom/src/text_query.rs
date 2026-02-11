@@ -3,7 +3,8 @@
 //! This module provides utilities for converting between byte offsets and
 //! screen coordinates in text layouts, as well as querying glyph bounds.
 
-use parley::layout::PositionedLayoutItem;
+use parley::layout::Affinity;
+use parley::Cursor;
 use peniko::Brush;
 
 /// Bounding box for a glyph cluster.
@@ -118,69 +119,9 @@ pub fn caret_position_for_offset_layout(
     layout: &parley::layout::Layout<Brush>,
     byte_offset: usize,
 ) -> (f32, f32) {
-    // Get first line metrics for default values
-    let first_line_top = layout
-        .lines()
-        .next()
-        .map(|line| line.metrics().baseline - line.metrics().ascent)
-        .unwrap_or(0.0);
-
-    if byte_offset == 0 {
-        return (0.0, first_line_top);
-    }
-
-    let mut last_x = 0.0f32;
-    let mut last_y = first_line_top;
-
-    for line in layout.lines() {
-        let line_metrics = line.metrics();
-        let line_y = line_metrics.baseline - line_metrics.ascent;
-
-        for item in line.items() {
-            if let PositionedLayoutItem::GlyphRun(glyph_run) = item {
-                let run = glyph_run.run();
-                let run_start = run.text_range().start;
-                let run_end = run.text_range().end;
-
-                if byte_offset <= run_start {
-                    return (glyph_run.offset(), line_y);
-                }
-
-                if byte_offset <= run_end {
-                    // Byte offset is within this run - iterate glyphs
-                    let mut gx = glyph_run.offset();
-                    for cluster in run.cluster_range() {
-                        let Some(cluster_data) = run.get(cluster) else {
-                            continue;
-                        };
-                        let cluster_start = cluster_data.text_range().start;
-                        let cluster_end = cluster_data.text_range().end;
-
-                        if byte_offset <= cluster_start {
-                            return (gx, line_y);
-                        }
-                        if byte_offset < cluster_end {
-                            // Strictly within this cluster - return start of cluster
-                            return (gx, line_y);
-                        }
-                        // byte_offset == cluster_end means after this cluster
-                        gx += cluster_data.advance();
-                    }
-                    return (gx, line_y);
-                }
-
-                // Track end position
-                last_x = glyph_run.offset();
-                for cluster in run.cluster_range() {
-                    if let Some(cluster_data) = run.get(cluster) {
-                        last_x += cluster_data.advance();
-                    }
-                }
-                last_y = line_y;
-            }
-        }
-    }
-    (last_x, last_y)
+    let cursor = Cursor::from_byte_index(layout, byte_offset, Affinity::Downstream);
+    let geom = cursor.geometry(layout, 0.0);
+    (geom.x0 as f32, geom.y0 as f32)
 }
 
 /// Get the bounding box for the glyph cluster containing the given byte offset in a layout.
@@ -197,60 +138,29 @@ pub fn glyph_bounds_for_offset_layout(
     layout: &parley::layout::Layout<Brush>,
     byte_offset: usize,
 ) -> Option<GlyphBounds> {
-    let mut last_bounds: Option<GlyphBounds> = None;
+    // Use downstream cursor to get geometry of the cluster at this offset
+    let cursor = Cursor::from_byte_index(layout, byte_offset, Affinity::Downstream);
+    let [upstream, downstream] = cursor.visual_clusters(layout);
 
-    for line in layout.lines() {
-        let line_metrics = line.metrics();
-        let line_y = line_metrics.baseline - line_metrics.ascent;
-        let line_height = line_metrics.line_height;
+    // Try to get the downstream (right) cluster first, then upstream
+    let cluster = downstream.or(upstream)?;
 
-        for item in line.items() {
-            if let PositionedLayoutItem::GlyphRun(glyph_run) = item {
-                let run = glyph_run.run();
-                let run_start = run.text_range().start;
-                let run_end = run.text_range().end;
+    let line = cluster.line();
+    let line_metrics = line.metrics();
+    let line_y = line_metrics.baseline - line_metrics.ascent;
 
-                // Skip runs that don't contain this offset
-                if byte_offset < run_start || byte_offset >= run_end {
-                    continue;
-                }
+    // Use the cluster's advance for width
+    let advance = cluster.advance();
 
-                // Find the cluster containing this offset
-                let mut gx = glyph_run.offset();
-                for cluster in run.cluster_range() {
-                    let Some(cluster_data) = run.get(cluster) else {
-                        continue;
-                    };
-                    let cluster_start = cluster_data.text_range().start;
-                    let cluster_end = cluster_data.text_range().end;
+    // Get the x position from cursor geometry
+    let geom = cursor.geometry(layout, 0.0);
 
-                    // Track last valid bounds for end-of-text handling
-                    let bounds = GlyphBounds {
-                        x: gx,
-                        y: line_y,
-                        width: cluster_data.advance(),
-                        height: line_height,
-                    };
-                    last_bounds = Some(bounds);
-
-                    if byte_offset >= cluster_start && byte_offset < cluster_end {
-                        return Some(bounds);
-                    }
-
-                    gx += cluster_data.advance();
-                }
-            }
-        }
-    }
-
-    // Handle end-of-text position: return bounds positioned at end of last character
-    if let Some(mut bounds) = last_bounds {
-        bounds.x += bounds.width;
-        bounds.width = 0.0;
-        return Some(bounds);
-    }
-
-    None
+    Some(GlyphBounds {
+        x: geom.x0 as f32,
+        y: line_y,
+        width: advance,
+        height: line_metrics.line_height,
+    })
 }
 
 /// Find the byte offset closest to the given (x, y) position.
@@ -266,69 +176,86 @@ pub fn glyph_bounds_for_offset_layout(
 /// # Returns
 /// The byte offset of the character closest to the position
 pub fn byte_offset_from_position(layout: &parley::layout::Layout<Brush>, x: f32, y: f32) -> usize {
-    if x <= 0.0 && y <= 0.0 {
-        return 0;
+    Cursor::from_point(layout, x, y).index()
+}
+
+// ── IFC ↔ DomCursor conversions ─────────────────────────────────────────
+
+/// Convert an IFC flat byte offset to a DOM cursor `(node_id, offset_within_node)`.
+///
+/// Searches `ranges` for the range containing `ifc_offset`.  When `ifc_offset`
+/// falls exactly on a boundary between two ranges the **earlier** range is
+/// preferred (cursor at end-of-node rather than start-of-next).
+///
+/// When `allow_br` is false, `<br>` ranges are deflected to the adjacent
+/// text range (end of previous text, or start of next text).
+/// When `allow_br` is true, `<br>` ranges are returned directly — use this
+/// for vertical cursor movement where blank lines should be valid targets.
+///
+/// Returns `None` if `ranges` is empty.
+pub fn ifc_offset_to_dom_cursor(
+    ranges: &[crate::node::IfcTextRange],
+    ifc_offset: usize,
+    allow_br: bool,
+) -> Option<(usize, usize)> {
+    if ranges.is_empty() {
+        return None;
     }
 
-    // First, find which line was clicked based on Y coordinate
-    let mut target_line_idx = 0usize;
-    let mut cumulative_height = 0.0f32;
-
-    for (idx, line) in layout.lines().enumerate() {
-        let line_height = line.metrics().line_height;
-        if y < cumulative_height + line_height {
-            target_line_idx = idx;
-            break;
-        }
-        cumulative_height += line_height;
-        target_line_idx = idx; // Default to last line if click is below all lines
-    }
-
-    // Now find the character position within that line
-    let mut best_offset = 0usize;
-
-    for (line_idx, line) in layout.lines().enumerate() {
-        if line_idx < target_line_idx {
-            // Track the end of previous lines
-            for item in line.items() {
-                if let PositionedLayoutItem::GlyphRun(glyph_run) = item {
-                    let run = glyph_run.run();
-                    best_offset = run.text_range().end;
-                }
-            }
-            continue;
-        }
-
-        if line_idx > target_line_idx {
-            break;
-        }
-
-        // This is the target line - find the character position based on X
-        for item in line.items() {
-            if let PositionedLayoutItem::GlyphRun(glyph_run) = item {
-                let run = glyph_run.run();
-                let mut gx = glyph_run.offset();
-
-                for cluster in run.cluster_range() {
-                    let Some(cluster_data) = run.get(cluster) else {
-                        continue;
-                    };
-                    let cluster_start = cluster_data.text_range().start;
-                    let advance = cluster_data.advance();
-
-                    let mid_x = gx + advance / 2.0;
-
-                    if x <= mid_x {
-                        return cluster_start;
+    // Try to find a range that contains the offset (inclusive start, exclusive end).
+    // For boundary cases (offset == flat_end of one range == flat_start of the next),
+    // prefer the earlier range so the cursor stays at "end of previous node".
+    for (i, r) in ranges.iter().enumerate() {
+        if ifc_offset >= r.flat_start && ifc_offset < r.flat_end {
+            // Deflect <br> cursor to adjacent text (unless allow_br is set)
+            if r.is_br && !allow_br {
+                // Prefer end of previous text range
+                for prev in ranges[..i].iter().rev() {
+                    if !prev.is_br {
+                        let local = prev.flat_end - prev.flat_start + prev.node_offset;
+                        return Some((prev.node_id, local));
                     }
-
-                    gx += advance;
-                    best_offset = cluster_data.text_range().end;
                 }
+                // No previous text — try start of next text range
+                for next in &ranges[i + 1..] {
+                    if !next.is_br {
+                        return Some((next.node_id, next.node_offset));
+                    }
+                }
+                // All ranges are <br> — return it as last resort
             }
+            let local = ifc_offset - r.flat_start + r.node_offset;
+            return Some((r.node_id, local));
         }
-        break;
     }
 
-    best_offset
+    // Offset is at or past the end — prefer last non-br range (unless allow_br)
+    for r in ranges.iter().rev() {
+        if allow_br || !r.is_br {
+            let local = r.flat_end - r.flat_start + r.node_offset;
+            return Some((r.node_id, local));
+        }
+    }
+    let last = ranges.last().unwrap();
+    let local = last.flat_end - last.flat_start + last.node_offset;
+    Some((last.node_id, local))
+}
+
+/// Convert a DOM cursor `(node_id, offset_within_node)` to an IFC flat byte offset.
+///
+/// Returns `None` if no range maps the given `node_id`.
+pub fn dom_cursor_to_ifc_offset(
+    ranges: &[crate::node::IfcTextRange],
+    node_id: usize,
+    node_offset: usize,
+) -> Option<usize> {
+    for r in ranges {
+        if r.node_id == node_id {
+            // Clamp node_offset to the range length
+            let range_len = r.flat_end - r.flat_start;
+            let clamped = node_offset.saturating_sub(r.node_offset).min(range_len);
+            return Some(r.flat_start + clamped);
+        }
+    }
+    None
 }

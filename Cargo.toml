@@ -29,6 +29,7 @@ rinch-editor = { path = "crates/rinch-editor" }
 rinch-editor-macros = { path = "crates/rinch-editor-macros" }
 rinch-editor-widgets = { path = "crates/rinch-editor-widgets" }
 rinch-debug = { path = "crates/rinch-debug" }
+rinch-editable = { path = "crates/rinch-editable" }
 rinch-platform = { path = "crates/rinch-platform" }
 rinch-visual-test = { path = "crates/rinch-visual-test" }
 rinch-web = { path = "crates/rinch-web" }

@@ -94,6 +94,8 @@ pub struct TextMeasure {
     pub color: AlphaColor<Srgb>,
     /// Whether text wrapping is disabled (white-space: nowrap/pre).
     pub no_wrap: bool,
+    /// Overflow wrap mode (controls emergency line-breaking).
+    pub overflow_wrap: crate::computed_style::OverflowWrapValue,
 }
 
 /// Layout result for a node after Taffy computation.
@@ -119,6 +121,25 @@ pub enum DisplayMode {
     InlineBlock,
 }
 
+/// Maps a range of bytes in the IFC flat text to a specific DOM node.
+///
+/// Built during `walk_inline_children()` so that IFC byte offsets can be
+/// converted to/from `(node_id, offset_within_node)` pairs.
+#[derive(Debug, Clone)]
+pub struct IfcTextRange {
+    /// Byte range start (inclusive) in the IFC `text_content`.
+    pub flat_start: usize,
+    /// Byte range end (exclusive) in the IFC `text_content`.
+    pub flat_end: usize,
+    /// DOM node ID: text node for text, `<br>` element for `<br>`.
+    pub node_id: usize,
+    /// Byte offset within the text node (0 for most; nonzero when a node
+    /// is split across multiple style spans).
+    pub node_offset: usize,
+    /// True for `<br>` entries (which map to `"\n"` in the flat text).
+    pub is_br: bool,
+}
+
 /// Cached Parley inline layout for an IFC (Inline Formatting Context) root.
 ///
 /// Stored on the IFC root element. Rebuilt when any inline child mutates.
@@ -129,6 +150,8 @@ pub struct InlineLayout {
     pub text_content: String,
     /// Map from inline child RawNodeId → computed position within the layout.
     pub child_positions: Vec<(RawNodeId, LayoutResult)>,
+    /// Map from IFC flat byte ranges to DOM text nodes / `<br>` elements.
+    pub text_ranges: Vec<IfcTextRange>,
 }
 
 impl std::fmt::Debug for InlineLayout {

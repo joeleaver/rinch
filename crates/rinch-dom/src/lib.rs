@@ -6,7 +6,10 @@
 pub mod computed_style;
 mod dom_impl;
 pub mod html_parser;
+mod ifc;
 pub mod layout;
+mod layout_engine;
+mod style_resolution;
 pub mod node;
 pub mod paint;
 pub mod stylesheet;
@@ -17,6 +20,6 @@ pub mod text_query;
 pub use computed_style::ComputedStyle;
 pub use dom_impl::RinchDocument;
 pub use node::{
-    DirtyFlags, DisplayMode, ElementData, InlineLayout, LayoutResult, Node, NodeContext, NodeKind,
-    NodeTree, TextData, TextMeasure,
+    DirtyFlags, DisplayMode, ElementData, IfcTextRange, InlineLayout, LayoutResult, Node,
+    NodeContext, NodeKind, NodeTree, TextData, TextMeasure,
 };

@@ -33,6 +33,10 @@ pub enum DebugCommandKind {
     GetComputedStyles { id: usize },
     #[serde(rename = "mouse_move")]
     MouseMove { x: f32, y: f32 },
+    #[serde(rename = "mouse_down")]
+    MouseDown { x: f32, y: f32 },
+    #[serde(rename = "mouse_up")]
+    MouseUp { x: f32, y: f32 },
     #[serde(rename = "scroll")]
     Scroll {
         x: f32,

@@ -669,6 +669,35 @@ impl WhiteSpaceValue {
     }
 }
 
+/// CSS overflow-wrap (word-wrap) property values.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub enum OverflowWrapValue {
+    #[default]
+    Normal,
+    BreakWord,
+    Anywhere,
+}
+
+impl OverflowWrapValue {
+    /// Parse from CSS string value.
+    pub fn parse(value: &str) -> Self {
+        match value.trim() {
+            "break-word" => Self::BreakWord,
+            "anywhere" => Self::Anywhere,
+            _ => Self::Normal,
+        }
+    }
+
+    /// Convert to Parley's OverflowWrap type.
+    pub fn to_parley(self) -> parley::style::OverflowWrap {
+        match self {
+            Self::Normal => parley::style::OverflowWrap::Normal,
+            Self::BreakWord => parley::style::OverflowWrap::BreakWord,
+            Self::Anywhere => parley::style::OverflowWrap::Anywhere,
+        }
+    }
+}
+
 // =============================================================================
 // ComputedStyle Struct
 // =============================================================================
@@ -756,6 +785,7 @@ pub struct ComputedStyle {
     pub text_align: TextAlignValue,
     pub text_decoration: TextDecorationValue,
     pub white_space: WhiteSpaceValue,
+    pub overflow_wrap: OverflowWrapValue,
 
     // Grid properties - skip serialization (taffy types don't impl Serialize)
     #[serde(skip)]
@@ -838,6 +868,7 @@ impl Default for ComputedStyle {
             text_align: TextAlignValue::default(),
             text_decoration: TextDecorationValue::default(),
             white_space: WhiteSpaceValue::default(),
+            overflow_wrap: OverflowWrapValue::default(),
 
             grid_template_columns: Vec::new(),
             grid_template_rows: Vec::new(),
@@ -1081,6 +1112,7 @@ impl ComputedStyle {
                 "text-align" => style.text_align = TextAlignValue::parse(value),
                 "text-decoration" => style.text_decoration = TextDecorationValue::parse(value),
                 "white-space" => style.white_space = WhiteSpaceValue::parse(value),
+                "overflow-wrap" | "word-wrap" => style.overflow_wrap = OverflowWrapValue::parse(value),
 
                 // Grid properties
                 "grid-template-columns" => {
@@ -1327,6 +1359,11 @@ impl ComputedStyle {
             builder.push_default(StyleProperty::WordSpacing(self.word_spacing));
         }
 
+        // Set overflow-wrap for emergency line-breaking
+        if self.overflow_wrap != OverflowWrapValue::Normal {
+            builder.push_default(StyleProperty::OverflowWrap(self.overflow_wrap.to_parley()));
+        }
+
         let mut layout = builder.build(text);
         layout.break_all_lines(max_width);
 
@@ -1488,6 +1525,7 @@ impl ComputedStyle {
                 &text.white_space_collapse,
                 &text.text_wrap_mode,
             ),
+            overflow_wrap: Self::overflow_wrap_from_stylo(&text.overflow_wrap),
 
             // Grid - extract from Stylo
             grid_template_columns: Self::grid_template_tracks_from_stylo(
@@ -1901,6 +1939,17 @@ impl ComputedStyle {
             (WSCollapse::Preserve, TWMode::Wrap) => WhiteSpaceValue::PreWrap,
             (WSCollapse::PreserveBreaks, TWMode::Wrap) => WhiteSpaceValue::PreLine,
             _ => WhiteSpaceValue::Normal,
+        }
+    }
+
+    fn overflow_wrap_from_stylo(
+        ow: &style::properties::longhands::overflow_wrap::computed_value::T,
+    ) -> OverflowWrapValue {
+        use style::values::specified::text::OverflowWrap as StyloOW;
+        match *ow {
+            StyloOW::Normal => OverflowWrapValue::Normal,
+            StyloOW::BreakWord => OverflowWrapValue::BreakWord,
+            StyloOW::Anywhere => OverflowWrapValue::Anywhere,
         }
     }
 

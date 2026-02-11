@@ -823,6 +823,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "contenteditable-test"
+version = "0.1.0"
+dependencies = [
+ "rinch",
+]
+
+[[package]]
 name = "contenteditable_spike"
 version = "0.1.0"
 dependencies = [
@@ -3799,6 +3806,7 @@ dependencies = [
  "rinch-core",
  "rinch-debug",
  "rinch-dom",
+ "rinch-editable",
  "rinch-macros",
  "rinch-platform",
  "rinch-renderer",

@@ -53,6 +53,22 @@ pub struct MouseMoveParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MouseDownParams {
+    /// X coordinate in pixels
+    pub x: f64,
+    /// Y coordinate in pixels
+    pub y: f64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MouseUpParams {
+    /// X coordinate in pixels
+    pub x: f64,
+    /// Y coordinate in pixels
+    pub y: f64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ScrollParams {
     /// X coordinate where the scroll occurs
     pub x: f64,
@@ -290,6 +306,30 @@ impl RinchMcpServer {
         params: Parameters<MouseMoveParams>,
     ) -> Result<CallToolResult, McpError> {
         self.forward_json_command(DebugCommandKind::MouseMove {
+            x: params.0.x as f32,
+            y: params.0.y as f32,
+        })
+        .await
+    }
+
+    #[tool(description = "Simulate a mouse button press (without release) at the given coordinates. Use with mouse_move and mouse_up for drag operations.")]
+    async fn mouse_down(
+        &self,
+        params: Parameters<MouseDownParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.forward_json_command(DebugCommandKind::MouseDown {
+            x: params.0.x as f32,
+            y: params.0.y as f32,
+        })
+        .await
+    }
+
+    #[tool(description = "Simulate a mouse button release at the given coordinates. Use after mouse_down to complete a click or drag.")]
+    async fn mouse_up(
+        &self,
+        params: Parameters<MouseUpParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.forward_json_command(DebugCommandKind::MouseUp {
             x: params.0.x as f32,
             y: params.0.y as f32,
         })

@@ -11,6 +11,7 @@ rinch-core.workspace = true
 rinch-dom.workspace = true
 rinch-macros.workspace = true
 rinch-platform = { workspace = true }
+rinch-editable = { workspace = true }
 parley = { workspace = true }
 peniko = "0.6"
 vello = "0.7"
