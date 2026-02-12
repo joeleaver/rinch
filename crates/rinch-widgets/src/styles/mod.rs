@@ -23,6 +23,7 @@ mod divider;
 mod drawer;
 mod dropdown_menu;
 mod fieldset;
+mod floating_panel;
 mod group;
 mod highlight;
 mod hover_card;
@@ -124,6 +125,7 @@ pub fn generate_all_widget_styles() -> String {
 
     // Window widgets
     css.push_str(&borderless_window::styles());
+    css.push_str(&floating_panel::styles());
 
     css
 }

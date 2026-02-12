@@ -148,22 +148,82 @@ pub fn start_drag<F>(
     });
 }
 
-/// Stop the current drag operation.
+/// Active drag state for absolute-coordinate dragging (panels, windows).
+///
+/// Unlike `DragState` which normalizes to percentages, this passes raw
+/// viewport pixel coordinates to the callback.
+pub struct DragStateAbsolute {
+    pub on_drag: Box<dyn Fn(f32, f32) + 'static>,
+}
+
+thread_local! {
+    static ACTIVE_DRAG_ABSOLUTE: RefCell<Option<DragStateAbsolute>> = const { RefCell::new(None) };
+}
+
+/// Start an absolute-coordinate drag operation.
+///
+/// The callback receives raw `(mouse_x, mouse_y)` viewport coordinates on
+/// each mouse move. Use this for dragging panels, windows, or other elements
+/// where you need pixel-level positioning.
+///
+/// # Example
+///
+/// ```ignore
+/// let ctx = get_click_context();
+/// let offset_x = ctx.mouse_x - panel_x.get();
+/// let offset_y = ctx.mouse_y - panel_y.get();
+/// start_drag_absolute(move |mx, my| {
+///     panel_x.set(mx - offset_x);
+///     panel_y.set(my - offset_y);
+/// });
+/// ```
+pub fn start_drag_absolute<F>(on_drag: F)
+where
+    F: Fn(f32, f32) + 'static,
+{
+    // Clear percentage-based drag if any
+    stop_drag();
+    ACTIVE_DRAG_ABSOLUTE.with(|drag| {
+        *drag.borrow_mut() = Some(DragStateAbsolute {
+            on_drag: Box::new(on_drag),
+        });
+    });
+}
+
+/// Stop the current drag operation (both percentage and absolute).
 pub fn stop_drag() {
     ACTIVE_DRAG.with(|drag| {
         *drag.borrow_mut() = None;
     });
+    ACTIVE_DRAG_ABSOLUTE.with(|drag| {
+        *drag.borrow_mut() = None;
+    });
 }
 
-/// Check if a drag operation is active.
+/// Check if a drag operation is active (either percentage or absolute).
 pub fn is_dragging() -> bool {
     ACTIVE_DRAG.with(|drag| drag.borrow().is_some())
+        || ACTIVE_DRAG_ABSOLUTE.with(|drag| drag.borrow().is_some())
 }
 
 /// Update the drag position (called by the runtime on mouse move).
 ///
 /// Returns true if a drag callback was invoked.
 pub fn update_drag(mouse_x: f32, mouse_y: f32) -> bool {
+    // Check absolute drag first
+    let abs_handled = ACTIVE_DRAG_ABSOLUTE.with(|drag| {
+        if let Some(ref state) = *drag.borrow() {
+            (state.on_drag)(mouse_x, mouse_y);
+            true
+        } else {
+            false
+        }
+    });
+    if abs_handled {
+        return true;
+    }
+
+    // Fall back to percentage-based drag
     ACTIVE_DRAG.with(|drag| {
         if let Some(ref state) = *drag.borrow() {
             let percent_x = if state.element_width > 0.0 {

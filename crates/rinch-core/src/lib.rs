@@ -49,8 +49,8 @@ pub use events::{
     get_modifier_state, get_saved_selection, is_dragging, query_selection_ranges, register_handler,
     register_input_handler, request_focus, request_selection_clear, save_selection_snapshot,
     set_click_context, set_input_context, set_keyboard_interceptor, set_modifier_state,
-    set_selection_callback, set_selection_sync_callback, start_drag, stop_drag,
-    take_pending_focus_request, take_pending_selection_clear, update_drag,
+    set_selection_callback, set_selection_sync_callback, start_drag, start_drag_absolute,
+    stop_drag, take_pending_focus_request, take_pending_selection_clear, update_drag,
 };
 
 // Re-export DOM types for fine-grained rendering
