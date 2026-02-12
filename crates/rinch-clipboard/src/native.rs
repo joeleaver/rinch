@@ -86,3 +86,37 @@ pub fn paste_image() -> ClipboardResult<ImageData<'static>> {
 pub fn has_image() -> bool {
     paste_image().is_ok()
 }
+
+/// Copy HTML to the clipboard with a plain-text fallback.
+///
+/// Places both `text/html` and `text/plain` MIME types on the clipboard.
+/// Applications that understand HTML will get the rich content, while
+/// others fall back to the plain text.
+pub fn copy_html(html: impl AsRef<str>, alt_text: Option<&str>) -> ClipboardResult<()> {
+    with_clipboard(|clipboard| {
+        clipboard.set_html(html.as_ref(), alt_text)?;
+        Ok(())
+    })
+}
+
+/// Paste HTML from the clipboard.
+///
+/// Returns the HTML content if the clipboard contains `text/html`.
+/// Returns `Err(ContentTypeMismatch)` if no HTML is available.
+pub fn paste_html() -> ClipboardResult<String> {
+    with_clipboard(|clipboard| {
+        let html = clipboard.get().html().map_err(|e| {
+            // arboard returns ContentNotAvailable when no HTML on clipboard
+            match e {
+                arboard::Error::ContentNotAvailable => ClipboardError::ContentTypeMismatch,
+                other => ClipboardError::AccessFailed(other.to_string()),
+            }
+        })?;
+        Ok(html)
+    })
+}
+
+/// Check if the clipboard contains HTML.
+pub fn has_html() -> bool {
+    paste_html().is_ok()
+}

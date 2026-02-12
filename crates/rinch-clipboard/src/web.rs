@@ -7,11 +7,12 @@
 use crate::{ClipboardError, ClipboardResult, ImageData};
 use std::cell::RefCell;
 
-// Internal buffer for synchronous clipboard operations.
+// Internal buffers for synchronous clipboard operations.
 // On the web, we can't synchronously read the system clipboard,
-// so we maintain a local buffer for copy/paste within the app.
+// so we maintain local buffers for copy/paste within the app.
 thread_local! {
     static CLIPBOARD_BUFFER: RefCell<Option<String>> = const { RefCell::new(None) };
+    static HTML_CLIPBOARD_BUFFER: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 /// Copy text to the clipboard.
@@ -84,4 +85,58 @@ pub fn paste_image() -> ClipboardResult<ImageData<'static>> {
 /// Check if the clipboard contains an image.
 pub fn has_image() -> bool {
     false
+}
+
+/// Copy HTML to the clipboard with a plain-text fallback.
+///
+/// On WASM, stores both HTML and plain text in local buffers.
+pub fn copy_html(html: impl AsRef<str>, alt_text: Option<&str>) -> ClipboardResult<()> {
+    let html = html.as_ref().to_string();
+
+    // Store HTML locally
+    HTML_CLIPBOARD_BUFFER.with(|buf| {
+        *buf.borrow_mut() = Some(html.clone());
+    });
+
+    // Also store plain text version
+    if let Some(text) = alt_text {
+        CLIPBOARD_BUFFER.with(|buf| {
+            *buf.borrow_mut() = Some(text.to_string());
+        });
+    }
+
+    // Try to write to system clipboard (fire-and-forget)
+    // Note: browser Clipboard API doesn't have a simple setHtml, but we can
+    // use ClipboardItem with text/html blob for modern browsers
+    if let Some(window) = web_sys::window() {
+        if let Ok(navigator) = js_sys::Reflect::get(&window, &"navigator".into()) {
+            if let Ok(clipboard) = js_sys::Reflect::get(&navigator, &"clipboard".into()) {
+                if !clipboard.is_undefined() {
+                    // Fall back to writing plain text for broad compatibility
+                    let clipboard: web_sys::Clipboard = clipboard.into();
+                    if let Some(text) = alt_text {
+                        let _ = clipboard.write_text(text);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Paste HTML from the clipboard.
+///
+/// On WASM, reads from the local HTML buffer.
+pub fn paste_html() -> ClipboardResult<String> {
+    HTML_CLIPBOARD_BUFFER.with(|buf| {
+        buf.borrow()
+            .clone()
+            .ok_or(ClipboardError::ContentTypeMismatch)
+    })
+}
+
+/// Check if the clipboard contains HTML.
+pub fn has_html() -> bool {
+    HTML_CLIPBOARD_BUFFER.with(|buf| buf.borrow().is_some())
 }

@@ -481,6 +481,14 @@ impl RinchApp {
             PlatformEvent::MouseMove { x, y } => {
                 self.cursor_pos = Some((x, y));
 
+                // Handle widget drag (sliders, floating panels, etc.)
+                if rinch_core::update_drag(x, y) {
+                    let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+                    self.resolve_and_repaint(w, h);
+                    actions.push(AppAction::RequestRedraw);
+                    return actions;
+                }
+
                 // Handle scrollbar drag
                 if let Some(drag) = &self.scrollbar_drag {
                     let node_id = drag.node_id;
@@ -623,6 +631,7 @@ impl RinchApp {
                 // Non-left button clicks: no-op for now
             }
             PlatformEvent::MouseUp { .. } => {
+                rinch_core::stop_drag();
                 self.scrollbar_drag = None;
                 self.ce_selecting = false;
 
@@ -2118,6 +2127,18 @@ impl RinchApp {
         });
 
         // Special handling for paste (Ctrl+V)
+        // Try HTML paste first for rich content, fall back to plain text
+        if ctrl && key == KeyCode::KeyV && cmd.is_none() {
+            #[cfg(feature = "clipboard")]
+            {
+                if let Ok(html) = crate::clipboard::paste_html() {
+                    if !html.is_empty() {
+                        self.paste_html_into_ce(&html);
+                        return true;
+                    }
+                }
+            }
+        }
         let cmd = cmd.or_else(|| {
             if ctrl && key == KeyCode::KeyV {
                 #[cfg(feature = "clipboard")]
@@ -3275,7 +3296,10 @@ impl RinchApp {
                         let text = Self::extract_selection_text(
                             &d.tree, ce_node_id, anchor, cursor,
                         );
-                        let _ = crate::clipboard::copy_text(&text);
+                        let html = Self::extract_selection_html(
+                            &d.tree, ce_node_id, anchor, cursor,
+                        );
+                        let _ = crate::clipboard::copy_html(&html, Some(&text));
                     }
                 }
             }
@@ -3289,7 +3313,10 @@ impl RinchApp {
                         let text = Self::extract_selection_text(
                             &d.tree, ce_node_id, anchor, cursor,
                         );
-                        let _ = crate::clipboard::copy_text(&text);
+                        let html = Self::extract_selection_html(
+                            &d.tree, ce_node_id, anchor, cursor,
+                        );
+                        let _ = crate::clipboard::copy_html(&html, Some(&text));
                     }
                     self.ce_delete_selection();
                     text_changed = true;
@@ -4189,6 +4216,314 @@ impl RinchApp {
         }
     }
 
+    // ── HTML paste ────────────────────────────────────────────────────────
+
+    /// Paste HTML content into the focused contenteditable element.
+    ///
+    /// Parses the HTML fragment, creates DOM nodes, and inserts them at the
+    /// cursor position. Handles splitting text nodes, inserting block elements,
+    /// and updating the cursor position.
+    #[allow(dead_code)]
+    fn paste_html_into_ce(&mut self, html: &str) {
+        let ce = match self.focused_contenteditable.as_mut() {
+            Some(ce) => ce,
+            None => return,
+        };
+        let ce_node_id = ce.ce_node_id;
+        let has_selection = ce.cursor != ce.anchor;
+
+        // Delete selection first if any
+        if has_selection {
+            self.ce_delete_selection();
+        }
+
+        let parsed = parse_html_fragment(html);
+        if parsed.is_empty() {
+            return;
+        }
+
+        let ce = self.focused_contenteditable.as_mut().unwrap();
+        let cur = ce.cursor;
+
+        let Some(doc) = &self.doc else { return };
+        let mut d = doc.borrow_mut();
+
+        // Flatten parsed nodes: collect all top-level nodes to insert.
+        // If the parsed content is just inline text/spans, insert inline.
+        // If it contains block elements, insert as blocks.
+        let has_blocks = parsed.iter().any(|n| matches!(n, ParsedNode::Element { tag, .. } if Self::is_block_element(tag)));
+
+        if !has_blocks {
+            // All inline content — insert text/inline elements at cursor position
+            let last_cursor = Self::insert_parsed_inline(
+                &mut d, ce_node_id, cur, &parsed,
+            );
+            let ce = self.focused_contenteditable.as_mut().unwrap();
+            ce.cursor = last_cursor;
+            ce.anchor = last_cursor;
+        } else {
+            // Contains block elements — need to split at cursor and insert blocks
+            let last_cursor = Self::insert_parsed_blocks(
+                &mut d, ce_node_id, cur, &parsed,
+            );
+            let ce = self.focused_contenteditable.as_mut().unwrap();
+            ce.cursor = last_cursor;
+            ce.anchor = last_cursor;
+        }
+
+        // Request redraw
+        drop(d);
+    }
+
+    /// Insert inline parsed nodes at the cursor position.
+    /// Returns the new cursor position after insertion.
+    #[allow(dead_code)]
+    fn insert_parsed_inline(
+        d: &mut rinch_dom::RinchDocument,
+        ce_node_id: usize,
+        cur: DomCursor,
+        nodes: &[ParsedNode],
+    ) -> DomCursor {
+        // Collect all text from the parsed nodes (flattened for inline insertion)
+        let mut flat_text = String::new();
+        Self::flatten_parsed_text(nodes, &mut flat_text);
+
+        if flat_text.is_empty() {
+            return cur;
+        }
+
+        // Check if cursor is on a <br> element
+        let is_br = d.tree.get(cur.node_id)
+            .and_then(|n| n.tag())
+            .map(|t| t == "br")
+            .unwrap_or(false);
+
+        if is_br {
+            let parent_id = d.tree.get(cur.node_id)
+                .and_then(|n| n.parent)
+                .unwrap_or(ce_node_id);
+            // Insert parsed nodes before the <br>
+            let last_id = Self::create_parsed_nodes(d, rinch_core::dom::NodeId(parent_id), nodes, Some(rinch_core::dom::NodeId(cur.node_id)));
+            if let Some(last) = last_id {
+                return last;
+            }
+            return cur;
+        }
+
+        if let Some(node) = d.tree.get(cur.node_id)
+            && node.text_content().is_some()
+        {
+            let current = node.text_content().unwrap().to_string();
+            let off = cur.offset.min(current.len());
+
+            // If we're inserting plain inline text only (no tags), do simple text splice
+            let all_text_nodes = nodes.iter().all(|n| matches!(n, ParsedNode::Text(_)));
+            if all_text_nodes {
+                let mut new_text = String::with_capacity(current.len() + flat_text.len());
+                new_text.push_str(&current[..off]);
+                new_text.push_str(&flat_text);
+                new_text.push_str(&current[off..]);
+                d.set_text_content(rinch_core::dom::NodeId(cur.node_id), &new_text);
+                return DomCursor { node_id: cur.node_id, offset: off + flat_text.len() };
+            }
+
+            // Mixed inline content — split text node and insert elements between
+            let parent_id = d.tree.get(cur.node_id)
+                .and_then(|n| n.parent)
+                .unwrap_or(ce_node_id);
+
+            let before = &current[..off];
+            let after = &current[off..];
+
+            // Update current text node to just the "before" part
+            if !before.is_empty() {
+                d.set_text_content(rinch_core::dom::NodeId(cur.node_id), before);
+            }
+
+            // Find reference node for insertion (sibling after current text node)
+            let ref_node = {
+                let children = &d.tree.nodes[parent_id].children;
+                let pos = children.iter().position(|&c| c == cur.node_id);
+                pos.and_then(|p| children.get(p + 1).copied())
+            };
+
+            // Create "after" text node if needed
+            let after_id = if !after.is_empty() {
+                let id = d.create_text(after);
+                if let Some(ref_id) = ref_node {
+                    d.insert_before(rinch_core::dom::NodeId(parent_id), id, rinch_core::dom::NodeId(ref_id));
+                } else {
+                    d.append_child(rinch_core::dom::NodeId(parent_id), id);
+                }
+                Some(id)
+            } else {
+                None
+            };
+
+            // Insert parsed nodes between "before" and "after"
+            let insert_ref = after_id.map(|id| rinch_core::dom::NodeId(id.0))
+                .or_else(|| ref_node.map(rinch_core::dom::NodeId));
+            let last_id = Self::create_parsed_nodes(d, rinch_core::dom::NodeId(parent_id), nodes, insert_ref);
+
+            if let Some(last) = last_id {
+                return last;
+            }
+            // Fall back to end of before text
+            if !before.is_empty() {
+                return DomCursor { node_id: cur.node_id, offset: before.len() };
+            }
+            return cur;
+        }
+
+        // Cursor on element node (empty block) — insert as children
+        let last_id = Self::create_parsed_nodes(d, rinch_core::dom::NodeId(cur.node_id), nodes, None);
+        d.set_style(rinch_core::dom::NodeId(cur.node_id), "min-height", "0");
+        if let Some(last) = last_id {
+            return last;
+        }
+        cur
+    }
+
+    /// Insert parsed nodes that contain block elements at the cursor position.
+    /// Splits the current block at the cursor and inserts blocks between.
+    #[allow(dead_code)]
+    fn insert_parsed_blocks(
+        d: &mut rinch_dom::RinchDocument,
+        ce_node_id: usize,
+        cur: DomCursor,
+        nodes: &[ParsedNode],
+    ) -> DomCursor {
+        // Find which direct child of CE root contains the cursor
+        let cursor_block = Self::find_ancestor_child_of(
+            &d.tree, cur.node_id, ce_node_id,
+        ).unwrap_or(cur.node_id);
+
+        // Find the insertion point: after the cursor's block
+        let ref_node = {
+            let children = &d.tree.nodes[ce_node_id].children;
+            let pos = children.iter().position(|&c| c == cursor_block);
+            pos.and_then(|p| children.get(p + 1).copied())
+        };
+
+        // Create and insert the parsed nodes
+        let insert_ref = ref_node.map(rinch_core::dom::NodeId);
+        let last_id = Self::create_parsed_nodes(
+            d, rinch_core::dom::NodeId(ce_node_id), nodes, insert_ref,
+        );
+
+        if let Some(last) = last_id {
+            return last;
+        }
+        cur
+    }
+
+    /// Find the ancestor of `node_id` that is a direct child of `root_id`.
+    #[allow(dead_code)]
+    fn find_ancestor_child_of(
+        tree: &rinch_dom::NodeTree,
+        node_id: usize,
+        root_id: usize,
+    ) -> Option<usize> {
+        let mut current = node_id;
+        loop {
+            let parent = tree.get(current)?.parent?;
+            if parent == root_id {
+                return Some(current);
+            }
+            current = parent;
+        }
+    }
+
+    /// Create DOM nodes from parsed HTML nodes and insert them into the tree.
+    /// Returns the cursor position at the end of the last inserted node.
+    #[allow(dead_code)]
+    fn create_parsed_nodes(
+        d: &mut rinch_dom::RinchDocument,
+        parent: rinch_core::dom::NodeId,
+        nodes: &[ParsedNode],
+        insert_before: Option<rinch_core::dom::NodeId>,
+    ) -> Option<DomCursor> {
+        let mut last_cursor = None;
+
+        for node in nodes {
+            match node {
+                ParsedNode::Text(text) => {
+                    if text.is_empty() {
+                        continue;
+                    }
+                    let text_id = d.create_text(text);
+                    if let Some(ref_id) = insert_before {
+                        d.insert_before(parent, text_id, ref_id);
+                    } else {
+                        d.append_child(parent, text_id);
+                    }
+                    last_cursor = Some(DomCursor { node_id: text_id.0, offset: text.len() });
+                }
+                ParsedNode::Element { tag, attributes, children } => {
+                    if tag == "br" {
+                        let br_id = d.create_element("br");
+                        if let Some(ref_id) = insert_before {
+                            d.insert_before(parent, br_id, ref_id);
+                        } else {
+                            d.append_child(parent, br_id);
+                        }
+                        last_cursor = Some(DomCursor { node_id: br_id.0, offset: 0 });
+                        continue;
+                    }
+
+                    let el_id = d.create_element(tag);
+
+                    // Apply safe attributes
+                    for (name, value) in attributes {
+                        match name.as_str() {
+                            "style" => d.set_attribute(el_id, "style", value),
+                            "class" => d.set_attribute(el_id, "class", value),
+                            "href" => d.set_attribute(el_id, "href", value),
+                            // Skip all other attributes (data-rid, onclick, etc.)
+                            _ => {}
+                        }
+                    }
+
+                    // Recursively create children
+                    let child_cursor = Self::create_parsed_nodes(d, el_id, children, None);
+                    if let Some(cc) = child_cursor {
+                        last_cursor = Some(cc);
+                    } else {
+                        last_cursor = Some(DomCursor { node_id: el_id.0, offset: 0 });
+                    }
+
+                    if let Some(ref_id) = insert_before {
+                        d.insert_before(parent, el_id, ref_id);
+                    } else {
+                        d.append_child(parent, el_id);
+                    }
+                }
+            }
+        }
+
+        last_cursor
+    }
+
+    /// Flatten parsed nodes into a single text string (stripping all tags).
+    #[allow(dead_code)]
+    fn flatten_parsed_text(nodes: &[ParsedNode], out: &mut String) {
+        for node in nodes {
+            match node {
+                ParsedNode::Text(t) => out.push_str(t),
+                ParsedNode::Element { tag, children, .. } => {
+                    if tag == "br" {
+                        out.push('\n');
+                    } else {
+                        Self::flatten_parsed_text(children, out);
+                        if Self::is_block_element(tag) {
+                            out.push('\n');
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ── Selection helpers ────────────────────────────────────────────────
 
     /// Delete the current selection, updating the CE cursor.
@@ -4441,6 +4776,254 @@ impl RinchApp {
         result
     }
 
+    /// Extract HTML between two cursors (for copy/cut with rich formatting).
+    ///
+    /// Walks the DOM tree and serializes the selected range as an HTML fragment,
+    /// preserving element tags, inline styles, and classes.
+    #[allow(dead_code)]
+    fn extract_selection_html(
+        tree: &rinch_dom::NodeTree,
+        ce_root: usize,
+        anchor: DomCursor,
+        cursor: DomCursor,
+    ) -> String {
+        let (start, end) = Self::order_cursors(tree, ce_root, anchor, cursor);
+
+        if start.node_id == end.node_id {
+            // Single-node selection: just return the text slice (no wrapping tags needed
+            // unless we want to preserve inline formatting of the parent)
+            if let Some(node) = tree.get(start.node_id)
+                && let Some(text) = node.text_content()
+            {
+                let s = start.offset.min(text.len());
+                let e = end.offset.min(text.len());
+                let slice = &text[s..e];
+                // Wrap in ancestor inline formatting tags
+                return Self::wrap_in_ancestor_tags(tree, start.node_id, ce_root, &html_escape(slice));
+            }
+            return String::new();
+        }
+
+        // Collect all leaf (text/br/empty-block) node IDs in document order
+        let mut all_leaves = Vec::new();
+        Self::collect_text_node_ids(tree, ce_root, &mut all_leaves);
+        let start_pos = all_leaves.iter().position(|&id| id == start.node_id).unwrap_or(0);
+        let end_pos = all_leaves.iter().position(|&id| id == end.node_id).unwrap_or(all_leaves.len().saturating_sub(1));
+
+        // Build a set of selected leaf IDs for fast lookup
+        let selected: std::collections::HashSet<usize> = all_leaves
+            [start_pos..=end_pos.min(all_leaves.len().saturating_sub(1))]
+            .iter()
+            .copied()
+            .collect();
+
+        // Recursively serialize the CE root's subtree, only including
+        // branches that contain selected leaves
+        let mut html = String::new();
+        Self::serialize_html_range(
+            tree, ce_root, &selected, start, end, &mut html,
+        );
+        html
+    }
+
+    /// Recursively serialize a DOM subtree as HTML, including only branches
+    /// that contain leaf nodes in the `selected` set.
+    fn serialize_html_range(
+        tree: &rinch_dom::NodeTree,
+        node_id: usize,
+        selected: &std::collections::HashSet<usize>,
+        start: DomCursor,
+        end: DomCursor,
+        out: &mut String,
+    ) {
+        let Some(node) = tree.get(node_id) else { return };
+
+        // Text node
+        if let Some(text) = node.text_content() {
+            if !selected.contains(&node_id) {
+                return;
+            }
+            let text_str = if node_id == start.node_id && node_id == end.node_id {
+                &text[start.offset.min(text.len())..end.offset.min(text.len())]
+            } else if node_id == start.node_id {
+                &text[start.offset.min(text.len())..]
+            } else if node_id == end.node_id {
+                &text[..end.offset.min(text.len())]
+            } else {
+                text
+            };
+            out.push_str(&html_escape(text_str));
+            return;
+        }
+
+        // <br> element
+        if node.tag() == Some("br") {
+            if selected.contains(&node_id) {
+                out.push_str("<br>");
+            }
+            return;
+        }
+
+        // Empty block element (cursor placeholder)
+        if node.children.is_empty()
+            && node.tag().map(Self::is_block_element).unwrap_or(false)
+            && selected.contains(&node_id)
+        {
+            if let Some(tag) = node.tag() {
+                out.push('<');
+                out.push_str(tag);
+                out.push('>');
+                out.push_str("</");
+                out.push_str(tag);
+                out.push('>');
+            }
+            return;
+        }
+
+        // Element node with children — only include if a descendant is selected
+        if let Some(tag) = node.tag() {
+            // Check if any descendant leaf is in the selection
+            if !Self::has_selected_descendant(tree, node_id, selected) {
+                return;
+            }
+
+            // Don't emit the CE root tag itself, just its children
+            if node_id == start.node_id && node.is_element() && node.children.is_empty() {
+                // Element cursor (empty block) — already handled above
+                return;
+            }
+
+            // Skip the contenteditable root wrapper — emit children directly
+            let emit_tag = node_id != start.node_id || !node.is_element() || !selected.contains(&node_id);
+            // Actually, never emit the CE root tag — it's the container, not content.
+            // We always want to emit tags for elements inside the CE root though.
+            let emit_tag = emit_tag && node.tag().is_some();
+            // Skip anonymous/internal nodes
+            let emit_tag = emit_tag && !node.is_anonymous_block_box;
+
+            if emit_tag {
+                out.push('<');
+                out.push_str(tag);
+                // Include style and class attributes
+                Self::emit_html_attributes(node, out);
+                out.push('>');
+            }
+
+            for &child_id in &node.children {
+                // Skip anonymous block boxes
+                if let Some(child) = tree.get(child_id) {
+                    if child.is_anonymous_block_box {
+                        // Recurse into anonymous box children directly
+                        for &grandchild_id in &child.children {
+                            Self::serialize_html_range(tree, grandchild_id, selected, start, end, out);
+                        }
+                        continue;
+                    }
+                }
+                Self::serialize_html_range(tree, child_id, selected, start, end, out);
+            }
+
+            if emit_tag && !Self::is_void_element(tag) {
+                out.push_str("</");
+                out.push_str(tag);
+                out.push('>');
+            }
+        } else {
+            // Document or other non-element — recurse into children
+            for &child_id in &node.children {
+                Self::serialize_html_range(tree, child_id, selected, start, end, out);
+            }
+        }
+    }
+
+    /// Check if any descendant leaf of `node_id` is in the selected set.
+    fn has_selected_descendant(
+        tree: &rinch_dom::NodeTree,
+        node_id: usize,
+        selected: &std::collections::HashSet<usize>,
+    ) -> bool {
+        if selected.contains(&node_id) {
+            return true;
+        }
+        let Some(node) = tree.get(node_id) else { return false };
+        for &child_id in &node.children {
+            if Self::has_selected_descendant(tree, child_id, selected) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Emit safe HTML attributes (style, class) for an element.
+    fn emit_html_attributes(node: &rinch_dom::node::Node, out: &mut String) {
+        // Include style attribute if present
+        if let Some(style) = node.attributes.get("style") {
+            if !style.is_empty() {
+                out.push_str(" style=\"");
+                out.push_str(&html_escape_attr(style));
+                out.push('"');
+            }
+        }
+        // Include class attribute if present
+        if let Some(class) = node.attributes.get("class") {
+            if !class.is_empty() {
+                out.push_str(" class=\"");
+                out.push_str(&html_escape_attr(class));
+                out.push('"');
+            }
+        }
+    }
+
+    /// Whether an HTML element is a void element (self-closing, no end tag).
+    fn is_void_element(tag: &str) -> bool {
+        matches!(tag, "br" | "hr" | "img" | "input" | "meta" | "link" | "wbr")
+    }
+
+    /// Wrap a text string in the inline formatting tags of its ancestors,
+    /// up to (but not including) the CE root.
+    fn wrap_in_ancestor_tags(
+        tree: &rinch_dom::NodeTree,
+        node_id: usize,
+        ce_root: usize,
+        inner: &str,
+    ) -> String {
+        let mut tags = Vec::new();
+        let mut current = node_id;
+        // Walk up from the text node's parent to the CE root
+        while let Some(node) = tree.get(current) {
+            if let Some(parent_id) = node.parent {
+                if parent_id == ce_root {
+                    break;
+                }
+                if let Some(parent) = tree.get(parent_id) {
+                    if let Some(tag) = parent.tag() {
+                        if !parent.is_anonymous_block_box {
+                            let mut opening = format!("<{}", tag);
+                            Self::emit_html_attributes(parent, &mut opening);
+                            opening.push('>');
+                            tags.push((opening, format!("</{}>", tag)));
+                        }
+                    }
+                }
+                current = parent_id;
+            } else {
+                break;
+            }
+        }
+
+        // Tags are innermost-first, we need outermost-first for wrapping
+        tags.reverse();
+        let mut result = String::new();
+        for (open, _) in &tags {
+            result.push_str(open);
+        }
+        result.push_str(inner);
+        for (_, close) in tags.iter().rev() {
+            result.push_str(close);
+        }
+        result
+    }
+
     /// Calculate byte offset from click coordinates relative to text start.
     #[allow(dead_code)]
     fn byte_offset_from_xy(
@@ -4556,12 +5139,21 @@ impl RinchApp {
                 DebugResult::Json { data: json!(null) }
             }
             DebugCommandKind::MouseUp { x: _, y: _ } => {
+                rinch_core::stop_drag();
                 self.scrollbar_drag = None;
                 self.ce_selecting = false;
                 DebugResult::Json { data: json!(null) }
             }
             DebugCommandKind::MouseMove { x, y } => {
                 self.cursor_pos = Some((x, y));
+
+                // Handle widget drag (sliders, floating panels, etc.)
+                if rinch_core::update_drag(x, y) {
+                    let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+                    self.resolve_and_repaint(w, h);
+                    actions.push(AppAction::RequestRedraw);
+                    return DebugResult::Json { data: json!(null) };
+                }
 
                 // Handle contenteditable text selection drag
                 if self.ce_selecting {
@@ -5426,4 +6018,391 @@ pub(crate) fn compute_absolute_y(tree: &rinch_dom::NodeTree, node_id: usize) -> 
         }
     }
     y
+}
+
+// ── HTML escape helpers ─────────────────────────────────────────────────────
+
+/// Escape HTML special characters in text content.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Escape characters for use inside an HTML attribute value (double-quoted).
+fn html_escape_attr(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+// ── Simple HTML Fragment Parser ─────────────────────────────────────────────
+//
+// Parses well-formed HTML fragments from clipboard data into a tree of
+// ParsedNode values that can be inserted into the rinch DOM.
+// Only used when clipboard feature is enabled.
+
+/// A parsed HTML node from clipboard content.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+enum ParsedNode {
+    /// Plain text content.
+    Text(String),
+    /// An HTML element with tag, attributes, and children.
+    Element {
+        tag: String,
+        attributes: Vec<(String, String)>,
+        children: Vec<ParsedNode>,
+    },
+}
+
+/// Parse an HTML fragment string into a list of parsed nodes.
+///
+/// Handles common clipboard HTML:
+/// - Strips `<html>`, `<head>`, `<body>` wrappers (extracts body content)
+/// - Strips `<meta>`, `<style>`, `<script>` tags entirely
+/// - Preserves formatting elements (strong, em, b, i, u, s, span, etc.)
+/// - Preserves block elements (p, div, h1-h6, ul, ol, li, blockquote, etc.)
+/// - Preserves style and class attributes, strips everything else except href
+/// - Decodes basic HTML entities (&amp; &lt; &gt; &quot; &nbsp;)
+#[allow(dead_code)]
+fn parse_html_fragment(html: &str) -> Vec<ParsedNode> {
+    let mut parser = HtmlFragmentParser::new(html);
+    let nodes = parser.parse();
+
+    // If the result is a single <html> or <body> wrapper, unwrap it
+    unwrap_body(nodes)
+}
+
+/// Unwrap `<html>` / `<body>` wrappers, returning their inner children.
+#[allow(dead_code)]
+fn unwrap_body(nodes: Vec<ParsedNode>) -> Vec<ParsedNode> {
+    if nodes.len() == 1 {
+        if let ParsedNode::Element { ref tag, ref children, .. } = nodes[0] {
+            if tag == "html" || tag == "body" {
+                return unwrap_body(children.clone());
+            }
+        }
+    }
+    // Also check for html > head + body pattern
+    let mut result = Vec::new();
+    let mut found_wrapper = false;
+    for node in &nodes {
+        if let ParsedNode::Element { tag, children, .. } = node {
+            if tag == "html" || tag == "body" {
+                result.extend(unwrap_body(children.clone()));
+                found_wrapper = true;
+            } else if tag == "head" || tag == "meta" || tag == "style" || tag == "script" {
+                found_wrapper = true;
+                // Skip these entirely
+            } else {
+                result.push(node.clone());
+            }
+        } else {
+            result.push(node.clone());
+        }
+    }
+    if found_wrapper && !result.is_empty() {
+        return result;
+    }
+    nodes
+}
+
+#[allow(dead_code)]
+struct HtmlFragmentParser<'a> {
+    input: &'a str,
+    pos: usize,
+}
+
+impl<'a> HtmlFragmentParser<'a> {
+    fn new(input: &'a str) -> Self {
+        Self { input, pos: 0 }
+    }
+
+    fn parse(&mut self) -> Vec<ParsedNode> {
+        self.parse_nodes(None)
+    }
+
+    fn parse_nodes(&mut self, end_tag: Option<&str>) -> Vec<ParsedNode> {
+        let mut nodes = Vec::new();
+
+        while self.pos < self.input.len() {
+            // Check for end tag
+            if let Some(end) = end_tag {
+                if self.looking_at_close_tag(end) {
+                    self.consume_close_tag();
+                    break;
+                }
+            }
+
+            if self.peek() == Some('<') {
+                // Check for comment
+                if self.input[self.pos..].starts_with("<!--") {
+                    self.skip_comment();
+                    continue;
+                }
+                // Check for closing tag (unexpected — belongs to parent)
+                if self.input[self.pos..].starts_with("</") {
+                    if end_tag.is_none() {
+                        // Unexpected close tag — skip it
+                        self.skip_to('>');
+                    }
+                    break;
+                }
+                // Opening tag
+                if let Some(element) = self.parse_element() {
+                    nodes.push(element);
+                }
+            } else {
+                // Text content
+                let text = self.parse_text();
+                if !text.is_empty() {
+                    nodes.push(ParsedNode::Text(text));
+                }
+            }
+        }
+
+        nodes
+    }
+
+    fn parse_element(&mut self) -> Option<ParsedNode> {
+        // Consume '<'
+        self.advance();
+
+        // Parse tag name
+        let tag = self.parse_tag_name()?.to_ascii_lowercase();
+
+        // Skip dangerous/unwanted tags entirely
+        if matches!(tag.as_str(), "script" | "style" | "meta" | "link" | "head" | "title") {
+            self.skip_until_close_tag(&tag);
+            return None;
+        }
+
+        // Parse attributes
+        let attributes = self.parse_attributes();
+
+        // Check for self-closing or void element
+        self.skip_whitespace();
+        let self_closing = self.peek() == Some('/');
+        if self_closing {
+            self.advance(); // skip '/'
+        }
+
+        // Consume '>'
+        if self.peek() == Some('>') {
+            self.advance();
+        }
+
+        let is_void = is_void_tag(&tag);
+        if self_closing || is_void {
+            return Some(ParsedNode::Element {
+                tag,
+                attributes: filter_attributes(attributes),
+                children: Vec::new(),
+            });
+        }
+
+        // Parse children until matching close tag
+        let children = self.parse_nodes(Some(&tag));
+
+        Some(ParsedNode::Element {
+            tag,
+            attributes: filter_attributes(attributes),
+            children,
+        })
+    }
+
+    fn parse_tag_name(&mut self) -> Option<String> {
+        let start = self.pos;
+        while self.pos < self.input.len() {
+            let ch = self.input.as_bytes()[self.pos];
+            if ch.is_ascii_alphanumeric() || ch == b'-' || ch == b'_' {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        if self.pos > start {
+            Some(self.input[start..self.pos].to_string())
+        } else {
+            // Skip malformed tag
+            self.skip_to('>');
+            None
+        }
+    }
+
+    fn parse_attributes(&mut self) -> Vec<(String, String)> {
+        let mut attrs = Vec::new();
+
+        loop {
+            self.skip_whitespace();
+            let ch = self.peek();
+            if ch == Some('>') || ch == Some('/') || ch.is_none() {
+                break;
+            }
+
+            // Parse attribute name
+            let name_start = self.pos;
+            while self.pos < self.input.len() {
+                let ch = self.input.as_bytes()[self.pos];
+                if ch == b'=' || ch == b'>' || ch == b'/' || ch.is_ascii_whitespace() {
+                    break;
+                }
+                self.pos += 1;
+            }
+            let name = self.input[name_start..self.pos].to_ascii_lowercase();
+            if name.is_empty() {
+                self.advance(); // skip invalid char
+                continue;
+            }
+
+            self.skip_whitespace();
+
+            // Check for '='
+            if self.peek() == Some('=') {
+                self.advance(); // skip '='
+                self.skip_whitespace();
+
+                // Parse attribute value
+                let value = if self.peek() == Some('"') {
+                    self.advance(); // skip opening quote
+                    let v = self.consume_until('"');
+                    self.advance(); // skip closing quote
+                    decode_entities(&v)
+                } else if self.peek() == Some('\'') {
+                    self.advance();
+                    let v = self.consume_until('\'');
+                    self.advance();
+                    decode_entities(&v)
+                } else {
+                    // Unquoted value
+                    let v_start = self.pos;
+                    while self.pos < self.input.len() {
+                        let ch = self.input.as_bytes()[self.pos];
+                        if ch.is_ascii_whitespace() || ch == b'>' || ch == b'/' {
+                            break;
+                        }
+                        self.pos += 1;
+                    }
+                    decode_entities(&self.input[v_start..self.pos])
+                };
+                attrs.push((name, value));
+            } else {
+                // Boolean attribute (no value)
+                attrs.push((name, String::new()));
+            }
+        }
+
+        attrs
+    }
+
+    fn parse_text(&mut self) -> String {
+        let start = self.pos;
+        while self.pos < self.input.len() && self.input.as_bytes()[self.pos] != b'<' {
+            self.pos += 1;
+        }
+        let raw = &self.input[start..self.pos];
+        decode_entities(raw)
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.input[self.pos..].chars().next()
+    }
+
+    fn advance(&mut self) {
+        if self.pos < self.input.len() {
+            self.pos += self.input[self.pos..].chars().next().map_or(1, |c| c.len_utf8());
+        }
+    }
+
+    fn skip_whitespace(&mut self) {
+        while self.pos < self.input.len() && self.input.as_bytes()[self.pos].is_ascii_whitespace() {
+            self.pos += 1;
+        }
+    }
+
+    fn skip_to(&mut self, ch: char) {
+        while self.pos < self.input.len() && self.input.as_bytes()[self.pos] != ch as u8 {
+            self.pos += 1;
+        }
+        if self.pos < self.input.len() {
+            self.pos += 1;
+        }
+    }
+
+    fn consume_until(&mut self, ch: char) -> String {
+        let start = self.pos;
+        while self.pos < self.input.len() && self.input.as_bytes()[self.pos] != ch as u8 {
+            self.pos += 1;
+        }
+        self.input[start..self.pos].to_string()
+    }
+
+    fn looking_at_close_tag(&self, tag: &str) -> bool {
+        let remaining = &self.input[self.pos..];
+        if !remaining.starts_with("</") {
+            return false;
+        }
+        let after = &remaining[2..];
+        if after.len() < tag.len() {
+            return false;
+        }
+        after[..tag.len()].eq_ignore_ascii_case(tag)
+            && after.as_bytes().get(tag.len()).map_or(true, |&b| b == b'>' || b.is_ascii_whitespace())
+    }
+
+    fn consume_close_tag(&mut self) {
+        self.skip_to('>');
+    }
+
+    fn skip_comment(&mut self) {
+        self.pos += 4; // skip "<!--"
+        while self.pos + 2 < self.input.len() {
+            if &self.input[self.pos..self.pos + 3] == "-->" {
+                self.pos += 3;
+                return;
+            }
+            self.pos += 1;
+        }
+        self.pos = self.input.len();
+    }
+
+    fn skip_until_close_tag(&mut self, tag: &str) {
+        let close = format!("</{}", tag);
+        while self.pos < self.input.len() {
+            if self.input[self.pos..].to_ascii_lowercase().starts_with(&close) {
+                self.skip_to('>');
+                return;
+            }
+            self.pos += 1;
+        }
+    }
+}
+
+/// Check if an HTML tag is a void element (no closing tag).
+#[allow(dead_code)]
+fn is_void_tag(tag: &str) -> bool {
+    matches!(tag, "br" | "hr" | "img" | "input" | "meta" | "link" | "wbr"
+        | "area" | "base" | "col" | "embed" | "source" | "track")
+}
+
+/// Filter attributes to only keep safe ones (style, class, href).
+#[allow(dead_code)]
+fn filter_attributes(attrs: Vec<(String, String)>) -> Vec<(String, String)> {
+    attrs.into_iter()
+        .filter(|(name, _)| matches!(name.as_str(), "style" | "class" | "href"))
+        .collect()
+}
+
+/// Decode basic HTML entities.
+#[allow(dead_code)]
+fn decode_entities(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&nbsp;", "\u{00A0}")
+        .replace("&#39;", "'")
 }
