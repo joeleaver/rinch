@@ -16,6 +16,7 @@ pub mod stylesheet;
 pub mod stylo_impl;
 pub mod testing;
 pub mod text_query;
+pub mod transition;
 
 pub use computed_style::ComputedStyle;
 pub use dom_impl::RinchDocument;

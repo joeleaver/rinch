@@ -845,11 +845,30 @@ impl RinchApp {
                 self.handle_debug_commands(&mut actions, scale_factor, window_size);
             }
             PlatformEvent::AboutToWait => {
+                // Tick active CSS transitions — this updates interpolated values
+                // in computed_style and marks affected nodes dirty.
+                let any_transitions = if let Some(doc) = &self.doc {
+                    doc.borrow_mut().tick_transitions()
+                } else {
+                    false
+                };
+
+                // Transitions modify computed_style directly — mark scene dirty
+                // so build_scene() rebuilds the Vello scene with interpolated values.
+                if any_transitions {
+                    self.scene_dirty = true;
+                }
+
                 if self.has_dirty_nodes() {
                     let (w, h) = (window_size.0 as f32, window_size.1 as f32);
                     if self.resolve_and_repaint(w, h) {
                         actions.push(AppAction::RequestRedraw);
                     }
+                }
+
+                // Keep the render loop active while transitions are running
+                if any_transitions {
+                    actions.push(AppAction::RequestRedraw);
                 }
             }
         }

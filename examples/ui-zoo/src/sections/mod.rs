@@ -1,6 +1,7 @@
 //! UI Zoo sections - each section showcases a category of widgets.
 
 mod buttons;
+mod css_features;
 mod data_display;
 mod editor;
 mod feedback;
@@ -14,6 +15,7 @@ mod tree;
 mod typography;
 
 pub use buttons::{buttons_section, init_buttons_state};
+pub use css_features::css_features_section;
 pub use data_display::data_display_section;
 pub use editor::{editor_section, init_editor_state};
 pub use feedback::{feedback_section, init_feedback_state};

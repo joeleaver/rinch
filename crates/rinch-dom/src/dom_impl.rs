@@ -209,6 +209,53 @@ impl RinchDocument {
             }
         }
     }
+
+    /// Advance all active CSS transitions by one frame.
+    /// Returns true if any transitions are still active (caller should keep polling).
+    pub fn tick_transitions(&mut self) -> bool {
+        use std::time::SystemTime;
+        let current_time_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64()
+            * 1000.0;
+
+        let any_active = crate::transition::tick_transitions(&mut self.tree, current_time_ms);
+
+        // For layout-affecting transitions, we need to re-sync Taffy styles
+        // from the updated computed_style values.
+        // Collect nodes that had LAYOUT dirty set by tick_transitions.
+        let layout_dirty: Vec<usize> = self
+            .tree
+            .active_transitions
+            .keys()
+            .copied()
+            .chain(
+                // Also check nodes that just had transitions complete
+                self.tree
+                    .dirty_nodes
+                    .iter()
+                    .copied(),
+            )
+            .collect();
+
+        for node_id in layout_dirty {
+            if !self.tree.contains(node_id) {
+                continue;
+            }
+            let node = &self.tree.nodes[node_id];
+            if !node.dirty.contains(DirtyFlags::LAYOUT) {
+                continue;
+            }
+            if let Some(taffy_id) = node.taffy_id {
+                let dd = self.default_display_for_node(node_id);
+                let taffy_style = node.computed_style.to_taffy_style(dd);
+                let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
+            }
+        }
+
+        any_active
+    }
 }
 
 impl DomDocument for RinchDocument {

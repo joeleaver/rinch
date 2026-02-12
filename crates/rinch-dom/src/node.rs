@@ -3,6 +3,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 
+use crate::transition::{ActiveTransition, TransitionProperty, TransitionSpec};
+
 use atomic_refcell::AtomicRefCell;
 use bitflags::bitflags;
 use peniko::Brush;
@@ -214,6 +216,11 @@ pub struct Node {
     /// Typed computed style derived from Stylo.
     /// This is the primary source for layout and paint after Stylo migration.
     pub computed_style: ComputedStyle,
+    /// Parsed CSS transition specs for this node.
+    pub transition_specs: Vec<TransitionSpec>,
+    /// Whether this node has been styled at least once.
+    /// Prevents transitions from firing on initial style application.
+    pub has_been_styled: bool,
 
     // === Stylo CSS engine fields ===
     /// Stylo element data containing computed CSS values.
@@ -274,6 +281,8 @@ impl Node {
             is_anonymous_block_box: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
+            transition_specs: Vec::new(),
+            has_been_styled: false,
             // Stylo fields
             stylo_element_data: AtomicRefCell::new(None),
             selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
@@ -310,6 +319,8 @@ impl Node {
             is_anonymous_block_box: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
+            transition_specs: Vec::new(),
+            has_been_styled: false,
             // Stylo fields
             stylo_element_data: AtomicRefCell::new(None),
             selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
@@ -345,6 +356,8 @@ impl Node {
             is_anonymous_block_box: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
+            transition_specs: Vec::new(),
+            has_been_styled: false,
             // Stylo fields
             stylo_element_data: AtomicRefCell::new(None),
             selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
@@ -378,6 +391,8 @@ impl Node {
             is_anonymous_block_box: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
+            transition_specs: Vec::new(),
+            has_been_styled: false,
             // Stylo fields
             stylo_element_data: AtomicRefCell::new(None),
             selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
@@ -472,6 +487,10 @@ pub struct NodeTree {
     /// IDs of anonymous block box nodes created during layout.
     /// Tracked for cleanup at the start of each layout pass.
     pub anonymous_block_boxes: Vec<RawNodeId>,
+    /// Active CSS transitions per node, keyed by property.
+    pub active_transitions: HashMap<RawNodeId, HashMap<TransitionProperty, ActiveTransition>>,
+    /// Whether transitions are enabled (false until first layout completes).
+    pub transitions_enabled: bool,
 }
 
 impl Default for NodeTree {
@@ -567,6 +586,8 @@ impl NodeTree {
             active_node: None,
             guard,
             anonymous_block_boxes: Vec::new(),
+            active_transitions: HashMap::new(),
+            transitions_enabled: false,
         }
     }
 
@@ -595,6 +616,9 @@ impl NodeTree {
         // Collect all descendant IDs first
         let mut to_remove = Vec::new();
         self.collect_descendants(id, &mut to_remove);
+        for node_id in &to_remove {
+            self.active_transitions.remove(node_id);
+        }
         for node_id in to_remove {
             self.nodes.remove(node_id);
         }

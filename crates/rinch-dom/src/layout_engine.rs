@@ -189,6 +189,11 @@ impl RinchDocument {
 
         // Copy cached text layouts to nodes (use the exact layouts from measurement)
         self.copy_cached_text_layouts(text_layout_cache.into_inner());
+
+        // Enable transitions after first layout completes (prevents transitions on page load)
+        if !self.tree.transitions_enabled {
+            self.tree.transitions_enabled = true;
+        }
     }
 
     /// Sync font-size from parent elements into text node contexts.

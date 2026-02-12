@@ -1,5 +1,7 @@
 //! Style resolution: Stylo CSS cascade, Taffy sync, hover, and theme operations.
 
+use std::collections::HashMap;
+
 use servo_arc::Arc as ServoArc;
 
 use euclid::Scale;
@@ -384,6 +386,22 @@ impl RinchDocument {
         }
     }
 
+    /// Clear cached `stylo_element_data` for a node and all its descendants,
+    /// forcing `resolve_styles_recursive()` to re-resolve their CSS.
+    ///
+    /// This is needed when pseudo-class state changes (hover, focus, active)
+    /// because the cache optimization in `resolve_styles_recursive()` would
+    /// otherwise skip nodes that already have computed styles.
+    fn invalidate_style_subtree(&mut self, node_id: usize) {
+        if let Some(node) = self.tree.nodes.get_mut(node_id) {
+            *node.stylo_element_data.borrow_mut() = None;
+            let children: Vec<usize> = node.children.clone();
+            for child_id in children {
+                self.invalidate_style_subtree(child_id);
+            }
+        }
+    }
+
     /// Resolve a pseudo-element (::before or ::after) for a given parent node.
     ///
     /// Queries Stylo for the pseudo-element's computed styles, extracts the `content`
@@ -418,16 +436,19 @@ impl RinchDocument {
             let guards = StylesheetGuards::same(&guard);
 
             let mut selector_caches = SelectorCaches::default();
-            let mut matching_context = MatchingContext::new_for_visited(
-                MatchingMode::Normal,
-                None,
-                &mut selector_caches,
-                VisitedHandlingMode::AllLinksUnvisited,
-                IncludeStartingStyle::No,
-                self.stylist.quirks_mode(),
-                NeedsSelectorFlags::No,
-                MatchingForInvalidation::No,
-            );
+            let mut matching_context =
+                MatchingContext::<'_, style::selector_parser::SelectorImpl>::new_for_visited(
+                    MatchingMode::ForStatelessPseudoElement,
+                    None,
+                    &mut selector_caches,
+                    VisitedHandlingMode::AllLinksUnvisited,
+                    IncludeStartingStyle::No,
+                    self.stylist.quirks_mode(),
+                    NeedsSelectorFlags::No,
+                    MatchingForInvalidation::No,
+                );
+            matching_context.extra_data.originating_element_style =
+                Some(parent_style);
 
             let mut applicable_declarations = ApplicableDeclarationList::new();
 
@@ -632,9 +653,13 @@ impl RinchDocument {
             }
         }
 
+        // Clear cached styles for affected nodes and their descendants
+        // so resolve_styles_recursive() will re-resolve their CSS
+        for &id in &dirty_nodes {
+            self.invalidate_style_subtree(id);
+        }
+
         // Recompute styles using Stylo for affected nodes
-        // For simplicity, we recompute styles for the entire tree
-        // (a more optimized approach would only restyle the affected subtrees)
         self.tree.styles_dirty = true;
         self.resolve_styles();
         self.apply_stylo_styles_to_taffy();
@@ -671,6 +696,14 @@ impl RinchDocument {
         }
 
         self.tree.focused_node = new_focused;
+
+        // Clear cached styles for affected nodes and their descendants
+        if let Some(id) = old_focused {
+            self.invalidate_style_subtree(id);
+        }
+        if let Some(id) = new_focused {
+            self.invalidate_style_subtree(id);
+        }
 
         // Recompute styles
         self.tree.styles_dirty = true;
@@ -733,12 +766,7 @@ impl RinchDocument {
 
         self.tree.active_node = new_active;
 
-        // Recompute styles
-        self.tree.styles_dirty = true;
-        self.resolve_styles();
-        self.apply_stylo_styles_to_taffy();
-
-        // Mark dirty nodes for repaint
+        // Collect nodes whose active state changed (symmetric difference)
         let mut dirty_nodes: Vec<usize> = Vec::new();
         for &id in &old_chain {
             if !new_chain.contains(&id) {
@@ -750,6 +778,18 @@ impl RinchDocument {
                 dirty_nodes.push(id);
             }
         }
+
+        // Clear cached styles for affected nodes and their descendants
+        for &id in &dirty_nodes {
+            self.invalidate_style_subtree(id);
+        }
+
+        // Recompute styles
+        self.tree.styles_dirty = true;
+        self.resolve_styles();
+        self.apply_stylo_styles_to_taffy();
+
+        // Mark dirty nodes for repaint
         for id in dirty_nodes {
             self.push_dirty_flags(id, DirtyFlags::STYLE | DirtyFlags::PAINT);
         }
@@ -845,8 +885,16 @@ impl RinchDocument {
     /// This reads from each element's `stylo_element_data` and sets the corresponding
     /// Taffy style. It also updates our `ComputedStyle` for paint operations.
     ///
+    /// When transitions are enabled, property changes are intercepted and animated
+    /// instead of applied immediately.
+    ///
     /// PERFORMANCE: Only processes nodes in `style_dirty_nodes` (set by resolve_styles).
     pub fn apply_stylo_styles_to_taffy(&mut self) {
+        use crate::transition::{
+            TransitionSpec, apply_value_to_style, diff_animatable,
+            start_transitions,
+        };
+
         // Take the dirty nodes list - only these need Taffy sync
         let dirty_node_ids = std::mem::take(&mut self.tree.style_dirty_nodes);
 
@@ -854,6 +902,9 @@ impl RinchDocument {
         if dirty_node_ids.is_empty() {
             return;
         }
+
+        // Get current time for transition start timestamps
+        let current_time_ms = self.current_time_ms();
 
         for node_id in dirty_node_ids {
             // Skip root and html nodes - their Taffy styles are manually set
@@ -893,27 +944,82 @@ impl RinchDocument {
             drop(stylo_data);
 
             // Convert Stylo ComputedValues to our ComputedStyle
-            let computed_style = ComputedStyle::from_stylo(&computed_values);
+            let new_style = ComputedStyle::from_stylo(&computed_values);
 
-            // Update node's computed_style for paint operations
-            self.tree.nodes[node_id].computed_style = computed_style.clone();
+            // Extract transition specs from Stylo
+            let transition_specs = TransitionSpec::extract_from_stylo(&computed_values);
+            self.tree.nodes[node_id].transition_specs = transition_specs;
 
-            // Sync display_mode from computed style
-            let display_mode = match computed_style.display {
+            // --- Transition logic ---
+            let specs = &self.tree.nodes[node_id].transition_specs;
+            let node_has_been_styled = self.tree.nodes[node_id].has_been_styled;
+            if self.tree.transitions_enabled && node_has_been_styled && !specs.is_empty() {
+                let old_style = &self.tree.nodes[node_id].computed_style;
+                let diffs = diff_animatable(old_style, &new_style);
+
+                if !diffs.is_empty() {
+                    // Clone specs for borrow-checker (specs borrows from tree.nodes)
+                    let specs_clone: Vec<TransitionSpec> = specs.clone();
+
+                    let transitions_map = self
+                        .tree
+                        .active_transitions
+                        .entry(node_id)
+                        .or_insert_with(HashMap::new);
+
+                    let transitioning = start_transitions(
+                        transitions_map,
+                        &specs_clone,
+                        &diffs,
+                        current_time_ms,
+                    );
+
+                    // Apply new_style to computed_style, but for transitioning
+                    // properties, keep the current interpolated value
+                    self.tree.nodes[node_id].computed_style = new_style.clone();
+
+                    // Overwrite transitioning properties with their current interpolated values
+                    for prop in &transitioning {
+                        if let Some(trans_map) = self.tree.active_transitions.get(&node_id) {
+                            if let Some(transition) = trans_map.get(prop) {
+                                if let Some(value) = transition.value_at(current_time_ms) {
+                                    apply_value_to_style(
+                                        &mut self.tree.nodes[node_id].computed_style,
+                                        *prop,
+                                        &value,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // No animatable diffs — apply directly
+                    self.tree.nodes[node_id].computed_style = new_style.clone();
+                }
+            } else {
+                // No transitions — apply directly (current behavior)
+                self.tree.nodes[node_id].computed_style = new_style.clone();
+            }
+
+            // Mark node as styled so future changes can trigger transitions
+            self.tree.nodes[node_id].has_been_styled = true;
+
+            // Sync display_mode from computed style (always from new_style target)
+            let display_mode = match new_style.display {
                 crate::computed_style::DisplayValue::Inline => DisplayMode::Inline,
                 crate::computed_style::DisplayValue::InlineBlock => DisplayMode::InlineBlock,
                 crate::computed_style::DisplayValue::InlineFlex => DisplayMode::Flex,
                 crate::computed_style::DisplayValue::Block => DisplayMode::Block,
                 crate::computed_style::DisplayValue::Flex => DisplayMode::Flex,
-                crate::computed_style::DisplayValue::Grid => DisplayMode::Block, // Grid treated as block for IFC
+                crate::computed_style::DisplayValue::Grid => DisplayMode::Block,
                 crate::computed_style::DisplayValue::None => DisplayMode::Block,
                 crate::computed_style::DisplayValue::Contents => DisplayMode::Block,
             };
             self.tree.nodes[node_id].display_mode = display_mode;
 
-            // Convert to Taffy style
+            // Convert to Taffy style (from current computed_style which may have transition values)
             let dd = self.default_display_for_node(node_id);
-            let mut taffy_style = computed_style.to_taffy_style(dd);
+            let mut taffy_style = self.tree.nodes[node_id].computed_style.to_taffy_style(dd);
 
             // Body node needs flex_grow: 1 and height: auto to fill the viewport
             if node_id == self.tree.body_id {
@@ -931,5 +1037,15 @@ impl RinchDocument {
             // Apply to Taffy node
             let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
         }
+    }
+
+    /// Get a monotonic timestamp in milliseconds for transition timing.
+    fn current_time_ms(&self) -> f64 {
+        use std::time::SystemTime;
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64()
+            * 1000.0
     }
 }

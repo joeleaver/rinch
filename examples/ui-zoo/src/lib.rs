@@ -95,6 +95,11 @@ pub fn nav_links<F: Fn() + 'static>(
                 active_fn: move || current_section.get() == 11,
                 onclick: nav(11)
             }
+            NavLink {
+                label: Some("CSS Features".to_string()),
+                active_fn: move || current_section.get() == 12,
+                onclick: nav(12)
+            }
         }
     }
 }
@@ -154,6 +159,7 @@ pub fn section_content(__scope: &mut RenderScope, current_section: Signal<usize>
             Show { when: move || current_section.get() == 9, then: icons_section }
             Show { when: move || current_section.get() == 10, then: tree_section }
             Show { when: move || current_section.get() == 11, then: editor_section }
+            Show { when: move || current_section.get() == 12, then: css_features_section }
         }
     }
 }

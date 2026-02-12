@@ -231,3 +231,325 @@ fn test_parse_color_rgb_rgba() {
     assert!(parse_color("rgba(255, 0, 0, 0.5)").is_some());
     assert!(parse_color("rgb(255, 0)").is_none());
 }
+
+#[test]
+fn test_paint_visibility_hidden() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "visibility: hidden; background: red; width: 100px; height: 100px",
+    );
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+
+    let mut scene = Scene::new();
+    paint(&mut doc, &mut scene);
+    // Hidden elements should not produce draw commands for themselves, but we just verify no panic
+    let _ = scene.encoding().is_empty();
+}
+
+#[test]
+fn test_paint_dashed_border() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "border: 2px dashed red; width: 100px; height: 100px",
+    );
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+
+    let mut scene = Scene::new();
+    paint(&mut doc, &mut scene);
+    assert!(
+        !scene.encoding().is_empty(),
+        "dashed border should produce draw commands"
+    );
+}
+
+#[test]
+fn test_paint_dotted_border() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "border: 2px dotted blue; width: 100px; height: 100px",
+    );
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+
+    let mut scene = Scene::new();
+    paint(&mut doc, &mut scene);
+    assert!(
+        !scene.encoding().is_empty(),
+        "dotted border should produce draw commands"
+    );
+}
+
+#[test]
+fn test_paint_per_side_border_colors() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "border-style: solid; border-width: 3px; border-top-color: red; border-right-color: green; border-bottom-color: blue; border-left-color: orange; width: 100px; height: 100px",
+    );
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+
+    let mut scene = Scene::new();
+    paint(&mut doc, &mut scene);
+    assert!(
+        !scene.encoding().is_empty(),
+        "per-side border colors should produce draw commands"
+    );
+}
+
+#[test]
+fn test_paint_outline() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "outline: 3px solid red; outline-offset: 2px; width: 100px; height: 100px",
+    );
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+
+    let mut scene = Scene::new();
+    paint(&mut doc, &mut scene);
+    assert!(
+        !scene.encoding().is_empty(),
+        "outline should produce draw commands"
+    );
+}
+
+#[test]
+fn test_paint_transform_rotate() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "transform: rotate(45deg); background: red; width: 100px; height: 100px",
+    );
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+
+    let mut scene = Scene::new();
+    paint(&mut doc, &mut scene);
+    assert!(
+        !scene.encoding().is_empty(),
+        "rotated element should produce draw commands"
+    );
+}
+
+#[test]
+fn test_paint_transform_scale() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "transform: scale(1.5); background: blue; width: 100px; height: 100px",
+    );
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+
+    let mut scene = Scene::new();
+    paint(&mut doc, &mut scene);
+    assert!(
+        !scene.encoding().is_empty(),
+        "scaled element should produce draw commands"
+    );
+}
+
+#[test]
+fn test_paint_linear_gradient() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "background: linear-gradient(to right, red, blue); width: 100px; height: 100px",
+    );
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+
+    let mut scene = Scene::new();
+    paint(&mut doc, &mut scene);
+    assert!(
+        !scene.encoding().is_empty(),
+        "linear gradient should produce draw commands"
+    );
+}
+
+#[test]
+fn test_paint_radial_gradient() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "background: radial-gradient(red, blue); width: 100px; height: 100px",
+    );
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+
+    let mut scene = Scene::new();
+    paint(&mut doc, &mut scene);
+    assert!(
+        !scene.encoding().is_empty(),
+        "radial gradient should produce draw commands"
+    );
+}
+
+#[test]
+fn test_paint_text_shadow() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "style", "text-shadow: 2px 2px black; width: 200px");
+    doc.append_child(body, div);
+    let text = doc.create_text("Shadow text");
+    doc.append_child(div, text);
+    doc.resolve_layout(800.0, 600.0);
+
+    let mut scene = Scene::new();
+    paint(&mut doc, &mut scene);
+    // Text rendering depends on fonts
+    let _ = scene.encoding().is_empty();
+}
+
+#[test]
+fn test_paint_z_index_ordering() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(
+        container,
+        "style",
+        "display: flex; width: 200px; height: 200px",
+    );
+    doc.append_child(body, container);
+
+    let back = doc.create_element("div");
+    doc.set_attribute(
+        back,
+        "style",
+        "position: absolute; z-index: 1; background: red; width: 100px; height: 100px",
+    );
+    doc.append_child(container, back);
+
+    let front = doc.create_element("div");
+    doc.set_attribute(
+        front,
+        "style",
+        "position: absolute; z-index: 2; background: blue; width: 100px; height: 100px",
+    );
+    doc.append_child(container, front);
+
+    doc.resolve_layout(800.0, 600.0);
+
+    let mut scene = Scene::new();
+    paint(&mut doc, &mut scene);
+    assert!(
+        !scene.encoding().is_empty(),
+        "z-indexed elements should produce draw commands"
+    );
+}
+
+#[test]
+fn test_paint_filter_brightness() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "filter: brightness(0.5); background: red; width: 100px; height: 100px",
+    );
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+
+    let mut scene = Scene::new();
+    paint(&mut doc, &mut scene);
+    // Filters are extracted but may not affect paint output yet
+    let _ = scene.encoding().is_empty();
+}
+
+#[test]
+fn test_paint_filter_grayscale() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "filter: grayscale(1); background: red; width: 100px; height: 100px",
+    );
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+
+    let mut scene = Scene::new();
+    paint(&mut doc, &mut scene);
+    // Filters are extracted but may not affect paint output yet
+    let _ = scene.encoding().is_empty();
+}
+
+#[test]
+fn test_paint_opacity_with_transform() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "opacity: 0.5; transform: rotate(10deg); background: red; width: 100px; height: 100px",
+    );
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+
+    let mut scene = Scene::new();
+    paint(&mut doc, &mut scene);
+    assert!(
+        !scene.encoding().is_empty(),
+        "opacity with transform should produce draw commands"
+    );
+}
+
+#[test]
+fn test_paint_border_style_double() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "border: 4px double red; width: 100px; height: 100px",
+    );
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+
+    let mut scene = Scene::new();
+    paint(&mut doc, &mut scene);
+    assert!(
+        !scene.encoding().is_empty(),
+        "double border should produce draw commands"
+    );
+}
