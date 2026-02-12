@@ -55,7 +55,7 @@ fn test_ifc_detected_for_inline_element() {
 }
 
 #[test]
-fn test_no_ifc_for_single_text_child() {
+fn test_ifc_for_single_text_child() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let div = doc.create_element("div");
@@ -67,11 +67,11 @@ fn test_no_ifc_for_single_text_child() {
 
     doc.resolve_layout(800.0, 600.0);
 
-    // Single text child doesn't need IFC — uses Taffy text measurement
+    // Single text child still uses IFC — avoids needing two measurement paths
     let div_node = doc.tree.get(div.0).unwrap();
     assert!(
-        div_node.text_layout.is_none(),
-        "div with single text child should NOT be an IFC root"
+        div_node.text_layout.is_some(),
+        "div with single text child should be an IFC root"
     );
 }
 
