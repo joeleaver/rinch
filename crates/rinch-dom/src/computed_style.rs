@@ -42,6 +42,21 @@ mod color_serde {
             None => serializer.serialize_none(),
         }
     }
+
+    pub fn serialize_direct<S>(color: &Color, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let rgba = color.to_rgba8();
+        if rgba.a == 255 {
+            serializer.serialize_str(&format!("#{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b))
+        } else {
+            serializer.serialize_str(&format!(
+                "#{:02x}{:02x}{:02x}{:02x}",
+                rgba.r, rgba.g, rgba.b, rgba.a
+            ))
+        }
+    }
 }
 
 // =============================================================================
@@ -100,6 +115,7 @@ pub enum PositionValue {
     Absolute,
     Fixed,
     Static,
+    Sticky,
 }
 
 impl PositionValue {
@@ -109,6 +125,7 @@ impl PositionValue {
             "absolute" => Self::Absolute,
             "fixed" => Self::Fixed,
             "static" => Self::Static,
+            "sticky" => Self::Sticky,
             _ => Self::Relative,
         }
     }
@@ -117,7 +134,7 @@ impl PositionValue {
     pub fn to_taffy(&self) -> taffy::Position {
         match self {
             Self::Absolute | Self::Fixed => taffy::Position::Absolute,
-            Self::Relative | Self::Static => taffy::Position::Relative,
+            Self::Relative | Self::Static | Self::Sticky => taffy::Position::Relative,
         }
     }
 }
@@ -319,6 +336,14 @@ impl LengthPercentageAutoValue {
             Self::Auto => taffy::LengthPercentageAuto::auto(),
             Self::Length(v) => taffy::LengthPercentageAuto::length(*v),
             Self::Percent(v) => taffy::LengthPercentageAuto::percent(*v),
+        }
+    }
+
+    /// Get as f32 length (returns 0.0 for Auto or Percent).
+    pub fn to_px(&self) -> f32 {
+        match self {
+            Self::Length(v) => *v,
+            Self::Auto | Self::Percent(_) => 0.0,
         }
     }
 }
@@ -698,6 +723,124 @@ impl OverflowWrapValue {
     }
 }
 
+/// CSS border-style property values.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub enum BorderStyleValue {
+    #[default]
+    None,
+    Solid,
+    Dashed,
+    Dotted,
+    Double,
+    Hidden,
+}
+
+/// CSS visibility property values.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub enum VisibilityValue {
+    #[default]
+    Visible,
+    Hidden,
+    Collapse,
+}
+
+/// CSS cursor property values.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub enum CursorValue {
+    #[default]
+    Auto,
+    Default,
+    Pointer,
+    Text,
+    Move,
+    NotAllowed,
+    Crosshair,
+    Grab,
+    Grabbing,
+    ColResize,
+    RowResize,
+    NResize,
+    SResize,
+    EResize,
+    WResize,
+    NeResize,
+    NwResize,
+    SeResize,
+    SwResize,
+    EwResize,
+    NsResize,
+    Wait,
+    Progress,
+    Help,
+    ZoomIn,
+    ZoomOut,
+    None,
+}
+
+/// CSS pointer-events property values.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub enum PointerEventsValue {
+    #[default]
+    Auto,
+    None,
+}
+
+/// A single text-shadow value.
+#[derive(Debug, Clone, Serialize)]
+pub struct TextShadowValue {
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub blur_radius: f32,
+    #[serde(serialize_with = "color_serde::serialize")]
+    pub color: Option<peniko::Color>,
+}
+
+/// Pre-computed 2D affine transform.
+#[derive(Debug, Clone, Serialize)]
+pub struct TransformValue {
+    /// Pre-computed 2D affine matrix [a, b, c, d, e, f].
+    pub matrix: [f64; 6],
+    /// Whether this is the identity transform (no-op).
+    pub is_identity: bool,
+}
+
+impl Default for TransformValue {
+    fn default() -> Self {
+        Self {
+            matrix: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            is_identity: true,
+        }
+    }
+}
+
+/// CSS background value — solid color or gradient.
+#[derive(Debug, Clone, Serialize)]
+pub enum BackgroundValue {
+    None,
+    Color(#[serde(serialize_with = "color_serde::serialize_direct")] peniko::Color),
+    LinearGradient {
+        angle_degrees: f32,
+        stops: Vec<GradientStop>,
+    },
+    RadialGradient {
+        stops: Vec<GradientStop>,
+    },
+}
+
+impl Default for BackgroundValue {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+/// A gradient color stop.
+#[derive(Debug, Clone, Serialize)]
+pub struct GradientStop {
+    pub offset: f32,
+    #[serde(serialize_with = "color_serde::serialize")]
+    pub color: Option<peniko::Color>,
+}
+
 // =============================================================================
 // ComputedStyle Struct
 // =============================================================================
@@ -763,16 +906,60 @@ pub struct ComputedStyle {
     pub border_radius_bottom_right: LengthPercentageValue,
     pub border_radius_bottom_left: LengthPercentageValue,
 
-    // Colors
+    // Border styles (per-side)
+    pub border_top_style: BorderStyleValue,
+    pub border_right_style: BorderStyleValue,
+    pub border_bottom_style: BorderStyleValue,
+    pub border_left_style: BorderStyleValue,
+
+    // Border colors (per-side)
     #[serde(serialize_with = "color_serde::serialize")]
-    pub background_color: Option<peniko::Color>,
+    pub border_top_color: Option<peniko::Color>,
+    #[serde(serialize_with = "color_serde::serialize")]
+    pub border_right_color: Option<peniko::Color>,
+    #[serde(serialize_with = "color_serde::serialize")]
+    pub border_bottom_color: Option<peniko::Color>,
+    #[serde(serialize_with = "color_serde::serialize")]
+    pub border_left_color: Option<peniko::Color>,
+
+    // Colors
+    pub background: BackgroundValue,
     #[serde(serialize_with = "color_serde::serialize")]
     pub color: Option<peniko::Color>,
-    #[serde(serialize_with = "color_serde::serialize")]
-    pub border_color: Option<peniko::Color>,
 
     // Visual
     pub opacity: f32,
+    pub visibility: VisibilityValue,
+
+    // Transforms
+    pub transform: TransformValue,
+    pub transform_origin_x: LengthPercentageValue,
+    pub transform_origin_y: LengthPercentageValue,
+
+    // Z-index
+    pub z_index: Option<i32>,
+
+    // Text shadow
+    pub text_shadow: Vec<TextShadowValue>,
+
+    // Outline
+    pub outline_width: f32,
+    #[serde(serialize_with = "color_serde::serialize")]
+    pub outline_color: Option<peniko::Color>,
+    pub outline_style: BorderStyleValue,
+    pub outline_offset: f32,
+
+    // Filters (partial — non-blur only)
+    pub filter_brightness: f32,
+    pub filter_grayscale: f32,
+    pub filter_saturate: f32,
+    pub filter_hue_rotate: f32,
+
+    // Cursor
+    pub cursor: CursorValue,
+
+    // Pointer events
+    pub pointer_events: PointerEventsValue,
 
     // Typography
     pub font_size: f32,
@@ -852,11 +1039,42 @@ impl Default for ComputedStyle {
             border_radius_bottom_right: LengthPercentageValue::Zero,
             border_radius_bottom_left: LengthPercentageValue::Zero,
 
-            background_color: None,
+            border_top_style: BorderStyleValue::None,
+            border_right_style: BorderStyleValue::None,
+            border_bottom_style: BorderStyleValue::None,
+            border_left_style: BorderStyleValue::None,
+
+            border_top_color: None,
+            border_right_color: None,
+            border_bottom_color: None,
+            border_left_color: None,
+
+            background: BackgroundValue::None,
             color: None,
-            border_color: None,
 
             opacity: 1.0,
+            visibility: VisibilityValue::default(),
+
+            transform: TransformValue::default(),
+            transform_origin_x: LengthPercentageValue::Percent(0.5),
+            transform_origin_y: LengthPercentageValue::Percent(0.5),
+
+            z_index: None,
+
+            text_shadow: Vec::new(),
+
+            outline_width: 0.0,
+            outline_color: None,
+            outline_style: BorderStyleValue::None,
+            outline_offset: 0.0,
+
+            filter_brightness: 1.0,
+            filter_grayscale: 0.0,
+            filter_saturate: 1.0,
+            filter_hue_rotate: 0.0,
+
+            cursor: CursorValue::default(),
+            pointer_events: PointerEventsValue::default(),
 
             font_size: 16.0,
             font_weight: 400.0,
@@ -880,6 +1098,19 @@ impl Default for ComputedStyle {
 }
 
 impl ComputedStyle {
+    /// Get the background color (convenience accessor for BackgroundValue::Color).
+    pub fn background_color(&self) -> Option<peniko::Color> {
+        match &self.background {
+            BackgroundValue::Color(c) => Some(*c),
+            _ => None,
+        }
+    }
+
+    /// Get the effective border color for a side (for backwards compat).
+    pub fn border_color(&self) -> Option<peniko::Color> {
+        self.border_top_color
+    }
+
     /// Parse CSS properties from a HashMap into a typed ComputedStyle.
     pub fn from_props(props: &HashMap<String, String>, viewport: &Viewport) -> Self {
         let mut style = Self::default();
@@ -1084,9 +1315,19 @@ impl ComputedStyle {
                 }
 
                 // Colors
-                "background-color" => style.background_color = parse_color(value),
+                "background-color" => {
+                    if let Some(c) = parse_color(value) {
+                        style.background = BackgroundValue::Color(c);
+                    }
+                }
                 "color" => style.color = parse_color(value),
-                "border-color" => style.border_color = parse_color(value),
+                "border-color" => {
+                    let c = parse_color(value);
+                    style.border_top_color = c;
+                    style.border_right_color = c;
+                    style.border_bottom_color = c;
+                    style.border_left_color = c;
+                }
 
                 // Visual
                 "opacity" => style.opacity = value.parse().unwrap_or(1.0),
@@ -1166,7 +1407,10 @@ impl ComputedStyle {
                         // Also try to extract border-color
                         for part in value.split_whitespace() {
                             if let Some(c) = parse_color(part) {
-                                style.border_color = Some(c);
+                                style.border_top_color = Some(c);
+                                style.border_right_color = Some(c);
+                                style.border_bottom_color = Some(c);
+                                style.border_left_color = Some(c);
                                 break;
                             }
                         }
@@ -1410,6 +1654,9 @@ impl ComputedStyle {
         let font = cv.get_font();
         let text = cv.get_inherited_text();
         let effects = cv.get_effects();
+        let inherited_box = cv.get_inherited_box();
+        let outline_style = cv.get_outline();
+        let inherited_ui = cv.get_inherited_ui();
 
         Self {
             // Display/position
@@ -1493,23 +1740,84 @@ impl ComputedStyle {
                 &border.border_bottom_left_radius,
             ),
 
-            // Colors
-            // Handle currentColor for background-color: resolve to text color
-            background_color: if background.background_color.is_currentcolor() {
-                Self::color_from_absolute(&text.color)
-            } else {
-                Self::color_from_stylo(&background.background_color)
-            },
-            color: Self::color_from_absolute(&text.color),
-            // Handle currentColor for border-color: resolve to text color
-            border_color: if border.border_top_color.is_currentcolor() {
+            // Border styles (per-side)
+            border_top_style: Self::border_style_from_stylo(&border.border_top_style),
+            border_right_style: Self::border_style_from_stylo(&border.border_right_style),
+            border_bottom_style: Self::border_style_from_stylo(&border.border_bottom_style),
+            border_left_style: Self::border_style_from_stylo(&border.border_left_style),
+
+            // Border colors (per-side, resolve currentColor)
+            border_top_color: if border.border_top_color.is_currentcolor() {
                 Self::color_from_absolute(&text.color)
             } else {
                 Self::color_from_stylo(&border.border_top_color)
             },
+            border_right_color: if border.border_right_color.is_currentcolor() {
+                Self::color_from_absolute(&text.color)
+            } else {
+                Self::color_from_stylo(&border.border_right_color)
+            },
+            border_bottom_color: if border.border_bottom_color.is_currentcolor() {
+                Self::color_from_absolute(&text.color)
+            } else {
+                Self::color_from_stylo(&border.border_bottom_color)
+            },
+            border_left_color: if border.border_left_color.is_currentcolor() {
+                Self::color_from_absolute(&text.color)
+            } else {
+                Self::color_from_stylo(&border.border_left_color)
+            },
+
+            // Background (color or gradient)
+            background: Self::background_from_stylo(background, &text.color),
+            color: Self::color_from_absolute(&text.color),
 
             // Visual
             opacity: effects.opacity,
+            visibility: Self::visibility_from_stylo(&inherited_box.visibility),
+
+            // Transforms
+            transform: Self::transform_from_stylo(&box_style.transform),
+            transform_origin_x: Self::transform_origin_component_from_stylo(
+                &box_style.transform_origin.horizontal,
+            ),
+            transform_origin_y: Self::transform_origin_component_from_stylo(
+                &box_style.transform_origin.vertical,
+            ),
+
+            // Z-index
+            z_index: Self::z_index_from_stylo(&position_style.z_index),
+
+            // Text shadow
+            text_shadow: Self::text_shadow_from_stylo(&text.text_shadow, &text.color),
+
+            // Outline
+            outline_width: if Self::border_style_is_none_val(
+                &Self::border_style_from_stylo_outline(&outline_style.outline_style),
+            ) {
+                0.0
+            } else {
+                outline_style.outline_width.0.to_f32_px()
+            },
+            outline_color: if outline_style.outline_color.is_currentcolor() {
+                Self::color_from_absolute(&text.color)
+            } else {
+                Self::color_from_stylo(&outline_style.outline_color)
+            },
+            outline_style: Self::border_style_from_stylo_outline(&outline_style.outline_style),
+            outline_offset: outline_style.outline_offset.to_f32_px(),
+
+            // Filters
+            filter_brightness: Self::extract_filter_brightness(&effects.filter),
+            filter_grayscale: Self::extract_filter_grayscale(&effects.filter),
+            filter_saturate: Self::extract_filter_saturate(&effects.filter),
+            filter_hue_rotate: Self::extract_filter_hue_rotate(&effects.filter),
+
+            // Cursor
+            cursor: Self::cursor_from_stylo(&inherited_ui.cursor.keyword),
+
+            // Pointer events
+            pointer_events: Self::pointer_events_from_stylo(&inherited_ui.pointer_events),
 
             // Typography
             font_size: font.font_size.computed_size().px(),
@@ -1578,7 +1886,7 @@ impl ComputedStyle {
             PositionProperty::Relative => PositionValue::Relative,
             PositionProperty::Absolute => PositionValue::Absolute,
             PositionProperty::Fixed => PositionValue::Fixed,
-            PositionProperty::Sticky => PositionValue::Relative, // Treat sticky as relative
+            PositionProperty::Sticky => PositionValue::Sticky,
         }
     }
 
@@ -2087,6 +2395,407 @@ impl ComputedStyle {
         } else {
             taffy::LengthPercentage::length(0.0)
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // New CSS feature extraction helpers
+    // -------------------------------------------------------------------------
+
+    fn border_style_from_stylo(bs: &style::values::computed::BorderStyle) -> BorderStyleValue {
+        use style::values::computed::BorderStyle;
+        match *bs {
+            BorderStyle::None => BorderStyleValue::None,
+            BorderStyle::Solid => BorderStyleValue::Solid,
+            BorderStyle::Dashed => BorderStyleValue::Dashed,
+            BorderStyle::Dotted => BorderStyleValue::Dotted,
+            BorderStyle::Double => BorderStyleValue::Double,
+            BorderStyle::Hidden => BorderStyleValue::Hidden,
+            // groove, ridge, inset, outset → render as solid
+            _ => BorderStyleValue::Solid,
+        }
+    }
+
+    fn border_style_from_stylo_outline(
+        os: &style::values::computed::OutlineStyle,
+    ) -> BorderStyleValue {
+        use style::values::computed::OutlineStyle;
+        match *os {
+            OutlineStyle::Auto => BorderStyleValue::Solid,
+            OutlineStyle::BorderStyle(ref bs) => Self::border_style_from_stylo(bs),
+        }
+    }
+
+    fn border_style_is_none_val(style: &BorderStyleValue) -> bool {
+        matches!(style, BorderStyleValue::None | BorderStyleValue::Hidden)
+    }
+
+    fn visibility_from_stylo(
+        vis: &style::properties::longhands::visibility::computed_value::T,
+    ) -> VisibilityValue {
+        use style::properties::longhands::visibility::computed_value::T as Vis;
+        match *vis {
+            Vis::Visible => VisibilityValue::Visible,
+            Vis::Hidden => VisibilityValue::Hidden,
+            Vis::Collapse => VisibilityValue::Collapse,
+        }
+    }
+
+    fn cursor_from_stylo(
+        cursor: &style::values::specified::ui::CursorKind,
+    ) -> CursorValue {
+        use style::values::specified::ui::CursorKind;
+        match *cursor {
+            CursorKind::Auto => CursorValue::Auto,
+            CursorKind::Default => CursorValue::Default,
+            CursorKind::Pointer => CursorValue::Pointer,
+            CursorKind::Text => CursorValue::Text,
+            CursorKind::Move => CursorValue::Move,
+            CursorKind::NotAllowed => CursorValue::NotAllowed,
+            CursorKind::Crosshair => CursorValue::Crosshair,
+            CursorKind::Grab => CursorValue::Grab,
+            CursorKind::Grabbing => CursorValue::Grabbing,
+            CursorKind::ColResize => CursorValue::ColResize,
+            CursorKind::RowResize => CursorValue::RowResize,
+            CursorKind::NResize => CursorValue::NResize,
+            CursorKind::SResize => CursorValue::SResize,
+            CursorKind::EResize => CursorValue::EResize,
+            CursorKind::WResize => CursorValue::WResize,
+            CursorKind::NeResize => CursorValue::NeResize,
+            CursorKind::NwResize => CursorValue::NwResize,
+            CursorKind::SeResize => CursorValue::SeResize,
+            CursorKind::SwResize => CursorValue::SwResize,
+            CursorKind::EwResize => CursorValue::EwResize,
+            CursorKind::NsResize => CursorValue::NsResize,
+            CursorKind::Wait => CursorValue::Wait,
+            CursorKind::Progress => CursorValue::Progress,
+            CursorKind::Help => CursorValue::Help,
+            CursorKind::ZoomIn => CursorValue::ZoomIn,
+            CursorKind::ZoomOut => CursorValue::ZoomOut,
+            CursorKind::None => CursorValue::None,
+            _ => CursorValue::Auto,
+        }
+    }
+
+    fn pointer_events_from_stylo(
+        pe: &style::values::specified::ui::PointerEvents,
+    ) -> PointerEventsValue {
+        use style::values::specified::ui::PointerEvents;
+        match *pe {
+            PointerEvents::None => PointerEventsValue::None,
+            _ => PointerEventsValue::Auto,
+        }
+    }
+
+    fn z_index_from_stylo(
+        z: &style::values::computed::ZIndex,
+    ) -> Option<i32> {
+        use style::values::generics::position::ZIndex;
+        match z {
+            ZIndex::Integer(val) => Some(*val),
+            ZIndex::Auto => None,
+        }
+    }
+
+    fn transform_from_stylo(
+        transform: &style::values::computed::Transform,
+    ) -> TransformValue {
+        use style::values::generics::transform::GenericTransformOperation;
+
+        if transform.0.is_empty() {
+            return TransformValue::default();
+        }
+
+        // Compose all operations into a single 2D affine matrix [a, b, c, d, e, f]
+        let mut m = [1.0_f64, 0.0, 0.0, 1.0, 0.0, 0.0]; // identity
+
+        for op in &*transform.0 {
+            let op_matrix = match op {
+                GenericTransformOperation::Matrix(mat) => {
+                    [mat.a as f64, mat.b as f64, mat.c as f64, mat.d as f64, mat.e as f64, mat.f as f64]
+                }
+                GenericTransformOperation::Rotate(angle) => {
+                    let rad = angle.radians64();
+                    let cos = rad.cos();
+                    let sin = rad.sin();
+                    [cos, sin, -sin, cos, 0.0, 0.0]
+                }
+                GenericTransformOperation::Scale(sx, sy) => {
+                    [*sx as f64, 0.0, 0.0, *sy as f64, 0.0, 0.0]
+                }
+                GenericTransformOperation::ScaleX(sx) => {
+                    [*sx as f64, 0.0, 0.0, 1.0, 0.0, 0.0]
+                }
+                GenericTransformOperation::ScaleY(sy) => {
+                    [1.0, 0.0, 0.0, *sy as f64, 0.0, 0.0]
+                }
+                GenericTransformOperation::TranslateX(tx) => {
+                    let tx_px = Self::length_or_pct_to_px(tx);
+                    [1.0, 0.0, 0.0, 1.0, tx_px, 0.0]
+                }
+                GenericTransformOperation::TranslateY(ty) => {
+                    let ty_px = Self::length_or_pct_to_px(ty);
+                    [1.0, 0.0, 0.0, 1.0, 0.0, ty_px]
+                }
+                GenericTransformOperation::Translate(tx, ty) => {
+                    let tx_px = Self::length_or_pct_to_px(tx);
+                    let ty_px = Self::length_or_pct_to_px(ty);
+                    [1.0, 0.0, 0.0, 1.0, tx_px, ty_px]
+                }
+                GenericTransformOperation::SkewX(angle) => {
+                    let tan = angle.radians64().tan();
+                    [1.0, 0.0, tan, 1.0, 0.0, 0.0]
+                }
+                GenericTransformOperation::SkewY(angle) => {
+                    let tan = angle.radians64().tan();
+                    [1.0, tan, 0.0, 1.0, 0.0, 0.0]
+                }
+                GenericTransformOperation::Skew(ax, ay) => {
+                    let tan_x = ax.radians64().tan();
+                    let tan_y = ay.radians64().tan();
+                    [1.0, tan_y, tan_x, 1.0, 0.0, 0.0]
+                }
+                // 3D transforms — flatten to 2D identity (skip)
+                _ => [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            };
+
+            // Matrix multiply: m = m * op_matrix
+            let a = m[0] * op_matrix[0] + m[2] * op_matrix[1];
+            let b = m[1] * op_matrix[0] + m[3] * op_matrix[1];
+            let c = m[0] * op_matrix[2] + m[2] * op_matrix[3];
+            let d = m[1] * op_matrix[2] + m[3] * op_matrix[3];
+            let e = m[0] * op_matrix[4] + m[2] * op_matrix[5] + m[4];
+            let f = m[1] * op_matrix[4] + m[3] * op_matrix[5] + m[5];
+            m = [a, b, c, d, e, f];
+        }
+
+        let is_identity = (m[0] - 1.0).abs() < 1e-6
+            && m[1].abs() < 1e-6
+            && m[2].abs() < 1e-6
+            && (m[3] - 1.0).abs() < 1e-6
+            && m[4].abs() < 1e-6
+            && m[5].abs() < 1e-6;
+
+        TransformValue {
+            matrix: m,
+            is_identity,
+        }
+    }
+
+    fn length_or_pct_to_px(lp: &style::values::computed::LengthPercentage) -> f64 {
+        if let Some(len) = lp.to_length() {
+            len.px() as f64
+        } else {
+            // Percentage transforms need element size — store 0 for now
+            // (will be resolved at paint time for percentage-based translates)
+            0.0
+        }
+    }
+
+    fn transform_origin_component_from_stylo(
+        origin: &style::values::computed::LengthPercentage,
+    ) -> LengthPercentageValue {
+        if let Some(len) = origin.to_length() {
+            LengthPercentageValue::Length(len.px())
+        } else if let Some(pct) = origin.to_percentage() {
+            LengthPercentageValue::Percent(pct.0)
+        } else {
+            LengthPercentageValue::Percent(0.5) // default 50%
+        }
+    }
+
+    fn text_shadow_from_stylo(
+        shadows: &style::properties::longhands::text_shadow::computed_value::T,
+        text_color: &style::color::AbsoluteColor,
+    ) -> Vec<TextShadowValue> {
+        shadows
+            .0
+            .iter()
+            .map(|s| {
+                let color = if s.color.is_currentcolor() {
+                    Self::color_from_absolute(text_color)
+                } else {
+                    Self::color_from_stylo(&s.color)
+                };
+                TextShadowValue {
+                    offset_x: s.horizontal.px(),
+                    offset_y: s.vertical.px(),
+                    blur_radius: s.blur.0.px(),
+                    color,
+                }
+            })
+            .collect()
+    }
+
+    fn background_from_stylo(
+        bg: &style::properties::style_structs::Background,
+        text_color: &style::color::AbsoluteColor,
+    ) -> BackgroundValue {
+        use style::values::computed::image::Image;
+        use style::values::generics::image::GenericGradient;
+
+        // Check for gradient in background-image first
+        if !bg.background_image.0.is_empty() {
+            match &bg.background_image.0[0] {
+                Image::Gradient(boxed_gradient) => {
+                    let gradient = &**boxed_gradient;
+                    match gradient {
+                        GenericGradient::Linear { direction, items, .. } => {
+                            let angle = Self::gradient_direction_to_angle(direction);
+                            let stops = Self::gradient_stops_from_stylo(items, text_color);
+                            if !stops.is_empty() {
+                                return BackgroundValue::LinearGradient {
+                                    angle_degrees: angle,
+                                    stops,
+                                };
+                            }
+                        }
+                        GenericGradient::Radial { items, .. } => {
+                            let stops = Self::gradient_stops_from_stylo(items, text_color);
+                            if !stops.is_empty() {
+                                return BackgroundValue::RadialGradient { stops };
+                            }
+                        }
+                        _ => {} // conic gradients not supported yet
+                    }
+                }
+                _ => {} // url() images or none not supported
+            }
+        }
+
+        // Fall back to background-color
+        let color = if bg.background_color.is_currentcolor() {
+            Self::color_from_absolute(text_color)
+        } else {
+            Self::color_from_stylo(&bg.background_color)
+        };
+        match color {
+            Some(c) => BackgroundValue::Color(c),
+            None => BackgroundValue::None,
+        }
+    }
+
+    fn gradient_direction_to_angle(
+        direction: &style::values::computed::image::LineDirection,
+    ) -> f32 {
+        use style::values::computed::image::LineDirection;
+        use style::values::specified::position::{HorizontalPositionKeyword, VerticalPositionKeyword};
+        match direction {
+            LineDirection::Angle(angle) => angle.degrees(),
+            LineDirection::Horizontal(h) => match *h {
+                HorizontalPositionKeyword::Left => 270.0,
+                HorizontalPositionKeyword::Right => 90.0,
+            },
+            LineDirection::Vertical(v) => match *v {
+                VerticalPositionKeyword::Top => 0.0,
+                VerticalPositionKeyword::Bottom => 180.0,
+            },
+            LineDirection::Corner(h, v) => {
+                match (h, v) {
+                    (HorizontalPositionKeyword::Right, VerticalPositionKeyword::Top) => 45.0,
+                    (HorizontalPositionKeyword::Right, VerticalPositionKeyword::Bottom) => 135.0,
+                    (HorizontalPositionKeyword::Left, VerticalPositionKeyword::Bottom) => 225.0,
+                    (HorizontalPositionKeyword::Left, VerticalPositionKeyword::Top) => 315.0,
+                }
+            }
+        }
+    }
+
+    fn gradient_stops_from_stylo(
+        items: &[style::values::generics::image::GenericGradientItem<
+            style::values::computed::color::Color,
+            style::values::computed::LengthPercentage,
+        >],
+        text_color: &style::color::AbsoluteColor,
+    ) -> Vec<GradientStop> {
+        use style::values::generics::image::GenericGradientItem;
+
+        let mut stops = Vec::new();
+        let total = items.len();
+
+        for (i, item) in items.iter().enumerate() {
+            match item {
+                GenericGradientItem::SimpleColorStop(color) => {
+                    let c = if color.is_currentcolor() {
+                        Self::color_from_absolute(text_color)
+                    } else {
+                        Self::color_from_stylo(color)
+                    };
+                    // Auto-distribute position
+                    let offset = if total <= 1 {
+                        0.0
+                    } else {
+                        i as f32 / (total - 1) as f32
+                    };
+                    stops.push(GradientStop { offset, color: c });
+                }
+                GenericGradientItem::ComplexColorStop { color, position } => {
+                    let c = if color.is_currentcolor() {
+                        Self::color_from_absolute(text_color)
+                    } else {
+                        Self::color_from_stylo(color)
+                    };
+                    let offset = if let Some(pct) = position.to_percentage() {
+                        pct.0
+                    } else if let Some(len) = position.to_length() {
+                        // Length stops need container size to resolve — approximate
+                        len.px() / 100.0
+                    } else {
+                        i as f32 / (total - 1).max(1) as f32
+                    };
+                    stops.push(GradientStop { offset, color: c });
+                }
+                _ => {}
+            }
+        }
+        stops
+    }
+
+    fn extract_filter_brightness(
+        filter: &style::properties::longhands::filter::computed_value::T,
+    ) -> f32 {
+        use style::values::generics::effects::GenericFilter;
+        for f in &*filter.0 {
+            if let GenericFilter::Brightness(val) = f {
+                return val.0;
+            }
+        }
+        1.0
+    }
+
+    fn extract_filter_grayscale(
+        filter: &style::properties::longhands::filter::computed_value::T,
+    ) -> f32 {
+        use style::values::generics::effects::GenericFilter;
+        for f in &*filter.0 {
+            if let GenericFilter::Grayscale(val) = f {
+                return val.0;
+            }
+        }
+        0.0
+    }
+
+    fn extract_filter_saturate(
+        filter: &style::properties::longhands::filter::computed_value::T,
+    ) -> f32 {
+        use style::values::generics::effects::GenericFilter;
+        for f in &*filter.0 {
+            if let GenericFilter::Saturate(val) = f {
+                return val.0;
+            }
+        }
+        1.0
+    }
+
+    fn extract_filter_hue_rotate(
+        filter: &style::properties::longhands::filter::computed_value::T,
+    ) -> f32 {
+        use style::values::generics::effects::GenericFilter;
+        for f in &*filter.0 {
+            if let GenericFilter::HueRotate(angle) = f {
+                return angle.degrees();
+            }
+        }
+        0.0
     }
 }
 

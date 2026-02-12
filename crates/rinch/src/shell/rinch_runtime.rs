@@ -229,7 +229,54 @@ impl RinchRuntime {
                         let _ = w.drag_window();
                     }
                 }
+                AppAction::SetCursor(style) => {
+                    if let Some(w) = &self.window {
+                        w.window.set_cursor(Self::cursor_style_to_winit(style));
+                    }
+                }
             }
+        }
+    }
+
+    /// Convert a platform CursorStyle to a winit CursorIcon.
+    fn cursor_style_to_winit(style: rinch_platform::CursorStyle) -> winit::window::CursorIcon {
+        use rinch_platform::CursorStyle as CS;
+        use winit::window::CursorIcon;
+        match style {
+            CS::Auto | CS::Default => CursorIcon::Default,
+            CS::Pointer => CursorIcon::Pointer,
+            CS::Text => CursorIcon::Text,
+            CS::Move => CursorIcon::Move,
+            CS::NotAllowed => CursorIcon::NotAllowed,
+            CS::Crosshair => CursorIcon::Crosshair,
+            CS::Grab => CursorIcon::Grab,
+            CS::Grabbing => CursorIcon::Grabbing,
+            CS::ColResize => CursorIcon::ColResize,
+            CS::RowResize => CursorIcon::RowResize,
+            CS::NResize => CursorIcon::NResize,
+            CS::SResize => CursorIcon::SResize,
+            CS::EResize => CursorIcon::EResize,
+            CS::WResize => CursorIcon::WResize,
+            CS::NeResize => CursorIcon::NeResize,
+            CS::NwResize => CursorIcon::NwResize,
+            CS::SeResize => CursorIcon::SeResize,
+            CS::SwResize => CursorIcon::SwResize,
+            CS::EwResize => CursorIcon::EwResize,
+            CS::NsResize => CursorIcon::NsResize,
+            CS::NeswResize => CursorIcon::NeswResize,
+            CS::NwseResize => CursorIcon::NwseResize,
+            CS::ZoomIn => CursorIcon::ZoomIn,
+            CS::ZoomOut => CursorIcon::ZoomOut,
+            CS::Wait => CursorIcon::Wait,
+            CS::Progress => CursorIcon::Progress,
+            CS::Help => CursorIcon::Help,
+            CS::ContextMenu => CursorIcon::ContextMenu,
+            CS::Cell => CursorIcon::Cell,
+            CS::Copy => CursorIcon::Copy,
+            CS::Alias => CursorIcon::Alias,
+            CS::NoDrop => CursorIcon::NoDrop,
+            CS::AllScroll => CursorIcon::AllScroll,
+            CS::None => CursorIcon::Default, // winit doesn't have "none"
         }
     }
 

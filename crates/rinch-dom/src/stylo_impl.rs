@@ -362,8 +362,8 @@ impl<'a> Element for RinchNode<'a> {
     ) -> bool {
         match *pseudo_class {
             NonTSPseudoClass::Hover => self.node().is_hovered,
-            NonTSPseudoClass::Active => false, // TODO: track active state
-            NonTSPseudoClass::Focus => false,  // TODO: track focus state
+            NonTSPseudoClass::Active => self.node().is_active,
+            NonTSPseudoClass::Focus => self.node().is_focused,
             NonTSPseudoClass::Enabled => true,
             NonTSPseudoClass::Disabled => false,
             NonTSPseudoClass::Checked => {
@@ -390,10 +390,10 @@ impl<'a> Element for RinchNode<'a> {
 
     fn match_pseudo_element(
         &self,
-        _pe: &PseudoElement,
+        pe: &PseudoElement,
         _context: &mut MatchingContext<Self::Impl>,
     ) -> bool {
-        false
+        matches!(pe, PseudoElement::Before | PseudoElement::After)
     }
 
     fn apply_selector_flags(&self, flags: ElementSelectorFlags) {
@@ -545,7 +545,12 @@ impl<'a> TElement for RinchNode<'a> {
         if self.node().is_hovered {
             state |= ElementState::HOVER;
         }
-        // TODO: Add other states (FOCUS, ACTIVE, etc.)
+        if self.node().is_focused {
+            state |= ElementState::FOCUS;
+        }
+        if self.node().is_active {
+            state |= ElementState::ACTIVE;
+        }
         state
     }
 

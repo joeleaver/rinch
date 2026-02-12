@@ -71,6 +71,48 @@ pub enum AppAction {
     SetMaximized(bool),
     /// Initiate a window drag (for custom titlebars).
     DragWindow,
+    /// Set the mouse cursor icon. Values match CSS cursor keywords.
+    SetCursor(CursorStyle),
+}
+
+/// Platform-agnostic cursor style matching CSS cursor property values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CursorStyle {
+    Auto,
+    Default,
+    Pointer,
+    Text,
+    Move,
+    NotAllowed,
+    Crosshair,
+    Grab,
+    Grabbing,
+    ColResize,
+    RowResize,
+    NResize,
+    SResize,
+    EResize,
+    WResize,
+    NeResize,
+    NwResize,
+    SeResize,
+    SwResize,
+    EwResize,
+    NsResize,
+    NeswResize,
+    NwseResize,
+    ZoomIn,
+    ZoomOut,
+    Wait,
+    Progress,
+    Help,
+    ContextMenu,
+    Cell,
+    Copy,
+    Alias,
+    NoDrop,
+    AllScroll,
+    None,
 }
 
 /// Platform-agnostic mouse button.

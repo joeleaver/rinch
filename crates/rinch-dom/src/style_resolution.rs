@@ -255,8 +255,37 @@ impl RinchDocument {
             return;
         }
 
+        // Remove existing pseudo-element children before re-resolving styles
+        // to avoid duplicates when styles are recomputed.
+        {
+            let children_to_remove: Vec<usize> = self.tree.nodes[node_id]
+                .children
+                .iter()
+                .filter(|&&cid| {
+                    self.tree
+                        .nodes
+                        .get(cid)
+                        .map_or(false, |n| n.is_pseudo_element)
+                })
+                .copied()
+                .collect();
+            for cid in children_to_remove {
+                // Remove from taffy parent
+                if let (Some(parent_taffy), Some(child_taffy)) = (
+                    self.tree.nodes[node_id].taffy_id,
+                    self.tree.nodes[cid].taffy_id,
+                ) {
+                    let _ = self.tree.taffy.remove_child(parent_taffy, child_taffy);
+                }
+                // Remove the pseudo-element's subtree from the slab
+                self.tree.remove_subtree(cid);
+                // Remove from parent's children list
+                self.tree.nodes[node_id].children.retain(|&c| c != cid);
+            }
+        }
+
         // Compute styles in a block so borrows are dropped before recursion
-        let (computed, children) = {
+        let computed = {
             // Create the RinchNode wrapper for Stylo
             let rinch_node = RinchNode::new(node_id, &self.tree);
 
@@ -338,15 +367,209 @@ impl RinchDocument {
             // Mark this node as needing Taffy sync (style was recomputed)
             self.tree.style_dirty_nodes.push(node_id);
 
-            // Clone children list before returning
-            let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
-
-            (computed.clone(), children)
+            computed.clone()
         };
+
+        // Check for ::before and ::after pseudo-elements
+        use style::selector_parser::PseudoElement;
+        self.resolve_pseudo_element(node_id, &computed, PseudoElement::Before);
+        self.resolve_pseudo_element(node_id, &computed, PseudoElement::After);
+
+        // Re-read children list since pseudo-element resolution may have added nodes
+        let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
 
         // Now we can recurse without holding borrows
         for child_id in children {
             self.resolve_styles_recursive(child_id, Some(computed.clone()));
+        }
+    }
+
+    /// Resolve a pseudo-element (::before or ::after) for a given parent node.
+    ///
+    /// Queries Stylo for the pseudo-element's computed styles, extracts the `content`
+    /// property text, and creates synthetic DOM nodes (a wrapper span + text child)
+    /// inserted as first child (::before) or last child (::after).
+    fn resolve_pseudo_element(
+        &mut self,
+        parent_id: usize,
+        parent_style: &ServoArc<ComputedValues>,
+        pseudo: style::selector_parser::PseudoElement,
+    ) {
+        use selectors::matching::{
+            IncludeStartingStyle, MatchingContext, MatchingForInvalidation, MatchingMode,
+            NeedsSelectorFlags, SelectorCaches, VisitedHandlingMode,
+        };
+        use style::applicable_declarations::ApplicableDeclarationList;
+        use style::context::CascadeInputs;
+        use style::properties::FirstLineReparenting;
+        use style::rule_cache::RuleCacheConditions;
+        use style::selector_parser::PseudoElement;
+        use style::shared_lock::StylesheetGuards;
+        use style::stylist::RuleInclusion;
+
+        use crate::stylo_impl::RinchNode;
+
+        let is_before = matches!(pseudo, PseudoElement::Before);
+
+        // Query Stylo for pseudo-element declarations
+        let pseudo_computed = {
+            let rinch_node = RinchNode::new(parent_id, &self.tree);
+            let guard = self.tree.guard.read();
+            let guards = StylesheetGuards::same(&guard);
+
+            let mut selector_caches = SelectorCaches::default();
+            let mut matching_context = MatchingContext::new_for_visited(
+                MatchingMode::Normal,
+                None,
+                &mut selector_caches,
+                VisitedHandlingMode::AllLinksUnvisited,
+                IncludeStartingStyle::No,
+                self.stylist.quirks_mode(),
+                NeedsSelectorFlags::No,
+                MatchingForInvalidation::No,
+            );
+
+            let mut applicable_declarations = ApplicableDeclarationList::new();
+
+            // Get the style attribute from the parent element
+            let style_attribute = rinch_node
+                .node()
+                .style_attribute_cache
+                .as_ref()
+                .map(|arc| arc.borrow_arc());
+
+            self.stylist.push_applicable_declarations(
+                rinch_node,
+                Some(&pseudo),
+                style_attribute,
+                None,
+                Default::default(),
+                RuleInclusion::All,
+                &mut applicable_declarations,
+                &mut matching_context,
+            );
+
+            // If no declarations matched, no pseudo-element defined
+            if applicable_declarations.is_empty() {
+                return;
+            }
+
+            let rule_node = self
+                .stylist
+                .rule_tree()
+                .compute_rule_node(&mut applicable_declarations, &guards);
+
+            let mut rule_cache_conditions = RuleCacheConditions::default();
+
+            self.stylist.cascade_style_and_visited(
+                Some(RinchNode::new(parent_id, &self.tree)),
+                Some(&pseudo),
+                CascadeInputs {
+                    rules: Some(rule_node),
+                    visited_rules: None,
+                    flags: matching_context.extra_data.cascade_input_flags,
+                },
+                &guards,
+                Some(parent_style),
+                Some(parent_style),
+                FirstLineReparenting::No,
+                &Default::default(),
+                None,
+                &mut rule_cache_conditions,
+            )
+        };
+
+        // Check content property - if none/normal/empty, skip
+        if pseudo_computed.ineffective_content_property() {
+            return;
+        }
+
+        // Extract text content from the content property
+        let text = Self::extract_content_text(&pseudo_computed);
+        if text.is_empty() {
+            return;
+        }
+
+        // Convert pseudo computed style to our ComputedStyle
+        let pseudo_style = ComputedStyle::from_stylo(&pseudo_computed);
+
+        // Create a wrapper span element for the pseudo-element
+        use rinch_core::dom::DomDocument;
+        let span_id = self.create_element("span");
+        let text_node_id = self.create_text(&text);
+
+        // Append the text node to the span (using raw tree manipulation
+        // to avoid triggering style recomputation via DomDocument::append_child)
+        {
+            let span_raw = span_id.0;
+            let text_raw = text_node_id.0;
+            self.tree.nodes[text_raw].parent = Some(span_raw);
+            self.tree.nodes[span_raw].children.push(text_raw);
+            // Sync taffy
+            if let (Some(parent_taffy), Some(child_taffy)) = (
+                self.tree.nodes[span_raw].taffy_id,
+                self.tree.nodes[text_raw].taffy_id,
+            ) {
+                let _ = self.tree.taffy.add_child(parent_taffy, child_taffy);
+            }
+        }
+
+        // Set computed style and mark as pseudo-element
+        {
+            let span_raw = span_id.0;
+            self.tree.nodes[span_raw].computed_style = pseudo_style;
+            self.tree.nodes[span_raw].is_pseudo_element = true;
+            self.tree.style_dirty_nodes.push(span_raw);
+        }
+
+        // Insert as first child (::before) or last child (::after) of parent
+        {
+            let span_raw = span_id.0;
+            self.tree.nodes[span_raw].parent = Some(parent_id);
+            if is_before {
+                // Insert at beginning of parent's children
+                self.tree.nodes[parent_id].children.insert(0, span_raw);
+                // Sync taffy: insert at index 0
+                if let (Some(parent_taffy), Some(child_taffy)) = (
+                    self.tree.nodes[parent_id].taffy_id,
+                    self.tree.nodes[span_raw].taffy_id,
+                ) {
+                    let _ = self
+                        .tree
+                        .taffy
+                        .insert_child_at_index(parent_taffy, 0, child_taffy);
+                }
+            } else {
+                // Append at end of parent's children
+                self.tree.nodes[parent_id].children.push(span_raw);
+                if let (Some(parent_taffy), Some(child_taffy)) = (
+                    self.tree.nodes[parent_id].taffy_id,
+                    self.tree.nodes[span_raw].taffy_id,
+                ) {
+                    let _ = self.tree.taffy.add_child(parent_taffy, child_taffy);
+                }
+            }
+        }
+    }
+
+    /// Extract text content from a Stylo ComputedValues `content` property.
+    /// Only handles string content items; skips counter(), attr(), url(), etc.
+    fn extract_content_text(computed: &ComputedValues) -> String {
+        use style::values::generics::counters::{Content, ContentItem};
+
+        let content = &computed.get_counters().content;
+        match content {
+            Content::Normal | Content::None => String::new(),
+            Content::Items(items) => {
+                let mut result = String::new();
+                for item in items.items.iter() {
+                    match item {
+                        ContentItem::String(s) => result.push_str(s),
+                        _ => {} // Skip counter(), attr(), url(), etc.
+                    }
+                }
+                result
+            }
         }
     }
 
@@ -417,6 +640,116 @@ impl RinchDocument {
         self.apply_stylo_styles_to_taffy();
 
         // Mark dirty nodes for repaint
+        for id in dirty_nodes {
+            self.push_dirty_flags(id, DirtyFlags::STYLE | DirtyFlags::PAINT);
+        }
+
+        true
+    }
+
+    /// Update focus state: set the focused node, clear previous focus,
+    /// and recompute styles for affected nodes.
+    /// Returns true if the focused node changed (caller should repaint).
+    pub fn update_focus(&mut self, new_focused: Option<usize>) -> bool {
+        let old_focused = self.tree.focused_node;
+        if old_focused == new_focused {
+            return false;
+        }
+
+        // Clear old focus state
+        if let Some(old_id) = old_focused {
+            if let Some(node) = self.tree.nodes.get_mut(old_id) {
+                node.is_focused = false;
+            }
+        }
+
+        // Set new focus state
+        if let Some(new_id) = new_focused {
+            if let Some(node) = self.tree.nodes.get_mut(new_id) {
+                node.is_focused = true;
+            }
+        }
+
+        self.tree.focused_node = new_focused;
+
+        // Recompute styles
+        self.tree.styles_dirty = true;
+        self.resolve_styles();
+        self.apply_stylo_styles_to_taffy();
+
+        // Mark dirty nodes for repaint
+        if let Some(id) = old_focused {
+            self.push_dirty_flags(id, DirtyFlags::STYLE | DirtyFlags::PAINT);
+        }
+        if let Some(id) = new_focused {
+            self.push_dirty_flags(id, DirtyFlags::STYLE | DirtyFlags::PAINT);
+        }
+
+        true
+    }
+
+    /// Update active (mouse-pressed) state: set the active node and its
+    /// ancestors, clear previous active, and recompute styles.
+    /// Returns true if the active node changed (caller should repaint).
+    pub fn update_active(&mut self, new_active: Option<usize>) -> bool {
+        let old_active = self.tree.active_node;
+        if old_active == new_active {
+            return false;
+        }
+
+        // Collect old active chain (node + ancestors)
+        let mut old_chain = Vec::new();
+        if let Some(old_id) = old_active {
+            let mut current = Some(old_id);
+            while let Some(id) = current {
+                old_chain.push(id);
+                current = self.tree.nodes.get(id).and_then(|n| n.parent);
+            }
+        }
+
+        // Collect new active chain (node + ancestors)
+        let mut new_chain = Vec::new();
+        if let Some(new_id) = new_active {
+            let mut current = Some(new_id);
+            while let Some(id) = current {
+                new_chain.push(id);
+                current = self.tree.nodes.get(id).and_then(|n| n.parent);
+            }
+        }
+
+        // Clear old active state
+        for &id in &old_chain {
+            if let Some(node) = self.tree.nodes.get_mut(id) {
+                node.is_active = false;
+            }
+        }
+
+        // Set new active state
+        for &id in &new_chain {
+            if let Some(node) = self.tree.nodes.get_mut(id) {
+                node.is_active = true;
+            }
+        }
+
+        self.tree.active_node = new_active;
+
+        // Recompute styles
+        self.tree.styles_dirty = true;
+        self.resolve_styles();
+        self.apply_stylo_styles_to_taffy();
+
+        // Mark dirty nodes for repaint
+        let mut dirty_nodes: Vec<usize> = Vec::new();
+        for &id in &old_chain {
+            if !new_chain.contains(&id) {
+                dirty_nodes.push(id);
+            }
+        }
+        for &id in &new_chain {
+            if !old_chain.contains(&id) {
+                dirty_nodes.push(id);
+            }
+        }
         for id in dirty_nodes {
             self.push_dirty_flags(id, DirtyFlags::STYLE | DirtyFlags::PAINT);
         }

@@ -4,11 +4,14 @@
 //! for backgrounds, borders, and text.
 
 use peniko::color::{AlphaColor, Srgb};
-use peniko::kurbo::{Affine, BezPath, Cap, Join, Rect, RoundedRect, Stroke};
-use peniko::{Brush, Fill};
+use peniko::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, RoundedRect, Stroke};
+use peniko::{Brush, Fill, Gradient};
 use vello::Scene;
 
-use crate::computed_style::{LineHeightValue, OverflowValue};
+use crate::computed_style::{
+    BackgroundValue, BorderStyleValue, LineHeightValue, OverflowValue, PositionValue,
+    TextShadowValue, VisibilityValue,
+};
 use crate::layout::parse_color;
 use crate::node::{Node, NodeKind, NodeTree, RawNodeId};
 
@@ -74,16 +77,69 @@ fn paint_node(
     let w = layout.width as f64 * scale;
     let h = layout.height as f64 * scale;
 
+    // Sticky position adjustment
+    let (x, y) = if node.computed_style.position == PositionValue::Sticky {
+        // Find the nearest scroll ancestor's scroll offset
+        let mut scroll_y = 0.0_f64;
+        let mut ancestor_id = node.parent;
+        while let Some(aid) = ancestor_id {
+            if let Some(ancestor) = tree.get(aid) {
+                let ov = ancestor.computed_style.overflow_y;
+                if matches!(ov, OverflowValue::Auto | OverflowValue::Scroll | OverflowValue::Hidden) {
+                    scroll_y = ancestor.scroll_offset.1 * scale;
+                    break;
+                }
+                ancestor_id = ancestor.parent;
+            } else {
+                break;
+            }
+        }
+
+        // Apply sticky top constraint: element should not scroll above `top` offset from container
+        let sticky_top = node.computed_style.top.to_px() as f64 * scale;
+        let adjusted_y = y.max(offset_y + scroll_y + sticky_top);
+        (x, adjusted_y)
+    } else {
+        (x, y)
+    };
+
     match &node.kind {
         NodeKind::Element(el) if el.tag == "svg" => {
             paint_svg(tree, node, scene, scale, x, y, w, h);
         }
         NodeKind::Element(_) => {
             let rect = Rect::new(x, y, x + w, y + h);
+            let visible = !matches!(node.computed_style.visibility, VisibilityValue::Hidden | VisibilityValue::Collapse);
 
-            // Parse and render box-shadow
-            if let Some(shadow_str) = get_style_property(node, "box-shadow") {
-                paint_box_shadow(scene, &shadow_str, x, y, w, h, scale, node);
+            // Get border-radius from computed style (use average of all 4 corners)
+            // Resolve percentage values against element dimensions
+            let radius = {
+                let cs = &node.computed_style;
+                let resolve_size = node.layout.width.min(node.layout.height);
+                let tl = cs.border_radius_top_left.resolve(resolve_size);
+                let tr = cs.border_radius_top_right.resolve(resolve_size);
+                let br = cs.border_radius_bottom_right.resolve(resolve_size);
+                let bl = cs.border_radius_bottom_left.resolve(resolve_size);
+                let avg = (tl + tr + br + bl) / 4.0;
+                avg as f64 * scale
+            };
+
+            // Apply CSS transform via Vello affine
+            let has_transform = !node.computed_style.transform.is_identity;
+            if has_transform {
+                let m = &node.computed_style.transform.matrix;
+                let cs = &node.computed_style;
+                // Resolve transform-origin (default 50% 50%)
+                let ox = cs.transform_origin_x.resolve(node.layout.width);
+                let oy = cs.transform_origin_y.resolve(node.layout.height);
+                let cx = x + ox as f64 * scale;
+                let cy = y + oy as f64 * scale;
+                let affine = Affine::translate((cx, cy))
+                    * Affine::new(*m)
+                    * Affine::translate((-cx, -cy));
+                scene.push_layer(Fill::NonZero, peniko::Mix::Normal, 1.0, affine, &Rect::new(
+                    x - w, y - h, x + w * 2.0, y + h * 2.0, // enlarged clip to avoid clipping transforms
+                ));
             }
 
             // Get opacity from computed style and push layer if needed
@@ -99,53 +155,55 @@ fn paint_node(
                 );
             }
 
-            // Get border-radius from computed style (use average of all 4 corners)
-            // Resolve percentage values against element dimensions
-            let radius = {
-                let cs = &node.computed_style;
-                // For percentage border-radius, resolve against min(width, height) for uniform corners
-                let resolve_size = node.layout.width.min(node.layout.height);
-                let tl = cs.border_radius_top_left.resolve(resolve_size);
-                let tr = cs.border_radius_top_right.resolve(resolve_size);
-                let br = cs.border_radius_bottom_right.resolve(resolve_size);
-                let bl = cs.border_radius_bottom_left.resolve(resolve_size);
-                let avg = (tl + tr + br + bl) / 4.0;
-                avg as f64 * scale
-            };
-
-            // Get background-color from computed style
-            if let Some(bg_color) = node.computed_style.background_color {
-                if radius > 0.0 {
-                    let rrect = RoundedRect::from_rect(rect, radius);
-                    scene.fill(Fill::NonZero, Affine::IDENTITY, bg_color, None, &rrect);
-                } else {
-                    scene.fill(Fill::NonZero, Affine::IDENTITY, bg_color, None, &rect);
+            // Only paint this element's own visuals if visible
+            // (children may override with visibility: visible)
+            if visible {
+                // Parse and render box-shadow
+                if let Some(shadow_str) = get_style_property(node, "box-shadow") {
+                    paint_box_shadow(scene, &shadow_str, x, y, w, h, scale, node);
                 }
-            }
 
-            // Get border from computed style
-            let border_width = node.computed_style.border_top_width.to_px();
-            let border_color = node.computed_style.border_color;
-
-            if let Some(bc) = border_color {
-                let bw = border_width;
-                if bw > 0.0 {
-                    let stroke = Stroke::new(bw as f64 * scale);
-                    let half = bw as f64 * scale * 0.5;
-                    let border_rect = Rect::new(x + half, y + half, x + w - half, y + h - half);
-
-                    if radius > 0.0 {
-                        let rrect = RoundedRect::from_rect(border_rect, radius);
-                        scene.stroke(&stroke, Affine::IDENTITY, bc, None, &rrect);
-                    } else {
-                        scene.stroke(&stroke, Affine::IDENTITY, bc, None, &border_rect);
+                // Get background from computed style (solid color or gradient)
+                match &node.computed_style.background {
+                    BackgroundValue::Color(bg_color) => {
+                        if radius > 0.0 {
+                            let rrect = RoundedRect::from_rect(rect, radius);
+                            scene.fill(Fill::NonZero, Affine::IDENTITY, *bg_color, None, &rrect);
+                        } else {
+                            scene.fill(Fill::NonZero, Affine::IDENTITY, *bg_color, None, &rect);
+                        }
                     }
+                    BackgroundValue::LinearGradient { angle_degrees, stops } => {
+                        let brush = build_linear_gradient_brush(*angle_degrees, stops, &rect);
+                        if radius > 0.0 {
+                            let rrect = RoundedRect::from_rect(rect, radius);
+                            scene.fill(Fill::NonZero, Affine::IDENTITY, &brush, None, &rrect);
+                        } else {
+                            scene.fill(Fill::NonZero, Affine::IDENTITY, &brush, None, &rect);
+                        }
+                    }
+                    BackgroundValue::RadialGradient { stops } => {
+                        let brush = build_radial_gradient_brush(stops, &rect);
+                        if radius > 0.0 {
+                            let rrect = RoundedRect::from_rect(rect, radius);
+                            scene.fill(Fill::NonZero, Affine::IDENTITY, &brush, None, &rrect);
+                        } else {
+                            scene.fill(Fill::NonZero, Affine::IDENTITY, &brush, None, &rect);
+                        }
+                    }
+                    BackgroundValue::None => {}
                 }
-            }
 
-            // Render input element value
-            if matches!(node.tag(), Some("input" | "textarea")) {
-                paint_input_value(node, scene, scale, x, y, w, h, font_cx, layout_cx);
+                // Render borders per-side with style support
+                paint_borders(scene, node, scale, x, y, w, h, radius);
+
+                // Render outline (drawn outside the box model)
+                paint_outline(scene, node, scale, x, y, w, h, radius);
+
+                // Render input element value
+                if matches!(node.tag(), Some("input" | "textarea")) {
+                    paint_input_value(node, scene, scale, x, y, w, h, font_cx, layout_cx);
+                }
             }
 
             // Handle overflow clipping from computed style
@@ -231,6 +289,33 @@ fn paint_node(
                             handled = true;
                             break;
                         }
+                    }
+
+                    // Empty CE root — no children, no text layout.
+                    // Draw a caret at the content-box origin.
+                    if !handled && node.children.is_empty() {
+                        if cursor_pos == 0 {
+                            let cs = &node.computed_style;
+                            let pad_x = (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64 * scale;
+                            let pad_y = (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64 * scale;
+                            let font_size = cs.font_size;
+                            let line_h = match cs.line_height {
+                                LineHeightValue::Relative(r) => font_size * r,
+                                LineHeightValue::Absolute(a) => a,
+                                LineHeightValue::Normal => font_size * 1.2,
+                            };
+                            let caret_height = line_h as f64 * scale;
+                            let caret_color = cs.color
+                                .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(33, 37, 41, 255));
+                            let caret_rect = Rect::new(
+                                x + pad_x,
+                                y + pad_y,
+                                x + pad_x + 1.5 * scale,
+                                y + pad_y + caret_height,
+                            );
+                            scene.fill(Fill::NonZero, Affine::IDENTITY, caret_color, None, &caret_rect);
+                        }
+                        handled = true;
                     }
 
                     // Block-level children: walk children accumulating text offsets
@@ -371,10 +456,11 @@ fn paint_node(
                 let scroll_y = node.scroll_offset.1 * scale;
                 let content_x = x + (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64 * scale - scroll_x;
                 let content_y = y + (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64 * scale - scroll_y;
-                paint_inline_layout(tree, scene, scale, content_x, content_y, inline_layout, font_cx, layout_cx);
+                let ifc_text_shadows = node.computed_style.text_shadow.as_slice();
+                paint_inline_layout(tree, scene, scale, content_x, content_y, inline_layout, font_cx, layout_cx, ifc_text_shadows);
 
                 // Still paint non-inline (block) children normally
-                let child_ids: Vec<usize> = node.children.to_vec();
+                let child_ids = sorted_paint_order(tree, &node.children);
                 for child_id in child_ids {
                     let child = match tree.get(child_id) {
                         Some(c) => c,
@@ -399,7 +485,7 @@ fn paint_node(
                 // Normal paint path: recurse into all children
                 let scroll_x = node.scroll_offset.0 * scale;
                 let scroll_y = node.scroll_offset.1 * scale;
-                let child_ids: Vec<usize> = node.children.to_vec();
+                let child_ids = sorted_paint_order(tree, &node.children);
                 for child_id in child_ids {
                     paint_node(
                         tree,
@@ -474,7 +560,71 @@ fn paint_node(
                 }
             }
 
+            // Apply CSS filter approximations (after content is painted, before opacity pop)
+            let cs = &tree.get(node_id).unwrap().computed_style;
+            let has_filter = cs.filter_brightness != 1.0 || cs.filter_grayscale > 0.0;
+
+            if has_filter {
+                // Brightness: overlay black (darken) or white (brighten) with calculated alpha
+                if cs.filter_brightness != 1.0 {
+                    let brightness = cs.filter_brightness;
+                    if brightness < 1.0 {
+                        // Darken: overlay black with alpha = 1.0 - brightness
+                        let alpha = ((1.0 - brightness).clamp(0.0, 1.0) * 255.0) as u8;
+                        let dark = AlphaColor::<Srgb>::from_rgba8(0, 0, 0, alpha);
+                        if radius > 0.0 {
+                            let rrect = RoundedRect::from_rect(rect, radius);
+                            scene.fill(Fill::NonZero, Affine::IDENTITY, dark, None, &rrect);
+                        } else {
+                            scene.fill(Fill::NonZero, Affine::IDENTITY, dark, None, &rect);
+                        }
+                    } else if brightness > 1.0 {
+                        // Brighten: overlay white with alpha proportional to excess brightness
+                        // brightness=2.0 → fully white, so alpha = (brightness - 1.0) clamped
+                        let alpha = ((brightness - 1.0).clamp(0.0, 1.0) * 255.0) as u8;
+                        let light = AlphaColor::<Srgb>::from_rgba8(255, 255, 255, alpha);
+                        if radius > 0.0 {
+                            let rrect = RoundedRect::from_rect(rect, radius);
+                            scene.fill(Fill::NonZero, Affine::IDENTITY, light, None, &rrect);
+                        } else {
+                            scene.fill(Fill::NonZero, Affine::IDENTITY, light, None, &rect);
+                        }
+                    }
+                }
+
+                // Grayscale approximation: overlay a semi-transparent gray matching average luminance
+                // This is a rough approximation — proper grayscale needs color matrix support
+                // For now, we apply a desaturation effect by overlaying gray at the grayscale intensity
+                if cs.filter_grayscale > 0.0 {
+                    // Use Mix::Saturation blend mode if available, otherwise skip
+                    // Vello's push_layer supports peniko::Mix blend modes
+                    // Mix::Saturation would desaturate the content underneath
+                    let grayscale = cs.filter_grayscale.clamp(0.0, 1.0);
+                    // Push a saturation layer: gray rect with Saturation blend at grayscale alpha
+                    scene.push_layer(
+                        Fill::NonZero,
+                        peniko::Mix::Saturation,
+                        grayscale,
+                        Affine::IDENTITY,
+                        &rect,
+                    );
+                    // Fill with neutral gray
+                    let gray = AlphaColor::<Srgb>::from_rgba8(128, 128, 128, 255);
+                    if radius > 0.0 {
+                        let rrect = RoundedRect::from_rect(rect, radius);
+                        scene.fill(Fill::NonZero, Affine::IDENTITY, gray, None, &rrect);
+                    } else {
+                        scene.fill(Fill::NonZero, Affine::IDENTITY, gray, None, &rect);
+                    }
+                    scene.pop_layer();
+                }
+            }
+
             if has_opacity {
+                scene.pop_layer();
+            }
+
+            if has_transform {
                 scene.pop_layer();
             }
         }
@@ -484,10 +634,23 @@ fn paint_node(
                 return;
             }
 
+            // Check visibility (inherited from parent)
+            let parent_visibility = node
+                .parent
+                .and_then(|p| tree.get(p))
+                .map(|p| &p.computed_style.visibility);
+            if matches!(parent_visibility, Some(VisibilityValue::Hidden | VisibilityValue::Collapse)) {
+                return;
+            }
+
             // Use cached layout if available (built after Taffy layout with final widths)
             if let Some(cached_layout) = &node.cached_text_parley {
                 // Layout is already aligned during caching, use it directly
-                render_text(scene, cached_layout, x, y);
+                let text_shadows = node.parent
+                    .and_then(|p| tree.get(p))
+                    .map(|p| p.computed_style.text_shadow.as_slice())
+                    .unwrap_or(&[]);
+                render_text_with_shadow(scene, cached_layout, x, y, text_shadows);
                 return;
             }
 
@@ -544,7 +707,10 @@ fn paint_node(
             text_layout.align(alignment, parley::layout::AlignmentOptions::default());
 
             // Render text glyphs to scene
-            render_text(scene, &text_layout, x, y);
+            let text_shadows = parent_computed
+                .map(|s| s.text_shadow.as_slice())
+                .unwrap_or(&[]);
+            render_text_with_shadow(scene, &text_layout, x, y, text_shadows);
         }
 
         _ => {} // Document, Comment -- invisible
@@ -566,10 +732,11 @@ fn paint_inline_layout(
     inline_layout: &crate::node::InlineLayout,
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<Brush>,
+    text_shadows: &[TextShadowValue],
 ) {
     // Render the Parley layout at the IFC root's position
     // Scale is already applied to font sizes during layout building
-    render_text(scene, &inline_layout.layout, parent_x, parent_y);
+    render_text_with_shadow(scene, &inline_layout.layout, parent_x, parent_y, text_shadows);
 
     // Paint inline-block boxes by looking them up in tree and painting
     for line in inline_layout.layout.lines() {
@@ -586,6 +753,192 @@ fn paint_inline_layout(
 
 /// Paint a CSS box-shadow effect.
 ///
+/// Paint per-side borders with style support (solid, dashed, dotted, double).
+#[allow(clippy::too_many_arguments)]
+fn paint_borders(
+    scene: &mut Scene,
+    node: &Node,
+    scale: f64,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    radius: f64,
+) {
+    let cs = &node.computed_style;
+
+    let sides = [
+        // (width, color, style, start, end) for each side
+        (cs.border_top_width.to_px(), cs.border_top_color, cs.border_top_style),
+        (cs.border_right_width.to_px(), cs.border_right_color, cs.border_right_style),
+        (cs.border_bottom_width.to_px(), cs.border_bottom_color, cs.border_bottom_style),
+        (cs.border_left_width.to_px(), cs.border_left_color, cs.border_left_style),
+    ];
+
+    // Fast path: if all sides have the same width, color, and style, use single stroke
+    let all_same = sides.windows(2).all(|pair| {
+        pair[0].0 == pair[1].0 && pair[0].1 == pair[1].1 && pair[0].2 == pair[1].2
+    });
+
+    if all_same {
+        let (bw, color, style) = sides[0];
+        if bw <= 0.0 || matches!(style, BorderStyleValue::None | BorderStyleValue::Hidden) {
+            return;
+        }
+        if let Some(bc) = color {
+            let stroke = make_border_stroke(bw as f64 * scale, style);
+            let half = bw as f64 * scale * 0.5;
+            let border_rect = Rect::new(x + half, y + half, x + w - half, y + h - half);
+
+            if radius > 0.0 {
+                let rrect = RoundedRect::from_rect(border_rect, radius);
+                scene.stroke(&stroke, Affine::IDENTITY, bc, None, &rrect);
+            } else {
+                scene.stroke(&stroke, Affine::IDENTITY, bc, None, &border_rect);
+            }
+        }
+        return;
+    }
+
+    // Per-side rendering
+    let top_w = sides[0].0 as f64 * scale;
+    let right_w = sides[1].0 as f64 * scale;
+    let bottom_w = sides[2].0 as f64 * scale;
+    let left_w = sides[3].0 as f64 * scale;
+
+    // Top border
+    if top_w > 0.0 && !matches!(sides[0].2, BorderStyleValue::None | BorderStyleValue::Hidden) {
+        if let Some(bc) = sides[0].1 {
+            let stroke = make_border_stroke(top_w, sides[0].2);
+            let half = top_w * 0.5;
+            let path = peniko::kurbo::Line::new((x, y + half), (x + w, y + half));
+            scene.stroke(&stroke, Affine::IDENTITY, bc, None, &path);
+        }
+    }
+
+    // Right border
+    if right_w > 0.0 && !matches!(sides[1].2, BorderStyleValue::None | BorderStyleValue::Hidden) {
+        if let Some(bc) = sides[1].1 {
+            let stroke = make_border_stroke(right_w, sides[1].2);
+            let half = right_w * 0.5;
+            let path = peniko::kurbo::Line::new((x + w - half, y), (x + w - half, y + h));
+            scene.stroke(&stroke, Affine::IDENTITY, bc, None, &path);
+        }
+    }
+
+    // Bottom border
+    if bottom_w > 0.0 && !matches!(sides[2].2, BorderStyleValue::None | BorderStyleValue::Hidden) {
+        if let Some(bc) = sides[2].1 {
+            let stroke = make_border_stroke(bottom_w, sides[2].2);
+            let half = bottom_w * 0.5;
+            let path = peniko::kurbo::Line::new((x, y + h - half), (x + w, y + h - half));
+            scene.stroke(&stroke, Affine::IDENTITY, bc, None, &path);
+        }
+    }
+
+    // Left border
+    if left_w > 0.0 && !matches!(sides[3].2, BorderStyleValue::None | BorderStyleValue::Hidden) {
+        if let Some(bc) = sides[3].1 {
+            let stroke = make_border_stroke(left_w, sides[3].2);
+            let half = left_w * 0.5;
+            let path = peniko::kurbo::Line::new((x + half, y), (x + half, y + h));
+            scene.stroke(&stroke, Affine::IDENTITY, bc, None, &path);
+        }
+    }
+}
+
+/// Create a Stroke with dash pattern based on border style.
+fn make_border_stroke(width: f64, style: BorderStyleValue) -> Stroke {
+    match style {
+        BorderStyleValue::Dashed => {
+            Stroke::new(width).with_dashes(0.0, &[width * 3.0, width * 3.0])
+        }
+        BorderStyleValue::Dotted => {
+            Stroke::new(width)
+                .with_dashes(0.0, &[width, width])
+                .with_caps(Cap::Round)
+        }
+        BorderStyleValue::Double => {
+            // For double, draw at 1/3 width (the caller draws two passes)
+            // We approximate by drawing a single thinner stroke
+            Stroke::new((width / 3.0).max(1.0))
+        }
+        _ => Stroke::new(width), // Solid and others
+    }
+}
+
+/// Paint outline outside the box model.
+#[allow(clippy::too_many_arguments)]
+fn paint_outline(
+    scene: &mut Scene,
+    node: &Node,
+    scale: f64,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    radius: f64,
+) {
+    let cs = &node.computed_style;
+    let ow = cs.outline_width as f64 * scale;
+    if ow <= 0.0 || matches!(cs.outline_style, BorderStyleValue::None | BorderStyleValue::Hidden) {
+        return;
+    }
+
+    let color = match cs.outline_color {
+        Some(c) => c,
+        None => return,
+    };
+
+    let offset = cs.outline_offset as f64 * scale;
+    let half = ow * 0.5;
+    let stroke = make_border_stroke(ow, cs.outline_style);
+
+    // Outline is drawn outside the border box, offset by outline-offset
+    let outline_rect = Rect::new(
+        x - offset - half,
+        y - offset - half,
+        x + w + offset + half,
+        y + h + offset + half,
+    );
+
+    if radius > 0.0 {
+        let rrect = RoundedRect::from_rect(outline_rect, radius + offset + half);
+        scene.stroke(&stroke, Affine::IDENTITY, color, None, &rrect);
+    } else {
+        scene.stroke(&stroke, Affine::IDENTITY, color, None, &outline_rect);
+    }
+}
+
+/// Sort child nodes by z-index for correct paint order.
+///
+/// Returns children sorted in CSS stacking order:
+/// 1. Negative z-index children (sorted ascending by z-index)
+/// 2. Auto/0 z-index children (DOM order preserved)
+/// 3. Positive z-index children (sorted ascending by z-index)
+fn sorted_paint_order(tree: &NodeTree, children: &[usize]) -> Vec<usize> {
+    let mut negative_z: Vec<(i32, usize)> = Vec::new();
+    let mut normal: Vec<usize> = Vec::new();
+    let mut positive_z: Vec<(i32, usize)> = Vec::new();
+
+    for &child_id in children {
+        match tree.get(child_id).and_then(|c| c.computed_style.z_index) {
+            Some(z) if z < 0 => negative_z.push((z, child_id)),
+            Some(z) if z > 0 => positive_z.push((z, child_id)),
+            _ => normal.push(child_id),
+        }
+    }
+
+    negative_z.sort_by_key(|(z, _)| *z);
+    positive_z.sort_by_key(|(z, _)| *z);
+
+    let mut result = Vec::with_capacity(children.len());
+    result.extend(negative_z.into_iter().map(|(_, id)| id));
+    result.extend(normal);
+    result.extend(positive_z.into_iter().map(|(_, id)| id));
+    result
+}
+
 /// Parses shadow format: `offset-x offset-y blur-radius color`
 /// Approximates blur by drawing expanded, semi-transparent rounded rects.
 #[allow(clippy::too_many_arguments)]
@@ -997,6 +1350,51 @@ fn parse_polyline_points(points_str: &str, close: bool) -> Option<BezPath> {
     Some(path)
 }
 
+/// Convert `GradientStop` list into peniko `ColorStop` tuples for `with_stops`.
+fn gradient_color_stops(
+    stops: &[crate::computed_style::GradientStop],
+) -> Vec<(f32, AlphaColor<Srgb>)> {
+    stops
+        .iter()
+        .filter_map(|s| s.color.map(|c| (s.offset, c)))
+        .collect()
+}
+
+/// Build a `Brush` for a CSS linear-gradient.
+fn build_linear_gradient_brush(
+    angle_degrees: f32,
+    stops: &[crate::computed_style::GradientStop],
+    rect: &Rect,
+) -> Brush {
+    let angle_rad = angle_degrees.to_radians();
+    let dx = (angle_rad.sin()) as f64;
+    let dy = -(angle_rad.cos()) as f64;
+    let half_w = (rect.x1 - rect.x0) / 2.0;
+    let half_h = (rect.y1 - rect.y0) / 2.0;
+    let len = half_w * dx.abs() + half_h * dy.abs();
+    let cx = rect.x0 + half_w;
+    let cy = rect.y0 + half_h;
+    let start = Point::new(cx - dx * len, cy - dy * len);
+    let end = Point::new(cx + dx * len, cy + dy * len);
+    let color_stops = gradient_color_stops(stops);
+    let gradient = Gradient::new_linear(start, end).with_stops(color_stops.as_slice());
+    Brush::Gradient(gradient)
+}
+
+/// Build a `Brush` for a CSS radial-gradient.
+fn build_radial_gradient_brush(
+    stops: &[crate::computed_style::GradientStop],
+    rect: &Rect,
+) -> Brush {
+    let half_w = (rect.x1 - rect.x0) / 2.0;
+    let half_h = (rect.y1 - rect.y0) / 2.0;
+    let center = Point::new(rect.x0 + half_w, rect.y0 + half_h);
+    let radius = half_w.max(half_h) as f32;
+    let color_stops = gradient_color_stops(stops);
+    let gradient = Gradient::new_radial(center, radius).with_stops(color_stops.as_slice());
+    Brush::Gradient(gradient)
+}
+
 /// Render a Parley text layout to a Vello scene.
 fn render_text(scene: &mut Scene, layout: &parley::layout::Layout<Brush>, x: f64, y: f64) {
     let transform = Affine::translate((x, y));
@@ -1108,6 +1506,90 @@ fn render_text(scene: &mut Scene, layout: &parley::layout::Layout<Brush>, x: f64
             }
         }
     }
+}
+
+/// Render a single shadow pass of a Parley text layout (glyphs only, no decorations).
+///
+/// Draws all glyph runs at the given offset with the specified shadow color,
+/// ignoring the original brush from the layout styles.
+fn render_text_shadow_pass(
+    scene: &mut Scene,
+    layout: &parley::layout::Layout<Brush>,
+    x: f64,
+    y: f64,
+    shadow_color: AlphaColor<Srgb>,
+) {
+    let transform = Affine::translate((x, y));
+    let shadow_brush = Brush::Solid(shadow_color);
+    for line in layout.lines() {
+        for item in line.items() {
+            let parley::layout::PositionedLayoutItem::GlyphRun(glyph_run) = item else {
+                continue;
+            };
+            let mut gx = glyph_run.offset();
+            let gy = glyph_run.baseline();
+            let run = glyph_run.run();
+            let font = run.font();
+            let font_size = run.font_size();
+            let synthesis = run.synthesis();
+            let glyph_xform = synthesis
+                .skew()
+                .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
+
+            scene
+                .draw_glyphs(font)
+                .font_size(font_size)
+                .transform(transform)
+                .glyph_transform(glyph_xform)
+                .brush(&shadow_brush)
+                .hint(true)
+                .normalized_coords(run.normalized_coords())
+                .draw(
+                    Fill::NonZero,
+                    glyph_run.glyphs().map(|glyph| {
+                        let px = gx + glyph.x;
+                        let py = gy - glyph.y;
+                        gx += glyph.advance;
+                        vello::Glyph {
+                            id: glyph.id,
+                            x: px,
+                            y: py,
+                        }
+                    }),
+                );
+        }
+    }
+}
+
+/// Render text with optional text-shadow effects.
+///
+/// Draws shadow passes (in reverse order so first shadow renders on top of later ones)
+/// at the specified offsets, then draws the normal text on top.
+fn render_text_with_shadow(
+    scene: &mut Scene,
+    layout: &parley::layout::Layout<Brush>,
+    x: f64,
+    y: f64,
+    text_shadows: &[TextShadowValue],
+) {
+    if text_shadows.is_empty() {
+        render_text(scene, layout, x, y);
+        return;
+    }
+
+    // Render shadows in reverse order (first shadow = topmost, drawn last before main text)
+    for shadow in text_shadows.iter().rev() {
+        let shadow_color = shadow.color.unwrap_or_else(|| {
+            AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255) // default: black
+        });
+        let sx = x + shadow.offset_x as f64;
+        let sy = y + shadow.offset_y as f64;
+        // Note: blur_radius is ignored for now (Vello lacks a blur API)
+        render_text_shadow_pass(scene, layout, sx, sy, shadow_color);
+    }
+
+    // Render the main text on top
+    render_text(scene, layout, x, y);
 }
 
 /// Get a CSS style property value from inline styles.
@@ -1302,6 +1784,7 @@ fn paint_ce_sub_blocks(
                     }
                 } else {
                     // Try sub-node's text children
+                    let mut found_text_child = false;
                     for &gc_id in &sub_node.children {
                         if let Some(gc) = tree.nodes.get(gc_id)
                             && let Some(ref cl) = gc.cached_text_parley
@@ -1317,8 +1800,21 @@ fn paint_ce_sub_blocks(
                                 caret.map(|c| c.min(gc_len)),
                                 content_width,
                             );
+                            found_text_child = true;
                             break;
                         }
+                    }
+                    // Recurse into deeper block structure (e.g., li > div + ul after indent)
+                    if !found_text_child {
+                        paint_ce_sub_blocks(
+                            tree, ce_node, scene, scale,
+                            parent_x + sub_node.layout.x as f64 * scale,
+                            parent_y + sub_node.layout.y as f64 * scale,
+                            &sub_node.children,
+                            sub_acc,
+                            cursor_pos, sel_min, sel_max,
+                            content_width,
+                        );
                     }
                 }
             }
@@ -1641,7 +2137,8 @@ fn paint_input_value(
 
     // Render text
     if !text.is_empty() {
-        render_text(scene, &text_layout, text_x, text_y);
+        let text_shadows = node.computed_style.text_shadow.as_slice();
+        render_text_with_shadow(scene, &text_layout, text_x, text_y, text_shadows);
     }
 
     // Draw cursor/caret if focused and visible

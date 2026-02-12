@@ -199,6 +199,18 @@ pub struct Node {
     pub computed_style_str: String,
     /// Whether this node is currently under the cursor (for CSS :hover).
     pub is_hovered: bool,
+    /// Whether this node or an ancestor has focus (for CSS :focus).
+    pub is_focused: bool,
+    /// Whether this node is currently being pressed (for CSS :active).
+    pub is_active: bool,
+    /// Whether this is an anonymous block box created by the layout engine.
+    /// These wrap runs of inline children in mixed-content block containers
+    /// (CSS "anonymous block boxes"). Transparent to editing operations.
+    pub is_anonymous_block_box: bool,
+    /// Whether this node is a CSS pseudo-element (::before or ::after).
+    /// Pseudo-element nodes are synthetic children created during style resolution
+    /// and are cleaned up before re-resolution to avoid duplicates.
+    pub is_pseudo_element: bool,
     /// Typed computed style derived from Stylo.
     /// This is the primary source for layout and paint after Stylo migration.
     pub computed_style: ComputedStyle,
@@ -257,6 +269,10 @@ impl Node {
             cached_text_parley: None,
             computed_style_str: String::new(),
             is_hovered: false,
+            is_focused: false,
+            is_active: false,
+            is_anonymous_block_box: false,
+            is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             // Stylo fields
             stylo_element_data: AtomicRefCell::new(None),
@@ -289,6 +305,10 @@ impl Node {
             cached_text_parley: None,
             computed_style_str: String::new(),
             is_hovered: false,
+            is_focused: false,
+            is_active: false,
+            is_anonymous_block_box: false,
+            is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             // Stylo fields
             stylo_element_data: AtomicRefCell::new(None),
@@ -320,6 +340,10 @@ impl Node {
             cached_text_parley: None,
             computed_style_str: String::new(),
             is_hovered: false,
+            is_focused: false,
+            is_active: false,
+            is_anonymous_block_box: false,
+            is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             // Stylo fields
             stylo_element_data: AtomicRefCell::new(None),
@@ -349,6 +373,10 @@ impl Node {
             cached_text_parley: None,
             computed_style_str: String::new(),
             is_hovered: false,
+            is_focused: false,
+            is_active: false,
+            is_anonymous_block_box: false,
+            is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             // Stylo fields
             stylo_element_data: AtomicRefCell::new(None),
@@ -435,8 +463,15 @@ pub struct NodeTree {
     pub viewport: crate::layout::Viewport,
     /// Currently hovered node ID (for CSS :hover).
     pub hovered_node: Option<RawNodeId>,
+    /// Currently focused node ID (for CSS :focus).
+    pub focused_node: Option<RawNodeId>,
+    /// Currently active (mouse-pressed) node ID (for CSS :active).
+    pub active_node: Option<RawNodeId>,
     /// Shared lock for Stylo CSS engine.
     pub guard: SharedRwLock,
+    /// IDs of anonymous block box nodes created during layout.
+    /// Tracked for cleanup at the start of each layout pass.
+    pub anonymous_block_boxes: Vec<RawNodeId>,
 }
 
 impl Default for NodeTree {
@@ -528,7 +563,10 @@ impl NodeTree {
             taffy_map,
             viewport: crate::layout::Viewport::default(),
             hovered_node: None,
+            focused_node: None,
+            active_node: None,
             guard,
+            anonymous_block_boxes: Vec::new(),
         }
     }
 

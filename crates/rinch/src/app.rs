@@ -6,20 +6,20 @@
 //! [`PlatformEvent`]s, feeds them to `RinchApp`, and processes the returned
 //! [`AppAction`]s.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rinch_core::dom::{DomDocument, NodeHandle, RenderScope, clear_render_scope, set_render_scope};
 use rinch_core::events;
 use rinch_core::hooks::{begin_render, end_render};
 use rinch_dom::RinchDocument;
-use rinch_dom::text_query::byte_offset_from_position;
+use rinch_dom::text_query::{byte_offset_from_position, caret_position_for_offset_layout};
 use rinch_editable::{
     InputHandler, Key as EditKey,
     Modifiers as EditModifiers,
 };
 #[cfg(feature = "debug")]
-use rinch_dom::text_query::{caret_position_for_offset_layout, glyph_bounds_for_offset_layout};
+use rinch_dom::text_query::glyph_bounds_for_offset_layout;
 use rinch_platform::{
     AppAction, Instant, KeyCode, Modifiers, MouseButton, PlatformEvent, UserEvent,
 };
@@ -147,6 +147,10 @@ pub struct RinchApp {
     pub(crate) focused_contenteditable: Option<ContentEditableFocus>,
     /// Whether we're currently doing a mouse-drag text selection in a contenteditable.
     pub(crate) ce_selecting: bool,
+    /// Whether a scroll-into-view is pending for the focused contenteditable.
+    /// Set when cursor changes; applied after the next layout resolve.
+    /// Uses `Cell` for interior mutability (set from `&self` methods).
+    pub(crate) ce_scroll_pending: Cell<bool>,
     /// Font data to register on the document when it is created (for WASM).
     pub(crate) pending_fonts: Vec<&'static [u8]>,
     /// Debug command receiver.
@@ -182,6 +186,7 @@ impl RinchApp {
             focused_input_value: String::new(),
             focused_contenteditable: None,
             ce_selecting: false,
+            ce_scroll_pending: Cell::new(false),
             pending_fonts: Vec::new(),
             #[cfg(feature = "debug")]
             debug_cmd_rx: None,
@@ -383,6 +388,9 @@ impl RinchApp {
             d.resolve_layout(viewport_width, viewport_height);
         }
 
+        // Apply deferred scroll-into-view now that layout is fresh
+        self.apply_ce_scroll_into_view();
+
         self.scene_dirty = true;
 
         // Log frame time if RINCH_PERF is set
@@ -517,14 +525,20 @@ impl RinchApp {
 
                 // Update hover state for CSS :hover support
                 if let Some(doc) = &self.doc {
-                    let hovered = {
+                    let (hovered, cursor_style) = {
                         let d = doc.borrow();
-                        hit_test(&d.tree, x, y)
+                        let h = hit_test(&d.tree, x, y);
+                        let cs = h
+                            .and_then(|id| d.tree.get(id))
+                            .map(|n| cursor_value_to_style(&n.computed_style.cursor))
+                            .unwrap_or(rinch_platform::CursorStyle::Default);
+                        (h, cs)
                     };
                     let changed = doc.borrow_mut().update_hover(hovered);
                     if changed {
                         actions.push(AppAction::RequestRedraw);
                     }
+                    actions.push(AppAction::SetCursor(cursor_style));
                 }
             }
             PlatformEvent::MouseDown {
@@ -550,6 +564,21 @@ impl RinchApp {
 
                 self.last_click_time = now;
                 self.last_click_pos = (x, y);
+
+                // Update :active and :focus pseudo-class state
+                if let Some(doc) = &self.doc {
+                    let hit = {
+                        let d = doc.borrow();
+                        hit_test(&d.tree, x, y)
+                    };
+                    // :active applies while mouse is pressed
+                    let active_changed = doc.borrow_mut().update_active(hit);
+                    // :focus applies to the clicked element (persists after release)
+                    let focus_changed = doc.borrow_mut().update_focus(hit);
+                    if active_changed || focus_changed {
+                        actions.push(AppAction::RequestRedraw);
+                    }
+                }
 
                 // Check scrollbar hit first
                 let scrollbar_hit = if let Some(doc) = &self.doc {
@@ -596,11 +625,19 @@ impl RinchApp {
             PlatformEvent::MouseUp { .. } => {
                 self.scrollbar_drag = None;
                 self.ce_selecting = false;
+
+                // Clear :active pseudo-class state on mouse release
+                if let Some(doc) = &self.doc {
+                    let changed = doc.borrow_mut().update_active(None);
+                    if changed {
+                        actions.push(AppAction::RequestRedraw);
+                    }
+                }
             }
             PlatformEvent::MouseWheel {
                 x,
                 y,
-                delta_x: _,
+                delta_x,
                 delta_y,
             } => {
                 self.cursor_pos = Some((x, y));
@@ -608,24 +645,51 @@ impl RinchApp {
                     let hit_node = hit_test(&doc.borrow().tree, x, y);
                     if let Some(hit_node) = hit_node {
                         let mut doc_mut = doc.borrow_mut();
-                        if let Some(scroll_node_id) = find_scroll_container(&doc_mut.tree, hit_node)
-                        {
-                            let content_height =
-                                compute_content_height(&doc_mut.tree, scroll_node_id);
-                            let visible_height = compute_visible_content_area_height(
-                                &doc_mut.tree, scroll_node_id,
-                            );
-                            let max_scroll = (content_height - visible_height).max(0.0);
 
-                            if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
-                                let new_y = (node.scroll_offset.1 - delta_y).clamp(0.0, max_scroll);
-                                if new_y != node.scroll_offset.1 {
-                                    node.scroll_offset.1 = new_y;
-                                    node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                                    doc_mut.tree.dirty_nodes.insert(scroll_node_id);
+                        // Vertical scrolling
+                        if delta_y.abs() > 0.0 {
+                            if let Some(scroll_node_id) = find_scroll_container(&doc_mut.tree, hit_node)
+                            {
+                                let content_height =
+                                    compute_content_height(&doc_mut.tree, scroll_node_id);
+                                let visible_height = compute_visible_content_area_height(
+                                    &doc_mut.tree, scroll_node_id,
+                                );
+                                let max_scroll = (content_height - visible_height).max(0.0);
+
+                                if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
+                                    let new_y = (node.scroll_offset.1 - delta_y).clamp(0.0, max_scroll);
+                                    if new_y != node.scroll_offset.1 {
+                                        node.scroll_offset.1 = new_y;
+                                        node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+                                        doc_mut.tree.dirty_nodes.insert(scroll_node_id);
+                                    }
                                 }
                             }
                         }
+
+                        // Horizontal scrolling
+                        if delta_x.abs() > 0.0 {
+                            if let Some(scroll_node_id) = find_horizontal_scroll_container(&doc_mut.tree, hit_node)
+                            {
+                                let content_width =
+                                    compute_content_width(&doc_mut.tree, scroll_node_id);
+                                let visible_width = compute_visible_content_area_width(
+                                    &doc_mut.tree, scroll_node_id,
+                                );
+                                let max_scroll = (content_width - visible_width).max(0.0);
+
+                                if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
+                                    let new_x = (node.scroll_offset.0 - delta_x).clamp(0.0, max_scroll);
+                                    if new_x != node.scroll_offset.0 {
+                                        node.scroll_offset.0 = new_x;
+                                        node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+                                        doc_mut.tree.dirty_nodes.insert(scroll_node_id);
+                                    }
+                                }
+                            }
+                        }
+
                         drop(doc_mut);
                         actions.push(AppAction::RequestRedraw);
                     }
@@ -1241,6 +1305,213 @@ impl RinchApp {
         )
     }
 
+    fn is_heading(tag: &str) -> bool {
+        matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
+    }
+
+    fn is_list_tag(tag: &str) -> bool {
+        matches!(tag, "ul" | "ol")
+    }
+
+    /// Strip specific CSS properties from an inline style string.
+    fn strip_css_properties(style: &str, properties: &[&str]) -> String {
+        style
+            .split(';')
+            .filter(|decl| {
+                let trimmed = decl.trim();
+                if trimmed.is_empty() {
+                    return false;
+                }
+                if let Some(prop) = trimmed.split(':').next() {
+                    !properties.contains(&prop.trim())
+                } else {
+                    true
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(";")
+    }
+
+    /// Change a block element's tag while preserving children and attributes.
+    /// Returns the new node's `NodeId`.
+    fn convert_block_tag(d: &mut RinchDocument, block_id: usize, new_tag: &str) -> rinch_core::dom::NodeId {
+        let old_tag = d.tree.get(block_id).and_then(|n| n.tag()).unwrap_or("").to_string();
+        let new_el = d.create_element(new_tag);
+        // Copy style/class attributes
+        if let Some(style) = d.tree.get(block_id).and_then(|n| n.attributes.get("style")).cloned() {
+            // When converting heading → non-heading, strip heading-specific CSS properties
+            // (font-size, font-weight) so the div reverts to normal text styling
+            let style = if Self::is_heading(&old_tag) && !Self::is_heading(new_tag) {
+                Self::strip_css_properties(&style, &["font-size", "font-weight"])
+            } else {
+                style
+            };
+            if !style.trim().is_empty() {
+                d.set_attribute(new_el, "style", &style);
+            }
+        }
+        if let Some(class) = d.tree.get(block_id).and_then(|n| n.attributes.get("class")).cloned() {
+            d.set_attribute(new_el, "class", &class);
+        }
+        // Move all children
+        let children: Vec<usize> = d.tree.nodes[block_id].children.clone();
+        for &child_id in &children {
+            d.remove_node(rinch_core::dom::NodeId(child_id));
+            d.append_child(new_el, rinch_core::dom::NodeId(child_id));
+        }
+        // Replace in parent: insert new element at same position, then remove old
+        let parent_id = d.tree.get(block_id).and_then(|n| n.parent).unwrap_or(0);
+        let next_sib = {
+            let siblings = &d.tree.nodes[parent_id].children;
+            let pos = siblings.iter().position(|&c| c == block_id);
+            pos.and_then(|p| siblings.get(p + 1).copied())
+        };
+        if let Some(next) = next_sib {
+            d.insert_before(
+                rinch_core::dom::NodeId(parent_id),
+                new_el,
+                rinch_core::dom::NodeId(next),
+            );
+        } else {
+            d.append_child(rinch_core::dom::NodeId(parent_id), new_el);
+        }
+        d.remove_node(rinch_core::dom::NodeId(block_id));
+        new_el
+    }
+
+    /// Outdent a `<li>` from its parent list: convert to `<div>`, split list if needed.
+    /// Works for any position (first, middle, last).
+    /// Returns the new `<div>` node id.
+    fn outdent_li(
+        d: &mut RinchDocument,
+        li_id: usize,
+        list_id: usize,
+        ce_root: usize,
+    ) -> rinch_core::dom::NodeId {
+        let list_tag = d.tree.get(list_id).and_then(|n| n.tag()).unwrap_or("ul").to_string();
+        let grandparent_id = d.tree.get(list_id).and_then(|n| n.parent).unwrap_or(ce_root);
+        let grandparent_tag = d.tree.get(grandparent_id).and_then(|n| n.tag()).unwrap_or("").to_string();
+
+        // If nested (parent <ul> is inside another <li>), move <li> up one level
+        // like Shift+Tab. Only convert to <div> when at the top level.
+        if grandparent_tag == "li" {
+            let parent_li_id = grandparent_id;
+            let outer_list_id = d.tree.get(parent_li_id).and_then(|n| n.parent).unwrap_or(ce_root);
+
+            // Collect siblings after current <li> in the nested list
+            let nested_siblings = d.tree.nodes[list_id].children.clone();
+            let pos = nested_siblings.iter().position(|&c| c == li_id).unwrap_or(0);
+            let after_siblings: Vec<usize> = nested_siblings[pos + 1..].to_vec();
+
+            // Move current <li> to after parent_li in the outer list
+            d.remove_node(rinch_core::dom::NodeId(li_id));
+            let parent_li_next = {
+                let siblings = &d.tree.nodes[outer_list_id].children;
+                let ppos = siblings.iter().position(|&c| c == parent_li_id);
+                ppos.and_then(|p| siblings.get(p + 1).copied())
+            };
+            if let Some(next) = parent_li_next {
+                d.insert_before(
+                    rinch_core::dom::NodeId(outer_list_id),
+                    rinch_core::dom::NodeId(li_id),
+                    rinch_core::dom::NodeId(next),
+                );
+            } else {
+                d.append_child(
+                    rinch_core::dom::NodeId(outer_list_id),
+                    rinch_core::dom::NodeId(li_id),
+                );
+            }
+
+            // If there are siblings after, create new nested list under current li
+            if !after_siblings.is_empty() {
+                let new_nested = d.create_element(&list_tag);
+                for &sib_id in &after_siblings {
+                    d.remove_node(rinch_core::dom::NodeId(sib_id));
+                    d.append_child(new_nested, rinch_core::dom::NodeId(sib_id));
+                }
+                d.append_child(rinch_core::dom::NodeId(li_id), new_nested);
+            }
+
+            // If the original nested list is now empty, remove it
+            if d.tree.nodes[list_id].children.is_empty() {
+                d.remove_node(rinch_core::dom::NodeId(list_id));
+            }
+
+            return rinch_core::dom::NodeId(li_id);
+        }
+
+        // Top-level: convert <li> to <div> and remove from list
+
+        // Get position and collect siblings after this <li>
+        let siblings = d.tree.nodes[list_id].children.clone();
+        let pos = siblings.iter().position(|&c| c == li_id).unwrap_or(0);
+        let after_siblings: Vec<usize> = siblings[pos + 1..].to_vec();
+
+        // Convert <li> to <div>
+        let new_el = Self::convert_block_tag(d, li_id, "div");
+        // convert_block_tag replaces in parent, so new_el is now a child of list_id.
+        // Remove it from the list.
+        d.remove_node(new_el);
+
+        if pos == 0 {
+            // First item: insert <div> before the list
+            d.insert_before(
+                rinch_core::dom::NodeId(grandparent_id),
+                new_el,
+                rinch_core::dom::NodeId(list_id),
+            );
+        } else {
+            // Non-first: insert <div> after the list
+            // Find what comes after list_id in grandparent
+            let gp_children = d.tree.nodes[grandparent_id].children.clone();
+            let list_pos = gp_children.iter().position(|&c| c == list_id);
+            let next_after_list = list_pos.and_then(|p| gp_children.get(p + 1).copied());
+            if let Some(next_id) = next_after_list {
+                d.insert_before(
+                    rinch_core::dom::NodeId(grandparent_id),
+                    new_el,
+                    rinch_core::dom::NodeId(next_id),
+                );
+            } else {
+                d.append_child(rinch_core::dom::NodeId(grandparent_id), new_el);
+            }
+        }
+
+        // If there are siblings after, move them to a new list after the <div>
+        if !after_siblings.is_empty() {
+            let new_list = d.create_element(&list_tag);
+            // Copy list style if any
+            if let Some(style) = d.tree.get(list_id).and_then(|n| n.attributes.get("style")).cloned() {
+                d.set_attribute(new_list, "style", &style);
+            }
+            for &sib_id in &after_siblings {
+                d.remove_node(rinch_core::dom::NodeId(sib_id));
+                d.append_child(new_list, rinch_core::dom::NodeId(sib_id));
+            }
+            // Insert new list after the <div>
+            let gp_children = d.tree.nodes[grandparent_id].children.clone();
+            let div_pos = gp_children.iter().position(|&c| c == new_el.0);
+            let next_after_div = div_pos.and_then(|p| gp_children.get(p + 1).copied());
+            if let Some(next_id) = next_after_div {
+                d.insert_before(
+                    rinch_core::dom::NodeId(grandparent_id),
+                    new_list,
+                    rinch_core::dom::NodeId(next_id),
+                );
+            } else {
+                d.append_child(rinch_core::dom::NodeId(grandparent_id), new_list);
+            }
+        }
+
+        // If original list is now empty, remove it
+        if d.tree.nodes[list_id].children.is_empty() {
+            d.remove_node(rinch_core::dom::NodeId(list_id));
+        }
+
+        new_el
+    }
+
     /// Walk up from `node_id` to find the nearest block-level ancestor
     /// and its parent. Stops at `ce_root_id` (the contenteditable element).
     /// Returns `(block_element_id, parent_of_block_id)`.
@@ -1256,29 +1527,50 @@ impl RinchApp {
         let mut current = node_id;
         loop {
             let parent = tree.get(current)?.parent?;
+            let is_block = tree
+                .get(current)?
+                .tag()
+                .map(Self::is_block_element)
+                .unwrap_or(false);
+            // Skip anonymous block boxes — they're layout-internal wrappers
+            // that editing operations should see through transparently.
+            let is_anon = tree.get(current).map(|n| n.is_anonymous_block_box).unwrap_or(false);
+
             if parent == ce_root_id {
-                // Only return if current is actually a block element.
-                // Text nodes and <br> directly under the CE root are inline,
-                // so return None to indicate an inline-only CE.
-                if tree.get(current)?
-                    .tag()
-                    .map(Self::is_block_element)
-                    .unwrap_or(false)
-                {
+                if is_block && !is_anon {
                     return Some((current, parent));
                 }
                 return None;
             }
-            if tree
-                .get(current)?
-                .tag()
-                .map(Self::is_block_element)
-                .unwrap_or(false)
-            {
+            if is_block && !is_anon {
                 return Some((current, parent));
             }
             current = parent;
         }
+    }
+
+    /// Walk up from a block to find a containing `<li>` whose parent is a list.
+    /// This handles the case where `find_block_and_parent` returns a wrapper `<div>`
+    /// (created by Tab indent) inside an `<li>` — we want to outdent the `<li>`, not
+    /// merge the `<div>` with the previous block.
+    fn find_li_ancestor_for_outdent(
+        tree: &rinch_dom::NodeTree,
+        block_id: usize,
+        ce_root: usize,
+    ) -> Option<(usize, usize)> {
+        let mut current = tree.get(block_id)?.parent?;
+        while current != ce_root {
+            let tag = tree.get(current)?.tag().unwrap_or("");
+            if tag == "li" {
+                let parent = tree.get(current)?.parent?;
+                let parent_tag = tree.get(parent)?.tag().unwrap_or("");
+                if Self::is_list_tag(parent_tag) {
+                    return Some((current, parent)); // (li_id, list_id)
+                }
+            }
+            current = tree.get(current)?.parent?;
+        }
+        None
     }
 
     /// Find the start of the word containing the given byte position.
@@ -1461,106 +1753,78 @@ impl RinchApp {
             }
         }
 
-        // Case 2: CE has block children — find which block was clicked
-        if let Some(node) = tree.get(ce_node_id) {
-            let (abs_x, abs_y) = Self::compute_absolute_position(tree, ce_node_id);
+        // Case 2: Recursive search through block children (handles any nesting depth)
+        if let Some(cursor) = Self::find_cursor_in_block(tree, ce_node_id, click_x, click_y) {
+            return cursor;
+        }
 
-            for &child_id in &node.children {
-                if let Some(child) = tree.get(child_id) {
-                    let child_abs_y = abs_y + child.layout.y - node.scroll_offset.1 as f32;
-                    let child_bottom = child_abs_y + child.layout.height;
-
-                    if click_y >= child_abs_y && click_y < child_bottom {
-                        // Click is in this block — check its IFC
-                        if let Some(ref inline_layout) = child.text_layout {
-                            let rel_x = click_x - abs_x - child.layout.x;
-                            let rel_y = click_y - child_abs_y;
-                            let child_pad_left = child.computed_style.padding_left.to_px();
-                            let child_pad_top = child.computed_style.padding_top.to_px();
-                            let ifc_offset = rinch_dom::text_query::byte_offset_from_position(
-                                &inline_layout.layout,
-                                rel_x - child_pad_left,
-                                rel_y - child_pad_top,
-                            );
-                            if let Some((nid, off)) = rinch_dom::text_query::ifc_offset_to_dom_cursor(
-                                &inline_layout.text_ranges, ifc_offset, true,
-                            ) {
-                                return DomCursor { node_id: nid, offset: off };
-                            }
-                        } else {
-                            // Fallback: block child with no IFC — check text children's cached_text_parley
-                            for &text_child_id in &child.children {
-                                if let Some(text_child) = tree.get(text_child_id)
-                                    && let Some(ref cached_layout) = text_child.cached_text_parley
-                                {
-                                    let (tc_abs_x, tc_abs_y) = Self::compute_absolute_position(tree, text_child_id);
-                                    let rx = click_x - tc_abs_x;
-                                    let ry = click_y - tc_abs_y;
-                                    let byte_off = byte_offset_from_position(cached_layout, rx, ry);
-                                    return DomCursor { node_id: text_child_id, offset: byte_off };
-                                }
-                            }
-                        }
-
-                        // Recurse into sub-blocks (ul > li, etc.)
-                        let child_abs_x = abs_x + child.layout.x;
-                        for &sub_id in &child.children {
-                            if let Some(sub_node) = tree.get(sub_id) {
-                                let sub_abs_y = child_abs_y + sub_node.layout.y;
-                                let sub_bottom = sub_abs_y + sub_node.layout.height;
-                                if click_y >= sub_abs_y && click_y < sub_bottom {
-                                    // Check IFC on the sub-block
-                                    if let Some(ref il) = sub_node.text_layout {
-                                        let rx = click_x - child_abs_x - sub_node.layout.x;
-                                        let ry = click_y - sub_abs_y;
-                                        let sp_l = sub_node.computed_style.padding_left.to_px();
-                                        let sp_t = sub_node.computed_style.padding_top.to_px();
-                                        let ifc_off = rinch_dom::text_query::byte_offset_from_position(
-                                            &il.layout, rx - sp_l, ry - sp_t,
-                                        );
-                                        if let Some((nid, off)) = rinch_dom::text_query::ifc_offset_to_dom_cursor(
-                                            &il.text_ranges, ifc_off, false,
-                                        ) {
-                                            return DomCursor { node_id: nid, offset: off };
-                                        }
-                                    }
-                                    // Check cached_text_parley on text children (li > text)
-                                    for &text_child_id in &sub_node.children {
-                                        if let Some(text_child) = tree.get(text_child_id)
-                                            && let Some(ref cached_layout) = text_child.cached_text_parley
-                                        {
-                                            let (tc_abs_x, tc_abs_y) = Self::compute_absolute_position(tree, text_child_id);
-                                            let rx = click_x - tc_abs_x;
-                                            let ry = click_y - tc_abs_y;
-                                            let byte_off = byte_offset_from_position(cached_layout, rx, ry);
-                                            return DomCursor { node_id: text_child_id, offset: byte_off };
-                                        }
-                                    }
-                                    // Sub-block fallback
-                                    if let Some(cursor) = Self::first_text_cursor(tree, sub_id) {
-                                        return cursor;
-                                    }
-                                }
-                            }
-                        }
-
-                        // No IFC found in this block — position at first text node
-                        if let Some(cursor) = Self::first_text_cursor(tree, child_id) {
-                            return cursor;
-                        }
-                    }
-                }
-            }
-
-            // Click was below all blocks — position at end of last text node
-            if let Some(cursor) = Self::last_text_cursor(tree, ce_node_id) {
-                return cursor;
-            }
+        // Click was below all blocks — position at end of last text node
+        if let Some(cursor) = Self::last_text_cursor(tree, ce_node_id) {
+            return cursor;
         }
 
         // Fallback: first text node
         Self::first_text_cursor(tree, ce_node_id)
             .unwrap_or(DomCursor { node_id: ce_node_id, offset: 0 })
+    }
+
+    /// Recursively find the cursor position in a block element at the given click coordinates.
+    /// Handles arbitrary nesting depth (nested lists, divs inside lis, etc.).
+    fn find_cursor_in_block(
+        tree: &rinch_dom::NodeTree,
+        node_id: usize,
+        click_x: f32,
+        click_y: f32,
+    ) -> Option<DomCursor> {
+        let node = tree.get(node_id)?;
+
+        // Check if this node has an IFC (inline formatting context)
+        if let Some(ref inline_layout) = node.text_layout {
+            let (abs_x, abs_y) = Self::compute_absolute_position(tree, node_id);
+            let pad_left = node.computed_style.padding_left.to_px();
+            let pad_top = node.computed_style.padding_top.to_px();
+            let rel_x = click_x - abs_x - pad_left + node.scroll_offset.0 as f32;
+            let rel_y = click_y - abs_y - pad_top + node.scroll_offset.1 as f32;
+            let ifc_offset = rinch_dom::text_query::byte_offset_from_position(
+                &inline_layout.layout, rel_x, rel_y,
+            );
+            if let Some((nid, off)) = rinch_dom::text_query::ifc_offset_to_dom_cursor(
+                &inline_layout.text_ranges, ifc_offset, true,
+            ) {
+                return Some(DomCursor { node_id: nid, offset: off });
+            }
+        }
+
+        // Check direct text children with cached_text_parley
+        for &child_id in &node.children {
+            if let Some(child) = tree.get(child_id)
+                && let Some(ref cached_layout) = child.cached_text_parley
+            {
+                let (tc_abs_x, tc_abs_y) = Self::compute_absolute_position(tree, child_id);
+                let rx = click_x - tc_abs_x;
+                let ry = click_y - tc_abs_y;
+                let byte_off = byte_offset_from_position(cached_layout, rx, ry);
+                return Some(DomCursor { node_id: child_id, offset: byte_off });
+            }
+        }
+
+        // Recurse into children by y-range
+        let (_, node_abs_y) = Self::compute_absolute_position(tree, node_id);
+        let scroll_y = node.scroll_offset.1 as f32;
+        for &child_id in &node.children {
+            if let Some(child) = tree.get(child_id) {
+                let child_abs_y = node_abs_y + child.layout.y - scroll_y;
+                let child_bottom = child_abs_y + child.layout.height;
+                if click_y >= child_abs_y && click_y < child_bottom {
+                    if let Some(cursor) = Self::find_cursor_in_block(tree, child_id, click_x, click_y) {
+                        return Some(cursor);
+                    }
+                }
+            }
+        }
+
+        // Fallback: first text node in this subtree
+        Self::first_text_cursor(tree, node_id)
     }
 
     /// Find the first text node (depth-first) under `root` and return cursor at offset 0.
@@ -1702,7 +1966,45 @@ impl RinchApp {
                 }
                 node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
             }
+
+            // Mark scroll-into-view as pending; applied after layout resolve
+            // when text_layout is valid.
+            if focused {
+                self.ce_scroll_pending.set(true);
+            }
+
             d.tree.dirty_nodes.insert(ce_node_id);
+        }
+    }
+
+    /// Apply deferred scroll-into-view for the focused contenteditable.
+    ///
+    /// Must be called AFTER `resolve_layout` so that text_layout is valid.
+    fn apply_ce_scroll_into_view(&mut self) {
+        if !self.ce_scroll_pending.get() {
+            return;
+        }
+        self.ce_scroll_pending.set(false);
+
+        let Some(ref ce) = self.focused_contenteditable else { return };
+        let cursor = ce.cursor;
+        let ce_node_id = ce.ce_node_id;
+
+        if let Some(doc) = &self.doc {
+            let cursor_off = {
+                let d = doc.borrow();
+                Self::dom_cursor_to_global_offset(&d.tree, ce_node_id, cursor)
+            };
+            let mut d = doc.borrow_mut();
+            if let Some(new_scroll) =
+                compute_ce_scroll_target(&d.tree, ce_node_id, cursor, cursor_off)
+            {
+                if let Some(node) = d.tree.nodes.get_mut(ce_node_id) {
+                    node.scroll_offset.1 = new_scroll;
+                    node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+                }
+                d.tree.dirty_nodes.insert(ce_node_id);
+            }
         }
     }
 
@@ -1833,6 +2135,8 @@ impl RinchApp {
             | EditCommand::DeleteForward
             | EditCommand::InsertNewline
             | EditCommand::Cut
+            | EditCommand::Indent
+            | EditCommand::Outdent
         );
         let mut pre_edit_ids: Vec<usize> = Vec::new();
         if is_mutating {
@@ -2021,27 +2325,54 @@ impl RinchApp {
                         text_changed = true;
                     } else if Self::is_element_cursor(&doc.borrow().tree, &cur) {
                         // ── Cursor at empty block element ──
-                        // Remove the empty block and move cursor to end of previous block.
                         let d_ref = doc.borrow();
                         let cur_block = Self::find_block_and_parent(&d_ref.tree, cur.node_id, ce_node_id);
                         if let Some((cur_block_id, block_parent_id)) = cur_block {
-                            // Find previous sibling block
-                            let siblings = &d_ref.tree.nodes[block_parent_id].children;
-                            let pos = siblings.iter().position(|&c| c == cur_block_id);
-                            let prev_block_id = pos.and_then(|p| if p > 0 { Some(siblings[p - 1]) } else { None });
-                            let prev_cursor = prev_block_id
-                                .and_then(|pb| Self::last_text_cursor(&d_ref.tree, pb));
-                            drop(d_ref);
-                            let mut d = doc.borrow_mut();
-                            d.remove_node(rinch_core::dom::NodeId(cur_block_id));
-                            if let Some(pc) = prev_cursor {
-                                ce.cursor = pc;
-                            } else if let Some(pb) = prev_block_id {
-                                // Previous block is also empty
-                                ce.cursor = DomCursor { node_id: pb, offset: 0 };
+                            let cur_tag = d_ref.tree.get(cur_block_id).and_then(|n| n.tag()).unwrap_or("").to_string();
+
+                            // ── Backspace on empty <li>: outdent (any position) ──
+                            if cur_tag == "li" && Self::is_list_tag(d_ref.tree.get(block_parent_id).and_then(|n| n.tag()).unwrap_or("")) {
+                                let list_id = block_parent_id;
+                                drop(d_ref);
+                                let mut d = doc.borrow_mut();
+                                let new_el = Self::outdent_li(&mut d, cur_block_id, list_id, ce_node_id);
+                                ce.cursor = DomCursor { node_id: new_el.0, offset: 0 };
+                                ce.anchor = ce.cursor;
+                                text_changed = true;
+                            } else if let Some((li_id, list_id)) = Self::find_li_ancestor_for_outdent(&d_ref.tree, cur_block_id, ce_node_id) {
+                                // Cursor is in a wrapper element inside an <li> — outdent the <li>
+                                drop(d_ref);
+                                let mut d = doc.borrow_mut();
+                                let new_el = Self::outdent_li(&mut d, li_id, list_id, ce_node_id);
+                                ce.cursor = DomCursor { node_id: new_el.0, offset: 0 };
+                                ce.anchor = ce.cursor;
+                                text_changed = true;
+                            } else if Self::is_heading(&cur_tag) || cur_tag == "blockquote" {
+                                // ── Backspace on empty heading/blockquote: convert to <div> ──
+                                drop(d_ref);
+                                let mut d = doc.borrow_mut();
+                                let new_el = Self::convert_block_tag(&mut d, cur_block_id, "div");
+                                ce.cursor = DomCursor { node_id: new_el.0, offset: 0 };
+                                ce.anchor = ce.cursor;
+                                text_changed = true;
+                            } else {
+                                // Default: remove the empty block, cursor to end of previous block
+                                let siblings = &d_ref.tree.nodes[block_parent_id].children;
+                                let pos = siblings.iter().position(|&c| c == cur_block_id);
+                                let prev_block_id = pos.and_then(|p| if p > 0 { Some(siblings[p - 1]) } else { None });
+                                let prev_cursor = prev_block_id
+                                    .and_then(|pb| Self::last_text_cursor(&d_ref.tree, pb));
+                                drop(d_ref);
+                                let mut d = doc.borrow_mut();
+                                d.remove_node(rinch_core::dom::NodeId(cur_block_id));
+                                if let Some(pc) = prev_cursor {
+                                    ce.cursor = pc;
+                                } else if let Some(pb) = prev_block_id {
+                                    ce.cursor = DomCursor { node_id: pb, offset: 0 };
+                                }
+                                ce.anchor = ce.cursor;
+                                text_changed = true;
                             }
-                            ce.anchor = ce.cursor;
-                            text_changed = true;
                         } else if cur.node_id == ce_node_id {
                             // Cursor is on the CE root element itself — recover by
                             // finding the last cursor target in the CE.
@@ -2114,95 +2445,213 @@ impl RinchApp {
                             let cross_block = cur_block.is_some()
                                 && cur_block.map(|(b, _)| b) != prev_block.map(|(b, _)| b);
 
-                            drop(d);
-                            let mut d = doc.borrow_mut();
+                            // ── Special backspace behaviors before cross-block merge ──
+                            if let Some((cur_block_id, cur_block_parent)) = cur_block {
+                                let cur_tag = d.tree.get(cur_block_id).and_then(|n| n.tag()).unwrap_or("").to_string();
+                                let parent_tag = d.tree.get(cur_block_parent).and_then(|n| n.tag()).unwrap_or("").to_string();
 
-                            if cross_block {
-                                // Cross-block backspace: merge current block into prev block
-                                let (cur_block_id, _) = cur_block.unwrap();
-                                let (prev_block_id, _) = prev_block.unwrap();
+                                // Backspace at start of <li>: always outdent (any position)
+                                if cur_tag == "li" && Self::is_list_tag(&parent_tag) {
+                                    let list_id = cur_block_parent;
+                                    drop(d);
+                                    let mut d = doc.borrow_mut();
+                                    let new_el = Self::outdent_li(&mut d, cur_block_id, list_id, ce_node_id);
+                                    if let Some(fc) = Self::first_text_cursor(&d.tree, new_el.0) {
+                                        ce.cursor = fc;
+                                    } else {
+                                        ce.cursor = DomCursor { node_id: new_el.0, offset: 0 };
+                                    }
+                                    ce.anchor = ce.cursor;
+                                    text_changed = true;
+                                } else if let Some((li_id, list_id)) = Self::find_li_ancestor_for_outdent(&d.tree, cur_block_id, ce_node_id) {
+                                    // Cursor is in a wrapper element inside an <li> — outdent the <li>
+                                    drop(d);
+                                    let mut d = doc.borrow_mut();
+                                    let new_el = Self::outdent_li(&mut d, li_id, list_id, ce_node_id);
+                                    if let Some(fc) = Self::first_text_cursor(&d.tree, new_el.0) {
+                                        ce.cursor = fc;
+                                    } else {
+                                        ce.cursor = DomCursor { node_id: new_el.0, offset: 0 };
+                                    }
+                                    ce.anchor = ce.cursor;
+                                    text_changed = true;
+                                } else if Self::is_heading(&cur_tag) || cur_tag == "blockquote" {
+                                    // Backspace at start of heading/blockquote: convert to <div>
+                                    drop(d);
+                                    let mut d = doc.borrow_mut();
+                                    let new_el = Self::convert_block_tag(&mut d, cur_block_id, "div");
+                                    if let Some(fc) = Self::first_text_cursor(&d.tree, new_el.0) {
+                                        ce.cursor = fc;
+                                    } else {
+                                        ce.cursor = DomCursor { node_id: new_el.0, offset: 0 };
+                                    }
+                                    ce.anchor = ce.cursor;
+                                    text_changed = true;
+                                } else {
+                                    // Normal cross-block merge or same-block merge
+                                    drop(d);
+                                    let mut d = doc.borrow_mut();
 
-                                // Find merge point: end of last text in prev block
-                                let merge_cursor = Self::last_text_cursor(&d.tree, prev_block_id)
-                                    .unwrap_or(DomCursor { node_id: prev, offset: 0 });
+                                    if cross_block {
+                                        let (prev_block_id, _) = prev_block.unwrap();
 
-                                // Collect current block's children
-                                let cur_children: Vec<usize> = d.tree.nodes[cur_block_id].children.clone();
+                                        // Find merge point: end of last text in prev block
+                                        let merge_cursor = Self::last_text_cursor(&d.tree, prev_block_id)
+                                            .unwrap_or(DomCursor { node_id: prev, offset: 0 });
 
-                                // Merge first text child with prev block's last text, move rest.
-                                let mut first = true;
-                                for &child_id in &cur_children {
-                                    if first {
-                                        first = false;
-                                        let child_is_text = d.tree.get(child_id)
-                                            .and_then(|n| n.text_content())
-                                            .is_some();
-                                        let merge_is_text = d.tree.get(merge_cursor.node_id)
-                                            .and_then(|n| n.text_content())
-                                            .is_some();
-                                        if child_is_text && merge_is_text {
-                                            let child_text = d.tree.get(child_id)
-                                                .and_then(|n| n.text_content())
-                                                .map(|s| s.to_string())
-                                                .unwrap_or_default();
-                                            let merge_text = d.tree.get(merge_cursor.node_id)
-                                                .and_then(|n| n.text_content())
-                                                .map(|s| s.to_string())
-                                                .unwrap_or_default();
-                                            let merged = format!("{}{}", merge_text, child_text);
-                                            d.set_text_content(
-                                                rinch_core::dom::NodeId(merge_cursor.node_id),
-                                                &merged,
-                                            );
+                                        // Collect current block's children
+                                        let cur_children: Vec<usize> = d.tree.nodes[cur_block_id].children.clone();
+
+                                        // Merge first text child with prev block's last text, move rest.
+                                        let mut first = true;
+                                        for &child_id in &cur_children {
+                                            if first {
+                                                first = false;
+                                                let child_is_text = d.tree.get(child_id)
+                                                    .and_then(|n| n.text_content())
+                                                    .is_some();
+                                                let merge_is_text = d.tree.get(merge_cursor.node_id)
+                                                    .and_then(|n| n.text_content())
+                                                    .is_some();
+                                                if child_is_text && merge_is_text {
+                                                    let child_text = d.tree.get(child_id)
+                                                        .and_then(|n| n.text_content())
+                                                        .map(|s| s.to_string())
+                                                        .unwrap_or_default();
+                                                    let merge_text = d.tree.get(merge_cursor.node_id)
+                                                        .and_then(|n| n.text_content())
+                                                        .map(|s| s.to_string())
+                                                        .unwrap_or_default();
+                                                    let merged = format!("{}{}", merge_text, child_text);
+                                                    d.set_text_content(
+                                                        rinch_core::dom::NodeId(merge_cursor.node_id),
+                                                        &merged,
+                                                    );
+                                                    d.remove_node(rinch_core::dom::NodeId(child_id));
+                                                    continue;
+                                                }
+                                            }
+                                            // Move remaining children to prev block
                                             d.remove_node(rinch_core::dom::NodeId(child_id));
-                                            continue;
+                                            d.append_child(
+                                                rinch_core::dom::NodeId(prev_block_id),
+                                                rinch_core::dom::NodeId(child_id),
+                                            );
+                                        }
+
+                                        // Remove the now-empty current block
+                                        d.remove_node(rinch_core::dom::NodeId(cur_block_id));
+
+                                        ce.cursor = merge_cursor;
+                                        ce.anchor = ce.cursor;
+                                    } else {
+                                        // Check if prev is a <br> — just remove it
+                                        let prev_is_br = d.tree.get(prev)
+                                            .and_then(|n| n.tag())
+                                            .map(|t| t == "br")
+                                            .unwrap_or(false);
+
+                                        if prev_is_br {
+                                            d.remove_node(rinch_core::dom::NodeId(prev));
+                                            ce.cursor = cur;
+                                            ce.anchor = ce.cursor;
+                                        } else {
+                                            // Same block or inline — merge text nodes
+                                            let prev_text = d.tree.get(prev)
+                                                .and_then(|n| n.text_content())
+                                                .map(|s| s.to_string())
+                                                .unwrap_or_default();
+                                            let prev_len = prev_text.len();
+                                            let cur_text = d.tree.get(cur.node_id)
+                                                .and_then(|n| n.text_content())
+                                                .map(|s| s.to_string())
+                                                .unwrap_or_default();
+                                            let merged = format!("{}{}", prev_text, cur_text);
+                                            d.set_text_content(rinch_core::dom::NodeId(prev), &merged);
+                                            d.remove_node(rinch_core::dom::NodeId(cur.node_id));
+                                            ce.cursor = DomCursor { node_id: prev, offset: prev_len };
+                                            ce.anchor = ce.cursor;
                                         }
                                     }
-                                    // Move remaining children to prev block
-                                    d.remove_node(rinch_core::dom::NodeId(child_id));
-                                    d.append_child(
-                                        rinch_core::dom::NodeId(prev_block_id),
-                                        rinch_core::dom::NodeId(child_id),
-                                    );
+                                    text_changed = true;
                                 }
-
-                                // Remove the now-empty current block
-                                d.remove_node(rinch_core::dom::NodeId(cur_block_id));
-
-                                ce.cursor = merge_cursor;
-                                ce.anchor = ce.cursor;
-                            } else {
-                                // Check if prev is a <br> — just remove it
+                            } // close if let Some((cur_block_id, ...))
+                            else {
+                                // No block found — inline merge
+                                drop(d);
+                                let mut d = doc.borrow_mut();
                                 let prev_is_br = d.tree.get(prev)
                                     .and_then(|n| n.tag())
                                     .map(|t| t == "br")
                                     .unwrap_or(false);
-
                                 if prev_is_br {
-                                    // Remove the <br> — text nodes stay separate but flow inline
                                     d.remove_node(rinch_core::dom::NodeId(prev));
-                                    // Cursor stays at start of current text node
                                     ce.cursor = cur;
                                     ce.anchor = ce.cursor;
                                 } else {
-                                    // Same block or inline — merge text nodes
                                     let prev_text = d.tree.get(prev)
                                         .and_then(|n| n.text_content())
                                         .map(|s| s.to_string())
                                         .unwrap_or_default();
                                     let prev_len = prev_text.len();
-                                    let cur_text = d.tree.get(cur.node_id)
+                                    let cur_text_str = d.tree.get(cur.node_id)
                                         .and_then(|n| n.text_content())
                                         .map(|s| s.to_string())
                                         .unwrap_or_default();
-                                    let merged = format!("{}{}", prev_text, cur_text);
+                                    let merged = format!("{}{}", prev_text, cur_text_str);
                                     d.set_text_content(rinch_core::dom::NodeId(prev), &merged);
                                     d.remove_node(rinch_core::dom::NodeId(cur.node_id));
                                     ce.cursor = DomCursor { node_id: prev, offset: prev_len };
                                     ce.anchor = ce.cursor;
                                 }
+                                text_changed = true;
                             }
-                            text_changed = true;
+                        } else {
+                            // No previous text node — cursor is at very start of CE.
+                            // Still handle heading/li/blockquote conversion.
+                            let cur_block = Self::find_block_and_parent(&d.tree, cur.node_id, ce_node_id);
+                            if let Some((cur_block_id, cur_block_parent)) = cur_block {
+                                let cur_tag = d.tree.get(cur_block_id).and_then(|n| n.tag()).unwrap_or("").to_string();
+                                let parent_tag = d.tree.get(cur_block_parent).and_then(|n| n.tag()).unwrap_or("").to_string();
+
+                                if cur_tag == "li" && Self::is_list_tag(&parent_tag) {
+                                    // Outdent li (any position)
+                                    let list_id = cur_block_parent;
+                                    drop(d);
+                                    let mut d = doc.borrow_mut();
+                                    let new_el = Self::outdent_li(&mut d, cur_block_id, list_id, ce_node_id);
+                                    if let Some(fc) = Self::first_text_cursor(&d.tree, new_el.0) {
+                                        ce.cursor = fc;
+                                    } else {
+                                        ce.cursor = DomCursor { node_id: new_el.0, offset: 0 };
+                                    }
+                                    ce.anchor = ce.cursor;
+                                    text_changed = true;
+                                } else if let Some((li_id, list_id)) = Self::find_li_ancestor_for_outdent(&d.tree, cur_block_id, ce_node_id) {
+                                    // Cursor is in a wrapper element inside an <li> — outdent the <li>
+                                    drop(d);
+                                    let mut d = doc.borrow_mut();
+                                    let new_el = Self::outdent_li(&mut d, li_id, list_id, ce_node_id);
+                                    if let Some(fc) = Self::first_text_cursor(&d.tree, new_el.0) {
+                                        ce.cursor = fc;
+                                    } else {
+                                        ce.cursor = DomCursor { node_id: new_el.0, offset: 0 };
+                                    }
+                                    ce.anchor = ce.cursor;
+                                    text_changed = true;
+                                } else if Self::is_heading(&cur_tag) || cur_tag == "blockquote" {
+                                    drop(d);
+                                    let mut d = doc.borrow_mut();
+                                    let new_el = Self::convert_block_tag(&mut d, cur_block_id, "div");
+                                    if let Some(fc) = Self::first_text_cursor(&d.tree, new_el.0) {
+                                        ce.cursor = fc;
+                                    } else {
+                                        ce.cursor = DomCursor { node_id: new_el.0, offset: 0 };
+                                    }
+                                    ce.anchor = ce.cursor;
+                                    text_changed = true;
+                                }
+                            }
                         }
                     }
                 }
@@ -2399,86 +2848,236 @@ impl RinchApp {
                     let block_info = Self::find_block_and_parent(&d.tree, cur.node_id, ce_node_id);
 
                     if let Some((block_id, block_parent_id)) = block_info {
-                        // Inside a block element — create a new block after it
-                        let new_tag = match d.tree.get(block_id).and_then(|n| n.tag()) {
-                            Some("li") => "li",
-                            _ => "p",
+                        let block_tag = d.tree.get(block_id).and_then(|n| n.tag()).unwrap_or("div").to_string();
+
+                        // If cursor is in a wrapper element inside an <li>,
+                        // redirect to the <li> for Enter behavior (create new <li>, not <div>).
+                        let (block_id, block_parent_id, block_tag) = if block_tag != "li" {
+                            if let Some((li_id, list_id)) = Self::find_li_ancestor_for_outdent(&d.tree, block_id, ce_node_id) {
+                                (li_id, list_id, "li".to_string())
+                            } else {
+                                (block_id, block_parent_id, block_tag)
+                            }
+                        } else {
+                            (block_id, block_parent_id, block_tag)
                         };
 
-                        // Split: move content after cursor to new block.
-                        // If cursor is at an element (empty block), treat as
-                        // "press Enter in empty block" — text is empty.
-                        let cur_text = if Self::is_element_cursor(&d.tree, &cur) {
-                            String::new()
-                        } else {
-                            d.tree.get(cur.node_id)
-                                .and_then(|n| n.text_content())
-                                .map(|s| s.to_string())
-                                .unwrap_or_default()
-                        };
-                        let off = cur.offset.min(cur_text.len());
-                        let after = &cur_text[off..];
+                        // ── Enter in empty <li>: exit the list ──
+                        if block_tag == "li" {
+                            let is_empty_li = if Self::is_element_cursor(&d.tree, &cur) {
+                                true
+                            } else {
+                                let text = d.tree.get(cur.node_id)
+                                    .and_then(|n| n.text_content())
+                                    .unwrap_or("");
+                                text.is_empty() && d.tree.nodes[block_id].children.len() <= 1
+                            };
 
-                        let new_block_id = d.create_element(new_tag);
-                        if after.is_empty() {
-                            // Empty new block — set min-height from sibling's
-                            // computed line-height so it occupies one line visually.
-                            // No placeholder content (<br> or text) is inserted.
-                            let line_h = Self::line_height_px(&d.tree, block_id);
-                            d.set_style(new_block_id, "min-height", &format!("{:.1}px", line_h));
-                        } else {
-                            let new_text_id = d.create_text(after);
-                            d.append_child(new_block_id, new_text_id);
-                            // Truncate current text node
-                            if off == 0 {
-                                // Cursor was at start — current text becomes empty.
-                                // Remove the empty text node; if block is now childless,
-                                // give it min-height so it occupies one line.
-                                d.remove_node(rinch_core::dom::NodeId(cur.node_id));
-                                if d.tree.nodes[block_id].children.is_empty() {
+                            if is_empty_li && Self::is_list_tag(&d.tree.get(block_parent_id).and_then(|n| n.tag()).unwrap_or("")) {
+                                let list_id = block_parent_id;
+                                let list_tag = d.tree.get(list_id).and_then(|n| n.tag()).unwrap_or("ul").to_string();
+                                let grandparent_id = d.tree.get(list_id).and_then(|n| n.parent).unwrap_or(ce_node_id);
+
+                                // Collect siblings after the empty <li>
+                                let siblings = d.tree.nodes[list_id].children.clone();
+                                let li_pos = siblings.iter().position(|&c| c == block_id).unwrap_or(0);
+                                let after_siblings: Vec<usize> = siblings[li_pos + 1..].to_vec();
+
+                                // Create a new <div> to replace the exited <li>
+                                let new_div = d.create_element("div");
+                                let line_h = Self::line_height_px(&d.tree, block_id);
+                                d.set_style(new_div, "min-height", &format!("{:.1}px", line_h));
+
+                                // Remove the empty <li>
+                                d.remove_node(rinch_core::dom::NodeId(block_id));
+
+                                // Insert <div> after the list in grandparent
+                                let list_next_sib = {
+                                    let gp_children = &d.tree.nodes[grandparent_id].children;
+                                    let lpos = gp_children.iter().position(|&c| c == list_id);
+                                    lpos.and_then(|p| gp_children.get(p + 1).copied())
+                                };
+                                if let Some(next) = list_next_sib {
+                                    d.insert_before(
+                                        rinch_core::dom::NodeId(grandparent_id),
+                                        new_div,
+                                        rinch_core::dom::NodeId(next),
+                                    );
+                                } else {
+                                    d.append_child(rinch_core::dom::NodeId(grandparent_id), new_div);
+                                }
+
+                                // If there are siblings after, move them to a new list after <div>
+                                if !after_siblings.is_empty() {
+                                    let new_list = d.create_element(&list_tag);
+                                    for &sib_id in &after_siblings {
+                                        d.remove_node(rinch_core::dom::NodeId(sib_id));
+                                        d.append_child(new_list, rinch_core::dom::NodeId(sib_id));
+                                    }
+                                    // Insert new list after <div>
+                                    let div_next = {
+                                        let gp_children = &d.tree.nodes[grandparent_id].children;
+                                        let dpos = gp_children.iter().position(|&c| c == new_div.0);
+                                        dpos.and_then(|p| gp_children.get(p + 1).copied())
+                                    };
+                                    if let Some(next) = div_next {
+                                        d.insert_before(
+                                            rinch_core::dom::NodeId(grandparent_id),
+                                            new_list,
+                                            rinch_core::dom::NodeId(next),
+                                        );
+                                    } else {
+                                        d.append_child(rinch_core::dom::NodeId(grandparent_id), new_list);
+                                    }
+                                }
+
+                                // If original list is now empty, remove it
+                                if d.tree.nodes[list_id].children.is_empty() {
+                                    d.remove_node(rinch_core::dom::NodeId(list_id));
+                                }
+
+                                // Cursor → start of new <div>
+                                ce.cursor = DomCursor { node_id: new_div.0, offset: 0 };
+                                ce.anchor = ce.cursor;
+                                text_changed = true;
+                            } else {
+                                // Non-empty li or not inside a list — split into new li
+                                let new_tag = "li";
+
+                                let cur_text = if Self::is_element_cursor(&d.tree, &cur) {
+                                    String::new()
+                                } else {
+                                    d.tree.get(cur.node_id)
+                                        .and_then(|n| n.text_content())
+                                        .map(|s| s.to_string())
+                                        .unwrap_or_default()
+                                };
+                                let off = cur.offset.min(cur_text.len());
+                                let after = &cur_text[off..];
+
+                                let new_block_id = d.create_element(new_tag);
+                                if after.is_empty() {
                                     let line_h = Self::line_height_px(&d.tree, block_id);
-                                    d.set_style(
-                                        rinch_core::dom::NodeId(block_id),
-                                        "min-height",
-                                        &format!("{:.1}px", line_h),
+                                    d.set_style(new_block_id, "min-height", &format!("{:.1}px", line_h));
+                                } else {
+                                    let new_text_id = d.create_text(after);
+                                    d.append_child(new_block_id, new_text_id);
+                                    if off == 0 {
+                                        d.remove_node(rinch_core::dom::NodeId(cur.node_id));
+                                        if d.tree.nodes[block_id].children.is_empty() {
+                                            let line_h = Self::line_height_px(&d.tree, block_id);
+                                            d.set_style(
+                                                rinch_core::dom::NodeId(block_id),
+                                                "min-height",
+                                                &format!("{:.1}px", line_h),
+                                            );
+                                        }
+                                    } else {
+                                        d.set_text_content(
+                                            rinch_core::dom::NodeId(cur.node_id),
+                                            &cur_text[..off],
+                                        );
+                                    }
+                                }
+
+                                let next_sib = d.tree.nodes[block_parent_id]
+                                    .children
+                                    .iter()
+                                    .position(|&c| c == block_id)
+                                    .and_then(|pos| {
+                                        d.tree.nodes[block_parent_id].children.get(pos + 1).copied()
+                                    });
+                                if let Some(next) = next_sib {
+                                    d.insert_before(
+                                        rinch_core::dom::NodeId(block_parent_id),
+                                        new_block_id,
+                                        rinch_core::dom::NodeId(next),
+                                    );
+                                } else {
+                                    d.append_child(
+                                        rinch_core::dom::NodeId(block_parent_id),
+                                        new_block_id,
                                     );
                                 }
+
+                                if let Some(first) = Self::first_text_cursor(&d.tree, new_block_id.0) {
+                                    ce.cursor = first;
+                                } else {
+                                    ce.cursor = DomCursor { node_id: new_block_id.0, offset: 0 };
+                                }
+                                ce.anchor = ce.cursor;
+                                text_changed = true;
+                            }
+                        } else {
+                            // Non-li block: heading → div, else preserve tag
+                            let new_tag = if Self::is_heading(&block_tag) { "div" } else { &block_tag };
+
+                            let cur_text = if Self::is_element_cursor(&d.tree, &cur) {
+                                String::new()
                             } else {
-                                d.set_text_content(
-                                    rinch_core::dom::NodeId(cur.node_id),
-                                    &cur_text[..off],
+                                d.tree.get(cur.node_id)
+                                    .and_then(|n| n.text_content())
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_default()
+                            };
+                            let off = cur.offset.min(cur_text.len());
+                            let after = &cur_text[off..];
+
+                            let new_block_id = d.create_element(new_tag);
+                            if after.is_empty() {
+                                let line_h = Self::line_height_px(&d.tree, block_id);
+                                d.set_style(new_block_id, "min-height", &format!("{:.1}px", line_h));
+                            } else {
+                                let new_text_id = d.create_text(after);
+                                d.append_child(new_block_id, new_text_id);
+                                if off == 0 {
+                                    d.remove_node(rinch_core::dom::NodeId(cur.node_id));
+                                    if d.tree.nodes[block_id].children.is_empty() {
+                                        let line_h = Self::line_height_px(&d.tree, block_id);
+                                        d.set_style(
+                                            rinch_core::dom::NodeId(block_id),
+                                            "min-height",
+                                            &format!("{:.1}px", line_h),
+                                        );
+                                    }
+                                } else {
+                                    d.set_text_content(
+                                        rinch_core::dom::NodeId(cur.node_id),
+                                        &cur_text[..off],
+                                    );
+                                }
+                            }
+
+                            // Insert new block after current block
+                            let next_sib = d.tree.nodes[block_parent_id]
+                                .children
+                                .iter()
+                                .position(|&c| c == block_id)
+                                .and_then(|pos| {
+                                    d.tree.nodes[block_parent_id].children.get(pos + 1).copied()
+                                });
+                            if let Some(next) = next_sib {
+                                d.insert_before(
+                                    rinch_core::dom::NodeId(block_parent_id),
+                                    new_block_id,
+                                    rinch_core::dom::NodeId(next),
+                                );
+                            } else {
+                                d.append_child(
+                                    rinch_core::dom::NodeId(block_parent_id),
+                                    new_block_id,
                                 );
                             }
-                        }
 
-                        // Insert new block after current block
-                        let next_sib = d.tree.nodes[block_parent_id]
-                            .children
-                            .iter()
-                            .position(|&c| c == block_id)
-                            .and_then(|pos| {
-                                d.tree.nodes[block_parent_id].children.get(pos + 1).copied()
-                            });
-                        if let Some(next) = next_sib {
-                            d.insert_before(
-                                rinch_core::dom::NodeId(block_parent_id),
-                                new_block_id,
-                                rinch_core::dom::NodeId(next),
-                            );
-                        } else {
-                            d.append_child(
-                                rinch_core::dom::NodeId(block_parent_id),
-                                new_block_id,
-                            );
+                            // Move cursor to start of new block
+                            if let Some(first) = Self::first_text_cursor(&d.tree, new_block_id.0) {
+                                ce.cursor = first;
+                            } else {
+                                ce.cursor = DomCursor { node_id: new_block_id.0, offset: 0 };
+                            }
+                            ce.anchor = ce.cursor;
+                            text_changed = true;
                         }
-
-                        // Move cursor to start of new block
-                        if let Some(first) = Self::first_text_cursor(&d.tree, new_block_id.0) {
-                            ce.cursor = first;
-                        } else {
-                            ce.cursor = DomCursor { node_id: new_block_id.0, offset: 0 };
-                        }
-                        ce.anchor = ce.cursor;
                     } else {
                         // Inline-only CE — insert <br> at CE root level,
                         // splitting any inline ancestors (spans) along the way.
@@ -2709,7 +3308,182 @@ impl RinchApp {
                 }
             }
 
-            // ── Unhandled commands (Tab, Escape, Redo) ───────────────
+            // ── Tab indent ────────────────────────────────────────────
+            EditCommand::Indent => {
+                if let Some(doc) = &self.doc {
+                    let ce = self.focused_contenteditable.as_mut().unwrap();
+                    let cur = ce.cursor;
+                    let d_ref = doc.borrow();
+
+                    // Find the <li> the cursor is in
+                    let block_info = Self::find_block_and_parent(&d_ref.tree, cur.node_id, ce_node_id);
+                    if let Some((li_id, list_id)) = block_info {
+                        let li_tag = d_ref.tree.get(li_id).and_then(|n| n.tag()).unwrap_or("");
+                        let list_tag = d_ref.tree.get(list_id).and_then(|n| n.tag()).unwrap_or("").to_string();
+
+                        // Resolve the actual <li> and list — either directly or via ancestor walk
+                        let resolved = if li_tag == "li" && Self::is_list_tag(&list_tag) {
+                            Some((li_id, list_id, list_tag.clone()))
+                        } else {
+                            // Cursor may be in a wrapper <div> inside an <li>
+                            Self::find_li_ancestor_for_outdent(&d_ref.tree, li_id, ce_node_id)
+                                .map(|(real_li, real_list)| {
+                                    let tag = d_ref.tree.get(real_list).and_then(|n| n.tag()).unwrap_or("ul").to_string();
+                                    (real_li, real_list, tag)
+                                })
+                        };
+
+                        if let Some((real_li_id, real_list_id, real_list_tag)) = resolved {
+                            // Find previous sibling <li>
+                            let siblings = d_ref.tree.nodes[real_list_id].children.clone();
+                            let pos = siblings.iter().position(|&c| c == real_li_id).unwrap_or(0);
+
+                            if pos > 0 {
+                                let prev_li = siblings[pos - 1];
+                                // Check if prev_li already has a nested list as last child
+                                let prev_children = d_ref.tree.nodes[prev_li].children.clone();
+                                let nested_list = prev_children.last().and_then(|&last| {
+                                    d_ref.tree.get(last)
+                                        .and_then(|n| n.tag())
+                                        .and_then(|t| if Self::is_list_tag(t) { Some(last) } else { None })
+                                });
+
+                                drop(d_ref);
+                                let mut d = doc.borrow_mut();
+
+                                if let Some(existing_nested) = nested_list {
+                                    // Move li into existing nested list
+                                    d.remove_node(rinch_core::dom::NodeId(real_li_id));
+                                    d.append_child(rinch_core::dom::NodeId(existing_nested), rinch_core::dom::NodeId(real_li_id));
+                                } else {
+                                    // Create new nested list, move li into it, append to prev_li
+                                    let new_nested = d.create_element(&real_list_tag);
+                                    d.set_attribute(new_nested, "style", "padding-left: 40px");
+                                    d.remove_node(rinch_core::dom::NodeId(real_li_id));
+                                    d.append_child(new_nested, rinch_core::dom::NodeId(real_li_id));
+                                    d.append_child(rinch_core::dom::NodeId(prev_li), new_nested);
+                                }
+
+                                // No flex style needed: the layout engine creates anonymous
+                                // block boxes for mixed inline+block content automatically.
+
+                                // Cursor stays in the same text node
+                                ce.cursor = cur;
+                                ce.anchor = ce.cursor;
+                                text_changed = true;
+                            } else {
+                                return false; // Can't indent first item
+                            }
+                        } else {
+                            return false; // Not in a list item
+                        }
+                    } else {
+                        return false; // Not in a block
+                    }
+                } else {
+                    return false;
+                }
+            }
+
+            // ── Shift+Tab outdent ────────────────────────────────────────
+            EditCommand::Outdent => {
+                if let Some(doc) = &self.doc {
+                    let ce = self.focused_contenteditable.as_mut().unwrap();
+                    let cur = ce.cursor;
+                    let d_ref = doc.borrow();
+
+                    // Find the <li> the cursor is in
+                    let block_info = Self::find_block_and_parent(&d_ref.tree, cur.node_id, ce_node_id);
+                    if let Some((li_id, nested_list_id)) = block_info {
+                        let li_tag = d_ref.tree.get(li_id).and_then(|n| n.tag()).unwrap_or("");
+                        let nested_list_tag = d_ref.tree.get(nested_list_id).and_then(|n| n.tag()).unwrap_or("").to_string();
+
+                        // Resolve the actual <li> and its parent list
+                        let resolved = if li_tag == "li" && Self::is_list_tag(&nested_list_tag) {
+                            Some((li_id, nested_list_id, nested_list_tag.clone()))
+                        } else {
+                            Self::find_li_ancestor_for_outdent(&d_ref.tree, li_id, ce_node_id)
+                                .map(|(real_li, real_list)| {
+                                    let tag = d_ref.tree.get(real_list).and_then(|n| n.tag()).unwrap_or("ul").to_string();
+                                    (real_li, real_list, tag)
+                                })
+                        };
+
+                        if let Some((real_li_id, real_nested_list_id, real_nested_list_tag)) = resolved {
+                            // Check if this list is nested inside another <li>
+                            let parent_li = d_ref.tree.get(real_nested_list_id).and_then(|n| n.parent);
+                            let parent_li_tag = parent_li
+                                .and_then(|p| d_ref.tree.get(p))
+                                .and_then(|n| n.tag())
+                                .unwrap_or("");
+
+                            if parent_li_tag == "li" {
+                                let parent_li_id = parent_li.unwrap();
+                                let outer_list_id = d_ref.tree.get(parent_li_id)
+                                    .and_then(|n| n.parent).unwrap_or(ce_node_id);
+
+                                // Collect siblings after current <li> in the nested list
+                                let nested_siblings = d_ref.tree.nodes[real_nested_list_id].children.clone();
+                                let pos = nested_siblings.iter().position(|&c| c == real_li_id).unwrap_or(0);
+                                let after_siblings: Vec<usize> = nested_siblings[pos + 1..].to_vec();
+
+                                drop(d_ref);
+                                let mut d = doc.borrow_mut();
+
+                                // Move current <li> to after parent_li in the outer list
+                                d.remove_node(rinch_core::dom::NodeId(real_li_id));
+                                let parent_li_next = {
+                                    let siblings = &d.tree.nodes[outer_list_id].children;
+                                    let ppos = siblings.iter().position(|&c| c == parent_li_id);
+                                    ppos.and_then(|p| siblings.get(p + 1).copied())
+                                };
+                                if let Some(next) = parent_li_next {
+                                    d.insert_before(
+                                        rinch_core::dom::NodeId(outer_list_id),
+                                        rinch_core::dom::NodeId(real_li_id),
+                                        rinch_core::dom::NodeId(next),
+                                    );
+                                } else {
+                                    d.append_child(
+                                        rinch_core::dom::NodeId(outer_list_id),
+                                        rinch_core::dom::NodeId(real_li_id),
+                                    );
+                                }
+
+                                // If there are siblings after, create new nested list under current li
+                                if !after_siblings.is_empty() {
+                                    let new_nested = d.create_element(&real_nested_list_tag);
+                                    for &sib_id in &after_siblings {
+                                        d.remove_node(rinch_core::dom::NodeId(sib_id));
+                                        d.append_child(new_nested, rinch_core::dom::NodeId(sib_id));
+                                    }
+                                    d.append_child(rinch_core::dom::NodeId(real_li_id), new_nested);
+                                }
+
+                                // If the original nested list is now empty, remove it
+                                if d.tree.nodes[real_nested_list_id].children.is_empty() {
+                                    d.remove_node(rinch_core::dom::NodeId(real_nested_list_id));
+                                }
+
+                                // Cursor stays in the same text node
+                                ce.cursor = cur;
+                                ce.anchor = ce.cursor;
+                                text_changed = true;
+                            } else {
+                                return false; // Already top-level
+                            }
+                        } else {
+                            return false; // Not in a list item
+                        }
+                    } else {
+                        return false; // Not in a block
+                    }
+                } else {
+                    return false;
+                }
+            }
+
+            // ── Unhandled commands (Escape, Redo, etc.) ───────────────
             _ => {
                 return false;
             }
@@ -3002,17 +3776,15 @@ impl RinchApp {
         // Element cursor (empty block) — jump to adjacent block
         if !is_br_cursor && Self::is_element_cursor(tree, &cursor) {
             let upward = direction < 0;
-            let block_id = cursor.node_id;
-            // Try sibling level
-            if let Some(result) = Self::move_to_adjacent_block(tree, ce_root, block_id, 0.0, upward) {
-                return result;
-            }
-            // Try parent container level (e.g., li → ul → adjacent p)
-            if let Some(parent_id) = tree.get(block_id).and_then(|n| n.parent)
-                && parent_id != ce_root
-            {
-                if let Some(result) = Self::move_to_adjacent_block(tree, ce_root, parent_id, 0.0, upward) {
+            // Walk up the ancestor chain trying each level
+            let mut walk_id = cursor.node_id;
+            while walk_id != ce_root {
+                if let Some(result) = Self::move_to_adjacent_block(tree, ce_root, walk_id, 0.0, upward) {
                     return result;
+                }
+                match tree.get(walk_id).and_then(|n| n.parent) {
+                    Some(pid) => walk_id = pid,
+                    None => break,
                 }
             }
             return cursor;
@@ -3046,17 +3818,16 @@ impl RinchApp {
 
                 let target_line_idx = if direction < 0 {
                     if current_line_idx == 0 {
-                        // Already on first line — try previous block's IFC
-                        // If no sibling, try parent container (e.g., li → ul → adjacent p)
+                        // Already on first line — walk up ancestor chain
                         let upward = true;
-                        if let Some(result) = Self::move_to_adjacent_block(tree, ce_root, ifc_root_id, x, upward) {
-                            return result;
-                        }
-                        if let Some(parent_id) = tree.get(ifc_root_id).and_then(|n| n.parent)
-                            && parent_id != ce_root
-                        {
-                            if let Some(result) = Self::move_to_adjacent_block(tree, ce_root, parent_id, x, upward) {
+                        let mut walk_id = ifc_root_id;
+                        while walk_id != ce_root {
+                            if let Some(result) = Self::move_to_adjacent_block(tree, ce_root, walk_id, x, upward) {
                                 return result;
+                            }
+                            match tree.get(walk_id).and_then(|n| n.parent) {
+                                Some(pid) => walk_id = pid,
+                                None => break,
                             }
                         }
                         return cursor;
@@ -3064,17 +3835,16 @@ impl RinchApp {
                     current_line_idx - 1
                 } else {
                     if current_line_idx >= lines.len() - 1 {
-                        // Already on last line — try next block's IFC
-                        // If no sibling, try parent container (e.g., li → ul → adjacent p)
+                        // Already on last line — walk up ancestor chain
                         let upward = false;
-                        if let Some(result) = Self::move_to_adjacent_block(tree, ce_root, ifc_root_id, x, upward) {
-                            return result;
-                        }
-                        if let Some(parent_id) = tree.get(ifc_root_id).and_then(|n| n.parent)
-                            && parent_id != ce_root
-                        {
-                            if let Some(result) = Self::move_to_adjacent_block(tree, ce_root, parent_id, x, upward) {
+                        let mut walk_id = ifc_root_id;
+                        while walk_id != ce_root {
+                            if let Some(result) = Self::move_to_adjacent_block(tree, ce_root, walk_id, x, upward) {
                                 return result;
+                            }
+                            match tree.get(walk_id).and_then(|n| n.parent) {
+                                Some(pid) => walk_id = pid,
+                                None => break,
                             }
                         }
                         return cursor;
@@ -3106,20 +3876,17 @@ impl RinchApp {
             let (x, _y) = rinch_dom::text_query::caret_position_for_offset_layout(
                 cached_layout, cursor.offset,
             );
-            // The parent of this text node is the block element (e.g., li, p, h2)
+            // Walk up the ancestor chain from the text node's parent
             if let Some(parent_id) = node.parent {
                 let upward = direction < 0;
-                // Try sibling-level first (e.g., li → adjacent li)
-                if let Some(result) = Self::move_to_adjacent_block(tree, ce_root, parent_id, x, upward) {
-                    return result;
-                }
-                // If no sibling, try parent container level (e.g., li → p via ul)
-                if let Some(parent_node) = tree.get(parent_id)
-                    && let Some(grandparent_id) = parent_node.parent
-                    && grandparent_id != ce_root
-                {
-                    if let Some(result) = Self::move_to_adjacent_block(tree, ce_root, grandparent_id, x, upward) {
+                let mut walk_id = parent_id;
+                while walk_id != ce_root {
+                    if let Some(result) = Self::move_to_adjacent_block(tree, ce_root, walk_id, x, upward) {
                         return result;
+                    }
+                    match tree.get(walk_id).and_then(|n| n.parent) {
+                        Some(pid) => walk_id = pid,
+                        None => break,
                     }
                 }
             }
@@ -3300,51 +4067,65 @@ impl RinchApp {
                 // Empty block element — return element-level cursor
                 return Some(DomCursor { node_id: adj_id, offset: 0 });
             } else {
-                // Adjacent block uses cached_text_parley on text children,
-                // or is a container (ul/ol) with nested block children (li)
-                let children = &adj_node.children;
-                // Pick first or last child depending on direction
-                let target_children: Vec<usize> = if upward {
-                    children.iter().rev().copied().collect()
-                } else {
-                    children.to_vec()
-                };
-                for child_id in target_children {
-                    if let Some(child) = tree.get(child_id) {
-                        // Empty nested block (e.g., empty li)
-                        if child.children.is_empty() && child.tag().map(Self::is_block_element).unwrap_or(false) {
-                            return Some(DomCursor { node_id: child_id, offset: 0 });
-                        }
-                        // Nested block with IFC (e.g., li inside ul)
-                        if let Some(ref il) = child.text_layout {
-                            let target_y = if upward {
-                                il.layout.height() - 1.0
-                            } else {
-                                1.0
-                            };
-                            let new_cursor = parley::Cursor::from_point(&il.layout, x, target_y);
-                            if let Some((nid, off)) = rinch_dom::text_query::ifc_offset_to_dom_cursor(
-                                &il.text_ranges, new_cursor.index(), true,
-                            ) {
-                                return Some(DomCursor { node_id: nid, offset: off });
-                            }
-                        }
-                        // Direct text child with cached_text_parley
-                        if let Some(ref cached_layout) = child.cached_text_parley {
-                            let target_y = if upward {
-                                cached_layout.height() - 1.0
-                            } else {
-                                1.0
-                            };
-                            let off = rinch_dom::text_query::byte_offset_from_position(
-                                cached_layout, x, target_y,
-                            );
-                            return Some(DomCursor { node_id: child_id, offset: off });
-                        }
-                    }
+                // Recursively find the first/last text cursor in the subtree
+                return Self::find_cursor_in_subtree(tree, adj_id, x, upward);
+            }
+        }
+        None
+    }
+
+    /// Recursively find a text cursor position within a subtree.
+    /// When `upward` is true, finds the LAST text block (deepest last child);
+    /// when false, finds the FIRST text block (deepest first child).
+    fn find_cursor_in_subtree(
+        tree: &rinch_dom::NodeTree,
+        node_id: usize,
+        x: f32,
+        upward: bool,
+    ) -> Option<DomCursor> {
+        let node = tree.get(node_id)?;
+
+        // Check if this node itself has an IFC
+        if let Some(ref il) = node.text_layout {
+            let target_y = if upward { il.layout.height() - 1.0 } else { 1.0 };
+            let new_cursor = parley::Cursor::from_point(&il.layout, x, target_y);
+            if let Some((nid, off)) = rinch_dom::text_query::ifc_offset_to_dom_cursor(
+                &il.text_ranges, new_cursor.index(), true,
+            ) {
+                return Some(DomCursor { node_id: nid, offset: off });
+            }
+        }
+
+        // Check if this node has cached_text_parley (direct text node)
+        if let Some(ref cached_layout) = node.cached_text_parley {
+            let target_y = if upward { cached_layout.height() - 1.0 } else { 1.0 };
+            let off = rinch_dom::text_query::byte_offset_from_position(
+                cached_layout, x, target_y,
+            );
+            return Some(DomCursor { node_id: node_id, offset: off });
+        }
+
+        // Empty block element
+        if node.children.is_empty() && node.tag().map(Self::is_block_element).unwrap_or(false) {
+            return Some(DomCursor { node_id: node_id, offset: 0 });
+        }
+
+        // Recurse into children (last-to-first for upward, first-to-last for downward)
+        let children = &node.children;
+        if upward {
+            for &child_id in children.iter().rev() {
+                if let Some(result) = Self::find_cursor_in_subtree(tree, child_id, x, upward) {
+                    return Some(result);
+                }
+            }
+        } else {
+            for &child_id in children.iter() {
+                if let Some(result) = Self::find_cursor_in_subtree(tree, child_id, x, upward) {
+                    return Some(result);
                 }
             }
         }
+
         None
     }
 
@@ -3924,6 +4705,8 @@ impl RinchApp {
                             "Enter" => KeyCode::Enter,
                             "Backspace" => KeyCode::Backspace,
                             "Delete" => KeyCode::Delete,
+                            "Tab" => KeyCode::Tab,
+                            "Escape" => KeyCode::Escape,
                             // Map single letter keys to their KeyCode variants
                             "a" | "A" => KeyCode::KeyA,
                             "b" | "B" => KeyCode::KeyB,
@@ -4189,13 +4972,6 @@ fn hit_test_node(
 ) -> Option<usize> {
     let node = tree.get(node_id)?;
 
-    // Skip elements with pointer-events: none
-    if let Some(style) = node.attributes.get("style")
-        && (style.contains("pointer-events: none") || style.contains("pointer-events:none"))
-    {
-        return None;
-    }
-
     let nx = offset_x + node.layout.x;
     let ny = offset_y + node.layout.y;
     let nw = node.layout.width;
@@ -4206,6 +4982,7 @@ fn hit_test_node(
     }
 
     // Check children in reverse order (topmost first)
+    // Children are always checked even if this element has pointer-events: none
     let sx = node.scroll_offset.0 as f32;
     let sy = node.scroll_offset.1 as f32;
     let children: Vec<_> = node.children.clone();
@@ -4215,7 +4992,51 @@ fn hit_test_node(
         }
     }
 
+    // Skip this element if pointer-events: none (children still checked above)
+    if matches!(
+        node.computed_style.pointer_events,
+        rinch_dom::computed_style::PointerEventsValue::None
+    ) {
+        return None;
+    }
+
     Some(node_id)
+}
+
+/// Convert a CursorValue from computed style to a platform CursorStyle.
+/// Convert a CursorValue from computed style to a platform CursorStyle.
+fn cursor_value_to_style(cursor: &rinch_dom::computed_style::CursorValue) -> rinch_platform::CursorStyle {
+    use rinch_dom::computed_style::CursorValue as CV;
+    use rinch_platform::CursorStyle as CS;
+    match cursor {
+        CV::Auto => CS::Auto,
+        CV::Default => CS::Default,
+        CV::Pointer => CS::Pointer,
+        CV::Text => CS::Text,
+        CV::Move => CS::Move,
+        CV::NotAllowed => CS::NotAllowed,
+        CV::Crosshair => CS::Crosshair,
+        CV::Grab => CS::Grab,
+        CV::Grabbing => CS::Grabbing,
+        CV::ColResize => CS::ColResize,
+        CV::RowResize => CS::RowResize,
+        CV::NResize => CS::NResize,
+        CV::SResize => CS::SResize,
+        CV::EResize => CS::EResize,
+        CV::WResize => CS::WResize,
+        CV::NeResize => CS::NeResize,
+        CV::NwResize => CS::NwResize,
+        CV::SeResize => CS::SeResize,
+        CV::SwResize => CS::SwResize,
+        CV::EwResize => CS::EwResize,
+        CV::NsResize => CS::NsResize,
+        CV::ZoomIn => CS::ZoomIn,
+        CV::ZoomOut => CS::ZoomOut,
+        CV::Wait => CS::Wait,
+        CV::Progress => CS::Progress,
+        CV::Help => CS::Help,
+        CV::None => CS::None,
+    }
 }
 
 /// Find the nearest ancestor (or self) that is a scroll container.
@@ -4282,6 +5103,234 @@ pub(crate) fn compute_visible_content_area_height(
     let border_top = cs.border_top_width.to_px() as f64;
     let border_bottom = cs.border_bottom_width.to_px() as f64;
     (node.layout.height as f64 - pad_top - pad_bottom - border_top - border_bottom).max(0.0)
+}
+
+/// Find the nearest ancestor (or self) that is a horizontal scroll container.
+pub(crate) fn find_horizontal_scroll_container(tree: &rinch_dom::NodeTree, start: usize) -> Option<usize> {
+    use rinch_dom::computed_style::OverflowValue;
+
+    let mut current = Some(start);
+    while let Some(node_id) = current {
+        let node = tree.get(node_id)?;
+        let overflow_x = &node.computed_style.overflow_x;
+        match overflow_x {
+            OverflowValue::Scroll | OverflowValue::Auto => return Some(node_id),
+            OverflowValue::Hidden => {
+                let content_w = compute_content_width(tree, node_id);
+                if content_w > node.layout.width as f64 {
+                    return Some(node_id);
+                }
+            }
+            _ => {}
+        }
+        current = node.parent;
+    }
+    // Fall back to body if content overflows
+    let body = tree.get(tree.body_id)?;
+    let content_w = compute_content_width(tree, tree.body_id);
+    if content_w > body.layout.width as f64 {
+        return Some(tree.body_id);
+    }
+    None
+}
+
+/// Compute the total content width of a node from its children's layout bounds.
+pub(crate) fn compute_content_width(tree: &rinch_dom::NodeTree, node_id: usize) -> f64 {
+    let node = match tree.get(node_id) {
+        Some(n) => n,
+        None => return 0.0,
+    };
+    let mut max_right: f64 = 0.0;
+    for &child_id in &node.children {
+        if let Some(child) = tree.get(child_id) {
+            let right = (child.layout.x + child.layout.width) as f64;
+            if right > max_right {
+                max_right = right;
+            }
+        }
+    }
+    max_right
+}
+
+/// The visible content area width: layout.width minus padding and border.
+/// Children are positioned relative to the content box, so this is the actual
+/// viewport width for scroll calculations.
+pub(crate) fn compute_visible_content_area_width(
+    tree: &rinch_dom::NodeTree,
+    node_id: usize,
+) -> f64 {
+    let node = match tree.get(node_id) {
+        Some(n) => n,
+        None => return 0.0,
+    };
+    let cs = &node.computed_style;
+    let pad_left = cs.padding_left.to_px() as f64;
+    let pad_right = cs.padding_right.to_px() as f64;
+    let border_left = cs.border_left_width.to_px() as f64;
+    let border_right = cs.border_right_width.to_px() as f64;
+    (node.layout.width as f64 - pad_left - pad_right - border_left - border_right).max(0.0)
+}
+
+/// Compute the scroll target for a contenteditable element so the cursor stays visible.
+///
+/// Returns `Some(new_scroll_y)` if scrolling is needed, `None` if already visible
+/// or the element is not a scroll container.
+fn compute_ce_scroll_target(
+    tree: &rinch_dom::NodeTree,
+    ce_node_id: usize,
+    cursor: DomCursor,
+    cursor_off: usize,
+) -> Option<f64> {
+    use rinch_dom::computed_style::{LineHeightValue, OverflowValue};
+
+    let node = tree.get(ce_node_id)?;
+
+    // Only applies to scroll containers
+    if !matches!(
+        node.computed_style.overflow_y,
+        OverflowValue::Auto | OverflowValue::Scroll
+    ) {
+        return None;
+    }
+
+    let current_scroll = node.scroll_offset.1;
+    let visible_height = compute_visible_content_area_height(tree, ce_node_id);
+    if visible_height <= 0.0 {
+        return None;
+    }
+
+    let cs = &node.computed_style;
+
+    // Helper: compute line height from a computed style
+    let line_height = |cs: &rinch_dom::computed_style::ComputedStyle| -> f64 {
+        let lh = match cs.line_height {
+            LineHeightValue::Relative(r) => cs.font_size * r,
+            LineHeightValue::Absolute(a) => a,
+            LineHeightValue::Normal => cs.font_size * 1.2,
+        };
+        lh as f64
+    };
+
+    // Find the cursor's Y position and height relative to the content box.
+    let (cursor_y, cursor_height) = if cursor.node_id == ce_node_id {
+        // Cursor at the CE root itself (empty CE) — position 0
+        (0.0_f64, line_height(cs))
+    } else if let Some(ref inline_layout) = node.text_layout {
+        // Inline CE with IFC layout — use caret position query
+        let offset = cursor_off.min(inline_layout.text_content.len());
+        let (_, y) = caret_position_for_offset_layout(&inline_layout.layout, offset);
+        (y as f64, line_height(cs))
+    } else {
+        // Block CE — find which direct child of the CE root contains cursor.node_id
+        let block_child_id = {
+            let mut current = cursor.node_id;
+            loop {
+                match tree.get(current) {
+                    Some(n) if n.parent == Some(ce_node_id) => break Some(current),
+                    Some(n) => match n.parent {
+                        Some(p) => current = p,
+                        None => break None,
+                    },
+                    None => break None,
+                }
+            }
+        };
+
+        let child_id = block_child_id?;
+        let child = tree.get(child_id)?;
+
+        // Try to get line-level precision within the block using its text layout
+        let child_pad_top = child.computed_style.padding_top.to_px() as f64;
+        if let Some(ref text_layout) = child.text_layout {
+            // Compute local offset within this child's IFC
+            // Walk prior siblings to find accumulated offset
+            let mut accumulated = 0usize;
+            let mut first_block = true;
+            for &sib_id in &node.children {
+                if sib_id == child_id {
+                    break;
+                }
+                if !first_block {
+                    accumulated += 1; // \n separator
+                }
+                first_block = false;
+                accumulated += flat_text_len_for_subtree(tree, sib_id);
+            }
+            if !first_block {
+                accumulated += 1; // \n before this block
+            }
+            let local_offset = cursor_off.saturating_sub(accumulated);
+            let clamped = local_offset.min(text_layout.text_content.len());
+            let (_, y) = caret_position_for_offset_layout(&text_layout.layout, clamped);
+            (
+                child.layout.y as f64 + child_pad_top + y as f64,
+                line_height(&child.computed_style),
+            )
+        } else {
+            // Fallback: use the child block's full layout bounds
+            (child.layout.y as f64, child.layout.height as f64)
+        }
+    };
+
+    // Determine if scrolling is needed
+    let margin = 4.0_f64;
+    let new_scroll = if cursor_y < current_scroll + margin {
+        // Cursor above visible area — scroll up
+        (cursor_y - margin).max(0.0)
+    } else if cursor_y + cursor_height > current_scroll + visible_height - margin {
+        // Cursor below visible area — scroll down
+        cursor_y + cursor_height - visible_height + margin
+    } else {
+        return None; // already visible
+    };
+
+    // Clamp to valid range
+    let content_height = compute_content_height(tree, ce_node_id);
+    let max_scroll = (content_height - visible_height).max(0.0);
+    Some(new_scroll.clamp(0.0, max_scroll))
+}
+
+/// Compute the flat text length for a subtree (for scroll offset calculation).
+/// Matches the logic in paint.rs's `get_flat_text_len`.
+fn flat_text_len_for_subtree(tree: &rinch_dom::NodeTree, node_id: usize) -> usize {
+    let mut len = 0usize;
+    let mut ends_with_newline = false;
+    flat_text_len_recursive(tree, node_id, &mut len, &mut ends_with_newline);
+    if ends_with_newline && len > 0 {
+        len -= 1;
+    }
+    len
+}
+
+fn flat_text_len_recursive(
+    tree: &rinch_dom::NodeTree,
+    node_id: usize,
+    len: &mut usize,
+    ends_with_newline: &mut bool,
+) {
+    let Some(node) = tree.get(node_id) else { return };
+    if let Some(t) = node.text_content() {
+        *len += t.len();
+        *ends_with_newline = t.ends_with('\n');
+    } else if node.tag() == Some("br") {
+        *len += 1;
+        *ends_with_newline = true;
+    } else {
+        let is_block = node.tag().map(|t| matches!(t,
+            "div" | "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
+            | "ul" | "ol" | "li" | "blockquote" | "section" | "article"
+            | "pre" | "hr" | "table" | "tr" | "header" | "footer"
+            | "main" | "nav" | "aside" | "figure" | "figcaption"
+            | "details" | "summary"
+        )).unwrap_or(false);
+        if is_block && !*ends_with_newline && *len > 0 {
+            *len += 1;
+            *ends_with_newline = true;
+        }
+        for &child_id in &node.children {
+            flat_text_len_recursive(tree, child_id, len, ends_with_newline);
+        }
+    }
 }
 
 /// Check if a point (x, y) hits a scrollbar.
