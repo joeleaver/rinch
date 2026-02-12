@@ -92,6 +92,7 @@
 //! [`use_callback`]: prelude::use_callback
 //! [`use_derived`]: prelude::use_derived
 
+#[cfg(feature = "desktop")]
 pub mod app;
 #[cfg(feature = "desktop")]
 pub mod menu;
@@ -153,7 +154,9 @@ pub mod prelude {
         use_effect_cleanup, use_memo, use_mount, use_ref, use_signal, use_state,
     };
     // Event handling - click context, drag support, and input callbacks
-    pub use rinch_core::{ClickContext, InputCallback, get_click_context, start_drag};
+    pub use rinch_core::{
+        ClickContext, InputCallback, get_click_context, start_drag, start_drag_absolute,
+    };
     // Icon enum for type-safe icons
     pub use rinch_core::Icon;
     pub use rinch_macros::{component, rsx};

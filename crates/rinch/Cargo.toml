@@ -8,17 +8,19 @@ description = "A lightweight cross-platform GUI library for Rust"
 [dependencies]
 # Always available (work on all platforms)
 rinch-core.workspace = true
-rinch-dom.workspace = true
 rinch-macros.workspace = true
 rinch-platform = { workspace = true }
-rinch-editable = { workspace = true }
-parley = { workspace = true }
-peniko = "0.6"
-vello = "0.7"
 tracing.workspace = true
-serde_json = "1"
 
-# Desktop-only (optional, enabled by `desktop` feature)
+# Desktop-only rendering deps (optional, enabled by `desktop` feature)
+rinch-dom = { workspace = true, optional = true }
+rinch-editable = { workspace = true, optional = true }
+parley = { workspace = true, optional = true }
+peniko = { version = "0.6", optional = true }
+vello = { version = "0.7", optional = true }
+serde_json = { version = "1", optional = true }
+
+# Desktop-only windowing/rendering (optional, enabled by `desktop` feature)
 rinch-renderer = { workspace = true, optional = true }
 anyrender = { workspace = true, optional = true }
 anyrender_vello = { workspace = true, optional = true }
@@ -49,6 +51,8 @@ windows-sys = { version = "0.59", features = ["Win32_Graphics_Gdi", "Win32_Found
 [features]
 default = ["desktop"]
 desktop = [
+    "dep:rinch-dom", "dep:rinch-editable", "dep:parley",
+    "dep:peniko", "dep:vello", "dep:serde_json",
     "dep:rinch-renderer", "dep:anyrender", "dep:anyrender_vello",
     "dep:wgpu", "dep:winit", "dep:muda", "dep:tokio", "dep:pollster",
     "dep:futures-util", "dep:tracing-subscriber",
