@@ -312,7 +312,9 @@ impl RinchMcpServer {
         .await
     }
 
-    #[tool(description = "Simulate a mouse button press (without release) at the given coordinates. Use with mouse_move and mouse_up for drag operations.")]
+    #[tool(
+        description = "Simulate a mouse button press (without release) at the given coordinates. Use with mouse_move and mouse_up for drag operations."
+    )]
     async fn mouse_down(
         &self,
         params: Parameters<MouseDownParams>,
@@ -324,7 +326,9 @@ impl RinchMcpServer {
         .await
     }
 
-    #[tool(description = "Simulate a mouse button release at the given coordinates. Use after mouse_down to complete a click or drag.")]
+    #[tool(
+        description = "Simulate a mouse button release at the given coordinates. Use after mouse_down to complete a click or drag."
+    )]
     async fn mouse_up(
         &self,
         params: Parameters<MouseUpParams>,

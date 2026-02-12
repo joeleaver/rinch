@@ -1,7 +1,5 @@
 //! Style resolution: Stylo CSS cascade, Taffy sync, hover, and theme operations.
 
-use std::collections::HashMap;
-
 use servo_arc::Arc as ServoArc;
 
 use euclid::Scale;
@@ -29,7 +27,10 @@ impl RinchDocument {
     }
 
     /// Create a DOM node from a parsed HTML node (recursive).
-    pub(crate) fn create_node_from_parsed(&mut self, parsed: &crate::html_parser::ParsedNode) -> NodeId {
+    pub(crate) fn create_node_from_parsed(
+        &mut self,
+        parsed: &crate::html_parser::ParsedNode,
+    ) -> NodeId {
         use crate::html_parser::ParsedNode;
         use rinch_core::dom::DomDocument;
 
@@ -267,7 +268,7 @@ impl RinchDocument {
                     self.tree
                         .nodes
                         .get(cid)
-                        .map_or(false, |n| n.is_pseudo_element)
+                        .is_some_and(|n| n.is_pseudo_element)
                 })
                 .copied()
                 .collect();
@@ -447,8 +448,7 @@ impl RinchDocument {
                     NeedsSelectorFlags::No,
                     MatchingForInvalidation::No,
                 );
-            matching_context.extra_data.originating_element_style =
-                Some(parent_style);
+            matching_context.extra_data.originating_element_style = Some(parent_style);
 
             let mut applicable_declarations = ApplicableDeclarationList::new();
 
@@ -584,9 +584,8 @@ impl RinchDocument {
             Content::Items(items) => {
                 let mut result = String::new();
                 for item in items.items.iter() {
-                    match item {
-                        ContentItem::String(s) => result.push_str(s),
-                        _ => {} // Skip counter(), attr(), url(), etc.
+                    if let ContentItem::String(s) = item {
+                        result.push_str(s);
                     }
                 }
                 result
@@ -682,17 +681,17 @@ impl RinchDocument {
         }
 
         // Clear old focus state
-        if let Some(old_id) = old_focused {
-            if let Some(node) = self.tree.nodes.get_mut(old_id) {
-                node.is_focused = false;
-            }
+        if let Some(old_id) = old_focused
+            && let Some(node) = self.tree.nodes.get_mut(old_id)
+        {
+            node.is_focused = false;
         }
 
         // Set new focus state
-        if let Some(new_id) = new_focused {
-            if let Some(node) = self.tree.nodes.get_mut(new_id) {
-                node.is_focused = true;
-            }
+        if let Some(new_id) = new_focused
+            && let Some(node) = self.tree.nodes.get_mut(new_id)
+        {
+            node.is_focused = true;
         }
 
         self.tree.focused_node = new_focused;
@@ -891,8 +890,7 @@ impl RinchDocument {
     /// PERFORMANCE: Only processes nodes in `style_dirty_nodes` (set by resolve_styles).
     pub fn apply_stylo_styles_to_taffy(&mut self) {
         use crate::transition::{
-            TransitionSpec, apply_value_to_style, diff_animatable,
-            start_transitions,
+            TransitionSpec, apply_value_to_style, diff_animatable, start_transitions,
         };
 
         // Take the dirty nodes list - only these need Taffy sync
@@ -961,18 +959,10 @@ impl RinchDocument {
                     // Clone specs for borrow-checker (specs borrows from tree.nodes)
                     let specs_clone: Vec<TransitionSpec> = specs.clone();
 
-                    let transitions_map = self
-                        .tree
-                        .active_transitions
-                        .entry(node_id)
-                        .or_insert_with(HashMap::new);
+                    let transitions_map = self.tree.active_transitions.entry(node_id).or_default();
 
-                    let transitioning = start_transitions(
-                        transitions_map,
-                        &specs_clone,
-                        &diffs,
-                        current_time_ms,
-                    );
+                    let transitioning =
+                        start_transitions(transitions_map, &specs_clone, &diffs, current_time_ms);
 
                     // Apply new_style to computed_style, but for transitioning
                     // properties, keep the current interpolated value
@@ -980,16 +970,15 @@ impl RinchDocument {
 
                     // Overwrite transitioning properties with their current interpolated values
                     for prop in &transitioning {
-                        if let Some(trans_map) = self.tree.active_transitions.get(&node_id) {
-                            if let Some(transition) = trans_map.get(prop) {
-                                if let Some(value) = transition.value_at(current_time_ms) {
-                                    apply_value_to_style(
-                                        &mut self.tree.nodes[node_id].computed_style,
-                                        *prop,
-                                        &value,
-                                    );
-                                }
-                            }
+                        if let Some(trans_map) = self.tree.active_transitions.get(&node_id)
+                            && let Some(transition) = trans_map.get(prop)
+                            && let Some(value) = transition.value_at(current_time_ms)
+                        {
+                            apply_value_to_style(
+                                &mut self.tree.nodes[node_id].computed_style,
+                                *prop,
+                                &value,
+                            );
                         }
                     }
                 } else {

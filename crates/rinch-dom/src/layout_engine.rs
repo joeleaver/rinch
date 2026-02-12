@@ -223,7 +223,15 @@ impl RinchDocument {
                 };
 
                 // Read from parent's parsed computed_style instead of parsing CSS strings
-                let (font_size, font_weight, font_family, line_height_css, color, no_wrap, overflow_wrap) = node
+                let (
+                    font_size,
+                    font_weight,
+                    font_family,
+                    line_height_css,
+                    color,
+                    no_wrap,
+                    overflow_wrap,
+                ) = node
                     .parent
                     .and_then(|p| self.tree.nodes.get(p))
                     .map(|parent| {
@@ -445,7 +453,11 @@ impl RinchDocument {
     /// Safely remove a child from a Taffy parent, checking membership first.
     /// Taffy's `remove_child` panics if the child isn't actually a child of the parent,
     /// which can happen when inline children were detached by `setup_inline_formatting_contexts`.
-    pub(crate) fn taffy_remove_child_safe(&mut self, parent_taffy: taffy::NodeId, child_taffy: taffy::NodeId) {
+    pub(crate) fn taffy_remove_child_safe(
+        &mut self,
+        parent_taffy: taffy::NodeId,
+        child_taffy: taffy::NodeId,
+    ) {
         if let Ok(children) = self.tree.taffy.children(parent_taffy)
             && children.contains(&child_taffy)
         {

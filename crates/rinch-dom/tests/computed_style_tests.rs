@@ -1,9 +1,9 @@
 use rinch_core::dom::DomDocument;
+use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::{
     BackgroundValue, BorderStyleValue, CursorValue, PointerEventsValue, PositionValue,
     VisibilityValue,
 };
-use rinch_dom::RinchDocument;
 
 // Helper to check approximate float equality
 fn approx_eq(a: f32, b: f32, epsilon: f32) -> bool {
@@ -81,10 +81,7 @@ fn test_pointer_events_default() {
 
     let node = doc.tree.get(div.0).unwrap();
     assert!(
-        matches!(
-            node.computed_style.pointer_events,
-            PointerEventsValue::Auto
-        ),
+        matches!(node.computed_style.pointer_events, PointerEventsValue::Auto),
         "default pointer-events should be Auto"
     );
 }
@@ -104,10 +101,7 @@ fn test_pointer_events_none() {
 
     let node = doc.tree.get(div.0).unwrap();
     assert!(
-        matches!(
-            node.computed_style.pointer_events,
-            PointerEventsValue::None
-        ),
+        matches!(node.computed_style.pointer_events, PointerEventsValue::None),
         "pointer-events should be None"
     );
 }
@@ -135,11 +129,7 @@ fn test_cursor_pointer() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let div = doc.create_element("div");
-    doc.set_attribute(
-        div,
-        "style",
-        "cursor: pointer; width: 100px; height: 100px",
-    );
+    doc.set_attribute(div, "style", "cursor: pointer; width: 100px; height: 100px");
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
 
@@ -331,10 +321,7 @@ fn test_border_style_none() {
 
     let node = doc.tree.get(div.0).unwrap();
     assert!(
-        matches!(
-            node.computed_style.border_top_style,
-            BorderStyleValue::None
-        ),
+        matches!(node.computed_style.border_top_style, BorderStyleValue::None),
         "default border-top-style should be None"
     );
 }
@@ -365,10 +352,7 @@ fn test_outline_width_and_color() {
         "outline_color should be set"
     );
     assert!(
-        matches!(
-            node.computed_style.outline_style,
-            BorderStyleValue::Solid
-        ),
+        matches!(node.computed_style.outline_style, BorderStyleValue::Solid),
         "outline_style should be Solid"
     );
 

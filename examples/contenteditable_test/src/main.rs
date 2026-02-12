@@ -8,7 +8,7 @@ use rinch::prelude::*;
 #[component]
 fn app() -> NodeHandle {
     let cursor_info = use_signal(|| String::from("No focus"));
-    let content_mirror = use_signal(|| String::new());
+    let content_mirror = use_signal(String::new);
 
     rsx! {
         div { style: "display: flex; flex-direction: column; height: 100vh; padding: 16px; gap: 12px; font-family: sans-serif; overflow: auto;",

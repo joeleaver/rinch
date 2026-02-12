@@ -23,9 +23,7 @@ use style::values::specified::font::QueryFontMetricsFlags;
 use stylo_config as style_config;
 // CSSPixel and DevicePixel are used via euclid::Size2D type parameters
 
-use crate::node::{
-    DirtyFlags, DisplayMode, Node, NodeContext, NodeKind, NodeTree, TextMeasure,
-};
+use crate::node::{DirtyFlags, DisplayMode, Node, NodeContext, NodeKind, NodeTree, TextMeasure};
 
 /// A simple FontMetricsProvider that returns default/fixed values.
 /// This is used by the Stylist's Device to resolve font-relative units.
@@ -232,10 +230,7 @@ impl RinchDocument {
             .copied()
             .chain(
                 // Also check nodes that just had transitions complete
-                self.tree
-                    .dirty_nodes
-                    .iter()
-                    .copied(),
+                self.tree.dirty_nodes.iter().copied(),
             )
             .collect();
 

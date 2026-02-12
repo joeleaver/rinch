@@ -3,8 +3,8 @@
 //! This module provides utilities for converting between byte offsets and
 //! screen coordinates in text layouts, as well as querying glyph bounds.
 
-use parley::layout::Affinity;
 use parley::Cursor;
+use parley::layout::Affinity;
 use peniko::Brush;
 
 /// Bounding box for a glyph cluster.

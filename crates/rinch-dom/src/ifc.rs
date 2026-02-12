@@ -51,14 +51,12 @@ impl RinchDocument {
                 if content_width > 0.0 {
                     // For auto-width elements, add a small tolerance to avoid
                     // floating-point precision causing unwanted line breaks.
-                    let tolerance = if matches!(
-                        cs.width,
-                        crate::computed_style::DimensionValue::Auto
-                    ) {
-                        0.5
-                    } else {
-                        0.0
-                    };
+                    let tolerance =
+                        if matches!(cs.width, crate::computed_style::DimensionValue::Auto) {
+                            0.5
+                        } else {
+                            0.0
+                        };
                     Some(content_width + tolerance)
                 } else {
                     None
@@ -182,13 +180,12 @@ impl RinchDocument {
             if let Some(child) = self.tree.nodes.get(child_id)
                 && child.is_text()
                 && child.ifc_root == Some(root_id)
+                && let Some(child) = self.tree.nodes.get_mut(child_id)
             {
-                if let Some(child) = self.tree.nodes.get_mut(child_id) {
-                    child.layout.x = 0.0;
-                    child.layout.y = 0.0;
-                    child.layout.width = root_layout.width;
-                    child.layout.height = ifc_content_height;
-                }
+                child.layout.x = 0.0;
+                child.layout.y = 0.0;
+                child.layout.width = root_layout.width;
+                child.layout.height = ifc_content_height;
             }
         }
     }
@@ -414,24 +411,15 @@ impl RinchDocument {
                         .get(child_id)
                         .map(|n| n.is_anonymous_block_box)
                         .unwrap_or(false)
-                    {
-                        if let Some(anon_taffy) =
+                        && let Some(anon_taffy) =
                             self.tree.nodes.get(child_id).and_then(|n| n.taffy_id)
-                        {
-                            let anon_children: Vec<usize> =
-                                self.tree.nodes[child_id].children.clone();
-                            for &anon_child_id in &anon_children {
-                                if let Some(anon_child_taffy) = self
-                                    .tree
-                                    .nodes
-                                    .get(anon_child_id)
-                                    .and_then(|n| n.taffy_id)
-                                {
-                                    let _ = self
-                                        .tree
-                                        .taffy
-                                        .add_child(anon_taffy, anon_child_taffy);
-                                }
+                    {
+                        let anon_children: Vec<usize> = self.tree.nodes[child_id].children.clone();
+                        for &anon_child_id in &anon_children {
+                            if let Some(anon_child_taffy) =
+                                self.tree.nodes.get(anon_child_id).and_then(|n| n.taffy_id)
+                            {
+                                let _ = self.tree.taffy.add_child(anon_taffy, anon_child_taffy);
                             }
                         }
                     }
@@ -683,9 +671,7 @@ impl RinchDocument {
         // Parley from collapsing trailing whitespace, which would cause cursor
         // position mismatches (the DOM text has the space but the layout doesn't).
         use crate::computed_style::WhiteSpaceValue;
-        let is_contenteditable = nodes[root_id]
-            .attributes
-            .contains_key("contenteditable");
+        let is_contenteditable = nodes[root_id].attributes.contains_key("contenteditable");
         let collapse = if is_contenteditable {
             parley::style::WhiteSpaceCollapse::Preserve
         } else {
@@ -703,7 +689,16 @@ impl RinchDocument {
         let mut flat_pos = 0usize;
 
         // Walk children and build the Parley tree
-        Self::walk_inline_children(nodes, root_id, &mut builder, &mut child_positions, &mut text_ranges, &mut flat_pos, scale, collapse);
+        Self::walk_inline_children(
+            nodes,
+            root_id,
+            &mut builder,
+            &mut child_positions,
+            &mut text_ranges,
+            &mut flat_pos,
+            scale,
+            collapse,
+        );
 
         let (text_layout, text_content) = builder.build();
         let mut text_layout = text_layout;
@@ -722,6 +717,7 @@ impl RinchDocument {
     }
 
     /// Recursively walk inline children, pushing text and style spans into the TreeBuilder.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn walk_inline_children(
         nodes: &slab::Slab<Node>,
         parent_id: usize,
@@ -756,8 +752,7 @@ impl RinchDocument {
                     }
                 }
                 NodeKind::Element(_)
-                    if child.display_mode == DisplayMode::Inline
-                        && child.tag() == Some("br") =>
+                    if child.display_mode == DisplayMode::Inline && child.tag() == Some("br") =>
                 {
                     // <br> elements insert a hard line break.
                     let start = *flat_pos;
@@ -826,7 +821,16 @@ impl RinchDocument {
                     child_positions.push((child_id, LayoutResult::default()));
 
                     // Recurse into inline element's children
-                    Self::walk_inline_children(nodes, child_id, builder, child_positions, text_ranges, flat_pos, scale, collapse);
+                    Self::walk_inline_children(
+                        nodes,
+                        child_id,
+                        builder,
+                        child_positions,
+                        text_ranges,
+                        flat_pos,
+                        scale,
+                        collapse,
+                    );
 
                     builder.pop_style_span();
                 }

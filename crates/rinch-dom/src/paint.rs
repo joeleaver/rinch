@@ -87,7 +87,10 @@ fn paint_node(
         while let Some(aid) = ancestor_id {
             if let Some(ancestor) = tree.get(aid) {
                 let ov = ancestor.computed_style.overflow_y;
-                if matches!(ov, OverflowValue::Auto | OverflowValue::Scroll | OverflowValue::Hidden) {
+                if matches!(
+                    ov,
+                    OverflowValue::Auto | OverflowValue::Scroll | OverflowValue::Hidden
+                ) {
                     scroll_y = ancestor.scroll_offset.1 * scale;
                     break;
                 }
@@ -111,7 +114,10 @@ fn paint_node(
         }
         NodeKind::Element(_) => {
             let rect = Rect::new(x, y, x + w, y + h);
-            let visible = !matches!(node.computed_style.visibility, VisibilityValue::Hidden | VisibilityValue::Collapse);
+            let visible = !matches!(
+                node.computed_style.visibility,
+                VisibilityValue::Hidden | VisibilityValue::Collapse
+            );
 
             // Get border-radius from computed style (use average of all 4 corners)
             // Resolve percentage values against element dimensions
@@ -173,7 +179,10 @@ fn paint_node(
                             scene.fill(Fill::NonZero, node_transform, *bg_color, None, &rect);
                         }
                     }
-                    BackgroundValue::LinearGradient { angle_degrees, stops } => {
+                    BackgroundValue::LinearGradient {
+                        angle_degrees,
+                        stops,
+                    } => {
                         let brush = build_linear_gradient_brush(*angle_degrees, stops, &rect);
                         if radius > 0.0 {
                             let rrect = RoundedRect::from_rect(rect, radius);
@@ -202,7 +211,18 @@ fn paint_node(
 
                 // Render input element value
                 if matches!(node.tag(), Some("input" | "textarea")) {
-                    paint_input_value(node, scene, scale, x, y, w, h, font_cx, layout_cx, node_transform);
+                    paint_input_value(
+                        node,
+                        scene,
+                        scale,
+                        x,
+                        y,
+                        w,
+                        h,
+                        font_cx,
+                        layout_cx,
+                        node_transform,
+                    );
                 }
             }
 
@@ -238,8 +258,7 @@ fn paint_node(
                     .unwrap_or(cursor_pos);
 
                 let padding_left = node.computed_style.padding_left.to_px() as f64 * scale;
-                let content_width =
-                    node.layout.width as f64 * scale - padding_left * 2.0;
+                let content_width = node.layout.width as f64 * scale - padding_left * 2.0;
 
                 // Account for scroll offset so selection moves with content
                 let ce_scroll_x = node.scroll_offset.0 * scale;
@@ -252,13 +271,19 @@ fn paint_node(
                 if let Some(ref inline_layout) = node.text_layout {
                     // IFC layout coords are relative to content box (inside padding+border)
                     let cs = &node.computed_style;
-                    let pad_x = (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64 * scale;
-                    let pad_y = (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64 * scale;
+                    let pad_x =
+                        (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64 * scale;
+                    let pad_y =
+                        (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64 * scale;
                     let text_x = x + pad_x - ce_scroll_x;
                     let text_y = y + pad_y - ce_scroll_y;
                     let text_len = inline_layout.text_content.len();
                     paint_contenteditable_cursor(
-                        node, scene, scale, text_x, text_y,
+                        node,
+                        scene,
+                        scale,
+                        text_x,
+                        text_y,
                         &inline_layout.layout,
                         text_len,
                         cursor_pos.min(selection_start),
@@ -279,7 +304,11 @@ fn paint_node(
                             let text_x = x + child.layout.x as f64 * scale - ce_scroll_x;
                             let text_y = y + child.layout.y as f64 * scale - ce_scroll_y;
                             paint_contenteditable_cursor(
-                                node, scene, scale, text_x, text_y,
+                                node,
+                                scene,
+                                scale,
+                                text_x,
+                                text_y,
                                 cached_layout,
                                 text_len,
                                 cursor_pos.min(selection_start),
@@ -298,8 +327,12 @@ fn paint_node(
                     if !handled && node.children.is_empty() {
                         if cursor_pos == 0 {
                             let cs = &node.computed_style;
-                            let pad_x = (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64 * scale;
-                            let pad_y = (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64 * scale;
+                            let pad_x = (cs.padding_left.to_px() + cs.border_left_width.to_px())
+                                as f64
+                                * scale;
+                            let pad_y = (cs.padding_top.to_px() + cs.border_top_width.to_px())
+                                as f64
+                                * scale;
                             let font_size = cs.font_size;
                             let line_h = match cs.line_height {
                                 LineHeightValue::Relative(r) => font_size * r,
@@ -307,7 +340,8 @@ fn paint_node(
                                 LineHeightValue::Normal => font_size * 1.2,
                             };
                             let caret_height = line_h as f64 * scale;
-                            let caret_color = cs.color
+                            let caret_color = cs
+                                .color
                                 .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(33, 37, 41, 255));
                             let caret_rect = Rect::new(
                                 x + pad_x,
@@ -315,7 +349,13 @@ fn paint_node(
                                 x + pad_x + 1.5 * scale,
                                 y + pad_y + caret_height,
                             );
-                            scene.fill(Fill::NonZero, node_transform, caret_color, None, &caret_rect);
+                            scene.fill(
+                                Fill::NonZero,
+                                node_transform,
+                                caret_color,
+                                None,
+                                &caret_rect,
+                            );
                         }
                         handled = true;
                     }
@@ -341,35 +381,47 @@ fn paint_node(
                                 let block_end = accumulated + child_text_len;
 
                                 // Check if this block overlaps the selection range or contains cursor
-                                let has_cursor = cursor_pos >= accumulated && cursor_pos <= block_end;
-                                let in_selection = sel_min < block_end && sel_max > accumulated && sel_min != sel_max;
+                                let has_cursor =
+                                    cursor_pos >= accumulated && cursor_pos <= block_end;
+                                let in_selection = sel_min < block_end
+                                    && sel_max > accumulated
+                                    && sel_min != sel_max;
 
                                 if has_cursor || in_selection {
                                     // Compute local selection range within this block
                                     let local_sel_start = if in_selection {
                                         sel_min.max(accumulated) - accumulated
-                                    } else { 0 };
+                                    } else {
+                                        0
+                                    };
                                     let local_sel_end = if in_selection {
                                         sel_max.min(block_end) - accumulated
-                                    } else { 0 };
+                                    } else {
+                                        0
+                                    };
                                     let caret = if has_cursor {
                                         Some(cursor_pos - accumulated)
-                                    } else { None };
+                                    } else {
+                                        None
+                                    };
 
                                     let child_pad_x =
                                         child.computed_style.padding_left.to_px() as f64 * scale;
                                     let child_pad_y =
                                         child.computed_style.padding_top.to_px() as f64 * scale;
-                                    let child_x =
-                                        x + child.layout.x as f64 * scale + child_pad_x - ce_scroll_x;
-                                    let child_y =
-                                        y + child.layout.y as f64 * scale + child_pad_y - ce_scroll_y;
+                                    let child_x = x + child.layout.x as f64 * scale + child_pad_x
+                                        - ce_scroll_x;
+                                    let child_y = y + child.layout.y as f64 * scale + child_pad_y
+                                        - ce_scroll_y;
 
                                     // Try this child's IFC layout
                                     if let Some(ref inline_layout) = child.text_layout {
                                         paint_contenteditable_cursor(
-                                            node, scene, scale,
-                                            child_x, child_y,
+                                            node,
+                                            scene,
+                                            scale,
+                                            child_x,
+                                            child_y,
                                             &inline_layout.layout,
                                             child_text_len,
                                             local_sel_start.min(child_text_len),
@@ -382,8 +434,7 @@ fn paint_node(
                                         // Try child's text children
                                         let mut found_gc = false;
                                         for &grandchild_id in &child.children {
-                                            if let Some(grandchild) =
-                                                tree.nodes.get(grandchild_id)
+                                            if let Some(grandchild) = tree.nodes.get(grandchild_id)
                                                 && let Some(ref cached_layout) =
                                                     grandchild.cached_text_parley
                                             {
@@ -392,8 +443,11 @@ fn paint_node(
                                                     .map(|s| s.len())
                                                     .unwrap_or(0);
                                                 paint_contenteditable_cursor(
-                                                    node, scene, scale,
-                                                    child_x, child_y,
+                                                    node,
+                                                    scene,
+                                                    scale,
+                                                    child_x,
+                                                    child_y,
                                                     cached_layout,
                                                     gc_text_len,
                                                     local_sel_start.min(gc_text_len),
@@ -409,34 +463,51 @@ fn paint_node(
                                         if !found_gc {
                                             if child.children.is_empty() {
                                                 // Empty block — draw a simple caret
-                                                if let Some(_) = caret {
+                                                if caret.is_some() {
                                                     let cs = &child.computed_style;
                                                     let font_size = cs.font_size;
                                                     let line_h = match cs.line_height {
-                                                        LineHeightValue::Relative(r) => font_size * r,
+                                                        LineHeightValue::Relative(r) => {
+                                                            font_size * r
+                                                        }
                                                         LineHeightValue::Absolute(a) => a,
                                                         LineHeightValue::Normal => font_size * 1.2,
                                                     };
                                                     let caret_height = line_h as f64 * scale;
-                                                    let caret_color = cs.color
-                                                        .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(33, 37, 41, 255));
+                                                    let caret_color =
+                                                        cs.color.unwrap_or_else(|| {
+                                                            AlphaColor::<Srgb>::from_rgba8(
+                                                                33, 37, 41, 255,
+                                                            )
+                                                        });
                                                     let caret_rect = Rect::new(
                                                         child_x,
                                                         child_y,
                                                         child_x + 1.5 * scale,
                                                         child_y + caret_height,
                                                     );
-                                                    scene.fill(Fill::NonZero, node_transform, caret_color, None, &caret_rect);
+                                                    scene.fill(
+                                                        Fill::NonZero,
+                                                        node_transform,
+                                                        caret_color,
+                                                        None,
+                                                        &caret_rect,
+                                                    );
                                                 }
                                             } else {
                                                 // Recurse into sub-blocks (ul > li, etc.)
                                                 paint_ce_sub_blocks(
-                                                    tree, node, scene, scale,
+                                                    tree,
+                                                    node,
+                                                    scene,
+                                                    scale,
                                                     x + child.layout.x as f64 * scale - ce_scroll_x,
                                                     y + child.layout.y as f64 * scale - ce_scroll_y,
                                                     &child.children,
                                                     accumulated,
-                                                    cursor_pos, sel_min, sel_max,
+                                                    cursor_pos,
+                                                    sel_min,
+                                                    sel_max,
                                                     content_width,
                                                     node_transform,
                                                 );
@@ -459,10 +530,25 @@ fn paint_node(
                 let cs = &node.computed_style;
                 let scroll_x = node.scroll_offset.0 * scale;
                 let scroll_y = node.scroll_offset.1 * scale;
-                let content_x = x + (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64 * scale - scroll_x;
-                let content_y = y + (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64 * scale - scroll_y;
+                let content_x = x
+                    + (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64 * scale
+                    - scroll_x;
+                let content_y = y
+                    + (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64 * scale
+                    - scroll_y;
                 let ifc_text_shadows = node.computed_style.text_shadow.as_slice();
-                paint_inline_layout(tree, scene, scale, content_x, content_y, inline_layout, font_cx, layout_cx, ifc_text_shadows, node_transform);
+                paint_inline_layout(
+                    tree,
+                    scene,
+                    scale,
+                    content_x,
+                    content_y,
+                    inline_layout,
+                    font_cx,
+                    layout_cx,
+                    ifc_text_shadows,
+                    node_transform,
+                );
 
                 // Still paint non-inline (block) children normally
                 let child_ids = sorted_paint_order(tree, &node.children);
@@ -526,7 +612,8 @@ fn paint_node(
                 // Visible content area = layout height minus padding and border
                 let cs = &node.computed_style;
                 let pad_v = (cs.padding_top.to_px() + cs.padding_bottom.to_px()) as f64 * scale;
-                let border_v = (cs.border_top_width.to_px() + cs.border_bottom_width.to_px()) as f64 * scale;
+                let border_v =
+                    (cs.border_top_width.to_px() + cs.border_bottom_width.to_px()) as f64 * scale;
                 let visible_h = (h - pad_v - border_v).max(0.0);
                 if content_height > visible_h {
                     let scrollbar_width = 6.0 * scale;
@@ -642,14 +729,18 @@ fn paint_node(
                 .parent
                 .and_then(|p| tree.get(p))
                 .map(|p| &p.computed_style.visibility);
-            if matches!(parent_visibility, Some(VisibilityValue::Hidden | VisibilityValue::Collapse)) {
+            if matches!(
+                parent_visibility,
+                Some(VisibilityValue::Hidden | VisibilityValue::Collapse)
+            ) {
                 return;
             }
 
             // Use cached layout if available (built after Taffy layout with final widths)
             if let Some(cached_layout) = &node.cached_text_parley {
                 // Layout is already aligned during caching, use it directly
-                let text_shadows = node.parent
+                let text_shadows = node
+                    .parent
                     .and_then(|p| tree.get(p))
                     .map(|p| p.computed_style.text_shadow.as_slice())
                     .unwrap_or(&[]);
@@ -740,7 +831,14 @@ fn paint_inline_layout(
 ) {
     // Render the Parley layout at the IFC root's position
     // Scale is already applied to font sizes during layout building
-    render_text_with_shadow(scene, &inline_layout.layout, parent_x, parent_y, text_shadows, transform);
+    render_text_with_shadow(
+        scene,
+        &inline_layout.layout,
+        parent_x,
+        parent_y,
+        text_shadows,
+        transform,
+    );
 
     // Paint inline-block boxes by looking them up in tree and painting
     for line in inline_layout.layout.lines() {
@@ -774,16 +872,32 @@ fn paint_borders(
 
     let sides = [
         // (width, color, style, start, end) for each side
-        (cs.border_top_width.to_px(), cs.border_top_color, cs.border_top_style),
-        (cs.border_right_width.to_px(), cs.border_right_color, cs.border_right_style),
-        (cs.border_bottom_width.to_px(), cs.border_bottom_color, cs.border_bottom_style),
-        (cs.border_left_width.to_px(), cs.border_left_color, cs.border_left_style),
+        (
+            cs.border_top_width.to_px(),
+            cs.border_top_color,
+            cs.border_top_style,
+        ),
+        (
+            cs.border_right_width.to_px(),
+            cs.border_right_color,
+            cs.border_right_style,
+        ),
+        (
+            cs.border_bottom_width.to_px(),
+            cs.border_bottom_color,
+            cs.border_bottom_style,
+        ),
+        (
+            cs.border_left_width.to_px(),
+            cs.border_left_color,
+            cs.border_left_style,
+        ),
     ];
 
     // Fast path: if all sides have the same width, color, and style, use single stroke
-    let all_same = sides.windows(2).all(|pair| {
-        pair[0].0 == pair[1].0 && pair[0].1 == pair[1].1 && pair[0].2 == pair[1].2
-    });
+    let all_same = sides
+        .windows(2)
+        .all(|pair| pair[0].0 == pair[1].0 && pair[0].1 == pair[1].1 && pair[0].2 == pair[1].2);
 
     if all_same {
         let (bw, color, style) = sides[0];
@@ -812,57 +926,69 @@ fn paint_borders(
     let left_w = sides[3].0 as f64 * scale;
 
     // Top border
-    if top_w > 0.0 && !matches!(sides[0].2, BorderStyleValue::None | BorderStyleValue::Hidden) {
-        if let Some(bc) = sides[0].1 {
-            let stroke = make_border_stroke(top_w, sides[0].2);
-            let half = top_w * 0.5;
-            let path = peniko::kurbo::Line::new((x, y + half), (x + w, y + half));
-            scene.stroke(&stroke, transform, bc, None, &path);
-        }
+    if top_w > 0.0
+        && !matches!(
+            sides[0].2,
+            BorderStyleValue::None | BorderStyleValue::Hidden
+        )
+        && let Some(bc) = sides[0].1
+    {
+        let stroke = make_border_stroke(top_w, sides[0].2);
+        let half = top_w * 0.5;
+        let path = peniko::kurbo::Line::new((x, y + half), (x + w, y + half));
+        scene.stroke(&stroke, transform, bc, None, &path);
     }
 
     // Right border
-    if right_w > 0.0 && !matches!(sides[1].2, BorderStyleValue::None | BorderStyleValue::Hidden) {
-        if let Some(bc) = sides[1].1 {
-            let stroke = make_border_stroke(right_w, sides[1].2);
-            let half = right_w * 0.5;
-            let path = peniko::kurbo::Line::new((x + w - half, y), (x + w - half, y + h));
-            scene.stroke(&stroke, transform, bc, None, &path);
-        }
+    if right_w > 0.0
+        && !matches!(
+            sides[1].2,
+            BorderStyleValue::None | BorderStyleValue::Hidden
+        )
+        && let Some(bc) = sides[1].1
+    {
+        let stroke = make_border_stroke(right_w, sides[1].2);
+        let half = right_w * 0.5;
+        let path = peniko::kurbo::Line::new((x + w - half, y), (x + w - half, y + h));
+        scene.stroke(&stroke, transform, bc, None, &path);
     }
 
     // Bottom border
-    if bottom_w > 0.0 && !matches!(sides[2].2, BorderStyleValue::None | BorderStyleValue::Hidden) {
-        if let Some(bc) = sides[2].1 {
-            let stroke = make_border_stroke(bottom_w, sides[2].2);
-            let half = bottom_w * 0.5;
-            let path = peniko::kurbo::Line::new((x, y + h - half), (x + w, y + h - half));
-            scene.stroke(&stroke, transform, bc, None, &path);
-        }
+    if bottom_w > 0.0
+        && !matches!(
+            sides[2].2,
+            BorderStyleValue::None | BorderStyleValue::Hidden
+        )
+        && let Some(bc) = sides[2].1
+    {
+        let stroke = make_border_stroke(bottom_w, sides[2].2);
+        let half = bottom_w * 0.5;
+        let path = peniko::kurbo::Line::new((x, y + h - half), (x + w, y + h - half));
+        scene.stroke(&stroke, transform, bc, None, &path);
     }
 
     // Left border
-    if left_w > 0.0 && !matches!(sides[3].2, BorderStyleValue::None | BorderStyleValue::Hidden) {
-        if let Some(bc) = sides[3].1 {
-            let stroke = make_border_stroke(left_w, sides[3].2);
-            let half = left_w * 0.5;
-            let path = peniko::kurbo::Line::new((x + half, y), (x + half, y + h));
-            scene.stroke(&stroke, transform, bc, None, &path);
-        }
+    if left_w > 0.0
+        && !matches!(
+            sides[3].2,
+            BorderStyleValue::None | BorderStyleValue::Hidden
+        )
+        && let Some(bc) = sides[3].1
+    {
+        let stroke = make_border_stroke(left_w, sides[3].2);
+        let half = left_w * 0.5;
+        let path = peniko::kurbo::Line::new((x + half, y), (x + half, y + h));
+        scene.stroke(&stroke, transform, bc, None, &path);
     }
 }
 
 /// Create a Stroke with dash pattern based on border style.
 fn make_border_stroke(width: f64, style: BorderStyleValue) -> Stroke {
     match style {
-        BorderStyleValue::Dashed => {
-            Stroke::new(width).with_dashes(0.0, &[width * 3.0, width * 3.0])
-        }
-        BorderStyleValue::Dotted => {
-            Stroke::new(width)
-                .with_dashes(0.0, &[width, width])
-                .with_caps(Cap::Round)
-        }
+        BorderStyleValue::Dashed => Stroke::new(width).with_dashes(0.0, [width * 3.0, width * 3.0]),
+        BorderStyleValue::Dotted => Stroke::new(width)
+            .with_dashes(0.0, [width, width])
+            .with_caps(Cap::Round),
         BorderStyleValue::Double => {
             // For double, draw at 1/3 width (the caller draws two passes)
             // We approximate by drawing a single thinner stroke
@@ -887,7 +1013,12 @@ fn paint_outline(
 ) {
     let cs = &node.computed_style;
     let ow = cs.outline_width as f64 * scale;
-    if ow <= 0.0 || matches!(cs.outline_style, BorderStyleValue::None | BorderStyleValue::Hidden) {
+    if ow <= 0.0
+        || matches!(
+            cs.outline_style,
+            BorderStyleValue::None | BorderStyleValue::Hidden
+        )
+    {
         return;
     }
 
@@ -1041,13 +1172,7 @@ fn paint_box_shadow(
                 let rrect = RoundedRect::from_rect(layer_rect, radius + layer_expand);
                 scene.fill(Fill::NonZero, transform, layer_color, None, &rrect);
             } else {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    layer_color,
-                    None,
-                    &layer_rect,
-                );
+                scene.fill(Fill::NonZero, transform, layer_color, None, &layer_rect);
             }
         }
     } else {
@@ -1403,7 +1528,13 @@ fn build_radial_gradient_brush(
 }
 
 /// Render a Parley text layout to a Vello scene.
-fn render_text(scene: &mut Scene, layout: &parley::layout::Layout<Brush>, x: f64, y: f64, css_transform: Affine) {
+fn render_text(
+    scene: &mut Scene,
+    layout: &parley::layout::Layout<Brush>,
+    x: f64,
+    y: f64,
+    css_transform: Affine,
+) {
     let transform = css_transform * Affine::translate((x, y));
     for line in layout.lines() {
         for item in line.items() {
@@ -1651,11 +1782,33 @@ fn parse_px(value: &str) -> Option<f32> {
 fn is_block_tag(tag: &str) -> bool {
     matches!(
         tag,
-        "div" | "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
-            | "li" | "ul" | "ol" | "section" | "article" | "blockquote"
-            | "pre" | "hr" | "table" | "tr" | "header" | "footer"
-            | "main" | "nav" | "aside" | "figure" | "figcaption"
-            | "details" | "summary"
+        "div"
+            | "p"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "li"
+            | "ul"
+            | "ol"
+            | "section"
+            | "article"
+            | "blockquote"
+            | "pre"
+            | "hr"
+            | "table"
+            | "tr"
+            | "header"
+            | "footer"
+            | "main"
+            | "nav"
+            | "aside"
+            | "figure"
+            | "figcaption"
+            | "details"
+            | "summary"
     )
 }
 
@@ -1687,7 +1840,7 @@ fn collect_text_len_recursive(
             *len += 1;
             *ends_with_newline = true;
         } else {
-            let is_block = node.tag().map(|t| is_block_tag(t)).unwrap_or(false);
+            let is_block = node.tag().map(is_block_tag).unwrap_or(false);
             if is_block && *len > 0 && !*ends_with_newline {
                 *len += 1;
                 *ends_with_newline = true;
@@ -1746,13 +1899,19 @@ fn paint_ce_sub_blocks(
             if has_cursor || in_selection {
                 let local_sel_start = if in_selection {
                     sel_min.max(sub_acc) - sub_acc
-                } else { 0 };
+                } else {
+                    0
+                };
                 let local_sel_end = if in_selection {
                     sel_max.min(sub_end) - sub_acc
-                } else { 0 };
+                } else {
+                    0
+                };
                 let caret = if has_cursor {
                     Some(cursor_pos - sub_acc)
-                } else { None };
+                } else {
+                    None
+                };
 
                 let sub_pad_x = sub_node.computed_style.padding_left.to_px() as f64 * scale;
                 let sub_pad_y = sub_node.computed_style.padding_top.to_px() as f64 * scale;
@@ -1762,8 +1921,11 @@ fn paint_ce_sub_blocks(
                 // Try sub-node's IFC layout
                 if let Some(ref il) = sub_node.text_layout {
                     paint_contenteditable_cursor(
-                        ce_node, scene, scale,
-                        sub_x, sub_y,
+                        ce_node,
+                        scene,
+                        scale,
+                        sub_x,
+                        sub_y,
                         &il.layout,
                         sub_text_len,
                         local_sel_start.min(sub_text_len),
@@ -1774,7 +1936,7 @@ fn paint_ce_sub_blocks(
                     );
                 } else if sub_node.children.is_empty() {
                     // Empty block — draw a simple caret
-                    if let Some(_) = caret {
+                    if caret.is_some() {
                         let cs = &sub_node.computed_style;
                         let font_size = cs.font_size;
                         let line_h = match cs.line_height {
@@ -1783,14 +1945,11 @@ fn paint_ce_sub_blocks(
                             LineHeightValue::Normal => font_size * 1.2,
                         };
                         let caret_height = line_h as f64 * scale;
-                        let caret_color = cs.color
+                        let caret_color = cs
+                            .color
                             .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(33, 37, 41, 255));
-                        let caret_rect = Rect::new(
-                            sub_x,
-                            sub_y,
-                            sub_x + 1.5 * scale,
-                            sub_y + caret_height,
-                        );
+                        let caret_rect =
+                            Rect::new(sub_x, sub_y, sub_x + 1.5 * scale, sub_y + caret_height);
                         scene.fill(Fill::NonZero, transform, caret_color, None, &caret_rect);
                     }
                 } else {
@@ -1802,8 +1961,11 @@ fn paint_ce_sub_blocks(
                         {
                             let gc_len = gc.text_content().map(|s| s.len()).unwrap_or(0);
                             paint_contenteditable_cursor(
-                                ce_node, scene, scale,
-                                sub_x, sub_y,
+                                ce_node,
+                                scene,
+                                scale,
+                                sub_x,
+                                sub_y,
                                 cl,
                                 gc_len,
                                 local_sel_start.min(gc_len),
@@ -1819,12 +1981,17 @@ fn paint_ce_sub_blocks(
                     // Recurse into deeper block structure (e.g., li > div + ul after indent)
                     if !found_text_child {
                         paint_ce_sub_blocks(
-                            tree, ce_node, scene, scale,
+                            tree,
+                            ce_node,
+                            scene,
+                            scale,
                             parent_x + sub_node.layout.x as f64 * scale,
                             parent_y + sub_node.layout.y as f64 * scale,
                             &sub_node.children,
                             sub_acc,
-                            cursor_pos, sel_min, sel_max,
+                            cursor_pos,
+                            sel_min,
+                            sel_max,
                             content_width,
                             transform,
                         );
@@ -1840,6 +2007,7 @@ fn paint_ce_sub_blocks(
 ///
 /// `sel_start`/`sel_end` define the local selection range within this layout.
 /// `caret_pos` is Some(offset) to draw the cursor caret, None to skip it.
+#[allow(clippy::too_many_arguments)]
 fn paint_contenteditable_cursor(
     node: &Node,
     scene: &mut Scene,
@@ -1893,10 +2061,8 @@ fn paint_contenteditable_cursor(
                 let glyph_top = line_metrics.baseline - line_metrics.ascent;
                 // Line box top accounts for half-leading (space distributed
                 // above and below glyphs when line-height > natural height)
-                let half_leading = (line_metrics.line_height
-                    - line_metrics.ascent
-                    - line_metrics.descent)
-                    / 2.0;
+                let half_leading =
+                    (line_metrics.line_height - line_metrics.ascent - line_metrics.descent) / 2.0;
                 let line_box_top = glyph_top - half_leading;
                 let line_box_bottom = line_box_top + line_metrics.line_height;
 
@@ -1906,14 +2072,11 @@ fn paint_contenteditable_cursor(
                 }
 
                 // Check if this line contains the start/end positions
-                let is_start_line =
-                    start_y >= line_box_top - 0.5 && start_y < line_box_bottom;
-                let is_end_line =
-                    end_y >= line_box_top - 0.5 && end_y < line_box_bottom;
+                let is_start_line = start_y >= line_box_top - 0.5 && start_y < line_box_bottom;
+                let is_end_line = end_y >= line_box_top - 0.5 && end_y < line_box_bottom;
 
                 let rect_y = text_y + glyph_top as f64;
-                let (rect_start_x, rect_end_x) = if is_start_line && is_end_line
-                {
+                let (rect_start_x, rect_end_x) = if is_start_line && is_end_line {
                     // Both on same line (fallback for edge cases)
                     (start_x as f64, end_x as f64)
                 } else if is_start_line {
@@ -1930,13 +2093,7 @@ fn paint_contenteditable_cursor(
                     text_x + rect_end_x,
                     rect_y + line_height,
                 );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    sel_color,
-                    None,
-                    &sel_rect,
-                );
+                scene.fill(Fill::NonZero, transform, sel_color, None, &sel_rect);
             }
         }
     }
@@ -1963,16 +2120,11 @@ fn paint_contenteditable_cursor(
             caret_x + 1.5 * scale,
             caret_y + caret_height,
         );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            caret_color,
-            None,
-            &caret_rect,
-        );
+        scene.fill(Fill::NonZero, transform, caret_color, None, &caret_rect);
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_input_value(
     node: &Node,
     scene: &mut Scene,

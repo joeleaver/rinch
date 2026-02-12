@@ -236,9 +236,7 @@ pub struct TransitionSpec {
 
 impl TransitionSpec {
     /// Extract transition specs from Stylo's ComputedValues.
-    pub fn extract_from_stylo(
-        cv: &style::properties::ComputedValues,
-    ) -> Vec<TransitionSpec> {
+    pub fn extract_from_stylo(cv: &style::properties::ComputedValues) -> Vec<TransitionSpec> {
         let ui = cv.get_ui();
 
         if !ui.specifies_transitions() {
@@ -314,9 +312,7 @@ impl TransitionSpec {
 }
 
 /// Convert a Stylo timing function to our TimingFunction.
-fn convert_timing_function(
-    tf: &style::values::computed::easing::TimingFunction,
-) -> TimingFunction {
+fn convert_timing_function(tf: &style::values::computed::easing::TimingFunction) -> TimingFunction {
     use style::values::generics::easing::TimingFunction as StyloTF;
 
     match tf {
@@ -327,9 +323,7 @@ fn convert_timing_function(
             TimingKeyword::EaseOut => TimingFunction::EaseOut,
             TimingKeyword::EaseInOut => TimingFunction::EaseInOut,
         },
-        StyloTF::CubicBezier { x1, y1, x2, y2 } => {
-            TimingFunction::CubicBezier(*x1, *y1, *x2, *y2)
-        }
+        StyloTF::CubicBezier { x1, y1, x2, y2 } => TimingFunction::CubicBezier(*x1, *y1, *x2, *y2),
         // Steps and linear functions fall back to linear for V1
         StyloTF::Steps(..) | StyloTF::LinearFunction(..) => TimingFunction::Linear,
     }
@@ -766,7 +760,11 @@ fn transforms_equal(a: &TransformValue, b: &TransformValue) -> bool {
 // =============================================================================
 
 /// Write an interpolated AnimatableValue into the correct ComputedStyle field.
-pub fn apply_value_to_style(style: &mut ComputedStyle, prop: TransitionProperty, value: &AnimatableValue) {
+pub fn apply_value_to_style(
+    style: &mut ComputedStyle,
+    prop: TransitionProperty,
+    value: &AnimatableValue,
+) {
     match (prop, value) {
         (TransitionProperty::Opacity, AnimatableValue::Float(v)) => {
             style.opacity = *v;
@@ -866,9 +864,15 @@ pub fn find_matching_spec(
     property: TransitionProperty,
 ) -> Option<&TransitionSpec> {
     // First try exact match
-    specs.iter().find(|spec| spec.property == property)
+    specs
+        .iter()
+        .find(|spec| spec.property == property)
         // Then try "all"
-        .or_else(|| specs.iter().find(|spec| spec.property == TransitionProperty::All))
+        .or_else(|| {
+            specs
+                .iter()
+                .find(|spec| spec.property == TransitionProperty::All)
+        })
 }
 
 /// Start transitions for property changes, storing them in the node tree.
@@ -963,11 +967,7 @@ pub fn tick_transitions(tree: &mut NodeTree, current_time_ms: f64) -> bool {
             } else {
                 // Apply interpolated value
                 if let Some(value) = transition.value_at(current_time_ms) {
-                    apply_value_to_style(
-                        &mut tree.nodes[node_id].computed_style,
-                        *prop,
-                        &value,
-                    );
+                    apply_value_to_style(&mut tree.nodes[node_id].computed_style, *prop, &value);
                     needs_paint = true;
                     if prop.affects_layout() {
                         needs_layout = true;

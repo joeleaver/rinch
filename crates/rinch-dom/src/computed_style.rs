@@ -814,8 +814,9 @@ impl Default for TransformValue {
 }
 
 /// CSS background value — solid color or gradient.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub enum BackgroundValue {
+    #[default]
     None,
     Color(#[serde(serialize_with = "color_serde::serialize_direct")] peniko::Color),
     LinearGradient {
@@ -825,12 +826,6 @@ pub enum BackgroundValue {
     RadialGradient {
         stops: Vec<GradientStop>,
     },
-}
-
-impl Default for BackgroundValue {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 /// A gradient color stop.
@@ -1353,7 +1348,9 @@ impl ComputedStyle {
                 "text-align" => style.text_align = TextAlignValue::parse(value),
                 "text-decoration" => style.text_decoration = TextDecorationValue::parse(value),
                 "white-space" => style.white_space = WhiteSpaceValue::parse(value),
-                "overflow-wrap" | "word-wrap" => style.overflow_wrap = OverflowWrapValue::parse(value),
+                "overflow-wrap" | "word-wrap" => {
+                    style.overflow_wrap = OverflowWrapValue::parse(value)
+                }
 
                 // Grid properties
                 "grid-template-columns" => {
@@ -2440,9 +2437,7 @@ impl ComputedStyle {
         }
     }
 
-    fn cursor_from_stylo(
-        cursor: &style::values::specified::ui::CursorKind,
-    ) -> CursorValue {
+    fn cursor_from_stylo(cursor: &style::values::specified::ui::CursorKind) -> CursorValue {
         use style::values::specified::ui::CursorKind;
         match *cursor {
             CursorKind::Auto => CursorValue::Auto,
@@ -2486,9 +2481,7 @@ impl ComputedStyle {
         }
     }
 
-    fn z_index_from_stylo(
-        z: &style::values::computed::ZIndex,
-    ) -> Option<i32> {
+    fn z_index_from_stylo(z: &style::values::computed::ZIndex) -> Option<i32> {
         use style::values::generics::position::ZIndex;
         match z {
             ZIndex::Integer(val) => Some(*val),
@@ -2496,9 +2489,7 @@ impl ComputedStyle {
         }
     }
 
-    fn transform_from_stylo(
-        transform: &style::values::computed::Transform,
-    ) -> TransformValue {
+    fn transform_from_stylo(transform: &style::values::computed::Transform) -> TransformValue {
         use style::values::generics::transform::GenericTransformOperation;
 
         if transform.0.is_empty() {
@@ -2510,9 +2501,14 @@ impl ComputedStyle {
 
         for op in &*transform.0 {
             let op_matrix = match op {
-                GenericTransformOperation::Matrix(mat) => {
-                    [mat.a as f64, mat.b as f64, mat.c as f64, mat.d as f64, mat.e as f64, mat.f as f64]
-                }
+                GenericTransformOperation::Matrix(mat) => [
+                    mat.a as f64,
+                    mat.b as f64,
+                    mat.c as f64,
+                    mat.d as f64,
+                    mat.e as f64,
+                    mat.f as f64,
+                ],
                 GenericTransformOperation::Rotate(angle) => {
                     let rad = angle.radians64();
                     let cos = rad.cos();
@@ -2522,12 +2518,8 @@ impl ComputedStyle {
                 GenericTransformOperation::Scale(sx, sy) => {
                     [*sx as f64, 0.0, 0.0, *sy as f64, 0.0, 0.0]
                 }
-                GenericTransformOperation::ScaleX(sx) => {
-                    [*sx as f64, 0.0, 0.0, 1.0, 0.0, 0.0]
-                }
-                GenericTransformOperation::ScaleY(sy) => {
-                    [1.0, 0.0, 0.0, *sy as f64, 0.0, 0.0]
-                }
+                GenericTransformOperation::ScaleX(sx) => [*sx as f64, 0.0, 0.0, 1.0, 0.0, 0.0],
+                GenericTransformOperation::ScaleY(sy) => [1.0, 0.0, 0.0, *sy as f64, 0.0, 0.0],
                 GenericTransformOperation::TranslateX(tx) => {
                     let tx_px = Self::length_or_pct_to_px(tx);
                     [1.0, 0.0, 0.0, 1.0, tx_px, 0.0]
@@ -2634,31 +2626,30 @@ impl ComputedStyle {
         use style::values::generics::image::GenericGradient;
 
         // Check for gradient in background-image first
-        if !bg.background_image.0.is_empty() {
-            match &bg.background_image.0[0] {
-                Image::Gradient(boxed_gradient) => {
-                    let gradient = &**boxed_gradient;
-                    match gradient {
-                        GenericGradient::Linear { direction, items, .. } => {
-                            let angle = Self::gradient_direction_to_angle(direction);
-                            let stops = Self::gradient_stops_from_stylo(items, text_color);
-                            if !stops.is_empty() {
-                                return BackgroundValue::LinearGradient {
-                                    angle_degrees: angle,
-                                    stops,
-                                };
-                            }
-                        }
-                        GenericGradient::Radial { items, .. } => {
-                            let stops = Self::gradient_stops_from_stylo(items, text_color);
-                            if !stops.is_empty() {
-                                return BackgroundValue::RadialGradient { stops };
-                            }
-                        }
-                        _ => {} // conic gradients not supported yet
+        if !bg.background_image.0.is_empty()
+            && let Image::Gradient(boxed_gradient) = &bg.background_image.0[0]
+        {
+            let gradient = &**boxed_gradient;
+            match gradient {
+                GenericGradient::Linear {
+                    direction, items, ..
+                } => {
+                    let angle = Self::gradient_direction_to_angle(direction);
+                    let stops = Self::gradient_stops_from_stylo(items, text_color);
+                    if !stops.is_empty() {
+                        return BackgroundValue::LinearGradient {
+                            angle_degrees: angle,
+                            stops,
+                        };
                     }
                 }
-                _ => {} // url() images or none not supported
+                GenericGradient::Radial { items, .. } => {
+                    let stops = Self::gradient_stops_from_stylo(items, text_color);
+                    if !stops.is_empty() {
+                        return BackgroundValue::RadialGradient { stops };
+                    }
+                }
+                _ => {} // conic gradients not supported yet
             }
         }
 
@@ -2678,7 +2669,9 @@ impl ComputedStyle {
         direction: &style::values::computed::image::LineDirection,
     ) -> f32 {
         use style::values::computed::image::LineDirection;
-        use style::values::specified::position::{HorizontalPositionKeyword, VerticalPositionKeyword};
+        use style::values::specified::position::{
+            HorizontalPositionKeyword, VerticalPositionKeyword,
+        };
         match direction {
             LineDirection::Angle(angle) => angle.degrees(),
             LineDirection::Horizontal(h) => match *h {
@@ -2689,14 +2682,12 @@ impl ComputedStyle {
                 VerticalPositionKeyword::Top => 0.0,
                 VerticalPositionKeyword::Bottom => 180.0,
             },
-            LineDirection::Corner(h, v) => {
-                match (h, v) {
-                    (HorizontalPositionKeyword::Right, VerticalPositionKeyword::Top) => 45.0,
-                    (HorizontalPositionKeyword::Right, VerticalPositionKeyword::Bottom) => 135.0,
-                    (HorizontalPositionKeyword::Left, VerticalPositionKeyword::Bottom) => 225.0,
-                    (HorizontalPositionKeyword::Left, VerticalPositionKeyword::Top) => 315.0,
-                }
-            }
+            LineDirection::Corner(h, v) => match (h, v) {
+                (HorizontalPositionKeyword::Right, VerticalPositionKeyword::Top) => 45.0,
+                (HorizontalPositionKeyword::Right, VerticalPositionKeyword::Bottom) => 135.0,
+                (HorizontalPositionKeyword::Left, VerticalPositionKeyword::Bottom) => 225.0,
+                (HorizontalPositionKeyword::Left, VerticalPositionKeyword::Top) => 315.0,
+            },
         }
     }
 
