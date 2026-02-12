@@ -90,6 +90,25 @@ fn app() -> NodeHandle {
                 }
             }
 
+            // Test 6: Nested list (indent/outdent test)
+            div { style: "border: 1px solid #ddd; border-radius: 8px; padding: 12px;",
+                h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #ff4aff;",
+                    "Test 6: Nested List (Tab/Shift+Tab)"
+                }
+                div {
+                    contenteditable: "true",
+                    style: "border: 2px solid #ff4aff; padding: 12px; min-height: 120px; font-size: 16px; line-height: 1.6; outline: none; border-radius: 4px; background: #fffaff; overflow-wrap: break-word;",
+                    ul { style: "margin: 0; padding-left: 24px;",
+                        li { "Item 1" }
+                        li { "Item 2" }
+                        li { "Item 3" }
+                    }
+                    p { style: "margin: 8px 0 0 0; color: #888; font-size: 13px;",
+                        "Tab to indent, Shift+Tab to outdent. Enter in empty li exits list."
+                    }
+                }
+            }
+
             // Comparison: native textarea
             div { style: "border: 1px solid #ddd; border-radius: 8px; padding: 12px;",
                 h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #999;",

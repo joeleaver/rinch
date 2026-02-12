@@ -46,4 +46,8 @@ pub enum EditCommand {
 
     // Multi-line specific
     InsertNewline,
+
+    // Block structure
+    Indent,  // Tab in list item
+    Outdent, // Shift+Tab in list item
 }

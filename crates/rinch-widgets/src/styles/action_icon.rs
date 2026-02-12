@@ -7,7 +7,7 @@ pub fn styles() -> String {
     justify-content: center;
     border: 1px solid transparent;
     cursor: pointer;
-    transition: background-color 150ms ease, border-color 150ms ease;
+    transition: background-color 150ms ease, border-color 150ms ease, transform 100ms ease;
     padding: 0;
     color: var(--rinch-action-icon-color, var(--rinch-primary-color));
 }
@@ -41,6 +41,10 @@ pub fn styles() -> String {
 .rinch-action-icon--filled:hover:not(:disabled) {
     background-color: var(--rinch-primary-color-7);
 }
+.rinch-action-icon--filled:active:not(:disabled) {
+    background-color: var(--rinch-primary-color-8);
+    transform: translateY(1px);
+}
 
 .rinch-action-icon--light {
     background-color: var(--rinch-primary-color-0);
@@ -48,6 +52,10 @@ pub fn styles() -> String {
 }
 .rinch-action-icon--light:hover:not(:disabled) {
     background-color: var(--rinch-primary-color-1);
+}
+.rinch-action-icon--light:active:not(:disabled) {
+    background-color: var(--rinch-primary-color-2);
+    transform: translateY(1px);
 }
 
 .rinch-action-icon--outline {
@@ -57,6 +65,10 @@ pub fn styles() -> String {
 .rinch-action-icon--outline:hover:not(:disabled) {
     background-color: var(--rinch-primary-color-0);
 }
+.rinch-action-icon--outline:active:not(:disabled) {
+    background-color: var(--rinch-primary-color-1);
+    transform: translateY(1px);
+}
 
 .rinch-action-icon--subtle {
     background-color: transparent;
@@ -64,12 +76,20 @@ pub fn styles() -> String {
 .rinch-action-icon--subtle:hover:not(:disabled) {
     background-color: var(--rinch-primary-color-0);
 }
+.rinch-action-icon--subtle:active:not(:disabled) {
+    background-color: var(--rinch-primary-color-1);
+    transform: translateY(1px);
+}
 
 .rinch-action-icon--transparent {
     background-color: transparent;
 }
 .rinch-action-icon--transparent:hover:not(:disabled) {
     background-color: var(--rinch-color-filled);
+}
+.rinch-action-icon--transparent:active:not(:disabled) {
+    background-color: var(--rinch-color-default);
+    transform: translateY(1px);
 }
 
 .rinch-action-icon--default {
@@ -79,6 +99,10 @@ pub fn styles() -> String {
 }
 .rinch-action-icon--default:hover:not(:disabled) {
     background-color: var(--rinch-color-default);
+}
+.rinch-action-icon--default:active:not(:disabled) {
+    background-color: var(--rinch-color-border);
+    transform: translateY(1px);
 }
 
 /* ActionIcon radius */

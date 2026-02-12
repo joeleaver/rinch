@@ -212,6 +212,15 @@ impl InputHandler {
             Key::Z if primary_mod => Some(EditCommand::Undo),
             Key::Y if primary_mod => Some(EditCommand::Redo),
 
+            // Indent / Outdent
+            Key::Tab => {
+                if modifiers.shift {
+                    Some(EditCommand::Outdent)
+                } else {
+                    Some(EditCommand::Indent)
+                }
+            }
+
             // Not handled
             _ => None,
         }

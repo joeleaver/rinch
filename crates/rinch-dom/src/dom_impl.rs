@@ -148,6 +148,11 @@ impl RinchDocument {
                 display: inline-block;
             }
 
+            /* Default list indentation (matches browser default) */
+            ul, ol {
+                padding-left: 40px;
+            }
+
             /* Default body margin - set to 0 for GUI apps */
             body {
                 margin: 0;

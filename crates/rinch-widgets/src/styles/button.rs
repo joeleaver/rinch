@@ -11,7 +11,11 @@ pub fn styles() -> String {
     cursor: pointer;
     text-decoration: none;
     white-space: nowrap;
-    transition: background-color 150ms ease, border-color 150ms ease;
+    transition: background-color 150ms ease, border-color 150ms ease, transform 100ms ease;
+}
+
+.rinch-button:active:not(:disabled) {
+    transform: translateY(1px);
 }
 
 .rinch-button:disabled {
@@ -64,6 +68,9 @@ pub fn styles() -> String {
 .rinch-button--filled:hover:not(:disabled) {
     background-color: var(--rinch-primary-color-7);
 }
+.rinch-button--filled:active:not(:disabled) {
+    background-color: var(--rinch-primary-color-8);
+}
 
 /* Button variants - outline */
 .rinch-button--outline {
@@ -75,6 +82,9 @@ pub fn styles() -> String {
 .rinch-button--outline:hover:not(:disabled) {
     background-color: var(--rinch-primary-color-0);
 }
+.rinch-button--outline:active:not(:disabled) {
+    background-color: var(--rinch-primary-color-1);
+}
 
 /* Button variants - light */
 .rinch-button--light {
@@ -84,6 +94,9 @@ pub fn styles() -> String {
 
 .rinch-button--light:hover:not(:disabled) {
     background-color: var(--rinch-primary-color-1);
+}
+.rinch-button--light:active:not(:disabled) {
+    background-color: var(--rinch-primary-color-2);
 }
 
 /* Button variants - subtle */
@@ -95,6 +108,9 @@ pub fn styles() -> String {
 .rinch-button--subtle:hover:not(:disabled) {
     background-color: var(--rinch-primary-color-0);
 }
+.rinch-button--subtle:active:not(:disabled) {
+    background-color: var(--rinch-primary-color-1);
+}
 
 /* Button variants - default */
 .rinch-button--default {
@@ -105,6 +121,9 @@ pub fn styles() -> String {
 
 .rinch-button--default:hover:not(:disabled) {
     background-color: var(--rinch-color-default);
+}
+.rinch-button--default:active:not(:disabled) {
+    background-color: var(--rinch-color-border);
 }
 
 /* Full width */
@@ -171,11 +190,17 @@ pub fn styles() -> String {
 .rinch-button--colored.rinch-button--filled:hover:not(:disabled) {
     background-color: var(--rinch-button-color-hover);
 }
+.rinch-button--colored.rinch-button--filled:active:not(:disabled) {
+    background-color: var(--rinch-button-color-hover);
+}
 .rinch-button--colored.rinch-button--light {
     background-color: var(--rinch-button-color-light);
     color: var(--rinch-button-color);
 }
 .rinch-button--colored.rinch-button--light:hover:not(:disabled) {
+    background-color: var(--rinch-button-color-light-hover);
+}
+.rinch-button--colored.rinch-button--light:active:not(:disabled) {
     background-color: var(--rinch-button-color-light-hover);
 }
 .rinch-button--colored.rinch-button--outline {
@@ -185,11 +210,17 @@ pub fn styles() -> String {
 .rinch-button--colored.rinch-button--outline:hover:not(:disabled) {
     background-color: var(--rinch-button-color-light);
 }
+.rinch-button--colored.rinch-button--outline:active:not(:disabled) {
+    background-color: var(--rinch-button-color-light-hover);
+}
 .rinch-button--colored.rinch-button--subtle {
     color: var(--rinch-button-color);
 }
 .rinch-button--colored.rinch-button--subtle:hover:not(:disabled) {
     background-color: var(--rinch-button-color-light);
+}
+.rinch-button--colored.rinch-button--subtle:active:not(:disabled) {
+    background-color: var(--rinch-button-color-light-hover);
 }
 
 /* Button variants - transparent */
@@ -201,6 +232,9 @@ pub fn styles() -> String {
 .rinch-button--transparent:hover:not(:disabled) {
     background-color: var(--rinch-color-filled);
 }
+.rinch-button--transparent:active:not(:disabled) {
+    background-color: var(--rinch-color-default);
+}
 
 /* Button variants - white */
 .rinch-button--white {
@@ -210,6 +244,9 @@ pub fn styles() -> String {
 }
 .rinch-button--white:hover:not(:disabled) {
     background-color: var(--rinch-color-filled);
+}
+.rinch-button--white:active:not(:disabled) {
+    background-color: var(--rinch-color-default);
 }
 "#
     .to_string()

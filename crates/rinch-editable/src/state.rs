@@ -167,6 +167,9 @@ impl<D: EditableDocument> EditableState<D> {
                 self.insert_text("\n");
                 None
             }
+
+            // Block structure (handled at the app level, not here)
+            EditCommand::Indent | EditCommand::Outdent => None,
         }
     }
 

@@ -193,6 +193,253 @@ impl RinchDocument {
         }
     }
 
+    /// Clean up anonymous block boxes from the previous layout pass.
+    ///
+    /// Anonymous block boxes wrap runs of inline children in mixed-content
+    /// block containers (CSS spec: "anonymous block boxes"). They are
+    /// recreated each layout pass to ensure correctness after DOM mutations.
+    fn cleanup_anonymous_block_boxes(&mut self) {
+        let anon_ids = std::mem::take(&mut self.tree.anonymous_block_boxes);
+        if anon_ids.is_empty() {
+            return;
+        }
+
+        // Track which parents need Taffy child rebuild
+        let mut parents_affected: Vec<usize> = Vec::new();
+
+        for &anon_id in &anon_ids {
+            let (parent_id, children) = {
+                let node = match self.tree.nodes.get(anon_id) {
+                    Some(n) => n,
+                    None => continue,
+                };
+                let parent_id = match node.parent {
+                    Some(p) => p,
+                    None => continue,
+                };
+                (parent_id, node.children.clone())
+            };
+
+            if !parents_affected.contains(&parent_id) {
+                parents_affected.push(parent_id);
+            }
+
+            // Find position of anonymous box in parent's DOM children
+            let pos = self.tree.nodes[parent_id]
+                .children
+                .iter()
+                .position(|&c| c == anon_id)
+                .unwrap_or(0);
+
+            // Remove anonymous box from parent's DOM children
+            self.tree.nodes[parent_id].children.remove(pos);
+
+            // Insert anonymous box's children back into parent at the same position
+            for (i, &child_id) in children.iter().enumerate() {
+                self.tree.nodes[parent_id]
+                    .children
+                    .insert(pos + i, child_id);
+                if let Some(child) = self.tree.nodes.get_mut(child_id) {
+                    child.parent = Some(parent_id);
+                    child.ifc_root = None;
+                }
+            }
+
+            // Remove anonymous Taffy node (children are detached, not deleted)
+            if let Some(anon_taffy) = self.tree.nodes[anon_id].taffy_id {
+                self.tree.taffy_map.remove(&anon_taffy);
+                let _ = self.tree.taffy.remove(anon_taffy);
+            }
+
+            // Remove anonymous DOM node from slab
+            self.tree.nodes.remove(anon_id);
+        }
+
+        // Rebuild Taffy children for all affected parents from DOM order
+        for parent_id in parents_affected {
+            if let Some(parent_taffy) = self.tree.nodes.get(parent_id).and_then(|n| n.taffy_id) {
+                let dom_children: Vec<usize> = self.tree.nodes[parent_id].children.clone();
+                let _ = self.tree.taffy.set_children(parent_taffy, &[]);
+                for &child_id in &dom_children {
+                    if let Some(child_taffy) =
+                        self.tree.nodes.get(child_id).and_then(|n| n.taffy_id)
+                    {
+                        let _ = self.tree.taffy.add_child(parent_taffy, child_taffy);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Create anonymous block boxes for block containers with mixed content.
+    ///
+    /// Per CSS spec, when a block container has both inline-level and block-level
+    /// children, consecutive runs of inline children are wrapped in anonymous
+    /// block boxes. These boxes become IFC roots for text layout.
+    fn create_anonymous_block_boxes(&mut self) {
+        // Phase 1: Detect mixed-content block containers
+        let mut containers: Vec<(usize, Vec<Vec<usize>>)> = Vec::new();
+
+        for (id, node) in &self.tree.nodes {
+            if !node.is_element() || node.is_anonymous_block_box {
+                continue;
+            }
+            // Only block containers can have anonymous boxes
+            if matches!(
+                node.display_mode,
+                DisplayMode::Inline | DisplayMode::InlineBlock | DisplayMode::Flex
+            ) {
+                continue;
+            }
+
+            let has_inline = node.children.iter().any(|&c| {
+                self.tree
+                    .nodes
+                    .get(c)
+                    .map(|n| n.is_inline())
+                    .unwrap_or(false)
+            });
+            let has_block = node.children.iter().any(|&c| {
+                self.tree
+                    .nodes
+                    .get(c)
+                    .map(|n| n.is_element() && !n.is_inline())
+                    .unwrap_or(false)
+            });
+
+            if !(has_inline && has_block) {
+                continue;
+            }
+
+            // Group consecutive inline children into runs
+            let mut runs: Vec<Vec<usize>> = Vec::new();
+            let mut current_run: Vec<usize> = Vec::new();
+
+            for &child_id in &node.children {
+                let is_inline = self
+                    .tree
+                    .nodes
+                    .get(child_id)
+                    .map(|c| c.is_inline())
+                    .unwrap_or(false);
+                if is_inline {
+                    current_run.push(child_id);
+                } else if !current_run.is_empty() {
+                    runs.push(std::mem::take(&mut current_run));
+                }
+            }
+            if !current_run.is_empty() {
+                runs.push(current_run);
+            }
+
+            if !runs.is_empty() {
+                containers.push((id, runs));
+            }
+        }
+
+        // Phase 2: Create anonymous boxes and reparent inline children
+        for (parent_id, runs) in containers {
+            let guard = self.tree.guard.clone();
+
+            for run in runs {
+                let first_child = run[0];
+                // Look up position in CURRENT children list (handles multiple runs correctly)
+                let first_pos = self.tree.nodes[parent_id]
+                    .children
+                    .iter()
+                    .position(|&c| c == first_child)
+                    .unwrap();
+
+                // Create anonymous block box DOM node
+                let anon_id = self.tree.nodes.vacant_key();
+                let mut anon_node = Node::element(anon_id, "div", guard.clone());
+                anon_node.is_anonymous_block_box = true;
+                anon_node.display_mode = DisplayMode::Block;
+                anon_node.parent = Some(parent_id);
+                anon_node.children = run.clone();
+                // Inherit computed style from parent for font properties
+                anon_node.computed_style = self.tree.nodes[parent_id].computed_style.clone();
+
+                // Create Taffy node for the anonymous box
+                let anon_taffy = self
+                    .tree
+                    .taffy
+                    .new_leaf(taffy::Style {
+                        display: taffy::Display::Block,
+                        ..Default::default()
+                    })
+                    .unwrap();
+                anon_node.taffy_id = Some(anon_taffy);
+                self.tree.taffy_map.insert(anon_taffy, anon_id);
+
+                // Insert anonymous node into slab
+                self.tree.nodes.insert(anon_node);
+
+                // Update children's parent references
+                for &child_id in &run {
+                    if let Some(child) = self.tree.nodes.get_mut(child_id) {
+                        child.parent = Some(anon_id);
+                    }
+                }
+
+                // Replace inline children in parent's DOM children with anonymous box
+                self.tree.nodes[parent_id]
+                    .children
+                    .retain(|c| !run.contains(c));
+                let insert_pos = first_pos.min(self.tree.nodes[parent_id].children.len());
+                self.tree.nodes[parent_id]
+                    .children
+                    .insert(insert_pos, anon_id);
+
+                // Track for cleanup on next layout pass
+                self.tree.anonymous_block_boxes.push(anon_id);
+            }
+
+            // Rebuild Taffy children for the parent and its anonymous boxes
+            // from DOM order. This avoids remove_child panics when Taffy
+            // children are out of sync with DOM (e.g., after IFC detached text nodes).
+            if let Some(parent_taffy) = self.tree.nodes.get(parent_id).and_then(|n| n.taffy_id) {
+                let _ = self.tree.taffy.set_children(parent_taffy, &[]);
+                let dom_children: Vec<usize> = self.tree.nodes[parent_id].children.clone();
+                for &child_id in &dom_children {
+                    if let Some(child_taffy) =
+                        self.tree.nodes.get(child_id).and_then(|n| n.taffy_id)
+                    {
+                        let _ = self.tree.taffy.add_child(parent_taffy, child_taffy);
+                    }
+                    // For anonymous boxes, also rebuild their Taffy children
+                    if self
+                        .tree
+                        .nodes
+                        .get(child_id)
+                        .map(|n| n.is_anonymous_block_box)
+                        .unwrap_or(false)
+                    {
+                        if let Some(anon_taffy) =
+                            self.tree.nodes.get(child_id).and_then(|n| n.taffy_id)
+                        {
+                            let anon_children: Vec<usize> =
+                                self.tree.nodes[child_id].children.clone();
+                            for &anon_child_id in &anon_children {
+                                if let Some(anon_child_taffy) = self
+                                    .tree
+                                    .nodes
+                                    .get(anon_child_id)
+                                    .and_then(|n| n.taffy_id)
+                                {
+                                    let _ = self
+                                        .tree
+                                        .taffy
+                                        .add_child(anon_taffy, anon_child_taffy);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Detect IFC roots and mark inline children.
     ///
     /// An element is an IFC root if it's a block container that has any
@@ -201,6 +448,11 @@ impl RinchDocument {
     /// paths (standalone Taffy vs IFC) and the sync bugs that arise when
     /// elements transition between them during editing.
     pub(crate) fn setup_inline_formatting_contexts(&mut self) {
+        // Clean up anonymous block boxes from previous layout pass,
+        // then recreate them for the current DOM state.
+        self.cleanup_anonymous_block_boxes();
+        self.create_anonymous_block_boxes();
+
         let mut ifc_roots: Vec<usize> = Vec::new();
         for (id, node) in &self.tree.nodes {
             if !node.is_element() {

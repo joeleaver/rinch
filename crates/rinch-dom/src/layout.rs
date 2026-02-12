@@ -331,13 +331,13 @@ pub fn build_taffy_style_full(
         && props.contains_key("display");
 
     // Choose defaults based on element type and whether CSS overrides are present.
-    // Block elements without explicit display: emulate CSS block with flex-column.
+    // Block elements use Taffy's native Block layout (children stack vertically, full width).
     // When CSS specifies display, use standard CSS flex defaults (row, nowrap).
     let (default_display_val, default_direction, default_wrap) = if has_explicit_display {
         (Display::Flex, FlexDirection::Row, FlexWrap::NoWrap)
     } else {
         match default_display {
-            DefaultDisplay::Block => (Display::Flex, FlexDirection::Column, FlexWrap::NoWrap),
+            DefaultDisplay::Block => (Display::Block, FlexDirection::Row, FlexWrap::NoWrap),
             DefaultDisplay::Inline => (Display::Flex, FlexDirection::Row, FlexWrap::NoWrap),
         }
     };
