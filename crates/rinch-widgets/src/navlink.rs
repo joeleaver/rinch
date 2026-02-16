@@ -19,7 +19,8 @@
 //! ```
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Icon, Widget};
+use rinch_core::Widget;
+use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use std::rc::Rc;
 
 /// Reactive callback type for boolean state.
@@ -96,9 +97,9 @@ pub struct NavLink {
     /// Color when active.
     pub color: Option<String>,
     /// Left section icon.
-    pub left_section: Option<Icon>,
+    pub left_section: Option<TablerIcon>,
     /// Right section icon.
-    pub right_section: Option<Icon>,
+    pub right_section: Option<TablerIcon>,
     /// Whether link is disabled.
     pub disabled: bool,
     /// Whether this navlink has nested children (makes it expandable).
@@ -208,7 +209,7 @@ impl Widget for NavLink {
         // Left section icon
         if let Some(icon) = self.left_section {
             let left_span = rinch_macros::rsx! { span { class: "rinch-navlink__left" } };
-            let icon_el = crate::icons::render_icon(__scope, icon);
+            let icon_el = render_tabler_icon(__scope, icon, TablerIconStyle::Outline);
             left_span.append_child(&icon_el);
             inner.append_child(&left_span);
         }
@@ -265,7 +266,7 @@ impl Widget for NavLink {
             inner.append_child(&right_span);
         } else if let Some(icon) = self.right_section {
             let right_span = rinch_macros::rsx! { span { class: "rinch-navlink__right" } };
-            let icon_el = crate::icons::render_icon(__scope, icon);
+            let icon_el = render_tabler_icon(__scope, icon, TablerIconStyle::Outline);
             right_span.append_child(&icon_el);
             inner.append_child(&right_span);
         }

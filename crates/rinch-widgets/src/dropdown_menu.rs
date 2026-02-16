@@ -3,7 +3,8 @@
 //! A dropdown menu component (distinct from native AppMenu/Menu).
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Icon, Widget};
+use rinch_core::Widget;
+use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
 /// Dropdown menu position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -227,9 +228,9 @@ impl Widget for DropdownMenuDropdown {
 #[derive(Debug, Default)]
 pub struct DropdownMenuItem {
     /// Left section icon.
-    pub left_section: Option<Icon>,
+    pub left_section: Option<TablerIcon>,
     /// Right section icon.
-    pub right_section: Option<Icon>,
+    pub right_section: Option<TablerIcon>,
     /// Color variant.
     pub color: Option<String>,
     /// Whether item is disabled.
@@ -280,7 +281,7 @@ impl Widget for DropdownMenuItem {
         // Left section
         if let Some(icon) = self.left_section {
             let left_span = rinch_macros::rsx! { span { class: "rinch-dropdown-menu__item-left" } };
-            let icon_el = crate::icons::render_icon(__scope, icon);
+            let icon_el = render_tabler_icon(__scope, icon, TablerIconStyle::Outline);
             left_span.append_child(&icon_el);
             btn.append_child(&left_span);
         }
@@ -296,7 +297,7 @@ impl Widget for DropdownMenuItem {
         if let Some(icon) = self.right_section {
             let right_span =
                 rinch_macros::rsx! { span { class: "rinch-dropdown-menu__item-right" } };
-            let icon_el = crate::icons::render_icon(__scope, icon);
+            let icon_el = render_tabler_icon(__scope, icon, TablerIconStyle::Outline);
             right_span.append_child(&icon_el);
             btn.append_child(&right_span);
         }

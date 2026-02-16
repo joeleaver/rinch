@@ -9,3 +9,4 @@ description = "UI widget library for the rinch GUI framework - Mantine-inspired 
 rinch-core.workspace = true
 rinch-theme.workspace = true
 rinch-macros.workspace = true
+rinch-tabler-icons.workspace = true

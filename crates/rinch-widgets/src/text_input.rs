@@ -175,11 +175,14 @@ impl Widget for TextInput {
             input.set_attribute("required", "");
         }
 
-        // Input handler
-        if let Some(callback) = &self.oninput {
-            let callback = callback.clone();
+        // Input handler — always register so the runtime can route text input
+        // to this element, even without an explicit oninput callback.
+        {
+            let callback = self.oninput.clone();
             let handler_id = __scope.register_input_handler(move |value| {
-                callback.invoke(value);
+                if let Some(cb) = &callback {
+                    cb.invoke(value);
+                }
             });
             input.set_attribute("data-oninput", &handler_id.to_string());
         }

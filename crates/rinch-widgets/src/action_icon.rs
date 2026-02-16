@@ -3,7 +3,8 @@
 //! An icon-only button for actions.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Icon, Widget, WidgetCallback};
+use rinch_core::{Widget, WidgetCallback};
+use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
 /// ActionIcon variant styles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -118,7 +119,7 @@ impl std::str::FromStr for ActionIconSize {
 #[derive(Debug, Default)]
 pub struct ActionIcon {
     /// Icon to display.
-    pub icon: Option<Icon>,
+    pub icon: Option<TablerIcon>,
     /// Button variant (filled, light, outline, subtle, transparent, default).
     pub variant: Option<String>,
     /// Button size (xs, sm, md, lg, xl).
@@ -213,10 +214,8 @@ impl Widget for ActionIcon {
             let loader = rinch_macros::rsx! { span { class: "rinch-action-icon__loader" } };
             container.append_child(&loader);
         } else if let Some(icon) = self.icon {
-            let icon_class = format!("rinch-icon rinch-icon--{}", icon.name());
-            let icon_span = rinch_macros::rsx! { span { class: "rinch-icon" } };
-            icon_span.set_attribute("class", &icon_class);
-            container.append_child(&icon_span);
+            let icon_el = render_tabler_icon(__scope, icon, TablerIconStyle::Outline);
+            container.append_child(&icon_el);
         } else {
             for child in children {
                 container.append_child(child);

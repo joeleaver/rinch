@@ -3,7 +3,8 @@
 //! Styled ordered and unordered lists.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Icon, Widget};
+use rinch_core::Widget;
+use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
 /// List type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -98,7 +99,7 @@ pub struct List {
     /// Whether to center list items.
     pub center: bool,
     /// Custom icon for list items.
-    pub icon: Option<Icon>,
+    pub icon: Option<TablerIcon>,
     /// Whether to show list markers.
     pub with_padding: bool,
 }
@@ -171,7 +172,7 @@ impl Widget for List {
 #[derive(Debug, Default)]
 pub struct ListItem {
     /// Custom icon for this item.
-    pub icon: Option<Icon>,
+    pub icon: Option<TablerIcon>,
 }
 
 impl Widget for ListItem {
@@ -182,7 +183,7 @@ impl Widget for ListItem {
             container.set_attribute("class", "rinch-list__item rinch-list__item--with-icon");
 
             let icon_span = rinch_macros::rsx! { span { class: "rinch-list__item-icon" } };
-            let icon_el = crate::icons::render_icon(__scope, icon);
+            let icon_el = render_tabler_icon(__scope, icon, TablerIconStyle::Outline);
             icon_span.append_child(&icon_el);
             container.append_child(&icon_span);
 

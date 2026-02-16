@@ -3,7 +3,8 @@
 //! Collapsible content sections.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Icon, Widget, WidgetCallback};
+use rinch_core::{Widget, WidgetCallback};
+use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
 /// Accordion variant style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -177,7 +178,7 @@ pub struct AccordionControl {
     /// Whether the control is disabled.
     pub disabled: bool,
     /// Icon to display (replaces default chevron).
-    pub icon: Option<Icon>,
+    pub icon: Option<TablerIcon>,
     /// Click callback.
     pub onclick: Option<WidgetCallback>,
 }
@@ -229,7 +230,7 @@ impl Widget for AccordionControl {
 
         // Chevron icon
         let chevron_el = if let Some(icon) = self.icon {
-            crate::icons::render_icon(__scope, icon)
+            render_tabler_icon(__scope, icon, TablerIconStyle::Outline)
         } else {
             crate::icons::chevron_down_dom("rinch-accordion__chevron", __scope)
         };

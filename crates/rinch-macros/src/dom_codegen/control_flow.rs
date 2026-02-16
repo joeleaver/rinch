@@ -344,22 +344,45 @@ fn generate_children_closure(
 /// Generate the body code for a list of RSX children, returning a single NodeHandle.
 ///
 /// If there's one child, it's returned directly. Multiple children are wrapped
-/// in a `display:contents` div.
+/// in a `display:contents` div. Leading `let` statements are emitted before
+/// the RSX content.
 fn generate_children_body(
     children: &[RsxNode],
     ctx: &mut DomCodegenContext,
 ) -> TokenStream2 {
-    if children.is_empty() {
-        quote! { __scope.create_element("div") }
-    } else if children.len() == 1 {
+    // Partition into leading statements and trailing RSX nodes
+    let mut statements = Vec::new();
+    let mut rsx_children = Vec::new();
+    let mut past_statements = false;
+
+    for child in children {
+        if !past_statements {
+            if let RsxNode::Statement(stmt) = child {
+                statements.push(stmt);
+                continue;
+            }
+            past_statements = true;
+        }
+        rsx_children.push(child);
+    }
+
+    let stmt_code: Vec<TokenStream2> = statements.iter().map(|stmt| quote! { #stmt }).collect();
+
+    if rsx_children.is_empty() {
+        quote! {
+            #(#stmt_code)*
+            __scope.create_element("div")
+        }
+    } else if rsx_children.len() == 1 {
         // Single child — check if it's a control flow node that needs a parent
-        match &children[0] {
+        match rsx_children[0] {
             RsxNode::IfBlock(_) | RsxNode::ForLoop(_) | RsxNode::MatchBlock(_) => {
                 // Control flow nodes insert into a parent, so we need a wrapper
                 let wrapper = ctx.next_var("cf_wrap");
-                let child_code = super::generate_child_code(&children[0], &wrapper, ctx);
+                let child_code = super::generate_child_code(rsx_children[0], &wrapper, ctx);
                 quote! {
                     {
+                        #(#stmt_code)*
                         let #wrapper = __scope.create_element("div");
                         #wrapper.set_attribute("style", "display:contents");
                         #child_code
@@ -368,18 +391,24 @@ fn generate_children_body(
                 }
             }
             _ => {
-                let child_code = super::node_to_dom(&children[0], ctx);
-                quote! { #child_code }
+                let child_code = super::node_to_dom(rsx_children[0], ctx);
+                quote! {
+                    {
+                        #(#stmt_code)*
+                        #child_code
+                    }
+                }
             }
         }
     } else {
         let wrapper = ctx.next_var("branch_wrap");
-        let children_code: Vec<TokenStream2> = children
+        let children_code: Vec<TokenStream2> = rsx_children
             .iter()
             .map(|child| super::generate_child_code(child, &wrapper, ctx))
             .collect();
         quote! {
             {
+                #(#stmt_code)*
                 let #wrapper = __scope.create_element("div");
                 #wrapper.set_attribute("style", "display:contents");
                 #(#children_code)*
@@ -419,8 +448,8 @@ pub fn generate_for_loop(
                 __scope,
                 &#parent_var,
                 #collection,
-                |#pattern| ::std::string::ToString::to_string(&#key_fn),
-                |#pattern, __child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
+                move |#pattern| ::std::string::ToString::to_string(&#key_fn),
+                move |#pattern, __child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
                     let __scope = __child_scope;
                     #body
                 }
@@ -438,8 +467,13 @@ pub fn generate_for_loop(
 /// as a special attribute and skips it (it would just become a harmless
 /// `set_attribute("key", ...)` otherwise).
 fn extract_key_expr(for_loop: &RsxForLoop) -> TokenStream2 {
-    // Look for key: prop on the first child element
-    if let Some(RsxNode::Element(el)) = for_loop.children.first()
+    // Look for key: prop on the first child element (skip leading let statements)
+    let first_element = for_loop
+        .children
+        .iter()
+        .find(|c| !matches!(c, RsxNode::Statement(_)));
+
+    if let Some(RsxNode::Element(el)) = first_element
         && let Some(key_prop) = el.props.iter().find(|p| p.name == "key")
     {
         let key_expr = &key_prop.value;

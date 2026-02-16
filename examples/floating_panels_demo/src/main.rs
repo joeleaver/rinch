@@ -107,115 +107,109 @@ fn app() -> NodeHandle {
             }
 
             // === Floating Editor Panel ===
-            Show {
-                when: {move || ed_visible.get()},
-                then: move |__scope: &mut RenderScope| rsx! {
-                    FloatingPanel {
-                        title: "Editor",
-                        x: Some(ed_x),
-                        y: Some(ed_y),
-                        width: Some(ed_w),
-                        height: Some(ed_h),
-                        on_close: move || ed_visible.set(false),
+            if ed_visible.get() {
+                FloatingPanel {
+                    title: "Editor",
+                    x: Some(ed_x),
+                    y: Some(ed_y),
+                    width: Some(ed_w),
+                    height: Some(ed_h),
+                    on_close: move || ed_visible.set(false),
 
-                        Stack { gap: "md",
-                            // Plaintext contenteditable
-                            Text { size: "xs", weight: "bold", color: "dimmed", "Plain Text" }
-                            div {
-                                contenteditable: "plaintext-only",
-                                style: "border: 1px solid var(--rinch-color-gray-3); padding: 10px; min-height: 80px; font-size: 14px; line-height: 1.6; outline: none; border-radius: var(--rinch-radius-sm); background: var(--rinch-color-gray-0); overflow-wrap: break-word; cursor: text",
-                                "The quick brown fox jumps over the lazy dog." br {} br {} "Try clicking to place the cursor, selecting text, and using arrow keys to navigate." br {} br {} "Drag this panel by its title bar to test that cursor and selection still work at a different position."
-                            }
+                    Stack { gap: "md",
+                        // Plaintext contenteditable
+                        Text { size: "xs", weight: "bold", color: "dimmed", "Plain Text" }
+                        div {
+                            contenteditable: "plaintext-only",
+                            style: "border: 1px solid var(--rinch-color-gray-3); padding: 10px; min-height: 80px; font-size: 14px; line-height: 1.6; outline: none; border-radius: var(--rinch-radius-sm); background: var(--rinch-color-gray-0); overflow-wrap: break-word; cursor: text",
+                            "The quick brown fox jumps over the lazy dog." br {} br {} "Try clicking to place the cursor, selecting text, and using arrow keys to navigate." br {} br {} "Drag this panel by its title bar to test that cursor and selection still work at a different position."
+                        }
 
-                            Divider {}
+                        Divider {}
 
-                            // Rich contenteditable
-                            Text { size: "xs", weight: "bold", color: "dimmed", "Rich Text" }
-                            div {
-                                contenteditable: "true",
-                                style: "border: 1px solid var(--rinch-color-gray-3); padding: 10px; min-height: 100px; font-size: 14px; line-height: 1.6; outline: none; border-radius: var(--rinch-radius-sm); background: var(--rinch-color-gray-0); overflow-wrap: break-word; cursor: text",
-                                "This has "
-                                span { style: "font-weight: bold;", "bold" }
-                                " and "
-                                span { style: "font-style: italic;", "italic" }
-                                " text, plus "
-                                span { style: "color: #228be6;", "colored" }
-                                " and "
-                                span { style: "text-decoration: underline;", "underlined" }
-                                " spans."
-                                br {}
-                                br {}
-                                "Second paragraph. "
-                                span { style: "font-weight: bold; font-style: italic;", "Bold italic" }
-                                " mixed with "
-                                span { style: "color: #e64980; font-weight: bold;", "bold pink" }
-                                " text."
-                            }
+                        // Rich contenteditable
+                        Text { size: "xs", weight: "bold", color: "dimmed", "Rich Text" }
+                        div {
+                            contenteditable: "true",
+                            style: "border: 1px solid var(--rinch-color-gray-3); padding: 10px; min-height: 100px; font-size: 14px; line-height: 1.6; outline: none; border-radius: var(--rinch-radius-sm); background: var(--rinch-color-gray-0); overflow-wrap: break-word; cursor: text",
+                            "This has "
+                            span { style: "font-weight: bold;", "bold" }
+                            " and "
+                            span { style: "font-style: italic;", "italic" }
+                            " text, plus "
+                            span { style: "color: #228be6;", "colored" }
+                            " and "
+                            span { style: "text-decoration: underline;", "underlined" }
+                            " spans."
+                            br {}
+                            br {}
+                            "Second paragraph. "
+                            span { style: "font-weight: bold; font-style: italic;", "Bold italic" }
+                            " mixed with "
+                            span { style: "color: #e64980; font-weight: bold;", "bold pink" }
+                            " text."
                         }
                     }
-                },
+                }
             }
 
             // === Floating Properties Panel ===
-            Show {
-                when: {move || props_visible.get()},
-                then: move |__scope: &mut RenderScope| rsx! {
-                    FloatingPanel {
-                        title: "Properties",
-                        x: Some(props_x),
-                        y: Some(props_y),
-                        width: Some(props_w),
-                        height: Some(props_h),
-                        on_close: move || props_visible.set(false),
+            if props_visible.get() {
+                FloatingPanel {
+                    title: "Properties",
+                    x: Some(props_x),
+                    y: Some(props_y),
+                    width: Some(props_w),
+                    height: Some(props_h),
+                    on_close: move || props_visible.set(false),
 
-                        Stack { gap: "sm",
-                            // Position section
-                            {section_header(__scope, "Position")}
-                            Group { gap: "sm",
-                                {labeled_input(__scope, "X", shape_x)}
-                                {labeled_input(__scope, "Y", shape_y)}
+                    Stack { gap: "sm",
+                        // Position section
+                        {section_header(__scope, "Position")}
+                        Group { gap: "sm",
+                            {labeled_input(__scope, "X", shape_x)}
+                            {labeled_input(__scope, "Y", shape_y)}
+                        }
+
+                        Divider {}
+
+                        // Size section
+                        {section_header(__scope, "Size")}
+                        Group { gap: "sm",
+                            {labeled_input(__scope, "W", shape_size)}
+                            {labeled_input(__scope, "R", shape_radius)}
+                        }
+
+                        Divider {}
+
+                        // Appearance section
+                        {section_header(__scope, "Appearance")}
+
+                        Stack { gap: "xs",
+                            Text { size: "xs", color: "dimmed", "Shape Color" }
+                            Group { gap: "xs",
+                                {color_swatch(__scope, "#228be6", shape_color)}
+                                {color_swatch(__scope, "#40c057", shape_color)}
+                                {color_swatch(__scope, "#fa5252", shape_color)}
+                                {color_swatch(__scope, "#fab005", shape_color)}
+                                {color_swatch(__scope, "#7950f2", shape_color)}
+                                {color_swatch(__scope, "#212529", shape_color)}
                             }
+                        }
 
-                            Divider {}
-
-                            // Size section
-                            {section_header(__scope, "Size")}
-                            Group { gap: "sm",
-                                {labeled_input(__scope, "W", shape_size)}
-                                {labeled_input(__scope, "R", shape_radius)}
-                            }
-
-                            Divider {}
-
-                            // Appearance section
-                            {section_header(__scope, "Appearance")}
-
-                            Stack { gap: "xs",
-                                Text { size: "xs", color: "dimmed", "Shape Color" }
-                                Group { gap: "xs",
-                                    {color_swatch(__scope, "#228be6", shape_color)}
-                                    {color_swatch(__scope, "#40c057", shape_color)}
-                                    {color_swatch(__scope, "#fa5252", shape_color)}
-                                    {color_swatch(__scope, "#fab005", shape_color)}
-                                    {color_swatch(__scope, "#7950f2", shape_color)}
-                                    {color_swatch(__scope, "#212529", shape_color)}
-                                }
-                            }
-
-                            Stack { gap: "xs",
-                                Text { size: "xs", color: "dimmed", "Canvas" }
-                                Group { gap: "xs",
-                                    {color_swatch(__scope, "#e7f5ff", canvas_color)}
-                                    {color_swatch(__scope, "#ebfbee", canvas_color)}
-                                    {color_swatch(__scope, "#fff9db", canvas_color)}
-                                    {color_swatch(__scope, "#f8f9fa", canvas_color)}
-                                    {color_swatch(__scope, "#fff5f5", canvas_color)}
-                                    {color_swatch(__scope, "#ffffff", canvas_color)}
-                                }
+                        Stack { gap: "xs",
+                            Text { size: "xs", color: "dimmed", "Canvas" }
+                            Group { gap: "xs",
+                                {color_swatch(__scope, "#e7f5ff", canvas_color)}
+                                {color_swatch(__scope, "#ebfbee", canvas_color)}
+                                {color_swatch(__scope, "#fff9db", canvas_color)}
+                                {color_swatch(__scope, "#f8f9fa", canvas_color)}
+                                {color_swatch(__scope, "#fff5f5", canvas_color)}
+                                {color_swatch(__scope, "#ffffff", canvas_color)}
                             }
                         }
                     }
-                },
+                }
             }
         }
     }

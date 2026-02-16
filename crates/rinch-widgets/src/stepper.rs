@@ -3,7 +3,8 @@
 //! Step-by-step progress indicator.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Icon, Widget};
+use rinch_core::Widget;
+use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
 /// Stepper size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -100,9 +101,9 @@ pub struct Stepper {
     /// Whether to allow clicking on completed steps.
     pub allow_next_steps_select: bool,
     /// Custom completed step icon.
-    pub completed_icon: Option<Icon>,
+    pub completed_icon: Option<TablerIcon>,
     /// Custom progress step icon.
-    pub progress_icon: Option<Icon>,
+    pub progress_icon: Option<TablerIcon>,
 }
 
 impl Stepper {
@@ -180,11 +181,11 @@ pub struct StepperStep {
     /// Step description text.
     pub description: Option<String>,
     /// Custom icon for this step.
-    pub icon: Option<Icon>,
+    pub icon: Option<TablerIcon>,
     /// Custom completed icon.
-    pub completed_icon: Option<Icon>,
+    pub completed_icon: Option<TablerIcon>,
     /// Custom progress icon.
-    pub progress_icon: Option<Icon>,
+    pub progress_icon: Option<TablerIcon>,
     /// Whether this step can be clicked.
     pub allow_step_click: bool,
     /// Whether this step allows selecting next step.
@@ -240,20 +241,20 @@ impl Widget for StepperStep {
             rinch_macros::rsx! { span { class: "rinch-stepper__loader" } }
         } else if state == "completed" {
             if let Some(custom_icon) = self.completed_icon {
-                crate::icons::render_icon(__scope, custom_icon)
+                render_tabler_icon(__scope, custom_icon, TablerIconStyle::Outline)
             } else {
                 crate::icons::check_dom(__scope)
             }
         } else if state == "progress" {
             if let Some(custom_icon) = self.progress_icon {
-                crate::icons::render_icon(__scope, custom_icon)
+                render_tabler_icon(__scope, custom_icon, TablerIconStyle::Outline)
             } else if let Some(custom_icon) = self.icon {
-                crate::icons::render_icon(__scope, custom_icon)
+                render_tabler_icon(__scope, custom_icon, TablerIconStyle::Outline)
             } else {
                 __scope.create_text(&step_number.to_string())
             }
         } else if let Some(custom_icon) = self.icon {
-            crate::icons::render_icon(__scope, custom_icon)
+            render_tabler_icon(__scope, custom_icon, TablerIconStyle::Outline)
         } else {
             __scope.create_text(&step_number.to_string())
         };

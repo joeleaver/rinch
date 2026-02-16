@@ -110,6 +110,10 @@ pub(crate) fn generate_child_code(
             // Native match inserts marker + content directly into parent
             control_flow::generate_match_block(match_block, parent_var, ctx)
         }
+        RsxNode::Statement(stmt) => {
+            // Emit statement directly (e.g., `let x = ...;`)
+            quote! { #stmt }
+        }
         _ => {
             let child_var = ctx.next_var("child");
             let child_dom = node_to_dom(child, ctx);
@@ -255,6 +259,10 @@ pub fn node_to_dom(node: &RsxNode, ctx: &mut DomCodegenContext) -> TokenStream2 
                     #wrapper_var
                 }
             }
+        }
+        RsxNode::Statement(stmt) => {
+            // Statements at top level just emit the code (unusual but valid)
+            quote! { { #stmt __scope.create_element("div") } }
         }
     }
 }

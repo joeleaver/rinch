@@ -20,7 +20,8 @@
 //! ```
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Icon, Widget};
+use rinch_core::Widget;
+use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use std::rc::Rc;
 
 /// Reactive callback type for opened state.
@@ -108,7 +109,7 @@ pub struct Notification {
     /// Whether notification has a colored border on the left.
     pub with_border: bool,
     /// Icon to display.
-    pub icon: Option<Icon>,
+    pub icon: Option<TablerIcon>,
     /// Auto-close delay in milliseconds (0 = no auto-close).
     pub auto_close: u32,
     /// Loading state.
@@ -260,7 +261,7 @@ impl Widget for Notification {
             root.append_child(&icon_div);
         } else if let Some(icon) = &self.icon {
             let icon_div = rinch_macros::rsx! { div { class: "rinch-notification__icon" } };
-            let icon_svg = crate::icons::render_icon(__scope, *icon);
+            let icon_svg = render_tabler_icon(__scope, *icon, TablerIconStyle::Outline);
             icon_div.append_child(&icon_svg);
             root.append_child(&icon_div);
         }

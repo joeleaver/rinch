@@ -30,7 +30,10 @@ pub fn element_to_dom_widget(element: &RsxElement, ctx: &mut DomCodegenContext) 
 
     for prop in &element.props {
         let name_str = prop.name.to_string();
-        if name_str == "style" {
+        if name_str == "key" {
+            // key: is handled by the parent for-loop, not the widget struct
+            continue;
+        } else if name_str == "style" {
             style_prop = Some(prop);
         } else if name_str == "class" {
             class_prop = Some(prop);

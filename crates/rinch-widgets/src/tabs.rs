@@ -3,7 +3,8 @@
 //! Tab-based navigation for switching between content panels.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Icon, Widget, WidgetCallback};
+use rinch_core::{Widget, WidgetCallback};
+use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
 /// Tab variant style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -234,9 +235,9 @@ pub struct Tab {
     /// Whether tab is disabled.
     pub disabled: bool,
     /// Left section icon.
-    pub left_section: Option<Icon>,
+    pub left_section: Option<TablerIcon>,
     /// Right section icon.
-    pub right_section: Option<Icon>,
+    pub right_section: Option<TablerIcon>,
     /// Click callback.
     pub onclick: Option<WidgetCallback>,
 }
@@ -285,7 +286,7 @@ impl Widget for Tab {
         // Left section icon
         if let Some(left) = self.left_section {
             let left_span = rinch_macros::rsx! { span { class: "rinch-tabs__tab-left" } };
-            let icon_el = crate::icons::render_icon(__scope, left);
+            let icon_el = render_tabler_icon(__scope, left, TablerIconStyle::Outline);
             left_span.append_child(&icon_el);
             btn.append_child(&left_span);
         }
@@ -300,7 +301,7 @@ impl Widget for Tab {
         // Right section icon
         if let Some(right) = self.right_section {
             let right_span = rinch_macros::rsx! { span { class: "rinch-tabs__tab-right" } };
-            let icon_el = crate::icons::render_icon(__scope, right);
+            let icon_el = render_tabler_icon(__scope, right, TablerIconStyle::Outline);
             right_span.append_child(&icon_el);
             btn.append_child(&right_span);
         }

@@ -4063,6 +4063,7 @@ version = "0.1.0"
 dependencies = [
  "rinch-core",
  "rinch-macros",
+ "rinch-tabler-icons",
  "rinch-theme",
 ]
 
@@ -4992,6 +4993,13 @@ dependencies = [
  "quote",
  "syn 2.0.114",
  "synstructure",
+]
+
+[[package]]
+name = "todo-app"
+version = "0.1.0"
+dependencies = [
+ "rinch",
 ]
 
 [[package]]

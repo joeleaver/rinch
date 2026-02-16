@@ -34,7 +34,8 @@ use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::element::ValueCallback;
 use rinch_core::hooks::use_signal;
 use rinch_core::reactive::Signal;
-use rinch_core::{Icon, Widget, show_dom};
+use rinch_core::{Widget, show_dom};
+use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
 // =============================================================================
 // TreeNodeData
@@ -52,7 +53,7 @@ pub struct TreeNodeData {
     /// Whether the node is disabled.
     pub disabled: bool,
     /// Optional icon to display.
-    pub icon: Option<Icon>,
+    pub icon: Option<TablerIcon>,
     /// Optional payload data.
     pub payload: Option<Rc<dyn Any>>,
 }
@@ -89,7 +90,7 @@ impl TreeNodeData {
     }
 
     /// Set the icon for this node.
-    pub fn with_icon(mut self, icon: Icon) -> Self {
+    pub fn with_icon(mut self, icon: TablerIcon) -> Self {
         self.icon = Some(icon);
         self
     }
@@ -566,7 +567,7 @@ impl Tree {
         if let Some(ref icon) = node.icon {
             let icon_wrapper = scope.create_element("span");
             icon_wrapper.set_attribute("class", "rinch-tree__icon");
-            let icon_el = crate::icons::render_icon(scope, *icon);
+            let icon_el = render_tabler_icon(scope, *icon, TablerIconStyle::Outline);
             icon_wrapper.append_child(&icon_el);
             content.append_child(&icon_wrapper);
         }

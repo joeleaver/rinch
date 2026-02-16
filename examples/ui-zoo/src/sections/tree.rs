@@ -4,6 +4,7 @@
 //! selection, custom rendering, icons, and various configurations.
 
 use rinch::prelude::*;
+use rinch_tabler_icons::TablerIcon;
 use std::rc::Rc;
 
 /// State for the Tree section, stored in context.
@@ -509,32 +510,32 @@ fn custom_render_demo(tree: UseTreeReturn) -> NodeHandle {
 fn icons_data() -> Vec<TreeNodeData> {
     vec![
         TreeNodeData::new("workspace", "Workspace")
-            .with_icon(Icon::Folder)
+            .with_icon(TablerIcon::Folder)
             .with_children(vec![
                 TreeNodeData::new("src", "Source Files")
-                    .with_icon(Icon::Folder)
+                    .with_icon(TablerIcon::Folder)
                     .with_children(vec![
-                        TreeNodeData::new("main.rs", "main.rs").with_icon(Icon::File),
-                        TreeNodeData::new("config.rs", "config.rs").with_icon(Icon::Settings),
-                        TreeNodeData::new("user.rs", "user.rs").with_icon(Icon::User),
+                        TreeNodeData::new("main.rs", "main.rs").with_icon(TablerIcon::File),
+                        TreeNodeData::new("config.rs", "config.rs").with_icon(TablerIcon::Settings),
+                        TreeNodeData::new("user.rs", "user.rs").with_icon(TablerIcon::User),
                     ]),
                 TreeNodeData::new("docs", "Documentation")
-                    .with_icon(Icon::Folder)
+                    .with_icon(TablerIcon::Folder)
                     .with_children(vec![
-                        TreeNodeData::new("readme", "README.md").with_icon(Icon::File),
-                        TreeNodeData::new("api", "API Reference").with_icon(Icon::Link),
+                        TreeNodeData::new("readme", "README.md").with_icon(TablerIcon::File),
+                        TreeNodeData::new("api", "API Reference").with_icon(TablerIcon::Link),
                     ]),
                 TreeNodeData::new("assets", "Assets")
-                    .with_icon(Icon::Folder)
+                    .with_icon(TablerIcon::Folder)
                     .with_children(vec![
-                        TreeNodeData::new("logo", "logo.png").with_icon(Icon::Image),
-                        TreeNodeData::new("banner", "banner.jpg").with_icon(Icon::Image),
+                        TreeNodeData::new("logo", "logo.png").with_icon(TablerIcon::Photo),
+                        TreeNodeData::new("banner", "banner.jpg").with_icon(TablerIcon::Photo),
                     ]),
                 TreeNodeData::new("contacts", "Contacts")
-                    .with_icon(Icon::Mail)
+                    .with_icon(TablerIcon::Mail)
                     .with_children(vec![
-                        TreeNodeData::new("support", "support@example.com").with_icon(Icon::Mail),
-                        TreeNodeData::new("phone", "+1-555-0123").with_icon(Icon::Phone),
+                        TreeNodeData::new("support", "support@example.com").with_icon(TablerIcon::Mail),
+                        TreeNodeData::new("phone", "+1-555-0123").with_icon(TablerIcon::Phone),
                     ]),
             ]),
     ]

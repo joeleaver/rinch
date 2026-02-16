@@ -159,8 +159,6 @@ pub mod prelude {
     pub use rinch_core::{
         ClickContext, InputCallback, get_click_context, start_drag, start_drag_absolute,
     };
-    // Icon enum for type-safe icons
-    pub use rinch_core::Icon;
     pub use rinch_macros::{component, rsx};
     // Window control functions
     #[cfg(feature = "desktop")]

@@ -20,6 +20,8 @@ pub enum RsxNode {
     ForLoop(RsxForLoop),
     /// A `match` block.
     MatchBlock(RsxMatchBlock),
+    /// A `let` statement (allowed inside control flow bodies).
+    Statement(syn::Stmt),
 }
 
 impl Parse for RsxNode {
@@ -241,7 +243,12 @@ impl Parse for RsxMatchArm {
 pub(crate) fn parse_rsx_children(input: ParseStream) -> Result<Vec<RsxNode>> {
     let mut children = Vec::new();
     while !input.is_empty() {
-        children.push(input.parse()?);
+        // Check for `let` statements (allowed inside control flow bodies)
+        if input.peek(Token![let]) {
+            children.push(RsxNode::Statement(input.parse()?));
+        } else {
+            children.push(input.parse()?);
+        }
         // Consume optional trailing comma
         if input.peek(Token![,]) {
             input.parse::<Token![,]>()?;
@@ -293,6 +300,7 @@ mod tests {
             Ok(RsxNode::IfBlock(_)) => "IfBlock",
             Ok(RsxNode::ForLoop(_)) => "ForLoop",
             Ok(RsxNode::MatchBlock(_)) => "MatchBlock",
+            Ok(RsxNode::Statement(_)) => "Statement",
             Err(_) => "Error",
         }
     }

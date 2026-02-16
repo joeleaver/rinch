@@ -3,7 +3,8 @@
 //! A styled quotation block.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Icon, Widget};
+use rinch_core::Widget;
+use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
 /// A blockquote component.
 ///
@@ -21,7 +22,7 @@ pub struct Blockquote {
     /// Citation/source.
     pub cite: Option<String>,
     /// Icon to display.
-    pub icon: Option<Icon>,
+    pub icon: Option<TablerIcon>,
     /// Color for the left border.
     pub color: Option<String>,
     /// Border radius.
@@ -69,10 +70,8 @@ impl Widget for Blockquote {
         // Icon element
         if let Some(icon) = self.icon {
             let icon_wrapper = rinch_macros::rsx! { span { class: "rinch-blockquote__icon" } };
-            let icon_class = format!("rinch-icon rinch-icon--{}", icon.name());
-            let icon_span = rinch_macros::rsx! { span { class: "rinch-icon" } };
-            icon_span.set_attribute("class", &icon_class);
-            icon_wrapper.append_child(&icon_span);
+            let icon_el = render_tabler_icon(__scope, icon, TablerIconStyle::Outline);
+            icon_wrapper.append_child(&icon_el);
             container.append_child(&icon_wrapper);
         }
 

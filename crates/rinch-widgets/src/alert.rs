@@ -3,7 +3,8 @@
 //! Displays a message with contextual feedback (info, success, warning, error).
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Icon, Widget, WidgetCallback};
+use rinch_core::{Widget, WidgetCallback};
+use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
 /// Alert variant styles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -157,7 +158,7 @@ pub struct Alert {
     /// Whether to show a close button.
     pub with_close_button: bool,
     /// Icon to display (optional).
-    pub icon: Option<Icon>,
+    pub icon: Option<TablerIcon>,
     /// Callback when close button is clicked.
     pub onclose: Option<WidgetCallback>,
 }
@@ -226,7 +227,7 @@ impl Widget for Alert {
         // Icon
         if let Some(icon) = &self.icon {
             let icon_div = rinch_macros::rsx! { div { class: "rinch-alert__icon" } };
-            let icon_svg = crate::icons::render_icon(__scope, *icon);
+            let icon_svg = render_tabler_icon(__scope, *icon, TablerIconStyle::Outline);
             icon_div.append_child(&icon_svg);
             container.append_child(&icon_div);
         }

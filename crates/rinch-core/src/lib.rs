@@ -7,7 +7,6 @@ pub mod event;
 pub mod events;
 pub mod for_loop;
 pub mod hooks;
-pub mod icon;
 pub mod match_dom;
 pub mod reactive;
 pub mod reconcile;
@@ -65,9 +64,6 @@ pub use dom::{
     clear_render_scope, has_render_scope, reactive_widget_dom, set_render_scope,
     try_with_render_scope, with_render_scope,
 };
-
-// Re-export icon types
-pub use icon::Icon;
 
 // Re-export ContentEditable API types
 pub use ce::{
