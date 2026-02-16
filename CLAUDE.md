@@ -1057,133 +1057,53 @@ Pattern bindings and guards are supported — each arm re-evaluates the scrutine
 
 **Runtime desugaring:** `if` → `show_dom()`, `for` → `for_each_dom_typed()`, `match` → `match_dom()`.
 
-### Conditional Rendering (Show Component)
+### For Loop Details
 
-The `Show` component is the explicit API for conditional rendering. **Prefer native `if`/`else` syntax for new code.** `Show` remains useful for lazy evaluation via the `then:` prop.
-
-**Lazy evaluation (recommended when children contain hooks):**
-```rust
-let visible = use_signal(|| true);
-
-rsx! {
-    Show {
-        when: {move || visible.get()},
-        then: |__scope: &mut RenderScope| rsx! { div { "Visible!" } },
-        fallback: |__scope: &mut RenderScope| rsx! { div { "Hidden" } },
-    }
-}
-```
-
-**Eager evaluation (simpler syntax, but hooks run even when hidden):**
-```rust
-let visible = use_signal(|| true);
-
-rsx! {
-    Show {
-        when: {move || visible.get()},
-        fallback: |__scope: &mut RenderScope| rsx! { div { "Hidden" } },
-        div { "Visible!" }
-    }
-}
-```
-
-**When to use lazy evaluation:**
-- When children call hooks (use_signal, use_effect, etc.)
-- When children render expensive components
-- When you want to defer initialization until the condition is true
-
-**Key difference:**
-- With `then:`, the closure body only executes when the condition becomes true
-- Without `then:`, children are evaluated immediately at render time
-
-When the condition changes, only the affected nodes are updated - the Effect swaps content surgically.
-
-**Example with component that uses hooks:**
-```rust
-// Use lazy evaluation to prevent hook panic when section is hidden
-Show {
-    when: move || current_section.get() == 1,
-    then: |__scope| my_section_with_hooks(__scope),
-}
-```
-
-For programmatic usage, use `show_dom()` directly:
+The `for` loop variable is **owned** (`T`, not `&T`), so you can capture it directly in `move` closures:
 
 ```rust
-show_dom(
-    __scope,
-    &parent,                                // Parent node
-    move || visible.get(),                  // Condition closure
-    |scope| {                               // Then branch
-        let div = scope.create_element("div");
-        div.set_text("Visible!");
-        div
-    },
-    Some(|scope| {                          // Else branch (optional)
-        let div = scope.create_element("div");
-        div.set_text("Hidden");
-        div
-    }),
-)
-```
-
-### List Rendering (For Component)
-
-The `For` component is the explicit API for keyed list rendering. **Prefer native `for` loop syntax for new code.** `For` remains useful when you need the `ForItem` API directly.
-
-```rust
-let items = use_signal(|| vec![
-    Item { id: 1, name: "Alice" },
-    Item { id: 2, name: "Bob" },
-]);
-
-rsx! {
-    For {
-        each: {move || ForItem::from_iter(items.get(), |item| item.id.to_string())},
-        |item: &Item| {
-            // Auto-downcast: typed parameter automatically downcasts ForItem
-            rsx! { div { {item.name.clone()} } }
+for todo in todos.get() {
+    let id = todo.id;
+    div { key: todo.id,
+        {todo.name.clone()}
+        button {
+            onclick: move || todos.update(|t| t.retain(|t| t.id != id)),
+            "Delete"
         }
     }
 }
 ```
 
-**`ForItem::from_iter`**: Converts any iterator to `Vec<ForItem>` with a key function. Preferred over manual `.map(|item| ForItem::new(...)).collect()`.
+**Item type requirements:** `Clone + PartialEq + 'static`. The `PartialEq` bound enables selective re-rendering — when the list changes, surviving items (same key) are compared by value. Only items whose data actually changed are re-rendered.
 
-**Auto-downcast**: When you use a typed parameter like `|item: &Item|`, the macro automatically generates the downcast code. No need to manually call `downcast_ref`.
+When the list changes, `for` uses keyed reconciliation (LIS algorithm) to compute minimal DOM operations:
+- **Insert**: New items are rendered and added at the correct position
+- **Remove**: Deleted items have their DOM nodes removed
+- **Move**: Reordered items are repositioned without re-rendering
+- **Changed**: Surviving items with different data (via `PartialEq`) are re-rendered
+- **Unchanged**: Items with matching keys and equal data keep their DOM nodes
 
-**Hooks in For bodies**: Hooks work inside For view closures. Each item gets its own isolated hook scope, so per-item state is fully supported:
+**Hooks in for bodies**: Hooks work inside `for` loop bodies. Each item gets its own isolated hook scope, so per-item state is fully supported:
 
 ```rust
-For {
-    each: {move || ForItem::from_iter(todos.get(), |t| t.id.to_string())},
-    |item: &Todo| {
-        let editing = use_signal(|| false);  // Per-item state
-        rsx! { div { {item.name.clone()} } }
+for todo in todos.get() {
+    let editing = use_signal(|| false);  // Per-item state
+    div { key: todo.id,
+        {todo.name.clone()}
+        button {
+            onclick: move || editing.update(|v| *v = !*v),
+            {|| if editing.get() { "Done" } else { "Edit" }}
+        }
     }
 }
 ```
 
-When the list changes, `For` uses keyed reconciliation (LIS algorithm) to compute minimal DOM operations:
-- **Insert**: New items are rendered and added at the correct position
-- **Remove**: Deleted items have their DOM nodes removed
-- **Move**: Reordered items are repositioned without re-rendering
-- **Unchanged**: Items with matching keys keep their DOM nodes (not re-rendered)
+### Programmatic Conditional/List Rendering
 
-For programmatic usage, use `for_each_dom()` or `for_each_dom_typed()` directly:
+For cases requiring explicit control, use the runtime functions directly:
 
-```rust
-for_each_dom_typed(
-    __scope,
-    &parent,
-    move || todos.get().into_iter().collect::<Vec<_>>(),
-    |todo| todo.id.to_string(),
-    |todo, __child_scope| {
-        let __scope = __child_scope;
-        rsx! { div { {todo.name.clone()} } }
-    },
-)
-```
+- `show_dom()` — conditional rendering (equivalent to `if`/`else`)
+- `for_each_dom_typed()` — keyed list rendering (equivalent to `for`)
 
 ### Reactive Widget Bindings
 

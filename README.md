@@ -52,7 +52,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["widgets", "theme"] }
+rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["desktop", "widgets", "theme"] }
 ```
 
 ### Basic Counter Example
@@ -63,12 +63,11 @@ use rinch::prelude::*;
 #[component]
 fn app() -> NodeHandle {
     let count = use_signal(|| 0);
-    let count_inc = count.clone();
 
     rsx! {
         div {
             h1 { "Count: " {|| count.get().to_string()} }
-            button { onclick: move || count_inc.update(|n| *n += 1),
+            button { onclick: move || count.update(|n| *n += 1),
                 "Increment"
             }
         }
@@ -92,7 +91,7 @@ fn main() {
   This expands to `fn app(__scope: &mut RenderScope) -> NodeHandle`. The manual signature also works.
 - Entry point: `run("title", width, height, component_fn)`
 - Reactive expressions use closure syntax: `{|| expr}` (without closure = captured once at initial render)
-- Clone signals before using in multiple closures to avoid borrow issues
+- `Signal` and `Memo` implement `Copy` — no `.clone()` needed before closures
 
 ### Component with Multiple Signals
 
@@ -104,18 +103,15 @@ fn app() -> NodeHandle {
     let name = use_signal(|| String::from("World"));
     let count = use_signal(|| 0);
 
-    let count_inc = count.clone();
-    let name_update = name.clone();
-
     rsx! {
         div {
             input {
-                onchange: move |ev: String| name_update.set(ev),
+                oninput: move |value: String| name.set(value),
                 placeholder: "Enter your name"
             }
             h1 { "Hello, " {|| name.get()} "!" }
             p { "Count: " {|| count.get().to_string()} }
-            button { onclick: move || count_inc.update(|n| *n += 1),
+            button { onclick: move || count.update(|n| *n += 1),
                 "Increment"
             }
         }

@@ -418,7 +418,7 @@ fn app() -> NodeHandle {
 
             input {
                 value: {|| input.get()},
-                oninput: move |e| input.set(e.value())
+                oninput: move |value: String| input.set(value),
             }
 
             button { onclick: move || {
@@ -429,14 +429,8 @@ fn app() -> NodeHandle {
                 }
             }, "Add" }
 
-            For {
-                each: {move || ForItem::from_iter(
-                    todos.get().into_iter().enumerate(),
-                    |(i, _)| i.to_string(),
-                )},
-                |item: &(usize, String)| {
-                    rsx! { li { {item.1.clone()} } }
-                }
+            for todo in todos.get() {
+                li { {todo.clone()} }
             }
         }
     }

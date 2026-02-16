@@ -1,6 +1,6 @@
 use rinch::prelude::*;
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 struct Todo {
     id: u32,
     text: String,

@@ -67,8 +67,6 @@ impl RsxElement {
                 | "MenuSeparator"
                 | "Fragment"
                 | "Portal"
-                | "Show"
-                | "For"
         )
     }
 
@@ -264,65 +262,6 @@ mod tests {
         assert_eq!(el.children.len(), 1);
     }
 
-    // ── For component ────────────────────────────────────────────
-
-    #[test]
-    fn parse_for_with_bare_closure() {
-        let el: RsxElement = parse_str(r#"For { each: {|| vec![]}, |item| { item } }"#).unwrap();
-        assert_eq!(el.name.to_string(), "For");
-        assert_eq!(el.props.len(), 1);
-        assert_eq!(el.props[0].name.to_string(), "each");
-        assert_eq!(el.children.len(), 1);
-        assert!(matches!(&el.children[0], RsxNode::Expr(_)));
-    }
-
-    #[test]
-    fn parse_for_with_move_closure() {
-        let el: RsxElement =
-            parse_str(r#"For { each: {|| vec![]}, move |item| { item } }"#).unwrap();
-        assert_eq!(el.name.to_string(), "For");
-        assert_eq!(el.props.len(), 1);
-        assert_eq!(el.children.len(), 1);
-        assert!(matches!(&el.children[0], RsxNode::Expr(_)));
-    }
-
-    // ── Show component ───────────────────────────────────────────
-
-    #[test]
-    fn parse_show_with_then_and_fallback() {
-        let el: RsxElement = parse_str(
-            r#"Show { when: {|| true}, then: |s| s.create_element("div"), fallback: |s| s.create_element("span") }"#,
-        )
-        .unwrap();
-        assert_eq!(el.name.to_string(), "Show");
-        assert_eq!(el.props.len(), 3);
-        assert_eq!(el.props[0].name.to_string(), "when");
-        assert_eq!(el.props[1].name.to_string(), "then");
-        assert_eq!(el.props[2].name.to_string(), "fallback");
-        assert!(el.children.is_empty());
-    }
-
-    #[test]
-    fn parse_show_eager_with_children() {
-        let el: RsxElement = parse_str(r#"Show { when: {|| true}, div { "visible" } }"#).unwrap();
-        assert_eq!(el.name.to_string(), "Show");
-        assert_eq!(el.props.len(), 1);
-        assert_eq!(el.children.len(), 1);
-        match &el.children[0] {
-            RsxNode::Element(child) => assert_eq!(child.name.to_string(), "div"),
-            _ => panic!("Expected Element child"),
-        }
-    }
-
-    #[test]
-    fn parse_show_with_only_when() {
-        let el: RsxElement = parse_str(r#"Show { when: {|| true} }"#).unwrap();
-        assert_eq!(el.name.to_string(), "Show");
-        assert_eq!(el.props.len(), 1);
-        assert_eq!(el.props[0].name.to_string(), "when");
-        assert!(el.children.is_empty());
-    }
-
     // ── Widget parsing ───────────────────────────────────────────
 
     #[test]
@@ -360,15 +299,12 @@ mod tests {
     // ── is_rinch_component / is_core_component / is_widget ──────
 
     #[test]
-    fn is_core_component_show() {
-        let el: RsxElement = parse_str(r#"Show { when: {|| true} }"#).unwrap();
-        assert!(el.is_rinch_component());
-    }
-
-    #[test]
-    fn is_core_component_for() {
-        let el: RsxElement = parse_str(r#"For { each: {|| vec![]} }"#).unwrap();
-        assert!(el.is_rinch_component());
+    fn show_and_for_are_widgets_not_core() {
+        // Show and For were removed as core components — they parse as widgets now
+        let show: RsxElement = parse_str(r#"Show { when: {|| true} }"#).unwrap();
+        assert!(show.is_rinch_component()); // Still PascalCase → widget
+        let for_el: RsxElement = parse_str(r#"For { each: {|| vec![]} }"#).unwrap();
+        assert!(for_el.is_rinch_component()); // Still PascalCase → widget
     }
 
     #[test]

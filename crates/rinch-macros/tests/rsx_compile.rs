@@ -99,111 +99,78 @@ fn test_onclick() -> NodeHandle {
 }
 
 // ============================================================
-// Show component
+// Conditional rendering (native if/else)
 // ============================================================
 
 #[component]
-fn test_show_eager() -> NodeHandle {
+fn test_if_basic() -> NodeHandle {
     let visible = use_signal(|| true);
     rsx! {
-        Show {
-            when: {move || visible.get()},
-            div { "Visible!" }
+        div {
+            if visible.get() {
+                div { "Visible!" }
+            }
         }
     }
 }
 
 #[component]
-fn test_show_lazy_then() -> NodeHandle {
+fn test_if_else() -> NodeHandle {
     let visible = use_signal(|| true);
     rsx! {
-        Show {
-            when: {move || visible.get()},
-            then: |__scope: &mut RenderScope| rsx! { div { "Visible!" } },
-        }
-    }
-}
-
-#[component]
-fn test_show_with_fallback() -> NodeHandle {
-    let visible = use_signal(|| true);
-    rsx! {
-        Show {
-            when: {move || visible.get()},
-            then: |__scope: &mut RenderScope| rsx! { div { "Visible!" } },
-            fallback: |__scope: &mut RenderScope| rsx! { div { "Hidden" } },
-        }
-    }
-}
-
-#[component]
-fn test_show_eager_with_fallback() -> NodeHandle {
-    let visible = use_signal(|| true);
-    rsx! {
-        Show {
-            when: {move || visible.get()},
-            fallback: |__scope: &mut RenderScope| rsx! { div { "Hidden" } },
-            div { "Visible!" }
+        div {
+            if visible.get() {
+                div { "Visible!" }
+            } else {
+                div { "Hidden" }
+            }
         }
     }
 }
 
 // ============================================================
-// For component
+// List rendering (native for loops)
 // ============================================================
+
+#[derive(Clone, Debug, PartialEq)]
+struct TestItem {
+    id: u32,
+    name: String,
+}
 
 #[component]
 fn test_for_basic() -> NodeHandle {
-    let items = use_signal(|| vec!["a".to_string(), "b".to_string()]);
+    let items = use_signal(|| vec![
+        TestItem { id: 1, name: "Alice".into() },
+        TestItem { id: 2, name: "Bob".into() },
+    ]);
     rsx! {
         div {
-            For {
-                each: {move || items.get().into_iter().enumerate().map(|(i, item)| {
-                    ForItem::new(i.to_string(), item)
-                }).collect()},
-                |item: &ForItem| {
-                    let text = item.downcast::<String>().unwrap().clone();
-                    rsx! { p { {text} } }
-                }
+            for item in items.get() {
+                p { key: item.id, {item.name.clone()} }
             }
         }
     }
 }
 
 #[component]
-fn test_for_with_braced_closure() -> NodeHandle {
-    let items = use_signal(|| vec!["a".to_string(), "b".to_string()]);
+fn test_for_with_closures() -> NodeHandle {
+    let items = use_signal(|| vec![
+        TestItem { id: 1, name: "Alice".into() },
+        TestItem { id: 2, name: "Bob".into() },
+    ]);
     rsx! {
         div {
-            For {
-                each: {move || items.get().into_iter().enumerate().map(|(i, item)| {
-                    ForItem::new(i.to_string(), item)
-                }).collect()},
-                {|item: &ForItem| {
-                    let text = item.downcast::<String>().unwrap().clone();
-                    rsx! { p { {text} } }
-                }}
-            }
-        }
-    }
-}
-
-// ============================================================
-// Bare closure children (For view function)
-// ============================================================
-
-#[component]
-fn test_bare_closure_child() -> NodeHandle {
-    let items = use_signal(|| vec![1u32, 2, 3]);
-    rsx! {
-        div {
-            For {
-                each: {move || items.get().into_iter().map(|n| {
-                    ForItem::new(n.to_string(), n)
-                }).collect()},
-                |item: &ForItem| {
-                    let n = *item.downcast::<u32>().unwrap();
-                    rsx! { span { {n.to_string()} } }
+            for item in items.get() {
+                let id = item.id;
+                div { key: item.id,
+                    {item.name.clone()}
+                    button {
+                        onclick: move || {
+                            items.update(|list| list.retain(|t| t.id != id));
+                        },
+                        "Delete"
+                    }
                 }
             }
         }
@@ -295,32 +262,29 @@ mod widget_tests {
 
     #[component]
     fn test_for_inside_widget() -> NodeHandle {
-        let items = use_signal(|| vec!["a".to_string(), "b".to_string()]);
+        let items = use_signal(|| vec![
+            TestItem { id: 1, name: "Alice".into() },
+            TestItem { id: 2, name: "Bob".into() },
+        ]);
         rsx! {
             Stack {
                 gap: "sm",
-                For {
-                    each: {move || items.get().into_iter().enumerate().map(|(i, item)| {
-                        ForItem::new(i.to_string(), item)
-                    }).collect()},
-                    |item: &ForItem| {
-                        let text = item.downcast::<String>().unwrap().clone();
-                        rsx! { Text { {text} } }
-                    }
+                for item in items.get() {
+                    Text { key: item.id, {item.name.clone()} }
                 }
             }
         }
     }
 
     #[component]
-    fn test_show_inside_widget() -> NodeHandle {
+    fn test_if_inside_widget() -> NodeHandle {
         let visible = use_signal(|| true);
         rsx! {
             Stack {
-                Show {
-                    when: {move || visible.get()},
-                    then: |__scope: &mut RenderScope| rsx! { Text { "Visible!" } },
-                    fallback: |__scope: &mut RenderScope| rsx! { Text { "Hidden" } },
+                if visible.get() {
+                    Text { "Visible!" }
+                } else {
+                    Text { "Hidden" }
                 }
             }
         }

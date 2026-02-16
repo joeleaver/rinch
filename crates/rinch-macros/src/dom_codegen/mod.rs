@@ -82,7 +82,7 @@ impl Default for DomCodegenContext {
 
 /// Generate child code for a parent element.
 ///
-/// Show and For elements use marker-based rendering and insert directly
+/// Control flow elements use marker-based rendering and insert directly
 /// into the parent. Other children are appended normally.
 pub(crate) fn generate_child_code(
     child: &RsxNode,
@@ -90,14 +90,6 @@ pub(crate) fn generate_child_code(
     ctx: &mut DomCodegenContext,
 ) -> TokenStream2 {
     match child {
-        RsxNode::Element(el) if el.name == "Show" => {
-            // Show inserts marker + content directly into parent
-            control_flow::element_to_dom_show(el, ctx, parent_var)
-        }
-        RsxNode::Element(el) if el.name == "For" => {
-            // For inserts marker + items directly into parent
-            control_flow::element_to_dom_for(el, ctx, parent_var)
-        }
         RsxNode::IfBlock(if_block) => {
             // Native if/else inserts marker + content directly into parent
             control_flow::generate_if_block(if_block, parent_var, ctx)
@@ -128,34 +120,6 @@ pub(crate) fn generate_child_code(
 /// Generate DOM construction code for an RSX element.
 pub fn element_to_dom(element: &RsxElement, ctx: &mut DomCodegenContext) -> TokenStream2 {
     let name = element.name.to_string();
-
-    // Show and For use marker-based rendering and need a parent context.
-    // When nested inside an element, they're handled by generate_child_code.
-    // At top level, create a display:contents wrapper.
-    if name == "Show" {
-        let wrapper_var = ctx.next_var("show_for_wrapper");
-        let inner = control_flow::element_to_dom_show(element, ctx, &wrapper_var);
-        return quote! {
-            {
-                let #wrapper_var = __scope.create_element("div");
-                #wrapper_var.set_attribute("style", "display:contents");
-                #inner
-                #wrapper_var
-            }
-        };
-    }
-    if name == "For" {
-        let wrapper_var = ctx.next_var("show_for_wrapper");
-        let inner = control_flow::element_to_dom_for(element, ctx, &wrapper_var);
-        return quote! {
-            {
-                let #wrapper_var = __scope.create_element("div");
-                #wrapper_var.set_attribute("style", "display:contents");
-                #inner
-                #wrapper_var
-            }
-        };
-    }
 
     // Special handling for Fragment - just wraps children in a span
     if name == "Fragment" {

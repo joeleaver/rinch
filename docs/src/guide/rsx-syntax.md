@@ -281,9 +281,7 @@ This approach has benefits:
 | `if`/`else` blocks | ✅ Yes | Native reactive conditional rendering |
 | `for` loops | ✅ Yes | Native reactive list rendering with keyed reconciliation |
 | `match` blocks | ✅ Yes | Native reactive multi-branch rendering |
-| Show component | ✅ Yes | Explicit conditional (still supported) |
-| For component | ✅ Yes | Explicit lists (still supported) |
-| `.iter().map()` | ❌ No | Use `for` loop or `For` component instead |
+| `.iter().map()` | ❌ No | Use `for` loop instead |
 | Window/Menu | N/A | Native OS elements, not DOM |
 
 ## Control Flow
@@ -393,8 +391,24 @@ The `for` loop desugars to `for_each_dom_typed()`, which:
 3. Evaluates the collection and renders initial items
 4. Creates an Effect that watches the collection
 5. When the collection changes, uses LIS-based keyed reconciliation (`diff_keyed()`) to compute minimal DOM operations: insert new items, remove deleted items, and reposition moved items
+6. For surviving items (same key), compares data via `PartialEq` — only re-renders items whose data actually changed
 
-**Important:** Items with matching keys are **not** re-rendered. Their existing DOM subtree is preserved as-is. If you need per-item reactivity (e.g., updating a todo's name), use Signals inside each item.
+The loop variable is **owned** (`T`, not `&T`), so you can capture it directly in `move` closures:
+
+```rust
+for todo in todos.get() {
+    let id = todo.id;
+    div { key: todo.id,
+        {todo.name.clone()}
+        button {
+            onclick: move || todos.update(|t| t.retain(|t| t.id != id)),
+            "Delete"
+        }
+    }
+}
+```
+
+**Note:** The item type must implement `Clone + PartialEq + 'static` for `for` loops to work. This enables efficient data comparison for selective re-rendering.
 
 ### `match`
 
@@ -449,257 +463,48 @@ match score.get() {
 
 The `match` block desugars to `match_dom()`, which generalizes `show_dom()` to N branches. A discriminant closure returns the index of the active branch (0, 1, 2, ...). When the discriminant changes, the old branch is disposed and the new branch is rendered.
 
-### Native control flow vs Show/For components
+### Programmatic Conditional Rendering (show_dom)
 
-| Feature | Native syntax | Component syntax |
-|---------|--------------|-----------------|
-| Conditional | `if cond { ... }` | `Show { when: ... }` |
-| List | `for x in items { ... }` | `For { each: ... }` |
-| Multi-branch | `match expr { ... }` | Chain multiple `Show` |
-| Lazy evaluation | Always lazy | `then:` prop for lazy |
-| Reactivity | Always reactive | Always reactive |
-| Verbosity | Minimal | More boilerplate |
-
-Both approaches are fully supported. Native syntax is recommended for new code. The `Show` and `For` components remain available for backward compatibility and for cases where you want explicit control (e.g., the `then:` prop for lazy evaluation).
-
-## Conditional Rendering with Show
-
-The `Show` component enables fine-grained conditional rendering. When the condition changes, only the affected DOM nodes are updated - the rest of the tree stays stable.
-
-### Show Syntax Modes
-
-Show supports two modes for conditional rendering:
-
-#### Lazy Evaluation (Recommended when children contain hooks)
-
-Use the `then:` prop for lazy evaluation. The closure body only executes when the condition becomes true, preventing hooks from running when hidden:
+For cases requiring explicit control (e.g., lazy evaluation of children that contain hooks), use `show_dom()` directly:
 
 ```rust
-let visible = use_signal(|| true);
-
-rsx! {
-    Show {
-        when: {move || visible.get()},
-        then: |__scope: &mut RenderScope| rsx! { div { "This is shown when visible is true!" } },
-        fallback: |__scope: &mut RenderScope| rsx! { div { "Hidden" } },
-    }
-}
-```
-
-**When to use lazy evaluation:**
-- When children call hooks (`use_signal`, `use_effect`, etc.)
-- When children render expensive components
-- When you want to defer initialization until the condition is true
-
-#### Eager Evaluation (Simpler syntax)
-
-Omit the `then:` prop for eager evaluation. Children are evaluated immediately at render time:
-
-```rust
-let visible = use_signal(|| true);
-
-rsx! {
-    Show {
-        when: {move || visible.get()},
-        fallback: |__scope: &mut RenderScope| rsx! { div { "Hidden" } },
-
-        div { "This is shown when visible is true!" }
-    }
-}
-```
-
-**Note:** With eager evaluation, hooks in children still run even when Show is hidden. This can cause panic if hooks are called when the condition is false.
-
-### Show Props
-
-| Prop | Type | Description |
-|------|------|-------------|
-| `when` | `{|| bool}` | Reactive condition closure |
-| `then` | `\|__scope\| Element` (optional) | Lazy-evaluated content to show when true |
-| `fallback` | `\|__scope\| NodeHandle` (optional) | Content to show when false |
-| Children | Elements | Content to show when true (eager evaluation, not used with `then:`) |
-
-### Show with Nested Reactivity
-
-Show preserves reactive content within its children:
-
-```rust
-let visible = use_signal(|| true);
-let count = use_signal(|| 0);
-
-rsx! {
-    Show {
-        when: {move || visible.get()},
-        then: |__scope: &mut RenderScope| rsx! {
-            // This reactive text updates independently of Show
-            p { "Count: " {|| count.get().to_string()} }
-            button { onclick: move || count.update(|n| *n += 1), "Increment" }
-        },
-    }
-}
-```
-
-### Show Cleanup
-
-When Show toggles, nested effects are automatically cleaned up:
-
-```rust
-Show {
-    when: {move || active.get()},
-    then: |__scope: &mut RenderScope| {
-        // When Show toggles to false:
-        // - This component's effects are disposed
-        // - Cleanup functions run
-        // - DOM nodes are removed
-        MyComponent {}
+show_dom(
+    __scope,
+    &parent,
+    move || visible.get(),           // Condition closure
+    |scope| {                        // Then branch
+        let div = scope.create_element("div");
+        div.set_text("Visible!");
+        div
     },
-}
+    Some(|scope| {                   // Else branch (optional)
+        let div = scope.create_element("div");
+        div.set_text("Hidden");
+        div
+    }),
+)
 ```
 
-### Example: Component with Hooks
+### Programmatic List Rendering (for_each_dom_typed)
 
-This example shows why lazy evaluation is important:
-
-```rust
-#[component]
-fn section_with_hooks() -> NodeHandle {
-    // This would panic if evaluated when section is hidden
-    let local_state = use_signal(|| 0);
-    rsx! { div { {|| local_state.get().to_string()} } }
-}
-
-#[component]
-fn app() -> NodeHandle {
-    let current_section = use_signal(|| 1);
-
-    rsx! {
-        Show {
-            when: {move || current_section.get() == 1},
-            // Use lazy evaluation to prevent hook panic
-            then: |__scope| section_with_hooks(__scope),
-        }
-    }
-}
-```
-
-## List Rendering with For
-
-The `For` component enables efficient list rendering with keyed reconciliation. When the list changes, only affected items are added, removed, or moved - unchanged items keep their DOM nodes and internal state.
-
-### Auto-Downcast Mode (Recommended)
-
-Use a typed parameter to automatically downcast from `ForItem`:
+For cases requiring the raw list API, use `for_each_dom_typed()` directly:
 
 ```rust
-let items = use_signal(|| vec![
-    Item { id: "1", name: "Alice" },
-    Item { id: "2", name: "Bob" },
-    Item { id: "3", name: "Carol" },
-]);
-
-rsx! {
-    For {
-        each: {move || items.get().into_iter().map(|item| {
-            ForItem::new(item.id.clone(), item)
-        }).collect()},
-
-        |item: &Item| {
-            // Auto-downcast: no manual downcast_ref needed!
-            rsx! {
-                div { class: "list-item",
-                    {item.name.clone()}
-                }
-            }
-        }
-    }
-}
-```
-
-### Manual Mode
-
-You can still use `&ForItem` and manually downcast:
-
-```rust
-rsx! {
-    For {
-        each: {move || items.get().into_iter().map(|item| {
-            ForItem::new(item.id.clone(), item)
-        }).collect()},
-
-        |item: &ForItem| {
-            let data = item.data.downcast_ref::<Item>().unwrap();
-            rsx! {
-                div { class: "list-item",
-                    {data.name.clone()}
-                }
-            }
-        }
-    }
-}
-```
-
-### For Props
-
-| Prop | Type | Description |
-|------|------|-------------|
-| `each` | `{|| Vec<ForItem>}` | Reactive closure returning items |
-| Children | `|item: &T| Element` | Render function for each item (auto-downcast) |
-| Children | `|item: &ForItem| Element` | Render function (manual downcast) |
-
-### ForItem
-
-Each item needs a unique key for reconciliation:
-
-```rust
-// Create from any data type
-let item = ForItem::new("unique-key", my_data);
-
-// Access the key
-let key = item.key; // "unique-key"
-
-// Manual downcast to original type (when using |item: &ForItem|)
-if let Some(data) = item.data.downcast_ref::<MyData>() {
-    // use data
-}
-```
-
-### Helper: ForItem::from_iter
-
-Convert any iterator to ForItems:
-
-```rust
-use rinch::prelude::*;
-
-let items = ForItem::from_iter(my_vec, |item| item.id.clone());
-```
-
-The legacy `to_for_items()` function also works but `ForItem::from_iter` is preferred.
-
-### Hooks in For Bodies
-
-Hooks work inside For view closures. Each item gets its own isolated hook scope:
-
-```rust
-For {
-    each: {move || ForItem::from_iter(todos.get(), |t| t.id.to_string())},
-    |item: &Todo| {
-        let editing = use_signal(|| false);
-        rsx! {
-            div {
-                span { {item.name.clone()} }
-                button {
-                    onclick: move || editing.update(|v| *v = !*v),
-                    {|| if editing.get() { "Done" } else { "Edit" }}
-                }
-            }
-        }
-    }
-}
+for_each_dom_typed(
+    __scope,
+    &parent,
+    move || todos.get().into_iter().collect::<Vec<_>>(),
+    |todo| todo.id.to_string(),
+    |todo, __child_scope| {
+        let __scope = __child_scope;
+        rsx! { div { {todo.name.clone()} } }
+    },
+)
 ```
 
 ### How Keyed Reconciliation Works
 
-When the list changes, For uses the LIS (Longest Increasing Subsequence) algorithm to find the minimum DOM operations:
+When the list changes, `for` uses the LIS (Longest Increasing Subsequence) algorithm to find the minimum DOM operations:
 
 ```rust
 // Before: ["a", "b", "c", "d"]
@@ -715,30 +520,11 @@ When the list changes, For uses the LIS (Longest Increasing Subsequence) algorit
 This means:
 - **Unchanged items** keep their DOM nodes (no re-render)
 - **Moved items** are repositioned in DOM (no re-create)
+- **Changed items** are re-rendered if their data differs (via `PartialEq`)
 - **Internal state** (signals, effects) is preserved for unchanged items
 - **Only new items** trigger component initialization
 
-### Nested Reactivity in For
-
-Items can contain their own reactive content:
-
-```rust
-For {
-    each: {move || ...},
-    |item: &Item| {
-        // Auto-downcast: item is already &Item
-
-        // This effect is scoped to this item
-        // When the item is removed, the effect is disposed
-        rsx! {
-            div {
-                // Reactive text within the item
-                span { {|| item.count.get().to_string()} }
-            }
-        }
-    }
-}
-```
+> **Note:** The loop variable is owned (`T`, not `&T`), so you can capture it directly in `move` closures without manual field extraction.
 
 ## Event Handlers
 

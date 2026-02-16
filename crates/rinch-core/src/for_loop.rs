@@ -113,6 +113,9 @@ struct ItemState {
 /// * `parent` - The parent node to insert the marker and items into
 /// * `each` - A closure that returns the current list of ForItems
 /// * `view` - A closure that renders a single item to a NodeHandle
+/// * `eq_fn` - Optional equality function to compare ForItem data.
+///   When provided, surviving items whose data changed are re-rendered.
+///   When None, surviving items are never re-rendered (old behavior).
 ///
 /// # Returns
 ///
@@ -123,6 +126,7 @@ pub fn for_each_dom<E, V>(
     parent: &NodeHandle,
     each: E,
     view: V,
+    eq_fn: Option<Rc<dyn Fn(&ForItem, &ForItem) -> bool>>,
 ) -> NodeHandle
 where
     E: Fn() -> Vec<ForItem> + 'static,
@@ -192,6 +196,7 @@ where
     let keys_order_clone = keys_order.clone();
     let doc_weak_clone = doc_weak.clone();
     let view_clone = view.clone();
+    let eq_fn_clone = eq_fn;
     let marker_effect = marker_clone;
 
     let effect = Effect::new(move || {
@@ -205,38 +210,16 @@ where
         let new_items_map: HashMap<String, &ForItem> =
             new_items.iter().map(|i| (i.key.clone(), i)).collect();
 
-        // Keys match — re-render each item with new data
-        if old_keys == new_keys {
-            let mut state = items_state_clone.borrow_mut();
-            for item in &new_items {
-                if let Some(old_state) = state.get_mut(&item.key)
-                    && let Some(doc) = doc_weak_clone.upgrade()
-                {
-                    // Dispose old scope (cleans up old effects)
-                    if let Some(old_scope) = old_state.scope.take() {
-                        old_scope.dispose();
-                    }
-                    let mut child_scope = RenderScope::new(doc, parent_id);
-                    push_hook_scope(Some(std::mem::take(&mut old_state.hooks)));
-                    let new_node = with_render_context(|| view_clone(item, &mut child_scope));
-                    let hooks = pop_hook_scope();
-                    old_state.node.insert_after(&new_node);
-                    old_state.node.remove();
-                    old_state.node = new_node;
-                    old_state.item = item.clone();
-                    old_state.hooks = hooks;
-                    old_state.scope = Some(child_scope);
-                }
-            }
-            return;
-        }
-
-        // Get diff operations
+        // Always use diff_keyed to compute minimal operations
         let ops = diff_keyed(&old_keys, &new_keys);
 
         // Apply operations
         let mut state = items_state_clone.borrow_mut();
         let mut keys = keys_order_clone.borrow_mut();
+
+        // Track which keys were freshly inserted (skip them in data comparison)
+        let mut inserted_keys: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         for op in ops {
             match op {
@@ -255,6 +238,8 @@ where
                     }
                 }
                 ListOp::Insert { key, new_index } => {
+                    inserted_keys.insert(key.clone());
+
                     // Get the item data
                     if let Some(&item) = new_items_map.get(&key)
                         && let Some(doc) = doc_weak_clone.upgrade()
@@ -355,6 +340,40 @@ where
             }
         }
 
+        // Data comparison pass: re-render surviving items whose data changed.
+        // This ensures that when a todo's `completed` field changes, the item
+        // gets fresh closures with the new value.
+        if let Some(ref eq_fn) = eq_fn_clone {
+            for item in &new_items {
+                // Skip freshly inserted items — they were just rendered
+                if inserted_keys.contains(&item.key) {
+                    continue;
+                }
+                if let Some(old_state) = state.get_mut(&item.key) {
+                    // Compare old data vs new data
+                    if !eq_fn(&old_state.item, item) {
+                        // Data changed — re-render this item
+                        if let Some(doc) = doc_weak_clone.upgrade() {
+                            if let Some(old_scope) = old_state.scope.take() {
+                                old_scope.dispose();
+                            }
+                            let mut child_scope = RenderScope::new(doc, parent_id);
+                            push_hook_scope(Some(std::mem::take(&mut old_state.hooks)));
+                            let new_node =
+                                with_render_context(|| view_clone(item, &mut child_scope));
+                            let hooks = pop_hook_scope();
+                            old_state.node.insert_after(&new_node);
+                            old_state.node.remove();
+                            old_state.node = new_node;
+                            old_state.item = item.clone();
+                            old_state.hooks = hooks;
+                            old_state.scope = Some(child_scope);
+                        }
+                    }
+                }
+            }
+        }
+
         // Update keys to match new order
         *keys = new_keys;
     });
@@ -370,6 +389,13 @@ where
 /// Wraps items into `ForItem` internally and delegates to `for_each_dom`.
 /// The user provides a typed collection, key function, and view function
 /// without ever seeing `ForItem` or `downcast_ref`.
+///
+/// Items with matching keys whose data has changed (via `PartialEq`) are
+/// automatically re-rendered with fresh closures. Items whose data is
+/// unchanged keep their existing DOM nodes and state.
+///
+/// The view function receives an **owned** `T`, so loop variables can be
+/// captured directly in `move` closures without manual extraction.
 ///
 /// # Arguments
 ///
@@ -390,14 +416,22 @@ pub fn for_each_dom_typed<T, C, K, V>(
     view: V,
 ) -> NodeHandle
 where
-    T: 'static,
+    T: Clone + PartialEq + 'static,
     C: Fn() -> Vec<T> + 'static,
     K: Fn(&T) -> String + 'static,
-    V: Fn(&T, &mut RenderScope) -> NodeHandle + 'static,
+    V: Fn(T, &mut RenderScope) -> NodeHandle + 'static,
 {
     let key_fn = Rc::new(key_fn);
     let view = Rc::new(view);
     let kf = key_fn.clone();
+
+    // Build PartialEq-based equality function for data comparison
+    let eq_fn: Rc<dyn Fn(&ForItem, &ForItem) -> bool> = Rc::new(|a: &ForItem, b: &ForItem| {
+        match (a.data.downcast_ref::<T>(), b.data.downcast_ref::<T>()) {
+            (Some(a_data), Some(b_data)) => a_data == b_data,
+            _ => false,
+        }
+    });
 
     for_each_dom(
         scope,
@@ -416,8 +450,9 @@ where
                 .data
                 .downcast_ref::<T>()
                 .expect("for_each_dom_typed: type mismatch in ForItem downcast");
-            view(data, scope)
+            view(data.clone(), scope)
         },
+        Some(eq_fn),
     )
 }
 
@@ -484,7 +519,7 @@ where
     /// Panics if `view` was not called.
     pub fn build(self, scope: &mut RenderScope, parent: &NodeHandle) -> NodeHandle {
         let view = self.view.expect("FineForBuilder: view() must be called");
-        for_each_dom(scope, parent, self.each, view)
+        for_each_dom(scope, parent, self.each, view, None)
     }
 }
 

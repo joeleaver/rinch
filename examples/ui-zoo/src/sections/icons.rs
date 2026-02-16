@@ -331,6 +331,7 @@ fn reactive_icon_grid(current_page: Signal<usize>, use_filled: Signal<bool>) -> 
 
             cell
         },
+        None, // No PartialEq-based data comparison (raw ForItem API)
     );
 
     grid_container
