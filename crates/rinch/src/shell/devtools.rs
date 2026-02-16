@@ -20,7 +20,7 @@ pub enum DevToolsPanel {
 pub struct DevToolsState {
     /// Whether the devtools panel is visible.
     pub visible: bool,
-    /// The currently selected node ID (blitz node ID).
+    /// The currently selected DOM node ID.
     pub selected_node: Option<usize>,
     /// Whether inspect mode is active (click to select elements).
     pub inspect_mode: bool,

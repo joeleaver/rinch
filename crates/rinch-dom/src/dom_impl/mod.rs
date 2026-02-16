@@ -1,0 +1,365 @@
+//! DomDocument implementation for rinch-dom.
+
+use std::collections::HashMap;
+
+use peniko::Brush;
+use servo_arc::Arc as ServoArc;
+
+// Stylo CSS engine imports
+use euclid::Scale;
+use style::context::QuirksMode;
+use style::font_metrics::FontMetrics;
+use style::media_queries::{Device, MediaType};
+use style::properties::ComputedValues;
+use style::properties::style_structs::Font as StyloFont;
+use style::queries::values::PrefersColorScheme;
+use style::stylist::Stylist;
+use style::values::computed::font::GenericFontFamily;
+use style::values::computed::{CSSPixelLength, Length};
+use style::values::specified::font::QueryFontMetricsFlags;
+use stylo_config as style_config;
+// CSSPixel and DevicePixel are used via euclid::Size2D type parameters
+
+use crate::node::{DirtyFlags, NodeTree};
+
+mod dom_document_impl;
+
+/// A simple FontMetricsProvider that returns default/fixed values.
+/// This is used by the Stylist's Device to resolve font-relative units.
+#[derive(Debug)]
+pub(crate) struct SimpleFontMetricsProvider;
+
+impl style::servo::media_queries::FontMetricsProvider for SimpleFontMetricsProvider {
+    fn query_font_metrics(
+        &self,
+        _vertical: bool,
+        _font: &StyloFont,
+        _base_size: CSSPixelLength,
+        _flags: QueryFontMetricsFlags,
+    ) -> FontMetrics {
+        // Return sensible defaults - these will be used for font-relative units
+        // like ex, ch, cap, ic when we don't have actual font metrics
+        FontMetrics::default()
+    }
+
+    fn base_size_for_generic(&self, _generic: GenericFontFamily) -> Length {
+        // Default base font size (16px for most generics)
+        Length::new(16.0)
+    }
+}
+
+/// The primary document type for rinch-dom.
+///
+/// Implements [`DomDocument`] using a slab-allocated node tree.
+/// In later phases, this will integrate Taffy for layout,
+/// Parley for text, and Vello for painting.
+pub struct RinchDocument {
+    /// The node tree.
+    pub tree: NodeTree,
+    /// Parley font context for text shaping.
+    pub font_cx: parley::FontContext,
+    /// Parley layout context for text measurement.
+    pub layout_cx: parley::LayoutContext<Brush>,
+    /// Stylo CSS engine stylist for CSS cascade and selector matching.
+    pub stylist: Stylist,
+}
+
+impl Default for RinchDocument {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RinchDocument {
+    /// Create a new document with root and body nodes.
+    pub fn new() -> Self {
+        // Enable CSS Grid support in Stylo
+        // This must be called before any CSS parsing happens
+        style_config::set_bool("layout.grid.enabled", true);
+
+        // Create the Stylo Device with default viewport and settings
+        let viewport_size = euclid::Size2D::new(800.0, 600.0);
+        let device_pixel_ratio = Scale::new(1.0);
+        let font_metrics_provider = Box::new(SimpleFontMetricsProvider);
+        let default_font = StyloFont::initial_values();
+        let default_computed_values =
+            ComputedValues::initial_values_with_font_override(default_font);
+
+        let device = Device::new(
+            MediaType::screen(),
+            QuirksMode::NoQuirks,
+            viewport_size,
+            device_pixel_ratio,
+            font_metrics_provider,
+            default_computed_values,
+            PrefersColorScheme::Light,
+        );
+
+        let stylist = Stylist::new(device, QuirksMode::NoQuirks);
+
+        let mut doc = Self {
+            tree: NodeTree::new(),
+            font_cx: parley::FontContext::new(),
+            layout_cx: parley::LayoutContext::new(),
+            stylist,
+        };
+
+        // Load User-Agent stylesheet with default display values for HTML elements
+        doc.load_ua_stylesheet();
+
+        doc
+    }
+
+    /// Load the User-Agent stylesheet with default display values for HTML elements.
+    /// Without this, all elements default to display: inline in Stylo.
+    fn load_ua_stylesheet(&mut self) {
+        use style::media_queries::MediaList;
+        use style::stylesheets::{
+            AllowImportRules, DocumentStyleSheet, Origin, Stylesheet, UrlExtraData,
+        };
+
+        // Basic UA stylesheet defining block-level elements
+        // Note: Stylo's initial border-width is 'medium' (3px), so we reset it to 0
+        let ua_css = r#"
+            * {
+                border-width: 0;
+            }
+
+            html, body, div, section, article, aside, header, footer, main, nav,
+            h1, h2, h3, h4, h5, h6, p, blockquote, pre, figure, figcaption,
+            ul, ol, li, dl, dt, dd, table, form, fieldset, legend, hr,
+            address, details, summary {
+                display: block;
+            }
+
+            head, style, script, link, meta, title, noscript {
+                display: none;
+            }
+
+            span, a, em, strong, b, i, u, s, sub, sup, small, mark, abbr, cite,
+            code, kbd, samp, var, q, dfn, time, label, br, wbr {
+                display: inline;
+            }
+
+            img, input, button, select, textarea {
+                display: inline-block;
+            }
+
+            /* Default list indentation (matches browser default) */
+            ul, ol {
+                padding-left: 40px;
+            }
+
+            /* Default body margin - set to 0 for GUI apps */
+            body {
+                margin: 0;
+            }
+        "#;
+
+        let url_data = UrlExtraData::from(url::Url::parse("about:ua-stylesheet").unwrap());
+        let media = ServoArc::new(self.tree.guard.wrap(MediaList::empty()));
+
+        let stylesheet = Stylesheet::from_str(
+            ua_css,
+            url_data,
+            Origin::UserAgent, // Use UserAgent origin for lowest priority
+            media,
+            self.tree.guard.clone(),
+            None, // stylesheet_loader
+            None, // error_reporter
+            QuirksMode::NoQuirks,
+            AllowImportRules::No,
+        );
+
+        let doc_stylesheet = DocumentStyleSheet(ServoArc::new(stylesheet));
+        let guard = self.tree.guard.read();
+        self.stylist.append_stylesheet(doc_stylesheet, &guard);
+        self.stylist
+            .force_stylesheet_origins_dirty(Origin::UserAgent.into());
+    }
+
+    /// Mark a node and its ancestors as needing layout.
+    fn mark_dirty_up(&mut self, node_id: usize, flags: DirtyFlags) {
+        let mut current = Some(node_id);
+        while let Some(id) = current {
+            if let Some(node) = self.tree.nodes.get_mut(id) {
+                node.dirty.insert(flags);
+                current = node.parent;
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Push a node to the dirty list with layout+paint flags.
+    fn push_dirty(&mut self, node_id: usize) {
+        self.push_dirty_flags(node_id, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+    }
+
+    /// Push a node to the dirty list with specific flags.
+    pub(crate) fn push_dirty_flags(&mut self, node_id: usize, flags: DirtyFlags) {
+        if self.tree.contains(node_id) {
+            self.tree.nodes[node_id].dirty.insert(flags);
+            self.tree.push_dirty(node_id);
+            if flags.contains(DirtyFlags::LAYOUT) {
+                self.mark_dirty_up(node_id, DirtyFlags::LAYOUT);
+            }
+        }
+    }
+
+    /// Advance all active CSS transitions by one frame.
+    /// Returns true if any transitions are still active (caller should keep polling).
+    pub fn tick_transitions(&mut self) -> bool {
+        use std::time::SystemTime;
+        let current_time_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64()
+            * 1000.0;
+
+        let any_active = crate::transition::tick_transitions(&mut self.tree, current_time_ms);
+
+        // For layout-affecting transitions, we need to re-sync Taffy styles
+        // from the updated computed_style values.
+        // Collect nodes that had LAYOUT dirty set by tick_transitions.
+        let layout_dirty: Vec<usize> = self
+            .tree
+            .active_transitions
+            .keys()
+            .copied()
+            .chain(
+                // Also check nodes that just had transitions complete
+                self.tree.dirty_nodes.iter().copied(),
+            )
+            .collect();
+
+        for node_id in layout_dirty {
+            if !self.tree.contains(node_id) {
+                continue;
+            }
+            let node = &self.tree.nodes[node_id];
+            if !node.dirty.contains(DirtyFlags::LAYOUT) {
+                continue;
+            }
+            if let Some(taffy_id) = node.taffy_id {
+                let dd = self.default_display_for_node(node_id);
+                let taffy_style = node.computed_style.to_taffy_style(dd);
+                let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
+            }
+        }
+
+        any_active
+    }
+}
+
+impl RinchDocument {
+    /// Simple recursive query selector.
+    fn query_recursive(&self, node_id: usize, selector: &str) -> Option<usize> {
+        let node = self.tree.nodes.get(node_id)?;
+
+        // Match by #id
+        if let Some(id) = selector.strip_prefix('#') {
+            if node.attributes.get("id").map(|v| v.as_str()) == Some(id) {
+                return Some(node_id);
+            }
+        }
+        // Match by .class
+        else if let Some(class) = selector.strip_prefix('.') {
+            if let Some(classes) = node.attributes.get("class")
+                && classes.split_whitespace().any(|c| c == class)
+            {
+                return Some(node_id);
+            }
+        }
+        // Match by attribute selector [attr] or [attr=value]
+        else if let Some(attr_sel) = selector.strip_prefix('[').and_then(|s| s.strip_suffix(']'))
+        {
+            if let Some((attr_name, attr_value)) = attr_sel.split_once('=') {
+                // [attr=value]
+                let value = attr_value.trim_matches('"').trim_matches('\'');
+                if node.attributes.get(attr_name).map(|v| v.as_str()) == Some(value) {
+                    return Some(node_id);
+                }
+            } else {
+                // [attr]
+                if node.attributes.contains_key(attr_sel) {
+                    return Some(node_id);
+                }
+            }
+        }
+        // Match by tag name
+        else if node.tag() == Some(selector) {
+            return Some(node_id);
+        }
+
+        // Search children
+        let children: Vec<_> = node.children.clone();
+        for child in children {
+            if let Some(found) = self.query_recursive(child, selector) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Query all nodes matching a selector.
+    fn query_all_recursive(&self, node_id: usize, selector: &str, results: &mut Vec<usize>) {
+        let Some(node) = self.tree.nodes.get(node_id) else {
+            return;
+        };
+
+        let matches = if let Some(id) = selector.strip_prefix('#') {
+            node.attributes.get("id").map(|v| v.as_str()) == Some(id)
+        } else if let Some(class) = selector.strip_prefix('.') {
+            node.attributes
+                .get("class")
+                .map(|classes| classes.split_whitespace().any(|c| c == class))
+                .unwrap_or(false)
+        } else if let Some(attr_sel) = selector.strip_prefix('[').and_then(|s| s.strip_suffix(']'))
+        {
+            if let Some((attr_name, attr_value)) = attr_sel.split_once('=') {
+                let value = attr_value.trim_matches('"').trim_matches('\'');
+                node.attributes.get(attr_name).map(|v| v.as_str()) == Some(value)
+            } else {
+                node.attributes.contains_key(attr_sel)
+            }
+        } else {
+            node.tag() == Some(selector)
+        };
+
+        if matches {
+            results.push(node_id);
+        }
+
+        // Search all children
+        let children: Vec<_> = node.children.clone();
+        for child in children {
+            self.query_all_recursive(child, selector, results);
+        }
+    }
+
+    /// Query all nodes matching a selector, returning a vector of NodeIds.
+    pub fn query_selector_all(&self, selector: &str) -> Vec<rinch_core::dom::NodeId> {
+        let mut results = Vec::new();
+        self.query_all_recursive(self.tree.root_id, selector, &mut results);
+        results
+            .into_iter()
+            .map(rinch_core::dom::NodeId)
+            .collect()
+    }
+}
+
+/// Parse a CSS style string like "display: flex; gap: 8px" into key-value pairs.
+pub(super) fn parse_style_string(style: &str) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+    for part in style.split(';') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if let Some((key, value)) = part.split_once(':') {
+            result.insert(key.trim().to_string(), value.trim().to_string());
+        }
+    }
+    result
+}

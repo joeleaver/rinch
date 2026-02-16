@@ -620,7 +620,7 @@ fn execute_toolbar_command(
     control: &ToolbarControl,
     on_change: &dyn Fn(),
 ) {
-    // Sync editor's internal selection from blitz's visual selection.
+    // Sync editor's internal selection from the DOM's visual selection.
     // query_selection_ranges returns (block_index, start_byte, end_byte) tuples.
     {
         let ranges = rinch_core::events::query_selection_ranges();

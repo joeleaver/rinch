@@ -55,7 +55,7 @@ impl Fragment {
 
     /// Convert fragment to HTML.
     pub fn to_html(&self) -> String {
-        use super::model::{html_escape, wrap_mark};
+        use super::model::serialization::{html_escape, wrap_mark};
 
         let mut html = String::new();
         for block in &self.blocks {

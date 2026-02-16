@@ -613,7 +613,7 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
 /// Run a rinch application using the rinch-dom rendering pipeline.
 ///
 /// This is an alternative to [`run`](crate::shell::run) that uses rinch-dom
-/// (Taffy + Parley + Vello) instead of blitz for layout and rendering.
+/// (Taffy + Parley + Vello) for layout and rendering.
 ///
 /// # Example
 ///

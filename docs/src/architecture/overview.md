@@ -149,7 +149,7 @@ rsx! {
 The main crate that ties everything together:
 
 - **RinchApp** (`app.rs`) - Platform-agnostic application logic
-- **Desktop backend** (`shell/window_manager.rs`) - `ManagedWindow`, `BlitzDocumentAdapter`
+- **Desktop backend** (`shell/rinch_runtime.rs`) - Event loop, window creation, rendering
 - **Event loop** (`shell/rinch_runtime.rs`) - Desktop runtime: event loop, window creation, rendering
 - **Menu Manager** - Native menu support via muda
 

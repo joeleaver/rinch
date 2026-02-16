@@ -3,7 +3,7 @@
 //! Tests the "hidden textarea + custom DOM rendering" approach for a rich-text editor.
 //!
 //! Core concept: Use a `<textarea>` to capture all text input (typing, IME, clipboard)
-//! via blitz's native handling, then read the value and render it ourselves in a
+//! via the runtime's native handling, then read the value and render it ourselves in a
 //! custom visible div with formatting and cursor.
 //!
 //! ## What this proves:
@@ -79,7 +79,7 @@ fn app() -> NodeHandle {
         let panel = create_panel(
             __scope,
             "1. Input Capture (Textarea)",
-            "Type here. The textarea handles input/IME/clipboard natively via blitz.",
+            "Type here. The textarea handles input/IME/clipboard natively via rinch-dom.",
         );
 
         let textarea = __scope.create_element("textarea");

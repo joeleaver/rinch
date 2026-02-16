@@ -1,0 +1,296 @@
+// ── Free functions (platform-agnostic hit testing) ───────────────────────────
+
+/// Simple hit testing: find the deepest node whose layout rect contains (x, y).
+pub(crate) fn hit_test(tree: &rinch_dom::NodeTree, x: f32, y: f32) -> Option<usize> {
+    hit_test_node(tree, tree.body_id, 0.0, 0.0, x, y)
+}
+
+fn hit_test_node(
+    tree: &rinch_dom::NodeTree,
+    node_id: usize,
+    offset_x: f32,
+    offset_y: f32,
+    x: f32,
+    y: f32,
+) -> Option<usize> {
+    let node = tree.get(node_id)?;
+
+    let nx = offset_x + node.layout.x;
+    let ny = offset_y + node.layout.y;
+    let nw = node.layout.width;
+    let nh = node.layout.height;
+
+    if x < nx || x > nx + nw || y < ny || y > ny + nh {
+        return None;
+    }
+
+    // Check children in reverse order (topmost first)
+    // Children are always checked even if this element has pointer-events: none
+    let sx = node.scroll_offset.0 as f32;
+    let sy = node.scroll_offset.1 as f32;
+    let children: Vec<_> = node.children.clone();
+    for &child_id in children.iter().rev() {
+        if let Some(hit) = hit_test_node(tree, child_id, nx - sx, ny - sy, x, y) {
+            return Some(hit);
+        }
+    }
+
+    // Skip this element if pointer-events: none (children still checked above)
+    if matches!(
+        node.computed_style.pointer_events,
+        rinch_dom::computed_style::PointerEventsValue::None
+    ) {
+        return None;
+    }
+
+    Some(node_id)
+}
+
+/// Convert a CursorValue from computed style to a platform CursorStyle.
+/// Convert a CursorValue from computed style to a platform CursorStyle.
+pub(super) fn cursor_value_to_style(
+    cursor: &rinch_dom::computed_style::CursorValue,
+) -> rinch_platform::CursorStyle {
+    use rinch_dom::computed_style::CursorValue as CV;
+    use rinch_platform::CursorStyle as CS;
+    match cursor {
+        CV::Auto => CS::Auto,
+        CV::Default => CS::Default,
+        CV::Pointer => CS::Pointer,
+        CV::Text => CS::Text,
+        CV::Move => CS::Move,
+        CV::NotAllowed => CS::NotAllowed,
+        CV::Crosshair => CS::Crosshair,
+        CV::Grab => CS::Grab,
+        CV::Grabbing => CS::Grabbing,
+        CV::ColResize => CS::ColResize,
+        CV::RowResize => CS::RowResize,
+        CV::NResize => CS::NResize,
+        CV::SResize => CS::SResize,
+        CV::EResize => CS::EResize,
+        CV::WResize => CS::WResize,
+        CV::NeResize => CS::NeResize,
+        CV::NwResize => CS::NwResize,
+        CV::SeResize => CS::SeResize,
+        CV::SwResize => CS::SwResize,
+        CV::EwResize => CS::EwResize,
+        CV::NsResize => CS::NsResize,
+        CV::ZoomIn => CS::ZoomIn,
+        CV::ZoomOut => CS::ZoomOut,
+        CV::Wait => CS::Wait,
+        CV::Progress => CS::Progress,
+        CV::Help => CS::Help,
+        CV::None => CS::None,
+    }
+}
+
+/// Find the nearest ancestor (or self) that is a scroll container.
+pub(crate) fn find_scroll_container(tree: &rinch_dom::NodeTree, start: usize) -> Option<usize> {
+    use rinch_dom::computed_style::OverflowValue;
+
+    let mut current = Some(start);
+    while let Some(node_id) = current {
+        let node = tree.get(node_id)?;
+        let overflow_y = &node.computed_style.overflow_y;
+        match overflow_y {
+            OverflowValue::Scroll | OverflowValue::Auto => return Some(node_id),
+            OverflowValue::Hidden => {
+                let content_h = compute_content_height(tree, node_id);
+                if content_h > node.layout.height as f64 {
+                    return Some(node_id);
+                }
+            }
+            _ => {}
+        }
+        current = node.parent;
+    }
+    // Fall back to body if content overflows
+    let body = tree.get(tree.body_id)?;
+    let content_h = compute_content_height(tree, tree.body_id);
+    if content_h > body.layout.height as f64 {
+        return Some(tree.body_id);
+    }
+    None
+}
+
+/// Compute the total content height of a node from its children's layout bounds.
+pub(crate) fn compute_content_height(tree: &rinch_dom::NodeTree, node_id: usize) -> f64 {
+    let node = match tree.get(node_id) {
+        Some(n) => n,
+        None => return 0.0,
+    };
+    let mut max_bottom: f64 = 0.0;
+    for &child_id in &node.children {
+        if let Some(child) = tree.get(child_id) {
+            let bottom = (child.layout.y + child.layout.height) as f64;
+            if bottom > max_bottom {
+                max_bottom = bottom;
+            }
+        }
+    }
+    max_bottom
+}
+
+/// The visible content area height: layout.height minus padding and border.
+/// Children are positioned relative to the content box, so this is the actual
+/// viewport height for scroll calculations.
+pub(crate) fn compute_visible_content_area_height(
+    tree: &rinch_dom::NodeTree,
+    node_id: usize,
+) -> f64 {
+    let node = match tree.get(node_id) {
+        Some(n) => n,
+        None => return 0.0,
+    };
+    let cs = &node.computed_style;
+    let pad_top = cs.padding_top.to_px() as f64;
+    let pad_bottom = cs.padding_bottom.to_px() as f64;
+    let border_top = cs.border_top_width.to_px() as f64;
+    let border_bottom = cs.border_bottom_width.to_px() as f64;
+    (node.layout.height as f64 - pad_top - pad_bottom - border_top - border_bottom).max(0.0)
+}
+
+/// Find the nearest ancestor (or self) that is a horizontal scroll container.
+pub(crate) fn find_horizontal_scroll_container(
+    tree: &rinch_dom::NodeTree,
+    start: usize,
+) -> Option<usize> {
+    use rinch_dom::computed_style::OverflowValue;
+
+    let mut current = Some(start);
+    while let Some(node_id) = current {
+        let node = tree.get(node_id)?;
+        let overflow_x = &node.computed_style.overflow_x;
+        match overflow_x {
+            OverflowValue::Scroll | OverflowValue::Auto => return Some(node_id),
+            OverflowValue::Hidden => {
+                let content_w = compute_content_width(tree, node_id);
+                if content_w > node.layout.width as f64 {
+                    return Some(node_id);
+                }
+            }
+            _ => {}
+        }
+        current = node.parent;
+    }
+    // Fall back to body if content overflows
+    let body = tree.get(tree.body_id)?;
+    let content_w = compute_content_width(tree, tree.body_id);
+    if content_w > body.layout.width as f64 {
+        return Some(tree.body_id);
+    }
+    None
+}
+
+/// Compute the total content width of a node from its children's layout bounds.
+pub(crate) fn compute_content_width(tree: &rinch_dom::NodeTree, node_id: usize) -> f64 {
+    let node = match tree.get(node_id) {
+        Some(n) => n,
+        None => return 0.0,
+    };
+    let mut max_right: f64 = 0.0;
+    for &child_id in &node.children {
+        if let Some(child) = tree.get(child_id) {
+            let right = (child.layout.x + child.layout.width) as f64;
+            if right > max_right {
+                max_right = right;
+            }
+        }
+    }
+    max_right
+}
+
+/// The visible content area width: layout.width minus padding and border.
+/// Children are positioned relative to the content box, so this is the actual
+/// viewport width for scroll calculations.
+pub(crate) fn compute_visible_content_area_width(
+    tree: &rinch_dom::NodeTree,
+    node_id: usize,
+) -> f64 {
+    let node = match tree.get(node_id) {
+        Some(n) => n,
+        None => return 0.0,
+    };
+    let cs = &node.computed_style;
+    let pad_left = cs.padding_left.to_px() as f64;
+    let pad_right = cs.padding_right.to_px() as f64;
+    let border_left = cs.border_left_width.to_px() as f64;
+    let border_right = cs.border_right_width.to_px() as f64;
+    (node.layout.width as f64 - pad_left - pad_right - border_left - border_right).max(0.0)
+}
+
+/// Check if a point (x, y) hits a scrollbar.
+pub(crate) fn find_scrollbar_hit(
+    tree: &rinch_dom::NodeTree,
+    x: f32,
+    y: f32,
+) -> Option<(usize, f64, f64)> {
+    find_scrollbar_hit_node(tree, tree.body_id, 0.0, 0.0, x, y)
+}
+
+fn find_scrollbar_hit_node(
+    tree: &rinch_dom::NodeTree,
+    node_id: usize,
+    offset_x: f32,
+    offset_y: f32,
+    x: f32,
+    y: f32,
+) -> Option<(usize, f64, f64)> {
+    let node = tree.get(node_id)?;
+    let nx = offset_x + node.layout.x;
+    let ny = offset_y + node.layout.y;
+    let nw = node.layout.width;
+    let nh = node.layout.height;
+
+    if x < nx || x > nx + nw || y < ny || y > ny + nh {
+        return None;
+    }
+
+    let sx = node.scroll_offset.0 as f32;
+    let sy = node.scroll_offset.1 as f32;
+    let children: Vec<_> = node.children.clone();
+    for &child_id in children.iter().rev() {
+        if let Some(hit) = find_scrollbar_hit_node(tree, child_id, nx - sx, ny - sy, x, y) {
+            return Some(hit);
+        }
+    }
+
+    use rinch_dom::computed_style::OverflowValue;
+    let overflow_y = &node.computed_style.overflow_y;
+
+    if matches!(overflow_y, OverflowValue::Scroll | OverflowValue::Auto) {
+        let content_height = compute_content_height(tree, node_id);
+        let visible_height = compute_visible_content_area_height(tree, node_id);
+
+        if content_height > visible_height {
+            let scrollbar_hit_width: f32 = 16.0;
+            let scrollbar_left = nx + nw - scrollbar_hit_width;
+
+            if x >= scrollbar_left && x <= nx + nw && y >= ny && y <= ny + nh {
+                return Some((node_id, content_height, visible_height));
+            }
+        }
+    }
+
+    None
+}
+
+/// Compute the absolute Y position of a node by walking up its parent chain.
+pub(crate) fn compute_absolute_y(tree: &rinch_dom::NodeTree, node_id: usize) -> f32 {
+    let mut y = 0.0_f32;
+    let mut current = Some(node_id);
+    while let Some(id) = current {
+        if let Some(node) = tree.get(id) {
+            y += node.layout.y;
+            if let Some(parent_id) = node.parent
+                && let Some(parent) = tree.get(parent_id)
+            {
+                y -= parent.scroll_offset.1 as f32;
+            }
+            current = node.parent;
+        } else {
+            break;
+        }
+    }
+    y
+}
