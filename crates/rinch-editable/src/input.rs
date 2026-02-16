@@ -71,7 +71,13 @@ pub enum Key {
     Escape,
     // Letters for shortcuts
     A,
+    B,
     C,
+    D,
+    E,
+    I,
+    S,
+    U,
     V,
     X,
     Z,
@@ -206,7 +212,12 @@ impl InputHandler {
 
             // Shortcuts
             Key::A if primary_mod => Some(EditCommand::SelectAll),
+            Key::B if primary_mod => Some(EditCommand::ToggleBold),
             Key::C if primary_mod => Some(EditCommand::Copy),
+            Key::D if primary_mod => Some(EditCommand::ToggleStrikethrough),
+            Key::E if primary_mod => Some(EditCommand::ToggleCode),
+            Key::I if primary_mod => Some(EditCommand::ToggleItalic),
+            Key::U if primary_mod => Some(EditCommand::ToggleUnderline),
             Key::X if primary_mod => Some(EditCommand::Cut),
             Key::Z if primary_mod && modifiers.shift => Some(EditCommand::Redo),
             Key::Z if primary_mod => Some(EditCommand::Undo),

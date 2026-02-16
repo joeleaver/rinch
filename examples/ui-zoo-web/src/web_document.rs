@@ -212,11 +212,10 @@ fn find_text_node_recursive(
     // Recurse into children
     let children = node.child_nodes();
     for i in 0..children.length() {
-        if let Some(child) = children.item(i) {
-            if let Some(result) = find_text_node_recursive(&child, remaining) {
+        if let Some(child) = children.item(i)
+            && let Some(result) = find_text_node_recursive(&child, remaining) {
                 return Some(result);
             }
-        }
     }
     None
 }
@@ -292,19 +291,16 @@ impl DomDocument for WebDocument {
     fn replace_node(&mut self, old: NodeId, new: NodeId) {
         if let (Some(old_node), Some(new_node)) =
             (self.nodes.get(&old.0), self.nodes.get(&new.0))
-        {
-            if let Some(parent) = old_node.parent_node() {
+            && let Some(parent) = old_node.parent_node() {
                 parent.replace_child(new_node, old_node).ok();
             }
-        }
     }
 
     fn remove_node(&mut self, node: NodeId) {
-        if let Some(n) = self.nodes.get(&node.0) {
-            if let Some(parent) = n.parent_node() {
+        if let Some(n) = self.nodes.get(&node.0)
+            && let Some(parent) = n.parent_node() {
                 parent.remove_child(n).ok();
             }
-        }
     }
 
     fn set_text_content(&mut self, node: NodeId, text: &str) {
@@ -314,19 +310,17 @@ impl DomDocument for WebDocument {
     }
 
     fn set_attribute(&mut self, node: NodeId, name: &str, value: &str) {
-        if let Some(n) = self.nodes.get(&node.0) {
-            if let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
+        if let Some(n) = self.nodes.get(&node.0)
+            && let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
                 el.set_attribute(name, value).ok();
             }
-        }
     }
 
     fn remove_attribute(&mut self, node: NodeId, name: &str) {
-        if let Some(n) = self.nodes.get(&node.0) {
-            if let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
+        if let Some(n) = self.nodes.get(&node.0)
+            && let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
                 el.remove_attribute(name).ok();
             }
-        }
     }
 
     fn get_attribute(&self, node: NodeId, name: &str) -> Option<String> {
@@ -336,11 +330,10 @@ impl DomDocument for WebDocument {
     }
 
     fn set_style(&mut self, node: NodeId, property: &str, value: &str) {
-        if let Some(n) = self.nodes.get(&node.0) {
-            if let Ok(el) = n.clone().dyn_into::<web_sys::HtmlElement>() {
+        if let Some(n) = self.nodes.get(&node.0)
+            && let Ok(el) = n.clone().dyn_into::<web_sys::HtmlElement>() {
                 el.style().set_property(property, value).ok();
             }
-        }
     }
 
     fn mark_dirty(&mut self, _node: NodeId) {
@@ -370,11 +363,10 @@ impl DomDocument for WebDocument {
         let mut result = Vec::new();
         if let Ok(node_list) = self.browser_doc.query_selector_all(selector) {
             for i in 0..node_list.length() {
-                if let Some(node) = node_list.item(i) {
-                    if let Some(nid) = get_nid(&node) {
+                if let Some(node) = node_list.item(i)
+                    && let Some(nid) = get_nid(&node) {
                         result.push(nid);
                     }
-                }
             }
         }
         result
@@ -385,11 +377,10 @@ impl DomDocument for WebDocument {
         if let Some(n) = self.nodes.get(&node.0) {
             let children = n.child_nodes();
             for i in 0..children.length() {
-                if let Some(child) = children.item(i) {
-                    if let Some(nid) = get_nid(&child) {
+                if let Some(child) = children.item(i)
+                    && let Some(nid) = get_nid(&child) {
                         result.push(nid);
                     }
-                }
             }
         }
         result
@@ -432,16 +423,15 @@ impl DomDocument for WebDocument {
     }
 
     fn set_scroll_top(&mut self, node: NodeId, scroll_top: f64) {
-        if let Some(n) = self.nodes.get(&node.0) {
-            if let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
+        if let Some(n) = self.nodes.get(&node.0)
+            && let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
                 el.set_scroll_top(scroll_top as i32);
             }
-        }
     }
 
     fn set_inner_html(&mut self, node: NodeId, html: &str) {
-        if let Some(n) = self.nodes.get(&node.0) {
-            if let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
+        if let Some(n) = self.nodes.get(&node.0)
+            && let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
                 el.set_inner_html(html);
                 // Walk all new child nodes and register them
                 let children = el.child_nodes();
@@ -451,7 +441,6 @@ impl DomDocument for WebDocument {
                     }
                 }
             }
-        }
     }
 
     fn query_caret_position(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32)> {
@@ -504,11 +493,10 @@ impl DomDocument for WebDocument {
     }
 
     fn focus_element(&mut self, node_id: NodeId) {
-        if let Some(n) = self.nodes.get(&node_id.0) {
-            if let Ok(el) = n.clone().dyn_into::<web_sys::HtmlElement>() {
+        if let Some(n) = self.nodes.get(&node_id.0)
+            && let Ok(el) = n.clone().dyn_into::<web_sys::HtmlElement>() {
                 el.focus().ok();
             }
-        }
     }
 
     fn resolve_layout(&mut self, _width: f32, _height: f32) {

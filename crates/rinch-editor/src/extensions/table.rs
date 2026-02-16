@@ -1,10 +1,10 @@
 //! Table extension for full table editing support.
 
+use crate::editor::Editor;
+use crate::error::EditorError;
 use crate::extensions::{CommandRegistration, Extension};
 use crate::input::KeyboardShortcut;
 use crate::schema::{AttrSpec, NodeSpec};
-
-use super::table_model::TableModel;
 
 /// Table extension providing table editing commands and node types.
 #[derive(Debug)]
@@ -46,22 +46,17 @@ impl Extension for TableExtension {
 
     fn commands(&self) -> Vec<CommandRegistration> {
         vec![
-            CommandRegistration::new("insert_table", |_editor| {
-                // Insert a default 3x3 table at cursor position
-                let _table = TableModel::new(3, 3);
-                // Integration with editor document model would go here
-                Ok(())
-            }),
-            CommandRegistration::new("delete_table", |_editor| Ok(())),
-            CommandRegistration::new("add_row_before", |_editor| Ok(())),
-            CommandRegistration::new("add_row_after", |_editor| Ok(())),
-            CommandRegistration::new("delete_row", |_editor| Ok(())),
-            CommandRegistration::new("add_column_before", |_editor| Ok(())),
-            CommandRegistration::new("add_column_after", |_editor| Ok(())),
-            CommandRegistration::new("delete_column", |_editor| Ok(())),
-            CommandRegistration::new("merge_cells", |_editor| Ok(())),
-            CommandRegistration::new("split_cell", |_editor| Ok(())),
-            CommandRegistration::new("toggle_header_row", |_editor| Ok(())),
+            CommandRegistration::new("insert_table", cmd_insert_table),
+            CommandRegistration::new("delete_table", cmd_delete_table),
+            CommandRegistration::new("add_row_before", cmd_add_row_before),
+            CommandRegistration::new("add_row_after", cmd_add_row_after),
+            CommandRegistration::new("delete_row", cmd_delete_row),
+            CommandRegistration::new("add_column_before", cmd_add_column_before),
+            CommandRegistration::new("add_column_after", cmd_add_column_after),
+            CommandRegistration::new("delete_column", cmd_delete_column),
+            CommandRegistration::new("merge_cells", cmd_merge_cells),
+            CommandRegistration::new("split_cell", cmd_split_cell),
+            CommandRegistration::new("toggle_header_row", cmd_toggle_header_row),
         ]
     }
 
@@ -77,6 +72,171 @@ impl Extension for TableExtension {
             ),
         ]
     }
+}
+
+/// Find the table block at or near the cursor position.
+/// Returns (block_index, table_id) if the cursor is at a table block.
+///
+/// Checks the explicit table_selection first (set by clicking a cell),
+/// then falls back to cursor-based detection.
+fn find_cursor_table(editor: &Editor) -> Option<(usize, String)> {
+    // First check if we have an explicit table selection
+    if let Some(ref cell_ref) = editor.table_selection {
+        return Some((cell_ref.block_index, cell_ref.table_id.clone()));
+    }
+
+    // Fall back to cursor-based detection
+    let sel = editor.get_selection();
+    let resolved = editor.doc.resolve_position(sel.head).ok()?;
+    let block_idx = resolved.block_index;
+
+    // Check if current block is a table
+    if let Some(bt) = editor.doc.block_type(block_idx)
+        && bt == "table"
+    {
+        let table_id = editor.table_id_for_block(block_idx)?;
+        return Some((block_idx, table_id));
+    }
+
+    // Check adjacent blocks (cursor might be right before/after a table)
+    if block_idx > 0
+        && editor.doc.block_type(block_idx - 1).as_deref() == Some("table")
+    {
+        let table_id = editor.table_id_for_block(block_idx - 1)?;
+        return Some((block_idx - 1, table_id));
+    }
+    if block_idx + 1 < editor.doc.block_count()
+        && editor.doc.block_type(block_idx + 1).as_deref() == Some("table")
+    {
+        let table_id = editor.table_id_for_block(block_idx + 1)?;
+        return Some((block_idx + 1, table_id));
+    }
+
+    None
+}
+
+fn cmd_insert_table(editor: &mut Editor) -> Result<(), EditorError> {
+    let _ = editor.insert_table(3, 3)?;
+    Ok(())
+}
+
+fn cmd_delete_table(editor: &mut Editor) -> Result<(), EditorError> {
+    let (block_idx, table_id) = find_cursor_table(editor)
+        .ok_or_else(|| EditorError::CommandFailed("No table at cursor".into()))?;
+    editor.tables.remove(&table_id);
+    editor.doc.delete_block(block_idx)?;
+    Ok(())
+}
+
+fn cmd_add_row_before(editor: &mut Editor) -> Result<(), EditorError> {
+    let (_block_idx, table_id) = find_cursor_table(editor)
+        .ok_or_else(|| EditorError::CommandFailed("No table at cursor".into()))?;
+    let table = editor
+        .tables
+        .get_mut(&table_id)
+        .ok_or_else(|| EditorError::CommandFailed("Table data not found".into()))?;
+    // Insert before the first body row (after header if present)
+    let insert_at = table.header_rows;
+    table.insert_row(insert_at);
+    Ok(())
+}
+
+fn cmd_add_row_after(editor: &mut Editor) -> Result<(), EditorError> {
+    let (_block_idx, table_id) = find_cursor_table(editor)
+        .ok_or_else(|| EditorError::CommandFailed("No table at cursor".into()))?;
+    let table = editor
+        .tables
+        .get_mut(&table_id)
+        .ok_or_else(|| EditorError::CommandFailed("Table data not found".into()))?;
+    // Insert at end
+    let row_count = table.row_count();
+    table.insert_row(row_count);
+    Ok(())
+}
+
+fn cmd_delete_row(editor: &mut Editor) -> Result<(), EditorError> {
+    let (_block_idx, table_id) = find_cursor_table(editor)
+        .ok_or_else(|| EditorError::CommandFailed("No table at cursor".into()))?;
+    let table = editor
+        .tables
+        .get_mut(&table_id)
+        .ok_or_else(|| EditorError::CommandFailed("Table data not found".into()))?;
+    // Delete last body row
+    let last_row = table.row_count().saturating_sub(1);
+    table.delete_row(last_row)?;
+    Ok(())
+}
+
+fn cmd_add_column_before(editor: &mut Editor) -> Result<(), EditorError> {
+    let (_block_idx, table_id) = find_cursor_table(editor)
+        .ok_or_else(|| EditorError::CommandFailed("No table at cursor".into()))?;
+    let table = editor
+        .tables
+        .get_mut(&table_id)
+        .ok_or_else(|| EditorError::CommandFailed("Table data not found".into()))?;
+    table.insert_column(0);
+    Ok(())
+}
+
+fn cmd_add_column_after(editor: &mut Editor) -> Result<(), EditorError> {
+    let (_block_idx, table_id) = find_cursor_table(editor)
+        .ok_or_else(|| EditorError::CommandFailed("No table at cursor".into()))?;
+    let table = editor
+        .tables
+        .get_mut(&table_id)
+        .ok_or_else(|| EditorError::CommandFailed("Table data not found".into()))?;
+    let col_count = table.col_count();
+    table.insert_column(col_count);
+    Ok(())
+}
+
+fn cmd_delete_column(editor: &mut Editor) -> Result<(), EditorError> {
+    let (_block_idx, table_id) = find_cursor_table(editor)
+        .ok_or_else(|| EditorError::CommandFailed("No table at cursor".into()))?;
+    let table = editor
+        .tables
+        .get_mut(&table_id)
+        .ok_or_else(|| EditorError::CommandFailed("Table data not found".into()))?;
+    let last_col = table.col_count().saturating_sub(1);
+    table.delete_column(last_col)?;
+    Ok(())
+}
+
+fn cmd_merge_cells(editor: &mut Editor) -> Result<(), EditorError> {
+    let (_block_idx, table_id) = find_cursor_table(editor)
+        .ok_or_else(|| EditorError::CommandFailed("No table at cursor".into()))?;
+    let table = editor
+        .tables
+        .get_mut(&table_id)
+        .ok_or_else(|| EditorError::CommandFailed("Table data not found".into()))?;
+    // Merge first two cells as a demo (full implementation needs cell selection)
+    if table.col_count() >= 2 {
+        table.merge_cells((0, 0), (0, 1))?;
+    }
+    Ok(())
+}
+
+fn cmd_split_cell(editor: &mut Editor) -> Result<(), EditorError> {
+    let (_block_idx, table_id) = find_cursor_table(editor)
+        .ok_or_else(|| EditorError::CommandFailed("No table at cursor".into()))?;
+    let table = editor
+        .tables
+        .get_mut(&table_id)
+        .ok_or_else(|| EditorError::CommandFailed("Table data not found".into()))?;
+    // Split first cell if it's merged
+    table.split_cell(0, 0)?;
+    Ok(())
+}
+
+fn cmd_toggle_header_row(editor: &mut Editor) -> Result<(), EditorError> {
+    let (_block_idx, table_id) = find_cursor_table(editor)
+        .ok_or_else(|| EditorError::CommandFailed("No table at cursor".into()))?;
+    let table = editor
+        .tables
+        .get_mut(&table_id)
+        .ok_or_else(|| EditorError::CommandFailed("Table data not found".into()))?;
+    table.toggle_header_row();
+    Ok(())
 }
 
 #[cfg(test)]
@@ -192,5 +352,75 @@ mod tests {
     fn input_rules_is_empty() {
         let ext = TableExtension;
         assert!(ext.input_rules().is_empty());
+    }
+
+    #[test]
+    fn insert_table_command() {
+        use crate::editor::{Editor, EditorConfig};
+        use crate::schema::Schema;
+
+        let mut editor = Editor::new(Schema::starter_kit(), EditorConfig::default()).unwrap();
+        cmd_insert_table(&mut editor).unwrap();
+        assert_eq!(editor.doc.block_count(), 2); // original + table
+        assert_eq!(editor.doc.block_type(1), Some("table".into()));
+        assert_eq!(editor.tables.len(), 1);
+    }
+
+    #[test]
+    fn delete_table_command() {
+        use crate::editor::{Editor, EditorConfig};
+        use crate::schema::Schema;
+
+        let mut editor = Editor::new(Schema::starter_kit(), EditorConfig::default()).unwrap();
+        cmd_insert_table(&mut editor).unwrap();
+        assert_eq!(editor.doc.block_count(), 2);
+
+        // Cursor should be at the table block
+        cmd_delete_table(&mut editor).unwrap();
+        assert_eq!(editor.doc.block_count(), 1);
+        assert!(editor.tables.is_empty());
+    }
+
+    #[test]
+    fn add_row_after_command() {
+        use crate::editor::{Editor, EditorConfig};
+        use crate::schema::Schema;
+
+        let mut editor = Editor::new(Schema::starter_kit(), EditorConfig::default()).unwrap();
+        let table_id = editor.insert_table(3, 3).unwrap();
+        assert_eq!(editor.tables[&table_id].row_count(), 3);
+
+        cmd_add_row_after(&mut editor).unwrap();
+        assert_eq!(editor.tables[&table_id].row_count(), 4);
+    }
+
+    #[test]
+    fn add_column_after_command() {
+        use crate::editor::{Editor, EditorConfig};
+        use crate::schema::Schema;
+
+        let mut editor = Editor::new(Schema::starter_kit(), EditorConfig::default()).unwrap();
+        let table_id = editor.insert_table(3, 3).unwrap();
+        assert_eq!(editor.tables[&table_id].col_count(), 3);
+
+        cmd_add_column_after(&mut editor).unwrap();
+        assert_eq!(editor.tables[&table_id].col_count(), 4);
+    }
+
+    #[test]
+    fn toggle_header_command() {
+        use crate::editor::{Editor, EditorConfig};
+        use crate::schema::Schema;
+
+        let mut editor = Editor::new(Schema::starter_kit(), EditorConfig::default()).unwrap();
+        let table_id = editor.insert_table(3, 3).unwrap();
+        // Table created with header via with_header
+        assert_eq!(editor.tables[&table_id].header_rows, 1);
+
+        cmd_toggle_header_row(&mut editor).unwrap();
+        assert_eq!(editor.tables[&table_id].header_rows, 0);
+
+        cmd_toggle_header_row(&mut editor).unwrap();
+        assert_eq!(editor.tables[&table_id].header_rows, 1);
     }
 }

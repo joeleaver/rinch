@@ -42,15 +42,6 @@ impl FormattingCommands {
             });
         }
 
-        // Track affected blocks
-        if let Ok(start_rp) = editor.doc.resolve_position(range.start)
-            && let Ok(end_rp) = editor.doc.resolve_position(range.end)
-        {
-            for bi in start_rp.block_index..=end_rp.block_index {
-                editor.mark_block_changed(bi);
-            }
-        }
-
         Ok(())
     }
 
@@ -63,15 +54,6 @@ impl FormattingCommands {
         let range = sel.range();
         editor.doc.add_mark(range, MarkData::new(mark_type))?;
 
-        // Track affected blocks
-        if let Ok(start_rp) = editor.doc.resolve_position(range.start)
-            && let Ok(end_rp) = editor.doc.resolve_position(range.end)
-        {
-            for bi in start_rp.block_index..=end_rp.block_index {
-                editor.mark_block_changed(bi);
-            }
-        }
-
         Ok(())
     }
 
@@ -83,15 +65,6 @@ impl FormattingCommands {
         }
         let range = sel.range();
         editor.doc.remove_mark(range, mark_type)?;
-
-        // Track affected blocks
-        if let Ok(start_rp) = editor.doc.resolve_position(range.start)
-            && let Ok(end_rp) = editor.doc.resolve_position(range.end)
-        {
-            for bi in start_rp.block_index..=end_rp.block_index {
-                editor.mark_block_changed(bi);
-            }
-        }
 
         Ok(())
     }
@@ -110,8 +83,6 @@ impl FormattingCommands {
             editor.doc.remove_mark(range, mark_type)?;
         }
 
-        // Track affected blocks (conservative - could affect multiple blocks)
-        editor.mark_structure_changed();
         Ok(())
     }
 }

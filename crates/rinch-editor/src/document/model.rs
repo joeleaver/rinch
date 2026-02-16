@@ -321,6 +321,42 @@ impl EditorDocument {
         parts.join("\n")
     }
 
+    /// Get markdown representation of the document.
+    pub fn to_markdown(&self) -> String {
+        use super::fragment::{Fragment, FragmentBlock, FragmentInline};
+
+        let count = self.block_count();
+        let mut blocks = Vec::with_capacity(count);
+
+        for i in 0..count {
+            let block_type = self.block_type(i).unwrap_or_else(|| "paragraph".into());
+            let attrs = self.block_attrs(i).unwrap_or_default();
+            let runs = self.block_inline_runs(i);
+
+            let content: Vec<FragmentInline> = runs
+                .iter()
+                .map(|run| {
+                    if run.inline_type == "hard_break" {
+                        FragmentInline::HardBreak
+                    } else {
+                        FragmentInline::Text {
+                            text: run.text.clone(),
+                            marks: run.marks.clone(),
+                        }
+                    }
+                })
+                .collect();
+
+            blocks.push(FragmentBlock {
+                block_type,
+                attrs,
+                content,
+            });
+        }
+
+        Fragment { blocks }.to_markdown()
+    }
+
     /// Get simple HTML representation.
     pub fn to_html(&self) -> String {
         let count = self.block_count();
@@ -544,6 +580,87 @@ impl EditorDocument {
         self.doc
             .put(&inline_id, "text", new_text.as_str())
             .map_err(|e| EditorError::Automerge(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Insert text at a position with explicit marks, creating a new inline if needed.
+    ///
+    /// Unlike `insert_text` which appends to the existing inline (inheriting its marks),
+    /// this method ensures the inserted text has exactly the specified marks.
+    /// If the marks match the current inline, inserts in-place. Otherwise, creates
+    /// a new inline node with the correct marks.
+    pub fn insert_text_with_marks(
+        &mut self,
+        pos: Position,
+        text: &str,
+        marks: &[MarkData],
+    ) -> Result<(), EditorError> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        let resolved = self.resolve_position(pos)?;
+        let block_id = self
+            .block_obj(resolved.block_index)
+            .ok_or_else(|| EditorError::InvalidPosition(pos.0, self.text_length()))?;
+        let content_id = self
+            .block_content_obj(&block_id)
+            .ok_or_else(|| EditorError::InvalidPosition(pos.0, self.text_length()))?;
+
+        let inline_id = self
+            .doc
+            .get(&content_id, resolved.inline_index)
+            .ok()
+            .flatten()
+            .map(|(_, id)| id)
+            .ok_or_else(|| EditorError::InvalidPosition(pos.0, self.text_length()))?;
+
+        let existing_marks = self.read_marks(&inline_id);
+        let existing_text = self.get_str(&inline_id, "text").unwrap_or_default();
+        let offset = resolved.text_offset.min(existing_text.len());
+
+        // Check if marks match — if so, insert in-place (fast path)
+        let marks_match = marks.len() == existing_marks.len()
+            && marks
+                .iter()
+                .all(|m| existing_marks.iter().any(|em| em.mark_type == m.mark_type));
+
+        if marks_match {
+            // Same marks: insert into existing inline
+            let mut new_text = String::with_capacity(existing_text.len() + text.len());
+            new_text.push_str(&existing_text[..offset]);
+            new_text.push_str(text);
+            new_text.push_str(&existing_text[offset..]);
+            self.doc
+                .put(&inline_id, "text", new_text.as_str())
+                .map_err(|e| EditorError::Automerge(e.to_string()))?;
+        } else if offset == existing_text.len() {
+            // At end of inline: insert new inline after
+            self.insert_text_inline(&content_id, resolved.inline_index + 1, text, marks)?;
+        } else if offset == 0 {
+            // At start of inline: insert new inline before
+            self.insert_text_inline(&content_id, resolved.inline_index, text, marks)?;
+        } else {
+            // In middle: split current inline, insert new inline between
+            let before = &existing_text[..offset];
+            let after = &existing_text[offset..];
+
+            // Truncate current inline to "before" text
+            self.doc
+                .put(&inline_id, "text", before)
+                .map_err(|e| EditorError::Automerge(e.to_string()))?;
+
+            // Insert "after" part as new inline (preserves original marks)
+            self.insert_text_inline(
+                &content_id,
+                resolved.inline_index + 1,
+                after,
+                &existing_marks,
+            )?;
+
+            // Insert our new text between them
+            self.insert_text_inline(&content_id, resolved.inline_index + 1, text, marks)?;
+        }
 
         Ok(())
     }
@@ -864,14 +981,21 @@ impl EditorDocument {
                 // Covers entire node - add mark directly
                 self.append_mark_to_inline(&inline_id, &mark)?;
             } else {
-                // Need to split the inline node into up to 3 parts
-                self.split_and_mark_inline(
-                    &content_id,
-                    start.inline_index,
-                    start.text_offset,
-                    end.text_offset,
-                    &mark,
-                )?;
+                // Check if the inline already has this mark — if so, no split needed.
+                // This prevents fragmentation when typing with stored marks active:
+                // insert_text appends to the existing marked inline, then add_mark
+                // would needlessly split it into per-character nodes.
+                let existing_marks = self.read_marks(&inline_id);
+                if !existing_marks.iter().any(|m| m.mark_type == mark.mark_type) {
+                    // Need to split the inline node into up to 3 parts
+                    self.split_and_mark_inline(
+                        &content_id,
+                        start.inline_index,
+                        start.text_offset,
+                        end.text_offset,
+                        &mark,
+                    )?;
+                }
             }
         } else {
             // Multi-inline or multi-block: for now, iterate blocks
@@ -1272,6 +1396,147 @@ impl EditorDocument {
         Ok(())
     }
 
+    /// Insert a new block at the given index with a specific type and attributes.
+    ///
+    /// The block is created with a single empty text inline node.
+    /// If `at` is beyond the current block count, it's clamped to the end.
+    pub fn insert_block_at(
+        &mut self,
+        at: usize,
+        block_type: &str,
+        attrs: Option<HashMap<String, String>>,
+    ) -> Result<(), EditorError> {
+        let at = at.min(self.block_count());
+        let block = self
+            .doc
+            .insert_object(&self.content_id, at, ObjType::Map)
+            .map_err(|e| EditorError::Automerge(e.to_string()))?;
+        self.doc
+            .put(&block, "type", block_type)
+            .map_err(|e| EditorError::Automerge(e.to_string()))?;
+        let attrs_id = self
+            .doc
+            .put_object(&block, "attrs", ObjType::Map)
+            .map_err(|e| EditorError::Automerge(e.to_string()))?;
+        if let Some(attrs) = attrs {
+            for (k, v) in &attrs {
+                self.doc
+                    .put(&attrs_id, k.as_str(), v.as_str())
+                    .map_err(|e| EditorError::Automerge(e.to_string()))?;
+            }
+        }
+        let inline_content = self
+            .doc
+            .put_object(&block, "content", ObjType::List)
+            .map_err(|e| EditorError::Automerge(e.to_string()))?;
+        self.insert_text_inline(&inline_content, 0, "", &[])?;
+        Ok(())
+    }
+
+    /// Delete a block at the given index.
+    ///
+    /// Returns error if this is the last block (document must have at least one).
+    pub fn delete_block(&mut self, block_index: usize) -> Result<(), EditorError> {
+        if self.block_count() <= 1 {
+            return Err(EditorError::CommandFailed(
+                "Cannot delete the last block".into(),
+            ));
+        }
+        if block_index >= self.block_count() {
+            return Err(EditorError::CommandFailed(format!(
+                "Block index {} out of bounds ({})",
+                block_index,
+                self.block_count()
+            )));
+        }
+        self.doc
+            .delete(&self.content_id, block_index)
+            .map_err(|e| EditorError::Automerge(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Extract a fragment (slice of document) from a range, preserving marks.
+    pub fn extract_fragment(
+        &self,
+        range: super::position::Range,
+    ) -> Result<super::fragment::Fragment, crate::error::EditorError> {
+        use super::fragment::{Fragment, FragmentBlock, FragmentInline};
+
+        if range.is_empty() {
+            return Ok(Fragment::empty());
+        }
+
+        let start = self.resolve_position(range.start)?;
+        let end = self.resolve_position(range.end)?;
+
+        let mut blocks = Vec::new();
+
+        for block_idx in start.block_index..=end.block_index {
+            let block_type = self
+                .block_type(block_idx)
+                .unwrap_or_else(|| "paragraph".into());
+            let attrs = self.block_attrs(block_idx).unwrap_or_default();
+            let runs = self.block_inline_runs(block_idx);
+
+            // Determine text range within this block using absolute positions.
+            // We use absolute position minus block start to get block-relative offsets,
+            // because ResolvedPosition.text_offset is inline-node-relative (not block-relative).
+            let block_start_abs = self.block_start_position(block_idx);
+            let block_text = self.block_text(block_idx).unwrap_or_default();
+            let block_text_start = if block_idx == start.block_index {
+                range.start.0.saturating_sub(block_start_abs)
+            } else {
+                0
+            };
+            let block_text_end = if block_idx == end.block_index {
+                range.end.0.saturating_sub(block_start_abs).min(block_text.len())
+            } else {
+                block_text.len()
+            };
+
+            let mut content = Vec::new();
+            let mut offset = 0;
+
+            for run in &runs {
+                let run_len = if run.inline_type == "hard_break" {
+                    1
+                } else {
+                    run.text.len()
+                };
+                let run_end = offset + run_len;
+
+                if run_end <= block_text_start || offset >= block_text_end {
+                    offset = run_end;
+                    continue;
+                }
+
+                if run.inline_type == "hard_break" {
+                    content.push(FragmentInline::HardBreak);
+                } else {
+                    let trim_start = block_text_start.saturating_sub(offset);
+                    let trim_end = (block_text_end - offset).min(run.text.len());
+                    let trimmed = &run.text[trim_start..trim_end];
+                    if !trimmed.is_empty() {
+                        content.push(FragmentInline::Text {
+                            text: trimmed.to_string(),
+                            marks: run.marks.clone(),
+                        });
+                    }
+                }
+
+                offset = run_end;
+            }
+
+            blocks.push(FragmentBlock {
+                block_type,
+                attrs,
+                content,
+            });
+        }
+
+        Ok(Fragment { blocks })
+    }
+
     /// Helper: get a string value from an automerge object.
     fn get_str(&self, obj: &ObjId, key: &str) -> Option<String> {
         self.doc.get(obj, key).ok().flatten().and_then(|(val, _)| {
@@ -1286,7 +1551,7 @@ impl EditorDocument {
 }
 
 /// Simple HTML escaping.
-fn html_escape(s: &str) -> String {
+pub(crate) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -1294,7 +1559,7 @@ fn html_escape(s: &str) -> String {
 }
 
 /// Wrap text in an HTML tag for a mark.
-fn wrap_mark(content: &str, mark: &MarkData) -> String {
+pub(crate) fn wrap_mark(content: &str, mark: &MarkData) -> String {
     match mark.mark_type.as_str() {
         "bold" => format!("<strong>{}</strong>", content),
         "italic" => format!("<em>{}</em>", content),
@@ -1693,5 +1958,124 @@ mod tests {
         // "F" should be italic
         let marks_f = doc.marks_at(Position(1));
         assert!(marks_f.iter().any(|m| m.mark_type == "italic"));
+    }
+
+    #[test]
+    fn extract_fragment_with_bold() {
+        let mut doc = EditorDocument::new();
+        doc.insert_text(Position(0), "Hello World").unwrap();
+        doc.add_mark(Range::new(0usize, 5usize), MarkData::new("bold"))
+            .unwrap();
+
+        let fragment = doc.extract_fragment(Range::new(0usize, 11usize)).unwrap();
+        assert_eq!(fragment.blocks.len(), 1);
+        assert_eq!(fragment.text(), "Hello World");
+
+        let html = fragment.to_html();
+        assert_eq!(html, "<p><strong>Hello</strong> World</p>");
+    }
+
+    #[test]
+    fn extract_fragment_html_roundtrip() {
+        use crate::document::fragment::Fragment;
+
+        let mut doc = EditorDocument::new();
+        doc.insert_text(Position(0), "Hello World").unwrap();
+        doc.add_mark(Range::new(0usize, 5usize), MarkData::new("bold"))
+            .unwrap();
+
+        let fragment = doc.extract_fragment(Range::new(0usize, 11usize)).unwrap();
+        let html = fragment.to_html();
+
+        // Parse back from HTML
+        let parsed = Fragment::from_html(&html);
+        assert_eq!(parsed.blocks.len(), 1);
+        assert_eq!(parsed.text(), "Hello World");
+        assert_eq!(parsed.to_html(), html);
+    }
+
+    #[test]
+    fn to_markdown_simple() {
+        let mut doc = EditorDocument::new();
+        doc.insert_text(Position(0), "Hello").unwrap();
+        assert_eq!(doc.to_markdown(), "Hello");
+    }
+
+    #[test]
+    fn to_markdown_with_bold() {
+        let mut doc = EditorDocument::new();
+        doc.insert_text(Position(0), "Hello World").unwrap();
+        doc.add_mark(Range::new(0usize, 5usize), MarkData::new("bold"))
+            .unwrap();
+        let md = doc.to_markdown();
+        assert!(md.contains("**Hello**"));
+        assert!(md.contains("World"));
+    }
+
+    #[test]
+    fn insert_fragment_text_then_marks() {
+        // Simulate the insert_fragment approach: insert all text first, then apply marks.
+        // This verifies that add_mark correctly splits inline nodes.
+        let mut doc = EditorDocument::new();
+        doc.insert_text(Position(0), "First line").unwrap();
+        doc.split_block(Position(10)).unwrap();
+        // Now: Block 0 = "First line", Block 1 = ""
+
+        // Simulate pasting "Hello World" with "Hello" bold into block 1
+        let insert_pos = Position(11); // start of block 1
+        doc.insert_text(insert_pos, "Hello World").unwrap();
+
+        // Apply bold to just "Hello" (first 5 chars)
+        doc.add_mark(Range::new(11usize, 16usize), MarkData::new("bold"))
+            .unwrap();
+
+        // Verify text
+        assert_eq!(doc.block_text(1), Some("Hello World".into()));
+        assert_eq!(doc.text_length(), 10 + 1 + 11); // 22
+
+        // Verify marks: "Hello" should be bold, " World" should not
+        let marks_h = doc.marks_at(Position(11));
+        assert!(
+            marks_h.iter().any(|m| m.mark_type == "bold"),
+            "H should be bold"
+        );
+        let marks_space = doc.marks_at(Position(16));
+        assert!(
+            !marks_space.iter().any(|m| m.mark_type == "bold"),
+            "space after Hello should NOT be bold"
+        );
+    }
+
+    #[test]
+    fn add_mark_subrange_no_fragmentation_when_already_marked() {
+        // Regression test: typing with stored marks active should NOT fragment
+        // the inline into one node per character. When add_mark is called on a
+        // sub-range of an inline that already has the mark, it should be a no-op.
+        let mut doc = EditorDocument::new();
+        doc.insert_text(Position(0), "B").unwrap();
+        // Mark the entire inline as bold
+        doc.add_mark(Range::new(0usize, 1usize), MarkData::new("bold")).unwrap();
+        assert_eq!(doc.block_inline_runs(0).len(), 1);
+
+        // Simulate typing "o" after "B" — insert_text appends to the bold inline
+        doc.insert_text(Position(1), "o").unwrap();
+        // Now add_mark on just the new char (sub-range of the already-bold inline)
+        doc.add_mark(Range::new(1usize, 2usize), MarkData::new("bold")).unwrap();
+
+        // Should still be ONE inline, not two
+        let runs = doc.block_inline_runs(0);
+        assert_eq!(runs.len(), 1, "Should be 1 inline, got {}: {:?}", runs.len(), runs);
+        assert_eq!(runs[0].text, "Bo");
+        assert!(runs[0].marks.iter().any(|m| m.mark_type == "bold"));
+
+        // Continue: type "ld" one char at a time
+        doc.insert_text(Position(2), "l").unwrap();
+        doc.add_mark(Range::new(2usize, 3usize), MarkData::new("bold")).unwrap();
+        doc.insert_text(Position(3), "d").unwrap();
+        doc.add_mark(Range::new(3usize, 4usize), MarkData::new("bold")).unwrap();
+
+        let runs = doc.block_inline_runs(0);
+        assert_eq!(runs.len(), 1, "Should still be 1 inline after 4 chars, got {}: {:?}", runs.len(), runs);
+        assert_eq!(runs[0].text, "Bold");
     }
 }

@@ -1,5 +1,6 @@
 //! Core types and traits for rinch.
 
+pub mod ce;
 pub mod dom;
 pub mod element;
 pub mod event;
@@ -41,16 +42,19 @@ pub use hooks::{
 
 // Re-export event handling types
 pub use events::{
-    ClickContext, EventCallback, EventHandlerId, InputCallback, InputContext, KeyEventData,
-    ModifierState, SelectionAction, TextHitInfo, check_and_clear_input_handled, clear_handlers,
-    clear_keyboard_interceptor, clear_selection_callback, clear_selection_snapshot,
-    clear_selection_sync_callback, dispatch_event, dispatch_input_event, dispatch_keyboard_event,
-    dispatch_selection, fire_selection_sync, get_click_context, get_input_context,
-    get_modifier_state, get_saved_selection, is_dragging, query_selection_ranges, register_handler,
-    register_input_handler, request_focus, request_selection_clear, save_selection_snapshot,
-    set_click_context, set_input_context, set_keyboard_interceptor, set_modifier_state,
-    set_selection_callback, set_selection_sync_callback, start_drag, start_drag_absolute,
-    stop_drag, take_pending_focus_request, take_pending_selection_clear, update_drag,
+    ClickContext, ContentEditableClickData, ContentEditableDragData, EventCallback, EventHandlerId,
+    InputCallback, InputContext, KeyEventData, ModifierState, SelectionAction, TextHitInfo,
+    check_and_clear_input_handled, clear_ce_click_interceptor, clear_ce_drag_interceptor,
+    clear_handlers, clear_keyboard_interceptor, clear_selection_callback, clear_selection_snapshot,
+    clear_selection_sync_callback, dispatch_ce_click, dispatch_ce_drag, dispatch_event,
+    dispatch_input_event, dispatch_keyboard_event, dispatch_selection, fire_selection_sync,
+    get_click_context, get_input_context, get_modifier_state, get_saved_selection, is_dragging,
+    query_selection_ranges, register_handler, register_input_handler, request_focus,
+    request_selection_clear, save_selection_snapshot, set_ce_click_interceptor,
+    set_ce_drag_interceptor, set_click_context, set_input_context, set_keyboard_interceptor,
+    set_modifier_state, set_selection_callback, set_selection_sync_callback, start_drag,
+    start_drag_absolute, stop_drag, take_pending_focus_request, take_pending_selection_clear,
+    update_drag,
 };
 
 // Re-export DOM types for fine-grained rendering
@@ -62,6 +66,13 @@ pub use dom::{
 
 // Re-export icon types
 pub use icon::Icon;
+
+// Re-export ContentEditable API types
+pub use ce::{
+    CeEvent, CeEventCallback, CeEventDispatcher, CeSelection, ContentEditableApi, DomCursor,
+    ce_event_listener_count, clear_active_ce_api, clear_ce_event_listeners, dispatch_ce_event,
+    set_active_ce_api, subscribe_ce_events, with_active_ce_api,
+};
 
 use std::cell::RefCell;
 

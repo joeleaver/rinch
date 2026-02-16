@@ -10,8 +10,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rinch_core::dom::{DomDocument, NodeHandle, RenderScope, clear_render_scope, set_render_scope};
+use rinch_core::ce::{self, CeEvent, CeSelection, ContentEditableApi};
 use rinch_core::events;
 use rinch_core::hooks::{begin_render, end_render};
+use crate::ce_ops::CeOps;
 use rinch_dom::RinchDocument;
 #[cfg(feature = "debug")]
 use rinch_dom::text_query::glyph_bounds_for_offset_layout;
@@ -49,15 +51,8 @@ pub(crate) struct ScrollbarDrag {
 
 // ── ContentEditable focus ────────────────────────────────────────────────────
 
-/// A cursor position within the DOM: a specific text node and byte offset,
-/// or a block element ID for empty blocks (offset always 0).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DomCursor {
-    /// DOM node ID — either a text node or an empty block element.
-    node_id: usize,
-    /// Byte offset within the text node's content (always 0 for element cursors).
-    offset: usize,
-}
+/// Re-use the public DomCursor from rinch_core::ce.
+use rinch_core::ce::DomCursor;
 
 /// A snapshot of text node contents for undo.
 #[derive(Debug, Clone)]
@@ -142,6 +137,8 @@ pub struct RinchApp {
     pub(crate) focused_input_value: String,
     /// State for a focused contenteditable element.
     pub(crate) focused_contenteditable: Option<ContentEditableFocus>,
+    /// ContentEditable API implementation (registered via set_active_ce_api).
+    pub(crate) ce_ops: Option<Rc<RefCell<CeOps>>>,
     /// Whether we're currently doing a mouse-drag text selection in a contenteditable.
     pub(crate) ce_selecting: bool,
     /// Whether a scroll-into-view is pending for the focused contenteditable.
@@ -182,6 +179,7 @@ impl RinchApp {
             focused_input_handler_id: None,
             focused_input_value: String::new(),
             focused_contenteditable: None,
+            ce_ops: None,
             ce_selecting: false,
             ce_scroll_pending: Cell::new(false),
             pending_fonts: Vec::new(),
@@ -512,6 +510,19 @@ impl RinchApp {
                     && let Some(ref mut ce) = self.focused_contenteditable
                 {
                     let ce_node_id = ce.ce_node_id;
+
+                    // Try CE drag interceptor first (used by editor framework)
+                    let drag_data = events::ContentEditableDragData {
+                        ce_node_id,
+                        x,
+                        y,
+                    };
+                    if events::dispatch_ce_drag(&drag_data) {
+                        self.scene_dirty = true;
+                        actions.push(AppAction::RequestRedraw);
+                        return actions;
+                    }
+
                     if let Some(doc) = &self.doc {
                         let new_cursor = {
                             let d = doc.borrow();
@@ -522,6 +533,7 @@ impl RinchApp {
                         self.set_contenteditable_attributes_dom(
                             ce_node_id, true, new_cursor, anchor,
                         );
+                        self.sync_ce_ops_cursor();
                         self.scene_dirty = true;
                         actions.push(AppAction::RequestRedraw);
                         return actions;
@@ -897,6 +909,7 @@ impl RinchApp {
                 ce_node_id: usize,
                 dom_cursor: DomCursor,
                 prev_node_id: Option<usize>,
+                closest_table_cell: Option<String>,
             },
             /// We did NOT hit contenteditable — clear previous if any.
             Clear { prev_node_id: Option<usize> },
@@ -908,9 +921,16 @@ impl RinchApp {
             let d = doc.borrow();
             if let Some(hit_id) = hit_test(&d.tree, x, y) {
                 let mut ce_result = None;
+                let mut closest_table_cell = None;
                 let mut check = Some(hit_id);
                 while let Some(nid) = check {
                     if let Some(node) = d.tree.get(nid) {
+                        // Detect data-table-cell attribute during the walk
+                        if closest_table_cell.is_none() {
+                            if let Some(val) = node.attributes.get("data-table-cell") {
+                                closest_table_cell = Some(val.clone());
+                            }
+                        }
                         if let Some(ce_val) = node.attributes.get("contenteditable") {
                             let is_editable =
                                 matches!(ce_val.as_str(), "plaintext-only" | "true" | "");
@@ -934,6 +954,7 @@ impl RinchApp {
                         ce_node_id,
                         dom_cursor,
                         prev_node_id,
+                        closest_table_cell,
                     }
                 } else {
                     CeAction::Clear { prev_node_id }
@@ -949,7 +970,49 @@ impl RinchApp {
                 ce_node_id,
                 mut dom_cursor,
                 prev_node_id,
+                closest_table_cell,
             } => {
+                // Try CE click interceptor first (used by editor framework)
+                let click_data = events::ContentEditableClickData {
+                    ce_node_id,
+                    x,
+                    y,
+                    click_count: self.click_count,
+                    shift: self.modifiers.shift,
+                    closest_table_cell,
+                };
+                if events::dispatch_ce_click(&click_data) {
+                    // Editor framework handled this click — still set up
+                    // ContentEditableFocus for cursor rendering if not already focused
+                    if self.focused_contenteditable.is_none()
+                        || self.focused_contenteditable.as_ref().map(|f| f.ce_node_id)
+                            != Some(ce_node_id)
+                    {
+                        let input_handler = InputHandler::new()
+                            .with_multiline(true)
+                            .with_macos(cfg!(target_os = "macos"));
+                        if let Some(prev_id) = prev_node_id
+                            && prev_id != ce_node_id
+                        {
+                            self.set_contenteditable_attributes(prev_id, false, 0, 0);
+                        }
+                        self.focused_contenteditable = Some(ContentEditableFocus {
+                            ce_node_id,
+                            cursor: dom_cursor,
+                            anchor: dom_cursor,
+                            input_handler,
+                            undo_stack: Vec::new(),
+                        });
+                        self.register_ce_ops(ce_node_id, dom_cursor);
+                    }
+                    self.ce_selecting = true;
+                    self.focused_input_handler_id = None;
+                    self.focused_input_value.clear();
+                    self.scene_dirty = true;
+                    actions.push(AppAction::RequestRedraw);
+                    return actions;
+                }
+
                 let input_handler = InputHandler::new()
                     .with_multiline(true)
                     .with_macos(cfg!(target_os = "macos"));
@@ -999,6 +1062,7 @@ impl RinchApp {
                     input_handler,
                     undo_stack: Vec::new(),
                 });
+                self.register_ce_ops(ce_node_id, dom_cursor);
 
                 // Start mouse-drag selection tracking
                 self.ce_selecting = true;
@@ -1022,6 +1086,9 @@ impl RinchApp {
             CeAction::Clear { prev_node_id } => {
                 if let Some(prev_id) = prev_node_id {
                     self.focused_contenteditable = None;
+                    // Clear CE API inline (can't call &mut self method due to doc borrow)
+                    ce::clear_active_ce_api();
+                    self.ce_ops = None;
                     self.set_contenteditable_attributes(prev_id, false, 0, 0);
                     self.scene_dirty = true;
                 }
@@ -2033,6 +2100,31 @@ impl RinchApp {
             .unwrap_or(false)
     }
 
+    /// Create and register a CeOps instance for the focused CE element.
+    ///
+    /// Called when a contentEditable element gains focus. Registers the
+    /// CeOps as the active CE API so the editor bridge can access it.
+    fn register_ce_ops(&mut self, ce_node_id: usize, cursor: DomCursor) {
+        if let Some(doc) = &self.doc {
+            let ops = Rc::new(RefCell::new(CeOps::new(doc.clone(), ce_node_id, cursor)));
+            ce::set_active_ce_api(ops.clone());
+            self.ce_ops = Some(ops);
+        }
+    }
+
+    /// Sync cursor state from ContentEditableFocus to CeOps.
+    ///
+    /// Called after app.rs handles input that changes cursor position.
+    fn sync_ce_ops_cursor(&self) {
+        if let Some(ce) = &self.focused_contenteditable
+            && let Some(ops) = &self.ce_ops
+        {
+            if let Ok(mut ops) = ops.try_borrow_mut() {
+                ops.sync_cursor(ce.cursor, ce.anchor);
+            }
+        }
+    }
+
     /// Snapshot all text nodes under `root` for undo.
     fn snapshot_text_nodes(tree: &rinch_dom::NodeTree, root: usize) -> Vec<(usize, String)> {
         let mut result = Vec::new();
@@ -2223,7 +2315,12 @@ impl RinchApp {
             KeyCode::Tab => Some(EditKey::Tab),
             KeyCode::Escape => Some(EditKey::Escape),
             KeyCode::KeyA if ctrl => Some(EditKey::A),
+            KeyCode::KeyB if ctrl => Some(EditKey::B),
             KeyCode::KeyC if ctrl => Some(EditKey::C),
+            KeyCode::KeyD if ctrl => Some(EditKey::D),
+            KeyCode::KeyE if ctrl => Some(EditKey::E),
+            KeyCode::KeyI if ctrl => Some(EditKey::I),
+            KeyCode::KeyU if ctrl => Some(EditKey::U),
             KeyCode::KeyX if ctrl => Some(EditKey::X),
             KeyCode::KeyZ if ctrl => Some(EditKey::Z),
             KeyCode::KeyY if ctrl => Some(EditKey::Y),
@@ -2285,6 +2382,7 @@ impl RinchApp {
 
         use rinch_editable::EditCommand;
         let mut text_changed = false;
+        let mut pending_ce_events: Vec<CeEvent> = Vec::new();
 
         // Push undo snapshot before any mutating command
         let is_mutating = matches!(
@@ -2297,6 +2395,11 @@ impl RinchApp {
                 | EditCommand::Cut
                 | EditCommand::Indent
                 | EditCommand::Outdent
+                | EditCommand::ToggleBold
+                | EditCommand::ToggleItalic
+                | EditCommand::ToggleUnderline
+                | EditCommand::ToggleStrikethrough
+                | EditCommand::ToggleCode
         );
         let mut pre_edit_ids: Vec<usize> = Vec::new();
         if is_mutating && let Some(doc) = &self.doc {
@@ -2380,6 +2483,13 @@ impl RinchApp {
                     }
                 }
                 text_changed = true;
+                // Dispatch CE event
+                let ce = self.focused_contenteditable.as_ref().unwrap();
+                ce::dispatch_ce_event(&CeEvent::TextInserted {
+                    node_id: ce.cursor.node_id,
+                    offset: ce.cursor.offset.saturating_sub(insert_str.len()),
+                    text: insert_str.clone(),
+                });
             }
             EditCommand::Paste(ref paste_text) => {
                 if has_selection {
@@ -2442,6 +2552,12 @@ impl RinchApp {
                     }
                 }
                 text_changed = true;
+                let ce = self.focused_contenteditable.as_ref().unwrap();
+                pending_ce_events.push(CeEvent::TextInserted {
+                    node_id: ce.cursor.node_id,
+                    offset: ce.cursor.offset.saturating_sub(paste_text.len()),
+                    text: paste_text.clone(),
+                });
             }
 
             // ── Backspace ────────────────────────────────────────────
@@ -2583,6 +2699,12 @@ impl RinchApp {
                                 };
                                 ce.anchor = ce.cursor;
                                 text_changed = true;
+                                pending_ce_events.push(CeEvent::BlockTypeChanged {
+                                    old_node_id: cur_block_id,
+                                    new_node_id: new_el.0,
+                                    old_tag: cur_tag.clone(),
+                                    new_tag: "div".to_string(),
+                                });
                             } else {
                                 // Default: remove the empty block, cursor to end of previous block
                                 let siblings = &d_ref.tree.nodes[block_parent_id].children;
@@ -2682,6 +2804,11 @@ impl RinchApp {
                                     node_id: cur.node_id,
                                     offset: prev_char_start,
                                 };
+                                pending_ce_events.push(CeEvent::TextDeleted {
+                                    node_id: cur.node_id,
+                                    offset: prev_char_start,
+                                    length: off - prev_char_start,
+                                });
                             }
                             ce.anchor = ce.cursor;
                             text_changed = true;
@@ -2767,6 +2894,12 @@ impl RinchApp {
                                     }
                                     ce.anchor = ce.cursor;
                                     text_changed = true;
+                                    pending_ce_events.push(CeEvent::BlockTypeChanged {
+                                        old_node_id: cur_block_id,
+                                        new_node_id: new_el.0,
+                                        old_tag: cur_tag.clone(),
+                                        new_tag: "div".to_string(),
+                                    });
                                 } else {
                                     // Normal cross-block merge or same-block merge
                                     drop(d);
@@ -2842,6 +2975,11 @@ impl RinchApp {
 
                                         ce.cursor = merge_cursor;
                                         ce.anchor = ce.cursor;
+                                        pending_ce_events.push(CeEvent::BlockJoined {
+                                            surviving_block_id: prev_block_id,
+                                            removed_block_id: cur_block_id,
+                                            merge_offset: merge_cursor.offset,
+                                        });
                                     } else {
                                         // Check if prev is a <br> — just remove it
                                         let prev_is_br = d
@@ -3109,6 +3247,11 @@ impl RinchApp {
                                 new_text.push_str(&current[..off]);
                                 new_text.push_str(&current[next_char_end..]);
                                 d.set_text_content(rinch_core::dom::NodeId(cur.node_id), &new_text);
+                                pending_ce_events.push(CeEvent::TextDeleted {
+                                    node_id: cur.node_id,
+                                    offset: off,
+                                    length: next_char_end - off,
+                                });
                                 text_changed = true;
                             } else {
                                 // At end of text node — find next and merge
@@ -3439,6 +3582,11 @@ impl RinchApp {
                                     };
                                 }
                                 ce.anchor = ce.cursor;
+                                pending_ce_events.push(CeEvent::BlockSplit {
+                                    original_block_id: block_id,
+                                    new_block_id: new_block_id.0,
+                                    split_offset: off,
+                                });
                             }
                         } else {
                             // Non-li block: heading → div, else preserve tag
@@ -3520,6 +3668,11 @@ impl RinchApp {
                                 };
                             }
                             ce.anchor = ce.cursor;
+                            pending_ce_events.push(CeEvent::BlockSplit {
+                                original_block_id: block_id,
+                                new_block_id: new_block_id.0,
+                                split_offset: off,
+                            });
                         }
                     } else {
                         // Inline-only CE — insert <br> at CE root level,
@@ -3772,6 +3925,7 @@ impl RinchApp {
                     ce.cursor = restore_cursor;
                     ce.anchor = restore_anchor;
                     text_changed = true;
+                    ce::dispatch_ce_event(&CeEvent::UndoApplied);
                 }
             }
 
@@ -3992,6 +4146,34 @@ impl RinchApp {
                 }
             }
 
+            // ── Inline formatting ─────────────────────────────────────
+            EditCommand::ToggleBold
+            | EditCommand::ToggleItalic
+            | EditCommand::ToggleUnderline
+            | EditCommand::ToggleStrikethrough
+            | EditCommand::ToggleCode => {
+                let tag = match cmd {
+                    EditCommand::ToggleBold => "strong",
+                    EditCommand::ToggleItalic => "em",
+                    EditCommand::ToggleUnderline => "u",
+                    EditCommand::ToggleStrikethrough => "s",
+                    EditCommand::ToggleCode => "code",
+                    _ => unreachable!(),
+                };
+                // Delegate to CeOps — the CE API owns formatting operations
+                self.sync_ce_ops_cursor();
+                if let Some(ops) = &self.ce_ops {
+                    if let Ok(mut ops) = ops.try_borrow_mut() {
+                        ops.toggle_wrap(tag);
+                        let sel = ops.get_selection();
+                        let ce = self.focused_contenteditable.as_mut().unwrap();
+                        ce.cursor = sel.head;
+                        ce.anchor = sel.anchor;
+                    }
+                }
+                text_changed = true;
+            }
+
             // ── Unhandled commands (Escape, Redo, etc.) ───────────────
             _ => {
                 return false;
@@ -4025,6 +4207,19 @@ impl RinchApp {
         let final_anchor = ce.anchor;
         let ce_nid = ce.ce_node_id;
         self.set_contenteditable_attributes_dom(ce_nid, true, final_cursor, final_anchor);
+
+        // Sync cursor state to CeOps so the bridge sees updated positions
+        self.sync_ce_ops_cursor();
+
+        // Dispatch accumulated CE events (after all doc borrows are dropped)
+        for evt in &pending_ce_events {
+            ce::dispatch_ce_event(evt);
+        }
+
+        // Dispatch CE events for the editor bridge
+        ce::dispatch_ce_event(&CeEvent::SelectionChanged {
+            selection: CeSelection::range(final_anchor, final_cursor),
+        });
 
         // Dispatch oninput event if text changed
         if text_changed && let Some(doc) = &self.doc {

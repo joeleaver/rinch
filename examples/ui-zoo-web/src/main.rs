@@ -147,12 +147,11 @@ fn resolve_text_hit(browser_doc: &web_sys::Document, client_x: f32, client_y: f3
     let mut current: Option<web_sys::Node> = Some(start_container.clone());
     let mut block_el: Option<web_sys::Element> = None;
     while let Some(node) = current {
-        if let Ok(el) = node.clone().dyn_into::<web_sys::Element>() {
-            if el.has_attribute("data-block-index") {
+        if let Ok(el) = node.clone().dyn_into::<web_sys::Element>()
+            && el.has_attribute("data-block-index") {
                 block_el = Some(el);
                 break;
             }
-        }
         current = node.parent_node();
     }
     let block_el = block_el?;
@@ -208,11 +207,10 @@ fn walk_text_nodes_for_offset(
     }
     let children = node.child_nodes();
     for i in 0..children.length() {
-        if let Some(child) = children.item(i) {
-            if walk_text_nodes_for_offset(&child, target, utf16_offset, byte_offset) {
+        if let Some(child) = children.item(i)
+            && walk_text_nodes_for_offset(&child, target, utf16_offset, byte_offset) {
                 return true;
             }
-        }
     }
     false
 }
@@ -224,12 +222,12 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
 
     // Click delegation: find nearest [data-rid] ancestor and dispatch.
     let click_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
-        if let Some(target) = event.target() {
-            if let Ok(el) = target.dyn_into::<web_sys::Element>() {
+        if let Some(target) = event.target()
+            && let Ok(el) = target.dyn_into::<web_sys::Element>() {
                 // Walk up from target to find nearest [data-rid]
-                if let Ok(Some(rid_el)) = el.closest("[data-rid]") {
-                    if let Some(rid_str) = rid_el.get_attribute("data-rid") {
-                        if let Ok(rid) = rid_str.parse::<usize>() {
+                if let Ok(Some(rid_el)) = el.closest("[data-rid]")
+                    && let Some(rid_str) = rid_el.get_attribute("data-rid")
+                        && let Ok(rid) = rid_str.parse::<usize>() {
                             // Set click context with mouse position and element bounds
                             let rect = rid_el.get_bounding_client_rect();
                             let text_hit = resolve_text_hit(
@@ -255,10 +253,7 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
                             event.prevent_default();
                             events::dispatch_event(events::EventHandlerId(rid));
                         }
-                    }
-                }
             }
-        }
     }) as Box<dyn FnMut(_)>);
     browser_doc
         .add_event_listener_with_callback("click", click_closure.as_ref().unchecked_ref())
@@ -280,20 +275,18 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
             event.stop_propagation();
         } else if event.key() == "Enter" {
             // Check if the target element (or ancestor) has data-onsubmit
-            if let Some(target) = event.target() {
-                if let Ok(el) = target.dyn_into::<web_sys::Element>() {
+            if let Some(target) = event.target()
+                && let Ok(el) = target.dyn_into::<web_sys::Element>() {
                     let mut current: Option<web_sys::Element> = Some(el);
                     while let Some(el) = current {
-                        if let Some(handler_str) = el.get_attribute("data-onsubmit") {
-                            if let Ok(handler_id) = handler_str.parse::<usize>() {
+                        if let Some(handler_str) = el.get_attribute("data-onsubmit")
+                            && let Ok(handler_id) = handler_str.parse::<usize>() {
                                 events::dispatch_event(events::EventHandlerId(handler_id));
                                 break;
                             }
-                        }
                         current = el.parent_element();
                     }
                 }
-            }
         }
     }) as Box<dyn FnMut(_)>);
     browser_doc
@@ -319,15 +312,14 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
                 if let Ok(el) = target.dyn_into::<web_sys::Element>() {
                     let mut current: Option<web_sys::Element> = Some(el);
                     while let Some(el) = current {
-                        if let Some(handler_str) = el.get_attribute("data-oninput") {
-                            if let Ok(handler_id) = handler_str.parse::<usize>() {
+                        if let Some(handler_str) = el.get_attribute("data-oninput")
+                            && let Ok(handler_id) = handler_str.parse::<usize>() {
                                 events::dispatch_input_event(
                                     events::EventHandlerId(handler_id),
                                     value,
                                 );
                                 break;
                             }
-                        }
                         current = el.parent_element();
                     }
                 }

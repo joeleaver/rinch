@@ -35,9 +35,6 @@ impl StructureCommands {
             old_attrs,
             new_attrs: HashMap::new(),
         });
-        // Use mark_structure_changed because changing block type requires replacing
-        // the DOM element (e.g., <p> to <h1>), not just updating content
-        editor.mark_structure_changed();
         Ok(())
     }
 
@@ -67,9 +64,6 @@ impl StructureCommands {
             old_attrs,
             new_attrs: attrs,
         });
-        // Use mark_structure_changed because changing block type requires replacing
-        // the DOM element (e.g., <p> to <h1>), not just updating content
-        editor.mark_structure_changed();
         Ok(())
     }
 
@@ -122,7 +116,6 @@ impl StructureCommands {
 
         // Set cursor at join point
         editor.set_selection(Selection::cursor(Position::new(delete_start)));
-        editor.mark_structure_changed();
         Ok(())
     }
 
@@ -156,7 +149,6 @@ impl StructureCommands {
             new_attrs: attrs,
         });
 
-        editor.mark_structure_changed();
         Ok(())
     }
 
@@ -189,7 +181,6 @@ impl StructureCommands {
         // Move cursor to start of new block
         let new_pos = pos + 1; // +1 for the newline separator
         editor.set_selection(Selection::cursor(new_pos));
-        editor.mark_structure_changed();
         Ok(())
     }
 }

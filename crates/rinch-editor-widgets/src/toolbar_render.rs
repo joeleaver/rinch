@@ -17,6 +17,12 @@ use rinch_editor::commands::{FormattingCommands, StructureCommands, TextCommands
 use rinch_editor::document::Position;
 use rinch_editor::selection::Selection;
 
+// Thread-local state for dropdown open/close persistence across re-renders.
+thread_local! {
+    static HEADING_DROPDOWN_OPEN: RefCell<bool> = const { RefCell::new(false) };
+    static COLOR_PICKER_OPEN: RefCell<bool> = const { RefCell::new(false) };
+}
+
 /// Render the full toolbar from a ToolbarConfig.
 pub fn render_toolbar(
     scope: &mut RenderScope,
@@ -75,6 +81,17 @@ fn render_toolbar_button(
     control: &ToolbarControl,
     on_change: Rc<dyn Fn()>,
 ) -> NodeHandle {
+    // Dispatch to specialized renderers for dropdown controls.
+    match control {
+        ToolbarControl::HeadingDropdown => {
+            return render_heading_dropdown(scope, editor, on_change);
+        }
+        ToolbarControl::TextColorPicker => {
+            return render_color_picker(scope, editor, on_change);
+        }
+        _ => {}
+    }
+
     let meta = ControlButton::from_control(control.clone());
 
     let btn = scope.create_element("div");
@@ -100,7 +117,14 @@ fn render_toolbar_button(
          transition: background 0.15s;"
     };
     btn.set_attribute("style", style);
-    btn.set_attribute("title", meta.tooltip());
+
+    // Tooltip with shortcut hint
+    let title = if let Some(shortcut) = meta.shortcut_hint() {
+        format!("{} ({})", meta.tooltip(), shortcut)
+    } else {
+        meta.tooltip().to_string()
+    };
+    btn.set_attribute("title", &title);
 
     // Try to render a Tabler icon; fall back to text label
     if let Some(icon) = control_to_tabler_icon(control) {
@@ -125,14 +149,284 @@ fn render_toolbar_button(
     btn
 }
 
+/// Get the current block type label for the heading dropdown.
+fn current_block_label(editor: &Editor) -> &'static str {
+    let sel = editor.get_selection();
+    if let Ok(rp) = editor.doc.resolve_position(sel.head)
+        && let Some(bt) = editor.doc.block_type(rp.block_index) {
+            match bt.as_str() {
+                "heading" => {
+                    if let Some(attrs) = editor.doc.block_attrs(rp.block_index) {
+                        match attrs.get("level").map(|s| s.as_str()) {
+                            Some("1") => return "Heading 1",
+                            Some("2") => return "Heading 2",
+                            Some("3") => return "Heading 3",
+                            Some("4") => return "Heading 4",
+                            Some("5") => return "Heading 5",
+                            Some("6") => return "Heading 6",
+                            _ => return "Heading",
+                        }
+                    }
+                    return "Heading";
+                }
+                "paragraph" => return "Paragraph",
+                "blockquote" => return "Blockquote",
+                "code_block" => return "Code Block",
+                "bullet_list" => return "Bullet List",
+                "ordered_list" => return "Ordered List",
+                _ => {}
+            }
+        }
+    "Paragraph"
+}
+
+/// Render the heading dropdown (replaces separate H1-H6 + Paragraph buttons).
+fn render_heading_dropdown(
+    scope: &mut RenderScope,
+    editor: Rc<RefCell<Editor>>,
+    on_change: Rc<dyn Fn()>,
+) -> NodeHandle {
+    let is_open = HEADING_DROPDOWN_OPEN.with(|o| *o.borrow());
+
+    let container = scope.create_element("div");
+    container.set_attribute(
+        "style",
+        "position: relative; display: inline-flex; align-items: center;",
+    );
+
+    // Button showing current block type + chevron
+    let btn = scope.create_element("div");
+    btn.set_attribute(
+        "style",
+        "display: inline-flex; align-items: center; gap: 4px; \
+         padding: 4px 8px; border-radius: 4px; cursor: pointer; \
+         border: 1px solid transparent; font-size: 13px; \
+         transition: background 0.15s; min-width: 90px;",
+    );
+    btn.set_attribute("title", "Block type");
+
+    let label = if let Ok(ed) = editor.try_borrow() {
+        current_block_label(&ed)
+    } else {
+        "Paragraph"
+    };
+    let label_span = scope.create_element("span");
+    label_span.set_text(label);
+    btn.append_child(&label_span);
+
+    let chevron = render_tabler_icon(scope, TablerIcon::ChevronDown, TablerIconStyle::Outline);
+    btn.append_child(&chevron);
+
+    // Toggle dropdown on click
+    let on_change_toggle = on_change.clone();
+    let toggle_handler = scope.register_handler(move || {
+        HEADING_DROPDOWN_OPEN.with(|o| {
+            let mut v = o.borrow_mut();
+            *v = !*v;
+        });
+        // Close color picker if open
+        COLOR_PICKER_OPEN.with(|o| *o.borrow_mut() = false);
+        on_change_toggle();
+    });
+    btn.set_attribute("data-rid", &toggle_handler.to_string());
+    container.append_child(&btn);
+
+    // Dropdown menu
+    if is_open {
+        let dropdown = scope.create_element("div");
+        dropdown.set_attribute(
+            "style",
+            "position: absolute; top: 100%; left: 0; z-index: 1000; \
+             background: var(--rinch-color-body, #fff); \
+             border: 1px solid var(--rinch-color-gray-3); \
+             border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.12); \
+             padding: 4px 0; min-width: 150px;",
+        );
+
+        let items: &[(&str, Option<u8>)] = &[
+            ("Paragraph", None),
+            ("Heading 1", Some(1)),
+            ("Heading 2", Some(2)),
+            ("Heading 3", Some(3)),
+            ("Heading 4", Some(4)),
+            ("Heading 5", Some(5)),
+            ("Heading 6", Some(6)),
+        ];
+
+        for &(item_label, level) in items {
+            let item = scope.create_element("div");
+
+            let font_size = match level {
+                Some(1) => "18px",
+                Some(2) => "16px",
+                Some(3) => "15px",
+                _ => "13px",
+            };
+            let font_weight = if level.is_some() { "600" } else { "400" };
+
+            let item_style = format!(
+                "padding: 6px 12px; cursor: pointer; font-size: {}; font-weight: {}; \
+                 transition: background 0.1s;",
+                font_size, font_weight,
+            );
+            item.set_attribute("style", &item_style);
+            item.set_text(item_label);
+
+            let editor_clone = editor.clone();
+            let on_change_clone = on_change.clone();
+            let item_handler = scope.register_handler(move || {
+                // Close dropdown
+                HEADING_DROPDOWN_OPEN.with(|o| *o.borrow_mut() = false);
+
+                if let Ok(mut ed) = editor_clone.try_borrow_mut() {
+                    if let Some(lvl) = level {
+                        let mut attrs = HashMap::new();
+                        attrs.insert("level".to_string(), lvl.to_string());
+                        let _ = StructureCommands::set_block_type_with_attrs(
+                            &mut ed, "heading", attrs,
+                        );
+                    } else {
+                        let _ = StructureCommands::set_block_type(&mut ed, "paragraph");
+                    }
+                }
+                on_change_clone();
+            });
+            item.set_attribute("data-rid", &item_handler.to_string());
+
+            dropdown.append_child(&item);
+        }
+
+        container.append_child(&dropdown);
+    }
+
+    container
+}
+
+/// Color palette for the color picker.
+const COLOR_PALETTE: &[(&str, &str)] = &[
+    ("Black", "#000000"),
+    ("Gray", "#868e96"),
+    ("Red", "#e03131"),
+    ("Orange", "#e8590c"),
+    ("Yellow", "#fcc419"),
+    ("Green", "#2f9e44"),
+    ("Cyan", "#1098ad"),
+    ("Blue", "#1971c2"),
+    ("Purple", "#7048e8"),
+    ("Pink", "#c2255c"),
+];
+
+/// Render the color picker dropdown (replaces separate TextColor buttons).
+fn render_color_picker(
+    scope: &mut RenderScope,
+    editor: Rc<RefCell<Editor>>,
+    on_change: Rc<dyn Fn()>,
+) -> NodeHandle {
+    let is_open = COLOR_PICKER_OPEN.with(|o| *o.borrow());
+
+    let container = scope.create_element("div");
+    container.set_attribute(
+        "style",
+        "position: relative; display: inline-flex; align-items: center;",
+    );
+
+    // Button with palette icon and colored underline
+    let btn = scope.create_element("div");
+    btn.set_attribute(
+        "style",
+        "display: inline-flex; align-items: center; justify-content: center; \
+         flex-direction: column; width: 32px; height: 32px; \
+         border-radius: 4px; cursor: pointer; border: 1px solid transparent; \
+         transition: background 0.15s;",
+    );
+    btn.set_attribute("title", "Text color");
+
+    let icon_node = render_tabler_icon(scope, TablerIcon::Palette, TablerIconStyle::Outline);
+    btn.append_child(&icon_node);
+
+    // Colored underline indicator
+    let underline = scope.create_element("div");
+    underline.set_attribute(
+        "style",
+        "width: 16px; height: 3px; border-radius: 1px; \
+         background: var(--rinch-primary-color, #1971c2); margin-top: -2px;",
+    );
+    btn.append_child(&underline);
+
+    // Toggle dropdown on click
+    let on_change_toggle = on_change.clone();
+    let toggle_handler = scope.register_handler(move || {
+        COLOR_PICKER_OPEN.with(|o| {
+            let mut v = o.borrow_mut();
+            *v = !*v;
+        });
+        // Close heading dropdown if open
+        HEADING_DROPDOWN_OPEN.with(|o| *o.borrow_mut() = false);
+        on_change_toggle();
+    });
+    btn.set_attribute("data-rid", &toggle_handler.to_string());
+    container.append_child(&btn);
+
+    // Dropdown color grid
+    if is_open {
+        let dropdown = scope.create_element("div");
+        dropdown.set_attribute(
+            "style",
+            "position: absolute; top: 100%; left: 0; z-index: 1000; \
+             background: var(--rinch-color-body, #fff); \
+             border: 1px solid var(--rinch-color-gray-3); \
+             border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.12); \
+             padding: 8px; display: flex; flex-wrap: wrap; gap: 4px; width: 140px;",
+        );
+
+        for &(color_name, color_hex) in COLOR_PALETTE {
+            let swatch = scope.create_element("div");
+            let swatch_style = format!(
+                "width: 24px; height: 24px; border-radius: 4px; cursor: pointer; \
+                 background: {}; border: 1px solid var(--rinch-color-gray-3); \
+                 transition: transform 0.1s;",
+                color_hex,
+            );
+            swatch.set_attribute("style", &swatch_style);
+            swatch.set_attribute("title", color_name);
+
+            let editor_clone = editor.clone();
+            let on_change_clone = on_change.clone();
+            let color_value = color_hex.to_string();
+            let swatch_handler = scope.register_handler(move || {
+                // Close dropdown
+                COLOR_PICKER_OPEN.with(|o| *o.borrow_mut() = false);
+
+                if let Ok(mut ed) = editor_clone.try_borrow_mut() {
+                    let sel = ed.get_selection().clone();
+                    if !sel.is_cursor() {
+                        let range = sel.range();
+                        let mut attrs = HashMap::new();
+                        attrs.insert("color".to_string(), color_value.clone());
+                        let _ = ed.doc.add_mark(
+                            range,
+                            rinch_editor::document::MarkData::with_attrs("textColor", attrs),
+                        );
+                    }
+                }
+                on_change_clone();
+            });
+            swatch.set_attribute("data-rid", &swatch_handler.to_string());
+
+            dropdown.append_child(&swatch);
+        }
+
+        container.append_child(&dropdown);
+    }
+
+    container
+}
+
 /// Check if a toolbar control's format is currently active at the cursor.
 fn is_control_active(editor: &Editor, control: &ToolbarControl) -> bool {
     let sel = editor.get_selection();
-    let marks = editor.doc.marks_at(sel.head);
-    let stored = &editor.stored_marks;
-
     let has_mark = |mark_type: &str| -> bool {
-        marks.iter().any(|m| m.mark_type == mark_type) || stored.iter().any(|m| m == mark_type)
+        editor.has_stored_mark(mark_type)
     };
 
     match control {
@@ -239,9 +533,20 @@ fn is_control_active(editor: &Editor, control: &ToolbarControl) -> bool {
                 false
             }
         }
-        ToolbarControl::Link => {
-            marks.iter().any(|m| m.mark_type == "link") || stored.iter().any(|m| m == "link")
-        }
+        ToolbarControl::Link => has_mark("link"),
+        // Dropdown and table controls do not have a simple active state
+        ToolbarControl::HeadingDropdown
+        | ToolbarControl::TextColorPicker
+        | ToolbarControl::InsertRowBefore
+        | ToolbarControl::InsertRowAfter
+        | ToolbarControl::InsertColBefore
+        | ToolbarControl::InsertColAfter
+        | ToolbarControl::DeleteRow
+        | ToolbarControl::DeleteCol
+        | ToolbarControl::ToggleHeaderRow
+        | ToolbarControl::MergeCells
+        | ToolbarControl::SplitCell
+        | ToolbarControl::DeleteTable => false,
         _ => false,
     }
 }
@@ -259,6 +564,8 @@ fn control_to_tabler_icon(control: &ToolbarControl) -> Option<TablerIcon> {
         ToolbarControl::Superscript => Some(TablerIcon::Superscript),
         ToolbarControl::Link => Some(TablerIcon::Link),
         ToolbarControl::TextColor(_) => Some(TablerIcon::Palette),
+        ToolbarControl::HeadingDropdown => Some(TablerIcon::Heading),
+        ToolbarControl::TextColorPicker => Some(TablerIcon::Palette),
         ToolbarControl::Heading(1) => Some(TablerIcon::H1),
         ToolbarControl::Heading(2) => Some(TablerIcon::H2),
         ToolbarControl::Heading(3) => Some(TablerIcon::H3),
@@ -281,8 +588,30 @@ fn control_to_tabler_icon(control: &ToolbarControl) -> Option<TablerIcon> {
         ToolbarControl::AlignCenter => Some(TablerIcon::AlignCenter),
         ToolbarControl::AlignRight => Some(TablerIcon::AlignRight),
         ToolbarControl::AlignJustify => Some(TablerIcon::AlignJustified),
+        ToolbarControl::InsertRowBefore => Some(TablerIcon::RowInsertTop),
+        ToolbarControl::InsertRowAfter => Some(TablerIcon::RowInsertBottom),
+        ToolbarControl::InsertColBefore => Some(TablerIcon::ColumnInsertLeft),
+        ToolbarControl::InsertColAfter => Some(TablerIcon::ColumnInsertRight),
+        ToolbarControl::DeleteRow => Some(TablerIcon::RowRemove),
+        ToolbarControl::DeleteCol => Some(TablerIcon::ColumnRemove),
+        ToolbarControl::ToggleHeaderRow => Some(TablerIcon::TableRow),
+        ToolbarControl::MergeCells => Some(TablerIcon::TableShortcut),
+        ToolbarControl::SplitCell => Some(TablerIcon::LayoutColumns),
+        ToolbarControl::DeleteTable => Some(TablerIcon::TableOff),
         ToolbarControl::Custom { .. } => None,
     }
+}
+
+/// Helper: find the table at the cursor and return (table_id, row, col).
+fn find_cursor_table(editor: &Editor) -> Option<(String, usize, usize)> {
+    let sel = editor.get_selection();
+    if let Ok(rp) = editor.doc.resolve_position(sel.head)
+        && let Some(table_id) = editor.table_id_for_block(rp.block_index) {
+            // For now, default to row 0, col 0 — a proper implementation would
+            // track the cursor cell within the table.
+            return Some((table_id, 0, 0));
+        }
+    None
 }
 
 /// Execute the editor command associated with a toolbar control.
@@ -474,15 +803,8 @@ fn execute_toolbar_command(
         }
         ToolbarControl::InsertTable => {
             if let Ok(mut ed) = editor.try_borrow_mut() {
-                // Insert a placeholder table using split blocks
-                let _ = StructureCommands::split_block(&mut ed);
-                let _ = TextCommands::insert_text(&mut ed, "| Header 1 | Header 2 | Header 3 |");
-                let _ = StructureCommands::split_block(&mut ed);
-                let _ = TextCommands::insert_text(&mut ed, "|----------|----------|----------|");
-                let _ = StructureCommands::split_block(&mut ed);
-                let _ = TextCommands::insert_text(&mut ed, "| Cell 1   | Cell 2   | Cell 3   |");
-                let _ = StructureCommands::split_block(&mut ed);
-                let _ = TextCommands::insert_text(&mut ed, "| Cell 4   | Cell 5   | Cell 6   |");
+                // Insert a 3x3 table with header row
+                let _ = ed.insert_table(3, 3);
             }
         }
         ToolbarControl::AlignLeft => {
@@ -542,6 +864,81 @@ fn execute_toolbar_command(
                         .unwrap_or_else(|| "paragraph".to_string());
                     let _ =
                         StructureCommands::set_block_type_with_attrs(&mut ed, &block_type, attrs);
+                }
+            }
+        }
+        // HeadingDropdown and TextColorPicker are handled by their own renderers
+        ToolbarControl::HeadingDropdown | ToolbarControl::TextColorPicker => {}
+        // Table manipulation commands
+        ToolbarControl::InsertRowBefore => {
+            if let Ok(mut ed) = editor.try_borrow_mut()
+                && let Some((table_id, row, _col)) = find_cursor_table(&ed)
+                    && let Some(table) = ed.get_table_mut(&table_id) {
+                        table.insert_row(row);
+                    }
+        }
+        ToolbarControl::InsertRowAfter => {
+            if let Ok(mut ed) = editor.try_borrow_mut()
+                && let Some((table_id, row, _col)) = find_cursor_table(&ed)
+                    && let Some(table) = ed.get_table_mut(&table_id) {
+                        table.insert_row(row + 1);
+                    }
+        }
+        ToolbarControl::InsertColBefore => {
+            if let Ok(mut ed) = editor.try_borrow_mut()
+                && let Some((table_id, _row, col)) = find_cursor_table(&ed)
+                    && let Some(table) = ed.get_table_mut(&table_id) {
+                        table.insert_column(col);
+                    }
+        }
+        ToolbarControl::InsertColAfter => {
+            if let Ok(mut ed) = editor.try_borrow_mut()
+                && let Some((table_id, _row, col)) = find_cursor_table(&ed)
+                    && let Some(table) = ed.get_table_mut(&table_id) {
+                        table.insert_column(col + 1);
+                    }
+        }
+        ToolbarControl::DeleteRow => {
+            if let Ok(mut ed) = editor.try_borrow_mut()
+                && let Some((table_id, row, _col)) = find_cursor_table(&ed)
+                    && let Some(table) = ed.get_table_mut(&table_id) {
+                        let _ = table.delete_row(row);
+                    }
+        }
+        ToolbarControl::DeleteCol => {
+            if let Ok(mut ed) = editor.try_borrow_mut()
+                && let Some((table_id, _row, col)) = find_cursor_table(&ed)
+                    && let Some(table) = ed.get_table_mut(&table_id) {
+                        let _ = table.delete_column(col);
+                    }
+        }
+        ToolbarControl::ToggleHeaderRow => {
+            if let Ok(mut ed) = editor.try_borrow_mut()
+                && let Some((table_id, _row, _col)) = find_cursor_table(&ed)
+                    && let Some(table) = ed.get_table_mut(&table_id) {
+                        table.toggle_header_row();
+                    }
+        }
+        ToolbarControl::MergeCells => {
+            if let Ok(mut ed) = editor.try_borrow_mut()
+                && let Some((table_id, row, col)) = find_cursor_table(&ed)
+                    && let Some(table) = ed.get_table_mut(&table_id) {
+                        // Merge the current cell with the one to the right
+                        let _ = table.merge_cells((row, col), (row, col.saturating_add(1)));
+                    }
+        }
+        ToolbarControl::SplitCell => {
+            if let Ok(mut ed) = editor.try_borrow_mut()
+                && let Some((table_id, row, col)) = find_cursor_table(&ed)
+                    && let Some(table) = ed.get_table_mut(&table_id) {
+                        let _ = table.split_cell(row, col);
+                    }
+        }
+        ToolbarControl::DeleteTable => {
+            if let Ok(mut ed) = editor.try_borrow_mut() {
+                let sel = ed.get_selection().clone();
+                if let Ok(rp) = ed.doc.resolve_position(sel.head) {
+                    let _ = ed.delete_table(rp.block_index);
                 }
             }
         }

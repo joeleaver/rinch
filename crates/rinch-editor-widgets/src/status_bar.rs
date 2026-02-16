@@ -65,9 +65,11 @@ pub fn render_status_bar(scope: &mut RenderScope, editor: &Rc<RefCell<Editor>>) 
     block_label.set_text(&block_type_str);
     bar.append_child(&block_label);
 
-    // Cursor position
+    // Cursor position (block-relative offset, not inline-node-relative)
     let pos_text = if let Ok(rp) = ed.doc.resolve_position(sel.head) {
-        format!("Block {}, Offset {}", rp.block_index + 1, rp.text_offset)
+        let block_start = ed.doc.block_start_position(rp.block_index);
+        let block_offset = sel.head.0.saturating_sub(block_start);
+        format!("Block {}, Offset {}", rp.block_index + 1, block_offset)
     } else {
         format!("Pos {}", sel.head.0)
     };

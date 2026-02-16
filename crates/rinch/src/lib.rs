@@ -95,6 +95,8 @@
 #[cfg(feature = "desktop")]
 pub mod app;
 #[cfg(feature = "desktop")]
+pub mod ce_ops;
+#[cfg(feature = "desktop")]
 pub mod menu;
 #[cfg(feature = "desktop")]
 pub mod shell;

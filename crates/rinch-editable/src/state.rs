@@ -168,8 +168,19 @@ impl<D: EditableDocument> EditableState<D> {
                 None
             }
 
-            // Block structure (handled at the app level, not here)
-            EditCommand::Indent | EditCommand::Outdent => None,
+            // Block structure and formatting (handled at the app/CE level, not here)
+            EditCommand::Indent
+            | EditCommand::Outdent
+            | EditCommand::ToggleBold
+            | EditCommand::ToggleItalic
+            | EditCommand::ToggleUnderline
+            | EditCommand::ToggleStrikethrough
+            | EditCommand::ToggleCode
+            | EditCommand::SetBlockType(_)
+            | EditCommand::ToggleBulletList
+            | EditCommand::ToggleOrderedList
+            | EditCommand::InsertHorizontalRule
+            | EditCommand::ToggleBlockquote => None,
         }
     }
 

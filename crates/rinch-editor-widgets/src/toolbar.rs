@@ -29,6 +29,10 @@ pub enum ToolbarControl {
     TextColor(String),
     Heading(u8),
     Paragraph,
+    /// Dropdown that replaces separate H1-H6 + Paragraph buttons.
+    HeadingDropdown,
+    /// Color picker that replaces separate TextColor buttons.
+    TextColorPicker,
     BulletList,
     OrderedList,
     Blockquote,
@@ -43,6 +47,17 @@ pub enum ToolbarControl {
     AlignCenter,
     AlignRight,
     AlignJustify,
+    // Table manipulation controls
+    InsertRowBefore,
+    InsertRowAfter,
+    InsertColBefore,
+    InsertColAfter,
+    DeleteRow,
+    DeleteCol,
+    ToggleHeaderRow,
+    MergeCells,
+    SplitCell,
+    DeleteTable,
     Custom {
         label: String,
         command: String,
@@ -101,18 +116,7 @@ impl ToolbarConfig {
                         ToolbarControl::Superscript,
                     ],
                 ),
-                ToolbarGroup::new(
-                    "Headings",
-                    vec![
-                        ToolbarControl::Heading(1),
-                        ToolbarControl::Heading(2),
-                        ToolbarControl::Heading(3),
-                        ToolbarControl::Heading(4),
-                        ToolbarControl::Heading(5),
-                        ToolbarControl::Heading(6),
-                        ToolbarControl::Paragraph,
-                    ],
-                ),
+                ToolbarGroup::new("Headings", vec![ToolbarControl::HeadingDropdown]),
                 ToolbarGroup::new(
                     "Lists",
                     vec![
@@ -140,22 +144,13 @@ impl ToolbarConfig {
                         ToolbarControl::InsertTable,
                     ],
                 ),
-                ToolbarGroup::new(
-                    "Color",
-                    vec![
-                        ToolbarControl::TextColor("red".into()),
-                        ToolbarControl::TextColor("blue".into()),
-                        ToolbarControl::TextColor("green".into()),
-                        ToolbarControl::TextColor("orange".into()),
-                        ToolbarControl::TextColor("purple".into()),
-                    ],
-                ),
+                ToolbarGroup::new("Color", vec![ToolbarControl::TextColorPicker]),
                 ToolbarGroup::new("Clear", vec![ToolbarControl::ClearFormatting]),
             ],
         }
     }
 
-    /// Minimal toolbar: bold, italic, link, headings 1-3.
+    /// Minimal toolbar: bold, italic, link, heading dropdown.
     pub fn default_minimal() -> Self {
         Self {
             sticky: true,
@@ -169,14 +164,7 @@ impl ToolbarConfig {
                         ToolbarControl::Link,
                     ],
                 ),
-                ToolbarGroup::new(
-                    "Headings",
-                    vec![
-                        ToolbarControl::Heading(1),
-                        ToolbarControl::Heading(2),
-                        ToolbarControl::Heading(3),
-                    ],
-                ),
+                ToolbarGroup::new("Headings", vec![ToolbarControl::HeadingDropdown]),
             ],
         }
     }
@@ -196,15 +184,7 @@ impl ToolbarConfig {
                         ToolbarControl::Code,
                     ],
                 ),
-                ToolbarGroup::new(
-                    "Headings",
-                    vec![
-                        ToolbarControl::Heading(1),
-                        ToolbarControl::Heading(2),
-                        ToolbarControl::Heading(3),
-                        ToolbarControl::Paragraph,
-                    ],
-                ),
+                ToolbarGroup::new("Headings", vec![ToolbarControl::HeadingDropdown]),
                 ToolbarGroup::new(
                     "Blocks",
                     vec![
@@ -234,10 +214,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_full_has_at_least_35_controls() {
+    fn default_full_has_at_least_20_controls() {
         let config = ToolbarConfig::default_full();
         assert!(
-            config.control_count() >= 35,
+            config.control_count() >= 20,
             "full toolbar has {} controls",
             config.control_count()
         );
@@ -260,7 +240,7 @@ mod tests {
     fn default_minimal_is_small() {
         let config = ToolbarConfig::default_minimal();
         assert!(config.control_count() <= 10);
-        assert!(config.control_count() >= 6);
+        assert!(config.control_count() >= 4);
     }
 
     #[test]

@@ -26,7 +26,21 @@ impl TextCommands {
             });
         }
         let insert_pos = sel.start();
-        editor.doc.insert_text(insert_pos, text)?;
+
+        // Insert text with mark-awareness:
+        // - Some(marks): insert with exactly these marks (creates new inline if needed)
+        // - None: inherit marks from cursor context (insert into existing inline)
+        if let Some(ref desired_marks) = editor.stored_marks {
+            let mark_data: Vec<MarkData> = desired_marks
+                .iter()
+                .map(MarkData::new)
+                .collect();
+            editor
+                .doc
+                .insert_text_with_marks(insert_pos, text, &mark_data)?;
+        } else {
+            editor.doc.insert_text(insert_pos, text)?;
+        }
 
         // Record undo operation (merge single chars for typing)
         let op = UndoOperation::InsertText {
@@ -39,25 +53,9 @@ impl TextCommands {
             editor.record_undo(op);
         }
 
-        // Apply stored marks to the newly inserted text
-        if !editor.stored_marks.is_empty() {
-            let mark_range = Range::new(insert_pos, insert_pos + text.len());
-            for mark_type in editor.stored_marks.clone() {
-                let _ = editor.doc.add_mark(mark_range, MarkData::new(&mark_type));
-            }
-            // Don't clear stored marks - they persist until cursor moves or user toggles off
-        }
-
         // Move cursor to end of inserted text
         let new_pos = insert_pos + text.len();
         editor.set_selection(Selection::cursor(new_pos));
-
-        // Track changes
-        if !sel.is_cursor() {
-            editor.mark_structure_changed();
-        } else if let Ok(rp) = editor.doc.resolve_position(insert_pos) {
-            editor.mark_block_changed(rp.block_index);
-        }
 
         Ok(())
     }
@@ -71,7 +69,6 @@ impl TextCommands {
             deleted_text,
         });
         editor.set_selection(Selection::cursor(range.start));
-        editor.mark_structure_changed();
         Ok(())
     }
 
@@ -90,7 +87,6 @@ impl TextCommands {
         });
         let new_pos = range.start + text.len();
         editor.set_selection(Selection::cursor(new_pos));
-        editor.mark_structure_changed();
         Ok(())
     }
 

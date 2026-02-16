@@ -9,9 +9,58 @@ use std::collections::HashMap;
 
 use super::{CommandRegistration, Extension};
 use crate::commands::{FormattingCommands, StructureCommands, TextCommands};
+use crate::document::Range;
+use crate::editor::Editor;
+use crate::error::EditorError;
 use crate::input::{InputRule, KeyboardShortcut};
 use crate::schema::mark::MarkSpec;
 use crate::schema::node::{AttrSpec, MarkSet, NodeSpec};
+
+// =============================================================================
+// Input rule helpers
+// =============================================================================
+
+/// Delete the matched prefix text and set the block type.
+///
+/// Used by markdown input rules (e.g., `# ` -> heading, `> ` -> blockquote).
+/// Deletes the prefix from the block start, adjusts cursor, and sets block type.
+fn apply_block_input_rule(
+    editor: &mut Editor,
+    caps: &regex::Captures,
+    block_type: &str,
+) -> Result<(), EditorError> {
+    let prefix_len = caps.get(0).unwrap().as_str().len();
+    let sel = editor.get_selection().clone();
+    let resolved = editor.doc.resolve_position(sel.head)?;
+    let block_start = editor.doc.block_start_position(resolved.block_index);
+    TextCommands::delete_range(editor, Range::new(block_start, block_start + prefix_len))?;
+    StructureCommands::set_block_type(editor, block_type)?;
+    Ok(())
+}
+
+/// Heading input rule handler: delete prefix, set heading type with level.
+fn heading_input_rule_handler(
+    editor: &mut Editor,
+    caps: &regex::Captures,
+) -> Result<(), EditorError> {
+    let hashes = caps.get(1).unwrap().as_str();
+    let level = hashes.len();
+    let prefix_len = caps.get(0).unwrap().as_str().len();
+
+    let sel = editor.get_selection().clone();
+    let resolved = editor.doc.resolve_position(sel.head)?;
+    let block_start = editor.doc.block_start_position(resolved.block_index);
+
+    // Delete the prefix text ("# ", "## ", etc.)
+    TextCommands::delete_range(editor, Range::new(block_start, block_start + prefix_len))?;
+
+    // Set heading with level
+    let mut attrs = HashMap::new();
+    attrs.insert("level".to_string(), level.to_string());
+    StructureCommands::set_block_type_with_attrs(editor, "heading", attrs)?;
+
+    Ok(())
+}
 
 // =============================================================================
 // Node Extensions
@@ -175,38 +224,11 @@ impl Extension for HeadingExt {
     }
 
     fn input_rules(&self) -> Vec<InputRule> {
-        vec![
-            InputRule::new(
-                Regex::new(r"^###### $").unwrap(),
-                "Heading 6",
-                |editor, _caps| StructureCommands::set_block_type(editor, "heading"),
-            ),
-            InputRule::new(
-                Regex::new(r"^##### $").unwrap(),
-                "Heading 5",
-                |editor, _caps| StructureCommands::set_block_type(editor, "heading"),
-            ),
-            InputRule::new(
-                Regex::new(r"^#### $").unwrap(),
-                "Heading 4",
-                |editor, _caps| StructureCommands::set_block_type(editor, "heading"),
-            ),
-            InputRule::new(
-                Regex::new(r"^### $").unwrap(),
-                "Heading 3",
-                |editor, _caps| StructureCommands::set_block_type(editor, "heading"),
-            ),
-            InputRule::new(
-                Regex::new(r"^## $").unwrap(),
-                "Heading 2",
-                |editor, _caps| StructureCommands::set_block_type(editor, "heading"),
-            ),
-            InputRule::new(
-                Regex::new(r"^# $").unwrap(),
-                "Heading 1",
-                |editor, _caps| StructureCommands::set_block_type(editor, "heading"),
-            ),
-        ]
+        vec![InputRule::new(
+            Regex::new(r"^(#{1,6}) $").unwrap(),
+            "Heading",
+            heading_input_rule_handler,
+        )]
     }
 }
 
@@ -251,7 +273,7 @@ impl Extension for BlockquoteExt {
         vec![InputRule::new(
             Regex::new(r"^> $").unwrap(),
             "Blockquote",
-            |editor, _caps| StructureCommands::wrap_in(editor, "blockquote"),
+            |editor, caps| apply_block_input_rule(editor, caps, "blockquote"),
         )]
     }
 }
@@ -298,12 +320,12 @@ impl Extension for BulletListExt {
             InputRule::new(
                 Regex::new(r"^- $").unwrap(),
                 "Bullet list (dash)",
-                |editor, _caps| StructureCommands::wrap_in(editor, "bullet_list"),
+                |editor, caps| apply_block_input_rule(editor, caps, "bullet_list"),
             ),
             InputRule::new(
                 Regex::new(r"^\* $").unwrap(),
                 "Bullet list (asterisk)",
-                |editor, _caps| StructureCommands::wrap_in(editor, "bullet_list"),
+                |editor, caps| apply_block_input_rule(editor, caps, "bullet_list"),
             ),
         ]
     }
@@ -351,7 +373,7 @@ impl Extension for OrderedListExt {
         vec![InputRule::new(
             Regex::new(r"^\d+\. $").unwrap(),
             "Ordered list",
-            |editor, _caps| StructureCommands::wrap_in(editor, "ordered_list"),
+            |editor, caps| apply_block_input_rule(editor, caps, "ordered_list"),
         )]
     }
 }
@@ -416,9 +438,9 @@ impl Extension for CodeBlockExt {
 
     fn input_rules(&self) -> Vec<InputRule> {
         vec![InputRule::new(
-            Regex::new(r"^```$").unwrap(),
+            Regex::new(r"^``` $").unwrap(),
             "Code block",
-            |editor, _caps| StructureCommands::set_block_type(editor, "code_block"),
+            |editor, caps| apply_block_input_rule(editor, caps, "code_block"),
         )]
     }
 }
@@ -447,9 +469,9 @@ impl Extension for HorizontalRuleExt {
 
     fn input_rules(&self) -> Vec<InputRule> {
         vec![InputRule::new(
-            Regex::new(r"^---$").unwrap(),
+            Regex::new(r"^--- $").unwrap(),
             "Horizontal rule",
-            |editor, _caps| StructureCommands::set_block_type(editor, "horizontal_rule"),
+            |editor, caps| apply_block_input_rule(editor, caps, "horizontal_rule"),
         )]
     }
 }
@@ -1092,11 +1114,12 @@ mod tests {
     fn heading_ext_has_input_rules() {
         let ext = HeadingExt;
         let rules = ext.input_rules();
-        assert_eq!(rules.len(), 6);
-        // Check that "# " matches the last rule (heading 1)
-        assert!(rules[5].matches("# ").is_some());
-        // Check that "## " matches heading 2 rule
-        assert!(rules[4].matches("## ").is_some());
+        assert_eq!(rules.len(), 1);
+        // Single combined rule matches all heading levels
+        assert!(rules[0].matches("# ").is_some());
+        assert!(rules[0].matches("## ").is_some());
+        assert!(rules[0].matches("###### ").is_some());
+        assert!(rules[0].matches("####### ").is_none()); // 7 hashes = no match
     }
 
     #[test]
@@ -1156,7 +1179,7 @@ mod tests {
         let ext = CodeBlockExt;
         let rules = ext.input_rules();
         assert_eq!(rules.len(), 1);
-        assert!(rules[0].matches("```").is_some());
+        assert!(rules[0].matches("``` ").is_some());
     }
 
     #[test]
@@ -1171,8 +1194,8 @@ mod tests {
     fn horizontal_rule_input_rule() {
         let ext = HorizontalRuleExt;
         let rules = ext.input_rules();
-        assert!(rules[0].matches("---").is_some());
-        assert!(rules[0].matches("--").is_none());
+        assert!(rules[0].matches("--- ").is_some());
+        assert!(rules[0].matches("-- ").is_none());
     }
 
     #[test]
@@ -1413,11 +1436,11 @@ mod tests {
     fn total_input_rules_count() {
         let exts = StarterKit::extensions();
         let total: usize = exts.iter().map(|e| e.input_rules().len()).sum();
-        // headings (6) + blockquote (1) + bullet_list (2) + ordered_list (1) +
-        // code_block (1) + hr (1) + bold (1) + italic (1) + strike (1) = 15
+        // headings (1 combined) + blockquote (1) + bullet_list (2) + ordered_list (1) +
+        // code_block (1) + hr (1) + bold (1) + italic (1) + strike (1) = 10
         assert!(
-            total >= 14,
-            "Expected at least 14 input rules, got {}",
+            total >= 9,
+            "Expected at least 9 input rules, got {}",
             total
         );
     }
