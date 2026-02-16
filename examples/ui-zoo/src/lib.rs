@@ -143,23 +143,26 @@ pub fn theme_controls(primary_color: Signal<&'static str>, dark_mode: Signal<boo
     }
 }
 
-/// Render the section content area with Show components for each section.
+/// Render the section content area using native match for tab routing.
 pub fn section_content(__scope: &mut RenderScope, current_section: Signal<usize>) -> NodeHandle {
     rsx! {
         Fragment {
-            Show { when: move || current_section.get() == 0, then: overview_section }
-            Show { when: move || current_section.get() == 1, then: buttons_section }
-            Show { when: move || current_section.get() == 2, then: inputs_section }
-            Show { when: move || current_section.get() == 3, then: typography_section }
-            Show { when: move || current_section.get() == 4, then: layout_section }
-            Show { when: move || current_section.get() == 5, then: navigation_section }
-            Show { when: move || current_section.get() == 6, then: data_display_section }
-            Show { when: move || current_section.get() == 7, then: feedback_section }
-            Show { when: move || current_section.get() == 8, then: overlays_section }
-            Show { when: move || current_section.get() == 9, then: icons_section }
-            Show { when: move || current_section.get() == 10, then: tree_section }
-            Show { when: move || current_section.get() == 11, then: editor_section }
-            Show { when: move || current_section.get() == 12, then: css_features_section }
+            match current_section.get() {
+                0 => { overview_section(__scope) },
+                1 => { buttons_section(__scope) },
+                2 => { inputs_section(__scope) },
+                3 => { typography_section(__scope) },
+                4 => { layout_section(__scope) },
+                5 => { navigation_section(__scope) },
+                6 => { data_display_section(__scope) },
+                7 => { feedback_section(__scope) },
+                8 => { overlays_section(__scope) },
+                9 => { icons_section(__scope) },
+                10 => { tree_section(__scope) },
+                11 => { editor_section(__scope) },
+                12 => { css_features_section(__scope) },
+                _ => div { },
+            }
         }
     }
 }
