@@ -278,11 +278,189 @@ This approach has benefits:
 | `style` attribute | ✅ Yes | Updates specific element's style |
 | `class` attribute | ✅ Yes | Updates specific element's class |
 | Portal content | ✅ Yes | Content inside portals is reactive |
-| Show component | ✅ Yes | Conditional with fine-grained updates |
-| For component | ✅ Yes | Lists with keyed reconciliation |
-| `if`/`else` blocks | ❌ No | Structural changes need re-render |
-| `.iter().map()` | ❌ No | Use For component instead |
+| `if`/`else` blocks | ✅ Yes | Native reactive conditional rendering |
+| `for` loops | ✅ Yes | Native reactive list rendering with keyed reconciliation |
+| `match` blocks | ✅ Yes | Native reactive multi-branch rendering |
+| Show component | ✅ Yes | Explicit conditional (still supported) |
+| For component | ✅ Yes | Explicit lists (still supported) |
+| `.iter().map()` | ❌ No | Use `for` loop or `For` component instead |
 | Window/Menu | N/A | Native OS elements, not DOM |
+
+## Control Flow
+
+Rinch supports native Rust control flow directly in RSX. All control flow is **always reactive** — the conditions, iterators, and scrutinees are automatically wrapped in closures and tracked by Effects. When the underlying signals change, only the affected branches are updated.
+
+### `if` / `else`
+
+Write standard Rust `if`/`else` directly in RSX:
+
+```rust
+let visible = use_signal(|| true);
+let count = use_signal(|| 5);
+
+rsx! {
+    div {
+        // Simple if
+        if visible.get() {
+            p { "I'm visible!" }
+        }
+
+        // if/else
+        if count.get() > 10 {
+            p { "Big number!" }
+        } else {
+            p { "Small number" }
+        }
+
+        // if/else if/else
+        if count.get() > 100 {
+            p { "Huge" }
+        } else if count.get() > 10 {
+            p { "Big" }
+        } else {
+            p { "Small" }
+        }
+    }
+}
+```
+
+#### `if let`
+
+Pattern matching with `if let` is also supported:
+
+```rust
+let current_user = use_signal(|| Some("Alice".to_string()));
+
+rsx! {
+    div {
+        if let Some(name) = current_user.get() {
+            p { "Welcome, " {name} "!" }
+        } else {
+            p { "Please log in" }
+        }
+    }
+}
+```
+
+#### How `if` works internally
+
+The `if` block desugars to `show_dom()` — the same runtime function used by the `Show` component. The condition is auto-wrapped in a `move || { ... }` closure, creating an Effect that watches the signals read inside it. When the condition changes:
+
+1. The old branch's scope is disposed (cleaning up nested effects)
+2. Old DOM nodes are removed
+3. New branch content is rendered with a fresh scope
+
+### `for` loops
+
+Write standard `for..in` loops directly in RSX:
+
+```rust
+let todos = use_signal(|| vec![
+    Todo { id: 1, name: "Buy groceries".into() },
+    Todo { id: 2, name: "Write code".into() },
+    Todo { id: 3, name: "Take a walk".into() },
+]);
+
+rsx! {
+    div {
+        for todo in todos.get() {
+            div { key: todo.id, {todo.name.clone()} }
+        }
+    }
+}
+```
+
+#### Keys
+
+Use `key:` on the first child element to enable efficient keyed reconciliation. When the list changes, items with the same key are preserved (not re-rendered), and only new/removed items trigger DOM operations:
+
+```rust
+for item in items.get() {
+    div { key: item.id,
+        span { {item.name.clone()} }
+    }
+}
+```
+
+If no `key:` prop is provided, items are keyed by their `Debug` representation (fallback).
+
+#### How `for` works internally
+
+The `for` loop desugars to `for_each_dom_typed()`, which:
+
+1. Wraps the iterator in a `move || { ... }` closure (making it reactive)
+2. Creates a `<!-- for -->` comment marker in the DOM
+3. Evaluates the collection and renders initial items
+4. Creates an Effect that watches the collection
+5. When the collection changes, uses LIS-based keyed reconciliation (`diff_keyed()`) to compute minimal DOM operations: insert new items, remove deleted items, and reposition moved items
+
+**Important:** Items with matching keys are **not** re-rendered. Their existing DOM subtree is preserved as-is. If you need per-item reactivity (e.g., updating a todo's name), use Signals inside each item.
+
+### `match`
+
+Write standard Rust `match` directly in RSX:
+
+```rust
+let tab = use_signal(|| 0);
+
+rsx! {
+    div {
+        match tab.get() {
+            0 => div { "Home page" },
+            1 => div { "About page" },
+            2 => div { "Settings page" },
+            _ => div { "Page not found" },
+        }
+    }
+}
+```
+
+#### Match with pattern bindings
+
+Patterns that bind variables work — each arm re-evaluates the scrutinee to extract the bound values:
+
+```rust
+let result = use_signal(|| Ok::<String, String>("Hello".into()));
+
+rsx! {
+    div {
+        match result.get() {
+            Ok(value) => p { "Success: " {value} },
+            Err(msg) => p { class: "error", "Error: " {msg} },
+        }
+    }
+}
+```
+
+#### Match with guards
+
+Guard expressions are supported:
+
+```rust
+match score.get() {
+    n if n >= 90 => div { "A" },
+    n if n >= 80 => div { "B" },
+    n if n >= 70 => div { "C" },
+    _ => div { "F" },
+}
+```
+
+#### How `match` works internally
+
+The `match` block desugars to `match_dom()`, which generalizes `show_dom()` to N branches. A discriminant closure returns the index of the active branch (0, 1, 2, ...). When the discriminant changes, the old branch is disposed and the new branch is rendered.
+
+### Native control flow vs Show/For components
+
+| Feature | Native syntax | Component syntax |
+|---------|--------------|-----------------|
+| Conditional | `if cond { ... }` | `Show { when: ... }` |
+| List | `for x in items { ... }` | `For { each: ... }` |
+| Multi-branch | `match expr { ... }` | Chain multiple `Show` |
+| Lazy evaluation | Always lazy | `then:` prop for lazy |
+| Reactivity | Always reactive | Always reactive |
+| Verbosity | Minimal | More boilerplate |
+
+Both approaches are fully supported. Native syntax is recommended for new code. The `Show` and `For` components remain available for backward compatibility and for cases where you want explicit control (e.g., the `then:` prop for lazy evaluation).
 
 ## Conditional Rendering with Show
 

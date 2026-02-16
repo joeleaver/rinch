@@ -84,6 +84,33 @@ Button { variant: "filled", onclick: move || do_thing() }
 Button { variant: Some(String::from("filled")), onclick: Some(WidgetCallback::new(|| do_thing())) }
 ```
 
+### Native Control Flow in RSX
+
+The `rsx!` macro supports native Rust `if`/`for`/`match`. All control flow is **always reactive** — conditions and iterators are auto-wrapped in closures and tracked by Effects.
+
+```rust
+rsx! {
+    div {
+        // if/else — desugars to show_dom()
+        if visible.get() { p { "Shown" } } else { p { "Hidden" } }
+
+        // for — desugars to for_each_dom_typed(), uses keyed reconciliation
+        for todo in todos.get() {
+            div { key: todo.id, {todo.name.clone()} }
+        }
+
+        // match — desugars to match_dom()
+        match tab.get() {
+            0 => div { "Home" },
+            1 => div { "About" },
+            _ => div { "404" },
+        }
+    }
+}
+```
+
+`if let`, `else if` chains, match guards, and pattern bindings are all supported. The `Show` and `For` components remain available but native syntax is preferred for new code.
+
 ### Component Pattern
 
 ```rust
@@ -113,14 +140,16 @@ Hooks must be called in the same order every render — no conditional hooks, no
 - `reactive.rs` (1,384 lines) — Signal, Effect, Memo, reactive graph. **Highest risk** — bugs here break everything.
 - `dom.rs` (1,534 lines) — NodeHandle, RenderScope, DomDocument trait. This is the contract between the reactive layer and rendering.
 - `hooks.rs` (1,342 lines) — use_signal, use_effect, use_memo, use_derived, use_context, etc.
-- `for_loop.rs` (608 lines) — Keyed list reconciliation (LIS algorithm)
+- `for_loop.rs` — Keyed list reconciliation (LIS algorithm), `for_each_dom()` and `for_each_dom_typed()`
+- `show.rs` — Conditional rendering (`show_dom()`)
+- `match_dom.rs` — Multi-branch conditional rendering (`match_dom()`)
 - `element.rs` (593 lines) — Widget trait, Element enum, callback types
 - `events.rs` (940 lines) — Event types, event handler registration
 
 **When working here:**
 - Changes to `DomDocument` trait signatures ripple through rinch-dom and rinch
 - Changes to `Signal`/`Effect`/`Memo` affect the entire framework
-- 57 tests cover reactivity, hooks, and reconciliation
+- 65 tests cover reactivity, hooks, and reconciliation
 
 ### rinch-dom (CSS + layout + paint)
 
@@ -144,14 +173,18 @@ Hooks must be called in the same order every render — no conditional hooks, no
 ### rinch-macros (proc macros)
 
 **Key files:**
-- `dom_codegen.rs` (1,221 lines) — RSX macro code generation (the main logic)
+- `dom_codegen/mod.rs` — RSX macro code generation (dispatches to submodules)
+- `dom_codegen/control_flow.rs` — Codegen for Show, For, and native `if`/`for`/`match`
+- `dom_codegen/html.rs` — HTML element codegen
+- `dom_codegen/widget.rs` — Widget codegen
 - `element.rs` — Element parsing
-- `node.rs` — Node parsing
+- `node.rs` — Node parsing (includes `RsxIfBlock`, `RsxForLoop`, `RsxMatchBlock`)
 
 **When working here:**
 - Changes affect every component in the project
-- 66 tests cover RSX parsing and codegen
+- 79 tests cover RSX parsing and codegen
 - Be careful with the auto-wrapping logic for widget props (Some, Rc, callbacks)
+- Native control flow (`if`/`for`/`match`) desugars to `show_dom()`/`for_each_dom_typed()`/`match_dom()`
 
 ### rinch (desktop runtime / facade)
 
@@ -219,7 +252,7 @@ cargo fmt --check                   # Format check
 
 1. **Double-wrapping props** — The rsx! macro auto-wraps. Writing `Some(...)` or `WidgetCallback::new(...)` in rsx! causes confusing type errors.
 2. **Non-reactive expressions** — `{count.get()}` captures once; `{|| count.get()}` creates an Effect that updates. This is the #1 source of "UI doesn't update" bugs.
-3. **Conditional hooks** — Hooks must be called unconditionally, in the same order. Use `Show` for conditional rendering instead.
+3. **Conditional hooks** — Hooks must be called unconditionally, in the same order. Use `if`/`else` or `Show` for conditional rendering instead.
 4. **Missing `desktop` feature** — The workspace default-features is false. Without `features = ["desktop"]`, `run()` and rendering APIs are unavailable.
 5. **app.rs coupling** — The 7K-line monolith means changes to event handling, rendering, or window management can have unexpected interactions.
 6. **Stylo complexity** — The Firefox CSS engine integration has many trait implementations with subtle requirements. Read existing code carefully before modifying.
@@ -244,8 +277,8 @@ Build the MCP server first: `cargo build -p rinch-mcp-server`
 |-------|-------|-------|
 | rinch-editor | 294 | Best covered — model, schema, commands, history, tables |
 | rinch-dom | 207 | Computed styles, DOM ops, IFC, layout, paint, transitions |
-| rinch-macros | 66 | RSX parsing and codegen |
-| rinch-core | 57 | Reactivity, hooks, reconciliation |
+| rinch-macros | 79 | RSX parsing, codegen, native control flow |
+| rinch-core | 65 | Reactivity, hooks, reconciliation, show/for/match |
 | rinch-editor-widgets | 32 | Toolbar, controls |
 | rinch-visual-test | 22 | Capture, comparison, CSS export |
 | rinch-editable | 10 | Input, state |

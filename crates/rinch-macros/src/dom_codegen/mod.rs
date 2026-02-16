@@ -98,6 +98,18 @@ pub(crate) fn generate_child_code(
             // For inserts marker + items directly into parent
             control_flow::element_to_dom_for(el, ctx, parent_var)
         }
+        RsxNode::IfBlock(if_block) => {
+            // Native if/else inserts marker + content directly into parent
+            control_flow::generate_if_block(if_block, parent_var, ctx)
+        }
+        RsxNode::ForLoop(for_loop) => {
+            // Native for loop inserts marker + items directly into parent
+            control_flow::generate_for_loop(for_loop, parent_var, ctx)
+        }
+        RsxNode::MatchBlock(match_block) => {
+            // Native match inserts marker + content directly into parent
+            control_flow::generate_match_block(match_block, parent_var, ctx)
+        }
         _ => {
             let child_var = ctx.next_var("child");
             let child_dom = node_to_dom(child, ctx);
@@ -203,6 +215,44 @@ pub fn node_to_dom(node: &RsxNode, ctx: &mut DomCodegenContext) -> TokenStream2 
                 // This handles both NodeHandle returns (from component functions) and text values
                 quote! {
                     ::rinch::core::IntoNode::into_node(#expr, __scope)
+                }
+            }
+        }
+        // Native control flow at top level: wrap in display:contents div
+        // since these need a parent to insert into.
+        RsxNode::IfBlock(if_block) => {
+            let wrapper_var = ctx.next_var("cf_wrapper");
+            let inner = control_flow::generate_if_block(if_block, &wrapper_var, ctx);
+            quote! {
+                {
+                    let #wrapper_var = __scope.create_element("div");
+                    #wrapper_var.set_attribute("style", "display:contents");
+                    #inner
+                    #wrapper_var
+                }
+            }
+        }
+        RsxNode::ForLoop(for_loop) => {
+            let wrapper_var = ctx.next_var("cf_wrapper");
+            let inner = control_flow::generate_for_loop(for_loop, &wrapper_var, ctx);
+            quote! {
+                {
+                    let #wrapper_var = __scope.create_element("div");
+                    #wrapper_var.set_attribute("style", "display:contents");
+                    #inner
+                    #wrapper_var
+                }
+            }
+        }
+        RsxNode::MatchBlock(match_block) => {
+            let wrapper_var = ctx.next_var("cf_wrapper");
+            let inner = control_flow::generate_match_block(match_block, &wrapper_var, ctx);
+            quote! {
+                {
+                    let #wrapper_var = __scope.create_element("div");
+                    #wrapper_var.set_attribute("style", "display:contents");
+                    #inner
+                    #wrapper_var
                 }
             }
         }

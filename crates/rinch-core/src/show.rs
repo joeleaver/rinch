@@ -92,7 +92,7 @@ pub fn show_dom<W, T, E>(
     else_fn: Option<E>,
 ) -> NodeHandle
 where
-    W: Fn() -> bool + Clone + 'static,
+    W: Fn() -> bool + 'static,
     T: Fn(&mut RenderScope) -> NodeHandle + 'static,
     E: Fn(&mut RenderScope) -> NodeHandle + 'static,
 {

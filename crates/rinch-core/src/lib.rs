@@ -8,6 +8,7 @@ pub mod events;
 pub mod for_loop;
 pub mod hooks;
 pub mod icon;
+pub mod match_dom;
 pub mod reactive;
 pub mod reconcile;
 pub mod show;
@@ -20,7 +21,8 @@ pub use element::{
 };
 
 // Re-export Show and For functions (fine-grained DOM-based)
-pub use for_loop::{FineForBuilder, for_each_dom, to_for_items};
+pub use for_loop::{FineForBuilder, for_each_dom, for_each_dom_typed, to_for_items};
+pub use match_dom::match_dom;
 pub use show::{FineShowBuilder, show_dom};
 
 // Re-export reconciliation types

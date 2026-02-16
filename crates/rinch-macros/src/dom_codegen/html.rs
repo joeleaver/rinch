@@ -27,7 +27,10 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
 
     for prop in &element.props {
         let name_str = prop.name.to_string();
-        if is_event_prop(&name_str) {
+        if name_str == "key" {
+            // Skip key prop — used by for-loop reconciliation, not a DOM attribute
+            continue;
+        } else if is_event_prop(&name_str) {
             event_props.push(prop);
         } else if expand_style_shorthand(&name_str).is_some() {
             shorthand_props.push(prop);

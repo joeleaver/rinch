@@ -992,9 +992,74 @@ Without the closure, expressions like `{count.get()}` are captured once at initi
 3. **Signal Changes**: Effects run and surgically update their target nodes
 4. **Batched Updates**: Multiple updates are collected for efficient re-layout
 
-### Conditional Rendering (Show)
+### Native Control Flow (if / for / match)
 
-Use `Show` in RSX for reactive conditional rendering with fine-grained updates:
+The `rsx!` macro supports native Rust control flow. All control flow is **always reactive** — conditions, iterators, and scrutinees are automatically wrapped in closures and tracked by Effects.
+
+**`if` / `else` / `if let`:**
+```rust
+let visible = use_signal(|| true);
+let user = use_signal(|| Some("Alice".to_string()));
+
+rsx! {
+    div {
+        // if/else
+        if visible.get() {
+            p { "Visible!" }
+        } else {
+            p { "Hidden" }
+        }
+
+        // if let
+        if let Some(name) = user.get() {
+            p { "Hello, " {name} "!" }
+        }
+    }
+}
+```
+
+**`for` loops with keyed reconciliation:**
+```rust
+let todos = use_signal(|| vec![
+    Todo { id: 1, name: "Buy groceries".into() },
+    Todo { id: 2, name: "Write code".into() },
+]);
+
+rsx! {
+    div {
+        for todo in todos.get() {
+            div { key: todo.id, {todo.name.clone()} }
+        }
+    }
+}
+```
+
+The `key:` prop enables efficient keyed reconciliation. Items with matching keys are preserved (not re-rendered). If no `key:` is provided, items are keyed by `Debug` formatting.
+
+**Important:** Items with matching keys are **not** re-rendered when the collection changes. Their existing DOM subtree is preserved as-is. For per-item reactivity, use Signals inside each item.
+
+**`match` with multi-branch rendering:**
+```rust
+let tab = use_signal(|| 0);
+
+rsx! {
+    div {
+        match tab.get() {
+            0 => div { "Home" },
+            1 => div { "About" },
+            _ => div { "Not found" },
+        }
+    }
+}
+```
+
+Pattern bindings and guards are supported — each arm re-evaluates the scrutinee to extract bound values.
+
+**Runtime desugaring:** `if` → `show_dom()`, `for` → `for_each_dom_typed()`, `match` → `match_dom()`.
+
+### Conditional Rendering (Show Component)
+
+The `Show` component is the explicit API for conditional rendering. **Prefer native `if`/`else` syntax for new code.** `Show` remains useful for lazy evaluation via the `then:` prop.
 
 **Lazy evaluation (recommended when children contain hooks):**
 ```rust
@@ -1062,9 +1127,9 @@ show_dom(
 )
 ```
 
-### List Rendering (For)
+### List Rendering (For Component)
 
-Use `For` in RSX for keyed list rendering with fine-grained updates:
+The `For` component is the explicit API for keyed list rendering. **Prefer native `for` loop syntax for new code.** `For` remains useful when you need the `ForItem` API directly.
 
 ```rust
 let items = use_signal(|| vec![
@@ -1099,53 +1164,23 @@ For {
 }
 ```
 
-**Manual mode** (still supported for compatibility):
-```rust
-rsx! {
-    For {
-        each: {move || ForItem::from_iter(items.get(), |item| item.id.to_string())},
-        |item: &ForItem| {
-            // Manual downcast when using &ForItem
-            let data = item.data.downcast_ref::<Item>().unwrap();
-            rsx! { div { {data.name.clone()} } }
-        }
-    }
-}
-```
-
 When the list changes, `For` uses keyed reconciliation (LIS algorithm) to compute minimal DOM operations:
 - **Insert**: New items are rendered and added at the correct position
 - **Remove**: Deleted items have their DOM nodes removed
 - **Move**: Reordered items are repositioned without re-rendering
-- **Update**: Items with matching keys but changed data are re-rendered in place
+- **Unchanged**: Items with matching keys keep their DOM nodes (not re-rendered)
 
-For programmatic usage, use `for_each_dom()` directly:
-
-```rust
-for_each_dom(
-    __scope,
-    &parent,                                    // Parent node
-    move || items.get(),                        // Items closure
-    |item, scope| {                             // View function
-        let data = item.data.downcast_ref::<Item>().unwrap();
-        let div = scope.create_element("div");
-        div.set_text(&data.name);
-        div
-    },
-)
-```
-
-For programmatic `for_each_dom` usage, you can use `rsx!` inside the view closure by binding `__scope`:
+For programmatic usage, use `for_each_dom()` or `for_each_dom_typed()` directly:
 
 ```rust
-for_each_dom(
+for_each_dom_typed(
     __scope,
     &parent,
-    move || items.get(),
-    |item, __child_scope| {
-        let __scope = __child_scope;  // Enable rsx! in this closure
-        let data = item.data.downcast_ref::<Item>().unwrap();
-        rsx! { div { {data.name.clone()} } }
+    move || todos.get().into_iter().collect::<Vec<_>>(),
+    |todo| todo.id.to_string(),
+    |todo, __child_scope| {
+        let __scope = __child_scope;
+        rsx! { div { {todo.name.clone()} } }
     },
 )
 ```

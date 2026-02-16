@@ -125,7 +125,7 @@ pub fn for_each_dom<E, V>(
     view: V,
 ) -> NodeHandle
 where
-    E: Fn() -> Vec<ForItem> + Clone + 'static,
+    E: Fn() -> Vec<ForItem> + 'static,
     V: Fn(&ForItem, &mut RenderScope) -> NodeHandle + 'static,
 {
     use crate::reconcile::ListOp;
@@ -363,6 +363,62 @@ where
     scope.create_effect_from(effect);
 
     marker
+}
+
+/// Typed list rendering that avoids ForItem boxing at the user level.
+///
+/// Wraps items into `ForItem` internally and delegates to `for_each_dom`.
+/// The user provides a typed collection, key function, and view function
+/// without ever seeing `ForItem` or `downcast_ref`.
+///
+/// # Arguments
+///
+/// * `scope` - The render scope for creating DOM nodes
+/// * `parent` - The parent node to insert the marker and items into
+/// * `collection` - A closure that returns the current list of items
+/// * `key_fn` - A closure that extracts a unique string key from each item
+/// * `view` - A closure that renders a single item to a NodeHandle
+///
+/// # Returns
+///
+/// The comment marker NodeHandle. Already inserted into parent.
+pub fn for_each_dom_typed<T, C, K, V>(
+    scope: &mut RenderScope,
+    parent: &NodeHandle,
+    collection: C,
+    key_fn: K,
+    view: V,
+) -> NodeHandle
+where
+    T: 'static,
+    C: Fn() -> Vec<T> + 'static,
+    K: Fn(&T) -> String + 'static,
+    V: Fn(&T, &mut RenderScope) -> NodeHandle + 'static,
+{
+    let key_fn = Rc::new(key_fn);
+    let view = Rc::new(view);
+    let kf = key_fn.clone();
+
+    for_each_dom(
+        scope,
+        parent,
+        move || {
+            collection()
+                .into_iter()
+                .map(|item| {
+                    let key = kf(&item);
+                    ForItem::new(key, item)
+                })
+                .collect()
+        },
+        move |item: &ForItem, scope: &mut RenderScope| {
+            let data = item
+                .data
+                .downcast_ref::<T>()
+                .expect("for_each_dom_typed: type mismatch in ForItem downcast");
+            view(data, scope)
+        },
+    )
 }
 
 /// Builder for fine-grained For loop rendering.
