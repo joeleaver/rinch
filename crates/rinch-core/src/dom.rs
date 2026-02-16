@@ -432,8 +432,8 @@ impl NodeHandle {
 
     /// Clear CSS animations and transitions on this node and all descendants.
     ///
-    /// This should be called before removing nodes to ensure blitz cleans up
-    /// its internal animation state. Without this, blitz may crash when trying
+    /// This should be called before removing nodes to ensure rinch-dom cleans up
+    /// its internal animation state. Without this, rinch-dom may crash when trying
     /// to access deleted nodes during the next resolve() call.
     pub fn clear_animations(&self) {
         if let Some(doc) = self.doc.upgrade() {
@@ -581,7 +581,7 @@ pub struct GlyphBounds {
 /// Trait for DOM documents that support mutation operations.
 ///
 /// This trait abstracts the DOM mutation API, allowing different
-/// implementations (blitz-dom, web-sys, etc.) to be used.
+/// implementations (rinch-dom, web-sys, etc.) to be used.
 ///
 /// # Required Operations
 ///

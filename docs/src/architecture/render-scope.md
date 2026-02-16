@@ -262,7 +262,7 @@ input.focus();  // Give focus to this element
 
 ## DomDocument Trait
 
-`DomDocument` is the trait that abstracts DOM operations. The primary desktop implementation is `BlitzDocumentAdapter` which wraps blitz-dom. The web implementation is `WebDocument` which uses browser-native DOM via `web_sys`.
+`DomDocument` is the trait that abstracts DOM operations. The primary desktop implementation is `RinchDocument` which uses Taffy + Parley + Vello. The web implementation is `WebDocument` which uses browser-native DOM via `web_sys`.
 
 ```rust
 pub trait DomDocument {
@@ -304,27 +304,26 @@ pub trait DomDocument {
 }
 ```
 
-## BlitzDocumentAdapter
+## RinchDocument
 
-`BlitzDocumentAdapter` is the desktop implementation of `DomDocument` that wraps blitz-dom's `Document`.
+`RinchDocument` is the desktop implementation of `DomDocument` that uses Taffy for layout, Parley for text, and Vello for rendering.
 
 ### Key Features
 
-- **Direct DOM manipulation** - Uses blitz-dom's `DocumentMutator` for efficient updates
+- **Direct DOM manipulation** - Efficient node creation and mutation
 - **Automatic dirty marking** - Calls `mark_ancestors_dirty()` after mutations
 - **Event handler storage** - Stores handlers as `data-rid` attributes for dispatch
 
 ### Usage
 
 ```rust
-use rinch::shell::blitz_document::{BlitzDocumentAdapter, SharedBlitzDocument};
+use rinch_dom::RinchDocument;
 
-// Create adapter from blitz Document
-let adapter = BlitzDocumentAdapter::new(Rc::downgrade(&blitz_document));
-let shared: SharedBlitzDocument = Rc::new(RefCell::new(adapter));
+// Create document
+let doc = Rc::new(RefCell::new(RinchDocument::new()));
 
 // Create RenderScope from shared document
-let mut scope = RenderScope::new(shared.clone(), parent_id);
+let mut scope = RenderScope::new(Rc::downgrade(&doc) as _, parent_id);
 
 // Build DOM
 let root = my_app(&mut scope);
@@ -332,13 +331,9 @@ let root = my_app(&mut scope);
 
 ### Thread Safety
 
-`SharedBlitzDocument` wraps the adapter in `Rc<RefCell<>>` for interior mutability:
+`RinchDocument` is wrapped in `Rc<RefCell<>>` for interior mutability.
 
-```rust
-pub type SharedBlitzDocument = Rc<RefCell<BlitzDocumentAdapter>>;
-```
-
-Effects capture clones of the shared adapter and can mutate the DOM when they run.
+Effects capture clones of the shared document and can mutate the DOM when they run.
 
 RenderScope itself holds a `Weak<RefCell<dyn DomDocument>>` to avoid preventing cleanup.
 

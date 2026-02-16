@@ -16,7 +16,7 @@ Rinch uses a multi-stage rendering pipeline that transforms component code into 
 ┌───────────────────────────────────────────────────────────────┐
 │                   2. DOM Construction                           │
 │  DomDocument creates nodes programmatically via RenderScope   │
-│  (BlitzDocumentAdapter wraps blitz-dom on desktop)            │
+│  (RinchDocument uses Taffy + Parley + Vello on desktop)       │
 └───────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -34,7 +34,7 @@ Rinch uses a multi-stage rendering pipeline that transforms component code into 
                               ▼
 ┌───────────────────────────────────────────────────────────────┐
 │                   5. Painting                                   │
-│  blitz-paint generates paint commands for the layout          │
+│  rinch-renderer generates paint commands for the layout       │
 └───────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -74,14 +74,12 @@ The `#[component]` macro injects a `__scope: &mut RenderScope` parameter. The `r
 
 ## Key Technologies
 
-### Blitz (Internal Dependencies)
+### rinch-dom
 
-Blitz is a modular HTML/CSS rendering engine used internally by the desktop backend. These are not user-facing crates:
+The custom DOM and layout engine built specifically for Rinch:
 
-- **blitz-dom** - DOM implementation with Stylo integration (wrapped by `BlitzDocumentAdapter`)
-- **blitz-traits** - Shared traits for rendering backends
-- **blitz-paint** - Converts styled DOM to paint commands
-- **blitz-html** - HTML parser (used for initial document setup, not for reactive updates)
+- **rinch-dom** - DOM implementation with Taffy layout, Parley text shaping, and Vello rendering
+- **rinch-renderer** - Converts styled DOM to Vello paint commands
 
 ### Stylo
 
@@ -122,11 +120,11 @@ Cross-platform GPU abstraction:
 ## Window Rendering Flow
 
 ```rust
-// Simplified rendering flow in window_manager.rs
+// Simplified rendering flow in rinch_runtime.rs
 
-impl ManagedWindow {
+impl RinchRuntime {
     fn paint_scene(&mut self) {
-        // 1. Get the document's scene from blitz
+        // 1. Get the document's scene from rinch-dom
         let scene = self.doc.render();
 
         // 2. Set up render parameters

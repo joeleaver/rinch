@@ -7,9 +7,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Text hit testing result from blitz's layout engine.
+/// Text hit testing result from the layout engine.
 ///
-/// When a click lands on text content, blitz can resolve the exact
+/// When a click lands on text content, rinch-dom can resolve the exact
 /// block and byte offset using parley's text layout data.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TextHitInfo {
@@ -17,7 +17,7 @@ pub struct TextHitInfo {
     pub block_index: usize,
     /// Byte offset within the block's text content.
     pub byte_offset: usize,
-    /// The blitz DOM node ID of the inline root element.
+    /// The DOM node ID of the inline root element.
     pub inline_root_node_id: usize,
     /// Whether this hit info is valid (was actually resolved from layout).
     pub valid: bool,
@@ -40,7 +40,7 @@ pub struct ClickContext {
     pub element_width: f32,
     /// Clicked element's height.
     pub element_height: f32,
-    /// Text hit info from blitz's layout engine (resolved via find_text_position).
+    /// Text hit info from the layout engine (resolved via find_text_position).
     pub text_hit: TextHitInfo,
 }
 
@@ -538,7 +538,7 @@ pub struct KeyEventData {
 }
 
 /// Type alias for the keyboard interceptor callback.
-/// Returns true if the event was handled (should not propagate to blitz).
+/// Returns true if the event was handled (should not propagate to the runtime).
 pub type KeyboardInterceptor = Rc<dyn Fn(&KeyEventData) -> bool>;
 
 thread_local! {
@@ -579,7 +579,7 @@ pub fn dispatch_keyboard_event(data: &KeyEventData) -> bool {
 // Text Selection Callback
 // ============================================================================
 
-/// Actions for controlling blitz's native text selection.
+/// Actions for controlling native text selection.
 #[derive(Debug, Clone)]
 pub enum SelectionAction {
     /// Set selection with anchor and focus (both node ID + byte offset).
@@ -636,7 +636,7 @@ pub fn dispatch_selection(action: SelectionAction) -> Vec<(usize, usize, usize)>
 }
 
 /// Save the current selection ranges as a snapshot.
-/// Called before PointerDown dispatch to blitz, which may clear selection.
+/// Called before PointerDown dispatch, which may clear selection.
 pub fn save_selection_snapshot() {
     let ranges = dispatch_selection(SelectionAction::QueryRanges);
     SAVED_SELECTION.with(|s| {
@@ -656,16 +656,16 @@ pub fn get_saved_selection() -> Vec<(usize, usize, usize)> {
     SAVED_SELECTION.with(|s| s.borrow().clone())
 }
 
-/// Query the current blitz text selection ranges.
+/// Query the current text selection ranges.
 /// Returns Vec<(node_id, start_byte_offset, end_byte_offset)>.
 /// Falls back to the saved snapshot if the live selection is empty
-/// (e.g., blitz cleared it on mousedown before a toolbar command runs).
+/// (e.g., the runtime cleared it on mousedown before a toolbar command runs).
 pub fn query_selection_ranges() -> Vec<(usize, usize, usize)> {
     let live = dispatch_selection(SelectionAction::QueryRanges);
     if !live.is_empty() {
         return live;
     }
-    // Fall back to saved snapshot (before blitz cleared it)
+    // Fall back to saved snapshot (before the runtime cleared it)
     get_saved_selection()
 }
 
@@ -674,7 +674,7 @@ pub fn query_selection_ranges() -> Vec<(usize, usize, usize)> {
 // ============================================================================
 
 /// Callback invoked on mouseup to notify that drag selection may have changed.
-/// The callback receives the current blitz selection ranges (block_index, start, end).
+/// The callback receives the current selection ranges (block_index, start, end).
 pub type SelectionSyncCallback = Rc<dyn Fn(Vec<(usize, usize, usize)>)>;
 
 thread_local! {
@@ -711,9 +711,9 @@ pub fn fire_selection_sync() {
 }
 
 // --- Deferred selection clear ---
-// When the DOM is rebuilt (e.g., editor re-render via Effect), blitz's text selection
+// When the DOM is rebuilt (e.g., editor re-render via Effect), the text selection
 // may reference nodes that no longer exist. The Effect cannot call dispatch_selection(Clear)
-// directly because the blitz doc may be mutably borrowed by the event handler that triggered
+// directly because the DOM doc may be mutably borrowed by the event handler that triggered
 // the Effect. Instead, the Effect sets this flag, and the window manager clears the selection
 // in redraw() before paint, when no borrows are active.
 
@@ -721,8 +721,8 @@ thread_local! {
     static PENDING_SELECTION_CLEAR: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Request that blitz's text selection be cleared before the next paint.
-/// Safe to call from Effects (does not borrow the blitz doc).
+/// Request that the text selection be cleared before the next paint.
+/// Safe to call from Effects (does not borrow the DOM doc).
 pub fn request_selection_clear() {
     PENDING_SELECTION_CLEAR.with(|c| c.set(true));
 }

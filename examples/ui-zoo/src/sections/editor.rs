@@ -168,7 +168,7 @@ pub fn editor_section() -> NodeHandle {
                             }
                             ed.clear_stored_marks();
 
-                            // Set blitz's native text selection for the word
+                            // Set native text selection for the word
                             let node_id = ctx.text_hit.inline_root_node_id;
                             let block_start_abs = abs_pos - char_offset;
                             let sel_start_in_block = start.saturating_sub(block_start_abs);
@@ -184,8 +184,8 @@ pub fn editor_section() -> NodeHandle {
                         }
                     }
                     // Don't call on_change here - it re-renders the DOM which
-                    // destroys the nodes blitz is tracking for selection.
-                    // Blitz handles visual word selection natively on double-click.
+                    // destroys the nodes the DOM is tracking for selection.
+                    // The runtime handles visual word selection natively on double-click.
                 }
                 3 => {
                     // Triple-click: select entire block
@@ -211,7 +211,7 @@ pub fn editor_section() -> NodeHandle {
                             ));
                             ed.clear_stored_marks();
 
-                            // Set blitz's native text selection for the block
+                            // Set native text selection for the block
                             let node_id = ctx.text_hit.inline_root_node_id;
                             rinch_core::events::dispatch_selection(
                                 rinch_core::SelectionAction::Set {
@@ -238,7 +238,7 @@ pub fn editor_section() -> NodeHandle {
                         use rinch_editor::document::Position;
                         use rinch_editor::selection::Selection;
 
-                        // Use blitz's text layout hit testing when available
+                        // Use text layout hit testing when available
                         let abs_pos = if ctx.text_hit.valid {
                             let bi = ctx.text_hit.block_index.min(block_count.saturating_sub(1));
                             let mut pos = 0usize;
@@ -261,8 +261,8 @@ pub fn editor_section() -> NodeHandle {
                         }
                         ed.clear_stored_marks();
 
-                        // Blitz handles single-click text selection automatically.
-                        // We only need to dispatch for shift-click (blitz doesn't handle it for non-inputs).
+                        // The runtime handles single-click text selection automatically.
+                        // We only need to dispatch for shift-click (the runtime doesn't handle it for non-inputs).
                         if shift_held && ctx.text_hit.valid {
                             rinch_core::events::dispatch_selection(
                                 rinch_core::SelectionAction::ExtendToPoint {
@@ -273,7 +273,7 @@ pub fn editor_section() -> NodeHandle {
                         }
                     }
                     // Update cursor visual after click-to-position
-                    // (In rinch-dom we handle cursor rendering ourselves, not via blitz selection)
+                    // (We handle cursor rendering ourselves, not via native selection)
                     on_change_for_click();
                 }
             }
@@ -281,7 +281,7 @@ pub fn editor_section() -> NodeHandle {
         content_div.set_attribute("data-rid", &handler_id.to_string());
     }
 
-    // Register mouseup selection sync: after drag-to-select, sync blitz's visual
+    // Register mouseup selection sync: after drag-to-select, sync the DOM's visual
     // selection into the editor's internal selection model.
     {
         let editor_for_sync = editor.clone();
@@ -325,7 +325,7 @@ pub fn editor_section() -> NodeHandle {
                             Position::new(abs_end.min(doc_len)),
                         ));
                         ed.clear_stored_marks();
-                        // Don't call on_change here to avoid re-render that clears blitz selection
+                        // Don't call on_change here to avoid re-render that clears the selection
                     }
                 }
             } else {
@@ -335,7 +335,7 @@ pub fn editor_section() -> NodeHandle {
                     signals.bump();
                 }
             }
-            // When ranges are non-empty, DON'T bump — blitz is already showing
+            // When ranges are non-empty, DON'T bump — the runtime is already showing
             // the native selection highlight and re-rendering would destroy it.
         });
     }

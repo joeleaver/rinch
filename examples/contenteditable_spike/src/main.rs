@@ -1,10 +1,10 @@
 //! ContentEditable Spike
 //!
-//! Tests blitz's contenteditable support for the rich-text editor project.
+//! Tests contenteditable support for the rich-text editor project.
 //!
 //! ## Tests:
 //! 1. Basic contenteditable div - can we type?
-//! 2. Input event emission - does blitz emit events for contenteditable changes?
+//! 2. Input event emission - does the runtime emit events for contenteditable changes?
 //! 3. Cursor/caret rendering - does the cursor display correctly?
 //! 4. Text selection - can we select text with mouse/keyboard?
 //! 5. Keyboard shortcuts - can we intercept Ctrl+B, etc.?
@@ -35,7 +35,7 @@ fn app() -> NodeHandle {
     let subtitle = __scope.create_element("p");
     subtitle.set_attribute("style", "color: #666; margin-bottom: 20px;");
     subtitle
-        .set_text("Testing blitz's support for contenteditable for the rich-text editor project");
+        .set_text("Testing contenteditable support for the rich-text editor project");
     root.append_child(&subtitle);
 
     // Grid container
@@ -72,7 +72,7 @@ fn app() -> NodeHandle {
         let panel = create_panel(
             __scope,
             "Test 2: ContentEditable with Input Handler",
-            "Testing if blitz emits input events for contenteditable divs.",
+            "Testing if the runtime emits input events for contenteditable divs.",
         );
 
         let editable = __scope.create_element("div");
@@ -145,7 +145,7 @@ fn app() -> NodeHandle {
         let panel = create_panel(
             __scope,
             "Test 4: Regular Input (Comparison)",
-            "A regular input element - we know blitz handles these correctly.",
+            "A regular input element - we know the runtime handles these correctly.",
         );
 
         let input = __scope.create_element("input");
@@ -172,7 +172,7 @@ fn app() -> NodeHandle {
         let panel = create_panel(
             __scope,
             "Test 5: Textarea (Comparison)",
-            "A textarea element - multi-line input that blitz handles.",
+            "A textarea element - multi-line input that the runtime handles.",
         );
 
         let textarea = __scope.create_element("textarea");

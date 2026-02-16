@@ -15,7 +15,7 @@ pub enum RinchEvent {
     /// Sync DOM updates to windows (Effects have already updated the adapter).
     /// This is much faster than ReRender because it doesn't re-run app().
     SyncDom,
-    /// Fine-grained reactive text update - directly update blitz Document.
+    /// Fine-grained reactive text update - directly update the DOM Document.
     /// This is the fastest path: no app() re-execution, no HTML regeneration.
     UpdateReactiveText { reactive_id: usize, text: String },
     /// An element was clicked (with handler ID, source window, and click context).

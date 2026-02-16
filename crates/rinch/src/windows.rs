@@ -387,7 +387,7 @@ pub fn minimize_current_window() {
         return;
     }
 
-    // Fallback to RinchEvent proxy (blitz-based runtime)
+    // Fallback to RinchEvent proxy (legacy runtime)
     if let Some(window_id) = get_current_window_id() {
         EVENT_PROXY.with(|p| {
             if let Some(proxy) = p.borrow().as_ref() {
@@ -420,7 +420,7 @@ pub fn toggle_maximize_current_window() {
         return;
     }
 
-    // Fallback to RinchEvent proxy (blitz-based runtime)
+    // Fallback to RinchEvent proxy (legacy runtime)
     if let Some(window_id) = get_current_window_id() {
         EVENT_PROXY.with(|p| {
             if let Some(proxy) = p.borrow().as_ref() {
@@ -453,7 +453,7 @@ pub fn close_current_window() {
         return;
     }
 
-    // Fallback to RinchEvent proxy (blitz-based runtime)
+    // Fallback to RinchEvent proxy (legacy runtime)
     if let Some(window_id) = get_current_window_id() {
         EVENT_PROXY.with(|p| {
             if let Some(proxy) = p.borrow().as_ref() {

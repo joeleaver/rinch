@@ -200,7 +200,7 @@ impl Widget for Radio {
         }
 
         // Hidden native radio input
-        // Always generate a name attribute - blitz-dom crashes without it
+        // Always generate a name attribute - the DOM crashes without it
         let name = self.name.as_deref().unwrap_or("radio-group");
         let input = scope.create_element("input");
         input.set_attribute("class", "rinch-radio__input");

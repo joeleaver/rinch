@@ -3,7 +3,7 @@ name = "contenteditable_spike"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Spike: Investigate blitz contenteditable support for rich-text editor"
+description = "Spike: Investigate contenteditable support for rich-text editor"
 
 [dependencies]
 rinch = { workspace = true, features = ["desktop", "widgets"] }

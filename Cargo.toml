@@ -70,7 +70,7 @@ stylo_traits = "0.11"
 stylo_dom = "0.11"
 stylo_atoms = "0.11"
 stylo_config = "0.11"
-stylo_taffy = { git = "https://github.com/dioxuslabs/blitz", package = "stylo_taffy" }
+stylo_taffy = { path = "crates/stylo-taffy" }
 servo_arc = "0.4"
 
 # Utilities
