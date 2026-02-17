@@ -198,7 +198,8 @@ pub use rinch_macros::{component, rsx};
 #[cfg(feature = "desktop")]
 #[allow(deprecated)]
 pub use shell::{
-    run, run_rinch, run_rinch_with_window_props, run_with_theme, run_with_window_props,
+    run, run_on_main_thread, run_rinch, run_rinch_with_window_props, run_with_theme,
+    run_with_window_props,
 };
 
 pub use rinch_core as core;

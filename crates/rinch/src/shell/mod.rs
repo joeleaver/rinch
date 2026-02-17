@@ -14,7 +14,7 @@ pub mod types;
 pub use devtools::{DevToolsPanel, DevToolsState};
 pub use devtools_overlay::render_overlay;
 #[allow(deprecated)]
-pub use rinch_runtime::{run_rinch, run_rinch_with_window_props};
+pub use rinch_runtime::{run_rinch, run_rinch_with_window_props, run_on_main_thread};
 pub use types::{ElementLayout, HoveredElementInfo, RinchEvent};
 
 use rinch_core::dom::{NodeHandle, RenderScope};

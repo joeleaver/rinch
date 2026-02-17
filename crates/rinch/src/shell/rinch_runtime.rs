@@ -20,7 +20,7 @@
 //! ```
 
 use std::cell::RefCell;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -47,6 +47,47 @@ use {super::screenshot, base64::Engine, rinch_debug::DebugResult};
 // Thread-local proxy for the native event loop, used by window control functions.
 thread_local! {
     pub(crate) static NATIVE_PROXY: RefCell<Option<EventLoopProxy<RinchNativeEvent>>> = const { RefCell::new(None) };
+}
+
+// ── Global proxy + main-thread callback queue ────────────────────────────────
+
+// Global (Send+Sync) proxy for waking the event loop from any thread.
+static GLOBAL_PROXY: OnceLock<EventLoopProxy<RinchNativeEvent>> = OnceLock::new();
+
+// Queue of closures to execute on the main thread during the next ReRender.
+static MAIN_QUEUE: Mutex<Vec<Box<dyn FnOnce() + Send>>> = Mutex::new(Vec::new());
+
+/// Queue a closure to run on the main (UI) thread.
+///
+/// The closure will execute during the next event-loop wake, before the
+/// re-render pass. This is the safe way to update [`Signal`]s from a
+/// background thread (e.g. after an HTTP request completes on tokio).
+///
+/// # Example
+///
+/// ```ignore
+/// let loading = use_signal(|| false);
+/// std::thread::spawn(move || {
+///     let result = do_work();
+///     rinch::run_on_main_thread(move || {
+///         loading.set(false);
+///     });
+/// });
+/// ```
+pub fn run_on_main_thread(f: impl FnOnce() + Send + 'static) {
+    MAIN_QUEUE.lock().unwrap().push(Box::new(f));
+    if let Some(proxy) = GLOBAL_PROXY.get() {
+        let _ = proxy.send_event(RinchNativeEvent::ReRender);
+    }
+}
+
+/// Drain and execute all pending main-thread callbacks.
+fn drain_main_queue() {
+    let callbacks: Vec<Box<dyn FnOnce() + Send>> =
+        MAIN_QUEUE.lock().unwrap().drain(..).collect();
+    for cb in callbacks {
+        cb();
+    }
 }
 
 /// Events sent to the event loop.
@@ -448,6 +489,9 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: RinchNativeEvent) {
+        // Drain main-thread callback queue on every user event (primarily ReRender).
+        drain_main_queue();
+
         let platform_event = match event {
             RinchNativeEvent::ReRender => PlatformEvent::UserEvent(UserEvent::ReRender),
             #[cfg(feature = "debug")]
@@ -668,6 +712,9 @@ where
     // Set native proxy for window control functions
     NATIVE_PROXY.with(|p| *p.borrow_mut() = Some(proxy.clone()));
 
+    // Set global proxy so run_on_main_thread() works from any thread
+    let _ = GLOBAL_PROXY.set(proxy.clone());
+
     // Start debug IPC server if feature is enabled (disable with RINCH_DEBUG=0)
     #[cfg(feature = "debug")]
     {
@@ -720,6 +767,9 @@ where
 
     // Set native proxy for window control functions
     NATIVE_PROXY.with(|p| *p.borrow_mut() = Some(proxy.clone()));
+
+    // Set global proxy so run_on_main_thread() works from any thread
+    let _ = GLOBAL_PROXY.set(proxy.clone());
 
     #[cfg(feature = "debug")]
     {
