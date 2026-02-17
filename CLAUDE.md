@@ -964,6 +964,45 @@ The patches:
 
 **Downstream projects** must copy the `[patch.crates-io]` section from the workspace `Cargo.toml` into their own `Cargo.toml` for transparent windows to work on Windows. This is required because Cargo patches are not transitive — they only apply to the workspace that declares them.
 
+## Game Engine Integration (Embed API)
+
+Rinch can be embedded into an existing game engine or custom render loop via the `embed` module. The game owns the wgpu `Device`/`Queue`/`Surface` and frame loop; rinch provides UI as a Vello scene.
+
+**Key types** (all in `rinch::embed`, re-exported in prelude):
+
+| Type | Purpose |
+|------|---------|
+| `RinchContext` | Main handle — `new()`, `update()`, `scene()` |
+| `RinchContextConfig` | Width, height, scale factor, optional theme |
+| `RinchOverlayRenderer` | Convenience Vello-to-texture renderer |
+| `GameViewport` | Component marking a transparent hole for game rendering |
+| `LayoutRect` | `{x, y, width, height}` in logical pixels |
+
+**Two patterns:**
+1. **Full overlay (HUD)**: Rinch covers entire window, use `wants_mouse()`/`wants_keyboard()` for input routing
+2. **Split layout**: `GameViewport { name: "main" }` marks game region, query with `viewport_rect("main")`
+
+**Typical game loop:**
+```rust
+use rinch::embed::{RinchContext, RinchContextConfig, RinchOverlayRenderer};
+
+let mut ctx = RinchContext::new(config, my_ui);
+let mut overlay = RinchOverlayRenderer::new(&device, w, h, format);
+
+loop {
+    let actions = ctx.update(&events);
+    game.render();
+    let ui = overlay.render(&device, &queue, ctx.scene());
+    composite(game_texture, ui);
+}
+```
+
+**Source files:**
+- `crates/rinch/src/embed.rs` — `RinchContext`, `RinchOverlayRenderer`, `GameViewport`
+- `crates/rinch/src/app/mod.rs` — `viewport_rect()`, `has_focused_input()`, `has_focused_contenteditable()`
+
+**Documentation:** `docs/src/guide/game-engine.md`
+
 ## Fine-Grained Reactive Rendering
 
 Rinch uses fine-grained reactive rendering for surgical DOM updates. Instead of regenerating HTML on every signal change, reactive expressions become Effects that update specific DOM nodes.
@@ -1366,6 +1405,7 @@ Documentation locations:
 - `docs/src/guide/reactivity.md` - Signals, effects, memos
 - `docs/src/guide/rsx-syntax.md` - RSX macro syntax
 - `docs/src/guide/platform.md` - File dialogs, clipboard, system tray
+- `docs/src/guide/game-engine.md` - Game engine integration (embed API)
 - `docs/src/guide/theming.md` - Theme system and CSS variables
 - `docs/src/guide/components.md` - Component library
 - `docs/src/SUMMARY.md` - Table of contents (update when adding new pages)

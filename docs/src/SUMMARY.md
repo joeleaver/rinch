@@ -18,6 +18,7 @@
 - [Components](./guide/components.md)
   - [Component Props Reference](./guide/component-props.md)
 - [Platform Features](./guide/platform.md)
+- [Game Engine Integration](./guide/game-engine.md)
 - [Rich-Text Editor](./guide/editor.md)
 
 # Architecture

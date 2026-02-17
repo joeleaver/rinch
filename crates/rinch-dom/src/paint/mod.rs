@@ -169,6 +169,27 @@ fn paint_node(
                 );
             }
 
+            // Game viewport hole: punch through all ancestor backgrounds
+            // so the game engine's render shows through this region.
+            let is_viewport = node.attributes.contains_key("data-viewport");
+            if is_viewport {
+                scene.push_layer(
+                    Fill::NonZero,
+                    peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::Clear),
+                    1.0,
+                    node_transform,
+                    &rect,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    node_transform,
+                    peniko::Color::BLACK,
+                    None,
+                    &rect,
+                );
+                scene.pop_layer();
+            }
+
             // Only paint this element's own visuals if visible
             // (children may override with visibility: visible)
             if visible {

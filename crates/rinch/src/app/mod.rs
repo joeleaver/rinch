@@ -7,7 +7,7 @@
 //! [`AppAction`]s.
 
 mod html_parser;
-mod hit_testing;
+pub(crate) mod hit_testing;
 mod contenteditable;
 mod event_dispatch;
 mod click_handling;
@@ -495,6 +495,53 @@ impl RinchApp {
     fn handle_copy(&mut self) {}
     fn handle_paste(&mut self) {}
     fn handle_cut(&mut self) {}
+
+    // ── Embed API helpers ─────────────────────────────────────────────
+
+    /// Whether a text input element is currently focused.
+    pub fn has_focused_input(&self) -> bool {
+        self.focused_input_handler_id.is_some()
+    }
+
+    /// Whether a contenteditable element is currently focused.
+    pub fn has_focused_contenteditable(&self) -> bool {
+        self.focused_contenteditable.is_some()
+    }
+
+    /// Query the computed layout rect of a `GameViewport` component by name.
+    ///
+    /// Walks the DOM tree looking for a node with attribute
+    /// `data-viewport={name}` and returns its absolute layout rect in logical
+    /// pixels.  Returns `None` if no matching viewport is found.
+    pub fn viewport_rect(&self, name: &str) -> Option<(f32, f32, f32, f32)> {
+        let doc = self.doc.as_ref()?;
+        let d = doc.borrow();
+        for (node_id, node) in &d.tree.nodes {
+            if node.attributes.get("data-viewport").map(|v| v.as_str()) == Some(name) {
+                // Compute absolute position by walking up the parent chain
+                let mut abs_x = 0.0_f32;
+                let mut abs_y = 0.0_f32;
+                let mut current = Some(node_id);
+                while let Some(id) = current {
+                    if let Some(n) = d.tree.get(id) {
+                        abs_x += n.layout.x;
+                        abs_y += n.layout.y;
+                        if let Some(parent_id) = n.parent
+                            && let Some(parent) = d.tree.get(parent_id)
+                        {
+                            abs_x -= parent.scroll_offset.0 as f32;
+                            abs_y -= parent.scroll_offset.1 as f32;
+                        }
+                        current = n.parent;
+                    } else {
+                        break;
+                    }
+                }
+                return Some((abs_x, abs_y, node.layout.width, node.layout.height));
+            }
+        }
+        None
+    }
 
     /// Create and register a CeOps instance for the focused CE element.
     ///

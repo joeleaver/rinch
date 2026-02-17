@@ -97,6 +97,8 @@ pub mod app;
 #[cfg(feature = "desktop")]
 pub mod ce_ops;
 #[cfg(feature = "desktop")]
+pub mod embed;
+#[cfg(feature = "desktop")]
 pub mod menu;
 #[cfg(feature = "desktop")]
 pub mod shell;
@@ -175,6 +177,10 @@ pub mod prelude {
     pub use rinch_core::{FineShowBuilder, show_dom};
     // For for reactive list rendering
     pub use rinch_core::{FineForBuilder, ForItem, for_each_dom, to_for_items};
+
+    // Embed API for game engine integration
+    #[cfg(feature = "desktop")]
+    pub use crate::embed::{GameViewport, LayoutRect, RinchContext, RinchContextConfig, RinchOverlayRenderer};
 
     // Re-export theme types when the theme feature is enabled
     #[cfg(feature = "theme")]

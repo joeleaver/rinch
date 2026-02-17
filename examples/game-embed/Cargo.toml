@@ -1,0 +1,13 @@
+[package]
+name = "game-embed"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop", "components", "theme", "debug"] }
+rinch-core = { workspace = true }
+rinch-platform = { workspace = true }
+wgpu = { workspace = true }
+winit = { workspace = true }
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }

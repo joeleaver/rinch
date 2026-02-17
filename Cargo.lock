@@ -1603,6 +1603,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "game-embed"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "pollster",
+ "rinch",
+ "rinch-core",
+ "rinch-platform",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "gdk"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
