@@ -9,9 +9,9 @@ use rinch_core::dom::{NodeHandle, RenderScope};
 #[derive(Debug, Default)]
 pub struct Space {
     /// Width size (xs, sm, md, lg, xl) for horizontal space.
-    pub w: Option<String>,
+    pub w: String,
     /// Height size (xs, sm, md, lg, xl) for vertical space.
-    pub h: Option<String>,
+    pub h: String,
 }
 
 impl Space {
@@ -20,8 +20,8 @@ impl Space {
         let mut classes = vec!["rinch-space"];
 
         // Width
-        if let Some(ref w) = self.w {
-            match w.as_str() {
+        if !self.w.is_empty() {
+            match self.w.as_str() {
                 "xs" => classes.push("rinch-space--w-xs"),
                 "sm" => classes.push("rinch-space--w-sm"),
                 "md" => classes.push("rinch-space--w-md"),
@@ -32,8 +32,8 @@ impl Space {
         }
 
         // Height
-        if let Some(ref h) = self.h {
-            match h.as_str() {
+        if !self.h.is_empty() {
+            match self.h.as_str() {
                 "xs" => classes.push("rinch-space--h-xs"),
                 "sm" => classes.push("rinch-space--h-sm"),
                 "md" => classes.push("rinch-space--h-md"),

@@ -25,12 +25,12 @@ pub struct SimpleGrid {
     pub cols: Option<u32>,
     /// Minimum column width for auto-fill behavior (e.g., "250px", "300px").
     /// When set, cols is ignored and grid uses auto-fill with minmax.
-    pub min_child_width: Option<String>,
+    pub min_child_width: String,
     /// Gap between grid items (xs, sm, md, lg, xl, or CSS value).
-    pub spacing: Option<String>,
+    pub spacing: String,
     /// Vertical gap between rows (xs, sm, md, lg, xl, or CSS value).
     /// Defaults to spacing if not provided.
-    pub vertical_spacing: Option<String>,
+    pub vertical_spacing: String,
 }
 
 impl SimpleGrid {
@@ -39,11 +39,11 @@ impl SimpleGrid {
         let mut styles = vec!["display: grid".to_string()];
 
         // Grid template columns
-        if let Some(ref min_width) = self.min_child_width {
+        if !self.min_child_width.is_empty() {
             // Auto-fill with minimum width
             styles.push(format!(
                 "grid-template-columns: repeat(auto-fill, minmax({}, 1fr))",
-                min_width
+                self.min_child_width
             ));
         } else {
             // Fixed number of columns
@@ -52,12 +52,12 @@ impl SimpleGrid {
         }
 
         // Gap
-        let gap = self.spacing_to_css(self.spacing.as_deref());
-        let v_gap = self
-            .vertical_spacing
-            .as_deref()
-            .map(|v| self.spacing_to_css(Some(v)))
-            .unwrap_or_else(|| gap.clone());
+        let gap = self.spacing_to_css(&self.spacing);
+        let v_gap = if self.vertical_spacing.is_empty() {
+            gap.clone()
+        } else {
+            self.spacing_to_css(&self.vertical_spacing)
+        };
 
         if gap == v_gap {
             styles.push(format!("gap: {}", gap));
@@ -69,15 +69,17 @@ impl SimpleGrid {
         styles.join("; ")
     }
 
-    fn spacing_to_css(&self, spacing: Option<&str>) -> String {
+    fn spacing_to_css(&self, spacing: &str) -> String {
+        if spacing.is_empty() {
+            return "var(--rinch-spacing-md)".to_string();
+        }
         match spacing {
-            Some("xs") => "var(--rinch-spacing-xs)".to_string(),
-            Some("sm") => "var(--rinch-spacing-sm)".to_string(),
-            Some("md") => "var(--rinch-spacing-md)".to_string(),
-            Some("lg") => "var(--rinch-spacing-lg)".to_string(),
-            Some("xl") => "var(--rinch-spacing-xl)".to_string(),
-            Some(val) => val.to_string(),
-            None => "var(--rinch-spacing-md)".to_string(),
+            "xs" => "var(--rinch-spacing-xs)".to_string(),
+            "sm" => "var(--rinch-spacing-sm)".to_string(),
+            "md" => "var(--rinch-spacing-md)".to_string(),
+            "lg" => "var(--rinch-spacing-lg)".to_string(),
+            "xl" => "var(--rinch-spacing-xl)".to_string(),
+            val => val.to_string(),
         }
     }
 }

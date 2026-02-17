@@ -61,7 +61,7 @@ pub fn navigation_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Switch between different views within the same context." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 // Interactive tabs
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
@@ -70,7 +70,7 @@ pub fn navigation_section() -> NodeHandle {
                             Badge { color: "blue", variant: "light", {|| tabs_value.get()} }
                         }
                         Divider {}
-                        Tabs { value: Some(tabs_value.get()),
+                        Tabs { value: tabs_value.get(),
                             TabsList {
                                 Tab { value: "gallery", onclick: move || tabs_value.set("gallery".to_string()), "Gallery" }
                                 Tab { value: "messages", onclick: move || tabs_value.set("messages".to_string()), "Messages" }
@@ -103,7 +103,7 @@ pub fn navigation_section() -> NodeHandle {
                             Badge { color: "violet", variant: "light", {|| tabs_pills_value.get()} }
                         }
                         Divider {}
-                        Tabs { variant: "pills", value: Some(tabs_pills_value.get()),
+                        Tabs { variant: "pills", value: tabs_pills_value.get(),
                             TabsList {
                                 Tab { value: "one", onclick: move || tabs_pills_value.set("one".to_string()), "First" }
                                 Tab { value: "two", onclick: move || tabs_pills_value.set("two".to_string()), "Second" }
@@ -125,17 +125,17 @@ pub fn navigation_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Sidebar and menu navigation items." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(3), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(3), spacing: "lg",
                 // Basic NavLink
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Text { weight: "600", "Basic" }
                         Divider {}
                         Stack { gap: "0",
-                            NavLink { label: Some("Home".to_string()), active: true }
-                            NavLink { label: Some("Dashboard".to_string()) }
-                            NavLink { label: Some("Settings".to_string()) }
-                            NavLink { label: Some("Profile".to_string()) }
+                            NavLink { label: "Home", active: true }
+                            NavLink { label: "Dashboard" }
+                            NavLink { label: "Settings" }
+                            NavLink { label: "Profile" }
                         }
                     }
                 }
@@ -146,9 +146,9 @@ pub fn navigation_section() -> NodeHandle {
                         Text { weight: "600", "With Description" }
                         Divider {}
                         Stack { gap: "0",
-                            NavLink { label: Some("Messages".to_string()), description: Some("3 unread".to_string()) }
-                            NavLink { label: Some("Notifications".to_string()), description: Some("12 new".to_string()) }
-                            NavLink { label: Some("Updates".to_string()), description: Some("Available".to_string()) }
+                            NavLink { label: "Messages", description: "3 unread" }
+                            NavLink { label: "Notifications", description: "12 new" }
+                            NavLink { label: "Updates", description: "Available" }
                         }
                     }
                 }
@@ -159,10 +159,10 @@ pub fn navigation_section() -> NodeHandle {
                         Text { weight: "600", "Colors" }
                         Divider {}
                         Stack { gap: "0",
-                            NavLink { label: Some("Blue".to_string()), color: "blue", active: true }
-                            NavLink { label: Some("Green".to_string()), color: "green", active: true }
-                            NavLink { label: Some("Red".to_string()), color: "red", active: true }
-                            NavLink { label: Some("Violet".to_string()), color: "violet", active: true }
+                            NavLink { label: "Blue", color: "blue", active: true }
+                            NavLink { label: "Green", color: "green", active: true }
+                            NavLink { label: "Red", color: "red", active: true }
+                            NavLink { label: "Violet", color: "violet", active: true }
                         }
                     }
                 }
@@ -178,7 +178,7 @@ pub fn navigation_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Show the current location within a hierarchy." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Text { weight: "600", "Default Separator" }
@@ -221,7 +221,7 @@ pub fn navigation_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Navigate through pages of content." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 // Interactive pagination
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
@@ -312,7 +312,7 @@ pub fn navigation_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Display hierarchical data with expand/collapse functionality." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 // Basic Tree
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",

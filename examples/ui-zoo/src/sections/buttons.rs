@@ -86,7 +86,7 @@ pub fn buttons_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Different button styles for various use cases." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(3), spacing: Some("md".to_string()),
+            SimpleGrid { cols: Some(3), spacing: "md",
                 Paper { p: "lg", radius: "md", with_border: true,
                     Stack { gap: "sm",
                         Text { weight: "600", "Filled" }
@@ -265,7 +265,7 @@ pub fn buttons_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Buttons that expand to fill their container." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("md".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "md",
                 Paper { p: "lg", radius: "md", with_border: true,
                     Stack { gap: "sm",
                         Button { full_width: true, "Full Width Filled" }

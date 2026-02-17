@@ -97,13 +97,13 @@ pub struct Notification {
     /// When provided, the notification updates automatically when the signal changes.
     pub opened_fn: Option<ReactiveBool>,
     /// Notification title.
-    pub title: Option<String>,
+    pub title: String,
     /// Color variant.
-    pub color: Option<String>,
+    pub color: String,
     /// Position (top-left, top-center, top-right, bottom-left, bottom-center, bottom-right).
-    pub position: Option<String>,
+    pub position: String,
     /// Border radius.
-    pub radius: Option<String>,
+    pub radius: String,
     /// Whether to show close button.
     pub with_close_button: bool,
     /// Whether notification has a colored border on the left.
@@ -145,10 +145,10 @@ impl Default for Notification {
         Self {
             opened: false,
             opened_fn: None,
-            title: None,
-            color: None,
-            position: None,
-            radius: None,
+            title: String::new(),
+            color: String::new(),
+            position: String::new(),
+            radius: String::new(),
             with_close_button: true,
             with_border: false,
             icon: None,
@@ -164,16 +164,16 @@ impl Notification {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-notification"];
 
-        if let Some(ref p) = self.position {
-            if let Ok(pos) = p.parse::<NotificationPosition>() {
+        if !self.position.is_empty() {
+            if let Ok(pos) = self.position.parse::<NotificationPosition>() {
                 classes.push(pos.class_name());
             }
         } else {
             classes.push(NotificationPosition::TopRight.class_name());
         }
 
-        if let Some(ref r) = self.radius {
-            match r.as_str() {
+        if !self.radius.is_empty() {
+            match self.radius.as_str() {
                 "xs" => classes.push("rinch-notification--radius-xs"),
                 "sm" => classes.push("rinch-notification--radius-sm"),
                 "md" => classes.push("rinch-notification--radius-md"),
@@ -205,13 +205,16 @@ impl Widget for Notification {
         };
 
         // Color style
-        let color_style = self.color.as_ref().map(|c| {
+        let color_style = if self.color.is_empty() {
+            None
+        } else {
+            let c = &self.color;
             if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
-                format!("--rinch-notification-color: {}", c)
+                Some(format!("--rinch-notification-color: {}", c))
             } else {
-                format!("--rinch-notification-color: var(--rinch-color-{}-6)", c)
+                Some(format!("--rinch-notification-color: var(--rinch-color-{}-6)", c))
             }
-        });
+        };
 
         // Close handler
         let close_handler_id = self.onclose.as_ref().map(|cb| {
@@ -270,9 +273,9 @@ impl Widget for Notification {
         let body = rinch_macros::rsx! { div { class: "rinch-notification__body" } };
 
         // Title element
-        if let Some(ref t) = self.title {
+        if !self.title.is_empty() {
             let title_div = rinch_macros::rsx! { div { class: "rinch-notification__title" } };
-            let title_text = __scope.create_text(t);
+            let title_text = __scope.create_text(&self.title);
             title_div.append_child(&title_text);
             body.append_child(&title_div);
         }

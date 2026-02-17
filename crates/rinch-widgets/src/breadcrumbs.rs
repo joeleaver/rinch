@@ -21,20 +21,20 @@ use rinch_core::dom::{NodeHandle, RenderScope};
 #[derive(Debug, Default)]
 pub struct Breadcrumbs {
     /// Separator between items.
-    pub separator: Option<String>,
+    pub separator: String,
     /// Spacing between items.
-    pub separator_margin: Option<String>,
+    pub separator_margin: String,
 }
 
 impl Widget for Breadcrumbs {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
-        let separator = self.separator.as_deref().unwrap_or("/");
+        let separator = if self.separator.is_empty() { "/" } else { &self.separator };
 
         let nav = rinch_macros::rsx! { nav { class: "rinch-breadcrumbs" } };
         nav.set_attribute("aria-label", "Breadcrumb");
 
-        if let Some(ref margin) = self.separator_margin {
-            nav.set_attribute("style", &format!("--rinch-breadcrumbs-margin: {}", margin));
+        if !self.separator_margin.is_empty() {
+            nav.set_attribute("style", &format!("--rinch-breadcrumbs-margin: {}", self.separator_margin));
         }
 
         let ol = rinch_macros::rsx! { ol { class: "rinch-breadcrumbs__list" } };
@@ -53,16 +53,16 @@ impl Widget for Breadcrumbs {
 #[derive(Debug, Default)]
 pub struct BreadcrumbsItem {
     /// Link href (if clickable).
-    pub href: Option<String>,
+    pub href: String,
 }
 
 impl Widget for BreadcrumbsItem {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         let li = rinch_macros::rsx! { li { class: "rinch-breadcrumbs__item" } };
 
-        let content = if let Some(ref href) = self.href {
+        let content = if !self.href.is_empty() {
             let link = rinch_macros::rsx! { a { class: "rinch-breadcrumbs__link" } };
-            link.set_attribute("href", href);
+            link.set_attribute("href", &self.href);
             for child in children {
                 link.append_child(child);
             }

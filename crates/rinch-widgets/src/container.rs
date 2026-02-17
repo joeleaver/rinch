@@ -9,7 +9,7 @@ use rinch_core::dom::{NodeHandle, RenderScope};
 #[derive(Debug, Default)]
 pub struct Container {
     /// Size (xs, sm, md, lg, xl). Controls max-width.
-    pub size: Option<String>,
+    pub size: String,
     /// Whether to add horizontal padding.
     pub fluid: bool,
 }
@@ -19,8 +19,8 @@ impl Container {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-container"];
 
-        if let Some(ref size) = self.size {
-            match size.as_str() {
+        if !self.size.is_empty() {
+            match self.size.as_str() {
                 "xs" => classes.push("rinch-container--xs"),
                 "sm" => classes.push("rinch-container--sm"),
                 "md" => classes.push("rinch-container--md"),

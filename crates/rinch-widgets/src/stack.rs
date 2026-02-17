@@ -123,11 +123,11 @@ impl std::str::FromStr for StackJustify {
 #[derive(Debug, Default)]
 pub struct Stack {
     /// Gap between children (xs, sm, md, lg, xl).
-    pub gap: Option<String>,
+    pub gap: String,
     /// Alignment of children (stretch, start, center, end).
-    pub align: Option<String>,
+    pub align: String,
     /// Justification of children (start, center, end, between, around).
-    pub justify: Option<String>,
+    pub justify: String,
 }
 
 impl Stack {
@@ -136,25 +136,25 @@ impl Stack {
         let mut classes = vec!["rinch-stack"];
 
         // Gap class
-        let gap: StackGap = self
-            .gap
-            .as_ref()
-            .and_then(|g| g.parse().ok())
-            .unwrap_or_default();
+        let gap: StackGap = if self.gap.is_empty() {
+            StackGap::default()
+        } else {
+            self.gap.parse().unwrap_or_default()
+        };
         classes.push(gap.class_name());
 
         // Alignment class
-        if let Some(ref align) = self.align
-            && let Ok(a) = align.parse::<StackAlign>()
-        {
-            classes.push(a.class_name());
+        if !self.align.is_empty() {
+            if let Ok(a) = self.align.parse::<StackAlign>() {
+                classes.push(a.class_name());
+            }
         }
 
         // Justification class
-        if let Some(ref justify) = self.justify
-            && let Ok(j) = justify.parse::<StackJustify>()
-        {
-            classes.push(j.class_name());
+        if !self.justify.is_empty() {
+            if let Ok(j) = self.justify.parse::<StackJustify>() {
+                classes.push(j.class_name());
+            }
         }
 
         classes.join(" ")

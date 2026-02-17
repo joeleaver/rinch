@@ -20,13 +20,13 @@ use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 #[derive(Debug, Default)]
 pub struct Blockquote {
     /// Citation/source.
-    pub cite: Option<String>,
+    pub cite: String,
     /// Icon to display.
     pub icon: Option<TablerIcon>,
     /// Color for the left border.
-    pub color: Option<String>,
+    pub color: String,
     /// Border radius.
-    pub radius: Option<String>,
+    pub radius: String,
 }
 
 impl Blockquote {
@@ -37,8 +37,8 @@ impl Blockquote {
             classes.push("rinch-blockquote--with-icon");
         }
 
-        if let Some(ref r) = self.radius {
-            classes.push(match r.as_str() {
+        if !self.radius.is_empty() {
+            classes.push(match self.radius.as_str() {
                 "xs" => "rinch-blockquote--radius-xs",
                 "sm" => "rinch-blockquote--radius-sm",
                 "md" => "rinch-blockquote--radius-md",
@@ -58,7 +58,8 @@ impl Widget for Blockquote {
         container.set_attribute("class", &self.class_string());
 
         // Color style
-        if let Some(c) = &self.color {
+        if !self.color.is_empty() {
+            let c = &self.color;
             let style = if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
                 format!("--rinch-blockquote-color: {}", c)
             } else {
@@ -83,9 +84,9 @@ impl Widget for Blockquote {
         container.append_child(&body);
 
         // Citation element
-        if let Some(ref cite) = self.cite {
+        if !self.cite.is_empty() {
             let cite_elem = rinch_macros::rsx! { cite { class: "rinch-blockquote__cite" } };
-            let cite_text = __scope.create_text(cite);
+            let cite_text = __scope.create_text(&self.cite);
             cite_elem.append_child(&cite_text);
             container.append_child(&cite_elem);
         }

@@ -9,7 +9,7 @@ use rinch_core::dom::{NodeHandle, RenderScope};
 #[derive(Debug, Default)]
 pub struct Kbd {
     /// Size (xs, sm, md, lg).
-    pub size: Option<String>,
+    pub size: String,
 }
 
 impl Kbd {
@@ -17,8 +17,8 @@ impl Kbd {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-kbd"];
 
-        if let Some(ref size) = self.size {
-            match size.as_str() {
+        if !self.size.is_empty() {
+            match self.size.as_str() {
                 "xs" => classes.push("rinch-kbd--xs"),
                 "sm" => classes.push("rinch-kbd--sm"),
                 "md" => classes.push("rinch-kbd--md"),

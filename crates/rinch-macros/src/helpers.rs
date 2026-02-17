@@ -13,18 +13,38 @@ pub fn is_literal_expr(expr: &Expr) -> bool {
     matches!(expr, Expr::Lit(_))
 }
 
-/// Extract the closure expression from an expression.
-/// Returns the closure if the expression is a closure or a block containing a single closure.
+/// Extract a closure expression from an expression, supporting block-with-setup patterns.
+///
+/// Returns the reactive expression if:
+/// - The expression is a direct closure: `|| expr`
+/// - A block with a single closure: `{ || expr }` (returns just the closure)
+/// - A block with setup statements + final closure: `{ let x = ...; move || expr }`
+///   (returns the whole block — when called as `(block)()`, setup runs then closure executes)
+///
+/// The last case enables this common pattern:
+/// ```ignore
+/// style: {
+///     let m = 10;
+///     move || format!("width: {}px", count.get() * m)
+/// }
+/// ```
 pub fn get_closure_expr(expr: &Expr) -> Option<&Expr> {
     match expr {
         Expr::Closure(_) => Some(expr),
         Expr::Block(block) => {
-            // Check if block contains exactly one statement that is a closure expression
-            if block.block.stmts.len() == 1
-                && let syn::Stmt::Expr(inner, None) = &block.block.stmts[0]
+            // Check if the last statement is a closure expression
+            if let Some(syn::Stmt::Expr(inner, None)) = block.block.stmts.last()
                 && matches!(inner, Expr::Closure(_))
             {
-                return Some(inner);
+                if block.block.stmts.len() == 1 {
+                    // Single closure — return just the closure (no setup overhead)
+                    return Some(inner);
+                } else {
+                    // Block with setup + closure — return the whole block.
+                    // When codegen emits `(#block)()`, the setup statements run,
+                    // the block returns the closure, and `()` calls it.
+                    return Some(expr);
+                }
             }
             None
         }
@@ -40,6 +60,11 @@ pub fn is_literal_bool(expr: &Expr) -> bool {
 /// Check if an expression is an integer literal.
 pub fn is_literal_int(expr: &Expr) -> bool {
     matches!(expr, Expr::Lit(lit) if matches!(lit.lit, syn::Lit::Int(_)))
+}
+
+/// Check if an expression is a float literal.
+pub fn is_literal_float(expr: &Expr) -> bool {
+    matches!(expr, Expr::Lit(lit) if matches!(lit.lit, syn::Lit::Float(_)))
 }
 
 /// Check if an expression is a string literal.

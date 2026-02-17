@@ -98,17 +98,17 @@ pub struct Modal {
     /// When provided, the modal updates automatically when the signal changes.
     pub opened_fn: Option<ReactiveBool>,
     /// Modal title.
-    pub title: Option<String>,
+    pub title: String,
     /// Size variant (xs, sm, md, lg, xl, full).
-    pub size: Option<String>,
+    pub size: String,
     /// Border radius.
-    pub radius: Option<String>,
+    pub radius: String,
     /// Whether to show overlay backdrop.
     pub with_overlay: bool,
     /// Overlay opacity (0-1).
     pub overlay_opacity: Option<f32>,
     /// Overlay blur.
-    pub overlay_blur: Option<String>,
+    pub overlay_blur: String,
     /// Whether to center the modal vertically.
     pub centered: bool,
     /// Whether clicking overlay closes modal.
@@ -118,7 +118,7 @@ pub struct Modal {
     /// Whether to show close button.
     pub with_close_button: bool,
     /// Padding inside modal.
-    pub padding: Option<String>,
+    pub padding: String,
     /// Z-index for the modal.
     pub z_index: Option<i32>,
     /// Whether to lock scroll when open.
@@ -158,17 +158,17 @@ impl Default for Modal {
         Self {
             opened: false,
             opened_fn: None,
-            title: None,
-            size: None,
-            radius: None,
+            title: String::new(),
+            size: String::new(),
+            radius: String::new(),
             with_overlay: true,
             overlay_opacity: None,
-            overlay_blur: None,
+            overlay_blur: String::new(),
             centered: false,
             close_on_click_outside: true,
             close_on_escape: true,
             with_close_button: true,
-            padding: None,
+            padding: String::new(),
             z_index: None,
             lock_scroll: true,
             trap_focus: true,
@@ -181,14 +181,14 @@ impl Modal {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-modal"];
 
-        if let Some(ref s) = self.size
-            && let Ok(size) = s.parse::<ModalSize>()
-        {
-            classes.push(size.class_name());
+        if !self.size.is_empty() {
+            if let Ok(size) = self.size.parse::<ModalSize>() {
+                classes.push(size.class_name());
+            }
         }
 
-        if let Some(ref r) = self.radius {
-            match r.as_str() {
+        if !self.radius.is_empty() {
+            match self.radius.as_str() {
                 "xs" => classes.push("rinch-modal--radius-xs"),
                 "sm" => classes.push("rinch-modal--radius-sm"),
                 "md" => classes.push("rinch-modal--radius-md"),
@@ -221,8 +221,8 @@ impl Widget for Modal {
             if let Some(opacity) = self.overlay_opacity {
                 styles.push(format!("--rinch-modal-overlay-opacity: {}", opacity));
             }
-            if let Some(ref blur) = self.overlay_blur {
-                styles.push(format!("--rinch-modal-overlay-blur: {}", blur));
+            if !self.overlay_blur.is_empty() {
+                styles.push(format!("--rinch-modal-overlay-blur: {}", self.overlay_blur));
             }
             if styles.is_empty() {
                 None
@@ -232,7 +232,11 @@ impl Widget for Modal {
         };
 
         // Build modal content styles
-        let content_style = self.padding.as_ref().map(|p| format!("padding: {}", p));
+        let content_style = if self.padding.is_empty() {
+            None
+        } else {
+            Some(format!("padding: {}", self.padding))
+        };
 
         // Build close button handler
         let close_handler_id = self.onclose.as_ref().map(|cb| {
@@ -297,11 +301,11 @@ impl Widget for Modal {
         }
 
         // Title section
-        if let Some(ref t) = self.title {
+        if !self.title.is_empty() {
             let header = rinch_macros::rsx! { div { class: "rinch-modal__header" } };
 
             let title_el = rinch_macros::rsx! { h2 { class: "rinch-modal__title" } };
-            let title_text = __scope.create_text(t);
+            let title_text = __scope.create_text(&self.title);
             title_el.append_child(&title_text);
             header.append_child(&title_el);
 

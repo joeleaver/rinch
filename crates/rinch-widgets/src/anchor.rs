@@ -9,11 +9,11 @@ use rinch_core::dom::{NodeHandle, RenderScope};
 #[derive(Debug, Default)]
 pub struct Anchor {
     /// Link URL.
-    pub href: Option<String>,
+    pub href: String,
     /// Link target (_blank, _self, etc.).
-    pub target: Option<String>,
+    pub target: String,
     /// Size (xs, sm, md, lg).
-    pub size: Option<String>,
+    pub size: String,
     /// Whether to always show underline.
     pub underline: bool,
 }
@@ -23,8 +23,8 @@ impl Anchor {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-anchor"];
 
-        if let Some(ref size) = self.size {
-            match size.as_str() {
+        if !self.size.is_empty() {
+            match self.size.as_str() {
                 "xs" => classes.push("rinch-anchor--xs"),
                 "sm" => classes.push("rinch-anchor--sm"),
                 "md" => classes.push("rinch-anchor--md"),
@@ -45,10 +45,11 @@ impl Widget for Anchor {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         let container = rinch_macros::rsx! { a { class: "rinch-anchor" } };
         container.set_attribute("class", &self.class_string());
-        container.set_attribute("href", self.href.as_deref().unwrap_or("#"));
+        let href = if self.href.is_empty() { "#" } else { &self.href };
+        container.set_attribute("href", href);
 
-        if let Some(target) = &self.target {
-            container.set_attribute("target", target);
+        if !self.target.is_empty() {
+            container.set_attribute("target", &self.target);
         }
 
         for child in children {

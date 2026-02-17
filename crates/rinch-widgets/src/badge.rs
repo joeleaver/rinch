@@ -88,13 +88,13 @@ impl std::str::FromStr for BadgeSize {
 #[derive(Debug, Default)]
 pub struct Badge {
     /// Badge variant (filled, light, outline, dot).
-    pub variant: Option<String>,
+    pub variant: String,
     /// Badge size (xs, sm, md, lg, xl).
-    pub size: Option<String>,
+    pub size: String,
     /// Override the primary color.
-    pub color: Option<String>,
+    pub color: String,
     /// Border radius override.
-    pub radius: Option<String>,
+    pub radius: String,
     /// Whether the badge should take full width.
     pub full_width: bool,
 }
@@ -105,19 +105,19 @@ impl Badge {
         let mut classes = vec!["rinch-badge"];
 
         // Size class
-        let size: BadgeSize = self
-            .size
-            .as_ref()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_default();
+        let size: BadgeSize = if self.size.is_empty() {
+            BadgeSize::default()
+        } else {
+            self.size.parse().unwrap_or_default()
+        };
         classes.push(size.class_name());
 
         // Variant class
-        let variant: BadgeVariant = self
-            .variant
-            .as_ref()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or_default();
+        let variant: BadgeVariant = if self.variant.is_empty() {
+            BadgeVariant::default()
+        } else {
+            self.variant.parse().unwrap_or_default()
+        };
         classes.push(variant.class_name());
 
         // Full width
@@ -134,8 +134,8 @@ impl Widget for Badge {
         let container = rinch_macros::rsx! { span { class: "rinch-badge" } };
         container.set_attribute("class", &self.class_string());
 
-        if let Some(color) = &self.color {
-            container.set_attribute("data-color", color);
+        if !self.color.is_empty() {
+            container.set_attribute("data-color", &self.color);
         }
 
         for child in children {

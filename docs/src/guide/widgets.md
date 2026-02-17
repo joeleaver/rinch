@@ -876,6 +876,64 @@ use my_widgets::generate_css;
 let custom_css = generate_css();
 ```
 
+## Custom Components with #[component]
+
+You can create reusable custom components using the `#[component]` macro. Components written in PascalCase become widgets in RSX:
+
+```rust
+use rinch::prelude::*;
+
+#[component]
+pub fn MyCard(
+    title: String,
+    color: String,
+    children: &[NodeHandle],
+) -> NodeHandle {
+    rsx! {
+        div { class: "my-card",
+            h2 { {title.clone()} }
+            div { class: "card-body", style: {move || format!("color: {}", color.clone())},
+                children
+            }
+        }
+    }
+}
+
+// Use in RSX:
+#[component]
+fn app() -> NodeHandle {
+    rsx! {
+        MyCard { title: "Hello", color: "blue",
+            Text { "Card content here" }
+        }
+    }
+}
+```
+
+**Key points:**
+- **PascalCase** function names become widgets in RSX
+- `children: &[NodeHandle]` is a special parameter that receives child content
+- Use `children` in the body to render child elements
+- `#[component]` auto-injects `__scope: &mut RenderScope` as the first parameter
+- Props are regular Rust function parameters
+
+**Without children:**
+```rust
+#[component]
+pub fn StatusBadge(label: String, status: String) -> NodeHandle {
+    rsx! {
+        div { class: "badge",
+            style: {move || format!("background: {}",
+                if status == "success" { "green" } else { "red" })},
+            {label.clone()}
+        }
+    }
+}
+
+// Use:
+StatusBadge { label: "Active", status: "success" }
+```
+
 ## Icon System
 
 Rinch provides a type-safe icon system with a curated library of SVG icons. Instead of passing arbitrary HTML strings, widgets accept `Icon` enum values for discoverability and consistency.

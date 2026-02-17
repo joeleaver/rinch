@@ -85,11 +85,11 @@ impl std::str::FromStr for PaperPadding {
 #[derive(Debug, Default)]
 pub struct Paper {
     /// Shadow size (xs, sm, md, lg, xl).
-    pub shadow: Option<String>,
+    pub shadow: String,
     /// Padding size (xs, sm, md, lg, xl). Use `p` as shorthand in RSX.
-    pub p: Option<String>,
+    pub p: String,
     /// Border radius (xs, sm, md, lg, xl).
-    pub radius: Option<String>,
+    pub radius: String,
     /// Whether to show a border.
     pub with_border: bool,
 }
@@ -100,22 +100,22 @@ impl Paper {
         let mut classes = vec!["rinch-paper"];
 
         // Shadow class
-        if let Some(ref shadow) = self.shadow
-            && let Ok(s) = shadow.parse::<PaperShadow>()
-        {
-            classes.push(s.class_name());
+        if !self.shadow.is_empty() {
+            if let Ok(s) = self.shadow.parse::<PaperShadow>() {
+                classes.push(s.class_name());
+            }
         }
 
         // Padding class
-        if let Some(ref p) = self.p
-            && let Ok(padding) = p.parse::<PaperPadding>()
-        {
-            classes.push(padding.class_name());
+        if !self.p.is_empty() {
+            if let Ok(padding) = self.p.parse::<PaperPadding>() {
+                classes.push(padding.class_name());
+            }
         }
 
         // Radius class
-        if let Some(ref radius) = self.radius {
-            match radius.as_str() {
+        if !self.radius.is_empty() {
+            match self.radius.as_str() {
                 "xs" => classes.push("rinch-paper--radius-xs"),
                 "sm" => classes.push("rinch-paper--radius-sm"),
                 "md" => classes.push("rinch-paper--radius-md"),

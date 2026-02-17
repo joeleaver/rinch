@@ -55,35 +55,36 @@ impl std::str::FromStr for ImageFit {
 #[derive(Debug, Default)]
 pub struct Image {
     /// Image source URL.
-    pub src: Option<String>,
+    pub src: String,
     /// Alt text.
-    pub alt: Option<String>,
+    pub alt: String,
     /// Width (CSS value or number for pixels).
-    pub width: Option<String>,
+    pub width: String,
     /// Height (CSS value or number for pixels).
-    pub height: Option<String>,
+    pub height: String,
     /// Object fit mode.
-    pub fit: Option<String>,
+    pub fit: String,
     /// Border radius (xs, sm, md, lg, xl).
-    pub radius: Option<String>,
+    pub radius: String,
     /// Fallback image source.
-    pub fallback_src: Option<String>,
+    pub fallback_src: String,
     /// Caption text.
-    pub caption: Option<String>,
+    pub caption: String,
 }
 
 impl Image {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-image"];
 
-        let fit: ImageFit = self
-            .fit
-            .as_ref()
-            .and_then(|f| f.parse().ok())
-            .unwrap_or_default();
+        let fit: ImageFit = if self.fit.is_empty() {
+            ImageFit::default()
+        } else {
+            self.fit.parse().unwrap_or_default()
+        };
         classes.push(fit.class_name());
 
-        if let Some(ref r) = self.radius {
+        if !self.radius.is_empty() {
+            let r = &self.radius;
             classes.push(match r.as_str() {
                 "xs" => "rinch-image--radius-xs",
                 "sm" => "rinch-image--radius-sm",
@@ -100,11 +101,12 @@ impl Image {
 
 impl Widget for Image {
     fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
-        let src = self.src.as_deref().unwrap_or("");
-        let alt = self.alt.as_deref().unwrap_or("");
+        let src = if self.src.is_empty() { "" } else { &self.src };
+        let alt = if self.alt.is_empty() { "" } else { &self.alt };
 
         let mut styles = Vec::new();
-        if let Some(ref w) = self.width {
+        if !self.width.is_empty() {
+            let w = &self.width;
             let w = if w.chars().all(|c| c.is_ascii_digit()) {
                 format!("{}px", w)
             } else {
@@ -112,7 +114,8 @@ impl Widget for Image {
             };
             styles.push(format!("width: {}", w));
         }
-        if let Some(ref h) = self.height {
+        if !self.height.is_empty() {
+            let h = &self.height;
             let h = if h.chars().all(|c| c.is_ascii_digit()) {
                 format!("{}px", h)
             } else {
@@ -132,13 +135,15 @@ impl Widget for Image {
         img.set_attribute("src", src);
         img.set_attribute("alt", alt);
 
-        if let Some(ref fallback) = self.fallback_src {
+        if !self.fallback_src.is_empty() {
+            let fallback = &self.fallback_src;
             img.set_attribute("onerror", &format!("this.src='{}'", fallback));
         }
 
         figure.append_child(&img);
 
-        if let Some(ref caption) = self.caption {
+        if !self.caption.is_empty() {
+            let caption = &self.caption;
             let figcaption = rinch_macros::rsx! { figcaption { class: "rinch-image__caption" } };
             let text_node = __scope.create_text(caption);
             figcaption.append_child(&text_node);

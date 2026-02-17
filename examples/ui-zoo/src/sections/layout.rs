@@ -22,7 +22,7 @@ pub fn layout_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Stack and Group for vertical and horizontal layouts." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 // Stack
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
@@ -111,7 +111,7 @@ pub fn layout_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Control spacing between elements." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 // Space
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
@@ -169,7 +169,7 @@ pub fn layout_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Container components for grouping and styling content." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 // Paper shadows
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",

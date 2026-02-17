@@ -29,11 +29,11 @@ pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 #[derive(Default)]
 pub struct Checkbox {
     /// Label displayed next to the checkbox.
-    pub label: Option<String>,
+    pub label: String,
     /// Description displayed below the checkbox.
-    pub description: Option<String>,
+    pub description: String,
     /// Size (xs, sm, md, lg).
-    pub size: Option<String>,
+    pub size: String,
     /// Whether the checkbox is disabled.
     pub disabled: bool,
     /// Whether the checkbox is checked (static, for initial render or non-reactive use).
@@ -71,8 +71,8 @@ impl Checkbox {
         let mut classes = vec!["rinch-checkbox"];
 
         // Size
-        if let Some(size) = &self.size {
-            match size.as_str() {
+        if !self.size.is_empty() {
+            match self.size.as_str() {
                 "xs" => classes.push("rinch-checkbox--xs"),
                 "sm" => classes.push("rinch-checkbox--sm"),
                 "md" => classes.push("rinch-checkbox--md"),
@@ -163,7 +163,8 @@ impl Widget for Checkbox {
         label_node.append_child(&box_node);
 
         // Label text
-        if let Some(label_text) = &self.label {
+        if !self.label.is_empty() {
+            let label_text = &self.label;
             let label_span = scope.create_element("span");
             label_span.set_attribute("class", "rinch-checkbox__label");
             let label_text_node = scope.create_text(label_text);

@@ -12,15 +12,15 @@ pub type ReactiveString = Rc<dyn Fn() -> String>;
 #[derive(Default)]
 pub struct Textarea {
     /// Label displayed above the textarea.
-    pub label: Option<String>,
+    pub label: String,
     /// Description displayed below the textarea.
-    pub description: Option<String>,
+    pub description: String,
     /// Error message to display.
-    pub error: Option<String>,
+    pub error: String,
     /// Placeholder text.
-    pub placeholder: Option<String>,
+    pub placeholder: String,
     /// Size (xs, sm, md, lg, xl).
-    pub size: Option<String>,
+    pub size: String,
     /// Whether the textarea is disabled.
     pub disabled: bool,
     /// Whether the textarea is required.
@@ -32,7 +32,7 @@ pub struct Textarea {
     /// Maximum number of rows.
     pub max_rows: Option<u32>,
     /// Current value.
-    pub value: Option<String>,
+    pub value: String,
     /// Reactive value getter for fine-grained updates.
     pub value_fn: Option<ReactiveString>,
     /// Callback when textarea content changes.
@@ -65,8 +65,8 @@ impl Textarea {
         let mut classes = vec!["rinch-textarea"];
 
         // Size
-        if let Some(size) = &self.size {
-            match size.as_str() {
+        if !self.size.is_empty() {
+            match self.size.as_str() {
                 "xs" => classes.push("rinch-textarea--xs"),
                 "sm" => classes.push("rinch-textarea--sm"),
                 "md" => classes.push("rinch-textarea--md"),
@@ -77,7 +77,7 @@ impl Textarea {
         }
 
         // Error state
-        if self.error.is_some() {
+        if !self.error.is_empty() {
             classes.push("rinch-textarea--error");
         }
 
@@ -96,7 +96,8 @@ impl Widget for Textarea {
         container.set_attribute("class", &self.class_string());
 
         // Label
-        if let Some(label_text) = &self.label {
+        if !self.label.is_empty() {
+            let label_text = &self.label;
             let label = rinch_macros::rsx! { label { class: "rinch-textarea__label" } };
             let label_text_node = __scope.create_text(label_text);
             label.append_child(&label_text_node);
@@ -113,8 +114,8 @@ impl Widget for Textarea {
         // Textarea element
         let textarea = rinch_macros::rsx! { textarea { class: "rinch-textarea__input" } };
 
-        if let Some(placeholder) = &self.placeholder {
-            textarea.set_attribute("placeholder", placeholder);
+        if !self.placeholder.is_empty() {
+            textarea.set_attribute("placeholder", &self.placeholder);
         }
         if self.disabled {
             textarea.set_attribute("disabled", "");
@@ -137,8 +138,8 @@ impl Widget for Textarea {
                 let current_value = value_fn();
                 textarea_clone.set_attribute("value", &current_value);
             });
-        } else if let Some(value) = &self.value {
-            textarea.set_attribute("value", value);
+        } else if !self.value.is_empty() {
+            textarea.set_attribute("value", &self.value);
         }
 
         // Input handler — always register so the runtime can route text input
@@ -156,7 +157,8 @@ impl Widget for Textarea {
         container.append_child(&textarea);
 
         // Description
-        if let Some(desc) = &self.description {
+        if !self.description.is_empty() {
+            let desc = &self.description;
             let desc_div = rinch_macros::rsx! { div { class: "rinch-textarea__description" } };
             let desc_text = __scope.create_text(desc);
             desc_div.append_child(&desc_text);
@@ -164,7 +166,8 @@ impl Widget for Textarea {
         }
 
         // Error
-        if let Some(err) = &self.error {
+        if !self.error.is_empty() {
+            let err = &self.error;
             let err_div = rinch_macros::rsx! { div { class: "rinch-textarea__error" } };
             let err_text = __scope.create_text(err);
             err_div.append_child(&err_text);

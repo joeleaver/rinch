@@ -228,7 +228,7 @@ pub fn editor_section() -> NodeHandle {
                     }
                     Space { h: "xs" }
 
-                    SimpleGrid { cols: Some(3), spacing: Some("md".to_string()),
+                    SimpleGrid { cols: Some(3), spacing: "md",
                         Paper { p: "md", radius: "sm", with_border: true,
                             Stack { gap: "xs",
                                 Text { weight: "600", "Full" }

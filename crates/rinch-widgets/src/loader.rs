@@ -96,11 +96,11 @@ impl std::str::FromStr for LoaderSize {
 #[derive(Debug, Default)]
 pub struct Loader {
     /// Loader type (oval, bars, dots).
-    pub r#type: Option<String>,
+    pub r#type: String,
     /// Loader size (xs, sm, md, lg, xl).
-    pub size: Option<String>,
+    pub size: String,
     /// Color (uses theme colors or custom).
-    pub color: Option<String>,
+    pub color: String,
 }
 
 impl Loader {
@@ -109,19 +109,11 @@ impl Loader {
         let mut classes = vec!["rinch-loader"];
 
         // Type class
-        let loader_type: LoaderType = self
-            .r#type
-            .as_ref()
-            .and_then(|t| t.parse().ok())
-            .unwrap_or_default();
+        let loader_type: LoaderType = self.r#type.parse().unwrap_or_default();
         classes.push(loader_type.class_name());
 
         // Size class
-        let size: LoaderSize = self
-            .size
-            .as_ref()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_default();
+        let size: LoaderSize = self.size.parse().unwrap_or_default();
         classes.push(size.class_name());
 
         classes.join(" ")
@@ -135,7 +127,8 @@ impl Widget for Loader {
         container.set_attribute("aria-label", "Loading");
 
         // Color style attribute
-        if let Some(c) = &self.color {
+        if !self.color.is_empty() {
+            let c = &self.color;
             let style = if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
                 format!("--rinch-loader-color: {}", c)
             } else {
@@ -144,11 +137,7 @@ impl Widget for Loader {
             container.set_attribute("style", &style);
         }
 
-        let loader_type: LoaderType = self
-            .r#type
-            .as_ref()
-            .and_then(|t| t.parse().ok())
-            .unwrap_or_default();
+        let loader_type: LoaderType = self.r#type.parse().unwrap_or_default();
 
         match loader_type {
             LoaderType::Oval => {

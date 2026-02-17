@@ -89,15 +89,15 @@ pub struct Stepper {
     /// Currently active step (0-indexed).
     pub active: u32,
     /// Size variant (xs, sm, md, lg, xl).
-    pub size: Option<String>,
+    pub size: String,
     /// Orientation (horizontal, vertical).
-    pub orientation: Option<String>,
+    pub orientation: String,
     /// Color for completed/active steps.
-    pub color: Option<String>,
+    pub color: String,
     /// Border radius for step icons.
-    pub radius: Option<String>,
+    pub radius: String,
     /// Icon size.
-    pub icon_size: Option<String>,
+    pub icon_size: String,
     /// Whether to allow clicking on completed steps.
     pub allow_next_steps_select: bool,
     /// Custom completed step icon.
@@ -110,22 +110,22 @@ impl Stepper {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-stepper"];
 
-        if let Some(ref s) = self.size
-            && let Ok(size) = s.parse::<StepperSize>()
+        if !self.size.is_empty()
+            && let Ok(size) = self.size.parse::<StepperSize>()
         {
             classes.push(size.class_name());
         }
 
-        if let Some(ref o) = self.orientation {
-            if let Ok(orientation) = o.parse::<StepperOrientation>() {
+        if !self.orientation.is_empty() {
+            if let Ok(orientation) = self.orientation.parse::<StepperOrientation>() {
                 classes.push(orientation.class_name());
             }
         } else {
             classes.push(StepperOrientation::Horizontal.class_name());
         }
 
-        if let Some(ref r) = self.radius {
-            match r.as_str() {
+        if !self.radius.is_empty() {
+            match self.radius.as_str() {
                 "xs" => classes.push("rinch-stepper--radius-xs"),
                 "sm" => classes.push("rinch-stepper--radius-sm"),
                 "md" => classes.push("rinch-stepper--radius-md"),
@@ -142,15 +142,16 @@ impl Stepper {
 impl Widget for Stepper {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         let mut style_parts = Vec::new();
-        if let Some(ref c) = self.color {
+        if !self.color.is_empty() {
+            let c = &self.color;
             if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
                 style_parts.push(format!("--rinch-stepper-color: {}", c));
             } else {
                 style_parts.push(format!("--rinch-stepper-color: var(--rinch-color-{}-6)", c));
             }
         }
-        if let Some(ref size) = self.icon_size {
-            style_parts.push(format!("--rinch-stepper-icon-size: {}", size));
+        if !self.icon_size.is_empty() {
+            style_parts.push(format!("--rinch-stepper-icon-size: {}", self.icon_size));
         }
 
         let container = rinch_macros::rsx! { div { class: "rinch-stepper" } };
@@ -177,9 +178,9 @@ impl Widget for Stepper {
 #[derive(Debug, Default)]
 pub struct StepperStep {
     /// Step label text.
-    pub label: Option<String>,
+    pub label: String,
     /// Step description text.
-    pub description: Option<String>,
+    pub description: String,
     /// Custom icon for this step.
     pub icon: Option<TablerIcon>,
     /// Custom completed icon.
@@ -194,7 +195,7 @@ pub struct StepperStep {
     pub loading: bool,
     /// Step state (will be set by parent based on active index).
     /// Internal use: "completed", "progress", "inactive"
-    pub state: Option<String>,
+    pub state: String,
     /// Step index (set automatically).
     pub step: Option<u32>,
 }
@@ -202,7 +203,7 @@ pub struct StepperStep {
 impl Widget for StepperStep {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         // State classes
-        let state = self.state.as_deref().unwrap_or("inactive");
+        let state = if self.state.is_empty() { "inactive" } else { &self.state };
         let state_class = match state {
             "completed" => "rinch-stepper__step--completed",
             "progress" => "rinch-stepper__step--progress",
@@ -265,17 +266,17 @@ impl Widget for StepperStep {
         // Body (label + description)
         let body = rinch_macros::rsx! { div { class: "rinch-stepper__step-body" } };
 
-        if let Some(ref label) = self.label {
+        if !self.label.is_empty() {
             let label_span = rinch_macros::rsx! { span { class: "rinch-stepper__step-label" } };
-            let label_text = __scope.create_text(label);
+            let label_text = __scope.create_text(&self.label);
             label_span.append_child(&label_text);
             body.append_child(&label_span);
         }
 
-        if let Some(ref description) = self.description {
+        if !self.description.is_empty() {
             let desc_span =
                 rinch_macros::rsx! { span { class: "rinch-stepper__step-description" } };
-            let desc_text = __scope.create_text(description);
+            let desc_text = __scope.create_text(&self.description);
             desc_span.append_child(&desc_text);
             body.append_child(&desc_span);
         }

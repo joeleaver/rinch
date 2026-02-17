@@ -70,9 +70,9 @@ impl std::str::FromStr for CloseButtonSize {
 #[derive(Default)]
 pub struct CloseButton {
     /// Button size (xs, sm, md, lg, xl).
-    pub size: Option<String>,
+    pub size: String,
     /// Border radius override (xs, sm, md, lg, xl).
-    pub radius: Option<String>,
+    pub radius: String,
     /// Whether the button is disabled.
     pub disabled: bool,
     /// Custom icon size in pixels.
@@ -99,16 +99,16 @@ impl CloseButton {
         let mut classes = vec!["rinch-close-button"];
 
         // Size class
-        let size: CloseButtonSize = self
-            .size
-            .as_ref()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_default();
+        let size: CloseButtonSize = if self.size.is_empty() {
+            CloseButtonSize::default()
+        } else {
+            self.size.parse().unwrap_or_default()
+        };
         classes.push(size.class_name());
 
         // Radius class
-        if let Some(ref r) = self.radius {
-            match r.as_str() {
+        if !self.radius.is_empty() {
+            match self.radius.as_str() {
                 "xs" => classes.push("rinch-close-button--radius-xs"),
                 "sm" => classes.push("rinch-close-button--radius-sm"),
                 "md" => classes.push("rinch-close-button--radius-md"),

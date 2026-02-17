@@ -215,7 +215,7 @@ rsx! {
 
 ### Important: Closure Must Be the Direct Expression
 
-The `{|| ...}` pattern requires the closure to be the **direct expression** inside the braces. Block expressions that evaluate to a closure are **not** treated as reactive:
+The `{|| ...}` pattern requires the closure to be the **direct expression** inside the braces. Block expressions with setup code now work:
 
 ```rust
 let count = use_signal(|| 0);
@@ -224,35 +224,21 @@ rsx! {
     // ✅ CORRECT: Closure is the direct expression
     div { style: {|| format!("width: {}px", count.get() * 10)} }
 
-    // ✅ CORRECT: Block with a single closure statement
-    div { style: {move || format!("width: {}px", count.get() * 10)} }
-
-    // ❌ WRONG: Block expression with multiple statements — NOT reactive
-    // The macro sees a multi-statement block, not a closure
+    // ✅ CORRECT: Block with setup + final closure — works!
     div { style: {
         let multiplier = 10;
         move || format!("width: {}px", count.get() * multiplier)
     }}
-}
-```
 
-If you need intermediate variables, compute them **outside** the RSX or **inside** the closure:
-
-```rust
-// Option 1: Compute outside RSX
-let multiplier = 10;
-rsx! {
-    div { style: {move || format!("width: {}px", count.get() * multiplier)} }
-}
-
-// Option 2: Compute inside the closure
-rsx! {
+    // ✅ CORRECT: Compute inside the closure
     div { style: {move || {
         let multiplier = 10;
         format!("width: {}px", count.get() * multiplier)
     }}}
 }
 ```
+
+You can compute intermediate values **outside** the RSX, **inside** the closure body, or in a setup block before the closure.
 
 ### Why Closures?
 
@@ -281,7 +267,7 @@ This approach has benefits:
 | `if`/`else` blocks | ✅ Yes | Native reactive conditional rendering |
 | `for` loops | ✅ Yes | Native reactive list rendering with keyed reconciliation |
 | `match` blocks | ✅ Yes | Native reactive multi-branch rendering |
-| `.iter().map()` | ❌ No | Use `for` loop instead |
+| `.iter().map()` | ✅ Yes | Creates a `display:contents` wrapper for the Vec |
 | Window/Menu | N/A | Native OS elements, not DOM |
 
 ## Control Flow

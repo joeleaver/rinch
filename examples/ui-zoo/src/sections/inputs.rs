@@ -125,7 +125,7 @@ pub fn inputs_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Single and multi-line text input components." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 // TextInput with labels
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
@@ -239,7 +239,7 @@ pub fn inputs_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Checkboxes, switches, and radio buttons for selecting options." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(3), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(3), spacing: "lg",
                 // Checkbox
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
@@ -376,7 +376,7 @@ pub fn inputs_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Interactive slider for selecting numeric values within a range." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Group { justify: "between",

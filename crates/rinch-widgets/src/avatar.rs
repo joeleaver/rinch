@@ -126,57 +126,62 @@ impl std::str::FromStr for AvatarVariant {
 #[derive(Debug, Default)]
 pub struct Avatar {
     /// Image source URL.
-    pub src: Option<String>,
+    pub src: String,
     /// Alt text for the image.
-    pub alt: Option<String>,
+    pub alt: String,
     /// User name (used to generate initials).
-    pub name: Option<String>,
+    pub name: String,
     /// Size (xs, sm, md, lg, xl).
-    pub size: Option<String>,
+    pub size: String,
     /// Border radius (xs, sm, md, lg, xl).
-    pub radius: Option<String>,
+    pub radius: String,
     /// Color for initials background.
-    pub color: Option<String>,
+    pub color: String,
     /// Variant (filled, light, outline).
-    pub variant: Option<String>,
+    pub variant: String,
 }
 
 impl Avatar {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-avatar"];
 
-        let size: AvatarSize = self
-            .size
-            .as_ref()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_default();
+        let size: AvatarSize = if self.size.is_empty() {
+            AvatarSize::default()
+        } else {
+            self.size.parse().unwrap_or_default()
+        };
         classes.push(size.class_name());
 
-        let radius: AvatarRadius = self
-            .radius
-            .as_ref()
-            .and_then(|r| r.parse().ok())
-            .unwrap_or_default();
+        let radius: AvatarRadius = if self.radius.is_empty() {
+            AvatarRadius::default()
+        } else {
+            self.radius.parse().unwrap_or_default()
+        };
         classes.push(radius.class_name());
 
-        let variant: AvatarVariant = self
-            .variant
-            .as_ref()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or_default();
+        let variant: AvatarVariant = if self.variant.is_empty() {
+            AvatarVariant::default()
+        } else {
+            self.variant.parse().unwrap_or_default()
+        };
         classes.push(variant.class_name());
 
         classes.join(" ")
     }
 
     fn get_initials(&self) -> Option<String> {
-        self.name.as_ref().map(|name| {
-            name.split_whitespace()
-                .filter_map(|word| word.chars().next())
-                .take(2)
-                .collect::<String>()
-                .to_uppercase()
-        })
+        if self.name.is_empty() {
+            None
+        } else {
+            Some(
+                self.name
+                    .split_whitespace()
+                    .filter_map(|word| word.chars().next())
+                    .take(2)
+                    .collect::<String>()
+                    .to_uppercase(),
+            )
+        }
     }
 }
 
@@ -185,7 +190,8 @@ impl Widget for Avatar {
         let container = rinch_macros::rsx! { div { class: "rinch-avatar" } };
         container.set_attribute("class", &self.class_string());
 
-        if let Some(c) = &self.color {
+        if !self.color.is_empty() {
+            let c = &self.color;
             let style = if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
                 format!("--rinch-avatar-color: {}", c)
             } else {
@@ -194,8 +200,9 @@ impl Widget for Avatar {
             container.set_attribute("style", &style);
         }
 
-        if let Some(src) = &self.src {
-            let alt = self.alt.as_deref().unwrap_or("");
+        if !self.src.is_empty() {
+            let src = &self.src;
+            let alt = if self.alt.is_empty() { "" } else { &self.alt };
             let img = rinch_macros::rsx! { img { class: "rinch-avatar__image" } };
             img.set_attribute("src", src);
             img.set_attribute("alt", alt);
@@ -219,14 +226,15 @@ impl Widget for Avatar {
 #[derive(Debug, Default)]
 pub struct AvatarGroup {
     /// Spacing between avatars (negative for overlap).
-    pub spacing: Option<String>,
+    pub spacing: String,
 }
 
 impl Widget for AvatarGroup {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         let container = rinch_macros::rsx! { div { class: "rinch-avatar-group" } };
 
-        if let Some(spacing) = &self.spacing {
+        if !self.spacing.is_empty() {
+            let spacing = &self.spacing;
             container.set_attribute(
                 "style",
                 &format!("--rinch-avatar-group-spacing: {}", spacing),

@@ -148,13 +148,13 @@ impl std::str::FromStr for AlertRadius {
 #[derive(Default)]
 pub struct Alert {
     /// Alert color (blue, green, yellow, red, gray, primary).
-    pub color: Option<String>,
+    pub color: String,
     /// Alert variant (light, filled, outline).
-    pub variant: Option<String>,
+    pub variant: String,
     /// Alert title (optional).
-    pub title: Option<String>,
+    pub title: String,
     /// Border radius (xs, sm, md, lg, xl).
-    pub radius: Option<String>,
+    pub radius: String,
     /// Whether to show a close button.
     pub with_close_button: bool,
     /// Icon to display (optional).
@@ -183,30 +183,30 @@ impl Alert {
         let mut classes = vec!["rinch-alert"];
 
         // Variant class
-        let variant: AlertVariant = self
-            .variant
-            .as_ref()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or_default();
+        let variant: AlertVariant = if self.variant.is_empty() {
+            AlertVariant::default()
+        } else {
+            self.variant.parse().unwrap_or_default()
+        };
         classes.push(variant.class_name());
 
         // Color class
-        let color: AlertColor = self
-            .color
-            .as_ref()
-            .and_then(|c| c.parse().ok())
-            .unwrap_or_default();
+        let color: AlertColor = if self.color.is_empty() {
+            AlertColor::default()
+        } else {
+            self.color.parse().unwrap_or_default()
+        };
         classes.push(color.class_name());
 
         // Radius class (only if non-default)
-        if let Some(ref r) = self.radius
-            && let Ok(radius) = r.parse::<AlertRadius>()
-        {
-            classes.push(radius.class_name());
+        if !self.radius.is_empty() {
+            if let Ok(radius) = self.radius.parse::<AlertRadius>() {
+                classes.push(radius.class_name());
+            }
         }
 
         // With title
-        if self.title.is_some() {
+        if !self.title.is_empty() {
             classes.push("rinch-alert--with-title");
         }
 
@@ -236,9 +236,9 @@ impl Widget for Alert {
         let wrapper = rinch_macros::rsx! { div { class: "rinch-alert__wrapper" } };
 
         // Title
-        if let Some(title) = &self.title {
+        if !self.title.is_empty() {
             let title_div = rinch_macros::rsx! { div { class: "rinch-alert__title" } };
-            let title_text = __scope.create_text(title);
+            let title_text = __scope.create_text(&self.title);
             title_div.append_child(&title_text);
             wrapper.append_child(&title_div);
         }

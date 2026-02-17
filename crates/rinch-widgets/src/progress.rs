@@ -122,11 +122,11 @@ pub struct Progress {
     /// When provided, the progress bar width updates automatically when the signal changes.
     pub value_fn: Option<ReactiveF32>,
     /// Progress bar color.
-    pub color: Option<String>,
+    pub color: String,
     /// Size (xs, sm, md, lg, xl).
-    pub size: Option<String>,
+    pub size: String,
     /// Border radius (xs, sm, md, lg, xl).
-    pub radius: Option<String>,
+    pub radius: String,
     /// Whether to show striped pattern.
     pub striped: bool,
     /// Whether to animate the stripes.
@@ -153,18 +153,18 @@ impl Progress {
         let mut classes = vec!["rinch-progress"];
 
         // Size class
-        let size: ProgressSize = self
-            .size
-            .as_ref()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_default();
+        let size: ProgressSize = if self.size.is_empty() {
+            ProgressSize::default()
+        } else {
+            self.size.parse().unwrap_or_default()
+        };
         classes.push(size.class_name());
 
         // Radius class
-        if let Some(ref r) = self.radius
-            && let Ok(radius) = r.parse::<ProgressRadius>()
-        {
-            classes.push(radius.class_name());
+        if !self.radius.is_empty() {
+            if let Ok(radius) = self.radius.parse::<ProgressRadius>() {
+                classes.push(radius.class_name());
+            }
         }
 
         classes.join(" ")
@@ -200,13 +200,16 @@ impl Widget for Progress {
         let value = current_value.clamp(0.0, 100.0);
 
         // Color style prefix
-        let color_prefix = self.color.as_ref().map(|c| {
-            if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
+        let color_prefix = if self.color.is_empty() {
+            None
+        } else {
+            let c = &self.color;
+            Some(if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
                 format!("--rinch-progress-color: {};", c)
             } else {
                 format!("--rinch-progress-color: var(--rinch-color-{}-6);", c)
-            }
-        });
+            })
+        };
 
         let container = rinch_macros::rsx! { div { class: "rinch-progress", role: "progressbar" } };
         container.set_attribute("class", &class);

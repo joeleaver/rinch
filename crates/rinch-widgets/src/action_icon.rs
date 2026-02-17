@@ -121,13 +121,13 @@ pub struct ActionIcon {
     /// Icon to display.
     pub icon: Option<TablerIcon>,
     /// Button variant (filled, light, outline, subtle, transparent, default).
-    pub variant: Option<String>,
+    pub variant: String,
     /// Button size (xs, sm, md, lg, xl).
-    pub size: Option<String>,
+    pub size: String,
     /// Color override.
-    pub color: Option<String>,
+    pub color: String,
     /// Border radius override (xs, sm, md, lg, xl).
-    pub radius: Option<String>,
+    pub radius: String,
     /// Whether the button is disabled.
     pub disabled: bool,
     /// Whether to show loading state.
@@ -142,24 +142,24 @@ impl ActionIcon {
         let mut classes = vec!["rinch-action-icon"];
 
         // Variant class
-        let variant: ActionIconVariant = self
-            .variant
-            .as_ref()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or_default();
+        let variant: ActionIconVariant = if self.variant.is_empty() {
+            ActionIconVariant::default()
+        } else {
+            self.variant.parse().unwrap_or_default()
+        };
         classes.push(variant.class_name());
 
         // Size class
-        let size: ActionIconSize = self
-            .size
-            .as_ref()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_default();
+        let size: ActionIconSize = if self.size.is_empty() {
+            ActionIconSize::default()
+        } else {
+            self.size.parse().unwrap_or_default()
+        };
         classes.push(size.class_name());
 
         // Radius class
-        if let Some(ref r) = self.radius {
-            match r.as_str() {
+        if !self.radius.is_empty() {
+            match self.radius.as_str() {
                 "xs" => classes.push("rinch-action-icon--radius-xs"),
                 "sm" => classes.push("rinch-action-icon--radius-sm"),
                 "md" => classes.push("rinch-action-icon--radius-md"),
@@ -188,7 +188,8 @@ impl Widget for ActionIcon {
         container.set_attribute("class", &self.class_string());
 
         // Color style
-        if let Some(c) = &self.color {
+        if !self.color.is_empty() {
+            let c = &self.color;
             let style = if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
                 format!("--rinch-action-icon-color: {}", c)
             } else {
@@ -214,11 +215,11 @@ impl Widget for ActionIcon {
             let loader = rinch_macros::rsx! { span { class: "rinch-action-icon__loader" } };
             container.append_child(&loader);
         } else if let Some(icon) = self.icon {
-            let size: ActionIconSize = self
-                .size
-                .as_ref()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or_default();
+            let size: ActionIconSize = if self.size.is_empty() {
+                ActionIconSize::default()
+            } else {
+                self.size.parse().unwrap_or_default()
+            };
             let icon_el = render_tabler_icon_with_options(
                 __scope,
                 icon,

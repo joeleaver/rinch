@@ -88,13 +88,13 @@ pub struct Popover {
     /// Whether the popover is open.
     pub opened: bool,
     /// Position relative to target.
-    pub position: Option<String>,
+    pub position: String,
     /// Offset from target in pixels.
     pub offset: Option<i32>,
     /// Border radius.
-    pub radius: Option<String>,
+    pub radius: String,
     /// Whether popover has shadow.
-    pub shadow: Option<String>,
+    pub shadow: String,
     /// Whether to show arrow pointing to target.
     pub with_arrow: bool,
     /// Arrow size in pixels.
@@ -106,7 +106,7 @@ pub struct Popover {
     /// Whether pressing Escape closes popover.
     pub close_on_escape: bool,
     /// Width of the dropdown.
-    pub width: Option<String>,
+    pub width: String,
     /// Z-index for the popover.
     pub z_index: Option<i32>,
     /// Whether to trap focus.
@@ -117,16 +117,16 @@ impl Default for Popover {
     fn default() -> Self {
         Self {
             opened: false,
-            position: None,
+            position: String::new(),
             offset: None,
-            radius: None,
-            shadow: None,
+            radius: String::new(),
+            shadow: String::new(),
             with_arrow: false,
             arrow_size: None,
             arrow_offset: None,
             close_on_click_outside: true,
             close_on_escape: true,
-            width: None,
+            width: String::new(),
             z_index: None,
             trap_focus: false,
         }
@@ -137,16 +137,16 @@ impl Popover {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-popover"];
 
-        if let Some(ref p) = self.position {
-            if let Ok(pos) = p.parse::<PopoverPosition>() {
+        if !self.position.is_empty() {
+            if let Ok(pos) = self.position.parse::<PopoverPosition>() {
                 classes.push(pos.class_name());
             }
         } else {
             classes.push(PopoverPosition::Bottom.class_name());
         }
 
-        if let Some(ref r) = self.radius {
-            match r.as_str() {
+        if !self.radius.is_empty() {
+            match self.radius.as_str() {
                 "xs" => classes.push("rinch-popover--radius-xs"),
                 "sm" => classes.push("rinch-popover--radius-sm"),
                 "md" => classes.push("rinch-popover--radius-md"),
@@ -156,8 +156,8 @@ impl Popover {
             }
         }
 
-        if let Some(ref s) = self.shadow {
-            match s.as_str() {
+        if !self.shadow.is_empty() {
+            match self.shadow.as_str() {
                 "xs" => classes.push("rinch-popover--shadow-xs"),
                 "sm" => classes.push("rinch-popover--shadow-sm"),
                 "md" => classes.push("rinch-popover--shadow-md"),
@@ -185,8 +185,8 @@ impl Widget for Popover {
         if let Some(offset) = self.offset {
             style_parts.push(format!("--rinch-popover-offset: {}px", offset));
         }
-        if let Some(ref w) = self.width {
-            style_parts.push(format!("--rinch-popover-width: {}", w));
+        if !self.width.is_empty() {
+            style_parts.push(format!("--rinch-popover-width: {}", self.width));
         }
         if let Some(size) = self.arrow_size {
             style_parts.push(format!("--rinch-popover-arrow-size: {}px", size));

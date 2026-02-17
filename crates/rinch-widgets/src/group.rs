@@ -126,11 +126,11 @@ impl std::str::FromStr for GroupJustify {
 #[derive(Debug, Default)]
 pub struct Group {
     /// Gap between children (xs, sm, md, lg, xl).
-    pub gap: Option<String>,
+    pub gap: String,
     /// Alignment of children (stretch, start, center, end, baseline).
-    pub align: Option<String>,
+    pub align: String,
     /// Justification of children (start, center, end, between, around).
-    pub justify: Option<String>,
+    pub justify: String,
     /// Whether items should wrap.
     pub wrap: bool,
     /// Whether children should grow to fill available space.
@@ -143,26 +143,26 @@ impl Group {
         let mut classes = vec!["rinch-group"];
 
         // Gap class
-        let gap: GroupGap = self
-            .gap
-            .as_ref()
-            .and_then(|g| g.parse().ok())
-            .unwrap_or_default();
+        let gap: GroupGap = if self.gap.is_empty() {
+            GroupGap::default()
+        } else {
+            self.gap.parse().unwrap_or_default()
+        };
         classes.push(gap.class_name());
 
         // Alignment class
-        let align: GroupAlign = self
-            .align
-            .as_ref()
-            .and_then(|a| a.parse().ok())
-            .unwrap_or_default();
+        let align: GroupAlign = if self.align.is_empty() {
+            GroupAlign::default()
+        } else {
+            self.align.parse().unwrap_or_default()
+        };
         classes.push(align.class_name());
 
         // Justification class
-        if let Some(ref justify) = self.justify
-            && let Ok(j) = justify.parse::<GroupJustify>()
-        {
-            classes.push(j.class_name());
+        if !self.justify.is_empty() {
+            if let Ok(j) = self.justify.parse::<GroupJustify>() {
+                classes.push(j.class_name());
+            }
         }
 
         // Wrap

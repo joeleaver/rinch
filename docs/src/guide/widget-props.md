@@ -2,6 +2,10 @@
 
 This page lists every prop for every widget in `rinch-widgets`. All widgets use `#[derive(Default)]` unless noted, meaning `Option<T>` defaults to `None` and `bool` defaults to `false`.
 
+**String props:** All text/string widget props are now `String` type (not `Option<String>`). Empty string `""` means "not set/use default". The RSX macro auto-converts string literals: `variant: "filled"` becomes `String::from("filled")`.
+
+**Float literals:** Float literals are auto-wrapped: `value: 30.0` becomes `Some(30.0)` for `Option<f32>` fields.
+
 **Universal props:** All widgets support `style:` and `class:` in RSX, which are applied to the widget's root DOM element. These support reactive closures `{|| expr}`.
 
 **Style shorthands:** All elements and widgets support CSS shorthand props like `w`, `h`, `m`, `p`, `maw`, etc. These expand to `set_style()` calls and compose with widget styles. Spacing scale values (`xs`, `sm`, `md`, `lg`, `xl`) auto-resolve to `var(--rinch-spacing-{value})`:

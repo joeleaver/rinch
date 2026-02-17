@@ -20,14 +20,15 @@ use rinch_core::dom::{NodeHandle, RenderScope};
 #[derive(Debug, Default)]
 pub struct Mark {
     /// Background color.
-    pub color: Option<String>,
+    pub color: String,
 }
 
 impl Widget for Mark {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         let container = rinch_macros::rsx! { mark { class: "rinch-mark" } };
 
-        if let Some(c) = &self.color {
+        if !self.color.is_empty() {
+            let c = &self.color;
             let style = if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
                 format!("--rinch-mark-color: {}", c)
             } else {

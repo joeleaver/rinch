@@ -22,7 +22,7 @@ pub fn data_display_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Visual indicators for status, labels, and counts." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(3), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(3), spacing: "lg",
                 // Badge colors
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
@@ -98,7 +98,7 @@ pub fn data_display_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "User profile images with initials fallback." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 // Avatar with names
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
@@ -164,7 +164,7 @@ pub fn data_display_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Container components for grouping related content." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 // Basic card
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",

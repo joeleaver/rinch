@@ -54,7 +54,7 @@ pub fn feedback_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Display important messages and notifications." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 // Alert colors
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
@@ -103,7 +103,7 @@ pub fn feedback_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Show completion status of tasks or processes." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 // Interactive progress
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
@@ -210,7 +210,7 @@ pub fn feedback_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Indicate loading or processing states." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 // Loader sizes
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
@@ -274,7 +274,7 @@ pub fn feedback_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Placeholder content while loading." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 // Basic skeleton
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",

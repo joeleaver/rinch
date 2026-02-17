@@ -11,9 +11,9 @@ pub struct Title {
     /// Heading level (1-6). Default is 1.
     pub order: Option<u8>,
     /// Text alignment ("left", "center", "right").
-    pub align: Option<String>,
+    pub align: String,
     /// Size override (1-6, independent of order).
-    pub size: Option<String>,
+    pub size: String,
 }
 
 impl Title {
@@ -23,11 +23,11 @@ impl Title {
 
         // Order/size class
         let order = self.order.unwrap_or(1).clamp(1, 6);
-        let size = self
-            .size
-            .as_ref()
-            .and_then(|s| s.parse::<u8>().ok())
-            .unwrap_or(order);
+        let size = if self.size.is_empty() {
+            order
+        } else {
+            self.size.parse::<u8>().unwrap_or(order)
+        };
         classes.push(match size {
             1 => "rinch-title--1",
             2 => "rinch-title--2",
@@ -38,7 +38,8 @@ impl Title {
         });
 
         // Alignment
-        if let Some(ref align) = self.align {
+        if !self.align.is_empty() {
+            let align = &self.align;
             match align.as_str() {
                 "left" => classes.push("rinch-title--left"),
                 "center" => classes.push("rinch-title--center"),

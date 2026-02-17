@@ -371,7 +371,7 @@ pub struct Tree {
     /// Tree state (from `use_tree` hook).
     pub tree: Option<UseTreeReturn>,
     /// Indentation per level (spacing scale: xs, sm, md, lg, xl or custom CSS).
-    pub level_offset: Option<String>,
+    pub level_offset: String,
     /// Whether clicking a node expands/collapses it.
     pub expand_on_click: bool,
     /// Whether clicking a node selects it.
@@ -402,7 +402,7 @@ impl Default for Tree {
         Self {
             data: Vec::new(),
             tree: None,
-            level_offset: Some("md".into()),
+            level_offset: "md".into(),
             expand_on_click: true,
             select_on_click: false,
             render_node: None,
@@ -420,7 +420,7 @@ impl Widget for Tree {
         container.set_attribute("role", "tree");
 
         // Apply level offset CSS variable
-        let offset = self.level_offset.as_deref().unwrap_or("md");
+        let offset = if self.level_offset.is_empty() { "md" } else { &self.level_offset };
         let offset_value = match offset {
             "xs" => "var(--rinch-spacing-xs)",
             "sm" => "var(--rinch-spacing-sm)",

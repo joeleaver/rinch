@@ -56,11 +56,11 @@ impl std::str::FromStr for SkeletonRadius {
 #[derive(Debug)]
 pub struct Skeleton {
     /// Width (CSS value).
-    pub width: Option<String>,
+    pub width: String,
     /// Height (CSS value).
-    pub height: Option<String>,
+    pub height: String,
     /// Border radius (xs, sm, md, lg, xl).
-    pub radius: Option<String>,
+    pub radius: String,
     /// Whether to render as a circle.
     pub circle: bool,
     /// Whether to show animation.
@@ -72,9 +72,9 @@ pub struct Skeleton {
 impl Default for Skeleton {
     fn default() -> Self {
         Self {
-            width: None,
-            height: None,
-            radius: None,
+            width: String::new(),
+            height: String::new(),
+            radius: String::new(),
             circle: false,
             animate: true,
             visible: true,
@@ -88,10 +88,10 @@ impl Skeleton {
 
         if self.circle {
             classes.push("rinch-skeleton--circle");
-        } else if let Some(ref r) = self.radius
-            && let Ok(radius) = r.parse::<SkeletonRadius>()
-        {
-            classes.push(radius.class_name());
+        } else if !self.radius.is_empty() {
+            if let Ok(radius) = self.radius.parse::<SkeletonRadius>() {
+                classes.push(radius.class_name());
+            }
         }
 
         if self.animate {
@@ -117,10 +117,12 @@ impl Widget for Skeleton {
         container.set_attribute("class", &self.class_string());
 
         let mut styles = Vec::new();
-        if let Some(ref w) = self.width {
+        if !self.width.is_empty() {
+            let w = &self.width;
             styles.push(format!("width: {}", w));
         }
-        if let Some(ref h) = self.height {
+        if !self.height.is_empty() {
+            let h = &self.height;
             styles.push(format!("height: {}", h));
             if self.circle {
                 styles.push(format!("width: {}", h)); // Circle needs equal width

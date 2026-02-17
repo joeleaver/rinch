@@ -67,19 +67,19 @@ pub struct Pagination {
     /// Number of pages at the start and end.
     pub boundaries: u32,
     /// Size variant (xs, sm, md, lg, xl).
-    pub size: Option<String>,
+    pub size: String,
     /// Border radius.
-    pub radius: Option<String>,
+    pub radius: String,
     /// Whether to show first/last buttons.
     pub with_edges: bool,
     /// Whether to show prev/next controls.
     pub with_controls: bool,
     /// Color for active page.
-    pub color: Option<String>,
+    pub color: String,
     /// Whether pagination is disabled.
     pub disabled: bool,
     /// Gap between items.
-    pub gap: Option<String>,
+    pub gap: String,
     /// Callback when page changes - receives the new page number.
     pub onchange: Option<ValueCallback<u32>>,
 }
@@ -91,13 +91,13 @@ impl Default for Pagination {
             value: 1,
             siblings: 1,
             boundaries: 1,
-            size: None,
-            radius: None,
+            size: String::new(),
+            radius: String::new(),
             with_edges: false,
             with_controls: true,
-            color: None,
+            color: String::new(),
             disabled: false,
-            gap: None,
+            gap: String::new(),
             onchange: None,
         }
     }
@@ -107,14 +107,14 @@ impl Pagination {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-pagination"];
 
-        if let Some(ref s) = self.size
-            && let Ok(size) = s.parse::<PaginationSize>()
+        if !self.size.is_empty()
+            && let Ok(size) = self.size.parse::<PaginationSize>()
         {
             classes.push(size.class_name());
         }
 
-        if let Some(ref r) = self.radius {
-            match r.as_str() {
+        if !self.radius.is_empty() {
+            match self.radius.as_str() {
                 "xs" => classes.push("rinch-pagination--radius-xs"),
                 "sm" => classes.push("rinch-pagination--radius-sm"),
                 "md" => classes.push("rinch-pagination--radius-md"),
@@ -215,7 +215,8 @@ enum PageItem {
 impl Widget for Pagination {
     fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
         let mut style_parts = Vec::new();
-        if let Some(ref c) = self.color {
+        if !self.color.is_empty() {
+            let c = &self.color;
             if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
                 style_parts.push(format!("--rinch-pagination-color: {}", c));
             } else {
@@ -225,8 +226,8 @@ impl Widget for Pagination {
                 ));
             }
         }
-        if let Some(ref g) = self.gap {
-            style_parts.push(format!("gap: {}", g));
+        if !self.gap.is_empty() {
+            style_parts.push(format!("gap: {}", self.gap));
         }
 
         let nav = rinch_macros::rsx! { nav { class: "rinch-pagination" } };

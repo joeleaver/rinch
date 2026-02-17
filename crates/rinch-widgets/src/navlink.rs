@@ -82,20 +82,20 @@ impl std::str::FromStr for NavLinkVariant {
 #[derive(Default)]
 pub struct NavLink {
     /// Link label text.
-    pub label: Option<String>,
+    pub label: String,
     /// Link description (secondary text).
-    pub description: Option<String>,
+    pub description: String,
     /// Link href.
-    pub href: Option<String>,
+    pub href: String,
     /// Whether link is active (static, for initial render or non-reactive use).
     pub active: bool,
     /// Reactive active getter - use this for fine-grained updates.
     /// When provided, the navlink class updates automatically when the signal changes.
     pub active_fn: Option<ReactiveBool>,
     /// Visual variant (default, light, filled, subtle).
-    pub variant: Option<String>,
+    pub variant: String,
     /// Color when active.
-    pub color: Option<String>,
+    pub color: String,
     /// Left section icon.
     pub left_section: Option<TablerIcon>,
     /// Right section icon.
@@ -103,7 +103,7 @@ pub struct NavLink {
     /// Whether link is disabled.
     pub disabled: bool,
     /// Whether this navlink has nested children (makes it expandable).
-    pub children_offset: Option<String>,
+    pub children_offset: String,
     /// Whether children are visible (expanded).
     pub opened: bool,
     /// Default opened state (uncontrolled).
@@ -141,8 +141,8 @@ impl NavLink {
     fn base_class_string(&self) -> String {
         let mut classes = vec!["rinch-navlink"];
 
-        if let Some(ref v) = self.variant {
-            if let Ok(variant) = v.parse::<NavLinkVariant>() {
+        if !self.variant.is_empty() {
+            if let Ok(variant) = self.variant.parse::<NavLinkVariant>() {
                 classes.push(variant.class_name());
             }
         } else {
@@ -186,15 +186,16 @@ impl Widget for NavLink {
 
         // Build style parts
         let mut style_parts = Vec::new();
-        if let Some(ref c) = self.color {
+        if !self.color.is_empty() {
+            let c = &self.color;
             if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
                 style_parts.push(format!("--rinch-navlink-color: {}", c));
             } else {
                 style_parts.push(format!("--rinch-navlink-color: var(--rinch-color-{}-6)", c));
             }
         }
-        if let Some(ref offset) = self.children_offset {
-            style_parts.push(format!("--rinch-navlink-children-offset: {}", offset));
+        if !self.children_offset.is_empty() {
+            style_parts.push(format!("--rinch-navlink-children-offset: {}", self.children_offset));
         }
 
         // Create wrapper element
@@ -215,27 +216,26 @@ impl Widget for NavLink {
         }
 
         // Body with label and optional description
-        if self.description.is_some() {
+        if !self.description.is_empty() {
             let body = rinch_macros::rsx! { div { class: "rinch-navlink__body" } };
 
-            if let Some(ref label) = self.label {
+            if !self.label.is_empty() {
                 let label_span = rinch_macros::rsx! { span { class: "rinch-navlink__label" } };
-                let label_text = __scope.create_text(label);
+                let label_text = __scope.create_text(&self.label);
                 label_span.append_child(&label_text);
                 body.append_child(&label_span);
             }
 
-            if let Some(ref desc) = self.description {
-                let desc_span = rinch_macros::rsx! { span { class: "rinch-navlink__description" } };
-                let desc_text = __scope.create_text(desc);
-                desc_span.append_child(&desc_text);
-                body.append_child(&desc_span);
-            }
+            let desc = &self.description;
+            let desc_span = rinch_macros::rsx! { span { class: "rinch-navlink__description" } };
+            let desc_text = __scope.create_text(desc);
+            desc_span.append_child(&desc_text);
+            body.append_child(&desc_span);
 
             inner.append_child(&body);
-        } else if let Some(ref label) = self.label {
+        } else if !self.label.is_empty() {
             let label_span = rinch_macros::rsx! { span { class: "rinch-navlink__label" } };
-            let label_text = __scope.create_text(label);
+            let label_text = __scope.create_text(&self.label);
             label_span.append_child(&label_text);
             inner.append_child(&label_span);
         }
@@ -272,7 +272,8 @@ impl Widget for NavLink {
         }
 
         // Build the link or button element
-        let link_or_button = if let Some(ref href) = self.href {
+        let link_or_button = if !self.href.is_empty() {
+            let href = &self.href;
             let a = rinch_macros::rsx! { a { class: "rinch-navlink" } };
             a.set_attribute("href", href);
 

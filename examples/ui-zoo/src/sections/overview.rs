@@ -19,7 +19,7 @@ pub fn overview_section() -> NodeHandle {
             Space { h: "xl" }
 
             // Stats cards
-            SimpleGrid { cols: Some(4), spacing: Some("md".to_string()),
+            SimpleGrid { cols: Some(4), spacing: "md",
                 Paper { p: "xl", radius: "md", shadow: "sm",
                     Center {
                         Stack { align: "center", gap: "xs",
@@ -60,7 +60,7 @@ pub fn overview_section() -> NodeHandle {
             Title { order: 3, "Key Features" }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Group { gap: "sm",
@@ -136,7 +136,7 @@ pub fn overview_section() -> NodeHandle {
             Title { order: 3, "Getting Started" }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
                         Text { weight: "600", "1. Add to Cargo.toml" }

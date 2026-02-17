@@ -223,7 +223,7 @@ pub fn tree_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Compare different indentation levels side by side." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(4), spacing: Some("md".to_string()),
+            SimpleGrid { cols: Some(4), spacing: "md",
                 Paper { p: "md", radius: "md", with_border: true,
                     Stack { gap: "sm",
                         Text { weight: "600", size: "sm", "xs" }
@@ -616,12 +616,11 @@ fn level_offset_data() -> Vec<TreeNodeData> {
 fn level_offset_demo(tree: UseTreeReturn, offset: &str) -> NodeHandle {
     let data = level_offset_data();
 
-    let offset_owned = offset.to_string();
     rsx! {
         Tree {
             data: data,
             tree: Some(tree),
-            level_offset: Some(offset_owned),
+            level_offset: offset.to_string(),
         }
     }
 }

@@ -130,11 +130,11 @@ pub struct Drawer {
     /// When provided, the drawer updates automatically when the signal changes.
     pub opened_fn: Option<ReactiveBool>,
     /// Drawer title.
-    pub title: Option<String>,
+    pub title: String,
     /// Position (left, right, top, bottom).
-    pub position: Option<String>,
+    pub position: String,
     /// Size variant (xs, sm, md, lg, xl, full).
-    pub size: Option<String>,
+    pub size: String,
     /// Whether to show overlay backdrop.
     pub with_overlay: bool,
     /// Overlay opacity (0-1).
@@ -146,7 +146,7 @@ pub struct Drawer {
     /// Whether to show close button.
     pub with_close_button: bool,
     /// Padding inside drawer.
-    pub padding: Option<String>,
+    pub padding: String,
     /// Z-index for the drawer.
     pub z_index: Option<i32>,
     /// Whether to lock scroll when open.
@@ -184,15 +184,15 @@ impl Default for Drawer {
         Self {
             opened: false,
             opened_fn: None,
-            title: None,
-            position: None,
-            size: None,
+            title: String::new(),
+            position: String::new(),
+            size: String::new(),
             with_overlay: true,
             overlay_opacity: None,
             close_on_click_outside: true,
             close_on_escape: true,
             with_close_button: true,
-            padding: None,
+            padding: String::new(),
             z_index: None,
             lock_scroll: true,
             trap_focus: true,
@@ -209,18 +209,18 @@ impl Drawer {
     pub fn class_string_with_opened(&self, opened: bool) -> String {
         let mut classes = vec!["rinch-drawer"];
 
-        if let Some(ref p) = self.position {
-            if let Ok(pos) = p.parse::<DrawerPosition>() {
+        if !self.position.is_empty() {
+            if let Ok(pos) = self.position.parse::<DrawerPosition>() {
                 classes.push(pos.class_name());
             }
         } else {
             classes.push(DrawerPosition::Left.class_name());
         }
 
-        if let Some(ref s) = self.size
-            && let Ok(size) = s.parse::<DrawerSize>()
-        {
-            classes.push(size.class_name());
+        if !self.size.is_empty() {
+            if let Ok(size) = self.size.parse::<DrawerSize>() {
+                classes.push(size.class_name());
+            }
         }
 
         if opened {
@@ -248,7 +248,11 @@ impl Widget for Drawer {
             .map(|o| format!("--rinch-drawer-overlay-opacity: {}", o));
 
         // Build content styles
-        let content_style = self.padding.as_ref().map(|p| format!("padding: {}", p));
+        let content_style = if self.padding.is_empty() {
+            None
+        } else {
+            Some(format!("padding: {}", self.padding))
+        };
 
         // Build close button handler
         let close_handler_id = self.onclose.as_ref().map(|cb| {
@@ -287,13 +291,13 @@ impl Widget for Drawer {
         drawer_div.set_attribute("class", &class);
 
         // Header section with title and close button inside
-        if self.title.is_some() || self.with_close_button {
+        if !self.title.is_empty() || self.with_close_button {
             let header = rinch_macros::rsx! { div { class: "rinch-drawer__header" } };
 
             // Title takes up remaining space
-            if let Some(ref t) = self.title {
+            if !self.title.is_empty() {
                 let title_el = rinch_macros::rsx! { h2 { class: "rinch-drawer__title" } };
-                let title_text = __scope.create_text(t);
+                let title_text = __scope.create_text(&self.title);
                 title_el.append_child(&title_text);
                 header.append_child(&title_el);
             } else {

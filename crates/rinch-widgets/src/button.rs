@@ -92,11 +92,11 @@ impl std::str::FromStr for ButtonSize {
 #[derive(Debug, Default)]
 pub struct Button {
     /// Button variant (filled, outline, light, subtle, default).
-    pub variant: Option<String>,
+    pub variant: String,
     /// Button size (xs, sm, md, lg, xl).
-    pub size: Option<String>,
+    pub size: String,
     /// Override the primary color (e.g., "red", "green").
-    pub color: Option<String>,
+    pub color: String,
     /// Whether the button is disabled.
     pub disabled: bool,
     /// Whether the button shows a loading spinner.
@@ -104,7 +104,7 @@ pub struct Button {
     /// Whether the button should take full width.
     pub full_width: bool,
     /// Override border radius.
-    pub radius: Option<String>,
+    pub radius: String,
     /// Callback when button is clicked.
     pub onclick: Option<WidgetCallback>,
 }
@@ -115,19 +115,19 @@ impl Button {
         let mut classes = vec!["rinch-button"];
 
         // Size class
-        let size: ButtonSize = self
-            .size
-            .as_ref()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_default();
+        let size: ButtonSize = if self.size.is_empty() {
+            ButtonSize::default()
+        } else {
+            self.size.parse().unwrap_or_default()
+        };
         classes.push(size.class_name());
 
         // Variant class
-        let variant: ButtonVariant = self
-            .variant
-            .as_ref()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or_default();
+        let variant: ButtonVariant = if self.variant.is_empty() {
+            ButtonVariant::default()
+        } else {
+            self.variant.parse().unwrap_or_default()
+        };
         classes.push(variant.class_name());
 
         // Full width
@@ -146,13 +146,13 @@ impl Button {
         }
 
         // Custom color
-        if self.color.is_some() {
+        if !self.color.is_empty() {
             classes.push("rinch-button--colored");
         }
 
         // Custom radius
-        if let Some(ref r) = self.radius {
-            match r.as_str() {
+        if !self.radius.is_empty() {
+            match self.radius.as_str() {
                 "xs" => classes.push("rinch-button--radius-xs"),
                 "sm" => classes.push("rinch-button--radius-sm"),
                 "md" => classes.push("rinch-button--radius-md"),
@@ -167,16 +167,17 @@ impl Button {
 
     /// Generate inline style for custom color.
     pub fn style_string(&self) -> Option<String> {
-        self.color.as_ref().map(|c| {
-            // Map color name to the theme color CSS variables
-            format!(
+        if self.color.is_empty() {
+            None
+        } else {
+            Some(format!(
                 "--rinch-button-color: var(--rinch-color-{}-6); \
                  --rinch-button-color-hover: var(--rinch-color-{}-7); \
                  --rinch-button-color-light: var(--rinch-color-{}-0); \
                  --rinch-button-color-light-hover: var(--rinch-color-{}-1);",
-                c, c, c, c
-            )
-        })
+                self.color, self.color, self.color, self.color
+            ))
+        }
     }
 }
 

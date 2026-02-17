@@ -86,15 +86,15 @@ pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 /// ```
 pub struct PasswordInput {
     /// Input label.
-    pub label: Option<String>,
+    pub label: String,
     /// Description text.
-    pub description: Option<String>,
+    pub description: String,
     /// Error message.
-    pub error: Option<String>,
+    pub error: String,
     /// Placeholder text.
-    pub placeholder: Option<String>,
+    pub placeholder: String,
     /// Current value (static, for initial render or non-reactive use).
-    pub value: Option<String>,
+    pub value: String,
     /// Reactive value getter - use this for fine-grained updates.
     /// When provided, the mask updates automatically when the signal changes.
     pub value_fn: Option<ReactiveString>,
@@ -109,9 +109,9 @@ pub struct PasswordInput {
     /// Whether to autofocus this input.
     pub autofocus: bool,
     /// Size (xs, sm, md, lg, xl).
-    pub size: Option<String>,
+    pub size: String,
     /// Border radius (xs, sm, md, lg, xl).
-    pub radius: Option<String>,
+    pub radius: String,
     /// Whether to show the visibility toggle button.
     pub toggle_visibility: bool,
     /// Callback when visibility toggle is clicked.
@@ -127,7 +127,7 @@ impl std::fmt::Debug for PasswordInput {
             .field("description", &self.description)
             .field("error", &self.error)
             .field("placeholder", &self.placeholder)
-            .field("value", &self.value.as_ref().map(|_| "[REDACTED]"))
+            .field("value", &if self.value.is_empty() { "" } else { "[REDACTED]" })
             .field("value_fn", &self.value_fn.as_ref().map(|_| "<reactive>"))
             .field("visible", &self.visible)
             .field(
@@ -149,19 +149,19 @@ impl std::fmt::Debug for PasswordInput {
 impl Default for PasswordInput {
     fn default() -> Self {
         Self {
-            label: None,
-            description: None,
-            error: None,
-            placeholder: None,
-            value: None,
+            label: String::new(),
+            description: String::new(),
+            error: String::new(),
+            placeholder: String::new(),
+            value: String::new(),
             value_fn: None,
             visible: false,
             visible_fn: None,
             disabled: false,
             required: false,
             autofocus: false,
-            size: None,
-            radius: None,
+            size: String::new(),
+            radius: String::new(),
             toggle_visibility: true,
             ontoggle: None,
             oninput: None,
@@ -175,14 +175,14 @@ impl PasswordInput {
         let mut classes = vec!["rinch-password-input"];
 
         // Size class
-        let size: PasswordInputSize = self
-            .size
-            .as_ref()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_default();
+        let size: PasswordInputSize = if self.size.is_empty() {
+            PasswordInputSize::default()
+        } else {
+            self.size.parse().unwrap_or_default()
+        };
         classes.push(size.class_name());
 
-        if self.error.is_some() {
+        if !self.error.is_empty() {
             classes.push("rinch-password-input--error");
         }
         if self.disabled {
@@ -209,7 +209,7 @@ impl Widget for PasswordInput {
         let initial_password = if let Some(ref f) = self.value_fn {
             f()
         } else {
-            self.value.clone().unwrap_or_default()
+            self.value.clone()
         };
 
         let initial_visible = if let Some(ref f) = self.visible_fn {
@@ -229,7 +229,8 @@ impl Widget for PasswordInput {
         container.set_attribute("class", &container_class);
 
         // Label
-        if let Some(label_text) = &self.label {
+        if !self.label.is_empty() {
+            let label_text = &self.label;
             let required_mark = if self.required { " *" } else { "" };
             let label = rinch_macros::rsx! { label { class: "rinch-password-input__label" } };
             let label_text_node = __scope.create_text(&format!("{}{}", label_text, required_mark));
@@ -238,7 +239,8 @@ impl Widget for PasswordInput {
         }
 
         // Description
-        if let Some(desc) = &self.description {
+        if !self.description.is_empty() {
+            let desc = &self.description;
             let desc_div =
                 rinch_macros::rsx! { div { class: "rinch-password-input__description" } };
             let desc_text = __scope.create_text(desc);
@@ -285,8 +287,8 @@ impl Widget for PasswordInput {
             ),
         );
 
-        if let Some(placeholder) = &self.placeholder {
-            input.set_attribute("placeholder", &html_escape(placeholder));
+        if !self.placeholder.is_empty() {
+            input.set_attribute("placeholder", &html_escape(&self.placeholder));
         }
         if self.disabled {
             input.set_attribute("disabled", "");
@@ -347,7 +349,8 @@ impl Widget for PasswordInput {
         container.append_child(&wrapper);
 
         // Error message
-        if let Some(err) = &self.error {
+        if !self.error.is_empty() {
+            let err = &self.error;
             let err_div = rinch_macros::rsx! { div { class: "rinch-password-input__error" } };
             let err_text = __scope.create_text(err);
             err_div.append_child(&err_text);

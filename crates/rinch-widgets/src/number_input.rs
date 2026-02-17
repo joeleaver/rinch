@@ -59,13 +59,13 @@ impl std::str::FromStr for NumberInputSize {
 #[derive(Default)]
 pub struct NumberInput {
     /// Input label.
-    pub label: Option<String>,
+    pub label: String,
     /// Description text.
-    pub description: Option<String>,
+    pub description: String,
     /// Error message.
-    pub error: Option<String>,
+    pub error: String,
     /// Placeholder text.
-    pub placeholder: Option<String>,
+    pub placeholder: String,
     /// Current value.
     pub value: Option<f64>,
     /// Default value.
@@ -79,9 +79,9 @@ pub struct NumberInput {
     /// Number of decimal places.
     pub decimal_scale: Option<u32>,
     /// Prefix text (e.g., "$").
-    pub prefix: Option<String>,
+    pub prefix: String,
     /// Suffix text (e.g., "kg").
-    pub suffix: Option<String>,
+    pub suffix: String,
     /// Whether the input is disabled.
     pub disabled: bool,
     /// Whether to hide the controls.
@@ -89,9 +89,9 @@ pub struct NumberInput {
     /// Whether the input is required.
     pub required: bool,
     /// Size (xs, sm, md, lg, xl).
-    pub size: Option<String>,
+    pub size: String,
     /// Border radius (xs, sm, md, lg, xl).
-    pub radius: Option<String>,
+    pub radius: String,
     /// Callback when increment button is clicked.
     pub onincrement: Option<WidgetCallback>,
     /// Callback when decrement button is clicked.
@@ -139,14 +139,14 @@ impl NumberInput {
         let mut classes = vec!["rinch-number-input"];
 
         // Size class
-        let size: NumberInputSize = self
-            .size
-            .as_ref()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_default();
+        let size: NumberInputSize = if self.size.is_empty() {
+            NumberInputSize::default()
+        } else {
+            self.size.parse().unwrap_or_default()
+        };
         classes.push(size.class_name());
 
-        if self.error.is_some() {
+        if !self.error.is_empty() {
             classes.push("rinch-number-input--error");
         }
         if self.disabled {
@@ -166,7 +166,8 @@ impl Widget for NumberInput {
         container.set_attribute("class", &self.class_string());
 
         // Label
-        if let Some(label_text) = &self.label {
+        if !self.label.is_empty() {
+            let label_text = &self.label;
             let required_mark = if self.required { " *" } else { "" };
             let label = rinch_macros::rsx! { label { class: "rinch-number-input__label" } };
             let label_text_node = __scope.create_text(&format!("{}{}", label_text, required_mark));
@@ -175,7 +176,8 @@ impl Widget for NumberInput {
         }
 
         // Description
-        if let Some(desc) = &self.description {
+        if !self.description.is_empty() {
+            let desc = &self.description;
             let desc_div = rinch_macros::rsx! { div { class: "rinch-number-input__description" } };
             let desc_text = __scope.create_text(desc);
             desc_div.append_child(&desc_text);
@@ -186,7 +188,8 @@ impl Widget for NumberInput {
         let wrapper = rinch_macros::rsx! { div { class: "rinch-number-input__wrapper" } };
 
         // Prefix
-        if let Some(prefix) = &self.prefix {
+        if !self.prefix.is_empty() {
+            let prefix = &self.prefix;
             let prefix_span = rinch_macros::rsx! { span { class: "rinch-number-input__prefix" } };
             let prefix_text = __scope.create_text(prefix);
             prefix_span.append_child(&prefix_text);
@@ -211,8 +214,8 @@ impl Widget for NumberInput {
         } else {
             input.set_attribute("step", "any");
         }
-        if let Some(placeholder) = &self.placeholder {
-            input.set_attribute("placeholder", placeholder);
+        if !self.placeholder.is_empty() {
+            input.set_attribute("placeholder", &self.placeholder);
         }
         if self.disabled {
             input.set_attribute("disabled", "");
@@ -233,7 +236,8 @@ impl Widget for NumberInput {
         }
 
         // Suffix
-        if let Some(suffix) = &self.suffix {
+        if !self.suffix.is_empty() {
+            let suffix = &self.suffix;
             let suffix_span = rinch_macros::rsx! { span { class: "rinch-number-input__suffix" } };
             let suffix_text = __scope.create_text(suffix);
             suffix_span.append_child(&suffix_text);
@@ -290,7 +294,8 @@ impl Widget for NumberInput {
         container.append_child(&wrapper);
 
         // Error message
-        if let Some(err) = &self.error {
+        if !self.error.is_empty() {
+            let err = &self.error;
             let err_div = rinch_macros::rsx! { div { class: "rinch-number-input__error" } };
             let err_text = __scope.create_text(err);
             err_div.append_child(&err_text);

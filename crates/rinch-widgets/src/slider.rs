@@ -90,15 +90,15 @@ pub struct Slider {
     /// Step increment.
     pub step: Option<f64>,
     /// Size (xs, sm, md, lg, xl).
-    pub size: Option<String>,
+    pub size: String,
     /// Color.
-    pub color: Option<String>,
+    pub color: String,
     /// Border radius.
-    pub radius: Option<String>,
+    pub radius: String,
     /// Whether the slider is disabled.
     pub disabled: bool,
     /// Label format (e.g., "{value}%").
-    pub label: Option<String>,
+    pub label: String,
     /// Whether to show the label on hover.
     pub show_label_on_hover: bool,
     /// Label always visible.
@@ -126,14 +126,15 @@ impl Slider {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-slider"];
 
-        let size: SliderSize = self
-            .size
-            .as_ref()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_default();
+        let size: SliderSize = if self.size.is_empty() {
+            SliderSize::default()
+        } else {
+            self.size.parse().unwrap_or_default()
+        };
         classes.push(size.class_name());
 
-        if let Some(ref r) = self.radius {
+        if !self.radius.is_empty() {
+            let r = &self.radius;
             classes.push(match r.as_str() {
                 "xs" => "rinch-slider--radius-xs",
                 "sm" => "rinch-slider--radius-sm",
@@ -180,7 +181,8 @@ impl Widget for Slider {
 
         let mut style_parts = Vec::new();
 
-        if let Some(ref c) = self.color {
+        if !self.color.is_empty() {
+            let c = &self.color;
             if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
                 style_parts.push(format!("--rinch-slider-color: {}", c));
             } else {
@@ -212,12 +214,12 @@ impl Widget for Slider {
         thumb_wrapper.set_style("left", &format!("{}%", percentage));
 
         // Add label if needed
-        if self.label.is_some() || self.show_label_on_hover || self.label_always_on {
-            let label_text = self
-                .label
-                .as_ref()
-                .map(|l| l.replace("{value}", &format!("{}", value)))
-                .unwrap_or_else(|| format!("{}", value));
+        if !self.label.is_empty() || self.show_label_on_hover || self.label_always_on {
+            let label_text = if self.label.is_empty() {
+                format!("{}", value)
+            } else {
+                self.label.replace("{value}", &format!("{}", value))
+            };
 
             let label = scope.create_element("div");
             label.set_attribute("class", "rinch-slider__label");

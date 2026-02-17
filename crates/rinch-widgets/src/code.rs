@@ -11,7 +11,7 @@ pub struct Code {
     /// Whether to display as a block (pre) instead of inline.
     pub block: bool,
     /// Color variant ("primary" for primary color).
-    pub color: Option<String>,
+    pub color: String,
 }
 
 impl Code {
@@ -23,9 +23,7 @@ impl Code {
             classes.push("rinch-code--block");
         }
 
-        if let Some(ref color) = self.color
-            && color == "primary"
-        {
+        if !self.color.is_empty() && self.color == "primary" {
             classes.push("rinch-code--primary");
         }
 

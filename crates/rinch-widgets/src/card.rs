@@ -59,11 +59,11 @@ impl std::str::FromStr for CardPadding {
 #[derive(Debug, Default)]
 pub struct Card {
     /// Shadow size (xs, sm, md, lg, xl).
-    pub shadow: Option<String>,
+    pub shadow: String,
     /// Padding size (xs, sm, md, lg, xl).
-    pub padding: Option<String>,
+    pub padding: String,
     /// Border radius (xs, sm, md, lg, xl).
-    pub radius: Option<String>,
+    pub radius: String,
     /// Whether to show a border.
     pub with_border: bool,
 }
@@ -72,8 +72,8 @@ impl Card {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-card"];
 
-        if let Some(ref shadow) = self.shadow {
-            classes.push(match shadow.as_str() {
+        if !self.shadow.is_empty() {
+            classes.push(match self.shadow.as_str() {
                 "xs" => "rinch-card--shadow-xs",
                 "sm" => "rinch-card--shadow-sm",
                 "md" => "rinch-card--shadow-md",
@@ -83,15 +83,15 @@ impl Card {
             });
         }
 
-        let padding: CardPadding = self
-            .padding
-            .as_ref()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or_default();
+        let padding: CardPadding = if self.padding.is_empty() {
+            CardPadding::default()
+        } else {
+            self.padding.parse().unwrap_or_default()
+        };
         classes.push(padding.class_name());
 
-        if let Some(ref radius) = self.radius {
-            classes.push(match radius.as_str() {
+        if !self.radius.is_empty() {
+            classes.push(match self.radius.as_str() {
                 "xs" => "rinch-card--radius-xs",
                 "sm" => "rinch-card--radius-sm",
                 "md" => "rinch-card--radius-md",

@@ -90,15 +90,15 @@ impl std::str::FromStr for HoverCardPosition {
 #[derive(Debug, Default)]
 pub struct HoverCard {
     /// Position relative to target.
-    pub position: Option<String>,
+    pub position: String,
     /// Offset from target.
     pub offset: Option<i32>,
     /// Border radius.
-    pub radius: Option<String>,
+    pub radius: String,
     /// Shadow size.
-    pub shadow: Option<String>,
+    pub shadow: String,
     /// Width of the dropdown.
-    pub width: Option<String>,
+    pub width: String,
     /// Open delay in ms (CSS transition).
     pub open_delay: Option<u32>,
     /// Close delay in ms (CSS transition).
@@ -111,16 +111,16 @@ impl HoverCard {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-hover-card"];
 
-        if let Some(ref p) = self.position {
-            if let Ok(pos) = p.parse::<HoverCardPosition>() {
+        if !self.position.is_empty() {
+            if let Ok(pos) = self.position.parse::<HoverCardPosition>() {
                 classes.push(pos.class_name());
             }
         } else {
             classes.push(HoverCardPosition::Bottom.class_name());
         }
 
-        if let Some(ref r) = self.radius {
-            match r.as_str() {
+        if !self.radius.is_empty() {
+            match self.radius.as_str() {
                 "xs" => classes.push("rinch-hover-card--radius-xs"),
                 "sm" => classes.push("rinch-hover-card--radius-sm"),
                 "md" => classes.push("rinch-hover-card--radius-md"),
@@ -130,8 +130,8 @@ impl HoverCard {
             }
         }
 
-        if let Some(ref s) = self.shadow {
-            match s.as_str() {
+        if !self.shadow.is_empty() {
+            match self.shadow.as_str() {
                 "xs" => classes.push("rinch-hover-card--shadow-xs"),
                 "sm" => classes.push("rinch-hover-card--shadow-sm"),
                 "md" => classes.push("rinch-hover-card--shadow-md"),
@@ -155,7 +155,8 @@ impl Widget for HoverCard {
         if let Some(offset) = self.offset {
             style_parts.push(format!("--rinch-hover-card-offset: {}px", offset));
         }
-        if let Some(ref w) = self.width {
+        if !self.width.is_empty() {
+            let w = &self.width;
             style_parts.push(format!("--rinch-hover-card-width: {}", w));
         }
         if let Some(delay) = self.open_delay {

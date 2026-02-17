@@ -78,7 +78,7 @@ pub fn typography_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Size, weight, color, and alignment options for text." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 // Sizes
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
@@ -154,7 +154,7 @@ pub fn typography_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Inline and block elements for code, keyboard shortcuts, and emphasis." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 // Code
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
@@ -234,7 +234,7 @@ pub fn typography_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Block-level typography components for structured content." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 // Blockquote
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",

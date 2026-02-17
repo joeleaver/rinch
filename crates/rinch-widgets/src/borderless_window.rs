@@ -93,9 +93,9 @@ impl std::str::FromStr for WindowRadius {
 /// close_current_window) from the `rinch` crate.
 pub struct BorderlessWindow {
     /// Window title displayed in the titlebar.
-    pub title: Option<String>,
+    pub title: String,
     /// Corner radius (none, xs, sm, md, lg, xl). Default: md.
-    pub radius: Option<String>,
+    pub radius: String,
     /// Whether to show the minimize button. Default: true.
     pub show_minimize: bool,
     /// Whether to show the maximize button. Default: true.
@@ -134,8 +134,8 @@ impl std::fmt::Debug for BorderlessWindow {
 impl Default for BorderlessWindow {
     fn default() -> Self {
         Self {
-            title: None,
-            radius: None,
+            title: String::new(),
+            radius: String::new(),
             show_minimize: true,
             show_maximize: true,
             show_close: true,
@@ -154,8 +154,8 @@ impl BorderlessWindow {
         let mut classes = vec!["rinch-borderlesswindow"];
 
         // Radius
-        if let Some(ref radius) = self.radius {
-            if let Ok(r) = radius.parse::<WindowRadius>() {
+        if !self.radius.is_empty() {
+            if let Ok(r) = self.radius.parse::<WindowRadius>() {
                 classes.push(r.class_name());
             }
         } else {
@@ -191,8 +191,8 @@ impl Widget for BorderlessWindow {
         // Title
         let title_el = __scope.create_element("div");
         title_el.set_attribute("class", "rinch-borderlesswindow__title");
-        if let Some(ref title) = self.title {
-            let title_text = __scope.create_text(title);
+        if !self.title.is_empty() {
+            let title_text = __scope.create_text(&self.title);
             title_el.append_child(&title_text);
         }
         titlebar.append_child(&title_el);

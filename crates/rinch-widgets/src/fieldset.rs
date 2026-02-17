@@ -9,11 +9,11 @@ use rinch_core::dom::{NodeHandle, RenderScope};
 #[derive(Debug, Default)]
 pub struct Fieldset {
     /// Legend text.
-    pub legend: Option<String>,
+    pub legend: String,
     /// Variant ("default", "filled", "unstyled").
-    pub variant: Option<String>,
+    pub variant: String,
     /// Size (xs, sm, md, lg, xl).
-    pub size: Option<String>,
+    pub size: String,
     /// Whether the fieldset is disabled.
     pub disabled: bool,
 }
@@ -24,8 +24,8 @@ impl Fieldset {
         let mut classes = vec!["rinch-fieldset"];
 
         // Variant
-        if let Some(ref variant) = self.variant {
-            match variant.as_str() {
+        if !self.variant.is_empty() {
+            match self.variant.as_str() {
                 "filled" => classes.push("rinch-fieldset--filled"),
                 "unstyled" => classes.push("rinch-fieldset--unstyled"),
                 _ => {} // default has no extra class
@@ -33,8 +33,8 @@ impl Fieldset {
         }
 
         // Size
-        if let Some(ref size) = self.size {
-            match size.as_str() {
+        if !self.size.is_empty() {
+            match self.size.as_str() {
                 "xs" => classes.push("rinch-fieldset--xs"),
                 "sm" => classes.push("rinch-fieldset--sm"),
                 "md" => classes.push("rinch-fieldset--md"),
@@ -57,9 +57,9 @@ impl Widget for Fieldset {
             container.set_attribute("disabled", "");
         }
 
-        if let Some(legend) = &self.legend {
+        if !self.legend.is_empty() {
             let legend_elem = rinch_macros::rsx! { legend { class: "rinch-fieldset__legend" } };
-            let text_node = __scope.create_text(legend);
+            let text_node = __scope.create_text(&self.legend);
             legend_elem.append_child(&text_node);
             container.append_child(&legend_elem);
         }

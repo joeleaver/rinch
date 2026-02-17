@@ -290,6 +290,41 @@ fn card(title: &str) -> NodeHandle {
 
 Both patterns are supported -- `#[component]` is preferred for new code, and the manual `__scope` parameter continues to work.
 
+### PascalCase Components (Widget Generation)
+
+When a `#[component]` function uses a PascalCase name, the macro generates a struct and `Widget` trait implementation:
+
+```rust
+#[component]
+pub fn MyWidget(
+    label: String,
+    color: String,
+    disabled: bool,
+    onclick: Option<WidgetCallback>,
+    children: &[NodeHandle],
+) -> NodeHandle {
+    // Parameters are available as local variables
+    rsx! {
+        div {
+            class: "my-widget",
+            style: {format!("color: {}", color)},
+            {label.clone()}
+            // children is automatically appended by Widget trait impl
+        }
+    }
+}
+```
+
+**Key points:**
+- **PascalCase name** triggers struct generation
+- **Parameters become public struct fields** (must be owned types: `String`, `bool`, `Option<T>`, etc.)
+- **`children: &[NodeHandle]` is special** — not a struct field, wired to `Widget::render` method
+- **Reference types rejected** (`&str`, `&T`) with a helpful error message
+- **Auto-derives `Default`** for the generated struct
+- **Usage:** `MyWidget { label: "Hello", color: "blue", onclick: || {}, "child content" }`
+
+This pattern eliminates boilerplate for creating custom widgets — just write a PascalCase component function with owned parameters.
+
 ## Widget Trait
 
 Widgets implement the `Widget` trait to render directly to DOM nodes:
@@ -337,6 +372,7 @@ For a complete reference of every widget's props (fields, types, defaults), see 
 **Key points:**
 - CSS shorthand props (`w`, `h`, `m`, `p`, `maw`, `px`, `my`, etc.) work on all HTML elements and widgets. They expand to `set_style()` calls. Spacing scale values (`xs`, `sm`, `md`, `lg`, `xl`) auto-resolve to `var(--rinch-spacing-{value})`. Example: `div { p: "md", maw: "600px" }`. See `docs/src/guide/rsx-syntax.md#style-shorthands` for the full list.
 - `Stack` and `Group` both have `align` and `justify` props for flex alignment — no need for `style:` for those.
+- **Widget text props are `String` (not `Option<String>`)** — empty string means "not set". The `rsx!` macro auto-converts string literals to `String::from(...)`.
 - All widget props accept reactive closures `{|| expr}` for automatic re-rendering when signals change.
 - `_fn` suffix props (e.g., `value_fn`, `checked_fn`, `opened_fn`) provide surgical DOM updates without full widget re-render.
 - The `rsx!` macro auto-wraps prop values — do NOT manually wrap in `Some(...)`, `Rc::new(...)`, or `WidgetCallback::new(...)`.
@@ -360,16 +396,16 @@ rsx! {
 }
 ```
 
-**Important:** The `{|| ...}` pattern requires the closure to be the direct expression inside the braces. Multi-statement block expressions that evaluate to a closure are NOT treated as reactive:
+**Block-expression closures:** The macro now supports block expressions that evaluate to closures, allowing setup code before the closure:
 
 ```rust
-// ✅ CORRECT: closure is the direct expression
+// ✅ WORKS: closure is the direct expression
 div { style: {|| format!("width: {}px", count.get() * 10)} }
 
-// ❌ WRONG: block with multiple statements — not detected as reactive
+// ✅ ALSO WORKS: block with setup + final closure
 div { style: { let m = 10; move || format!("width: {}px", count.get() * m) } }
 
-// ✅ FIX: compute intermediate values outside RSX or inside the closure body
+// ✅ BOTH PATTERNS: compute outside or inside the block
 let m = 10;
 rsx! { div { style: {move || format!("width: {}px", count.get() * m)} } }
 ```
@@ -1147,7 +1183,8 @@ The `rsx!` macro **automatically wraps** widget prop values. You must NOT manual
 | `icon`, `*_icon` | `icon: Icon::Check` | `Some(Icon::Check)` |
 | bool literal | `disabled: true` | `true` (no wrapping) |
 | int literal | `size: 42` | `Some(42)` |
-| string literal | `variant: "filled"` | `Some(String::from("filled"))` |
+| float literal | `value: 30.0` | `Some(30.0)` |
+| string literal | `variant: "filled"` | `String::from("filled")` |
 | any other expr | `variant: my_var` | `my_var` (pass-through) |
 
 **Common mistakes (DO NOT do these):**
@@ -1168,14 +1205,14 @@ Alert { icon: Some(Icon::Check) }
 // RIGHT - macro adds Some(...) for you
 Alert { icon: Icon::Check }
 
-// WRONG - double-wraps into Some(Some(String::from("filled")))
+// WRONG - widget expects String, not Option<String>
 Button { variant: Some(String::from("filled")) }
-// RIGHT - macro adds Some(String::from(...)) for you
+// RIGHT - macro generates String::from("filled")
 Button { variant: "filled" }
 ```
 
 **Additional notes:**
-- For expression props where the widget expects `Option<String>`, wrap explicitly: `prop: Some("value".into())`
+- Widget text props (e.g., `variant`, `color`, `size`) are now `String` (not `Option<String>`). Empty string means "not set". The macro auto-converts string literals to `String::from(...)`.
 - `_fn` suffix props (e.g., `checked_fn`, `value_fn`) are auto-wrapped — just pass the closure directly, don't wrap in `Some(Rc::new(...))`
 - **Note:** ThemeProvider props (`primary_color_fn`, `dark_mode_fn`) use a different codegen path and still require manual `Rc::new()` wrapping
 

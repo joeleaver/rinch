@@ -80,17 +80,17 @@ impl std::str::FromStr for ChevronPosition {
 #[derive(Debug, Default)]
 pub struct Accordion {
     /// Currently expanded item(s).
-    pub value: Option<String>,
+    pub value: String,
     /// Default expanded item (uncontrolled).
-    pub default_value: Option<String>,
+    pub default_value: String,
     /// Visual variant (default, contained, filled, separated).
-    pub variant: Option<String>,
+    pub variant: String,
     /// Border radius.
-    pub radius: Option<String>,
+    pub radius: String,
     /// Whether multiple items can be open.
     pub multiple: bool,
     /// Chevron position (left, right).
-    pub chevron_position: Option<String>,
+    pub chevron_position: String,
     /// Whether to disable chevron rotation.
     pub disable_chevron_rotation: bool,
 }
@@ -99,16 +99,16 @@ impl Accordion {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-accordion"];
 
-        if let Some(ref v) = self.variant {
-            if let Ok(variant) = v.parse::<AccordionVariant>() {
+        if !self.variant.is_empty() {
+            if let Ok(variant) = self.variant.parse::<AccordionVariant>() {
                 classes.push(variant.class_name());
             }
         } else {
             classes.push(AccordionVariant::Default.class_name());
         }
 
-        if let Some(ref r) = self.radius {
-            match r.as_str() {
+        if !self.radius.is_empty() {
+            match self.radius.as_str() {
                 "xs" => classes.push("rinch-accordion--radius-xs"),
                 "sm" => classes.push("rinch-accordion--radius-sm"),
                 "md" => classes.push("rinch-accordion--radius-md"),
@@ -118,8 +118,8 @@ impl Accordion {
             }
         }
 
-        if let Some(ref cp) = self.chevron_position
-            && let Ok(ChevronPosition::Left) = cp.parse()
+        if !self.chevron_position.is_empty()
+            && let Ok(ChevronPosition::Left) = self.chevron_position.parse()
         {
             classes.push("rinch-accordion--chevron-left");
         }
@@ -133,7 +133,8 @@ impl Widget for Accordion {
         let container = rinch_macros::rsx! { div { class: "rinch-accordion" } };
         container.set_attribute("class", &self.class_string());
 
-        if let Some(active_value) = self.value.as_ref().or(self.default_value.as_ref()) {
+        let active_value = if !self.value.is_empty() { &self.value } else { &self.default_value };
+        if !active_value.is_empty() {
             container.set_attribute("data-active-item", active_value);
         }
 
@@ -153,15 +154,15 @@ impl Widget for Accordion {
 #[derive(Debug, Default)]
 pub struct AccordionItem {
     /// Item identifier value.
-    pub value: Option<String>,
+    pub value: String,
 }
 
 impl Widget for AccordionItem {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         let item = rinch_macros::rsx! { div { class: "rinch-accordion__item" } };
 
-        if let Some(ref value) = self.value {
-            item.set_attribute("data-item-value", value);
+        if !self.value.is_empty() {
+            item.set_attribute("data-item-value", &self.value);
         }
 
         for child in children {

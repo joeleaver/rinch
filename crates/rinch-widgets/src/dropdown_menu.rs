@@ -92,19 +92,19 @@ pub struct DropdownMenu {
     /// Whether the menu is open.
     pub opened: bool,
     /// Position relative to target.
-    pub position: Option<String>,
+    pub position: String,
     /// Offset from target.
     pub offset: Option<i32>,
     /// Border radius.
-    pub radius: Option<String>,
+    pub radius: String,
     /// Shadow size.
-    pub shadow: Option<String>,
+    pub shadow: String,
     /// Whether clicking outside closes menu.
     pub close_on_click_outside: bool,
     /// Whether clicking item closes menu.
     pub close_on_item_click: bool,
     /// Width of the dropdown.
-    pub width: Option<String>,
+    pub width: String,
     /// Z-index.
     pub z_index: Option<i32>,
 }
@@ -113,13 +113,13 @@ impl Default for DropdownMenu {
     fn default() -> Self {
         Self {
             opened: false,
-            position: None,
+            position: String::new(),
             offset: None,
-            radius: None,
-            shadow: None,
+            radius: String::new(),
+            shadow: String::new(),
             close_on_click_outside: true,
             close_on_item_click: true,
-            width: None,
+            width: String::new(),
             z_index: None,
         }
     }
@@ -129,16 +129,16 @@ impl DropdownMenu {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-dropdown-menu"];
 
-        if let Some(ref p) = self.position {
-            if let Ok(pos) = p.parse::<DropdownMenuPosition>() {
+        if !self.position.is_empty() {
+            if let Ok(pos) = self.position.parse::<DropdownMenuPosition>() {
                 classes.push(pos.class_name());
             }
         } else {
             classes.push(DropdownMenuPosition::Bottom.class_name());
         }
 
-        if let Some(ref r) = self.radius {
-            match r.as_str() {
+        if !self.radius.is_empty() {
+            match self.radius.as_str() {
                 "xs" => classes.push("rinch-dropdown-menu--radius-xs"),
                 "sm" => classes.push("rinch-dropdown-menu--radius-sm"),
                 "md" => classes.push("rinch-dropdown-menu--radius-md"),
@@ -148,8 +148,8 @@ impl DropdownMenu {
             }
         }
 
-        if let Some(ref s) = self.shadow {
-            match s.as_str() {
+        if !self.shadow.is_empty() {
+            match self.shadow.as_str() {
                 "xs" => classes.push("rinch-dropdown-menu--shadow-xs"),
                 "sm" => classes.push("rinch-dropdown-menu--shadow-sm"),
                 "md" => classes.push("rinch-dropdown-menu--shadow-md"),
@@ -173,8 +173,8 @@ impl Widget for DropdownMenu {
         if let Some(offset) = self.offset {
             style_parts.push(format!("--rinch-dropdown-menu-offset: {}px", offset));
         }
-        if let Some(ref w) = self.width {
-            style_parts.push(format!("--rinch-dropdown-menu-width: {}", w));
+        if !self.width.is_empty() {
+            style_parts.push(format!("--rinch-dropdown-menu-width: {}", self.width));
         }
 
         let root = rinch_macros::rsx! { div { class: "rinch-dropdown-menu" } };
@@ -232,7 +232,7 @@ pub struct DropdownMenuItem {
     /// Right section icon.
     pub right_section: Option<TablerIcon>,
     /// Color variant.
-    pub color: Option<String>,
+    pub color: String,
     /// Whether item is disabled.
     pub disabled: bool,
     /// Click callback.
@@ -247,16 +247,19 @@ impl Widget for DropdownMenuItem {
             classes.push("rinch-dropdown-menu__item--disabled");
         }
 
-        let color_style = self.color.as_ref().map(|c| {
+        let color_style = if self.color.is_empty() {
+            None
+        } else {
+            let c = &self.color;
             if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
-                format!("--rinch-dropdown-menu-item-color: {}", c)
+                Some(format!("--rinch-dropdown-menu-item-color: {}", c))
             } else {
-                format!(
+                Some(format!(
                     "--rinch-dropdown-menu-item-color: var(--rinch-color-{}-6)",
                     c
-                )
+                ))
             }
-        });
+        };
 
         let btn = rinch_macros::rsx! { button { class: "rinch-dropdown-menu__item" } };
         btn.set_attribute("class", &classes.join(" "));

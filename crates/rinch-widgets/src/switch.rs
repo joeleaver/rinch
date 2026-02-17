@@ -29,11 +29,11 @@ pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 #[derive(Default)]
 pub struct Switch {
     /// Label displayed next to the switch.
-    pub label: Option<String>,
+    pub label: String,
     /// Description displayed below the switch.
-    pub description: Option<String>,
+    pub description: String,
     /// Size (xs, sm, md, lg).
-    pub size: Option<String>,
+    pub size: String,
     /// Whether the switch is disabled.
     pub disabled: bool,
     /// Whether the switch is checked (static, for initial render or non-reactive use).
@@ -42,7 +42,7 @@ pub struct Switch {
     /// When provided, the switch class updates automatically when the signal changes.
     pub checked_fn: Option<ReactiveBool>,
     /// Label position (start, end). Default is end.
-    pub label_position: Option<String>,
+    pub label_position: String,
     /// Callback when switch is toggled.
     pub onchange: Option<WidgetCallback>,
 }
@@ -71,8 +71,8 @@ impl Switch {
         let mut classes = vec!["rinch-switch"];
 
         // Size
-        if let Some(size) = &self.size {
-            match size.as_str() {
+        if !self.size.is_empty() {
+            match self.size.as_str() {
                 "xs" => classes.push("rinch-switch--xs"),
                 "sm" => classes.push("rinch-switch--sm"),
                 "md" => classes.push("rinch-switch--md"),
@@ -87,9 +87,7 @@ impl Switch {
         }
 
         // Label position
-        if let Some(pos) = &self.label_position
-            && pos == "start"
-        {
+        if !self.label_position.is_empty() && self.label_position == "start" {
             classes.push("rinch-switch--label-start");
         }
 
@@ -162,7 +160,8 @@ impl Widget for Switch {
         label_node.append_child(&track);
 
         // Label text
-        if let Some(label_text) = &self.label {
+        if !self.label.is_empty() {
+            let label_text = &self.label;
             let label_span = scope.create_element("span");
             label_span.set_attribute("class", "rinch-switch__label");
             let label_text_node = scope.create_text(label_text);

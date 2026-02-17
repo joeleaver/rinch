@@ -77,7 +77,7 @@ pub fn overlays_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Centered dialogs for focused user interactions." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 // Basic modal
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
@@ -109,7 +109,7 @@ pub fn overlays_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Slide-out panels from screen edges." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 // Drawers
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
@@ -176,7 +176,7 @@ pub fn overlays_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Contextual menus and hover hints." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("lg".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "lg",
                 // Dropdown
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",

@@ -33,15 +33,15 @@ pub struct LoadingOverlay {
     /// Overlay background color/opacity.
     pub overlay_opacity: Option<f32>,
     /// Overlay blur amount.
-    pub overlay_blur: Option<String>,
+    pub overlay_blur: String,
     /// Loader type (oval, bars, dots).
-    pub loader_type: Option<String>,
+    pub loader_type: String,
     /// Loader size.
-    pub loader_size: Option<String>,
+    pub loader_size: String,
     /// Loader color.
-    pub loader_color: Option<String>,
+    pub loader_color: String,
     /// Border radius (matches parent container).
-    pub radius: Option<String>,
+    pub radius: String,
     /// Z-index relative to siblings.
     pub z_index: Option<i32>,
     /// Transition duration.
@@ -56,8 +56,8 @@ impl LoadingOverlay {
             classes.push("rinch-loading-overlay--visible");
         }
 
-        if let Some(ref r) = self.radius {
-            match r.as_str() {
+        if !self.radius.is_empty() {
+            match self.radius.as_str() {
                 "xs" => classes.push("rinch-loading-overlay--radius-xs"),
                 "sm" => classes.push("rinch-loading-overlay--radius-sm"),
                 "md" => classes.push("rinch-loading-overlay--radius-md"),
@@ -79,10 +79,11 @@ impl Widget for LoadingOverlay {
         if let Some(opacity) = self.overlay_opacity {
             style_parts.push(format!("--rinch-loading-overlay-opacity: {}", opacity));
         }
-        if let Some(ref blur) = self.overlay_blur {
-            style_parts.push(format!("--rinch-loading-overlay-blur: {}", blur));
+        if !self.overlay_blur.is_empty() {
+            style_parts.push(format!("--rinch-loading-overlay-blur: {}", self.overlay_blur));
         }
-        if let Some(ref color) = self.loader_color {
+        if !self.loader_color.is_empty() {
+            let color = &self.loader_color;
             if color.starts_with('#') || color.starts_with("rgb") || color.starts_with("hsl") {
                 style_parts.push(format!("--rinch-loading-overlay-loader-color: {}", color));
             } else {
@@ -103,24 +104,28 @@ impl Widget for LoadingOverlay {
         }
 
         // Determine loader class
-        let loader_type = self.loader_type.as_deref().unwrap_or("oval");
+        let loader_type = if self.loader_type.is_empty() {
+            "oval"
+        } else {
+            &self.loader_type
+        };
         let loader_class = match loader_type {
             "bars" => "rinch-loader--bars",
             "dots" => "rinch-loader--dots",
             _ => "rinch-loader--oval",
         };
 
-        let loader_size_class = self
-            .loader_size
-            .as_ref()
-            .map(|s| match s.as_str() {
+        let loader_size_class = if self.loader_size.is_empty() {
+            ""
+        } else {
+            match self.loader_size.as_str() {
                 "xs" => " rinch-loader--xs",
                 "sm" => " rinch-loader--sm",
                 "lg" => " rinch-loader--lg",
                 "xl" => " rinch-loader--xl",
                 _ => "",
-            })
-            .unwrap_or("");
+            }
+        };
 
         let root = rinch_macros::rsx! { div { class: "rinch-loading-overlay" } };
         root.set_attribute("class", &class);

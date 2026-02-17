@@ -375,12 +375,14 @@ pub fn generate_widget_field_assignments(
                 quote! { #name: #value }
             } else if crate::helpers::is_literal_int(value) {
                 quote! { #name: Some(#value) }
+            } else if crate::helpers::is_literal_float(value) {
+                quote! { #name: Some(#value) }
             } else if crate::helpers::is_literal_string(value) {
-                quote! { #name: Some(String::from(#value)) }
+                quote! { #name: String::from(#value) }
             } else if invoke_closures {
                 if let Some(closure) = get_closure_expr(value) {
-                    // Invoke the closure to get current value, wrap as Option<String>
-                    quote! { #name: Some(String::from(::std::string::ToString::to_string(&(#closure)()))) }
+                    // Invoke the closure to get current value as String
+                    quote! { #name: String::from(::std::string::ToString::to_string(&(#closure)())) }
                 } else {
                     quote! { #name: #value }
                 }

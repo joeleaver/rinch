@@ -39,6 +39,23 @@ impl IntoNode for std::borrow::Cow<'_, str> {
     }
 }
 
+impl IntoNode for Vec<NodeHandle> {
+    /// Append all NodeHandles as children of a transparent wrapper.
+    ///
+    /// This enables the `.iter().map(|x| rsx!{...}).collect::<Vec<_>>()` pattern in RSX.
+    /// For reactive lists that update when signals change, prefer `for` loops with keyed
+    /// reconciliation instead.
+    #[inline]
+    fn into_node(self, scope: &mut RenderScope) -> NodeHandle {
+        let container = scope.create_element("div");
+        container.set_attribute("style", "display:contents");
+        for child in &self {
+            container.append_child(child);
+        }
+        container
+    }
+}
+
 // Implement IntoNode for numeric types
 macro_rules! impl_into_node_for_display {
     ($($ty:ty),*) => {

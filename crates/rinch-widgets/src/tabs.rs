@@ -118,45 +118,45 @@ impl std::str::FromStr for TabsPosition {
 #[derive(Debug, Default)]
 pub struct Tabs {
     /// Currently active tab value.
-    pub value: Option<String>,
+    pub value: String,
     /// Default active tab (uncontrolled).
-    pub default_value: Option<String>,
+    pub default_value: String,
     /// Visual variant (default, outline, pills).
-    pub variant: Option<String>,
+    pub variant: String,
     /// Tab orientation (horizontal, vertical).
-    pub orientation: Option<String>,
+    pub orientation: String,
     /// Tab position (top, bottom, left, right).
-    pub position: Option<String>,
+    pub position: String,
     /// Whether tabs grow to fill container.
     pub grow: bool,
     /// Color for active tab.
-    pub color: Option<String>,
+    pub color: String,
     /// Border radius.
-    pub radius: Option<String>,
+    pub radius: String,
 }
 
 impl Tabs {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-tabs"];
 
-        if let Some(ref v) = self.variant {
-            if let Ok(variant) = v.parse::<TabsVariant>() {
+        if !self.variant.is_empty() {
+            if let Ok(variant) = self.variant.parse::<TabsVariant>() {
                 classes.push(variant.class_name());
             }
         } else {
             classes.push(TabsVariant::Default.class_name());
         }
 
-        if let Some(ref o) = self.orientation {
-            if let Ok(orientation) = o.parse::<TabsOrientation>() {
+        if !self.orientation.is_empty() {
+            if let Ok(orientation) = self.orientation.parse::<TabsOrientation>() {
                 classes.push(orientation.class_name());
             }
         } else {
             classes.push(TabsOrientation::Horizontal.class_name());
         }
 
-        if let Some(ref p) = self.position
-            && let Ok(position) = p.parse::<TabsPosition>()
+        if !self.position.is_empty()
+            && let Ok(position) = self.position.parse::<TabsPosition>()
         {
             classes.push(position.class_name());
         }
@@ -174,11 +174,13 @@ impl Widget for Tabs {
         let container = rinch_macros::rsx! { div { class: "rinch-tabs" } };
         container.set_attribute("class", &self.class_string());
 
-        if let Some(active_value) = self.value.as_ref().or(self.default_value.as_ref()) {
+        let active_value = if !self.value.is_empty() { &self.value } else { &self.default_value };
+        if !active_value.is_empty() {
             container.set_attribute("data-active-tab", active_value);
         }
 
-        if let Some(ref c) = self.color {
+        if !self.color.is_empty() {
+            let c = &self.color;
             let style = if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
                 format!("--rinch-tabs-color: {}", c)
             } else {
@@ -201,7 +203,7 @@ pub struct TabsList {
     /// Whether tabs should grow to fill width.
     pub grow: bool,
     /// Justify content (start, center, end, space-between).
-    pub justify: Option<String>,
+    pub justify: String,
 }
 
 impl Widget for TabsList {
@@ -215,8 +217,8 @@ impl Widget for TabsList {
         let list = rinch_macros::rsx! { div { class: "rinch-tabs__list", role: "tablist" } };
         list.set_attribute("class", &classes.join(" "));
 
-        if let Some(ref justify) = self.justify {
-            list.set_attribute("style", &format!("justify-content: {}", justify));
+        if !self.justify.is_empty() {
+            list.set_attribute("style", &format!("justify-content: {}", self.justify));
         }
 
         for child in children {
@@ -231,7 +233,7 @@ impl Widget for TabsList {
 #[derive(Default)]
 pub struct Tab {
     /// Tab identifier value.
-    pub value: Option<String>,
+    pub value: String,
     /// Whether tab is disabled.
     pub disabled: bool,
     /// Left section icon.
@@ -264,8 +266,8 @@ impl Widget for Tab {
         let btn = rinch_macros::rsx! { button { class: "rinch-tabs__tab", role: "tab" } };
         btn.set_attribute("class", &classes.join(" "));
 
-        if let Some(ref value) = self.value {
-            btn.set_attribute("data-tab-value", value);
+        if !self.value.is_empty() {
+            btn.set_attribute("data-tab-value", &self.value);
         }
 
         if self.disabled {
@@ -314,15 +316,15 @@ impl Widget for Tab {
 #[derive(Debug, Default)]
 pub struct TabsPanel {
     /// Tab value this panel belongs to.
-    pub value: Option<String>,
+    pub value: String,
 }
 
 impl Widget for TabsPanel {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         let panel = rinch_macros::rsx! { div { class: "rinch-tabs__panel", role: "tabpanel" } };
 
-        if let Some(ref value) = self.value {
-            panel.set_attribute("data-panel-value", value);
+        if !self.value.is_empty() {
+            panel.set_attribute("data-panel-value", &self.value);
         }
 
         for child in children {

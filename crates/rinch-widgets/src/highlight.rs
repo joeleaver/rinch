@@ -20,11 +20,11 @@ use rinch_core::dom::{NodeHandle, RenderScope};
 #[derive(Debug)]
 pub struct Highlight {
     /// The full text to display.
-    pub text: Option<String>,
+    pub text: String,
     /// The substring(s) to highlight.
-    pub highlight: Option<String>,
+    pub highlight: String,
     /// Background color for highlighted parts.
-    pub color: Option<String>,
+    pub color: String,
     /// Whether to do case-insensitive matching.
     pub ignore_case: bool,
 }
@@ -32,9 +32,9 @@ pub struct Highlight {
 impl Default for Highlight {
     fn default() -> Self {
         Self {
-            text: None,
-            highlight: None,
-            color: None,
+            text: String::new(),
+            highlight: String::new(),
+            color: String::new(),
             ignore_case: true,
         }
     }
@@ -42,13 +42,14 @@ impl Default for Highlight {
 
 impl Widget for Highlight {
     fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
-        let text = self.text.as_deref().unwrap_or("");
-        let highlight = self.highlight.as_deref().unwrap_or("");
+        let text = &self.text;
+        let highlight = &self.highlight;
 
         let container = rinch_macros::rsx! { span { class: "rinch-highlight" } };
 
         // Color style
-        if let Some(c) = &self.color {
+        if !self.color.is_empty() {
+            let c = &self.color;
             let style = if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
                 format!("--rinch-highlight-color: {}", c)
             } else {

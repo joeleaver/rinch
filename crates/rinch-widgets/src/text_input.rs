@@ -52,25 +52,25 @@ impl std::str::FromStr for TextInputSize {
 #[derive(Default)]
 pub struct TextInput {
     /// Input label.
-    pub label: Option<String>,
+    pub label: String,
     /// Placeholder text.
-    pub placeholder: Option<String>,
+    pub placeholder: String,
     /// Description text below the input.
-    pub description: Option<String>,
+    pub description: String,
     /// Error message (shows error styling when present).
-    pub error: Option<String>,
+    pub error: String,
     /// Input size (xs, sm, md, lg, xl).
-    pub size: Option<String>,
+    pub size: String,
     /// Whether the input is disabled.
     pub disabled: bool,
     /// Whether the input is required.
     pub required: bool,
     /// Override border radius.
-    pub radius: Option<String>,
+    pub radius: String,
     /// Input type (text, password, email, etc.).
-    pub input_type: Option<String>,
+    pub input_type: String,
     /// Current value.
-    pub value: Option<String>,
+    pub value: String,
     /// Reactive value getter - use this for fine-grained updates.
     /// When provided, the input value updates automatically when the signal changes.
     pub value_fn: Option<ReactiveString>,
@@ -106,15 +106,15 @@ impl TextInput {
         let mut classes = vec!["rinch-text-input"];
 
         // Size class
-        let size: TextInputSize = self
-            .size
-            .as_ref()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_default();
+        let size: TextInputSize = if self.size.is_empty() {
+            TextInputSize::default()
+        } else {
+            self.size.parse().unwrap_or_default()
+        };
         classes.push(size.class_name());
 
         // Error state
-        if self.error.is_some() {
+        if !self.error.is_empty() {
             classes.push("rinch-text-input--error");
         }
 
@@ -128,7 +128,8 @@ impl Widget for TextInput {
         container.set_attribute("class", &self.class_string());
 
         // Label element
-        if let Some(label_text) = &self.label {
+        if !self.label.is_empty() {
+            let label_text = &self.label;
             let label = rinch_macros::rsx! { label { class: "rinch-text-input__label" } };
             let label_text_node = __scope.create_text(label_text);
             label.append_child(&label_text_node);
@@ -143,12 +144,12 @@ impl Widget for TextInput {
         }
 
         // Input element
-        let input_type = self.input_type.as_deref().unwrap_or("text");
+        let input_type = if self.input_type.is_empty() { "text" } else { &self.input_type };
         let input = rinch_macros::rsx! { input { class: "rinch-text-input__input" } };
         input.set_attribute("type", input_type);
 
-        if let Some(placeholder) = &self.placeholder {
-            input.set_attribute("placeholder", placeholder);
+        if !self.placeholder.is_empty() {
+            input.set_attribute("placeholder", &self.placeholder);
         }
 
         // Reactive value binding
@@ -164,8 +165,8 @@ impl Widget for TextInput {
                 let current_value = value_fn();
                 input_clone.set_attribute("value", &current_value);
             });
-        } else if let Some(value) = &self.value {
-            input.set_attribute("value", value);
+        } else if !self.value.is_empty() {
+            input.set_attribute("value", &self.value);
         }
 
         if self.disabled {
@@ -199,7 +200,8 @@ impl Widget for TextInput {
         container.append_child(&input);
 
         // Description element
-        if let Some(desc) = &self.description {
+        if !self.description.is_empty() {
+            let desc = &self.description;
             let desc_div = rinch_macros::rsx! { div { class: "rinch-text-input__description" } };
             let desc_text = __scope.create_text(desc);
             desc_div.append_child(&desc_text);
@@ -207,7 +209,8 @@ impl Widget for TextInput {
         }
 
         // Error element
-        if let Some(err) = &self.error {
+        if !self.error.is_empty() {
+            let err = &self.error;
             let err_div = rinch_macros::rsx! { div { class: "rinch-text-input__error" } };
             let err_text = __scope.create_text(err);
             err_div.append_child(&err_text);

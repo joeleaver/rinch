@@ -67,7 +67,7 @@ pub fn icons_section() -> NodeHandle {
 
                     // Style toggle
                     Switch {
-                        label: Some("Filled Style".to_string()),
+                        label: "Filled Style",
                         checked_fn: move || use_filled.get(),
                         onchange: move || use_filled.update(|v| *v = !*v)
                     }
@@ -153,7 +153,7 @@ let icon = tabler_icon!(__scope, AlertCircle, Filled);"# }
             Title { order: 3, "Sample Icons by Category" }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: Some("md".to_string()),
+            SimpleGrid { cols: Some(2), spacing: "md",
                 // Navigation icons
                 Paper { p: "md", radius: "md", with_border: true,
                     Stack { gap: "md",

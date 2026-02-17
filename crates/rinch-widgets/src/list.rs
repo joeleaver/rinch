@@ -91,11 +91,11 @@ impl std::str::FromStr for ListSize {
 #[derive(Debug, Default)]
 pub struct List {
     /// List type (ordered, unordered).
-    pub r#type: Option<String>,
+    pub r#type: String,
     /// Size (xs, sm, md, lg, xl).
-    pub size: Option<String>,
+    pub size: String,
     /// Spacing between items (xs, sm, md, lg, xl).
-    pub spacing: Option<String>,
+    pub spacing: String,
     /// Whether to center list items.
     pub center: bool,
     /// Custom icon for list items.
@@ -108,21 +108,22 @@ impl List {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-list"];
 
-        let list_type: ListType = self
-            .r#type
-            .as_ref()
-            .and_then(|t| t.parse().ok())
-            .unwrap_or_default();
+        let list_type: ListType = if self.r#type.is_empty() {
+            ListType::default()
+        } else {
+            self.r#type.parse().unwrap_or_default()
+        };
         classes.push(list_type.class_name());
 
-        let size: ListSize = self
-            .size
-            .as_ref()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_default();
+        let size: ListSize = if self.size.is_empty() {
+            ListSize::default()
+        } else {
+            self.size.parse().unwrap_or_default()
+        };
         classes.push(size.class_name());
 
-        if let Some(ref spacing) = self.spacing {
+        if !self.spacing.is_empty() {
+            let spacing = &self.spacing;
             classes.push(match spacing.as_str() {
                 "xs" => "rinch-list--spacing-xs",
                 "sm" => "rinch-list--spacing-sm",
@@ -149,11 +150,11 @@ impl Widget for List {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         let class = self.class_string();
 
-        let list_type: ListType = self
-            .r#type
-            .as_ref()
-            .and_then(|t| t.parse().ok())
-            .unwrap_or_default();
+        let list_type: ListType = if self.r#type.is_empty() {
+            ListType::default()
+        } else {
+            self.r#type.parse().unwrap_or_default()
+        };
 
         let container = match list_type {
             ListType::Ordered => rinch_macros::rsx! { ol { class: "rinch-list" } },

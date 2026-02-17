@@ -134,13 +134,13 @@ impl std::str::FromStr for TextAlign {
 #[derive(Debug, Default)]
 pub struct Text {
     /// Text size (xs, sm, md, lg, xl).
-    pub size: Option<String>,
+    pub size: String,
     /// Font weight (thin, light, normal, medium, semibold, bold, etc.).
-    pub weight: Option<String>,
+    pub weight: String,
     /// Text color (primary, dimmed, or any color name).
-    pub color: Option<String>,
+    pub color: String,
     /// Text alignment (left, center, right, justify).
-    pub align: Option<String>,
+    pub align: String,
     /// Whether to render as a span instead of p (inline).
     pub inline: bool,
 }
@@ -151,24 +151,22 @@ impl Text {
         let mut classes = vec!["rinch-text"];
 
         // Size class
-        if let Some(ref size) = self.size {
-            if let Ok(s) = size.parse::<TextSize>() {
-                classes.push(s.class_name());
-            }
-        } else {
+        if self.size.is_empty() {
             classes.push(TextSize::Md.class_name());
+        } else if let Ok(s) = self.size.parse::<TextSize>() {
+            classes.push(s.class_name());
         }
 
         // Weight class
-        if let Some(ref weight) = self.weight
-            && let Ok(w) = weight.parse::<TextWeight>()
-        {
-            classes.push(w.class_name());
+        if !self.weight.is_empty() {
+            if let Ok(w) = self.weight.parse::<TextWeight>() {
+                classes.push(w.class_name());
+            }
         }
 
         // Color class
-        if let Some(ref color) = self.color {
-            match color.as_str() {
+        if !self.color.is_empty() {
+            match self.color.as_str() {
                 "primary" => classes.push("rinch-text--primary"),
                 "dimmed" => classes.push("rinch-text--dimmed"),
                 "inherit" => classes.push("rinch-text--inherit"),
@@ -191,10 +189,10 @@ impl Text {
         }
 
         // Alignment class
-        if let Some(ref align) = self.align
-            && let Ok(a) = align.parse::<TextAlign>()
-        {
-            classes.push(a.class_name());
+        if !self.align.is_empty() {
+            if let Ok(a) = self.align.parse::<TextAlign>() {
+                classes.push(a.class_name());
+            }
         }
 
         classes.join(" ")

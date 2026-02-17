@@ -36,67 +36,67 @@ pub fn nav_links<F: Fn() + 'static>(
     rsx! {
         Stack { gap: "0",
             NavLink {
-                label: Some("Overview".to_string()),
+                label: "Overview",
                 active_fn: move || current_section.get() == 0,
                 onclick: nav(0)
             }
             NavLink {
-                label: Some("Buttons".to_string()),
+                label: "Buttons",
                 active_fn: move || current_section.get() == 1,
                 onclick: nav(1)
             }
             NavLink {
-                label: Some("Inputs".to_string()),
+                label: "Inputs",
                 active_fn: move || current_section.get() == 2,
                 onclick: nav(2)
             }
             NavLink {
-                label: Some("Typography".to_string()),
+                label: "Typography",
                 active_fn: move || current_section.get() == 3,
                 onclick: nav(3)
             }
             NavLink {
-                label: Some("Layout".to_string()),
+                label: "Layout",
                 active_fn: move || current_section.get() == 4,
                 onclick: nav(4)
             }
             NavLink {
-                label: Some("Navigation".to_string()),
+                label: "Navigation",
                 active_fn: move || current_section.get() == 5,
                 onclick: nav(5)
             }
             NavLink {
-                label: Some("Data Display".to_string()),
+                label: "Data Display",
                 active_fn: move || current_section.get() == 6,
                 onclick: nav(6)
             }
             NavLink {
-                label: Some("Feedback".to_string()),
+                label: "Feedback",
                 active_fn: move || current_section.get() == 7,
                 onclick: nav(7)
             }
             NavLink {
-                label: Some("Overlays".to_string()),
+                label: "Overlays",
                 active_fn: move || current_section.get() == 8,
                 onclick: nav(8)
             }
             NavLink {
-                label: Some("Icons".to_string()),
+                label: "Icons",
                 active_fn: move || current_section.get() == 9,
                 onclick: nav(9)
             }
             NavLink {
-                label: Some("Tree".to_string()),
+                label: "Tree",
                 active_fn: move || current_section.get() == 10,
                 onclick: nav(10)
             }
             NavLink {
-                label: Some("Rich Text Editor".to_string()),
+                label: "Rich Text Editor",
                 active_fn: move || current_section.get() == 11,
                 onclick: nav(11)
             }
             NavLink {
-                label: Some("CSS Features".to_string()),
+                label: "CSS Features",
                 active_fn: move || current_section.get() == 12,
                 onclick: nav(12)
             }
@@ -116,7 +116,7 @@ pub fn theme_controls(primary_color: Signal<&'static str>, dark_mode: Signal<boo
             Space { h: "md" }
 
             Switch {
-                label: Some("Dark Mode".to_string()),
+                label: "Dark Mode",
                 checked_fn: move || dark_mode.get(),
                 onchange: toggle_dark
             }
@@ -231,10 +231,10 @@ pub fn overlays_demo_overlays(__scope: &mut RenderScope) -> NodeHandle {
                 position: "left",
 
                 Stack { gap: "0",
-                    NavLink { label: Some("Home".to_string()), active: true }
-                    NavLink { label: Some("Dashboard".to_string()) }
-                    NavLink { label: Some("Settings".to_string()) }
-                    NavLink { label: Some("Profile".to_string()) }
+                    NavLink { label: "Home", active: true }
+                    NavLink { label: "Dashboard" }
+                    NavLink { label: "Settings" }
+                    NavLink { label: "Profile" }
                 }
             }
 

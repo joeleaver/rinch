@@ -56,11 +56,11 @@ impl std::str::FromStr for TooltipPosition {
 #[derive(Debug, Default)]
 pub struct Tooltip {
     /// Tooltip text content.
-    pub label: Option<String>,
+    pub label: String,
     /// Position (top, bottom, left, right).
-    pub position: Option<String>,
+    pub position: String,
     /// Background color.
-    pub color: Option<String>,
+    pub color: String,
     /// Whether tooltip is initially open.
     pub opened: bool,
     /// Whether tooltip is disabled.
@@ -70,18 +70,18 @@ pub struct Tooltip {
     /// Multiline tooltip (wraps text).
     pub multiline: bool,
     /// Width for multiline tooltips.
-    pub width: Option<String>,
+    pub width: String,
 }
 
 impl Tooltip {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-tooltip"];
 
-        let position: TooltipPosition = self
-            .position
-            .as_ref()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or_default();
+        let position: TooltipPosition = if self.position.is_empty() {
+            TooltipPosition::default()
+        } else {
+            self.position.parse().unwrap_or_default()
+        };
         classes.push(position.class_name());
 
         if self.with_arrow {
@@ -106,23 +106,27 @@ impl Tooltip {
 
 impl Widget for Tooltip {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
-        let label = self.label.as_deref().unwrap_or("");
+        let label = if self.label.is_empty() {
+            ""
+        } else {
+            &self.label
+        };
 
         let mut styles = Vec::new();
 
-        if let Some(ref color) = self.color {
-            if color.starts_with('#') || color.starts_with("rgb") || color.starts_with("hsl") {
-                styles.push(format!("--rinch-tooltip-color: {}", color));
+        if !self.color.is_empty() {
+            if self.color.starts_with('#') || self.color.starts_with("rgb") || self.color.starts_with("hsl") {
+                styles.push(format!("--rinch-tooltip-color: {}", self.color));
             } else {
                 styles.push(format!(
                     "--rinch-tooltip-color: var(--rinch-color-{}-9)",
-                    color
+                    self.color
                 ));
             }
         }
 
-        if let Some(ref width) = self.width {
-            styles.push(format!("--rinch-tooltip-width: {}", width));
+        if !self.width.is_empty() {
+            styles.push(format!("--rinch-tooltip-width: {}", self.width));
         }
 
         // Create root element

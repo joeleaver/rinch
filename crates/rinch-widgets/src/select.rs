@@ -12,21 +12,21 @@ pub type ReactiveString = Rc<dyn Fn() -> String>;
 #[derive(Default)]
 pub struct Select {
     /// Label displayed above the select.
-    pub label: Option<String>,
+    pub label: String,
     /// Description displayed below the select.
-    pub description: Option<String>,
+    pub description: String,
     /// Error message to display.
-    pub error: Option<String>,
+    pub error: String,
     /// Placeholder text for empty state.
-    pub placeholder: Option<String>,
+    pub placeholder: String,
     /// Size (xs, sm, md, lg, xl).
-    pub size: Option<String>,
+    pub size: String,
     /// Whether the select is disabled.
     pub disabled: bool,
     /// Whether the select is required.
     pub required: bool,
     /// Currently selected value.
-    pub value: Option<String>,
+    pub value: String,
     /// Reactive value getter for fine-grained updates.
     pub value_fn: Option<ReactiveString>,
     /// Callback when selection changes (receives selected value).
@@ -56,8 +56,8 @@ impl Select {
         let mut classes = vec!["rinch-select"];
 
         // Size
-        if let Some(size) = &self.size {
-            match size.as_str() {
+        if !self.size.is_empty() {
+            match self.size.as_str() {
                 "xs" => classes.push("rinch-select--xs"),
                 "sm" => classes.push("rinch-select--sm"),
                 "md" => classes.push("rinch-select--md"),
@@ -68,7 +68,7 @@ impl Select {
         }
 
         // Error state
-        if self.error.is_some() {
+        if !self.error.is_empty() {
             classes.push("rinch-select--error");
         }
 
@@ -82,7 +82,8 @@ impl Widget for Select {
         container.set_attribute("class", &self.class_string());
 
         // Label
-        if let Some(label_text) = &self.label {
+        if !self.label.is_empty() {
+            let label_text = &self.label;
             let label = rinch_macros::rsx! { label { class: "rinch-select__label" } };
             let label_text_node = __scope.create_text(label_text);
             label.append_child(&label_text_node);
@@ -117,8 +118,8 @@ impl Widget for Select {
                 let current_value = value_fn();
                 select_clone.set_attribute("value", &current_value);
             });
-        } else if let Some(value) = &self.value {
-            select.set_attribute("value", value);
+        } else if !self.value.is_empty() {
+            select.set_attribute("value", &self.value);
         }
 
         // Change handler
@@ -138,7 +139,8 @@ impl Widget for Select {
         container.append_child(&select);
 
         // Description
-        if let Some(desc) = &self.description {
+        if !self.description.is_empty() {
+            let desc = &self.description;
             let desc_div = rinch_macros::rsx! { div { class: "rinch-select__description" } };
             let desc_text = __scope.create_text(desc);
             desc_div.append_child(&desc_text);
@@ -146,7 +148,8 @@ impl Widget for Select {
         }
 
         // Error
-        if let Some(err) = &self.error {
+        if !self.error.is_empty() {
+            let err = &self.error;
             let err_div = rinch_macros::rsx! { div { class: "rinch-select__error" } };
             let err_text = __scope.create_text(err);
             err_div.append_child(&err_text);

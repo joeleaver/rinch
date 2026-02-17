@@ -97,42 +97,158 @@ pub fn rsx(input: TokenStream) -> TokenStream {
     dom_codegen::node_to_dom(&node, &mut ctx).into()
 }
 
-/// Attribute macro that injects `__scope: &mut RenderScope` as the first parameter.
+/// Attribute macro for defining components.
 ///
-/// This eliminates the need to manually write the `__scope` parameter in every
-/// component function. The macro transforms:
+/// # Two modes based on function name casing:
+///
+/// ## lowercase functions — simple scope injection
+///
+/// For lowercase function names, the macro just injects `__scope: &mut RenderScope`
+/// as the first parameter. Use this for the top-level app function and helper components.
 ///
 /// ```ignore
 /// #[component]
 /// fn app() -> NodeHandle {
 ///     rsx! { div { "Hello" } }
 /// }
+/// // becomes: fn app(__scope: &mut RenderScope) -> NodeHandle { ... }
 /// ```
 ///
-/// Into:
+/// ## PascalCase functions — Widget struct generation
 ///
-/// ```ignore
-/// fn app(__scope: &mut RenderScope) -> NodeHandle {
-///     rsx! { div { "Hello" } }
-/// }
-/// ```
-///
-/// Functions with existing parameters get `__scope` prepended:
+/// For PascalCase function names, the macro generates a struct + `Widget` trait impl,
+/// making the component usable in RSX with prop syntax (just like built-in widgets):
 ///
 /// ```ignore
 /// #[component]
-/// fn card(title: &str) -> NodeHandle { ... }
-/// // becomes: fn card(__scope: &mut RenderScope, title: &str) -> NodeHandle { ... }
+/// fn TodoItem(
+///     todo: Todo,
+///     on_delete: Option<WidgetCallback>,
+///     children: &[NodeHandle],
+/// ) -> NodeHandle {
+///     rsx! { div { {todo.name.clone()} } }
+/// }
+///
+/// // Generates:
+/// // - pub struct TodoItem { pub todo: Todo, pub on_delete: Option<WidgetCallback> }
+/// // - impl Widget for TodoItem { ... }
+/// //
+/// // Use in RSX like any widget:
+/// // TodoItem { todo: my_todo, on_delete: || remove(id) }
 /// ```
+///
+/// ### Rules for PascalCase components:
+///
+/// - Parameters become public struct fields (must be owned types, not references)
+/// - `children: &[NodeHandle]` is special — wired to Widget::render's children, not a field
+/// - The struct derives `Default` automatically
+/// - `Widget`, `RenderScope`, and `NodeHandle` must be in scope (via `use rinch::prelude::*`)
 #[proc_macro_attribute]
 pub fn component(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let mut func = syn::parse_macro_input!(item as syn::ItemFn);
+    let func = syn::parse_macro_input!(item as syn::ItemFn);
+    let name_str = func.sig.ident.to_string();
 
-    // Build `__scope: &mut RenderScope`
-    let scope_param: syn::FnArg = syn::parse_quote!(__scope: &mut RenderScope);
+    if name_str.starts_with(|c: char| c.is_uppercase()) {
+        generate_widget_component(func)
+    } else {
+        // lowercase: just inject __scope
+        let mut func = func;
+        let scope_param: syn::FnArg = syn::parse_quote!(__scope: &mut RenderScope);
+        func.sig.inputs.insert(0, scope_param);
+        quote::quote!(#func).into()
+    }
+}
 
-    // Prepend as first parameter
-    func.sig.inputs.insert(0, scope_param);
+/// Generate a Widget struct + impl from a PascalCase `#[component]` function.
+fn generate_widget_component(func: syn::ItemFn) -> TokenStream {
+    use quote::quote;
 
-    quote::quote!(#func).into()
+    let vis = &func.vis;
+    let name = &func.sig.ident;
+    let attrs = &func.attrs;
+    let stmts = &func.block.stmts;
+
+    // Collect struct fields and detect children parameter
+    let mut fields: Vec<(Vec<syn::Attribute>, syn::Ident, Box<syn::Type>)> = Vec::new();
+    let mut has_children = false;
+
+    for param in &func.sig.inputs {
+        if let syn::FnArg::Typed(pat_type) = param {
+            if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
+                let param_name = pat_ident.ident.to_string();
+
+                // children: &[NodeHandle] is special — wired to Widget::render, not a field
+                if param_name == "children" {
+                    has_children = true;
+                    continue;
+                }
+
+                // Reject reference types (Phase 1b) — component params must be owned
+                if let syn::Type::Reference(_) = &*pat_type.ty {
+                    return syn::Error::new_spanned(
+                        &pat_type.ty,
+                        format!(
+                            "Component parameter `{}` uses a reference type. \
+                             Component parameters must be owned types \
+                             (e.g., `String` instead of `&str`) because they are stored in a struct.",
+                            param_name
+                        ),
+                    )
+                    .to_compile_error()
+                    .into();
+                }
+
+                fields.push((
+                    pat_type.attrs.clone(),
+                    pat_ident.ident.clone(),
+                    pat_type.ty.clone(),
+                ));
+            }
+        }
+    }
+
+    // Struct field definitions
+    let field_defs: Vec<_> = fields
+        .iter()
+        .map(|(attrs, ident, ty)| {
+            quote! { #(#attrs)* pub #ident: #ty }
+        })
+        .collect();
+
+    // Clone self fields into local variables so the body can use param names directly
+    let clone_stmts: Vec<_> = fields
+        .iter()
+        .map(|(_, ident, _)| {
+            quote! { #[allow(unused)] let #ident = self.#ident.clone(); }
+        })
+        .collect();
+
+    // Name the children param in Widget::render based on whether the component uses it
+    let children_param = if has_children {
+        quote! { children }
+    } else {
+        quote! { _children }
+    };
+
+    quote! {
+        #(#attrs)*
+        #[derive(Default)]
+        #vis struct #name {
+            #(#field_defs,)*
+        }
+
+        impl ::std::fmt::Debug for #name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                f.debug_struct(stringify!(#name)).finish_non_exhaustive()
+            }
+        }
+
+        impl Widget for #name {
+            fn render(&self, __scope: &mut RenderScope, #children_param: &[NodeHandle]) -> NodeHandle {
+                #(#clone_stmts)*
+                #(#stmts)*
+            }
+        }
+    }
+    .into()
 }

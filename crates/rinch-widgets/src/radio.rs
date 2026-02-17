@@ -80,13 +80,13 @@ impl std::str::FromStr for RadioSize {
 #[derive(Default)]
 pub struct Radio {
     /// Input name (for grouping).
-    pub name: Option<String>,
+    pub name: String,
     /// Input value.
-    pub value: Option<String>,
+    pub value: String,
     /// Label text.
-    pub label: Option<String>,
+    pub label: String,
     /// Description text.
-    pub description: Option<String>,
+    pub description: String,
     /// Whether the radio is checked (static, for initial render or non-reactive use).
     pub checked: bool,
     /// Reactive checked getter - use this for fine-grained updates.
@@ -95,9 +95,9 @@ pub struct Radio {
     /// Whether the radio is disabled.
     pub disabled: bool,
     /// Size (xs, sm, md, lg, xl).
-    pub size: Option<String>,
+    pub size: String,
     /// Color override.
-    pub color: Option<String>,
+    pub color: String,
     /// Error state.
     pub error: bool,
     /// Callback when radio is selected.
@@ -131,11 +131,11 @@ impl Radio {
         let mut classes = vec!["rinch-radio"];
 
         // Size class
-        let size: RadioSize = self
-            .size
-            .as_ref()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_default();
+        let size: RadioSize = if self.size.is_empty() {
+            RadioSize::default()
+        } else {
+            self.size.parse().unwrap_or_default()
+        };
         classes.push(size.class_name());
 
         if self.disabled {
@@ -181,7 +181,8 @@ impl Widget for Radio {
         label_node.set_attribute("class", &class);
 
         // Color style
-        if let Some(c) = &self.color {
+        if !self.color.is_empty() {
+            let c = &self.color;
             let style = if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
                 format!("--rinch-radio-color: {}", c)
             } else {
@@ -201,14 +202,14 @@ impl Widget for Radio {
 
         // Hidden native radio input
         // Always generate a name attribute - the DOM crashes without it
-        let name = self.name.as_deref().unwrap_or("radio-group");
+        let name = if self.name.is_empty() { "radio-group" } else { &self.name };
         let input = scope.create_element("input");
         input.set_attribute("class", "rinch-radio__input");
         input.set_attribute("type", "radio");
         input.set_attribute("name", name);
 
-        if let Some(v) = &self.value {
-            input.set_attribute("value", v);
+        if !self.value.is_empty() {
+            input.set_attribute("value", &self.value);
         }
         if is_checked {
             input.set_attribute("checked", "");
@@ -230,11 +231,12 @@ impl Widget for Radio {
         label_node.append_child(&indicator);
 
         // Label and description
-        if self.label.is_some() || self.description.is_some() {
+        if !self.label.is_empty() || !self.description.is_empty() {
             let body = scope.create_element("div");
             body.set_attribute("class", "rinch-radio__body");
 
-            if let Some(label_text) = &self.label {
+            if !self.label.is_empty() {
+                let label_text = &self.label;
                 let label_span = scope.create_element("span");
                 label_span.set_attribute("class", "rinch-radio__label");
                 let label_text_node = scope.create_text(label_text);
@@ -242,7 +244,8 @@ impl Widget for Radio {
                 body.append_child(&label_span);
             }
 
-            if let Some(desc) = &self.description {
+            if !self.description.is_empty() {
+                let desc = &self.description;
                 let desc_span = scope.create_element("span");
                 desc_span.set_attribute("class", "rinch-radio__description");
                 let desc_text = scope.create_text(desc);
@@ -291,15 +294,15 @@ impl Widget for Radio {
 #[derive(Debug, Default)]
 pub struct RadioGroup {
     /// Group label.
-    pub label: Option<String>,
+    pub label: String,
     /// Description text.
-    pub description: Option<String>,
+    pub description: String,
     /// Error message.
-    pub error: Option<String>,
+    pub error: String,
     /// Size for all radios in group.
-    pub size: Option<String>,
+    pub size: String,
     /// Orientation (horizontal or vertical).
-    pub orientation: Option<String>,
+    pub orientation: String,
 }
 
 impl RadioGroup {
@@ -307,11 +310,11 @@ impl RadioGroup {
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-radio-group"];
 
-        if self.orientation.as_deref() == Some("horizontal") {
+        if self.orientation == "horizontal" {
             classes.push("rinch-radio-group--horizontal");
         }
 
-        if self.error.is_some() {
+        if !self.error.is_empty() {
             classes.push("rinch-radio-group--error");
         }
 
@@ -329,7 +332,8 @@ impl Widget for RadioGroup {
         container.set_attribute("role", "radiogroup");
 
         // Label
-        if let Some(label_text) = &self.label {
+        if !self.label.is_empty() {
+            let label_text = &self.label;
             let label_div = scope.create_element("div");
             label_div.set_attribute("class", "rinch-radio-group__label");
             let label_text_node = scope.create_text(label_text);
@@ -338,7 +342,8 @@ impl Widget for RadioGroup {
         }
 
         // Description
-        if let Some(desc) = &self.description {
+        if !self.description.is_empty() {
+            let desc = &self.description;
             let desc_div = scope.create_element("div");
             desc_div.set_attribute("class", "rinch-radio-group__description");
             let desc_text = scope.create_text(desc);
@@ -358,7 +363,8 @@ impl Widget for RadioGroup {
         container.append_child(&radios);
 
         // Error message
-        if let Some(err) = &self.error {
+        if !self.error.is_empty() {
+            let err = &self.error;
             let err_div = scope.create_element("div");
             err_div.set_attribute("class", "rinch-radio-group__error");
             let err_text = scope.create_text(err);

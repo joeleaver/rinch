@@ -37,7 +37,7 @@ use rinch_core::{
 /// ```
 pub struct FloatingPanel {
     /// Title displayed in the panel header.
-    pub title: Option<String>,
+    pub title: String,
     /// X position signal (viewport pixels).
     pub x: Option<Signal<f32>>,
     /// Y position signal (viewport pixels).
@@ -59,7 +59,7 @@ pub struct FloatingPanel {
 impl Default for FloatingPanel {
     fn default() -> Self {
         Self {
-            title: None,
+            title: String::new(),
             x: None,
             y: None,
             width: None,
@@ -114,10 +114,10 @@ impl Widget for FloatingPanel {
         header.set_attribute("class", "rinch-floating-panel__header");
 
         // Title
-        if let Some(ref title) = self.title {
+        if !self.title.is_empty() {
             let title_span = scope.create_element("span");
             title_span.set_attribute("class", "rinch-floating-panel__title");
-            let title_text = scope.create_text(title);
+            let title_text = scope.create_text(&self.title);
             title_span.append_child(&title_text);
             header.append_child(&title_span);
         }
