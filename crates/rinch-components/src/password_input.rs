@@ -1,7 +1,7 @@
 //! PasswordInput component.
 //!
 //! A password input field with visibility toggle.
-//! Uses visual masking (transparent text + bullet overlay) for proper editing support.
+//! Uses paint-level masking via `type="password"` (rinch-dom renders bullets at the paint layer).
 //!
 //! # Fine-Grained Reactivity
 //!
@@ -12,7 +12,7 @@
 //! These create Effects that update only the affected DOM nodes when signals change.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{InputCallback, Component, Callback};
+use rinch_core::{Callback, Component, InputCallback};
 use std::rc::Rc;
 
 /// PasswordInput size.
@@ -61,10 +61,9 @@ pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 
 /// A password input component with visibility toggle.
 ///
-/// Uses visual masking: the input always contains the real password,
-/// but when masked, the text is made transparent and bullets are shown
-/// in an overlay behind the input. This allows proper cursor positioning,
-/// selection, and all normal text editing operations.
+/// Uses paint-level masking: `type="password"` causes rinch-dom to render
+/// bullet characters at the paint layer. Toggling visibility switches
+/// between `type="password"` and `type="text"`.
 ///
 /// # Fine-Grained Reactivity Example
 ///
@@ -72,13 +71,11 @@ pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 /// let visible = use_signal(|| false);
 /// let password = use_signal(|| String::new());
 ///
-///
 /// rsx! {
 ///     PasswordInput {
 ///         label: "Password",
-///         // Reactive props - updates without re-render
-///         value_fn: Some(Rc::new(move || password.get())),
-///         visible_fn: Some(Rc::new(move || visible.get())),
+///         value_fn: move || password.get(),
+///         visible_fn: move || visible.get(),
 ///         oninput: move |new_value| password.set(new_value),
 ///         ontoggle: move || visible.update(|v| *v = !*v),
 ///     }
@@ -96,7 +93,7 @@ pub struct PasswordInput {
     /// Current value (static, for initial render or non-reactive use).
     pub value: String,
     /// Reactive value getter - use this for fine-grained updates.
-    /// When provided, the mask updates automatically when the signal changes.
+    /// When provided, the input value updates automatically when the signal changes.
     pub value_fn: Option<ReactiveString>,
     /// Whether the password is visible (static).
     pub visible: bool,
@@ -127,7 +124,14 @@ impl std::fmt::Debug for PasswordInput {
             .field("description", &self.description)
             .field("error", &self.error)
             .field("placeholder", &self.placeholder)
-            .field("value", &if self.value.is_empty() { "" } else { "[REDACTED]" })
+            .field(
+                "value",
+                &if self.value.is_empty() {
+                    ""
+                } else {
+                    "[REDACTED]"
+                },
+            )
             .field("value_fn", &self.value_fn.as_ref().map(|_| "<reactive>"))
             .field("visible", &self.visible)
             .field(
@@ -170,11 +174,10 @@ impl Default for PasswordInput {
 }
 
 impl PasswordInput {
-    /// Generate the base CSS class string (without visibility class).
-    fn base_class_string(&self) -> String {
+    /// Generate the CSS class string.
+    fn class_string(&self) -> String {
         let mut classes = vec!["rinch-password-input"];
 
-        // Size class
         let size: PasswordInputSize = if self.size.is_empty() {
             PasswordInputSize::default()
         } else {
@@ -203,9 +206,9 @@ fn html_escape(s: &str) -> String {
 
 impl Component for PasswordInput {
     fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
-        let base_class = self.base_class_string();
+        let container_class = self.class_string();
 
-        // Get initial values for static rendering
+        // Get initial values
         let initial_password = if let Some(ref f) = self.value_fn {
             f()
         } else {
@@ -218,13 +221,6 @@ impl Component for PasswordInput {
             self.visible
         };
 
-        // Build the container class - needs to include visibility state
-        let container_class = if initial_visible {
-            format!("{} rinch-password-input--visible", base_class)
-        } else {
-            format!("{} rinch-password-input--masked", base_class)
-        };
-
         let container = rinch_macros::rsx! { div { class: "rinch-password-input" } };
         container.set_attribute("class", &container_class);
 
@@ -233,7 +229,8 @@ impl Component for PasswordInput {
             let label_text = &self.label;
             let required_mark = if self.required { " *" } else { "" };
             let label = rinch_macros::rsx! { label { class: "rinch-password-input__label" } };
-            let label_text_node = __scope.create_text(&format!("{}{}", label_text, required_mark));
+            let label_text_node =
+                __scope.create_text(&format!("{}{}", label_text, required_mark));
             label.append_child(&label_text_node);
             container.append_child(&label);
         }
@@ -248,44 +245,49 @@ impl Component for PasswordInput {
             container.append_child(&desc_div);
         }
 
-        // Input wrapper (contains mask layer + input + toggle button)
+        // Input wrapper (contains input + toggle button)
         let wrapper = rinch_macros::rsx! { div { class: "rinch-password-input__wrapper" } };
 
-        // Mask layer - shows bullets when password is hidden
-        let mask = rinch_macros::rsx! { div { class: "rinch-password-input__mask" } };
-        let mask_text = if initial_visible {
-            String::new()
-        } else {
-            "\u{2022}".repeat(initial_password.chars().count())
-        };
-        let mask_text_node = __scope.create_text(&mask_text);
-        mask.append_child(&mask_text_node);
-        wrapper.append_child(&mask);
-
-        // Input element - always contains the real password
+        // Input element — uses type="password" for paint-level masking
         let input = rinch_macros::rsx! {
             input {
                 class: "rinch-password-input__input",
-                r#type: "text",
                 autocomplete: "off",
                 spellcheck: "false"
             }
         };
-        input.set_attribute("value", &html_escape(&initial_password));
 
-        // Set visibility styling
-        let color = if initial_visible {
-            "var(--rinch-color-text)"
-        } else {
-            "transparent"
-        };
-        input.set_attribute(
-            "style",
-            &format!(
-                "color: {}; -webkit-text-fill-color: {}; caret-color: var(--rinch-color-text)",
-                color, color
-            ),
-        );
+        // Set initial type based on visibility
+        let input_type = if initial_visible { "text" } else { "password" };
+        input.set_attribute("type", input_type);
+
+        // Reactive value binding (following TextInput pattern)
+        if let Some(ref value_fn) = self.value_fn {
+            let initial_value = value_fn();
+            input.set_attribute("value", &html_escape(&initial_value));
+
+            let value_fn = value_fn.clone();
+            let input_clone = input.clone();
+            __scope.create_effect(move || {
+                let current_value = value_fn();
+                input_clone.set_attribute("value", &html_escape(&current_value));
+            });
+        } else if !initial_password.is_empty() {
+            input.set_attribute("value", &html_escape(&initial_password));
+        }
+
+        // Reactive visibility binding — toggles type attribute
+        if let Some(ref visible_fn) = self.visible_fn {
+            let visible_fn = visible_fn.clone();
+            let input_clone = input.clone();
+            __scope.create_effect(move || {
+                let is_visible = visible_fn();
+                input_clone.set_attribute(
+                    "type",
+                    if is_visible { "text" } else { "password" },
+                );
+            });
+        }
 
         if !self.placeholder.is_empty() {
             input.set_attribute("placeholder", &html_escape(&self.placeholder));
@@ -300,30 +302,31 @@ impl Component for PasswordInput {
             input.set_attribute("autofocus", "");
         }
 
-        // Input handler - directly passes the input value (which is the real password)
-        if let Some(callback) = &self.oninput {
-            let callback = callback.clone();
+        // Always register input handler so runtime routes text input
+        {
+            let callback = self.oninput.clone();
             let handler_id = __scope.register_input_handler(move |value| {
-                callback.invoke(value);
+                if let Some(cb) = &callback {
+                    cb.invoke(value);
+                }
             });
             input.set_attribute("data-oninput", &handler_id.to_string());
         }
 
         wrapper.append_child(&input);
 
-        // Visibility toggle button
-        if self.toggle_visibility {
-            let icon = if initial_visible {
-                crate::icons::eye_off_dom(__scope)
-            } else {
-                crate::icons::eye_dom(__scope)
-            };
+        // Visibility toggle button (Mantine-style)
+        if self.toggle_visibility && !self.disabled {
+            // Pre-create both icons
+            let eye_icon = crate::icons::eye_dom(__scope);
+            let eye_off_icon = crate::icons::eye_off_dom(__scope);
 
-            let aria_label = if initial_visible {
-                "Hide password"
+            // Set initial visibility: eye-off shown when masked, eye shown when revealed
+            if initial_visible {
+                eye_off_icon.set_attribute("style", "display: none");
             } else {
-                "Show password"
-            };
+                eye_icon.set_attribute("style", "display: none");
+            }
 
             let toggle_btn = rinch_macros::rsx! {
                 button {
@@ -332,8 +335,36 @@ impl Component for PasswordInput {
                     tabindex: "-1"
                 }
             };
+
+            let aria_label = if initial_visible {
+                "Hide password"
+            } else {
+                "Show password"
+            };
             toggle_btn.set_attribute("aria-label", aria_label);
-            toggle_btn.append_child(&icon);
+
+            toggle_btn.append_child(&eye_icon);
+            toggle_btn.append_child(&eye_off_icon);
+
+            // Reactive icon swap via visible_fn
+            if let Some(ref visible_fn) = self.visible_fn {
+                let visible_fn = visible_fn.clone();
+                let eye_clone = eye_icon.clone();
+                let eye_off_clone = eye_off_icon.clone();
+                let btn_clone = toggle_btn.clone();
+                __scope.create_effect(move || {
+                    let is_visible = visible_fn();
+                    if is_visible {
+                        eye_clone.set_attribute("style", "");
+                        eye_off_clone.set_attribute("style", "display: none");
+                        btn_clone.set_attribute("aria-label", "Hide password");
+                    } else {
+                        eye_clone.set_attribute("style", "display: none");
+                        eye_off_clone.set_attribute("style", "");
+                        btn_clone.set_attribute("aria-label", "Show password");
+                    }
+                });
+            }
 
             if let Some(cb) = &self.ontoggle {
                 let handler_id = __scope.register_handler({

@@ -455,6 +455,29 @@ pub(super) fn paint_input_value(
         (value, false)
     };
 
+    // Password masking: replace display text with bullets for type="password"
+    let is_password =
+        node.attributes.get("type").map(|s| s.as_str()) == Some("password");
+    let password_display;
+    let (text, cursor_pos, selection_start) =
+        if is_password && !is_placeholder && !text.is_empty() {
+            let bullet = "\u{2022}";
+            let bullet_len = bullet.len();
+            let total_chars = value.chars().count();
+            let cursor_chars =
+                value[..cursor_pos.min(value.len())].chars().count();
+            let sel_chars =
+                value[..selection_start.min(value.len())].chars().count();
+            password_display = bullet.repeat(total_chars);
+            (
+                password_display.as_str(),
+                cursor_chars * bullet_len,
+                sel_chars * bullet_len,
+            )
+        } else {
+            (text, cursor_pos, selection_start)
+        };
+
     // Get font properties from computed style
     let font_size = node.computed_style.font_size;
     let font_weight = node.computed_style.font_weight;
