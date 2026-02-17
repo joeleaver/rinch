@@ -263,6 +263,14 @@ impl RinchApp {
     pub fn mount_component(&mut self, viewport_width: f32, viewport_height: f32) {
         let doc = Rc::new(RefCell::new(RinchDocument::new()));
 
+        // Set up network image loader if feature enabled (replaces default FileImageLoader)
+        #[cfg(feature = "image-network")]
+        {
+            doc.borrow_mut().tree.image_loader = Some(std::sync::Arc::new(
+                crate::image_loader::NetworkImageLoader,
+            ));
+        }
+
         // Register any pending fonts on the document's font context (for WASM)
         if !self.pending_fonts.is_empty() {
             let mut d = doc.borrow_mut();

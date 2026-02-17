@@ -369,13 +369,17 @@ Paper { shadow: "sm", p: "md", with_border: true,
 Divider {}
 Divider { label: "OR" }
 
-// Image
+// Image (local file or URL with image-network feature)
 Image {
-    src: "https://example.com/image.jpg",
-    width: "200px",
-    height: "150px",
-    radius: "md"
+    src: "photo.png",
+    width: "200",
+    height: "150",
+    fit: "cover",
+    radius: "md",
 }
+
+// Avatar with image
+Avatar { src: "photo.png", size: "lg" }
 
 // List
 List {

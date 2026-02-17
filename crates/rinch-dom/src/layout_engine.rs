@@ -31,12 +31,18 @@ impl RinchDocument {
             self.tree.styles_dirty = true;
         }
 
+        // Drain completed image loads and update intrinsic dimensions
+        self.drain_pending_images();
+
         // Resolve Stylo styles and apply to Taffy nodes (only if dirty)
         if self.tree.styles_dirty {
             self.resolve_styles();
             self.apply_stylo_styles_to_taffy();
             self.tree.styles_dirty = false;
         }
+
+        // Trigger loads for any background-image URLs not yet in the cache
+        self.request_background_image_loads();
 
         let root_taffy = match self.tree.nodes[self.tree.root_id].taffy_id {
             Some(id) => id,
@@ -154,6 +160,28 @@ impl RinchDocument {
                                         .get(&(text.node_id, wrap_bits))
                                         .map(|l| l.height())
                                         .unwrap_or(0.0)
+                                }),
+                            }
+                        }
+                        Some(NodeContext::Image { width, height, .. }) => {
+                            let iw = *width as f32;
+                            let ih = *height as f32;
+                            if iw == 0.0 || ih == 0.0 {
+                                // Image still loading — return zero size
+                                return taffy::Size::ZERO;
+                            }
+                            // Use intrinsic dimensions as default, but respect
+                            // CSS width/height if set (via known_dims from Taffy style)
+                            taffy::Size {
+                                width: known_dims.width.unwrap_or(iw),
+                                height: known_dims.height.unwrap_or_else(|| {
+                                    // If width is constrained but height isn't,
+                                    // maintain aspect ratio
+                                    if let Some(kw) = known_dims.width {
+                                        ih * (kw / iw)
+                                    } else {
+                                        ih
+                                    }
                                 }),
                             }
                         }

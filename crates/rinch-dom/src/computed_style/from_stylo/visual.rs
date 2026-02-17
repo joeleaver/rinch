@@ -208,31 +208,43 @@ pub(super) fn background_from_stylo(
     use style::values::computed::image::Image;
     use style::values::generics::image::GenericGradient;
 
-    // Check for gradient in background-image first
-    if !bg.background_image.0.is_empty()
-        && let Image::Gradient(boxed_gradient) = &bg.background_image.0[0]
-    {
-        let gradient = &**boxed_gradient;
-        match gradient {
-            GenericGradient::Linear {
-                direction, items, ..
-            } => {
-                let angle = gradient_direction_to_angle(direction);
-                let stops = gradient_stops_from_stylo(items, text_color);
-                if !stops.is_empty() {
-                    return BackgroundValue::LinearGradient {
-                        angle_degrees: angle,
-                        stops,
-                    };
+    // Check for gradient or image URL in background-image first
+    if !bg.background_image.0.is_empty() {
+        match &bg.background_image.0[0] {
+            Image::Gradient(boxed_gradient) => {
+                let gradient = &**boxed_gradient;
+                match gradient {
+                    GenericGradient::Linear {
+                        direction, items, ..
+                    } => {
+                        let angle = gradient_direction_to_angle(direction);
+                        let stops = gradient_stops_from_stylo(items, text_color);
+                        if !stops.is_empty() {
+                            return BackgroundValue::LinearGradient {
+                                angle_degrees: angle,
+                                stops,
+                            };
+                        }
+                    }
+                    GenericGradient::Radial { items, .. } => {
+                        let stops = gradient_stops_from_stylo(items, text_color);
+                        if !stops.is_empty() {
+                            return BackgroundValue::RadialGradient { stops };
+                        }
+                    }
+                    _ => {} // conic gradients not supported yet
                 }
             }
-            GenericGradient::Radial { items, .. } => {
-                let stops = gradient_stops_from_stylo(items, text_color);
-                if !stops.is_empty() {
-                    return BackgroundValue::RadialGradient { stops };
+            Image::Url(url_value) => {
+                let url_str = match url_value {
+                    style::values::computed::url::ComputedUrl::Valid(url) => url.as_str().to_string(),
+                    style::values::computed::url::ComputedUrl::Invalid(s) => s.to_string(),
+                };
+                if !url_str.is_empty() {
+                    return BackgroundValue::Image { url: url_str };
                 }
             }
-            _ => {} // conic gradients not supported yet
+            _ => {}
         }
     }
 

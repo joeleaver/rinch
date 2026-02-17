@@ -98,7 +98,30 @@ pub fn data_display_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "User profile images with initials fallback." }
             Space { h: "md" }
 
-            SimpleGrid { cols: Some(2), spacing: "lg",
+            SimpleGrid { cols: Some(3), spacing: "lg",
+                // Avatar with image
+                Paper { p: "xl", radius: "md", with_border: true,
+                    Stack { gap: "md",
+                        Text { weight: "600", "Avatar with Image" }
+                        Text { size: "sm", color: "dimmed", "Display user photos with image source" }
+                        Divider {}
+                        Group { gap: "md",
+                            Stack { align: "center", gap: "xs",
+                                Avatar { src: "test_image.png", size: "lg", alt: "User 1" }
+                                Text { size: "xs", color: "dimmed", "Image" }
+                            }
+                            Stack { align: "center", gap: "xs",
+                                Avatar { src: "test_image.png", size: "xl", alt: "User 2" }
+                                Text { size: "xs", color: "dimmed", "Large" }
+                            }
+                            Stack { align: "center", gap: "xs",
+                                Avatar { src: "test_image.png", size: "md", radius: "md", alt: "User 3" }
+                                Text { size: "xs", color: "dimmed", "Rounded" }
+                            }
+                        }
+                    }
+                }
+
                 // Avatar with names
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
@@ -249,6 +272,47 @@ pub fn data_display_section() -> NodeHandle {
                                 "The theme system provides CSS variables for colors, spacing, typography, and shadows. Components accept color, size, and variant props for customization."
                             }
                         }
+                    }
+                }
+            }
+
+            Space { h: "xl" }
+
+            // ============================================
+            // IMAGE
+            // ============================================
+            Title { order: 3, "Image" }
+            Space { h: "sm" }
+            Text { color: "dimmed", size: "sm", "Image rendering with object-fit modes and background-image CSS." }
+            Space { h: "md" }
+
+            SimpleGrid { cols: Some(3), spacing: "lg",
+                // img element
+                Paper { p: "xl", radius: "md", with_border: true,
+                    Stack { gap: "md",
+                        Text { weight: "600", "img Element" }
+                        Divider {}
+                        Image { src: "test_image.png", width: "200", height: "150", fit: "contain" }
+                    }
+                }
+
+                // background-image
+                Paper { p: "xl", radius: "md", with_border: true,
+                    Stack { gap: "md",
+                        Text { weight: "600", "Background Image" }
+                        Divider {}
+                        div {
+                            style: "width: 200px; height: 150px; background-image: url(test_image.png); background-size: cover;",
+                        }
+                    }
+                }
+
+                // img with different fit
+                Paper { p: "xl", radius: "md", with_border: true,
+                    Stack { gap: "md",
+                        Text { weight: "600", "Image Fit: Fill" }
+                        Divider {}
+                        Image { src: "test_image.png", width: "200", height: "100", fit: "fill" }
                     }
                 }
             }

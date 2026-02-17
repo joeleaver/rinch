@@ -6,6 +6,7 @@
 pub mod computed_style;
 mod dom_impl;
 pub mod html_parser;
+pub mod image_cache;
 mod ifc;
 pub mod layout;
 mod layout_engine;

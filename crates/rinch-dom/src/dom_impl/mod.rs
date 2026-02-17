@@ -104,6 +104,11 @@ impl RinchDocument {
             stylist,
         };
 
+        // Set up default file-based image loader
+        doc.tree.image_loader = Some(std::sync::Arc::new(
+            crate::image_cache::FileImageLoader,
+        ));
+
         // Load User-Agent stylesheet with default display values for HTML elements
         doc.load_ua_stylesheet();
 
@@ -249,6 +254,149 @@ impl RinchDocument {
         }
 
         any_active
+    }
+
+    /// Request an image load for a node's `src` attribute.
+    ///
+    /// If the image is already decoded in the cache, updates intrinsic dimensions
+    /// immediately. Otherwise kicks off an async load on a background thread.
+    pub(crate) fn request_image_load_for_node(&mut self, node_id: usize, src: &str) {
+        if src.is_empty() {
+            return;
+        }
+
+        // Check if already in cache
+        if let Some(img) = self.tree.image_cache.get(src) {
+            // Already decoded — update intrinsic dimensions on the Taffy node
+            let (iw, ih) = (img.width, img.height);
+            if let Some(taffy_id) = self.tree.nodes[node_id].taffy_id {
+                let _ = self.tree.taffy.set_node_context(
+                    taffy_id,
+                    Some(crate::node::NodeContext::Image {
+                        src: src.to_string(),
+                        width: iw,
+                        height: ih,
+                    }),
+                );
+                let _ = self.tree.taffy.mark_dirty(taffy_id);
+            }
+            self.push_dirty_flags(
+                node_id,
+                DirtyFlags::LAYOUT | DirtyFlags::PAINT,
+            );
+            return;
+        }
+
+        // If already loading, don't re-request
+        if self.tree.image_cache.contains(src) {
+            return;
+        }
+
+        // Mark as loading and kick off background load
+        let Some(loader) = self.tree.image_loader.clone() else {
+            return;
+        };
+
+        self.tree.image_cache.mark_loading(src.to_string());
+
+        // Update NodeContext with src (0x0 dims while loading)
+        if let Some(taffy_id) = self.tree.nodes[node_id].taffy_id {
+            let _ = self.tree.taffy.set_node_context(
+                taffy_id,
+                Some(crate::node::NodeContext::Image {
+                    src: src.to_string(),
+                    width: 0,
+                    height: 0,
+                }),
+            );
+        }
+
+        // Kick off async load — result goes to PENDING_IMAGES static queue
+        crate::image_cache::request_image_load(src.to_string(), loader);
+    }
+
+    /// Scan for background-image URLs that need loading and trigger async loads.
+    pub fn request_background_image_loads(&mut self) {
+        let Some(loader) = self.tree.image_loader.clone() else {
+            return;
+        };
+
+        // Collect URLs that need loading
+        let urls_to_load: Vec<String> = self
+            .tree
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| {
+                if let crate::computed_style::BackgroundValue::Image { url } =
+                    &node.computed_style.background
+                    && !self.tree.image_cache.contains(url)
+                {
+                    return Some(url.clone());
+                }
+                None
+            })
+            .collect();
+
+        for url in urls_to_load {
+            self.tree.image_cache.mark_loading(url.clone());
+            crate::image_cache::request_image_load(url, loader.clone());
+        }
+    }
+
+    /// Drain completed image loads and update Taffy nodes with intrinsic dimensions.
+    ///
+    /// Called before layout to pick up newly decoded images.
+    /// Returns true if any images were newly decoded (needs re-layout).
+    pub fn drain_pending_images(&mut self) -> bool {
+        let newly_decoded = self.tree.image_cache.drain_pending();
+        if newly_decoded.is_empty() {
+            return false;
+        }
+
+        // For each newly decoded image, find <img> nodes referencing it
+        // and update their intrinsic dimensions
+        for src in &newly_decoded {
+            let img_dims = self.tree.image_cache.get(src).map(|i| (i.width, i.height));
+            let Some((iw, ih)) = img_dims else {
+                continue;
+            };
+
+            // Scan all nodes for img elements with matching src
+            let node_ids: Vec<usize> = self
+                .tree
+                .nodes
+                .iter()
+                .filter_map(|(id, node)| {
+                    if node.tag() == Some("img")
+                        && node.attributes.get("src").map(|s| s.as_str()) == Some(src)
+                    {
+                        Some(id)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            for node_id in node_ids {
+                if let Some(taffy_id) = self.tree.nodes[node_id].taffy_id {
+                    let _ = self.tree.taffy.set_node_context(
+                        taffy_id,
+                        Some(crate::node::NodeContext::Image {
+                            src: src.clone(),
+                            width: iw,
+                            height: ih,
+                        }),
+                    );
+                    let _ = self.tree.taffy.mark_dirty(taffy_id);
+                }
+                self.push_dirty_flags(
+                    node_id,
+                    DirtyFlags::LAYOUT | DirtyFlags::PAINT,
+                );
+            }
+        }
+
+        true
     }
 }
 

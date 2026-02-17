@@ -38,6 +38,7 @@ Unlike virtual DOM approaches, Rinch tracks which signals each reactive expressi
 - **Theme System** — CSS variables, 20 color palettes, dark mode support, spacing/radius/typography scales
 - **5000+ Icons** — Tabler Icons with type-safe enum API
 - **Rich-Text Editor** — CRDT-backed editor (Automerge), 22 extensions, markdown shortcuts
+- **Image Support** — `<img>` elements and `background-image` CSS, async loading, local files and HTTP(S) via optional `image-network` feature
 - **Native Integration** — Menus (muda), file dialogs, clipboard, system tray
 - **Transparent Windows** — Borderless frameless windows with custom chrome (Windows)
 - **DevTools** — F12 inspector, layout debug overlay, performance stats

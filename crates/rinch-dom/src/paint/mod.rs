@@ -5,6 +5,7 @@
 
 mod borders;
 mod contenteditable;
+pub mod image;
 mod svg;
 mod text;
 
@@ -120,6 +121,82 @@ fn paint_node(
         NodeKind::Element(el) if el.tag == "svg" => {
             paint_svg(tree, node, scene, scale, x, y, w, h);
         }
+        NodeKind::Element(el) if el.tag == "img" => {
+            let rect = Rect::new(x, y, x + w, y + h);
+
+            // Get object-fit from CSS (default: fill)
+            let object_fit = node
+                .attributes
+                .get("style")
+                .and_then(|s| {
+                    s.split(';')
+                        .find_map(|part| {
+                            let part = part.trim();
+                            part.strip_prefix("object-fit:")
+                                .or_else(|| part.strip_prefix("object-fit :"))
+                                .map(|v| v.trim().to_string())
+                        })
+                })
+                .unwrap_or_default();
+            let fit = if object_fit.is_empty() {
+                "fill"
+            } else {
+                &object_fit
+            };
+
+            // Compute transform (same as generic element)
+            let node_transform = if !node.computed_style.transform.is_identity {
+                let m = &node.computed_style.transform.matrix;
+                let cs = &node.computed_style;
+                let ox = cs.transform_origin_x.resolve(node.layout.width);
+                let oy = cs.transform_origin_y.resolve(node.layout.height);
+                let cx = x + ox as f64 * scale;
+                let cy = y + oy as f64 * scale;
+                parent_transform
+                    * Affine::translate((cx, cy))
+                    * Affine::new(*m)
+                    * Affine::translate((-cx, -cy))
+            } else {
+                parent_transform
+            };
+
+            // Opacity
+            let opacity = node.computed_style.opacity;
+            if opacity < 1.0 {
+                scene.push_layer(
+                    Fill::NonZero,
+                    peniko::Mix::Normal,
+                    opacity,
+                    node_transform,
+                    &rect,
+                );
+            }
+
+            // Paint background (if any) before image
+            let visible = !matches!(
+                node.computed_style.visibility,
+                VisibilityValue::Hidden | VisibilityValue::Collapse
+            );
+            if visible {
+                if let BackgroundValue::Color(bg_color) = &node.computed_style.background {
+                    scene.fill(Fill::NonZero, node_transform, *bg_color, None, &rect);
+                }
+
+                // Paint the image itself
+                if let Some(src) = node.attributes.get("src")
+                    && let Some(decoded) = tree.image_cache.get(src)
+                {
+                    image::paint_image(scene, decoded, rect, scale, fit, node_transform);
+                }
+
+                // Borders
+                paint_borders(scene, node, scale, x, y, w, h, 0.0, node_transform);
+            }
+
+            if opacity < 1.0 {
+                scene.pop_layer();
+            }
+        }
         NodeKind::Element(_) => {
             let rect = Rect::new(x, y, x + w, y + h);
             let visible = !matches!(
@@ -229,6 +306,13 @@ fn paint_node(
                             scene.fill(Fill::NonZero, node_transform, &brush, None, &rect);
                         }
                     }
+                    BackgroundValue::Image { url } => {
+                        if let Some(decoded) = tree.image_cache.get(url) {
+                            image::paint_image(
+                                scene, decoded, rect, scale, "fill", node_transform,
+                            );
+                        }
+                    }
                     BackgroundValue::None => {}
                 }
 
@@ -264,7 +348,12 @@ fn paint_node(
             );
 
             if clips {
-                scene.push_clip_layer(Fill::NonZero, node_transform, &rect);
+                if radius > 0.0 {
+                    let clip_rrect = RoundedRect::from_rect(rect, radius);
+                    scene.push_clip_layer(Fill::NonZero, node_transform, &clip_rrect);
+                } else {
+                    scene.push_clip_layer(Fill::NonZero, node_transform, &rect);
+                }
             }
 
             // Render contenteditable cursor/selection overlay

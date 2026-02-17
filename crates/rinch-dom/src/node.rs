@@ -2,7 +2,11 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
+use rinch_core::image::ImageLoader;
+
+use crate::image_cache::ImageCache;
 use crate::transition::{ActiveTransition, TransitionProperty, TransitionSpec};
 
 use atomic_refcell::AtomicRefCell;
@@ -68,6 +72,14 @@ pub enum NodeContext {
     Text(TextMeasure),
     /// Element (no custom measurement needed).
     Element,
+    /// Image element with intrinsic dimensions (0x0 while loading).
+    Image {
+        src: String,
+        /// Intrinsic width (0 while loading).
+        width: u32,
+        /// Intrinsic height (0 while loading).
+        height: u32,
+    },
     /// IFC root that needs Parley TreeBuilder measurement.
     InlineRoot(usize), // stores the RawNodeId of the IFC root
 }
@@ -491,6 +503,10 @@ pub struct NodeTree {
     pub active_transitions: HashMap<RawNodeId, HashMap<TransitionProperty, ActiveTransition>>,
     /// Whether transitions are enabled (false until first layout completes).
     pub transitions_enabled: bool,
+    /// Cache of loaded and decoded images.
+    pub image_cache: ImageCache,
+    /// Image loader for fetching image data (file, network, etc.).
+    pub image_loader: Option<Arc<dyn ImageLoader>>,
 }
 
 impl Default for NodeTree {
@@ -588,6 +604,8 @@ impl NodeTree {
             anonymous_block_boxes: Vec::new(),
             active_transitions: HashMap::new(),
             transitions_enabled: false,
+            image_cache: ImageCache::new(),
+            image_loader: None,
         }
     }
 

@@ -21,20 +21,30 @@ impl DomDocument for RinchDocument {
         // Block elements (div, p, h1, etc.): flex-column (emulates block stacking)
         // Inline elements (span, a, etc.): flex-row
         let is_block = matches!(node.display_mode, DisplayMode::Block);
-        let taffy_id = self
-            .tree
-            .taffy
-            .new_leaf(taffy::Style {
-                display: taffy::Display::Flex,
-                flex_direction: if is_block {
-                    taffy::FlexDirection::Column
-                } else {
-                    taffy::FlexDirection::Row
-                },
-                flex_wrap: taffy::FlexWrap::NoWrap,
-                ..Default::default()
-            })
-            .unwrap();
+        let default_style = taffy::Style {
+            display: taffy::Display::Flex,
+            flex_direction: if is_block {
+                taffy::FlexDirection::Column
+            } else {
+                taffy::FlexDirection::Row
+            },
+            flex_wrap: taffy::FlexWrap::NoWrap,
+            ..Default::default()
+        };
+        let taffy_id = if tag == "img" {
+            // Image elements use NodeContext::Image for intrinsic sizing
+            let context = NodeContext::Image {
+                src: String::new(),
+                width: 0,
+                height: 0,
+            };
+            self.tree
+                .taffy
+                .new_leaf_with_context(default_style, context)
+                .unwrap()
+        } else {
+            self.tree.taffy.new_leaf(default_style).unwrap()
+        };
         node.taffy_id = Some(taffy_id);
         self.tree.taffy_map.insert(taffy_id, id);
         self.tree.nodes.insert(node);
@@ -359,6 +369,11 @@ impl DomDocument for RinchDocument {
                 self.invalidate_parent_ifc(parent_id);
             }
         }
+        // Handle <img src="..."> — trigger async image load
+        if name == "src" && self.tree.nodes[node.0].tag() == Some("img") {
+            self.request_image_load_for_node(node.0, value);
+        }
+
         // SVG elements: width/height HTML attributes affect layout sizing
         let needs_style_recompute = name == "class"
             || name == "style"

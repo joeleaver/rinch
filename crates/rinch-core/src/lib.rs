@@ -7,10 +7,14 @@ pub mod event;
 pub mod events;
 pub mod for_loop;
 pub mod hooks;
+pub mod image;
 pub mod match_dom;
 pub mod reactive;
 pub mod reconcile;
 pub mod show;
+
+// Re-export image loading types
+pub use image::{ImageLoadResult, ImageLoader};
 
 // Re-export element types for convenience
 pub use element::{

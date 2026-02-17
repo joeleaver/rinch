@@ -217,6 +217,19 @@ impl ComputedStyle {
                         style.background = BackgroundValue::Color(c);
                     }
                 }
+                "background-image" => {
+                    if let Some(url) = value
+                        .strip_prefix("url(")
+                        .and_then(|v| v.strip_suffix(')'))
+                    {
+                        let url = url.trim_matches(|c| c == '"' || c == '\'').trim();
+                        if !url.is_empty() {
+                            style.background = BackgroundValue::Image {
+                                url: url.to_string(),
+                            };
+                        }
+                    }
+                }
                 "color" => style.color = parse_color(value),
                 "border-color" => {
                     let c = parse_color(value);

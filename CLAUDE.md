@@ -659,6 +659,35 @@ MenuEntry::Item(MenuItemProps {
 
 ## Features
 
+### Image Support
+
+Images render on the desktop (Vello) backend via `<img>` elements and `background-image: url(...)` CSS. Images load asynchronously on background threads.
+
+**Architecture:**
+```
+rinch-core:  ImageLoader trait + ImageLoadResult enum (no deps)
+rinch-dom:   ImageCache + FileImageLoader + decode pipeline (image crate)
+rinch:       NetworkImageLoader (ureq, gated behind image-network feature)
+```
+
+**Key files:**
+- `crates/rinch-core/src/image.rs` — `ImageLoader` trait, `ImageLoadResult` enum
+- `crates/rinch-dom/src/image_cache.rs` — `ImageCache`, `DecodedImage`, `FileImageLoader`, async load
+- `crates/rinch-dom/src/paint/image.rs` — `paint_image()` with object-fit support (fill/contain/cover)
+- `crates/rinch/src/image_loader.rs` — `NetworkImageLoader` (feature-gated)
+
+**How it works:**
+1. `set_attribute("src", ...)` on `<img>` or `BackgroundValue::Image` during style resolution triggers a load
+2. `ImageCache` checks if already cached; if not, spawns a background thread via `request_image_load()`
+3. The background thread calls `ImageLoader::load()` then decodes with the `image` crate to RGBA8
+4. Results go to a static `Mutex<Vec<PendingImage>>` queue
+5. `drain_pending_images()` at the start of layout picks up decoded images, updates Taffy intrinsic dims
+6. `paint_image()` renders via `scene.draw_image()` with proper affine transforms
+
+**Network loading:** Enable `features = ["image-network"]` for HTTP(S) URL support via `ureq`.
+
+**Overflow clipping:** The overflow clip layer uses `RoundedRect` when `border-radius > 0`, enabling circular avatar clipping.
+
 ### DevTools Panel
 
 Press F12 to toggle the DevTools panel which shows:

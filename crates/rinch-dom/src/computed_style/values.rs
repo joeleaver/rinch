@@ -801,7 +801,7 @@ impl Default for TransformValue {
     }
 }
 
-/// CSS background value — solid color or gradient.
+/// CSS background value — solid color, gradient, or image URL.
 #[derive(Debug, Clone, Default, Serialize)]
 pub enum BackgroundValue {
     #[default]
@@ -813,6 +813,10 @@ pub enum BackgroundValue {
     },
     RadialGradient {
         stops: Vec<GradientStop>,
+    },
+    /// A background image loaded from a URL or file path.
+    Image {
+        url: String,
     },
 }
 

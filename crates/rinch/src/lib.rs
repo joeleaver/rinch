@@ -106,6 +106,9 @@ pub mod window;
 #[cfg(feature = "desktop")]
 pub mod windows;
 
+#[cfg(feature = "image-network")]
+pub mod image_loader;
+
 #[cfg(feature = "file-dialogs")]
 pub mod dialogs;
 
