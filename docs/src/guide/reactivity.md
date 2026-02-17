@@ -60,6 +60,8 @@ fn counter() -> NodeHandle {
 
 > **Note:** The closure syntax `{|| expr}` is required for fine-grained reactive updates. Without it, values are captured once and never update. See [RSX Syntax - Reactive Expressions](./rsx-syntax.md#reactive-expressions) for details.
 
+> **When are closures unnecessary?** Inside `for` loop bodies, components are re-created when the item data changes (via keyed reconciliation). Plain props from the loop variable don't need closures — only per-item Signals do. See [RSX Syntax - Reactivity in for Loops](./rsx-syntax.md#reactivity-in-for-loops) for details.
+
 ## How Dependency Tracking Works
 
 1. When an **Effect** or **Memo** runs, it registers itself as the "current observer"

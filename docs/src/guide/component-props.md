@@ -56,7 +56,7 @@ Horizontal flex container.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `gap` | `Option<String>` | `None` | Spacing between children |
+| `gap` | `Option<String>` | `None` | Spacing between children (xs, sm, md, lg, xl or CSS value) |
 | `align` | `Option<String>` | `None` | CSS `align-items` |
 | `justify` | `Option<String>` | `None` | CSS `justify-content` |
 | `wrap` | `bool` | `false` | Enable flex-wrap |
@@ -70,8 +70,8 @@ Auto-layout grid.
 |------|------|---------|-------------|
 | `cols` | `Option<u32>` | `None` | Number of columns (default 1) |
 | `min_child_width` | `Option<String>` | `None` | Min column width for auto-fill; overrides `cols` |
-| `spacing` | `Option<String>` | `None` | Gap between items |
-| `vertical_spacing` | `Option<String>` | `None` | Vertical gap; falls back to `spacing` |
+| `spacing` | `Option<String>` | `None` | Gap between items (xs, sm, md, lg, xl or CSS value) |
+| `vertical_spacing` | `Option<String>` | `None` | Vertical gap (xs, sm, md, lg, xl or CSS value); falls back to `spacing` |
 
 ### Container
 

@@ -404,6 +404,63 @@ for todo in todos.get() {
 
 **Note:** The item type must implement `Clone + PartialEq + 'static` for `for` loops to work. This enables efficient data comparison for selective re-rendering.
 
+#### Reactivity in for Loops
+
+The `for` loop expression itself is reactive — it reads a Signal, which creates an Effect. When that Signal changes, the loop re-evaluates and reconciles the list. Items whose data changed (per `PartialEq`) get their component **re-created** with fresh props. This means the component function runs again with the new values.
+
+Because of this, **closures on plain props inside for-loop components are unnecessary** — the whole function runs again with new values when the item changes. Closures *are* needed for per-item Signals created with `use_signal` inside the loop body, since those change independently of the list data.
+
+```rust
+// Props are plain values from the for loop — no closure needed
+#[component]
+pub fn TodoItem(label: String, completed: bool) -> NodeHandle {
+    // ❌ Unnecessary: `completed` is a plain bool, not a Signal.
+    // The closure captures it once, but the component is re-created
+    // with a fresh `completed` value when the item data changes anyway.
+    rsx! { Text { style: {|| if completed { "text-decoration: line-through" } else { "" }} } }
+
+    // ✅ Simpler: just use the value directly
+    rsx! { Text { style: if completed { "text-decoration: line-through" } else { "" } } }
+}
+
+// Per-item Signal — closure IS needed
+for todo in todos.get() {
+    let editing = use_signal(|| false);  // Per-item state
+    div { key: todo.id,
+        // ✅ Closure needed: `editing` is a Signal that changes independently
+        span { style: {|| if editing.get() { "outline: 1px solid blue" } else { "" }} }
+    }
+}
+```
+
+**Rule of thumb:** If the value comes from a Signal (`.get()`), use a closure. If it comes from the `for` loop variable (a plain value), just use it directly.
+
+#### Filtering and Transforming Collections
+
+You can filter, map, and transform the collection inline in the `for` expression. The entire expression is wrapped in a reactive closure by the macro, so all Signals read inside it are tracked:
+
+```rust
+let todos = use_signal(|| vec![/* ... */]);
+let filter = use_signal(|| Filter::All);
+
+rsx! {
+    div {
+        // Filter the collection inline — .filter(), .map(), .collect() all work
+        for todo in todos.get().into_iter().filter(|t| {
+            match filter.get() {
+                Filter::All => true,
+                Filter::Active => !t.completed,
+                Filter::Completed => t.completed,
+            }
+        }).collect::<Vec<_>>() {
+            TodoItem { key: todo.id, label: todo.text.clone() }
+        }
+    }
+}
+```
+
+Both `todos` and `filter` are tracked — the loop re-evaluates when either Signal changes. Any iterator chain that produces a `Vec<T>` (where `T: Clone + PartialEq + 'static`) works.
+
 ### `match`
 
 Write standard Rust `match` directly in RSX:

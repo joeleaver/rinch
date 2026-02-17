@@ -18,7 +18,6 @@ Components are used directly in RSX with a declarative syntax:
 
 ```rust
 use rinch::prelude::*;
-use rinch_core::element::ThemeProviderProps;
 
 #[component]
 fn app() -> NodeHandle {
@@ -833,7 +832,6 @@ Leverage Rinch's theme variables for consistency:
 
 ```rust
 use rinch::prelude::*;
-use rinch_core::element::ThemeProviderProps;
 use my_components::{MyCard, MyButton};
 
 #[component]

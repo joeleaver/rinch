@@ -13,7 +13,6 @@ Configure the theme at the runtime level using `ThemeProviderProps`:
 
 ```rust
 use rinch::prelude::*;
-use rinch_core::element::ThemeProviderProps;
 
 #[component]
 fn app() -> NodeHandle {
@@ -171,7 +170,6 @@ var(--rinch-h1-font-weight)
 
 ```rust
 use rinch::prelude::*;
-use rinch_core::element::ThemeProviderProps;
 
 #[component]
 fn app() -> NodeHandle {
@@ -247,7 +245,6 @@ When using the `components` feature, all components automatically use theme CSS 
 
 ```rust
 use rinch::prelude::*;
-use rinch_core::element::ThemeProviderProps;
 
 #[component]
 fn app() -> NodeHandle {
