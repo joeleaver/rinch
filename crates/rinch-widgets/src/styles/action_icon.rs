@@ -26,12 +26,12 @@ pub fn styles() -> String {
     pointer-events: none;
 }
 
-/* ActionIcon sizes */
-.rinch-action-icon--xs { width: 1.125rem; height: 1.125rem; border-radius: var(--rinch-radius-xs); }
-.rinch-action-icon--sm { width: 1.375rem; height: 1.375rem; border-radius: var(--rinch-radius-sm); }
-.rinch-action-icon--md { width: 1.75rem; height: 1.75rem; border-radius: var(--rinch-radius-default); }
-.rinch-action-icon--lg { width: 2.125rem; height: 2.125rem; border-radius: var(--rinch-radius-default); }
-.rinch-action-icon--xl { width: 2.75rem; height: 2.75rem; border-radius: var(--rinch-radius-default); }
+/* ActionIcon sizes — font-size controls text children and 1em-based icons */
+.rinch-action-icon--xs { width: 1.125rem; height: 1.125rem; font-size: 0.75rem; border-radius: var(--rinch-radius-xs); }
+.rinch-action-icon--sm { width: 1.375rem; height: 1.375rem; font-size: 0.875rem; border-radius: var(--rinch-radius-sm); }
+.rinch-action-icon--md { width: 1.75rem; height: 1.75rem; font-size: 1.125rem; border-radius: var(--rinch-radius-default); }
+.rinch-action-icon--lg { width: 2.125rem; height: 2.125rem; font-size: 1.375rem; border-radius: var(--rinch-radius-default); }
+.rinch-action-icon--xl { width: 2.75rem; height: 2.75rem; font-size: 1.75rem; border-radius: var(--rinch-radius-default); }
 
 /* ActionIcon variants */
 .rinch-action-icon--filled {

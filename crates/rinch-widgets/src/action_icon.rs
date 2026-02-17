@@ -4,7 +4,7 @@
 
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::{Widget, WidgetCallback};
-use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
+use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon_with_options};
 
 /// ActionIcon variant styles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -214,7 +214,20 @@ impl Widget for ActionIcon {
             let loader = rinch_macros::rsx! { span { class: "rinch-action-icon__loader" } };
             container.append_child(&loader);
         } else if let Some(icon) = self.icon {
-            let icon_el = render_tabler_icon(__scope, icon, TablerIconStyle::Outline);
+            let size: ActionIconSize = self
+                .size
+                .as_ref()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_default();
+            let icon_el = render_tabler_icon_with_options(
+                __scope,
+                icon,
+                rinch_tabler_icons::TablerIconOptions {
+                    style: TablerIconStyle::Outline,
+                    size: Some(size.icon_size().parse().unwrap_or(18)),
+                    ..Default::default()
+                },
+            );
             container.append_child(&icon_el);
         } else {
             for child in children {

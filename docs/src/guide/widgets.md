@@ -4,8 +4,13 @@ Rinch provides a comprehensive widget library with 51 styled, themeable UI compo
 
 ```toml
 [dependencies]
-rinch = { path = "...", features = ["widgets"] }
+rinch = { workspace = true, features = ["desktop", "widgets", "theme"] }
 ```
+
+> **Note:** The workspace dependency uses `default-features = false`, so features must be listed explicitly:
+> - `"desktop"` — enables `run()`, window management, and the Vello renderer
+> - `"widgets"` — enables the widget library (Button, TextInput, Stack, etc.)
+> - `"theme"` — enables automatic theme CSS loading and CSS variables
 
 ## Using Widgets
 

@@ -16,6 +16,136 @@ use super::html::{
 };
 use super::DomCodegenContext;
 
+/// Check if an element is a widget with reactive (closure) props that needs
+/// statement-based insertion (like control flow) rather than expression-based.
+pub fn has_reactive_widget_props(element: &RsxElement) -> bool {
+    if !element.is_rinch_component() {
+        return false;
+    }
+    element.props.iter().any(|p| {
+        let name = p.name.to_string();
+        if name == "key" || name == "style" || name == "class" {
+            return false;
+        }
+        if name.starts_with("on") || name.ends_with("_fn") {
+            return false;
+        }
+        if expand_style_shorthand(&name).is_some() {
+            return false;
+        }
+        get_closure_expr(&p.value).is_some()
+    })
+}
+
+/// Generate reactive widget code as a statement that inserts directly into parent_var.
+///
+/// This is the preferred path when we know the parent (inside `generate_child_code`).
+/// The widget's marker and content are appended directly to the actual parent,
+/// avoiding layout issues with wrapper divs.
+pub fn generate_reactive_widget_stmt(
+    element: &RsxElement,
+    parent_var: &syn::Ident,
+    ctx: &mut DomCodegenContext,
+) -> TokenStream2 {
+    let widget_name = &element.name;
+
+    // Separate style/class/shorthand props from widget struct props
+    let mut style_prop = None;
+    let mut class_prop = None;
+    let mut shorthand_props = Vec::new();
+    let mut widget_props = Vec::new();
+
+    for prop in &element.props {
+        let name_str = prop.name.to_string();
+        if name_str == "key" {
+            continue;
+        } else if name_str == "style" {
+            style_prop = Some(prop);
+        } else if name_str == "class" {
+            class_prop = Some(prop);
+        } else if expand_style_shorthand(&name_str).is_some() {
+            shorthand_props.push(prop);
+        } else {
+            widget_props.push(prop);
+        }
+    }
+
+    let field_assignments: Vec<TokenStream2> =
+        generate_widget_field_assignments(&widget_props, true);
+
+    let children_var = ctx.next_var("children");
+    let temp_var = ctx.next_var("temp");
+    let widget_var = ctx.next_var("widget");
+    let result_var = ctx.next_var("result");
+
+    let children_code: Vec<TokenStream2> = element
+        .children
+        .iter()
+        .map(|child| super::generate_child_code(child, &temp_var, ctx))
+        .collect();
+
+    // Style/class inside the reactive closure use simple set (no separate effects needed)
+    let style_code = if let Some(prop) = style_prop {
+        let value = &prop.value;
+        if is_literal_expr(value) {
+            let value_str = crate::helpers::expr_to_string(value);
+            quote! { #result_var.set_attribute("style", #value_str); }
+        } else if let Some(closure) = get_closure_expr(value) {
+            quote! { #result_var.set_attribute("style", &::std::string::ToString::to_string(&(#closure)())); }
+        } else {
+            quote! { #result_var.set_attribute("style", &::std::string::ToString::to_string(&#value)); }
+        }
+    } else {
+        quote! {}
+    };
+
+    let class_code = if let Some(prop) = class_prop {
+        let value = &prop.value;
+        if is_literal_expr(value) {
+            let value_str = crate::helpers::expr_to_string(value);
+            quote! { #result_var.add_class(#value_str); }
+        } else if let Some(closure) = get_closure_expr(value) {
+            quote! {
+                let __cls = ::std::string::ToString::to_string(&(#closure)());
+                if !__cls.is_empty() { for __c in __cls.split_whitespace() { #result_var.add_class(__c); } }
+            }
+        } else {
+            quote! {
+                let __cls = ::std::string::ToString::to_string(&#value);
+                if !__cls.is_empty() { for __c in __cls.split_whitespace() { #result_var.add_class(__c); } }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    let shorthand_code = generate_shorthand_code_reactive(&shorthand_props, &result_var);
+
+    // Pass the actual parent directly to reactive_widget_dom — no wrapper div needed.
+    // This is the statement path: no return value, the function handles insertion.
+    quote! {
+        ::rinch::core::reactive_widget_dom(__scope, &#parent_var, move |__child_scope| {
+            let __scope = __child_scope;
+
+            #[allow(clippy::needless_update)]
+            let #widget_var = #widget_name {
+                #(#field_assignments,)*
+                ..Default::default()
+            };
+
+            let #temp_var = __scope.create_element("template");
+            #(#children_code)*
+            let #children_var: Vec<::rinch::core::NodeHandle> = #temp_var.children();
+
+            let #result_var = ::rinch::core::Widget::render(&#widget_var, __scope, &#children_var);
+            #style_code
+            #class_code
+            #shorthand_code
+            #result_var
+        });
+    }
+}
+
 /// Generate DOM code for a widget (direct construction without Element::Widget).
 pub fn element_to_dom_widget(element: &RsxElement, ctx: &mut DomCodegenContext) -> TokenStream2 {
     let widget_name = &element.name;
@@ -117,6 +247,10 @@ pub fn element_to_dom_widget(element: &RsxElement, ctx: &mut DomCodegenContext) 
 ///
 /// When any widget prop is a closure (e.g., `variant: {|| if active.get() { "filled" } else { "light" }}`),
 /// the entire widget is reconstructed whenever those signals change.
+///
+/// Uses a `display:contents` wrapper div as the parent for `reactive_widget_dom`, so the
+/// returned node can be appended to any parent by the caller. This avoids using
+/// `__scope.parent()` which would misroute to the scope root (body).
 pub fn element_to_dom_widget_reactive(
     element: &RsxElement,
     ctx: &mut DomCodegenContext,
@@ -183,9 +317,13 @@ pub fn element_to_dom_widget_reactive(
     // Shorthands inside reactive closure invoke closures directly (no separate effects)
     let shorthand_code = generate_shorthand_code_reactive(shorthand_props, &result_var);
 
+    // Use a display:contents wrapper div as the parent for reactive_widget_dom.
+    // This ensures the widget content is placed inside the wrapper, which the caller
+    // then appends to the actual parent — avoiding __scope.parent() misrouting.
     quote! {
         {
-            let #wrapper_var = __scope.parent();
+            let #wrapper_var = __scope.create_element("div");
+            #wrapper_var.set_attribute("style", "display:contents");
             ::rinch::core::reactive_widget_dom(__scope, &#wrapper_var, move |__child_scope| {
                 let __scope = __child_scope;
 
@@ -204,7 +342,8 @@ pub fn element_to_dom_widget_reactive(
                 #class_code
                 #shorthand_code
                 #result_var
-            })
+            });
+            #wrapper_var
         }
     }
 }

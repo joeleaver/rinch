@@ -108,6 +108,15 @@ pub(super) fn white_space_from_stylo(
     }
 }
 
+pub(super) fn text_decoration_from_stylo(
+    line: &style::values::specified::TextDecorationLine,
+) -> TextDecorationValue {
+    TextDecorationValue {
+        underline: line.contains(style::values::specified::TextDecorationLine::UNDERLINE),
+        strikethrough: line.contains(style::values::specified::TextDecorationLine::LINE_THROUGH),
+    }
+}
+
 pub(super) fn overflow_wrap_from_stylo(
     ow: &style::properties::longhands::overflow_wrap::computed_value::T,
 ) -> OverflowWrapValue {

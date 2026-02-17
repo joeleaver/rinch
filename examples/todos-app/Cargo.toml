@@ -1,8 +1,0 @@
-[package]
-name = "todos-app"
-version.workspace = true
-edition.workspace = true
-
-[dependencies]
-rinch = { workspace = true, features = ["desktop", "widgets", "theme"] }
-rinch-core = { workspace = true }

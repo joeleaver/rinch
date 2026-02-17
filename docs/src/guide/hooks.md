@@ -412,6 +412,16 @@ fn app() -> NodeHandle {
         || println!("App closing...")
     });
 
+    // Extract shared handler — both Enter key and button click add a todo.
+    // Signal is Copy, so no .clone() needed before closures.
+    let add_todo = move || {
+        let text = input.get();
+        if !text.is_empty() {
+            todos.update(|t| t.push(text.clone()));
+            input.set(String::new());
+        }
+    };
+
     rsx! {
         div {
             h1 { "Todos (" {|| count.get().to_string()} ")" }
@@ -419,15 +429,10 @@ fn app() -> NodeHandle {
             input {
                 value: {|| input.get()},
                 oninput: move |value: String| input.set(value),
+                onsubmit: add_todo,
             }
 
-            button { onclick: move || {
-                let text = input.get();
-                if !text.is_empty() {
-                    todos.update(|t| t.push(text.clone()));
-                    input.set(String::new());
-                }
-            }, "Add" }
+            button { onclick: add_todo, "Add" }
 
             for todo in todos.get() {
                 li { {todo.clone()} }

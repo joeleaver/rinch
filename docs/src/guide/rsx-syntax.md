@@ -542,6 +542,36 @@ rsx! {
 }
 ```
 
+## Sharing Event Handlers
+
+You can extract event handlers into variables and reuse them across multiple elements. This is especially useful when a button and a text input should trigger the same action:
+
+```rust
+let input_text = use_signal(|| String::new());
+let todos = use_signal(|| Vec::<String>::new());
+
+// Extract shared logic into a closure
+let add_todo = move || {
+    let text = input_text.get();
+    if !text.trim().is_empty() {
+        todos.update(|t| t.push(text.trim().to_string()));
+        input_text.set(String::new());
+    }
+};
+
+rsx! {
+    // Both TextInput (on Enter) and Button (on click) use the same handler
+    TextInput {
+        value_fn: move || input_text.get(),
+        oninput: move |value: String| input_text.set(value),
+        onsubmit: add_todo,
+    }
+    Button { onclick: add_todo, "Add" }
+}
+```
+
+This works because `Signal` implements `Copy`, so closures capturing signals can be used in multiple places without `.clone()`.
+
 ## Style Shorthands
 
 The `rsx!` macro supports CSS shorthand props on both HTML elements and widgets. Shorthands expand to `set_style()` calls that merge with existing styles.

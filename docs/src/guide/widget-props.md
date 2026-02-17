@@ -114,11 +114,11 @@ Empty spacing element.
 
 ### ActionIcon
 
-Icon-only button.
+Icon-only button. For text-based action buttons, use `Button` with compact styling.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `icon` | `Option<Icon>` | `None` | Icon enum |
+| `icon` | `Option<TablerIcon>` | `None` | Tabler icon to display |
 | `variant` | `Option<String>` | `None` | Same variants as Button |
 | `size` | `Option<String>` | `None` | xs, sm, md, lg, xl |
 | `color` | `Option<String>` | `None` | Theme color name |

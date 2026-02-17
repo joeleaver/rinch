@@ -115,8 +115,18 @@ pub fn render_tabler_icon_with_options(
     icon: TablerIcon,
     options: TablerIconOptions,
 ) -> NodeHandle {
-    let size = options.size.unwrap_or(24);
     let stroke_width = options.stroke_width.unwrap_or(2.0);
+
+    // Use 1em when no explicit size — icons inherit from parent font-size.
+    // Use pixel values when an explicit size is given.
+    let size_css = match options.size {
+        Some(px) => format!("{}px", px),
+        None => "1em".to_string(),
+    };
+    let size_attr = match options.size {
+        Some(px) => px.to_string(),
+        None => "24".to_string(),
+    };
 
     // Get the paths for the requested style, falling back to the other style
     let (paths, is_filled) = match options.style {
@@ -129,11 +139,11 @@ pub fn render_tabler_icon_with_options(
                 // Return empty SVG if no paths available
                 let svg = scope.create_element("svg");
                 svg.set_attribute("viewBox", "0 0 24 24");
-                svg.set_attribute("width", &size.to_string());
-                svg.set_attribute("height", &size.to_string());
+                svg.set_attribute("width", &size_attr);
+                svg.set_attribute("height", &size_attr);
                 svg.set_attribute(
                     "style",
-                    &format!("width: {}px; height: {}px; flex-shrink: 0;", size, size),
+                    &format!("width: {0}; height: {0}; flex-shrink: 0;", size_css),
                 );
                 return svg;
             }
@@ -147,11 +157,11 @@ pub fn render_tabler_icon_with_options(
                 // Return empty SVG if no paths available
                 let svg = scope.create_element("svg");
                 svg.set_attribute("viewBox", "0 0 24 24");
-                svg.set_attribute("width", &size.to_string());
-                svg.set_attribute("height", &size.to_string());
+                svg.set_attribute("width", &size_attr);
+                svg.set_attribute("height", &size_attr);
                 svg.set_attribute(
                     "style",
-                    &format!("width: {}px; height: {}px; flex-shrink: 0;", size, size),
+                    &format!("width: {0}; height: {0}; flex-shrink: 0;", size_css),
                 );
                 return svg;
             }
@@ -162,12 +172,13 @@ pub fn render_tabler_icon_with_options(
     let svg = scope.create_element("svg");
     svg.set_attribute("xmlns", "http://www.w3.org/2000/svg");
     svg.set_attribute("viewBox", "0 0 24 24");
-    svg.set_attribute("width", &size.to_string());
-    svg.set_attribute("height", &size.to_string());
-    // Also set inline styles for width/height - SVG attributes alone don't affect CSS layout
+    svg.set_attribute("width", &size_attr);
+    svg.set_attribute("height", &size_attr);
+    // Also set inline styles for width/height - SVG attributes alone don't affect CSS layout.
+    // Uses 1em by default so icons scale with parent font-size (e.g., in ActionIcon).
     svg.set_attribute(
         "style",
-        &format!("width: {}px; height: {}px; flex-shrink: 0;", size, size),
+        &format!("width: {0}; height: {0}; flex-shrink: 0;", size_css),
     );
 
     if is_filled {

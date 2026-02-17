@@ -106,6 +106,11 @@ pub(crate) fn generate_child_code(
             // Emit statement directly (e.g., `let x = ...;`)
             quote! { #stmt }
         }
+        RsxNode::Element(element) if widget::has_reactive_widget_props(element) => {
+            // Reactive widgets insert directly into parent (like control flow)
+            // to avoid display:contents wrapper divs that Taffy can't layout
+            widget::generate_reactive_widget_stmt(element, parent_var, ctx)
+        }
         _ => {
             let child_var = ctx.next_var("child");
             let child_dom = node_to_dom(child, ctx);

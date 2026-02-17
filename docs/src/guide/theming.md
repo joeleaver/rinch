@@ -77,7 +77,28 @@ var(--rinch-color-border)      /* Borders */
 var(--rinch-color-placeholder) /* Placeholder text */
 ```
 
-Available colors: `dark`, `gray`, `red`, `pink`, `grape`, `violet`, `indigo`, `blue`, `cyan`, `teal`, `green`, `lime`, `yellow`, `orange`.
+### Color Palette Reference
+
+All 14 named colors, each with 10 shades (0 = lightest, 9 = darkest):
+
+| Color | Shade 0 | Shade 6 | Notes |
+|-------|---------|---------|-------|
+| `dark` | `#C1C2C5` | `#1A1B1E` | Dark grays |
+| `gray` | `#f8f9fa` | `#868e96` | **gray-0 matches default body background** — use gray-1+ for visible backgrounds |
+| `red` | `#fff5f5` | `#fa5252` | |
+| `pink` | `#fff0f6` | `#e64980` | |
+| `grape` | `#f8f0fc` | `#be4bdb` | |
+| `violet` | `#f3f0ff` | `#7950f2` | |
+| `indigo` | `#edf2ff` | `#4c6ef5` | |
+| `blue` | `#e7f5ff` | `#228be6` | Default primary |
+| `cyan` | `#e3fafc` | `#15aabf` | |
+| `teal` | `#e6fcf5` | `#12b886` | |
+| `green` | `#ebfbee` | `#40c057` | |
+| `lime` | `#f4fce3` | `#82c91e` | |
+| `yellow` | `#fff9db` | `#fab005` | |
+| `orange` | `#fff4e6` | `#fd7e14` | |
+
+> **Tip:** `--rinch-color-body` defaults to `#f8f9fa` (gray-0) in light mode. If you use `background: var(--rinch-color-gray-0)`, it will be invisible against the default body. Use `gray-1` (`#f1f3f5`) or higher for visible card/section backgrounds.
 
 ### Spacing
 
