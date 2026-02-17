@@ -1,16 +1,60 @@
 use rinch::prelude::*;
 
-// --- Data model ---
+// === ATTEMPT 1: Writing this as a newcomer based purely on documentation ===
+//
+// FINDINGS LOG - I'll document every surprise, mistake, and friction point here.
+//
+// Each finding is tagged: [FINDING-N] description
+//
 
-#[derive(Clone, Debug, Default, PartialEq)]
+// My todo item struct
+#[derive(Clone, Debug, PartialEq)]
 struct Todo {
     id: u32,
     text: String,
     completed: bool,
 }
 
-// --- Filter enum ---
+// [FINDING-1] The docs show `#[component]` on a PascalCase function to create
+// a reusable component with props. Let me try making a TodoItem component.
+// The docs say: children: &[NodeHandle] is special, Callback has a default (no-op),
+// and props are owned types (String, bool, etc.)
+#[component]
+pub fn TodoItem(
+    label: String,
+    completed: bool,
+    on_toggle: Callback,
+    on_delete: Callback,
+) -> NodeHandle {
+    rsx! {
+        Group { gap: "sm", align: "center",
+            style: "padding: 8px 0; border-bottom: 1px solid var(--rinch-color-gray-3);",
+            Checkbox {
+                checked: completed,
+                onchange: on_toggle,
+            }
+            Text {
+                style: {
+                    let completed = completed;
+                    move || if completed {
+                        "text-decoration: line-through; color: var(--rinch-color-dimmed);"
+                    } else {
+                        ""
+                    }
+                },
+                {label.clone()}
+            }
+            ActionIcon {
+                variant: "subtle",
+                color: "red",
+                onclick: on_delete,
+                "×"
+            }
+        }
+    }
+}
 
+// Filter enum for showing all/active/completed
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Filter {
     All,
@@ -18,68 +62,15 @@ enum Filter {
     Completed,
 }
 
-// --- Todo Item Component ---
-// The docs show PascalCase #[component] generates a struct + Component impl.
-// Parameters become struct fields (must be owned types).
-// `children` is special, but we don't need it here.
-
-#[component]
-pub fn TodoItem(
-    todo: Todo,
-    on_toggle: Callback,
-    on_delete: Callback,
-) -> NodeHandle {
-    rsx! {
-        Group { gap: "sm", align: "center", style: "padding: 8px 0; border-bottom: 1px solid #eee;",
-            Checkbox {
-                checked: todo.completed,
-                onchange: on_toggle,
-            }
-            Text {
-                style: {
-                    let completed = todo.completed;
-                    move || if completed {
-                        "flex: 1; text-decoration: line-through; color: #888;"
-                    } else {
-                        "flex: 1;"
-                    }
-                },
-                {todo.text.clone()}
-            }
-            ActionIcon {
-                variant: "subtle",
-                color: "red",
-                onclick: on_delete,
-                "X"
-            }
-        }
-    }
-}
-
-// --- Main App ---
-
 #[component]
 fn app() -> NodeHandle {
-    let next_id = use_signal(|| 1u32);
+    // State
     let todos = use_signal(|| Vec::<Todo>::new());
     let input_text = use_signal(|| String::new());
     let filter = use_signal(|| Filter::All);
+    let next_id = use_signal(|| 1u32);
 
-    // Derived state
-    let active_count = use_derived(move || {
-        todos.get().iter().filter(|t| !t.completed).count()
-    });
-
-    let filtered_todos = use_derived(move || {
-        let all = todos.get();
-        match filter.get() {
-            Filter::All => all,
-            Filter::Active => all.into_iter().filter(|t| !t.completed).collect(),
-            Filter::Completed => all.into_iter().filter(|t| t.completed).collect(),
-        }
-    });
-
-    // Add todo handler
+    // Add todo handler - shared between TextInput onsubmit and Button onclick
     let add_todo = move || {
         let text = input_text.get();
         if !text.trim().is_empty() {
@@ -99,6 +90,12 @@ fn app() -> NodeHandle {
             Stack { gap: "md", p: "lg",
                 // Header
                 Title { order: 1, "Todo App" }
+                Text { color: "dimmed", size: "sm",
+                    {|| format!("{} items, {} completed",
+                        todos.get().len(),
+                        todos.get().iter().filter(|t| t.completed).count()
+                    )}
+                }
 
                 // Input row
                 Group { gap: "sm",
@@ -138,38 +135,44 @@ fn app() -> NodeHandle {
                     }
                 }
 
-                // Status
-                Text { size: "sm", color: "dimmed",
-                    {|| format!("{} items remaining", active_count.get())}
-                }
-
                 // Todo list
-                Paper { shadow: "xs", p: "md",
-                    Stack { gap: "0",
-                        for todo in filtered_todos.get() {
-                            TodoItem {
-                                key: todo.id,
-                                todo: todo.clone(),
-                                on_toggle: {
-                                    let id = todo.id;
-                                    move || todos.update(|t| {
-                                        if let Some(item) = t.iter_mut().find(|i| i.id == id) {
-                                            item.completed = !item.completed;
-                                        }
-                                    })
-                                },
-                                on_delete: {
-                                    let id = todo.id;
-                                    move || todos.update(|t| t.retain(|i| i.id != id))
-                                },
-                            }
+                // [FINDING-2] The docs say for loops work with Clone + PartialEq + 'static items.
+                // My Todo struct derives those. Let me try filtering inline.
+                // [FINDING-3] I'm not sure if I can do .filter() inside a for loop expression.
+                // The docs show `for todo in todos.get()` directly. Let me try filtering first.
+                Stack { gap: "0",
+                    for todo in todos.get().into_iter().filter(|t| {
+                        match filter.get() {
+                            Filter::All => true,
+                            Filter::Active => !t.completed,
+                            Filter::Completed => t.completed,
                         }
+                    }).collect::<Vec<_>>() {
+                        // [FINDING-4] The docs show TodoItem component usage like:
+                        // TodoItem { label: "text", completed: false, on_toggle: || ..., on_delete: || ... }
+                        // But I need to capture `todo.id` for the callbacks.
+                        let id = todo.id;
+                        TodoItem {
+                            key: id,
+                            label: todo.text.clone(),
+                            completed: todo.completed,
+                            on_toggle: move || {
+                                todos.update(|list| {
+                                    if let Some(t) = list.iter_mut().find(|t| t.id == id) {
+                                        t.completed = !t.completed;
+                                    }
+                                });
+                            },
+                            on_delete: move || {
+                                todos.update(|list| list.retain(|t| t.id != id));
+                            },
+                        }
+                    }
 
-                        // Empty state
-                        if filtered_todos.get().is_empty() {
-                            Center { p: "xl",
-                                Text { color: "dimmed", "No todos yet. Add one above!" }
-                            }
+                    // Empty state
+                    if todos.get().is_empty() {
+                        Text { color: "dimmed", style: "text-align: center; padding: 40px;",
+                            "No todos yet. Add one above!"
                         }
                     }
                 }
@@ -180,7 +183,7 @@ fn app() -> NodeHandle {
                         variant: "subtle",
                         color: "red",
                         size: "xs",
-                        onclick: move || todos.update(|t| t.retain(|i| !i.completed)),
+                        onclick: move || todos.update(|list| list.retain(|t| !t.completed)),
                         "Clear completed"
                     }
                 }
@@ -190,5 +193,15 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    run("Todo App", 500, 700, app);
+    // [FINDING-5] The docs show two ways to run:
+    // - run("title", w, h, app)  -- simple
+    // - run_with_theme("title", w, h, app, theme)  -- with theme
+    // I want a nice look, so let me use run_with_theme.
+    let theme = ThemeProviderProps {
+        primary_color: Some("blue".into()),
+        default_radius: Some("md".into()),
+        ..Default::default()
+    };
+
+    run_with_theme("Todo App", 500, 700, app, theme);
 }
