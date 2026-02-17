@@ -114,42 +114,42 @@ pub fn rsx(input: TokenStream) -> TokenStream {
 /// // becomes: fn app(__scope: &mut RenderScope) -> NodeHandle { ... }
 /// ```
 ///
-/// ## PascalCase functions — Widget struct generation
+/// ## PascalCase functions — Component struct generation
 ///
-/// For PascalCase function names, the macro generates a struct + `Widget` trait impl,
-/// making the component usable in RSX with prop syntax (just like built-in widgets):
+/// For PascalCase function names, the macro generates a struct + `Component` trait impl,
+/// making the component usable in RSX with prop syntax (just like built-in components):
 ///
 /// ```ignore
 /// #[component]
 /// fn TodoItem(
 ///     todo: Todo,
-///     on_delete: Option<WidgetCallback>,
+///     on_delete: Option<Callback>,
 ///     children: &[NodeHandle],
 /// ) -> NodeHandle {
 ///     rsx! { div { {todo.name.clone()} } }
 /// }
 ///
 /// // Generates:
-/// // - pub struct TodoItem { pub todo: Todo, pub on_delete: Option<WidgetCallback> }
-/// // - impl Widget for TodoItem { ... }
+/// // - pub struct TodoItem { pub todo: Todo, pub on_delete: Option<Callback> }
+/// // - impl Component for TodoItem { ... }
 /// //
-/// // Use in RSX like any widget:
+/// // Use in RSX like any component:
 /// // TodoItem { todo: my_todo, on_delete: || remove(id) }
 /// ```
 ///
 /// ### Rules for PascalCase components:
 ///
 /// - Parameters become public struct fields (must be owned types, not references)
-/// - `children: &[NodeHandle]` is special — wired to Widget::render's children, not a field
+/// - `children: &[NodeHandle]` is special — wired to Component::render's children, not a field
 /// - The struct derives `Default` automatically
-/// - `Widget`, `RenderScope`, and `NodeHandle` must be in scope (via `use rinch::prelude::*`)
+/// - `Component`, `RenderScope`, and `NodeHandle` must be in scope (via `use rinch::prelude::*`)
 #[proc_macro_attribute]
 pub fn component(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = syn::parse_macro_input!(item as syn::ItemFn);
     let name_str = func.sig.ident.to_string();
 
     if name_str.starts_with(|c: char| c.is_uppercase()) {
-        generate_widget_component(func)
+        generate_component(func)
     } else {
         // lowercase: just inject __scope
         let mut func = func;
@@ -159,8 +159,8 @@ pub fn component(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
-/// Generate a Widget struct + impl from a PascalCase `#[component]` function.
-fn generate_widget_component(func: syn::ItemFn) -> TokenStream {
+/// Generate a Component struct + impl from a PascalCase `#[component]` function.
+fn generate_component(func: syn::ItemFn) -> TokenStream {
     use quote::quote;
 
     let vis = &func.vis;
@@ -177,7 +177,7 @@ fn generate_widget_component(func: syn::ItemFn) -> TokenStream {
             if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
                 let param_name = pat_ident.ident.to_string();
 
-                // children: &[NodeHandle] is special — wired to Widget::render, not a field
+                // children: &[NodeHandle] is special — wired to Component::render, not a field
                 if param_name == "children" {
                     has_children = true;
                     continue;
@@ -223,7 +223,7 @@ fn generate_widget_component(func: syn::ItemFn) -> TokenStream {
         })
         .collect();
 
-    // Name the children param in Widget::render based on whether the component uses it
+    // Name the children param in Component::render based on whether the component uses it
     let children_param = if has_children {
         quote! { children }
     } else {
@@ -243,7 +243,7 @@ fn generate_widget_component(func: syn::ItemFn) -> TokenStream {
             }
         }
 
-        impl Widget for #name {
+        impl Component for #name {
             fn render(&self, __scope: &mut RenderScope, #children_param: &[NodeHandle]) -> NodeHandle {
                 #(#clone_stmts)*
                 #(#stmts)*

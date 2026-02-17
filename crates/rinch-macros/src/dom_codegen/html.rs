@@ -142,8 +142,8 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
 /// Generate `set_style()` calls for style shorthand props.
 ///
 /// Handles both static values (compile-time spacing resolution) and reactive
-/// closures (runtime `resolve_spacing()`). Used by HTML, widget, and reactive
-/// widget codegen paths.
+/// closures (runtime `resolve_spacing()`). Used by HTML, component, and reactive
+/// component codegen paths.
 pub fn generate_shorthand_code(
     shorthand_props: &[&RsxProp],
     result_var: &syn::Ident,
@@ -195,10 +195,10 @@ pub fn generate_shorthand_code(
     quote! { #(#code)* }
 }
 
-/// Generate `set_style()` calls for shorthand props inside a reactive widget closure.
+/// Generate `set_style()` calls for shorthand props inside a reactive component closure.
 ///
 /// Similar to `generate_shorthand_code` but closures are invoked directly (tracking
-/// signals) rather than creating separate effects, since the entire widget re-renders.
+/// signals) rather than creating separate effects, since the entire component re-renders.
 pub fn generate_shorthand_code_reactive(
     shorthand_props: &[&RsxProp],
     result_var: &syn::Ident,
@@ -220,7 +220,7 @@ pub fn generate_shorthand_code_reactive(
                             #result_var.set_style(#css_prop, #resolved);
                         }
                     } else if let Some(closure) = get_closure_expr(value) {
-                        // Inside reactive widget, invoke closure directly (tracks signals)
+                        // Inside reactive component, invoke closure directly (tracks signals)
                         quote! {
                             {
                                 let __val = ::std::string::ToString::to_string(&(#closure)());
@@ -243,7 +243,7 @@ pub fn generate_shorthand_code_reactive(
     quote! { #(#code)* }
 }
 
-/// Generate post-render style application code for a widget.
+/// Generate post-render style application code for a component.
 pub fn generate_style_code(
     style_prop: Option<&RsxProp>,
     result_var: &syn::Ident,
@@ -281,7 +281,7 @@ pub fn generate_style_code(
     }
 }
 
-/// Generate post-render class application code for a widget.
+/// Generate post-render class application code for a component.
 pub fn generate_class_code(
     class_prop: Option<&RsxProp>,
     result_var: &syn::Ident,

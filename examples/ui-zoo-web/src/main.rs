@@ -3,7 +3,7 @@
 //! Instead of painting to a Canvas 2D or WebGPU surface, this runtime creates
 //! real browser DOM elements via `web_sys`. The browser handles layout, CSS,
 //! text rendering, and painting natively. The reactive system (Signal/Effect)
-//! and all widgets work through `NodeHandle` -> `DomDocument`, so everything
+//! and all components work through `NodeHandle` -> `DomDocument`, so everything
 //! works automatically.
 
 pub mod web_document;
@@ -89,7 +89,7 @@ fn app() -> NodeHandle {
                 div { class: "sidebar",
                     div { class: "sidebar-header",
                         Title { order: 3, "UI Zoo" }
-                        Text { size: "xs", color: "dimmed", "Rinch Widget Showcase" }
+                        Text { size: "xs", color: "dimmed", "Rinch Component Showcase" }
                     }
                     Space { h: "md" }
                     {nav_links(__scope, current_section, nav)}

@@ -1,6 +1,6 @@
 # rinch
 
-The main rinch crate provides the application entry point, shell runtime, and re-exports commonly used types from `rinch-core`, `rinch-macros`, `rinch-theme`, and `rinch-widgets`.
+The main rinch crate provides the application entry point, shell runtime, and re-exports commonly used types from `rinch-core`, `rinch-macros`, `rinch-theme`, and `rinch-components`.
 
 ## Entry Point
 
@@ -78,7 +78,7 @@ This includes:
 
 **Element and prop types** (from `rinch_core::element::*`):
 - `Element`, `Children`, `WindowProps`, `MenuProps`, `MenuItemProps`, `ThemeProviderProps`
-- `WidgetCallback`, `MenuItemCallback`, `SectionRenderer`
+- `Callback`, `MenuItemCallback`, `SectionRenderer`
 
 **Reactive primitives**:
 - `Signal`, `Effect`, `Memo`, `Scope`
@@ -94,8 +94,8 @@ This includes:
 **DOM construction**:
 - `NodeHandle`, `RenderScope`, `with_render_scope`
 
-**Widget trait**:
-- `Widget`
+**Component trait**:
+- `Component`
 
 **Control flow**:
 - `show_dom`, `FineShowBuilder` (conditional rendering)
@@ -116,8 +116,8 @@ This includes:
 **Theme types** (theme feature):
 - All types from `rinch_theme` (colors, spacing, radius, etc.)
 
-**Widget types** (widgets feature):
-- All widget structs from `rinch_widgets` (Button, TextInput, Stack, Group, etc.)
+**Component types** (components feature):
+- All component structs from `rinch_components` (Button, TextInput, Stack, Group, etc.)
 
 ## Macros
 
@@ -199,9 +199,9 @@ Fine-grained rendering types (re-exported from `rinch-core`):
 
 Theme system types from `rinch-theme`.
 
-### `rinch::widgets` (widgets feature)
+### `rinch::components` (components feature)
 
-Widget library from `rinch-widgets`.
+Component library from `rinch-components`.
 
 ### `rinch::dialogs` (file-dialogs feature)
 

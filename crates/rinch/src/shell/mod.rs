@@ -50,7 +50,7 @@ where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
     // Auto-load default theme CSS when theme feature is enabled
-    // This ensures widgets are visible even without run_with_theme()
+    // This ensures components are visible even without run_with_theme()
     #[cfg(feature = "theme")]
     {
         crate::setup_theme_css(&rinch_core::element::ThemeProviderProps::default());

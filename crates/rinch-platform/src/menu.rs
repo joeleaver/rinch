@@ -2,7 +2,7 @@
 //!
 //! Native menus are a desktop-only concept. On web and mobile, this
 //! trait can be implemented as a no-op, or applications can use
-//! rinch widgets to render custom menus.
+//! rinch components to render custom menus.
 
 use crate::{KeyCode, Modifiers};
 

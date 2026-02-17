@@ -1,0 +1,13 @@
+[package]
+name = "rinch-editor-components"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Toolbar and control components for Rinch rich-text editor"
+
+[dependencies]
+rinch-core = { workspace = true }
+rinch-editor = { path = "../rinch-editor" }
+rinch-components = { path = "../rinch-components" }
+rinch-macros = { workspace = true }
+rinch-tabler-icons = { workspace = true }

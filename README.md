@@ -31,7 +31,7 @@ Unlike virtual DOM approaches, Rinch tracks which signals each reactive expressi
 ## Features
 
 - **Fine-Grained Reactivity** — Signals, Effects, Memos. Only changed DOM nodes update.
-- **55+ Widgets** — Mantine-inspired UI components (buttons, inputs, cards, navigation, overlays, etc.)
+- **55+ Components** — Mantine-inspired UI components (buttons, inputs, cards, navigation, overlays, etc.)
 - **HTML/CSS Rendering** — Stylo CSS engine, Taffy flexbox, Parley text shaping
 - **React-Style Hooks** — `use_signal`, `use_effect`, `use_memo`, `use_context`, `use_derived`, and more
 - **RSX Macro** — JSX-like syntax with reactive closures for declarative UIs
@@ -52,7 +52,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["desktop", "widgets", "theme"] }
+rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["desktop", "components", "theme"] }
 ```
 
 ### Basic Counter Example
@@ -131,8 +131,8 @@ Rinch is organized as a workspace of specialized crates:
 |-------|--------|---------|
 | **Core** | rinch, rinch-core, rinch-macros, rinch-dom | Foundation types, hooks, reactive primitives, rsx! macro, DOM implementation |
 | **Platform** | rinch-platform, rinch-web | Platform abstraction traits, WASM backend |
-| **UI** | rinch-widgets, rinch-theme, rinch-tabler-icons | 55+ widgets, theme system, 5000+ icons |
-| **Editor** | rinch-editor, rinch-editor-macros, rinch-editor-widgets, rinch-editable | Rich-text editor with CRDT backing, editing utilities |
+| **UI** | rinch-components, rinch-theme, rinch-tabler-icons | 55+ components, theme system, 5000+ icons |
+| **Editor** | rinch-editor, rinch-editor-macros, rinch-editor-components, rinch-editable | Rich-text editor with CRDT backing, editing utilities |
 | **Tooling** | rinch-debug, rinch-mcp-server, rinch-clipboard | IPC debug server, Claude MCP integration, clipboard support |
 | **Rendering** | rinch-renderer | (Placeholder for custom rendering) |
 
@@ -155,14 +155,14 @@ Features:
 
 ### ui-zoo
 
-Interactive widget showcase displaying all 55+ Rinch components.
+Interactive component showcase displaying all 55+ Rinch components.
 [**Try the live demo**](https://joeleaver.github.io/rinch/ui-zoo/) (requires WebGPU) or run locally:
 
 ```bash
 cargo run -p ui-zoo
 ```
 
-Perfect for exploring the widget library and theme customization.
+Perfect for exploring the component library and theme customization.
 
 ## Keyboard Shortcuts
 
@@ -194,7 +194,7 @@ cargo build
 # Run the rich-text editor example
 cargo run -p ui-zoo-desktop
 
-# Run the widget showcase
+# Run the component showcase
 cargo run -p ui-zoo
 
 # Build and open API docs

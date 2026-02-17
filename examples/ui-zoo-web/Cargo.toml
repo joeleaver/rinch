@@ -11,7 +11,7 @@ description = "UI Zoo WASM build for GitHub Pages deployment"
 ui-zoo = { path = "../ui-zoo" }
 
 # Rinch without desktop
-rinch = { path = "../../crates/rinch", default-features = false, features = ["widgets", "theme"] }
+rinch = { path = "../../crates/rinch", default-features = false, features = ["components", "theme"] }
 rinch-core = { path = "../../crates/rinch-core", features = ["theme"] }
 
 # WASM bindings

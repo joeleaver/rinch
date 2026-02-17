@@ -207,7 +207,7 @@ fn test_set_text_content_updates_measurement() {
 fn test_nested_flex_column_layout() {
     let mut doc = RinchDocument::new();
 
-    // Load CSS matching widget styles
+    // Load CSS matching component styles
     doc.load_css(r#"
         .rinch-borderlesswindow { display: flex; flex-direction: column; height: 100vh; width: 100vw; }
         .rinch-borderlesswindow__content { flex: 1; min-height: 0; overflow-y: auto; }
@@ -286,10 +286,10 @@ fn test_nested_flex_column_layout() {
 }
 
 #[test]
-fn test_style_tag_then_widget_nodes() {
+fn test_style_tag_then_component_nodes() {
     let mut doc = RinchDocument::new();
 
-    // Load widget CSS first (like runtime does)
+    // Load component CSS first (like runtime does)
     doc.load_css(".rinch-center { display: flex; align-items: center; justify-content: center; }");
     doc.load_css(".rinch-stack { display: flex; flex-direction: column; }");
 
@@ -301,7 +301,7 @@ fn test_style_tag_then_widget_nodes() {
     let style_text = doc.create_text("* { box-sizing: border-box; margin: 0; padding: 0; }");
     doc.append_child(style_el, style_text);
 
-    // Create widget nodes AFTER style tag
+    // Create component nodes AFTER style tag
     let main = doc.create_element("div");
     doc.set_attribute(main, "class", "main-content");
     doc.append_child(body, main);

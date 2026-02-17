@@ -17,11 +17,11 @@ crates/
 ├── rinch-dom/           # CSS + layout + paint engine (18.4K lines) — heaviest crate
 ├── rinch-platform/      # Platform abstraction traits (500 lines)
 ├── rinch/               # Desktop runtime, facade crate (15.8K lines)
-├── rinch-widgets/       # 56 Mantine-inspired widgets (17.8K lines, 113 files)
+├── rinch-components/    # 56 Mantine-inspired components (17.8K lines, 113 files)
 ├── rinch-theme/         # Theme system, CSS variables (1.5K lines)
 ├── rinch-editor/        # ProseMirror-style rich-text editor (11.4K lines)
 ├── rinch-editable/      # Text editing primitives (1.5K lines)
-├── rinch-editor-widgets/# Editor toolbar and controls (1.5K lines)
+├── rinch-editor-components/# Editor toolbar and controls (1.5K lines)
 ├── rinch-editor-macros/ # Editor proc macros (231 lines)
 ├── rinch-clipboard/     # Clipboard via arboard (373 lines)
 ├── rinch-tabler-icons/  # 5000+ icons, fetched at build time (721 lines)
@@ -32,7 +32,7 @@ crates/
 └── rinch-web/           # STUB — 217 lines, all TODOs
 
 examples/
-├── ui-zoo/              # Shared widget showcase (primary dev target)
+├── ui-zoo/              # Shared component showcase (primary dev target)
 ├── ui-zoo-desktop/      # Desktop entry point
 ├── ui-zoo-web/          # WASM entry (excluded from workspace, not functional via rinch-web)
 ├── hello_rinch_dom/     # Minimal hello world
@@ -51,7 +51,7 @@ rinch (facade)
   ├── rinch-platform (always)
   ├── rinch-dom (desktop feature)
   ├── rinch-theme (theme feature)
-  ├── rinch-widgets (widgets feature → pulls theme)
+  ├── rinch-components (components feature → pulls theme)
   ├── rinch-debug (debug feature)
   └── winit, wgpu, vello, muda (desktop feature)
 
@@ -59,7 +59,7 @@ rinch-dom
   ├── rinch-core
   └── stylo, stylo_taffy, taffy, parley, vello, cssparser
 
-rinch-widgets → rinch-core, rinch-theme, rinch-macros
+rinch-components → rinch-core, rinch-theme, rinch-macros
 rinch-editor → rinch-core, rinch-editable, rinch-clipboard, automerge
 ```
 
@@ -74,14 +74,14 @@ rinch-editor → rinch-core, rinch-editable, rinch-clipboard, automerge
 
 ### RSX Macro Auto-Wrapping
 
-The `rsx!` macro auto-wraps widget prop values. **Never** manually wrap in `Some(...)`, `Rc::new(...)`, or `WidgetCallback::new(...)`:
+The `rsx!` macro auto-wraps component prop values. **Never** manually wrap in `Some(...)`, `Rc::new(...)`, or `Callback::new(...)`:
 
 ```rust
 // CORRECT — macro wraps for you
 Button { variant: "filled", onclick: move || do_thing() }
 
 // WRONG — double-wrapping
-Button { variant: Some(String::from("filled")), onclick: Some(WidgetCallback::new(|| do_thing())) }
+Button { variant: Some(String::from("filled")), onclick: Some(Callback::new(|| do_thing())) }
 ```
 
 ### Native Control Flow in RSX
@@ -115,7 +115,7 @@ rsx! {
 
 ```rust
 #[component]
-fn my_widget(title: &str) -> NodeHandle {
+fn my_component(title: &str) -> NodeHandle {
     // __scope is auto-injected by the macro
     let count = use_signal(|| 0);
     rsx! {
@@ -143,7 +143,7 @@ Hooks must be called in the same order every render — no conditional hooks, no
 - `for_loop.rs` — Keyed list reconciliation (LIS algorithm), `for_each_dom()` and `for_each_dom_typed()`
 - `show.rs` — Conditional rendering (`show_dom()`)
 - `match_dom.rs` — Multi-branch conditional rendering (`match_dom()`)
-- `element.rs` (593 lines) — Widget trait, Element enum, callback types
+- `element.rs` (593 lines) — Component trait, Element enum, callback types
 - `events.rs` (940 lines) — Event types, event handler registration
 
 **When working here:**
@@ -176,14 +176,14 @@ Hooks must be called in the same order every render — no conditional hooks, no
 - `dom_codegen/mod.rs` — RSX macro code generation (dispatches to submodules)
 - `dom_codegen/control_flow.rs` — Codegen for Show, For, and native `if`/`for`/`match`
 - `dom_codegen/html.rs` — HTML element codegen
-- `dom_codegen/widget.rs` — Widget codegen
+- `dom_codegen/component_codegen.rs` — Component codegen
 - `element.rs` — Element parsing
 - `node.rs` — Node parsing (includes `RsxIfBlock`, `RsxForLoop`, `RsxMatchBlock`)
 
 **When working here:**
 - Changes affect every component in the project
 - 79 tests cover RSX parsing and codegen
-- Be careful with the auto-wrapping logic for widget props (Some, Rc, callbacks)
+- Be careful with the auto-wrapping logic for component props (Some, Rc, callbacks)
 - Native control flow (`if`/`for`/`match`) desugars to `show_dom()`/`for_each_dom_typed()`/`match_dom()`
 
 ### rinch (desktop runtime / facade)
@@ -200,21 +200,21 @@ Hooks must be called in the same order every render — no conditional hooks, no
 **When working here:**
 - `app.rs` is the most dangerous file to modify — side effects are likely
 - The `prelude` module re-exports everything from sub-crates
-- Feature flags gate heavy dependencies (desktop, widgets, theme, debug, etc.)
+- Feature flags gate heavy dependencies (desktop, components, theme, debug, etc.)
 
-### rinch-widgets (56 widgets)
+### rinch-components (56 components)
 
 **Key files:**
-- `styles/` directory — CSS generation for each widget
-- Individual widget files (e.g., `button.rs`, `text_input.rs`, `modal.rs`, `tabs.rs`)
+- `styles/` directory — CSS generation for each component
+- Individual component files (e.g., `button.rs`, `text_input.rs`, `modal.rs`, `tabs.rs`)
 - `icons.rs` (855 lines) — SVG icon rendering
-- `tree.rs` (703 lines) — Most complex widget
+- `tree.rs` (703 lines) — Most complex component
 
 **When working here:**
-- Each widget is self-contained — low risk to modify individually
-- Widgets implement `Widget::render(&self, scope, children) -> NodeHandle`
+- Each component is self-contained — low risk to modify individually
+- Components implement `Component::render(&self, scope, children) -> NodeHandle`
 - Follow existing patterns: look at `badge.rs` (simple) or `tabs.rs` (complex) as templates
-- **No unit tests** on individual widgets currently — test via ui-zoo visually
+- **No unit tests** on individual components currently — test via ui-zoo visually
 - `_fn` suffix props (e.g., `value_fn`, `checked_fn`) enable surgical DOM updates
 
 ### rinch-editor (rich-text editor)
@@ -250,7 +250,7 @@ cargo fmt --check                   # Format check
 
 ## Common Pitfalls
 
-1. **Double-wrapping props** — The rsx! macro auto-wraps. Writing `Some(...)` or `WidgetCallback::new(...)` in rsx! causes confusing type errors.
+1. **Double-wrapping props** — The rsx! macro auto-wraps. Writing `Some(...)` or `Callback::new(...)` in rsx! causes confusing type errors.
 2. **Non-reactive expressions** — `{count.get()}` captures once; `{|| count.get()}` creates an Effect that updates. This is the #1 source of "UI doesn't update" bugs.
 3. **Conditional hooks** — Hooks must be called unconditionally, in the same order. Use `if`/`else` or `Show` for conditional rendering instead.
 4. **Missing `desktop` feature** — The workspace default-features is false. Without `features = ["desktop"]`, `run()` and rendering APIs are unavailable.
@@ -279,10 +279,10 @@ Build the MCP server first: `cargo build -p rinch-mcp-server`
 | rinch-dom | 207 | Computed styles, DOM ops, IFC, layout, paint, transitions |
 | rinch-macros | 79 | RSX parsing, codegen, native control flow |
 | rinch-core | 65 | Reactivity, hooks, reconciliation, show/for/match |
-| rinch-editor-widgets | 32 | Toolbar, controls |
+| rinch-editor-components | 32 | Toolbar, controls |
 | rinch-visual-test | 22 | Capture, comparison, CSS export |
 | rinch-editable | 10 | Input, state |
 | rinch | 5 | HTML parser only |
-| rinch-widgets | 0 | No unit tests — tested visually via ui-zoo |
+| rinch-components | 0 | No unit tests — tested visually via ui-zoo |
 | rinch-debug | 0 | No tests |
 | rinch-mcp-server | 0 | No tests |

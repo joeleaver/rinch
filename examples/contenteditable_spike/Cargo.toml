@@ -6,6 +6,6 @@ license.workspace = true
 description = "Spike: Investigate contenteditable support for rich-text editor"
 
 [dependencies]
-rinch = { workspace = true, features = ["desktop", "widgets"] }
+rinch = { workspace = true, features = ["desktop", "components"] }
 tracing.workspace = true
 tracing-subscriber = "0.3"

@@ -2,7 +2,7 @@
 //!
 //! Instead of painting to a canvas, this implementation creates real browser DOM
 //! elements via `web_sys`. The browser handles layout, CSS, text rendering, and
-//! painting natively. The reactive system (Signal/Effect) and all widgets work
+//! painting natively. The reactive system (Signal/Effect) and all components work
 //! through NodeHandle -> DomDocument, so everything works automatically.
 
 use std::collections::HashMap;

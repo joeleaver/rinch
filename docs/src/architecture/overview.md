@@ -29,15 +29,15 @@ rinch/
 │   ├── rinch-web/          # WASM backend stubs
 │   ├── rinch-editor/       # Rich-text editor (CRDT)
 │   ├── rinch-theme/        # Theme system (CSS variables)
-│   ├── rinch-widgets/      # UI widget library (~55 widgets)
+│   ├── rinch-components/   # UI component library (~55 components)
 │   ├── rinch-editable/     # Text editing abstractions
 │   ├── rinch-clipboard/    # Cross-platform clipboard
 │   ├── rinch-tabler-icons/ # 5000+ Tabler Icons
 │   ├── rinch-debug/        # Debug IPC server
 │   └── rinch-mcp-server/   # MCP server for Claude
 └── examples/
-    ├── ui-zoo-desktop/     # Desktop widget showcase + rich-text editor
-    └── ui-zoo-web/         # Web (WASM) widget showcase using browser-native DOM
+    ├── ui-zoo-desktop/     # Desktop component showcase + rich-text editor
+    └── ui-zoo-web/         # Web (WASM) component showcase using browser-native DOM
 ```
 
 ## Layer Diagram
@@ -68,8 +68,8 @@ rinch/
 │                      rinch-core                               │
 │  Signal, Effect, Memo, RenderScope, NodeHandle, DomDocument  │
 ├──────────────────────────────────────────────────────────────┤
-│  rinch-dom    │  rinch-theme  │  rinch-widgets               │
-│  (HTML/CSS)   │  (CSS vars)   │  (~55 widgets)               │
+│  rinch-dom    │  rinch-theme  │  rinch-components            │
+│  (HTML/CSS)   │  (CSS vars)   │  (~55 components)            │
 ├──────────────────────────────────────────────────────────────┤
 │                    External Crates                            │
 │  Taffy (layout) │ Parley (text) │ Stylo (CSS) │ Vello (GPU) │
@@ -122,9 +122,9 @@ The foundation layer containing:
 - **Reactive primitives** - `Signal<T>`, `Effect`, `Memo<T>` for state management
 - **DOM abstractions** - `RenderScope`, `NodeHandle`, `DomDocument` trait
 - **Hooks API** - `use_signal`, `use_effect`, `use_memo`, `use_context`
-- **Element types** - Minimal enum: `Html`, `Fragment`, `Widget` only
+- **Element types** - Minimal enum: `Html`, `Fragment`, `Component` only
 - **Event handling** - Input and click event dispatch
-- **Icon enum** - Curated set of ~40 common icons for widgets
+- **Icon enum** - Curated set of ~40 common icons for components
 
 ### rinch-macros
 
@@ -186,7 +186,7 @@ Theme system with CSS variables:
 - Color palettes (10 shades per color, Mantine-inspired)
 - Spacing, radius, typography scales
 - Dark mode support
-- CSS variable generation for widgets
+- CSS variable generation for components
 
 ### rinch-editor
 
@@ -204,16 +204,16 @@ Rich-text editor with collaborative editing support:
 
 See [Editor Architecture](./editor.md) for technical details.
 
-### rinch-widgets
+### rinch-components
 
-UI component library (~55 widgets):
+UI component library (~55 components):
 
-- Input widgets: TextInput, Checkbox, Switch, Select, Slider
-- Display widgets: Button, Badge, Alert, Card, Notification
-- Layout widgets: Stack, Group, Grid, Container, Accordion
-- Navigation widgets: Tabs, NavLink, Breadcrumbs, Pagination
-- Overlay widgets: Modal, Drawer, Tooltip, Popover, Menu
-- Typography widgets: Text, Title, Code, Blockquote
+- Input components: TextInput, Checkbox, Switch, Select, Slider
+- Display components: Button, Badge, Alert, Card, Notification
+- Layout components: Stack, Group, Grid, Container, Accordion
+- Navigation components: Tabs, NavLink, Breadcrumbs, Pagination
+- Overlay components: Modal, Drawer, Tooltip, Popover, Menu
+- Typography components: Text, Title, Code, Blockquote
 - Data display: Table, List, Timeline, Avatar
 
 ### rinch-editable

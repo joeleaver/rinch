@@ -1,4 +1,4 @@
-//! Tree section - Tree widget showcase.
+//! Tree section - Tree component showcase.
 //!
 //! Demonstrates hierarchical data display with expand/collapse functionality,
 //! selection, custom rendering, icons, and various configurations.

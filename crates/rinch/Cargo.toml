@@ -41,7 +41,7 @@ rinch-clipboard = { workspace = true, optional = true }
 tray-icon = { workspace = true, optional = true }
 memory-stats = { version = "1.2", optional = true }
 rinch-theme = { workspace = true, optional = true }
-rinch-widgets = { workspace = true, optional = true }
+rinch-components = { workspace = true, optional = true }
 rinch-debug = { path = "../rinch-debug", optional = true }
 rinch-web = { workspace = true, optional = true }
 
@@ -63,6 +63,6 @@ clipboard = ["dep:rinch-clipboard"]
 system-tray = ["tray-icon"]
 memory-profile = ["memory-stats"]
 theme = ["dep:rinch-theme", "rinch-core/theme"]
-widgets = ["theme", "dep:rinch-widgets"]
+components = ["theme", "dep:rinch-components"]
 debug = ["dep:rinch-debug"]
 web = ["dep:rinch-web"]

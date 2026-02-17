@@ -25,7 +25,7 @@ impl RinchDocument {
     /// Load CSS into the document's stylesheet.
     ///
     /// Parses the CSS string and merges rules/variables into the existing stylesheet.
-    /// Call this at startup to load theme and widget CSS.
+    /// Call this at startup to load theme and component CSS.
     pub fn load_css(&mut self, css: &str) {
         self.load_stylo_css(css);
     }

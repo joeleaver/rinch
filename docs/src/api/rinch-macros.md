@@ -153,7 +153,7 @@ rsx! { p { {|| count.get().to_string()} } }
 // Creates an Effect that calls node.set_text() when the signal changes
 ```
 
-PascalCase components invoke the widget's `render()` method or the component function, passing `__scope` and any children.
+PascalCase components invoke the component's `render()` method or the component function, passing `__scope` and any children.
 
 ### Notes
 

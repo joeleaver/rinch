@@ -426,10 +426,10 @@ mod tests {
         assert_eq!(parse_variant(r#"div { p { "hello" } }"#), "Element");
     }
 
-    // ── Widget/component parsing (PascalCase → Element) ──────────
+    // ── Component parsing (PascalCase → Element) ──────────
 
     #[test]
-    fn parse_widget() {
+    fn parse_component() {
         assert_eq!(parse_variant(r#"Button { variant: "filled" }"#), "Element");
     }
 

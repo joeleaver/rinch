@@ -237,7 +237,7 @@ fn labeled_input(__scope: &mut RenderScope, label: &str, signal: Signal<i32>) ->
 }
 
 /// A toolbar button with an icon that highlights when active.
-/// Uses reactive style on an HTML element to avoid the reactive widget prop re-parenting bug.
+/// Uses reactive style on an HTML element to avoid the reactive component prop re-parenting bug.
 fn tool_icon(
     __scope: &mut RenderScope,
     icon: TablerIcon,

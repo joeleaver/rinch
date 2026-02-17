@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-rinch = { path = "../../crates/rinch", features = ["desktop", "widgets", "theme", "debug", "clipboard"] }
+rinch = { path = "../../crates/rinch", features = ["desktop", "components", "theme", "debug", "clipboard"] }
 rinch-core = { path = "../../crates/rinch-core" }
 rinch-tabler-icons = { path = "../../crates/rinch-tabler-icons" }
 tracing-subscriber = "0.3"

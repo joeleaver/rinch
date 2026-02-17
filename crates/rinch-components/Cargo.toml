@@ -1,0 +1,12 @@
+[package]
+name = "rinch-components"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "UI component library for the rinch GUI framework - Mantine-inspired components"
+
+[dependencies]
+rinch-core.workspace = true
+rinch-theme.workspace = true
+rinch-macros.workspace = true
+rinch-tabler-icons.workspace = true

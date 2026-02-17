@@ -22,12 +22,12 @@ rinch-core = { path = "crates/rinch-core" }
 rinch-macros = { path = "crates/rinch-macros" }
 rinch-renderer = { path = "crates/rinch-renderer" }
 rinch-theme = { path = "crates/rinch-theme" }
-rinch-widgets = { path = "crates/rinch-widgets" }
+rinch-components = { path = "crates/rinch-components" }
 rinch-tabler-icons = { path = "crates/rinch-tabler-icons" }
 rinch-dom = { path = "crates/rinch-dom" }
 rinch-editor = { path = "crates/rinch-editor" }
 rinch-editor-macros = { path = "crates/rinch-editor-macros" }
-rinch-editor-widgets = { path = "crates/rinch-editor-widgets" }
+rinch-editor-components = { path = "crates/rinch-editor-components" }
 rinch-debug = { path = "crates/rinch-debug" }
 rinch-editable = { path = "crates/rinch-editable" }
 rinch-platform = { path = "crates/rinch-platform" }

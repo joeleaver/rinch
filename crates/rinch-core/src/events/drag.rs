@@ -2,7 +2,7 @@
 
 use std::cell::RefCell;
 
-/// Active drag state for slider-like widgets.
+/// Active drag state for slider-like components.
 ///
 /// When a draggable element (like a slider) receives a mousedown event,
 /// it can register itself as the active drag target. The runtime will

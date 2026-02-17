@@ -1,4 +1,4 @@
-//! UI Zoo sections - each section showcases a category of widgets.
+//! UI Zoo sections - each section showcases a category of components.
 
 mod buttons;
 mod css_features;

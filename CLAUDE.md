@@ -36,7 +36,7 @@ crates/
 │   │       └── mod.rs        # MenuManager, MenuEntry builder API
 │   └── ...
 ├── rinch-core/               # Core types
-│   ├── src/element.rs        # Element enum (Html, Fragment, Widget only), prop types
+│   ├── src/element.rs        # Element enum (Html, Fragment, Component only), prop types
 │   ├── src/hooks.rs          # React-style hooks API (use_signal, use_effect, etc.)
 │   ├── src/reactive.rs       # Signal, Effect, Memo primitives
 │   ├── src/dom.rs            # NodeHandle, RenderScope, DomDocument trait
@@ -50,17 +50,17 @@ crates/
 │       ├── shadows.rs        # Shadow definitions
 │       ├── theme.rs          # Theme struct, defaults, builder
 │       └── css.rs            # CSS variable generation
-├── rinch-widgets/            # UI widgets (optional, enable with `widgets` feature)
+├── rinch-components/         # UI components (optional, enable with `components` feature)
 │   └── src/
-│       ├── button.rs         # Button widget
-│       ├── text_input.rs     # Text input widget
-│       ├── text.rs           # Typography widget
-│       ├── paper.rs          # Card container widget
+│       ├── button.rs         # Button component
+│       ├── text_input.rs     # Text input component
+│       ├── text.rs           # Typography component
+│       ├── paper.rs          # Card container component
 │       ├── stack.rs          # Vertical flex layout
 │       ├── group.rs          # Horizontal flex layout
 │       ├── badge.rs          # Status indicator
 │       ├── icons.rs          # SVG icon rendering (render_icon function)
-│       └── styles.rs         # Widget CSS generation
+│       └── styles.rs         # Component CSS generation
 ├── rinch-tabler-icons/       # 5000+ Tabler Icons (build.rs fetches from tabler.io)
 │   ├── build.rs              # Downloads and generates icon data from Tabler
 │   └── src/lib.rs            # TablerIcon enum, render_tabler_icon function
@@ -77,7 +77,7 @@ crates/
 └── rinch-renderer/           # (placeholder for custom rendering)
 
 examples/
-├── ui-zoo/                    # Shared widget showcase library
+├── ui-zoo/                    # Shared component showcase library
 ├── ui-zoo-desktop/            # Desktop entry point - primary development target
 ├── ui-zoo-web/                # WASM browser-native DOM entry point
 ├── hello_rinch_dom/           # Minimal hello world
@@ -92,7 +92,7 @@ The Element enum is minimal - only used for content that needs to be embedded in
 
 - `Element::Html(String)` - Raw HTML content rendered by rinch-dom
 - `Element::Fragment(Children)` - Groups multiple elements
-- `Element::Widget(Rc<dyn Widget>, Children)` - Custom widget implementation
+- `Element::Component(Rc<dyn Component>, Children)` - Custom component implementation
 
 Shell-level constructs (windows, menus, themes) are handled at the runtime level via props, not as Element variants. See the "Application Entry Point" and "Native Menus" sections below.
 
@@ -112,7 +112,7 @@ fn my_component() -> NodeHandle {
 
 Rinch has two icon systems:
 
-1. **`Icon` enum** (rinch-core) - A curated set of ~40 common icons, used by widgets
+1. **`Icon` enum** (rinch-core) - A curated set of ~40 common icons, used by components
 2. **`TablerIcon` enum** (rinch-tabler-icons) - 5000+ icons from [Tabler Icons](https://tabler.io/icons)
 
 ### Tabler Icons (Recommended)
@@ -169,7 +169,7 @@ ActionIcon {
 
 ### Built-in Icon Enum (Legacy)
 
-The `Icon` enum in rinch-core provides a smaller curated set of ~40 icons. These are used internally by widgets like `Alert`, `Notification`, etc.
+The `Icon` enum in rinch-core provides a smaller curated set of ~40 icons. These are used internally by components like `Alert`, `Notification`, etc.
 
 | Category | Icons |
 |----------|-------|
@@ -179,9 +179,9 @@ The `Icon` enum in rinch-core provides a smaller curated set of ~40 icons. These
 | **Content** | `User`, `Mail`, `Phone`, `Calendar`, `Clock`, `File`, `Folder`, `Image`, `Link`, `ExternalLink` |
 | **UI** | `Eye`, `EyeOff`, `Menu`, `MoreHorizontal`, `MoreVertical`, `Loader`, `Quote` |
 
-### Widgets with Icon Support
+### Components with Icon Support
 
-| Widget | Icon Props |
+| Component | Icon Props |
 |--------|-----------|
 | `Alert` | `icon: Option<Icon>` |
 | `Notification` | `icon: Option<Icon>` |
@@ -196,27 +196,27 @@ The `Icon` enum in rinch-core provides a smaller curated set of ~40 icons. These
 
 ## Dependencies and Imports
 
-The `rinch` crate re-exports everything through its prelude. You do NOT need separate dependencies on `rinch-widgets` or `rinch-theme`:
+The `rinch` crate re-exports everything through its prelude. You do NOT need separate dependencies on `rinch-components` or `rinch-theme`:
 
 ```toml
 # Cargo.toml - this is all you need:
 [dependencies]
-rinch = { workspace = true, features = ["desktop", "widgets", "theme"] }
+rinch = { workspace = true, features = ["desktop", "components", "theme"] }
 ```
 
 **Important:** The workspace dependency uses `default-features = false`, so `"desktop"` must be listed explicitly. Without it, `run()` and other desktop APIs won't be available.
 
 ```rust
-// In your code - prelude includes all widgets:
+// In your code - prelude includes all components:
 use rinch::prelude::*;
 
 // DO NOT add redundant imports:
-// use rinch_widgets::*;  // Not needed! Already in prelude
+// use rinch_components::*;  // Not needed! Already in prelude
 ```
 
 ## Application Entry Point
 
-Use the `run` function to start a rinch application. **`run()` automatically loads theme and widget CSS** when those features are enabled, so widgets work out of the box:
+Use the `run` function to start a rinch application. **`run()` automatically loads theme and component CSS** when those features are enabled, so components work out of the box:
 
 ```rust
 use rinch::prelude::*;
@@ -233,7 +233,7 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    // This works with widgets - theme CSS is auto-loaded
+    // This works with components - theme CSS is auto-loaded
     run("My App", 800, 600, app);
 }
 ```
@@ -290,26 +290,26 @@ fn card(title: &str) -> NodeHandle {
 
 Both patterns are supported -- `#[component]` is preferred for new code, and the manual `__scope` parameter continues to work.
 
-### PascalCase Components (Widget Generation)
+### PascalCase Components (Component Generation)
 
-When a `#[component]` function uses a PascalCase name, the macro generates a struct and `Widget` trait implementation:
+When a `#[component]` function uses a PascalCase name, the macro generates a struct and `Component` trait implementation:
 
 ```rust
 #[component]
-pub fn MyWidget(
+pub fn MyComponent(
     label: String,
     color: String,
     disabled: bool,
-    onclick: Option<WidgetCallback>,
+    onclick: Option<Callback>,
     children: &[NodeHandle],
 ) -> NodeHandle {
     // Parameters are available as local variables
     rsx! {
         div {
-            class: "my-widget",
+            class: "my-component",
             style: {format!("color: {}", color)},
             {label.clone()}
-            // children is automatically appended by Widget trait impl
+            // children is automatically appended by Component trait impl
         }
     }
 }
@@ -318,33 +318,33 @@ pub fn MyWidget(
 **Key points:**
 - **PascalCase name** triggers struct generation
 - **Parameters become public struct fields** (must be owned types: `String`, `bool`, `Option<T>`, etc.)
-- **`children: &[NodeHandle]` is special** — not a struct field, wired to `Widget::render` method
+- **`children: &[NodeHandle]` is special** — not a struct field, wired to `Component::render` method
 - **Reference types rejected** (`&str`, `&T`) with a helpful error message
 - **Auto-derives `Default`** for the generated struct
-- **Usage:** `MyWidget { label: "Hello", color: "blue", onclick: || {}, "child content" }`
+- **Usage:** `MyComponent { label: "Hello", color: "blue", onclick: || {}, "child content" }`
 
-This pattern eliminates boilerplate for creating custom widgets — just write a PascalCase component function with owned parameters.
+This pattern eliminates boilerplate for creating custom components — just write a PascalCase component function with owned parameters.
 
-## Widget Trait
+## Component Trait
 
-Widgets implement the `Widget` trait to render directly to DOM nodes:
+Components implement the `Component` trait to render directly to DOM nodes:
 
 ```rust
-pub trait Widget: std::fmt::Debug + 'static {
+pub trait Component: std::fmt::Debug + 'static {
     fn render(&self, scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle;
 }
 ```
 
-Example custom widget:
+Example custom component:
 
 ```rust
 #[derive(Debug, Default)]
 pub struct MyButton {
     pub label: Option<String>,
-    pub onclick: Option<WidgetCallback>,
+    pub onclick: Option<Callback>,
 }
 
-impl Widget for MyButton {
+impl Component for MyButton {
     fn render(&self, scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         let btn = scope.create_element("button");
         btn.set_attribute("class", "my-button");
@@ -365,17 +365,17 @@ impl Widget for MyButton {
 }
 ```
 
-## Widget Props
+## Component Props
 
-For a complete reference of every widget's props (fields, types, defaults), see [`docs/src/guide/widget-props.md`](docs/src/guide/widget-props.md).
+For a complete reference of every component's props (fields, types, defaults), see [`docs/src/guide/component-props.md`](docs/src/guide/component-props.md).
 
 **Key points:**
-- CSS shorthand props (`w`, `h`, `m`, `p`, `maw`, `px`, `my`, etc.) work on all HTML elements and widgets. They expand to `set_style()` calls. Spacing scale values (`xs`, `sm`, `md`, `lg`, `xl`) auto-resolve to `var(--rinch-spacing-{value})`. Example: `div { p: "md", maw: "600px" }`. See `docs/src/guide/rsx-syntax.md#style-shorthands` for the full list.
+- CSS shorthand props (`w`, `h`, `m`, `p`, `maw`, `px`, `my`, etc.) work on all HTML elements and components. They expand to `set_style()` calls. Spacing scale values (`xs`, `sm`, `md`, `lg`, `xl`) auto-resolve to `var(--rinch-spacing-{value})`. Example: `div { p: "md", maw: "600px" }`. See `docs/src/guide/rsx-syntax.md#style-shorthands` for the full list.
 - `Stack` and `Group` both have `align` and `justify` props for flex alignment — no need for `style:` for those.
-- **Widget text props are `String` (not `Option<String>`)** — empty string means "not set". The `rsx!` macro auto-converts string literals to `String::from(...)`.
-- All widget props accept reactive closures `{|| expr}` for automatic re-rendering when signals change.
-- `_fn` suffix props (e.g., `value_fn`, `checked_fn`, `opened_fn`) provide surgical DOM updates without full widget re-render.
-- The `rsx!` macro auto-wraps prop values — do NOT manually wrap in `Some(...)`, `Rc::new(...)`, or `WidgetCallback::new(...)`.
+- **Component text props are `String` (not `Option<String>`)** — empty string means "not set". The `rsx!` macro auto-converts string literals to `String::from(...)`.
+- All component props accept reactive closures `{|| expr}` for automatic re-rendering when signals change.
+- `_fn` suffix props (e.g., `value_fn`, `checked_fn`, `opened_fn`) provide surgical DOM updates without full component re-render.
+- The `rsx!` macro auto-wraps prop values — do NOT manually wrap in `Some(...)`, `Rc::new(...)`, or `Callback::new(...)`.
 
 ## Reactive Patterns in RSX
 
@@ -880,9 +880,9 @@ The `resize_inset` value should match your CSS content margin/padding to align t
 - `WS_EX_NOREDIRECTIONBITMAP` window style (handled automatically)
 - Patched wgpu for Rgba8Unorm storage textures (see wgpu fork below)
 
-### BorderlessWindow Widget
+### BorderlessWindow Component
 
-The `BorderlessWindow` widget provides a complete container for borderless/transparent windows with:
+The `BorderlessWindow` component provides a complete container for borderless/transparent windows with:
 - Rounded corners
 - Custom titlebar with drag support
 - Window control buttons (minimize, maximize, close)
@@ -928,9 +928,9 @@ fn app() -> NodeHandle {
 | `show_close` | `bool` | Show close button (default: true) |
 | `left_section` | `Option<SectionRenderer>` | Custom content for left side of titlebar |
 | `right_section` | `Option<SectionRenderer>` | Custom content before window controls |
-| `on_minimize` | `Option<WidgetCallback>` | Callback for minimize button |
-| `on_maximize` | `Option<WidgetCallback>` | Callback for maximize button |
-| `on_close` | `Option<WidgetCallback>` | Callback for close button |
+| `on_minimize` | `Option<Callback>` | Callback for minimize button |
+| `on_maximize` | `Option<Callback>` | Callback for maximize button |
+| `on_close` | `Option<Callback>` | Callback for close button |
 
 ### Window Control Functions
 
@@ -1141,11 +1141,11 @@ For cases requiring explicit control, use the runtime functions directly:
 - `show_dom()` — conditional rendering (equivalent to `if`/`else`)
 - `for_each_dom_typed()` — keyed list rendering (equivalent to `for`)
 
-### Reactive Widget Bindings
+### Reactive Component Bindings
 
-Some widgets support reactive value binding via `_fn` props. The `rsx!` macro auto-wraps `_fn` props — just pass a closure:
+Some components support reactive value binding via `_fn` props. The `rsx!` macro auto-wraps `_fn` props — just pass a closure:
 
-| Widget | Prop | Type | Purpose |
+| Component | Prop | Type | Purpose |
 |--------|------|------|---------|
 | `Checkbox` | `checked_fn` | `Option<ReactiveBool>` (`Rc<dyn Fn() -> bool>`) | Reactive checked state |
 | `TextInput` | `value_fn` | `Option<ReactiveString>` (`Rc<dyn Fn() -> String>`) | Reactive value binding |
@@ -1171,9 +1171,9 @@ rsx! {
 }
 ```
 
-### RSX Prop Transformation Rules (IMPORTANT - Read Before Using Widgets)
+### RSX Prop Transformation Rules (IMPORTANT - Read Before Using Components)
 
-The `rsx!` macro **automatically wraps** widget prop values. You must NOT manually wrap them or you'll get confusing type errors from double-wrapping.
+The `rsx!` macro **automatically wraps** component prop values. You must NOT manually wrap them or you'll get confusing type errors from double-wrapping.
 
 | Prop pattern | What you write | What the macro generates |
 |---|---|---|
@@ -1196,7 +1196,7 @@ TextInput { oninput: Some(InputCallback::new(move |val| ...)) }
 TextInput { oninput: move |val: String| input_signal.set(val) }
 
 // WRONG - double-wraps into Some(Some((...).into()))
-Button { onclick: Some(WidgetCallback::new(|| ...)) }
+Button { onclick: Some(Callback::new(|| ...)) }
 // RIGHT - macro adds Some((...).into()) for you
 Button { onclick: move || do_something() }
 
@@ -1205,18 +1205,18 @@ Alert { icon: Some(Icon::Check) }
 // RIGHT - macro adds Some(...) for you
 Alert { icon: Icon::Check }
 
-// WRONG - widget expects String, not Option<String>
+// WRONG - component expects String, not Option<String>
 Button { variant: Some(String::from("filled")) }
 // RIGHT - macro generates String::from("filled")
 Button { variant: "filled" }
 ```
 
 **Additional notes:**
-- Widget text props (e.g., `variant`, `color`, `size`) are now `String` (not `Option<String>`). Empty string means "not set". The macro auto-converts string literals to `String::from(...)`.
+- Component text props (e.g., `variant`, `color`, `size`) are now `String` (not `Option<String>`). Empty string means "not set". The macro auto-converts string literals to `String::from(...)`.
 - `_fn` suffix props (e.g., `checked_fn`, `value_fn`) are auto-wrapped — just pass the closure directly, don't wrap in `Some(Rc::new(...))`
 - **Note:** ThemeProvider props (`primary_color_fn`, `dark_mode_fn`) use a different codegen path and still require manual `Rc::new()` wrapping
 
-**Widget Props vs HTML Attributes:**
+**Component Props vs HTML Attributes:**
 
 - **HTML elements** (`div`, `span`, `p`, etc.) accept any attribute as a string: `style:`, `class:`, `id:`, custom `data-*`, etc. They also support reactive closures `{|| expr}` on any attribute. **`oninput` and `onchange` on `<input>`/`<textarea>` elements** receive the input value as a `String` — use `Fn(String)` closures, not `Fn()`:
   ```rust
@@ -1225,21 +1225,21 @@ Button { variant: "filled" }
       placeholder: "Type here...",
   }
   ```
-- **Widgets** (`Button`, `TextInput`, `Stack`, etc.) accept their declared struct fields as props. Additionally, all widgets support these universal props:
-  - `style:` — Applied to the widget's root DOM element after rendering. Supports static strings and reactive closures.
-  - `class:` — Merged with the widget's own CSS classes (additive, not replacing). Supports static strings and reactive closures.
+- **Components** (`Button`, `TextInput`, `Stack`, etc.) accept their declared struct fields as props. Additionally, all components support these universal props:
+  - `style:` — Applied to the component's root DOM element after rendering. Supports static strings and reactive closures.
+  - `class:` — Merged with the component's own CSS classes (additive, not replacing). Supports static strings and reactive closures.
 
 ```rust
-// style: and class: work on all widgets
+// style: and class: work on all components
 Button {
     variant: "filled",
     style: "margin-top: 8px",           // Static style
-    class: "my-custom-button",          // Merged with widget classes
+    class: "my-custom-button",          // Merged with component classes
     onclick: || do_something(),
     "Click me"
 }
 
-// Reactive closures also work on widget style/class
+// Reactive closures also work on component style/class
 Text {
     color: "dimmed",
     style: {|| if highlighted.get() { "background: yellow" } else { "" }},
@@ -1248,7 +1248,7 @@ Text {
 }
 ```
 
-**All widget props support reactive closures.** Pass `{|| expr}` to any widget prop (`variant`, `color`, `size`, `disabled`, etc.) to make it reactive — when signals change, the widget re-renders automatically:
+**All component props support reactive closures.** Pass `{|| expr}` to any component prop (`variant`, `color`, `size`, `disabled`, etc.) to make it reactive — when signals change, the component re-renders automatically:
 
 ```rust
 let active = use_signal(|| false);
@@ -1259,14 +1259,14 @@ Button {
 }
 ```
 
-For surgical updates without full widget re-render, use `_fn` props where available (e.g., `checked_fn`, `value_fn`).
+For surgical updates without full component re-render, use `_fn` props where available (e.g., `checked_fn`, `value_fn`).
 
 | Prop Type | Accepts `{|| ...}` | Update Strategy |
 |---|---|---|
 | HTML element attributes | Yes | Surgical DOM update |
-| Widget `style:`/`class:` | Yes | Surgical DOM update |
-| Widget `_fn` props | Yes (auto-wrapped) | Surgical DOM update |
-| Widget props (all others) | Yes | Full widget re-render |
+| Component `style:`/`class:` | Yes | Surgical DOM update |
+| Component `_fn` props | Yes (auto-wrapped) | Surgical DOM update |
+| Component props (all others) | Yes | Full component re-render |
 
 ## Iterative Development with MCP (IMPORTANT)
 
@@ -1358,7 +1358,7 @@ Documentation locations:
 - `docs/src/guide/rsx-syntax.md` - RSX macro syntax
 - `docs/src/guide/platform.md` - File dialogs, clipboard, system tray
 - `docs/src/guide/theming.md` - Theme system and CSS variables
-- `docs/src/guide/widgets.md` - Widget library components
+- `docs/src/guide/components.md` - Component library
 - `docs/src/SUMMARY.md` - Table of contents (update when adding new pages)
 
 Architecture documentation:
@@ -1393,5 +1393,5 @@ close_app()                         # Done
 | Borders appearing unexpectedly | `border_*_width` should be 0 for `border: none` | `computed_style.rs` - check `border-style` |
 | SVG icons 0x0 | Missing inline width/height styles | Add `style="width: Xpx; height: Xpx"` |
 | currentColor not resolving | Check `is_currentcolor()` handling | `computed_style.rs` |
-| Reactive state not updating | Need `{|| expr}` closure syntax | Widget render method |
+| Reactive state not updating | Need `{|| expr}` closure syntax | Component render method |
 | Menu active state stale | Missing reactive effect | Add `create_effect()` for class updates |

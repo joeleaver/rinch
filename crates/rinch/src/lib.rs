@@ -138,10 +138,10 @@ pub mod theme {
     pub use rinch_theme::*;
 }
 
-/// Widget library (enable with `widgets` feature).
-#[cfg(feature = "widgets")]
-pub mod widgets {
-    pub use rinch_widgets::*;
+/// Component library (enable with `components` feature).
+#[cfg(feature = "components")]
+pub mod components {
+    pub use rinch_components::*;
 }
 
 pub mod prelude {
@@ -169,8 +169,8 @@ pub mod prelude {
     pub use rinch_core::dom::{
         NodeHandle, RenderScope, has_render_scope, try_with_render_scope, with_render_scope,
     };
-    // Widget trait for fine-grained widgets
-    pub use rinch_core::Widget;
+    // Component trait for fine-grained components
+    pub use rinch_core::Component;
     // Show for reactive conditional rendering
     pub use rinch_core::{FineShowBuilder, show_dom};
     // For for reactive list rendering
@@ -184,9 +184,9 @@ pub mod prelude {
     #[cfg(feature = "theme")]
     pub use crate::update_theme;
 
-    // Re-export widgets when the widgets feature is enabled
-    #[cfg(feature = "widgets")]
-    pub use rinch_widgets::*;
+    // Re-export components when the components feature is enabled
+    #[cfg(feature = "components")]
+    pub use rinch_components::*;
 }
 
 // Re-export core types at crate root
@@ -243,9 +243,9 @@ pub fn update_theme(props: &ThemeProviderProps) {
     let theme = builder.build();
     let mut css = generate_theme_css(&theme);
 
-    #[cfg(feature = "widgets")]
+    #[cfg(feature = "components")]
     {
-        css.push_str(&rinch_widgets::generate_widget_css());
+        css.push_str(&rinch_components::generate_component_css());
     }
 
     rinch_core::set_current_theme_css(Some(css));

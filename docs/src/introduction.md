@@ -2,7 +2,7 @@
 
 Rinch is a lightweight, cross-platform GUI library for Rust that combines the power of web technologies with native performance.
 
-> **[UI Zoo Live Demo](https://joeleaver.github.io/rinch/ui-zoo/)** — Try all Rinch widgets in your browser (works in all modern browsers). Or run locally: `cargo run -p ui-zoo-desktop`
+> **[UI Zoo Live Demo](https://joeleaver.github.io/rinch/ui-zoo/)** — Try all Rinch components in your browser (works in all modern browsers). Or run locally: `cargo run -p ui-zoo-desktop`
 
 ## Philosophy
 
@@ -41,7 +41,7 @@ fn main() {
 - **Hooks (React-style)** - use_signal, use_effect, use_memo, and more
 - **Fine-grained Reactivity** - Surgical DOM updates with signals and effects
 - **Theme System (Mantine-inspired)** - CSS variables, color palettes, spacing scales
-- **80+ Widgets** - Buttons, inputs, modals, dropdowns, and more
+- **80+ Components** - Buttons, inputs, modals, dropdowns, and more
 - **Rich-Text Editor** - Full-featured text editing with selections and formatting
 - **5000+ Tabler Icons** - Type-safe SVG icons from tabler.io
 - **Native Menus** - Platform-native menu bars via muda

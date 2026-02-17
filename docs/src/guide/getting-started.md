@@ -23,11 +23,11 @@ Add rinch to your `Cargo.toml`:
 rinch = { path = "../path/to/rinch", features = ["desktop"] }
 ```
 
-The `"desktop"` feature is required for windowing and rendering. Add `"widgets"` and `"theme"` for the full widget library and theme system:
+The `"desktop"` feature is required for windowing and rendering. Add `"components"` and `"theme"` for the full component library and theme system:
 
 ```toml
 [dependencies]
-rinch = { path = "../path/to/rinch", features = ["desktop", "widgets", "theme"] }
+rinch = { path = "../path/to/rinch", features = ["desktop", "components", "theme"] }
 ```
 
 ## Write Your First App

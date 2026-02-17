@@ -1,6 +1,6 @@
 # rinch-core
 
-Core types and traits for rinch, including elements, reactive primitives, the DOM abstraction layer, hooks, and the Widget trait.
+Core types and traits for rinch, including elements, reactive primitives, the DOM abstraction layer, hooks, and the Component trait.
 
 ## Element Types
 
@@ -14,8 +14,8 @@ pub enum Element {
     Html(String),
     /// A fragment containing multiple children.
     Fragment(Children),
-    /// A custom widget implementing the Widget trait.
-    Widget(Rc<dyn Widget>, Children),
+    /// A custom component implementing the Component trait.
+    Component(Rc<dyn Component>, Children),
 }
 ```
 
@@ -129,12 +129,12 @@ NodeHandles are used by Effects for surgical DOM updates:
 // Signal change -> Effect runs -> NodeHandle.set_text() -> Minimal re-layout
 ```
 
-## Widget Trait
+## Component Trait
 
-Widgets implement the `Widget` trait to render directly to DOM nodes:
+Components implement the `Component` trait to render directly to DOM nodes:
 
 ```rust
-pub trait Widget: std::fmt::Debug + 'static {
+pub trait Component: std::fmt::Debug + 'static {
     fn render(&self, scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle;
 }
 ```

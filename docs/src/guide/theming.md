@@ -241,9 +241,9 @@ let theme = Theme::builder()
 let css = generate_theme_css(&theme);
 ```
 
-## Widget Integration
+## Component Integration
 
-When using the `widgets` feature, all components automatically use theme CSS variables:
+When using the `components` feature, all components automatically use theme CSS variables:
 
 ```rust
 use rinch::prelude::*;
@@ -253,7 +253,7 @@ use rinch_core::element::ThemeProviderProps;
 fn app() -> NodeHandle {
     rsx! {
         Stack { gap: "md",
-            // These widgets automatically use theme colors
+            // These components automatically use theme colors
             Button { "Primary Button" }
             Badge { variant: "light", "Status" }
             Alert { color: "blue", "Info message" }
@@ -267,8 +267,8 @@ fn main() {
         ..Default::default()
     };
 
-    run_with_theme("Themed Widgets", 800, 600, app, theme);
+    run_with_theme("Themed Components", 800, 600, app, theme);
 }
 ```
 
-See the [Widgets Guide](./widgets.md) for the complete list of available components.
+See the [Components Guide](./components.md) for the complete list of available components.

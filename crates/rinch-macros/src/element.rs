@@ -70,18 +70,18 @@ impl RsxElement {
         )
     }
 
-    /// Check if this is a widget (PascalCase name that isn't a core component).
-    /// Widgets are third-party components that implement the Widget trait.
-    fn is_widget(&self) -> bool {
+    /// Check if this is a custom component (PascalCase name that isn't a core component).
+    /// Custom components implement the Component trait.
+    fn is_component(&self) -> bool {
         let name = self.name.to_string();
         // Must start with uppercase letter (PascalCase)
         let first_char = name.chars().next().unwrap_or('a');
         first_char.is_ascii_uppercase() && !self.is_core_component()
     }
 
-    /// Check if this element is a rinch component (core component or widget).
+    /// Check if this element is a rinch component (core component or custom component).
     pub fn is_rinch_component(&self) -> bool {
-        self.is_core_component() || self.is_widget()
+        self.is_core_component() || self.is_component()
     }
 }
 
@@ -262,10 +262,10 @@ mod tests {
         assert_eq!(el.children.len(), 1);
     }
 
-    // ── Widget parsing ───────────────────────────────────────────
+    // ── Component parsing ───────────────────────────────────────────
 
     #[test]
-    fn parse_widget_with_style_and_class() {
+    fn parse_component_with_style_and_class() {
         let el: RsxElement = parse_str(
             r#"Button { variant: "filled", style: "margin: 10px", class: "my-btn", "Click" }"#,
         )
@@ -276,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_widget_with_reactive_style() {
+    fn parse_component_with_reactive_style() {
         let el: RsxElement =
             parse_str(r#"Button { style: {|| "color: red".to_string()}, "Click" }"#).unwrap();
         assert_eq!(el.name.to_string(), "Button");
@@ -286,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_widget_with_reactive_class() {
+    fn parse_component_with_reactive_class() {
         let el: RsxElement =
             parse_str(r#"Button { class: {|| if active { "on" } else { "off" }}, "Click" }"#)
                 .unwrap();
@@ -296,15 +296,15 @@ mod tests {
         assert_eq!(el.children.len(), 1);
     }
 
-    // ── is_rinch_component / is_core_component / is_widget ──────
+    // ── is_rinch_component / is_core_component ──────
 
     #[test]
-    fn show_and_for_are_widgets_not_core() {
-        // Show and For were removed as core components — they parse as widgets now
+    fn show_and_for_are_components_not_core() {
+        // Show and For were removed as core components — they parse as components now
         let show: RsxElement = parse_str(r#"Show { when: {|| true} }"#).unwrap();
-        assert!(show.is_rinch_component()); // Still PascalCase → widget
+        assert!(show.is_rinch_component()); // Still PascalCase → component
         let for_el: RsxElement = parse_str(r#"For { each: {|| vec![]} }"#).unwrap();
-        assert!(for_el.is_rinch_component()); // Still PascalCase → widget
+        assert!(for_el.is_rinch_component()); // Still PascalCase → component
     }
 
     #[test]
@@ -326,14 +326,14 @@ mod tests {
     }
 
     #[test]
-    fn is_widget_button() {
+    fn is_component_button() {
         let el: RsxElement = parse_str(r#"Button { variant: "filled" }"#).unwrap();
         assert!(el.is_rinch_component());
     }
 
     #[test]
-    fn is_widget_custom_component() {
-        let el: RsxElement = parse_str("MyCustomWidget {}").unwrap();
+    fn is_component_custom() {
+        let el: RsxElement = parse_str("MyCustomComponent {}").unwrap();
         assert!(el.is_rinch_component());
     }
 

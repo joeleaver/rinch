@@ -14,8 +14,8 @@
   - [Memos](./guide/memos.md)
 - [Hooks](./guide/hooks.md)
 - [Theming](./guide/theming.md)
-- [Widgets](./guide/widgets.md)
-  - [Widget Props Reference](./guide/widget-props.md)
+- [Components](./guide/components.md)
+  - [Component Props Reference](./guide/component-props.md)
 - [Platform Features](./guide/platform.md)
 - [Rich-Text Editor](./guide/editor.md)
 

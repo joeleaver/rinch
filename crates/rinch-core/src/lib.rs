@@ -15,7 +15,7 @@ pub mod show;
 // Re-export element types for convenience
 pub use element::{
     AppMenuProps, Children, Element, ForItem, HandlerId, IntoDom, IntoElement, MenuItemCallback,
-    MenuItemProps, MenuProps, Reactive, ThemeProviderProps, ValueCallback, Widget, WidgetCallback,
+    Callback, MenuItemProps, MenuProps, Reactive, ThemeProviderProps, ValueCallback, Component,
     WindowProps,
 };
 
@@ -61,7 +61,7 @@ pub use events::{
 // Re-export DOM types for fine-grained rendering
 pub use dom::{
     DomDocument, DomUpdate, IntoNode, NodeHandle, NodeId, RenderScope, UpdateBatch,
-    clear_render_scope, has_render_scope, reactive_widget_dom, set_render_scope,
+    clear_render_scope, has_render_scope, reactive_component_dom, set_render_scope,
     try_with_render_scope, with_render_scope,
 };
 

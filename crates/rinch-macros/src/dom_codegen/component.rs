@@ -12,7 +12,7 @@ use super::DomCodegenContext;
 
 /// Generate DOM code for a rinch component.
 ///
-/// For widgets (PascalCase components), generates direct widget construction and render call.
+/// For components (PascalCase), generates direct construction and render call.
 /// Shell elements (Window, Menu, etc.) are NOT supported inside rsx! - use run() for windows
 /// and the menu API for menus.
 pub fn element_to_dom_component(
@@ -37,8 +37,8 @@ pub fn element_to_dom_component(
         };
     }
 
-    // For widgets, generate direct construction and render call
-    super::widget::element_to_dom_widget(element, ctx)
+    // For components, generate direct construction and render call
+    super::component_codegen::element_to_dom_component(element, ctx)
 }
 
 /// Generate DOM code for ThemeProvider (reactive theme wrapper).

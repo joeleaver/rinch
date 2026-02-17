@@ -3,17 +3,17 @@ name = "ui-zoo"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "UI Zoo - A comprehensive showcase of rinch's theme system and widgets"
+description = "UI Zoo - A comprehensive showcase of rinch's theme system and components"
 
 [lib]
 name = "ui_zoo"
 path = "src/lib.rs"
 
 [dependencies]
-rinch = { workspace = true, default-features = false, features = ["widgets", "theme"] }
+rinch = { workspace = true, default-features = false, features = ["components", "theme"] }
 rinch-core = { workspace = true }
 rinch-macros = { workspace = true }
 rinch-platform = { workspace = true }
 rinch-tabler-icons.workspace = true
 rinch-editor = { path = "../../crates/rinch-editor" }
-rinch-editor-widgets = { path = "../../crates/rinch-editor-widgets" }
+rinch-editor-components = { path = "../../crates/rinch-editor-components" }

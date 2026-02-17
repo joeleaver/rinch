@@ -11,7 +11,7 @@ pub fn overview_section() -> NodeHandle {
                 Stack { align: "center", gap: "md",
                     Title { order: 1, "Welcome to UI Zoo" }
                     Text { size: "lg", color: "dimmed",
-                        "A comprehensive showcase of all Rinch widgets and components"
+                        "A comprehensive showcase of all Rinch components"
                     }
                 }
             }
@@ -141,7 +141,7 @@ pub fn overview_section() -> NodeHandle {
                     Stack { gap: "md",
                         Text { weight: "600", "1. Add to Cargo.toml" }
                         Code { block: true,
-                            "[dependencies]\nrinch = { version = \"0.1\", features = [\"widgets\", \"theme\"] }"
+                            "[dependencies]\nrinch = { version = \"0.1\", features = [\"components\", \"theme\"] }"
                         }
                     }
                 }

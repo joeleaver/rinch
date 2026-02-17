@@ -3841,6 +3841,7 @@ dependencies = [
  "pollster",
  "rfd",
  "rinch-clipboard",
+ "rinch-components",
  "rinch-core",
  "rinch-debug",
  "rinch-dom",
@@ -3850,7 +3851,6 @@ dependencies = [
  "rinch-renderer",
  "rinch-theme",
  "rinch-web",
- "rinch-widgets",
  "serde_json",
  "tokio",
  "tracing",
@@ -3871,6 +3871,16 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "rinch-components"
+version = "0.1.0"
+dependencies = [
+ "rinch-core",
+ "rinch-macros",
+ "rinch-tabler-icons",
+ "rinch-theme",
 ]
 
 [[package]]
@@ -3946,23 +3956,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rinch-editor-components"
+version = "0.1.0"
+dependencies = [
+ "rinch-components",
+ "rinch-core",
+ "rinch-editor",
+ "rinch-macros",
+ "rinch-tabler-icons",
+]
+
+[[package]]
 name = "rinch-editor-macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.114",
-]
-
-[[package]]
-name = "rinch-editor-widgets"
-version = "0.1.0"
-dependencies = [
- "rinch-core",
- "rinch-editor",
- "rinch-macros",
- "rinch-tabler-icons",
- "rinch-widgets",
 ]
 
 [[package]]
@@ -4055,16 +4065,6 @@ dependencies = [
  "vello",
  "wasm-bindgen",
  "web-sys",
-]
-
-[[package]]
-name = "rinch-widgets"
-version = "0.1.0"
-dependencies = [
- "rinch-core",
- "rinch-macros",
- "rinch-tabler-icons",
- "rinch-theme",
 ]
 
 [[package]]
@@ -5217,7 +5217,7 @@ dependencies = [
  "rinch",
  "rinch-core",
  "rinch-editor",
- "rinch-editor-widgets",
+ "rinch-editor-components",
  "rinch-macros",
  "rinch-platform",
  "rinch-tabler-icons",

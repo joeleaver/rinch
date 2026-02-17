@@ -71,9 +71,9 @@ rsx! {
 }
 ```
 
-## Widgets
+## Components
 
-Widgets are custom components written in PascalCase. They implement the `Widget` trait and render directly to DOM nodes:
+Components are custom UI elements written in PascalCase. They implement the `Component` trait and render directly to DOM nodes:
 
 ```rust
 rsx! {
@@ -560,7 +560,7 @@ This works because `Signal` implements `Copy`, so closures capturing signals can
 
 ## Style Shorthands
 
-The `rsx!` macro supports CSS shorthand props on both HTML elements and widgets. Shorthands expand to `set_style()` calls that merge with existing styles.
+The `rsx!` macro supports CSS shorthand props on both HTML elements and components. Shorthands expand to `set_style()` calls that merge with existing styles.
 
 Spacing scale values (`xs`, `sm`, `md`, `lg`, `xl`) auto-resolve to `var(--rinch-spacing-{value})`.
 
@@ -588,7 +588,7 @@ Spacing scale values (`xs`, `sm`, `md`, `lg`, `xl`) auto-resolve to `var(--rinch
 // On HTML elements
 div { p: "md", m: "lg", w: "200px", "Padded and margined" }
 
-// On widgets
+// On components
 Stack { gap: "md", p: "xl", maw: "600px",
     Text { "Constrained content" }
 }
@@ -604,7 +604,7 @@ div { p: "20px" }  // becomes: padding: 20px (passed through)
 
 ### Application Order
 
-Shorthands are applied via `set_style()` after widget rendering and after the `style:` prop. This means shorthands win over conflicting properties in `style:`.
+Shorthands are applied via `set_style()` after component rendering and after the `style:` prop. This means shorthands win over conflicting properties in `style:`.
 
 ## Styling
 

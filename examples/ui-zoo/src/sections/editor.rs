@@ -9,7 +9,7 @@ use rinch_core::reactive::Effect;
 use rinch_editor::bridge::EditorBridge;
 use rinch_editor::editor::{Editor, EditorConfig};
 use rinch_editor::schema::Schema;
-use rinch_editor_widgets::{ControlButton, ToolbarConfig, render_status_bar, render_toolbar};
+use rinch_editor_components::{ControlButton, ToolbarConfig, render_status_bar, render_toolbar};
 
 /// State for the Editor section, stored in context.
 #[derive(Clone)]

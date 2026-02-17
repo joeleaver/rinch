@@ -271,7 +271,7 @@ impl RinchApp {
             }
         }
 
-        // Load theme + widget CSS into the document's stylesheet
+        // Load theme + component CSS into the document's stylesheet
         {
             let mut d = doc.borrow_mut();
             #[cfg(feature = "theme")]

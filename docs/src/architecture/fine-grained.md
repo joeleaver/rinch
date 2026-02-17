@@ -261,7 +261,7 @@ show_dom(
 )
 ```
 
-In RSX, use the `Show` widget instead:
+In RSX, use the `Show` component instead:
 
 ```rust
 rsx! {
@@ -299,7 +299,7 @@ for_each_dom(
 )
 ```
 
-In RSX, use the `For` widget instead:
+In RSX, use the `For` component instead:
 
 ```rust
 rsx! {

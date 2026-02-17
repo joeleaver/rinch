@@ -3,23 +3,23 @@
 use std::any::Any;
 use std::rc::Rc;
 
-/// Trait for extensible widgets.
+/// Trait for extensible components.
 ///
-/// Widgets render directly to DOM nodes via RenderScope for fine-grained updates.
+/// Components render directly to DOM nodes via RenderScope for fine-grained updates.
 ///
 /// # Example
 ///
 /// ```ignore
-/// use rinch_core::{Widget, WidgetCallback};
+/// use rinch_core::{Component, Callback};
 /// use rinch_core::dom::{RenderScope, NodeHandle};
 ///
 /// #[derive(Debug, Default)]
 /// pub struct MyButton {
 ///     pub label: Option<String>,
-///     pub onclick: Option<WidgetCallback>,
+///     pub onclick: Option<Callback>,
 /// }
 ///
-/// impl Widget for MyButton {
+/// impl Component for MyButton {
 ///     fn render(&self, scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
 ///         let btn = scope.create_element("button");
 ///         btn.set_attribute("class", "my-button");
@@ -40,18 +40,18 @@ use std::rc::Rc;
 ///     }
 /// }
 /// ```
-pub trait Widget: std::fmt::Debug + 'static {
-    /// Render this widget directly to DOM nodes.
+pub trait Component: std::fmt::Debug + 'static {
+    /// Render this component directly to DOM nodes.
     ///
     /// Creates DOM structure via RenderScope and returns the root NodeHandle.
-    /// This is called once per widget instance - use Effects for reactive updates.
+    /// This is called once per component instance - use Effects for reactive updates.
     ///
     /// # Arguments
     /// * `scope` - The render scope for creating DOM nodes and effects
     /// * `children` - Child nodes already rendered to NodeHandles
     ///
     /// # Returns
-    /// A handle to the root DOM node created by this widget
+    /// A handle to the root DOM node created by this component
     fn render(
         &self,
         scope: &mut crate::dom::RenderScope,
@@ -69,8 +69,8 @@ pub enum Element {
     Html(String),
     /// A fragment containing multiple children.
     Fragment(Children),
-    /// An extensible widget from any crate implementing the Widget trait.
-    Widget(Rc<dyn Widget>, Children),
+    /// An extensible component from any crate implementing the Component trait.
+    Component(Rc<dyn Component>, Children),
 }
 
 impl Element {
@@ -79,15 +79,15 @@ impl Element {
         match self {
             Element::Html(_) => "Html",
             Element::Fragment(_) => "Fragment",
-            Element::Widget(_, _) => "Widget",
+            Element::Component(_, _) => "Component",
         }
     }
 }
 
 /// A reactive value that can be either static or dynamic.
 ///
-/// Use this for widget props that should support fine-grained reactivity.
-/// When a `Dynamic` value is used, widgets should create Effects to track changes.
+/// Use this for component props that should support fine-grained reactivity.
+/// When a `Dynamic` value is used, components should create Effects to track changes.
 ///
 /// # Example
 ///
@@ -338,7 +338,7 @@ fn render_element_to_dom(
                 render_element_to_dom(child, scope, parent);
             }
         }
-        Element::Widget(widget, children) => {
+        Element::Component(component, children) => {
             // Render children to NodeHandles first
             let mut child_handles = Vec::with_capacity(children.len());
             let temp_container = scope.create_element("template");
@@ -347,8 +347,8 @@ fn render_element_to_dom(
             }
             child_handles.extend(temp_container.children());
 
-            // Render widget directly to DOM
-            let handle = widget.render(scope, &child_handles);
+            // Render component directly to DOM
+            let handle = component.render(scope, &child_handles);
             parent.append_child(&handle);
         }
     }
@@ -532,14 +532,14 @@ impl std::fmt::Debug for ForItem {
     }
 }
 
-/// Callback type for widget events.
+/// Callback type for component events.
 ///
 /// Uses `Rc` for `Clone` support, allowing callbacks to be stored and invoked.
 #[derive(Clone)]
-pub struct WidgetCallback(pub Rc<dyn Fn()>);
+pub struct Callback(pub Rc<dyn Fn()>);
 
-impl WidgetCallback {
-    /// Create a new widget callback from a function.
+impl Callback {
+    /// Create a new callback from a function.
     pub fn new<F: Fn() + 'static>(f: F) -> Self {
         Self(Rc::new(f))
     }
@@ -550,19 +550,19 @@ impl WidgetCallback {
     }
 }
 
-impl<F: Fn() + 'static> From<F> for WidgetCallback {
+impl<F: Fn() + 'static> From<F> for Callback {
     fn from(f: F) -> Self {
         Self::new(f)
     }
 }
 
-impl std::fmt::Debug for WidgetCallback {
+impl std::fmt::Debug for Callback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("WidgetCallback(...)")
+        f.write_str("Callback(...)")
     }
 }
 
-/// Callback type for widgets that pass a value (like sliders, number inputs).
+/// Callback type for components that pass a value (like sliders, number inputs).
 ///
 /// Uses `Rc` for `Clone` support, allowing callbacks to be stored and invoked.
 #[derive(Clone)]

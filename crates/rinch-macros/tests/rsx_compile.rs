@@ -178,15 +178,15 @@ fn test_for_with_closures() -> NodeHandle {
 }
 
 // ============================================================
-// Widget tests (requires rinch-widgets feature)
+// Component tests (requires rinch-components feature)
 // ============================================================
 
-#[cfg(feature = "widgets")]
-mod widget_tests {
+#[cfg(feature = "components")]
+mod component_tests {
     use super::*;
 
     #[component]
-    fn test_button_widget() -> NodeHandle {
+    fn test_button_component() -> NodeHandle {
         rsx! {
             Button {
                 variant: "filled",
@@ -197,7 +197,7 @@ mod widget_tests {
     }
 
     #[component]
-    fn test_widget_with_style() -> NodeHandle {
+    fn test_component_with_style() -> NodeHandle {
         rsx! {
             Button {
                 variant: "filled",
@@ -208,7 +208,7 @@ mod widget_tests {
     }
 
     #[component]
-    fn test_widget_with_class() -> NodeHandle {
+    fn test_component_with_class() -> NodeHandle {
         rsx! {
             Button {
                 variant: "filled",
@@ -219,7 +219,7 @@ mod widget_tests {
     }
 
     #[component]
-    fn test_widget_with_reactive_style() -> NodeHandle {
+    fn test_component_with_reactive_style() -> NodeHandle {
         let active = use_signal(|| false);
         rsx! {
             Button {
@@ -231,7 +231,7 @@ mod widget_tests {
     }
 
     #[component]
-    fn test_widget_with_reactive_class() -> NodeHandle {
+    fn test_component_with_reactive_class() -> NodeHandle {
         let active = use_signal(|| false);
         rsx! {
             Button {
@@ -243,7 +243,7 @@ mod widget_tests {
     }
 
     #[component]
-    fn test_text_widget() -> NodeHandle {
+    fn test_text_component() -> NodeHandle {
         rsx! {
             Text { size: "lg", color: "dimmed", "Hello" }
         }
@@ -261,7 +261,7 @@ mod widget_tests {
     }
 
     #[component]
-    fn test_for_inside_widget() -> NodeHandle {
+    fn test_for_inside_component() -> NodeHandle {
         let items = use_signal(|| vec![
             TestItem { id: 1, name: "Alice".into() },
             TestItem { id: 2, name: "Bob".into() },
@@ -277,7 +277,7 @@ mod widget_tests {
     }
 
     #[component]
-    fn test_if_inside_widget() -> NodeHandle {
+    fn test_if_inside_component() -> NodeHandle {
         let visible = use_signal(|| true);
         rsx! {
             Stack {

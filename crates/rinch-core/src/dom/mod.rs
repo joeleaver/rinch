@@ -20,13 +20,13 @@
 //! # Thread-Local Context
 //!
 //! The render scope is managed via thread-local storage, similar to hooks.
-//! Widgets access the current scope via [`with_render_scope`] or [`try_with_render_scope`].
+//! Components access the current scope via [`with_render_scope`] or [`try_with_render_scope`].
 //!
 //! ```ignore
 //! // Runtime sets up the scope
 //! set_render_scope(scope);
 //!
-//! // Widgets access it
+//! // Components access it
 //! with_render_scope(|scope| {
 //!     let div = scope.create_element("div");
 //!     // ...
@@ -525,17 +525,17 @@ impl std::fmt::Debug for NodeHandle {
 }
 
 // ============================================================================
-// reactive_widget_dom
+// reactive_component_dom
 // ============================================================================
 
-/// Re-render a widget whenever signals read inside `render_fn` change.
+/// Re-render a component whenever signals read inside `render_fn` change.
 ///
 /// This uses the same marker + Effect + DOM swap pattern as `show_dom`.
-/// The entire widget is reconstructed on each signal change — suitable for
-/// widget props that are closures (e.g., `variant: {|| if active.get() { "filled" } else { "light" }}`).
+/// The entire component is reconstructed on each signal change — suitable for
+/// component props that are closures (e.g., `variant: {|| if active.get() { "filled" } else { "light" }}`).
 ///
 /// Returns the marker comment node. The caller should NOT append it again.
-pub fn reactive_widget_dom<R>(
+pub fn reactive_component_dom<R>(
     scope: &mut RenderScope,
     parent: &NodeHandle,
     render_fn: R,
@@ -545,7 +545,7 @@ where
 {
     use crate::hooks::with_render_context;
 
-    let marker = scope.create_comment("widget");
+    let marker = scope.create_comment("component");
     parent.append_child(&marker);
 
     let current_content: Rc<RefCell<Vec<NodeHandle>>> = Rc::new(RefCell::new(Vec::new()));
