@@ -28,20 +28,13 @@ pub fn navigation_section() -> NodeHandle {
     let state = use_context::<NavigationSectionState>();
 
     let (pagination_page, pagination_with_edges_page, stepper_active, tabs_value, tabs_pills_value) =
-        match state {
-            Some(s) => (
-                s.pagination_page,
-                s.pagination_with_edges_page,
-                s.stepper_active,
-                s.tabs_value,
-                s.tabs_pills_value,
-            ),
-            None => {
-                return rsx! {
-                    div { "Error: NavigationSectionState not initialized" }
-                };
-            }
-        };
+        (
+            state.pagination_page,
+            state.pagination_with_edges_page,
+            state.stepper_active,
+            state.tabs_value,
+            state.tabs_pills_value,
+        );
 
     rsx! {
         Fragment {

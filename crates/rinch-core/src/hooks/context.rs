@@ -47,7 +47,7 @@ thread_local! {
 /// #[component]
 /// fn themed_button() -> NodeHandle {
 ///     // Access the theme from anywhere in the component tree
-///     let theme = use_context::<Theme>().expect("Theme context not found");
+///     let theme = use_context::<Theme>();
 ///
 ///     rsx! {
 ///         button { style: {|| format!("color: {}", theme.primary_color)},
@@ -67,8 +67,8 @@ pub fn create_context<T: Clone + 'static>(value: T) -> T {
 
 /// Retrieve a context value by type.
 ///
-/// Returns `Some(value)` if a context of the given type has been created,
-/// or `None` if no such context exists.
+/// Returns the value directly. Panics with a helpful message if no context
+/// of the given type has been created.
 ///
 /// # Example
 ///
@@ -82,14 +82,44 @@ pub fn create_context<T: Clone + 'static>(value: T) -> T {
 /// #[component]
 /// fn user_info() -> NodeHandle {
 ///     let user = use_context::<UserContext>();
+///     rsx! { p { "Welcome, " {user.username} } }
+/// }
+/// ```
 ///
-///     match user {
-///         Some(u) => rsx! { p { "Welcome, " {u.username} } },
-///         None => rsx! { p { "Not logged in" } },
+/// # Panics
+///
+/// Panics if no context of type `T` has been created via `create_context`.
+pub fn use_context<T: Clone + 'static>() -> T {
+    try_use_context::<T>().unwrap_or_else(|| {
+        panic!(
+            "Context not found: {}\nDid you forget to call create_context() in a parent component?",
+            std::any::type_name::<T>()
+        )
+    })
+}
+
+/// Try to retrieve a context value by type.
+///
+/// Returns `Some(value)` if a context of the given type has been created,
+/// or `None` if no such context exists.
+///
+/// Use this when the context may not be present and you want to handle
+/// the `None` case explicitly. For most uses, prefer [`use_context`] which
+/// panics with a helpful message if the context is missing.
+///
+/// # Example
+///
+/// ```ignore
+/// #[component]
+/// fn optional_theme() -> NodeHandle {
+///     let theme = try_use_context::<Theme>();
+///     match theme {
+///         Some(t) => rsx! { p { style: {format!("color: {}", t.color)}, "Themed" } },
+///         None => rsx! { p { "No theme" } },
 ///     }
 /// }
 /// ```
-pub fn use_context<T: Clone + 'static>() -> Option<T> {
+pub fn try_use_context<T: Clone + 'static>() -> Option<T> {
     CONTEXT_STORE.with(|store| {
         store
             .borrow()

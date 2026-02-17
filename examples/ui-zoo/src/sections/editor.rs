@@ -48,15 +48,6 @@ fn preset_name(preset: usize) -> &'static str {
 pub fn editor_section() -> NodeHandle {
     let state = use_context::<EditorSectionState>();
 
-    let state = match state {
-        Some(s) => s,
-        None => {
-            return rsx! {
-                div { "Error: EditorSectionState not initialized" }
-            };
-        }
-    };
-
     let toolbar_preset = state.toolbar_preset;
     let editor = state.editor.clone();
 

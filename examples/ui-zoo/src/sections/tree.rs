@@ -91,26 +91,19 @@ pub fn tree_section() -> NodeHandle {
         level_tree_sm,
         level_tree_md,
         level_tree_lg,
-    ) = match state {
-        Some(s) => (
-            s.selected_value,
-            s.basic_tree,
-            s.selection_tree,
-            s.expand_tree,
-            s.custom_tree,
-            s.icons_tree,
-            s.disabled_tree,
-            s.level_tree_xs,
-            s.level_tree_sm,
-            s.level_tree_md,
-            s.level_tree_lg,
-        ),
-        None => {
-            return rsx! {
-                div { "Error: TreeSectionState not initialized" }
-            };
-        }
-    };
+    ) = (
+        state.selected_value,
+        state.basic_tree,
+        state.selection_tree,
+        state.expand_tree,
+        state.custom_tree,
+        state.icons_tree,
+        state.disabled_tree,
+        state.level_tree_xs,
+        state.level_tree_sm,
+        state.level_tree_md,
+        state.level_tree_lg,
+    );
 
     rsx! {
         Fragment {

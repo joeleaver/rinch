@@ -320,7 +320,7 @@ pub fn MyComponent(
 - **Parameters become public struct fields** (must be owned types: `String`, `bool`, `Option<T>`, etc.)
 - **`children: &[NodeHandle]` is special** — not a struct field, wired to `Component::render` method
 - **Reference types rejected** (`&str`, `&T`) with a helpful error message
-- **Auto-derives `Default`** for the generated struct
+- **A manual `Default` impl is generated with per-field defaults for known types (String, bool, Option, Vec, numeric types). Unknown types fall back to `Default::default()`.**
 - **Usage:** `MyComponent { label: "Hello", color: "blue", onclick: || {}, "child content" }`
 
 This pattern eliminates boilerplate for creating custom components — just write a PascalCase component function with owned parameters.
@@ -441,7 +441,8 @@ Rinch provides a React-style hooks API for managing state. Hooks replace the ver
 | `use_memo` | Memoized computations |
 | `use_callback` | Memoized callbacks |
 | `use_derived` | Auto-tracking computed values (uses reactive Memo) |
-| `use_context` | Access shared context values |
+| `use_context` | Access shared context values (returns T, panics if missing) |
+| `try_use_context` | Try to access shared context (returns Option<T>) |
 | `create_context` | Create shared context values |
 
 ### Basic Example
@@ -577,8 +578,9 @@ fn app() -> NodeHandle {
 
 #[component]
 fn child_component() -> NodeHandle {
-    // Access context anywhere in tree
-    let theme = use_context::<Theme>().unwrap();
+    // Access context anywhere in tree — returns T directly, panics if not found
+    let theme = use_context::<Theme>();
+    // For optional access: let theme = try_use_context::<Theme>(); // returns Option<T>
     // ...
 }
 ```

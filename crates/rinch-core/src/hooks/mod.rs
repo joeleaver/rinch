@@ -588,6 +588,6 @@ pub fn get_hooks_debug_info() -> Vec<HookMeta> {
 }
 
 // Re-export all public items from submodules
-pub use context::{create_context, use_context};
+pub use context::{create_context, try_use_context, use_context};
 pub use effect_hooks::{use_callback, use_effect, use_effect_cleanup, use_memo, use_mount};
 pub use state_hooks::{RefHandle, use_derived, use_ref, use_signal, use_state};

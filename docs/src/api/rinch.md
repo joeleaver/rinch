@@ -88,7 +88,7 @@ This includes:
 - `use_signal`, `use_state`, `use_ref`
 - `use_effect`, `use_effect_cleanup`, `use_mount`
 - `use_memo`, `use_callback`, `use_derived`
-- `use_context`, `create_context`
+- `use_context`, `try_use_context`, `create_context`
 - `RefHandle`
 
 **DOM construction**:

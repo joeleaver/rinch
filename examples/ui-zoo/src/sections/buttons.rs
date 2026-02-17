@@ -20,14 +20,7 @@ pub fn buttons_section() -> NodeHandle {
     // Get state from context
     let state = use_context::<ButtonsSectionState>();
 
-    let counter = match state {
-        Some(s) => s.counter,
-        None => {
-            return rsx! {
-                div { "Error: ButtonsSectionState not initialized" }
-            };
-        }
-    };
+    let counter = state.counter;
 
     rsx! {
         Fragment {

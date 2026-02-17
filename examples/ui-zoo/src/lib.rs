@@ -172,19 +172,13 @@ pub fn section_content(__scope: &mut RenderScope, current_section: Signal<usize>
 pub fn overlays_demo_overlays(__scope: &mut RenderScope) -> NodeHandle {
     let state = use_context::<OverlaysSectionState>();
 
-    let (modal_opened, modal_lg_opened, drawer_opened, drawer_right_opened, notification_visible) =
-        match state {
-            Some(s) => (
-                s.modal_opened,
-                s.modal_lg_opened,
-                s.drawer_opened,
-                s.drawer_right_opened,
-                s.notification_visible,
-            ),
-            None => {
-                return rsx! { div { } };
-            }
-        };
+    let (modal_opened, modal_lg_opened, drawer_opened, drawer_right_opened, notification_visible) = (
+        state.modal_opened,
+        state.modal_lg_opened,
+        state.drawer_opened,
+        state.drawer_right_opened,
+        state.notification_visible,
+    );
 
     rsx! {
         Fragment {

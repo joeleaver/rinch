@@ -38,7 +38,8 @@ fn counter() -> NodeHandle {
 | [`use_mount`](#use_mount) | One-time effect on first render |
 | [`use_memo`](#use_memo) | Memoized computations |
 | [`use_callback`](#use_callback) | Memoized callbacks |
-| [`use_context`](#use_context) | Access shared state |
+| [`use_context`](#use_context) | Access shared state (panics if not found) |
+| [`try_use_context`](#try_use_context) | Access shared state (returns Option) |
 | [`use_derived`](#use_derived) | Computed state from signals |
 
 ---
@@ -225,6 +226,15 @@ let increment = use_callback(|| {
 
 Access shared state across components without prop drilling.
 
+`use_context::<T>()` returns `T` directly. It **panics** with a helpful message if the context was not found:
+
+```
+Context not found: TypeName
+Did you forget to call create_context() in a parent component?
+```
+
+For fallible access that doesn't panic, use [`try_use_context`](#try_use_context) instead.
+
 ### Creating Context
 
 At the top of your component tree:
@@ -259,7 +269,27 @@ In any descendant component:
 ```rust
 #[component]
 fn themed_button() -> NodeHandle {
-    let theme: Option<Theme> = use_context();
+    let theme = use_context::<Theme>();
+    // theme is directly Theme, not Option<Theme>
+
+    rsx! {
+        button { style: {|| format!("background: {}", theme.primary)},
+            "Click me"
+        }
+    }
+}
+```
+
+---
+
+## try_use_context
+
+Like `use_context`, but returns `Option<T>` instead of panicking when the context is not found. Use this when a context may legitimately be absent.
+
+```rust
+#[component]
+fn themed_button() -> NodeHandle {
+    let theme = try_use_context::<Theme>();
 
     let bg = theme.map(|t| t.primary).unwrap_or("#ccc".into());
 

@@ -152,7 +152,7 @@ pub mod prelude {
     pub use rinch_core::{Effect, Memo, Scope, Signal, batch, derived, untracked};
     // Hooks for ergonomic state management
     pub use rinch_core::{
-        RefHandle, create_context, use_callback, use_context, use_derived, use_effect,
+        RefHandle, create_context, try_use_context, use_callback, use_context, use_derived, use_effect,
         use_effect_cleanup, use_memo, use_mount, use_ref, use_signal, use_state,
     };
     // Event handling - click context, drag support, and input callbacks

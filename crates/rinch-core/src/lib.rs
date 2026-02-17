@@ -36,7 +36,7 @@ pub use reactive::{
 // Re-export hooks for ergonomic state management
 pub use hooks::{
     HookEntry, HookMeta, RefHandle, begin_render, clear_hooks, create_context, end_render,
-    get_hooks_debug_info, pop_hook_scope, push_hook_scope, use_callback, use_context, use_derived,
+    get_hooks_debug_info, pop_hook_scope, push_hook_scope, try_use_context, use_callback, use_context, use_derived,
     use_effect, use_effect_cleanup, use_memo, use_mount, use_ref, use_signal, use_state,
     with_render_context,
 };

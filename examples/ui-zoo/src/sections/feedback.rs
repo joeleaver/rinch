@@ -23,18 +23,11 @@ pub fn init_feedback_state() {
 pub fn feedback_section() -> NodeHandle {
     let state = use_context::<FeedbackSectionState>();
 
-    let (progress_value, notification_visible, notification_error_visible) = match state {
-        Some(s) => (
-            s.progress_value,
-            s.notification_visible,
-            s.notification_error_visible,
-        ),
-        None => {
-            return rsx! {
-                div { "Error: FeedbackSectionState not initialized" }
-            };
-        }
-    };
+    let (progress_value, notification_visible, notification_error_visible) = (
+        state.progress_value,
+        state.notification_visible,
+        state.notification_error_visible,
+    );
 
     rsx! {
         Fragment {

@@ -356,13 +356,21 @@ rsx! {
 
 #### Keys
 
-Use `key:` on the first child element to enable efficient keyed reconciliation. When the list changes, items with the same key are preserved (not re-rendered), and only new/removed items trigger DOM operations:
+Use `key:` on the first child element or component to enable efficient keyed reconciliation. When the list changes, items with the same key are preserved (not re-rendered), and only new/removed items trigger DOM operations:
 
 ```rust
 for item in items.get() {
     div { key: item.id,
         span { {item.name.clone()} }
     }
+}
+```
+
+`key:` also works on components — place it on the component tag directly:
+
+```rust
+for item in items.get() {
+    TodoRow { key: item.id, label: item.name.clone() }
 }
 ```
 
@@ -379,12 +387,12 @@ The `for` loop desugars to `for_each_dom_typed()`, which:
 5. When the collection changes, uses LIS-based keyed reconciliation (`diff_keyed()`) to compute minimal DOM operations: insert new items, remove deleted items, and reposition moved items
 6. For surviving items (same key), compares data via `PartialEq` — only re-renders items whose data actually changed
 
-The loop variable is **owned** (`T`, not `&T`), so you can capture it directly in `move` closures:
+The loop variable is **owned** (`T`, not `&T`), so you can capture it directly in `move` closures. `let` bindings before the element are available in the `key:` expression too:
 
 ```rust
 for todo in todos.get() {
     let id = todo.id;
-    div { key: todo.id,
+    div { key: id,
         {todo.name.clone()}
         button {
             onclick: move || todos.update(|t| t.retain(|t| t.id != id)),

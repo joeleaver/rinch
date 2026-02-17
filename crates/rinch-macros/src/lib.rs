@@ -141,7 +141,8 @@ pub fn rsx(input: TokenStream) -> TokenStream {
 ///
 /// - Parameters become public struct fields (must be owned types, not references)
 /// - `children: &[NodeHandle]` is special — wired to Component::render's children, not a field
-/// - The struct derives `Default` automatically
+/// - A manual `Default` impl is generated with per-field defaults for known types
+///   (String, bool, Option, Vec, numeric types). Unknown types fall back to `Default::default()`.
 /// - `Component`, `RenderScope`, and `NodeHandle` must be in scope (via `use rinch::prelude::*`)
 #[proc_macro_attribute]
 pub fn component(_attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -215,6 +216,16 @@ fn generate_component(func: syn::ItemFn) -> TokenStream {
         })
         .collect();
 
+    // Generate per-field default expressions for manual Default impl.
+    // Known types get explicit defaults. Unknown types fall back to Default::default().
+    let field_defaults: Vec<_> = fields
+        .iter()
+        .map(|(_, ident, ty)| {
+            let default_expr = type_default_expr(ty);
+            quote! { #ident: #default_expr }
+        })
+        .collect();
+
     // Clone self fields into local variables so the body can use param names directly
     let clone_stmts: Vec<_> = fields
         .iter()
@@ -232,9 +243,16 @@ fn generate_component(func: syn::ItemFn) -> TokenStream {
 
     quote! {
         #(#attrs)*
-        #[derive(Default)]
         #vis struct #name {
             #(#field_defs,)*
+        }
+
+        impl ::std::default::Default for #name {
+            fn default() -> Self {
+                Self {
+                    #(#field_defaults,)*
+                }
+            }
         }
 
         impl ::std::fmt::Debug for #name {
@@ -251,4 +269,43 @@ fn generate_component(func: syn::ItemFn) -> TokenStream {
         }
     }
     .into()
+}
+
+/// Get a default expression for a type based on token-level analysis.
+///
+/// Known types get explicit defaults:
+/// - `String` → `String::new()`
+/// - `bool` → `false`
+/// - `Option<T>` → `None`
+/// - `Vec<T>` → `Vec::new()`
+/// - Integer types → `0`
+/// - Float types → `0.0`
+///
+/// Unknown types fall back to `Default::default()`.
+fn type_default_expr(ty: &syn::Type) -> proc_macro2::TokenStream {
+    use quote::quote;
+
+    if let syn::Type::Path(type_path) = ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            let type_name = segment.ident.to_string();
+            match type_name.as_str() {
+                "String" => return quote! { String::new() },
+                "bool" => return quote! { false },
+                "Option" => return quote! { None },
+                "Vec" => return quote! { Vec::new() },
+                "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+                | "i8" | "i16" | "i32" | "i64" | "i128" | "isize" => {
+                    return quote! { 0 }
+                }
+                "f32" => return quote! { 0.0f32 },
+                "f64" => return quote! { 0.0f64 },
+                _ => {}
+            }
+        }
+    }
+
+    // Unknown type: fall back to Default trait.
+    // If the type doesn't impl Default and the user doesn't provide this prop,
+    // they'll get a compile error pointing to this specific field.
+    quote! { ::std::default::Default::default() }
 }

@@ -249,7 +249,7 @@ mod tests {
         begin_render, clear_hooks, end_render, use_ref, use_signal, use_state,
     };
     use crate::hooks::context::clear_context;
-    use crate::hooks::context::{create_context, use_context};
+    use crate::hooks::context::{create_context, try_use_context, use_context};
     use crate::hooks::state_hooks::use_derived;
 
     fn reset_registry() {
@@ -464,13 +464,12 @@ mod tests {
         let ctx = create_context(TestContext { value: 42 });
         assert_eq!(ctx.value, 42);
 
-        // Retrieve context
+        // Retrieve context (returns T directly)
         let retrieved = use_context::<TestContext>();
-        assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().value, 42);
+        assert_eq!(retrieved.value, 42);
 
-        // Wrong type returns None
-        let wrong: Option<String> = use_context();
+        // Wrong type returns None with try_use_context
+        let wrong: Option<String> = try_use_context();
         assert!(wrong.is_none());
 
         // Clean up

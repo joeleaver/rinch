@@ -13,6 +13,7 @@
   - [Effects](./guide/effects.md)
   - [Memos](./guide/memos.md)
 - [Hooks](./guide/hooks.md)
+- [Sharing State](./guide/sharing-state.md)
 - [Theming](./guide/theming.md)
 - [Components](./guide/components.md)
   - [Component Props Reference](./guide/component-props.md)

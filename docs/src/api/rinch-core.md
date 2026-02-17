@@ -226,7 +226,8 @@ React-style hooks for managing state in components. All hooks must be called at 
 | `use_callback(f, deps)` | Memoized callbacks |
 | `use_derived(f)` | Auto-tracking computed values (uses Memo) |
 | `create_context(value)` | Create shared context |
-| `use_context::<T>()` | Access shared context |
+| `use_context::<T>()` | Access shared context (returns T directly, panics if not found) |
+| `try_use_context::<T>()` | Access shared context (returns Option<T>) |
 
 ## Utility Functions
 

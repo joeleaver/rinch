@@ -39,22 +39,15 @@ pub fn overlays_section() -> NodeHandle {
         dropdown_opened,
         notification_visible,
         dropdown_selection,
-    ) = match state {
-        Some(s) => (
-            s.modal_opened,
-            s.modal_lg_opened,
-            s.drawer_opened,
-            s.drawer_right_opened,
-            s.dropdown_opened,
-            s.notification_visible,
-            s.dropdown_selection,
-        ),
-        None => {
-            return rsx! {
-                div { "Error: OverlaysSectionState not initialized" }
-            };
-        }
-    };
+    ) = (
+        state.modal_opened,
+        state.modal_lg_opened,
+        state.drawer_opened,
+        state.drawer_right_opened,
+        state.dropdown_opened,
+        state.notification_visible,
+        state.dropdown_selection,
+    );
 
     rsx! {
         Fragment {

@@ -4996,6 +4996,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "todo-app"
+version = "0.1.0"
+dependencies = [
+ "rinch",
+]
+
+[[package]]
 name = "tokio"
 version = "1.49.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

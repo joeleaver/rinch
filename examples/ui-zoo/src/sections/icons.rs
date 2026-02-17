@@ -26,12 +26,7 @@ pub fn init_icons_state() {
 pub fn icons_section() -> NodeHandle {
     let state = use_context::<IconsSectionState>();
 
-    let (current_page, use_filled) = match state {
-        Some(s) => (s.current_page, s.use_filled),
-        None => {
-            return rsx! { div { "Icons section state not initialized" } };
-        }
-    };
+    let (current_page, use_filled) = (state.current_page, state.use_filled);
 
     // Calculate total pages
     let total_pages = ICON_COUNT.div_ceil(ICONS_PER_PAGE);

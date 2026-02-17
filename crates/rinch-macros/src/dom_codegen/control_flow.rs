@@ -239,6 +239,20 @@ pub fn generate_for_loop(
     // Try to extract key from first child element's `key:` prop
     let key_fn = extract_key_expr(for_loop);
 
+    // Collect leading let statements so they can be included in the key closure too
+    let leading_stmts: Vec<TokenStream2> = for_loop
+        .children
+        .iter()
+        .take_while(|c| matches!(c, RsxNode::Statement(_)))
+        .filter_map(|c| {
+            if let RsxNode::Statement(stmt) = c {
+                Some(quote! { #stmt })
+            } else {
+                None
+            }
+        })
+        .collect();
+
     // Build the view closure body from children
     let body = generate_children_body(&for_loop.children, ctx);
 
@@ -247,13 +261,20 @@ pub fn generate_for_loop(
         move || (#iter_expr).into_iter().collect::<Vec<_>>()
     };
 
+    // Key closure: include leading let statements so key: can reference let-bound values
+    let key_closure = if leading_stmts.is_empty() {
+        quote! { move |#pattern| ::std::string::ToString::to_string(&#key_fn) }
+    } else {
+        quote! { move |#pattern| { #(#leading_stmts)* ::std::string::ToString::to_string(&#key_fn) } }
+    };
+
     quote! {
         {
             ::rinch::core::for_each_dom_typed(
                 __scope,
                 &#parent_var,
                 #collection,
-                move |#pattern| ::std::string::ToString::to_string(&#key_fn),
+                #key_closure,
                 move |#pattern, __child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
                     let __scope = __child_scope;
                     #body

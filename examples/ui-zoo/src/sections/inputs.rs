@@ -76,34 +76,27 @@ pub fn inputs_section() -> NodeHandle {
         brightness,
         password_visible_sig,
         password_value,
-    ) = match state {
-        Some(s) => (
-            s.check1,
-            s.check2,
-            s.check_xs,
-            s.check_sm,
-            s.check_md,
-            s.check_lg,
-            s.switch1,
-            s.switch2,
-            s.switch_xs,
-            s.switch_sm,
-            s.switch_md,
-            s.switch_lg,
-            s.quantity,
-            s.price,
-            s.selected_plan,
-            s.volume,
-            s.brightness,
-            s.password_visible,
-            s.password_value,
-        ),
-        None => {
-            return rsx! {
-                div { "Error: InputsSectionState not initialized" }
-            };
-        }
-    };
+    ) = (
+        state.check1,
+        state.check2,
+        state.check_xs,
+        state.check_sm,
+        state.check_md,
+        state.check_lg,
+        state.switch1,
+        state.switch2,
+        state.switch_xs,
+        state.switch_sm,
+        state.switch_md,
+        state.switch_lg,
+        state.quantity,
+        state.price,
+        state.selected_plan,
+        state.volume,
+        state.brightness,
+        state.password_visible,
+        state.password_value,
+    );
 
     let toggle = |sig: Signal<bool>| move || sig.update(|v| *v = !*v);
 
