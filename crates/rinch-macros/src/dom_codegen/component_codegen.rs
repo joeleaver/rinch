@@ -363,10 +363,10 @@ pub fn generate_component_field_assignments(
             let name_str = prop.name.to_string();
             let value = &prop.value;
 
-            if name_str == "oninput" {
-                quote! { #name: Some(InputCallback::new(#value)) }
-            } else if name_str.starts_with("on") {
-                quote! { #name: Some((#value).into()) }
+            if name_str == "oninput" || name_str.starts_with("on") {
+                // Use IntoEventHandler trait so the field can be either T or Option<T>
+                // (e.g., Callback, Option<Callback>, ValueCallback<T>, Option<ValueCallback<T>>).
+                quote! { #name: IntoEventHandler::into_event_handler(#value) }
             } else if name_str == "icon" || name_str.ends_with("_icon") {
                 quote! { #name: Some(#value) }
             } else if name_str.ends_with("_fn") {

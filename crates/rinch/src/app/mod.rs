@@ -468,6 +468,22 @@ impl RinchApp {
             drop(d);
             if let Some(handler_id) = submit_handler_id {
                 events::dispatch_event(events::EventHandlerId(handler_id));
+
+                // After onsubmit, the handler may have changed the signal (e.g., cleared it).
+                // Effects run synchronously during dispatch, so the DOM value attribute
+                // is already updated. Re-read it to keep our buffer in sync.
+                if let Some(doc) = &self.doc {
+                    let d = doc.borrow();
+                    if let Some(value) = d.tree.nodes.iter().find_map(|(_, node)| {
+                        node.attributes
+                            .get("data-oninput")
+                            .and_then(|s| s.parse::<usize>().ok())
+                            .filter(|&h| Some(h) == self.focused_input_handler_id)
+                            .and_then(|_| node.attributes.get("value").cloned())
+                    }) {
+                        self.focused_input_value = value;
+                    }
+                }
             }
         }
     }

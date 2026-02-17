@@ -40,9 +40,27 @@ impl InputCallback {
     }
 }
 
+impl<F: Fn(String) + 'static> From<F> for InputCallback {
+    fn from(f: F) -> Self {
+        Self::new(f)
+    }
+}
+
 impl std::fmt::Debug for InputCallback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("InputCallback(...)")
+    }
+}
+
+impl crate::element::IntoEventHandler<InputCallback> for InputCallback {
+    fn into_event_handler(self) -> InputCallback {
+        self
+    }
+}
+
+impl<F: Fn(String) + 'static> crate::element::IntoEventHandler<InputCallback> for F {
+    fn into_event_handler(self) -> InputCallback {
+        InputCallback::from(self)
     }
 }
 

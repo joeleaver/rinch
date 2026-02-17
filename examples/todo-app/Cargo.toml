@@ -1,0 +1,7 @@
+[package]
+name = "todo-app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop", "components", "theme", "debug"] }

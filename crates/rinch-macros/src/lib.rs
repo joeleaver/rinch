@@ -142,7 +142,8 @@ pub fn rsx(input: TokenStream) -> TokenStream {
 /// - Parameters become public struct fields (must be owned types, not references)
 /// - `children: &[NodeHandle]` is special — wired to Component::render's children, not a field
 /// - A manual `Default` impl is generated with per-field defaults for known types
-///   (String, bool, Option, Vec, numeric types). Unknown types fall back to `Default::default()`.
+///   (String, bool, Option, Vec, numeric, Callback, InputCallback).
+///   Unknown types fall back to `Default::default()`.
 /// - `Component`, `RenderScope`, and `NodeHandle` must be in scope (via `use rinch::prelude::*`)
 #[proc_macro_attribute]
 pub fn component(_attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -280,6 +281,8 @@ fn generate_component(func: syn::ItemFn) -> TokenStream {
 /// - `Vec<T>` → `Vec::new()`
 /// - Integer types → `0`
 /// - Float types → `0.0`
+/// - `Callback` → no-op callback
+/// - `InputCallback` → no-op callback
 ///
 /// Unknown types fall back to `Default::default()`.
 fn type_default_expr(ty: &syn::Type) -> proc_macro2::TokenStream {
@@ -299,6 +302,8 @@ fn type_default_expr(ty: &syn::Type) -> proc_macro2::TokenStream {
                 }
                 "f32" => return quote! { 0.0f32 },
                 "f64" => return quote! { 0.0f64 },
+                "Callback" => return quote! { Callback::new(|| {}) },
+                "InputCallback" => return quote! { InputCallback::new(|_: String| {}) },
                 _ => {}
             }
         }

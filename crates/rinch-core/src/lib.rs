@@ -14,9 +14,9 @@ pub mod show;
 
 // Re-export element types for convenience
 pub use element::{
-    AppMenuProps, Children, Element, ForItem, HandlerId, IntoDom, IntoElement, MenuItemCallback,
-    Callback, MenuItemProps, MenuProps, Reactive, ThemeProviderProps, ValueCallback, Component,
-    WindowProps,
+    AppMenuProps, Children, Element, ForItem, HandlerId, IntoDom, IntoElement, IntoEventHandler,
+    MenuItemCallback, Callback, MenuItemProps, MenuProps, Reactive, ThemeProviderProps,
+    ValueCallback, Component, WindowProps,
 };
 
 // Re-export Show and For functions (fine-grained DOM-based)

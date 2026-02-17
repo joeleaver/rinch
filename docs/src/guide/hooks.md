@@ -323,25 +323,20 @@ Unlike `use_memo`, `use_derived` doesn't require explicit dependencies - it auto
 
 > **Note:** `use_derived` returns a `Memo<T>`, which implements `Copy` just like `Signal<T>`. You can use it in multiple closures without `.clone()`.
 
-### Hooks in For Bodies
+### Hooks in For Loop Bodies
 
-Hooks work inside `For` view closures. Each For item gets its own isolated hook scope, so per-item state is fully supported:
+Hooks work inside `for` loop bodies in RSX. Each item gets its own isolated hook scope, so per-item state is fully supported:
 
 ```rust
-For {
-    each: {move || ForItem::from_iter(todos.get(), |t| t.id.to_string())},
-    |item: &Todo| {
-        // Per-item hook state — each item gets its own signal
-        let editing = use_signal(|| false);
+for todo in todos.get() {
+    // Per-item hook state — each item gets its own signal
+    let editing = use_signal(|| false);
 
-        rsx! {
-            div {
-                span { {item.name.clone()} }
-                button {
-                    onclick: move || editing.update(|v| *v = !*v),
-                    {|| if editing.get() { "Done" } else { "Edit" }}
-                }
-            }
+    div { key: todo.id,
+        span { {todo.name.clone()} }
+        button {
+            onclick: move || editing.update(|v| *v = !*v),
+            {|| if editing.get() { "Done" } else { "Edit" }}
         }
     }
 }

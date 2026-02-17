@@ -591,3 +591,53 @@ impl<T> std::fmt::Debug for ValueCallback<T> {
         f.write_str("ValueCallback(...)")
     }
 }
+
+// ── IntoEventHandler trait ──────────────────────────────────────────────────
+
+/// Trait for converting event handlers into component field values.
+///
+/// Used by the RSX macro for `on*` prop assignments. Supports both direct types
+/// (e.g., `Callback`) and optional types (e.g., `Option<Callback>`) as field targets,
+/// so custom components can use `on_toggle: Callback` while built-in components
+/// continue to use `Option<Callback>`.
+pub trait IntoEventHandler<T> {
+    fn into_event_handler(self) -> T;
+}
+
+/// Blanket: any `IntoEventHandler<T>` also works for `Option<T>`.
+impl<V, T> IntoEventHandler<Option<T>> for V
+where
+    V: IntoEventHandler<T>,
+{
+    fn into_event_handler(self) -> Option<T> {
+        Some(IntoEventHandler::<T>::into_event_handler(self))
+    }
+}
+
+// ── Callback impls ──
+
+impl IntoEventHandler<Callback> for Callback {
+    fn into_event_handler(self) -> Callback {
+        self
+    }
+}
+
+impl<F: Fn() + 'static> IntoEventHandler<Callback> for F {
+    fn into_event_handler(self) -> Callback {
+        Callback::from(self)
+    }
+}
+
+// ── ValueCallback<T> impls ──
+
+impl<T: 'static> IntoEventHandler<ValueCallback<T>> for ValueCallback<T> {
+    fn into_event_handler(self) -> ValueCallback<T> {
+        self
+    }
+}
+
+impl<T: 'static, F: Fn(T) + 'static> IntoEventHandler<ValueCallback<T>> for F {
+    fn into_event_handler(self) -> ValueCallback<T> {
+        ValueCallback::from(self)
+    }
+}

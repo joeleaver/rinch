@@ -733,7 +733,7 @@ impl Component for MyButton {
         // Add click handler if provided
         if let Some(ref cb) = self.onclick {
             let cb = cb.clone();
-            button.add_event_listener("click", move |_| cb.call());
+            button.add_event_listener("click", move |_| cb.invoke());
         }
 
         // Append children
@@ -933,6 +933,58 @@ pub fn StatusBadge(label: String, status: String) -> NodeHandle {
 // Use:
 StatusBadge { label: "Active", status: "success" }
 ```
+
+**With callback props:**
+
+`Callback` and `InputCallback` have built-in defaults (no-op), so they work as direct props without `Option` wrapping:
+
+```rust
+#[component]
+pub fn TodoItem(
+    label: String,
+    completed: bool,
+    on_toggle: Callback,
+    on_delete: Callback,
+) -> NodeHandle {
+    rsx! {
+        Group { gap: "sm", align: "center",
+            Checkbox {
+                checked: completed,
+                onchange: on_toggle,  // Forward directly — no Option unwrapping needed
+            }
+            Text { {label.clone()} }
+            ActionIcon { variant: "subtle", color: "red",
+                onclick: on_delete,
+                "X"
+            }
+        }
+    }
+}
+
+// Use — closures are auto-wrapped into Callback:
+TodoItem {
+    label: "Buy groceries",
+    completed: false,
+    on_toggle: move || toggle(id),
+    on_delete: move || delete(id),
+}
+```
+
+**Prop type defaults:**
+
+The `#[component]` macro generates a `Default` impl for the component struct. Known types get sensible defaults automatically:
+
+| Type | Default |
+|------|---------|
+| `String` | `String::new()` (empty) |
+| `bool` | `false` |
+| `Option<T>` | `None` |
+| `Vec<T>` | `Vec::new()` |
+| Numeric types | `0` / `0.0` |
+| `Callback` | No-op (does nothing) |
+| `InputCallback` | No-op (does nothing) |
+
+Other types (e.g., custom structs) fall back to `Default::default()`, so they must implement `Default`.
 
 ## Icon System
 

@@ -320,7 +320,7 @@ pub fn MyComponent(
 - **Parameters become public struct fields** (must be owned types: `String`, `bool`, `Option<T>`, etc.)
 - **`children: &[NodeHandle]` is special** — not a struct field, wired to `Component::render` method
 - **Reference types rejected** (`&str`, `&T`) with a helpful error message
-- **A manual `Default` impl is generated with per-field defaults for known types (String, bool, Option, Vec, numeric types). Unknown types fall back to `Default::default()`.**
+- **A manual `Default` impl is generated with per-field defaults for known types (String, bool, Option, Vec, numeric, Callback, InputCallback). Unknown types fall back to `Default::default()`.**
 - **Usage:** `MyComponent { label: "Hello", color: "blue", onclick: || {}, "child content" }`
 
 This pattern eliminates boilerplate for creating custom components — just write a PascalCase component function with owned parameters.
@@ -1179,8 +1179,10 @@ The `rsx!` macro **automatically wraps** component prop values. You must NOT man
 
 | Prop pattern | What you write | What the macro generates |
 |---|---|---|
-| `oninput` | `oninput: move \|val\| do_thing(val)` | `Some(InputCallback::new(move \|val\| do_thing(val)))` |
-| `on*` (events) | `onclick: move \|\| do_thing()` | `Some((move \|\| do_thing()).into())` |
+| `oninput` (closure) | `oninput: move \|val\| do_thing(val)` | `(InputCallback::new(move \|val\| do_thing(val))).into()` |
+| `oninput` (value) | `oninput: my_callback` | `(my_callback).into()` |
+| `on*` (closure) | `onclick: move \|\| do_thing()` | `(Callback::new(move \|\| do_thing())).into()` |
+| `on*` (value) | `onclick: my_callback` | `(my_callback).into()` |
 | `*_fn` (reactive) | `value_fn: move \|\| text.get()` | `Some(Rc::new(move \|\| text.get()))` |
 | `icon`, `*_icon` | `icon: Icon::Check` | `Some(Icon::Check)` |
 | bool literal | `disabled: true` | `true` (no wrapping) |
@@ -1192,15 +1194,18 @@ The `rsx!` macro **automatically wraps** component prop values. You must NOT man
 **Common mistakes (DO NOT do these):**
 
 ```rust
-// WRONG - double-wraps into Some(Some(InputCallback::new(...)))
+// WRONG - don't manually wrap callbacks
 TextInput { oninput: Some(InputCallback::new(move |val| ...)) }
-// RIGHT - macro adds Some(InputCallback::new(...)) for you
+// RIGHT - macro wraps closures automatically
 TextInput { oninput: move |val: String| input_signal.set(val) }
 
-// WRONG - double-wraps into Some(Some((...).into()))
+// WRONG - don't manually wrap callbacks
 Button { onclick: Some(Callback::new(|| ...)) }
-// RIGHT - macro adds Some((...).into()) for you
+// RIGHT - just pass the closure
 Button { onclick: move || do_something() }
+
+// RIGHT - you can also forward an existing Callback directly
+Button { onclick: my_callback }
 
 // WRONG - double-wraps into Some(Some(Icon::Check))
 Alert { icon: Some(Icon::Check) }
@@ -1214,6 +1219,8 @@ Button { variant: "filled" }
 ```
 
 **Additional notes:**
+- `on*` props accept both closures and existing `Callback` values. The macro uses `.into()` so the field can be either `Callback` or `Option<Callback>`.
+- `Callback` and `InputCallback` have built-in defaults (no-op), so custom components can use `on_toggle: Callback` instead of `Option<Callback>`.
 - Component text props (e.g., `variant`, `color`, `size`) are now `String` (not `Option<String>`). Empty string means "not set". The macro auto-converts string literals to `String::from(...)`.
 - `_fn` suffix props (e.g., `checked_fn`, `value_fn`) are auto-wrapped — just pass the closure directly, don't wrap in `Some(Rc::new(...))`
 - **Note:** ThemeProvider props (`primary_color_fn`, `dark_mode_fn`) use a different codegen path and still require manual `Rc::new()` wrapping
