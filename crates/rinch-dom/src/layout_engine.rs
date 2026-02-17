@@ -342,83 +342,94 @@ impl RinchDocument {
     }
 
     /// Handle display:contents nodes by reparenting their taffy children
-    /// to the taffy parent of the display:contents node.
+    /// to the nearest non-display-contents ancestor in the taffy tree.
+    ///
+    /// This function is **idempotent**: it rebuilds the taffy children list from
+    /// the DOM structure each time, so calling it multiple times produces the
+    /// same result. Nested display:contents (e.g. from `else if` chains) are
+    /// handled by recursively flattening.
     pub(crate) fn sync_display_contents(&mut self) {
-        // Collect display:contents nodes
-        let mut contents_nodes = Vec::new();
+        // Find all display:contents nodes and their nearest non-contents ancestors.
+        // We rebuild the taffy children of each affected ancestor from scratch.
+        let mut affected_parents: Vec<usize> = Vec::new();
+        let mut all_contents_nodes: Vec<usize> = Vec::new();
+
         for (id, node) in &self.tree.nodes {
             if let Some(style_str) = node.attributes.get("style")
                 && layout::is_display_contents(style_str)
             {
-                contents_nodes.push(id);
-            }
-        }
+                all_contents_nodes.push(id);
 
-        for node_id in contents_nodes {
-            let parent_id = match self.tree.nodes[node_id].parent {
-                Some(p) => p,
-                None => continue,
-            };
-            let parent_taffy = match self.tree.nodes[parent_id].taffy_id {
-                Some(t) => t,
-                None => continue,
-            };
-            let node_taffy = match self.tree.nodes[node_id].taffy_id {
-                Some(t) => t,
-                None => continue,
-            };
-
-            // Remove the contents node from taffy parent
-            self.taffy_remove_child_safe(parent_taffy, node_taffy);
-
-            // Find the position of this node among parent's DOM children to know where
-            // to insert its children in the taffy tree
-            let parent_children: Vec<usize> = self.tree.nodes[parent_id].children.clone();
-            let dom_pos = parent_children
-                .iter()
-                .position(|&c| c == node_id)
-                .unwrap_or(0);
-
-            // Compute taffy insert index (count taffy-having siblings before this position,
-            // excluding the contents node itself)
-            let mut taffy_insert_idx = 0;
-            for &sibling_id in &parent_children[..dom_pos] {
-                if sibling_id != node_id && self.tree.nodes[sibling_id].taffy_id.is_some() {
-                    // Check if sibling is NOT also display:contents (already removed)
-                    let is_contents = self.tree.nodes[sibling_id]
+                // Walk up to find nearest non-display-contents ancestor
+                let mut ancestor = node.parent;
+                while let Some(anc_id) = ancestor {
+                    let anc_is_contents = self.tree.nodes[anc_id]
                         .attributes
                         .get("style")
                         .map(|s| layout::is_display_contents(s))
                         .unwrap_or(false);
-                    if !is_contents {
-                        taffy_insert_idx += 1;
+                    if !anc_is_contents {
+                        if !affected_parents.contains(&anc_id) {
+                            affected_parents.push(anc_id);
+                        }
+                        break;
                     }
+                    ancestor = self.tree.nodes[anc_id].parent;
                 }
             }
-
-            // Add children of contents node directly to taffy parent
-            let grandchildren: Vec<usize> = self.tree.nodes[node_id].children.clone();
-            for (i, &grandchild_id) in grandchildren.iter().enumerate() {
-                if let Some(gc_taffy) = self.tree.nodes[grandchild_id].taffy_id {
-                    // Remove from contents node's taffy
-                    self.taffy_remove_child_safe(node_taffy, gc_taffy);
-                    let _ = self.tree.taffy.insert_child_at_index(
-                        parent_taffy,
-                        taffy_insert_idx + i,
-                        gc_taffy,
-                    );
-                }
-            }
-
-            // Set the contents node's taffy to display:none with zero size
-            let _ = self.tree.taffy.set_style(
-                node_taffy,
-                taffy::Style {
-                    display: taffy::Display::None,
-                    ..Default::default()
-                },
-            );
         }
+
+        // For each affected parent, rebuild its taffy children by flattening
+        // display:contents nodes recursively.
+        for parent_id in affected_parents {
+            let parent_taffy = match self.tree.nodes[parent_id].taffy_id {
+                Some(t) => t,
+                None => continue,
+            };
+
+            let new_children =
+                Self::collect_effective_taffy_children(&self.tree.nodes, parent_id);
+            let _ = self.tree.taffy.set_children(parent_taffy, &new_children);
+        }
+
+        // Set all display:contents nodes' taffy to display:none so they don't
+        // participate in layout themselves.
+        for node_id in all_contents_nodes {
+            if let Some(node_taffy) = self.tree.nodes[node_id].taffy_id {
+                let _ = self.tree.taffy.set_style(
+                    node_taffy,
+                    taffy::Style {
+                        display: taffy::Display::None,
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+    }
+
+    /// Recursively collect the effective Taffy children for a node,
+    /// flattening any `display:contents` children so their grandchildren
+    /// appear directly in the parent's child list.
+    fn collect_effective_taffy_children(
+        nodes: &slab::Slab<crate::node::Node>,
+        node_id: usize,
+    ) -> Vec<taffy::NodeId> {
+        let mut result = Vec::new();
+        for &child_id in &nodes[node_id].children {
+            let is_contents = nodes[child_id]
+                .attributes
+                .get("style")
+                .map(|s| layout::is_display_contents(s))
+                .unwrap_or(false);
+
+            if is_contents {
+                // Recursively flatten: add grandchildren directly
+                result.extend(Self::collect_effective_taffy_children(nodes, child_id));
+            } else if let Some(child_taffy) = nodes[child_id].taffy_id {
+                result.push(child_taffy);
+            }
+        }
+        result
     }
 
     /// Invalidate the IFC that owns a node (if any).
