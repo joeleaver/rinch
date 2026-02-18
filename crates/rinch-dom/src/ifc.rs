@@ -596,6 +596,23 @@ impl RinchDocument {
                                 height: known_dims.height.unwrap_or(layout.height()),
                             }
                         }
+                        Some(NodeContext::Image { width, height, .. }) => {
+                            let iw = *width as f32;
+                            let ih = *height as f32;
+                            if iw == 0.0 || ih == 0.0 {
+                                return taffy::Size::ZERO;
+                            }
+                            taffy::Size {
+                                width: known_dims.width.unwrap_or(iw),
+                                height: known_dims.height.unwrap_or_else(|| {
+                                    if let Some(kw) = known_dims.width {
+                                        ih * (kw / iw)
+                                    } else {
+                                        ih
+                                    }
+                                }),
+                            }
+                        }
                         _ => taffy::Size::ZERO,
                     }
                 },

@@ -3957,6 +3957,7 @@ version = "0.1.0"
 dependencies = [
  "app_units",
  "atomic_refcell",
+ "base64",
  "bitflags 2.10.0",
  "cssparser",
  "euclid",

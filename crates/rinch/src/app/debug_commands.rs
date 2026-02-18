@@ -274,6 +274,10 @@ impl RinchApp {
                 };
                 let handled = events::dispatch_keyboard_event(&key_data);
 
+                if handled {
+                    actions.push(AppAction::RequestRedraw);
+                }
+
                 if !handled {
                     if self.focused_contenteditable.is_some() {
                         // Route to contenteditable handler

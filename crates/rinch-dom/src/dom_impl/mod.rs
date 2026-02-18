@@ -265,6 +265,36 @@ impl RinchDocument {
             return;
         }
 
+        // Data URIs are decoded synchronously and inserted directly into the
+        // image cache (not the pending queue). This ensures that when a signal
+        // triggers a re-render and creates a new img element, the cache lookup
+        // in the "already in cache" path below finds the Decoded entry immediately.
+        if src.starts_with("data:") {
+            if !self.tree.image_cache.contains(src) {
+                if let Some(bytes) = crate::image_cache::decode_data_uri(src) {
+                    match image::load_from_memory(&bytes) {
+                        Ok(img) => {
+                            let rgba = img.to_rgba8();
+                            let (w, h) = (rgba.width(), rgba.height());
+                            self.tree.image_cache.insert_decoded(
+                                src.to_string(),
+                                crate::image_cache::DecodedImage {
+                                    data: rgba.into_raw(),
+                                    width: w,
+                                    height: h,
+                                },
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to decode data URI image: {}", e);
+                        }
+                    }
+                }
+            }
+            // Fall through to the "already in cache" path to set NodeContext
+            // dimensions on this node (works for both first render and re-renders).
+        }
+
         // Check if already in cache
         if let Some(img) = self.tree.image_cache.get(src) {
             // Already decoded — update intrinsic dimensions on the Taffy node
@@ -352,7 +382,6 @@ impl RinchDocument {
         if newly_decoded.is_empty() {
             return false;
         }
-
         // For each newly decoded image, find <img> nodes referencing it
         // and update their intrinsic dimensions
         for src in &newly_decoded {

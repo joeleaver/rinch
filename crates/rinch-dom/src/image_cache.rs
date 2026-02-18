@@ -163,3 +163,19 @@ pub fn request_image_load(src: String, loader: Arc<dyn ImageLoader>) {
             .push(pending);
     });
 }
+
+/// Decode a `data:` URI into raw bytes.
+///
+/// Supports `data:[<mediatype>];base64,<data>` format.
+/// Returns `None` if the URI is malformed or not base64-encoded.
+pub fn decode_data_uri(src: &str) -> Option<Vec<u8>> {
+    let comma = src.find(',')?;
+    let header = &src[..comma];
+    let data = &src[comma + 1..];
+    if header.contains(";base64") {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.decode(data).ok()
+    } else {
+        None
+    }
+}
