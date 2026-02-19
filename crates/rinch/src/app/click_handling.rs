@@ -128,8 +128,11 @@ impl RinchApp {
                 self.ce_selecting = true;
 
                 // Clear regular input focus
+                self.clear_input_focus_attrs();
                 self.focused_input_handler_id = None;
                 self.focused_input_value.clear();
+                self.focused_input_state = None;
+                self.focused_input_node_id = None;
 
                 // Clear previous contenteditable focus attributes
                 if let Some(prev_id) = prev_node_id
@@ -165,17 +168,15 @@ impl RinchApp {
 
         // Walk up from hit target to detect text input focus (data-oninput).
         // This must happen before the data-rid walk which may return early.
-        let mut found_input_focus = false;
+        let mut found_input_focus: Option<(usize, usize, String)> = None; // (node_id, handler_id, value)
         {
             let mut check = Some(hit_id);
             while let Some(nid) = check {
                 if let Some(node) = d.tree.get(nid) {
                     if let Some(oninput_str) = node.attributes.get("data-oninput") {
                         if let Ok(handler_id) = oninput_str.parse::<usize>() {
-                            self.focused_input_handler_id = Some(handler_id);
-                            self.focused_input_value =
-                                node.attributes.get("value").cloned().unwrap_or_default();
-                            found_input_focus = true;
+                            let value = node.attributes.get("value").cloned().unwrap_or_default();
+                            found_input_focus = Some((nid, handler_id, value));
                         }
                         break;
                     }
@@ -185,11 +186,47 @@ impl RinchApp {
                 }
             }
         }
-        if !found_input_focus {
+
+        // Compute click-to-cursor byte offset if we're focusing an input
+        let input_cursor_offset = if let Some((nid, _, _)) = found_input_focus {
+            Some(Self::compute_input_cursor_from_click(&d.tree, nid, x, y))
+        } else {
+            None
+        };
+
+        // Drop the borrow before calling methods that re-borrow self.doc
+        drop(d);
+
+        if let Some((nid, handler_id, value)) = found_input_focus {
+            // Clear previous input focus attrs if switching to a different input
+            if self.focused_input_node_id.is_some() && self.focused_input_node_id != Some(nid) {
+                self.clear_input_focus_attrs();
+            }
+            self.focused_input_handler_id = Some(handler_id);
+            self.focused_input_value = value.clone();
+            self.focused_input_node_id = Some(nid);
+
+            // Create EditableState from the current value
+            let mut state = EditableState::new(StringDocument::with_text(&value));
+            let byte_offset = input_cursor_offset.unwrap_or(value.len());
+            state.selection = Selection::cursor(byte_offset);
+            self.focused_input_state = Some(state);
+            self.sync_input_cursor_to_dom();
+            self.scene_dirty = true;
+        } else {
+            // Clicked outside any input — clear focus
+            if self.focused_input_node_id.is_some() {
+                self.clear_input_focus_attrs();
+                self.scene_dirty = true;
+            }
             self.focused_input_handler_id = None;
             self.focused_input_value.clear();
+            self.focused_input_state = None;
+            self.focused_input_node_id = None;
         }
 
+        // Re-borrow for the data-rid walk
+        let d = doc.borrow();
         let mut current = Some(hit_id);
         while let Some(node_id) = current {
             if let Some(node) = d.tree.get(node_id) {
@@ -321,6 +358,114 @@ impl RinchApp {
             byte_offset,
             inline_root_node_id: block_id,
             valid: true,
+        }
+    }
+
+    /// Compute the byte offset for a click position within a text input node.
+    ///
+    /// Builds a temporary Parley layout from the node's value and font properties,
+    /// then uses `byte_offset_from_position` to find the character at click coords.
+    fn compute_input_cursor_from_click(
+        tree: &rinch_dom::NodeTree,
+        node_id: usize,
+        click_x: f32,
+        click_y: f32,
+    ) -> usize {
+        let Some(node) = tree.get(node_id) else { return 0 };
+
+        let value = node.attributes.get("value").map(|s| s.as_str()).unwrap_or("");
+        if value.is_empty() {
+            return 0;
+        }
+
+        // Compute node's absolute position
+        let mut abs_x = node.layout.x;
+        let mut abs_y = node.layout.y;
+        let mut parent_id = node.parent;
+        while let Some(pid) = parent_id {
+            if let Some(pn) = tree.get(pid) {
+                abs_x += pn.layout.x;
+                abs_y += pn.layout.y;
+                abs_x -= pn.scroll_offset.0 as f32;
+                abs_y -= pn.scroll_offset.1 as f32;
+                parent_id = pn.parent;
+            } else {
+                break;
+            }
+        }
+
+        let padding_left = node.computed_style.padding_left.to_px();
+        let padding_top = node.computed_style.padding_top.to_px();
+
+        // Local coordinates within the text area
+        let local_x = (click_x - abs_x - padding_left).max(0.0);
+        let local_y = (click_y - abs_y - padding_top).max(0.0);
+
+        // Build a Parley layout matching paint_input_value's parameters
+        let font_size = node.computed_style.font_size;
+        let font_weight = node.computed_style.font_weight;
+        let font_family = if node.computed_style.font_family.is_empty() {
+            "sans-serif".to_string()
+        } else {
+            node.computed_style.font_family.clone()
+        };
+
+        // Password masking: map click position through bullet text
+        let is_password = node.attributes.get("type").map(|s| s.as_str()) == Some("password");
+        let bullet = "\u{2022}";
+        let password_display;
+        let display_text = if is_password {
+            let total_chars = value.chars().count();
+            password_display = bullet.repeat(total_chars);
+            password_display.as_str()
+        } else {
+            value
+        };
+
+        // Use the tree's font context to build the layout
+        // We can't borrow font_cx mutably here since we only have &NodeTree.
+        // Instead, create a temporary font context for hit testing.
+        let mut font_cx = parley::FontContext::new();
+        let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
+
+        let mut builder = layout_cx.ranged_builder(&mut font_cx, display_text, 1.0, true);
+        builder.push_default(parley::style::StyleProperty::FontSize(font_size));
+        builder.push_default(parley::style::StyleProperty::FontStack(
+            parley::style::FontStack::Source(std::borrow::Cow::Owned(font_family)),
+        ));
+        if (font_weight - 400.0).abs() > 1.0 {
+            builder.push_default(parley::style::StyleProperty::FontWeight(
+                parley::style::FontWeight::new(font_weight),
+            ));
+        }
+
+        let content_width = node.layout.width - padding_left * 2.0;
+        let mut text_layout = builder.build(display_text);
+        text_layout.break_all_lines(Some(content_width));
+
+        // For single-line inputs, adjust local_y to account for vertical centering
+        let is_textarea = node.tag() == Some("textarea");
+        let adjusted_y = if !is_textarea {
+            let text_height = text_layout.height();
+            let content_height = node.layout.height;
+            let vertical_offset = (content_height - text_height) / 2.0 - padding_top;
+            (local_y - vertical_offset.max(0.0)).max(0.0)
+        } else {
+            local_y
+        };
+
+        let byte_offset = byte_offset_from_position(&text_layout, local_x, adjusted_y);
+
+        // For password fields, map display byte offset back to real value byte offset
+        if is_password {
+            let bullet_len = bullet.len();
+            let char_index = byte_offset / bullet_len;
+            value.char_indices()
+                .nth(char_index)
+                .map(|(i, _)| i)
+                .unwrap_or(value.len())
+        } else {
+            byte_offset
         }
     }
 }

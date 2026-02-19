@@ -30,7 +30,7 @@ use rinch_dom::RinchDocument;
 #[cfg(feature = "debug")]
 use rinch_dom::text_query::glyph_bounds_for_offset_layout;
 use rinch_dom::text_query::{byte_offset_from_position, caret_position_for_offset_layout};
-use rinch_editable::{InputHandler, Key as EditKey, Modifiers as EditModifiers};
+use rinch_editable::{EditCommand, EditableDocument, EditableState, InputHandler, Key as EditKey, Modifiers as EditModifiers, Selection, StringDocument};
 use rinch_platform::{
     AppAction, Instant, KeyCode, Modifiers, MouseButton, PlatformEvent, UserEvent,
 };
@@ -113,6 +113,10 @@ pub struct RinchApp {
     pub(crate) focused_input_handler_id: Option<usize>,
     /// Current accumulated text value for the focused text input.
     pub(crate) focused_input_value: String,
+    /// Editable state for the focused text input (cursor, selection, undo).
+    pub(crate) focused_input_state: Option<EditableState<StringDocument>>,
+    /// DOM node ID of the currently focused text input.
+    pub(crate) focused_input_node_id: Option<usize>,
     /// State for a focused contenteditable element.
     pub(crate) focused_contenteditable: Option<ContentEditableFocus>,
     /// Active CE API instance for the focused contentEditable element.
@@ -156,6 +160,8 @@ impl RinchApp {
             scene_dirty: true,
             focused_input_handler_id: None,
             focused_input_value: String::new(),
+            focused_input_state: None,
+            focused_input_node_id: None,
             focused_contenteditable: None,
             ce_ops: None,
             ce_selecting: false,
@@ -433,12 +439,41 @@ impl RinchApp {
             .unwrap_or(false)
     }
 
-    // ── No-op keyboard stubs ─────────────────────────────────────────────
-    // The keyboard interceptor handles all input; these are stubs for
-    // the fallback path when no interceptor is registered.
+    // ── Input keyboard handling ─────────────────────────────────────────
+    // Routes editing commands through EditableState<StringDocument> for
+    // proper cursor tracking, selection, and undo support.
+
+    /// Central dispatch: execute an EditCommand on the focused input's EditableState.
+    fn handle_input_edit_command(&mut self, cmd: EditCommand) {
+        let Some(handler_id) = self.focused_input_handler_id else { return };
+        let Some(state) = self.focused_input_state.as_mut() else { return };
+
+        let old_text = state.document.to_text();
+        let clipboard_text = state.execute(cmd);
+        let new_text = state.document.to_text();
+
+        // Handle clipboard output (Copy/Cut)
+        if let Some(text) = clipboard_text {
+            #[cfg(feature = "clipboard")]
+            { let _ = crate::clipboard::copy_text(&text); }
+            let _ = text;
+        }
+
+        // Sync value to our buffer
+        self.focused_input_value = new_text.clone();
+        self.sync_input_cursor_to_dom();
+
+        // Fire oninput if text changed
+        if new_text != old_text {
+            events::dispatch_input_event(events::EventHandlerId(handler_id), new_text);
+        }
+    }
 
     fn handle_text_input(&mut self, text: &str) {
-        if let Some(handler_id) = self.focused_input_handler_id {
+        if self.focused_input_state.is_some() {
+            self.handle_input_edit_command(EditCommand::InsertText(text.to_string()));
+        } else if let Some(handler_id) = self.focused_input_handler_id {
+            // Fallback for inputs without EditableState (shouldn't happen)
             self.focused_input_value.push_str(text);
             let value = self.focused_input_value.clone();
             self.update_focused_input_dom_value(handler_id, &value);
@@ -446,66 +481,158 @@ impl RinchApp {
         }
     }
     fn handle_backspace(&mut self) {
-        if let Some(handler_id) = self.focused_input_handler_id {
+        if self.focused_input_state.is_some() {
+            self.handle_input_edit_command(EditCommand::DeleteBackward);
+        } else if let Some(handler_id) = self.focused_input_handler_id {
             self.focused_input_value.pop();
             let value = self.focused_input_value.clone();
             self.update_focused_input_dom_value(handler_id, &value);
             events::dispatch_input_event(events::EventHandlerId(handler_id), value);
         }
     }
-    fn handle_delete(&mut self) {}
-    fn handle_arrow_left(&mut self, _shift: bool, _ctrl: bool) {}
-    fn handle_arrow_right(&mut self, _shift: bool, _ctrl: bool) {}
+    fn handle_delete(&mut self) {
+        self.handle_input_edit_command(EditCommand::DeleteForward);
+    }
+    fn handle_arrow_left(&mut self, shift: bool, ctrl: bool) {
+        let cmd = match (shift, ctrl) {
+            (true, true) => EditCommand::SelectWordLeft,
+            (true, false) => EditCommand::SelectLeft,
+            (false, true) => EditCommand::MoveWordLeft,
+            (false, false) => EditCommand::MoveLeft,
+        };
+        self.handle_input_edit_command(cmd);
+    }
+    fn handle_arrow_right(&mut self, shift: bool, ctrl: bool) {
+        let cmd = match (shift, ctrl) {
+            (true, true) => EditCommand::SelectWordRight,
+            (true, false) => EditCommand::SelectRight,
+            (false, true) => EditCommand::MoveWordRight,
+            (false, false) => EditCommand::MoveRight,
+        };
+        self.handle_input_edit_command(cmd);
+    }
     fn handle_enter(&mut self) {
         // Check if a text input is focused and has an onsubmit handler
-        if self.focused_input_handler_id.is_some()
-            && let Some(doc) = &self.doc
-        {
-            let d = doc.borrow();
-            // Find the focused input node by its data-oninput handler
-            let submit_handler_id = d.tree.nodes.iter().find_map(|(_, node)| {
-                // Find node with matching data-oninput
-                node.attributes
-                    .get("data-oninput")
-                    .and_then(|s| s.parse::<usize>().ok())
-                    .filter(|&h| Some(h) == self.focused_input_handler_id)
-                    .and_then(|_| {
-                        // Found the focused input - check for data-onsubmit
+        if self.focused_input_handler_id.is_some() {
+            // Use stored node_id if available, else linear scan
+            let submit_handler_id = if let Some(node_id) = self.focused_input_node_id {
+                if let Some(doc) = &self.doc {
+                    let d = doc.borrow();
+                    d.tree.nodes.get(node_id).and_then(|node| {
                         node.attributes
                             .get("data-onsubmit")
                             .and_then(|s| s.parse::<usize>().ok())
                     })
-            });
-            drop(d);
+                } else {
+                    None
+                }
+            } else if let Some(doc) = &self.doc {
+                let d = doc.borrow();
+                d.tree.nodes.iter().find_map(|(_, node)| {
+                    node.attributes
+                        .get("data-oninput")
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .filter(|&h| Some(h) == self.focused_input_handler_id)
+                        .and_then(|_| {
+                            node.attributes
+                                .get("data-onsubmit")
+                                .and_then(|s| s.parse::<usize>().ok())
+                        })
+                })
+            } else {
+                None
+            };
             if let Some(handler_id) = submit_handler_id {
                 events::dispatch_event(events::EventHandlerId(handler_id));
 
                 // After onsubmit, the handler may have changed the signal (e.g., cleared it).
-                // Effects run synchronously during dispatch, so the DOM value attribute
-                // is already updated. Re-read it to keep our buffer in sync.
-                if let Some(doc) = &self.doc {
-                    let d = doc.borrow();
-                    if let Some(value) = d.tree.nodes.iter().find_map(|(_, node)| {
-                        node.attributes
-                            .get("data-oninput")
-                            .and_then(|s| s.parse::<usize>().ok())
-                            .filter(|&h| Some(h) == self.focused_input_handler_id)
-                            .and_then(|_| node.attributes.get("value").cloned())
-                    }) {
-                        self.focused_input_value = value;
-                    }
-                }
+                // Re-read value and rebuild EditableState to stay in sync.
+                self.resync_input_state_from_dom();
             }
         }
     }
     fn handle_arrow_up(&mut self, _shift: bool) {}
     fn handle_arrow_down(&mut self, _shift: bool) {}
-    fn handle_home(&mut self, _shift: bool) {}
-    fn handle_end(&mut self, _shift: bool) {}
-    fn handle_select_all(&mut self) {}
-    fn handle_copy(&mut self) {}
-    fn handle_paste(&mut self) {}
-    fn handle_cut(&mut self) {}
+    fn handle_home(&mut self, shift: bool) {
+        let cmd = if shift { EditCommand::SelectToLineStart } else { EditCommand::MoveToLineStart };
+        self.handle_input_edit_command(cmd);
+    }
+    fn handle_end(&mut self, shift: bool) {
+        let cmd = if shift { EditCommand::SelectToLineEnd } else { EditCommand::MoveToLineEnd };
+        self.handle_input_edit_command(cmd);
+    }
+    fn handle_select_all(&mut self) {
+        self.handle_input_edit_command(EditCommand::SelectAll);
+    }
+    fn handle_copy(&mut self) {
+        self.handle_input_edit_command(EditCommand::Copy);
+    }
+    fn handle_paste(&mut self) {
+        let clip_text = {
+            #[cfg(feature = "clipboard")]
+            { crate::clipboard::paste_text().unwrap_or_default() }
+            #[cfg(not(feature = "clipboard"))]
+            { String::new() }
+        };
+        if !clip_text.is_empty() {
+            self.handle_input_edit_command(EditCommand::Paste(clip_text));
+        }
+    }
+    fn handle_cut(&mut self) {
+        self.handle_input_edit_command(EditCommand::Cut);
+    }
+
+    // ── Input cursor DOM sync ─────────────────────────────────────────
+
+    /// Write cursor/selection attributes to the focused input's DOM node.
+    fn sync_input_cursor_to_dom(&self) {
+        let Some(node_id) = self.focused_input_node_id else { return };
+        let Some(state) = &self.focused_input_state else { return };
+        let Some(doc) = &self.doc else { return };
+
+        let mut d = doc.borrow_mut();
+        if let Some(node) = d.tree.nodes.get_mut(node_id) {
+            node.attributes.insert("value".to_string(), state.document.to_text());
+            node.attributes.insert("data-focused".to_string(), "true".to_string());
+            node.attributes.insert("data-cursor-pos".to_string(), state.selection.head.0.to_string());
+            node.attributes.insert("data-selection-start".to_string(), state.selection.anchor.0.to_string());
+            node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+        }
+        d.tree.dirty_nodes.insert(node_id);
+    }
+
+    /// Clear focus-related attributes from the previously focused input node.
+    fn clear_input_focus_attrs(&self) {
+        let Some(node_id) = self.focused_input_node_id else { return };
+        let Some(doc) = &self.doc else { return };
+
+        let mut d = doc.borrow_mut();
+        if let Some(node) = d.tree.nodes.get_mut(node_id) {
+            node.attributes.remove("data-focused");
+            node.attributes.remove("data-cursor-pos");
+            node.attributes.remove("data-selection-start");
+            node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+        }
+        d.tree.dirty_nodes.insert(node_id);
+    }
+
+    /// Re-read the DOM value and rebuild EditableState after an onsubmit handler
+    /// may have changed the signal (e.g., cleared the input).
+    fn resync_input_state_from_dom(&mut self) {
+        let Some(node_id) = self.focused_input_node_id else { return };
+        if let Some(doc) = &self.doc {
+            let d = doc.borrow();
+            if let Some(node) = d.tree.nodes.get(node_id) {
+                let value = node.attributes.get("value").cloned().unwrap_or_default();
+                self.focused_input_value = value.clone();
+                let mut state = EditableState::new(StringDocument::with_text(&value));
+                // Place cursor at end after resync
+                state.selection = Selection::cursor(value.len());
+                self.focused_input_state = Some(state);
+            }
+        }
+        self.sync_input_cursor_to_dom();
+    }
 
     // ── Embed API helpers ─────────────────────────────────────────────
 
