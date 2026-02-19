@@ -11,7 +11,7 @@ pub struct DebugServer {
     #[allow(dead_code)]
     app_name: String,
     shutdown: Arc<AtomicBool>,
-    _listener_thread: thread::JoinHandle<()>,
+    listener_thread: Option<thread::JoinHandle<()>>,
 }
 
 impl DebugServer {
@@ -40,7 +40,7 @@ impl DebugServer {
                 tracing::info!("rinch-debug listening on 127.0.0.1:{}", port);
 
                 loop {
-                    if shutdown_clone.load(Ordering::Relaxed) {
+                    if shutdown_clone.load(Ordering::Acquire) {
                         break;
                     }
 
@@ -59,7 +59,7 @@ impl DebugServer {
                             thread::sleep(std::time::Duration::from_millis(100));
                         }
                         Err(e) => {
-                            if !shutdown_clone.load(Ordering::Relaxed) {
+                            if !shutdown_clone.load(Ordering::Acquire) {
                                 tracing::error!("rinch-debug accept error: {}", e);
                             }
                             break;
@@ -72,7 +72,7 @@ impl DebugServer {
             port,
             app_name: app_name.to_string(),
             shutdown,
-            _listener_thread: handle,
+            listener_thread: Some(handle),
         })
     }
 
@@ -129,7 +129,7 @@ impl DebugServer {
 
         // Request loop
         loop {
-            if shutdown.load(Ordering::Relaxed) {
+            if shutdown.load(Ordering::Acquire) {
                 break;
             }
 
@@ -179,9 +179,14 @@ impl DebugServer {
 
 impl Drop for DebugServer {
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Relaxed);
+        self.shutdown.store(true, Ordering::Release);
         discovery::remove_discovery_file();
-        // Connect to self to unblock accept()
+        // Connect to self to unblock accept() (the listener uses non-blocking
+        // accept with 100ms sleeps, but a self-connect wakes it immediately).
         let _ = std::net::TcpStream::connect(format!("127.0.0.1:{}", self.port));
+        // Join the listener thread so it doesn't outlive the app.
+        if let Some(handle) = self.listener_thread.take() {
+            let _ = handle.join();
+        }
     }
 }

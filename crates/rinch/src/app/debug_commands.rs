@@ -255,10 +255,7 @@ impl RinchApp {
                 }
             }
             DebugCommandKind::CloseApp => {
-                std::thread::spawn(|| {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    std::process::exit(0);
-                });
+                actions.push(AppAction::Exit);
                 DebugResult::Json {
                     data: json!({"status": "closing"}),
                 }

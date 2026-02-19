@@ -147,6 +147,28 @@ impl RinchRuntime {
         }
     }
 
+    /// Explicit shutdown: drop resources in the correct order and clear global state.
+    fn shutdown(&mut self) {
+        // 1. Clear the signal-change callback so no stale closures fire during drop.
+        rinch_core::clear_on_signal_change();
+
+        // 2. Drain any pending main-thread callbacks (they may capture app state).
+        MAIN_QUEUE.lock().unwrap().clear();
+
+        // 3. Drop the app first (disposes effects/scopes before GPU resources).
+        //    RinchApp's own drop order handles _render_scope before doc.
+        drop(self.app.component.take());
+        drop(self.app._render_scope.take());
+        drop(self.app.ce_ops.take());
+        drop(self.app.doc.take());
+
+        // 4. Drop GPU renderer before window — Surface holds a window handle reference.
+        drop(self.renderer.take());
+
+        // 5. Window can now be dropped safely.
+        drop(self.window.take());
+    }
+
     fn create_window(&mut self, event_loop: &ActiveEventLoop) {
         let mut window_attrs = Window::default_attributes()
             .with_title(&self.title)
@@ -404,10 +426,11 @@ impl RinchRuntime {
     }
 
     /// Handle debug commands that require the renderer (e.g., screenshots).
+    /// Returns true if the event loop should exit.
     #[cfg(feature = "debug")]
-    fn handle_debug_commands_with_renderer(&mut self) {
+    fn handle_debug_commands_with_renderer(&mut self) -> bool {
         let Some(rx) = self.app.debug_cmd_rx.take() else {
-            return;
+            return false;
         };
 
         // Collect commands that need renderer access
@@ -415,6 +438,8 @@ impl RinchRuntime {
         while let Ok(cmd) = rx.0.try_recv() {
             pending.push(cmd);
         }
+
+        let mut should_exit = false;
 
         for cmd in pending {
             let response = match &cmd.kind {
@@ -456,6 +481,9 @@ impl RinchRuntime {
                     // Process any actions generated
                     for action in actions {
                         match action {
+                            AppAction::Exit => {
+                                should_exit = true;
+                            }
                             AppAction::RequestRedraw => {
                                 if let Some(w) = &self.window {
                                     w.request_redraw();
@@ -476,6 +504,13 @@ impl RinchRuntime {
         }
 
         self.app.debug_cmd_rx = Some(rx);
+        should_exit
+    }
+}
+
+impl Drop for RinchRuntime {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
@@ -498,7 +533,9 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
             RinchNativeEvent::DebugCommand => {
                 // Debug commands may need the renderer (screenshots), so
                 // we handle them here in the shell instead of delegating.
-                self.handle_debug_commands_with_renderer();
+                if self.handle_debug_commands_with_renderer() {
+                    event_loop.exit();
+                }
                 return;
             }
             RinchNativeEvent::MinimizeWindow => PlatformEvent::UserEvent(UserEvent::MinimizeWindow),

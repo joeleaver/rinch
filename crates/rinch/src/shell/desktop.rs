@@ -74,13 +74,18 @@ impl PlatformWindow for WinitWindow {
 // ── WgpuRenderer ─────────────────────────────────────────────────────────────
 
 /// Desktop GPU renderer backed by wgpu + vello.
+///
+/// Field order matters for drop safety: resources that reference the device
+/// (`renderer`, `render_texture`) must be declared before `device`/`queue`
+/// so they are dropped first (Rust drops fields in declaration order).
+/// `surface` must drop before the window handle it references is freed.
 pub struct WgpuRenderer {
     pub(crate) renderer: VelloRenderer,
+    pub(crate) render_texture: Texture,
     pub(crate) surface: Surface<'static>,
     pub(crate) surface_config: SurfaceConfiguration,
     pub(crate) device: Device,
     pub(crate) queue: Queue,
-    pub(crate) render_texture: Texture,
 }
 
 impl WgpuRenderer {
@@ -162,11 +167,11 @@ impl WgpuRenderer {
 
         Self {
             renderer,
+            render_texture,
             surface,
             surface_config,
             device,
             queue,
-            render_texture,
         }
     }
 

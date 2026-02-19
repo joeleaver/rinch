@@ -75,10 +75,13 @@ pub struct RinchApp {
     /// Component function to render (consumed on mount).
     #[allow(clippy::type_complexity)]
     pub(crate) component: Option<Box<dyn FnOnce(&mut RenderScope) -> NodeHandle>>,
+    /// Render scope (kept alive for effects).
+    /// Declared before `doc` so it drops first — Scope::dispose() runs effects
+    /// that may access the document via Weak<RefCell<DomDocument>>, and the doc
+    /// must still be alive at that point.
+    pub(crate) _render_scope: Option<Rc<RefCell<RenderScope>>>,
     /// The document (shared with RenderScope).
     pub(crate) doc: Option<Rc<RefCell<RinchDocument>>>,
-    /// Render scope (kept alive for effects).
-    pub(crate) _render_scope: Option<Rc<RefCell<RenderScope>>>,
     /// Vello scene (reused across frames).
     pub(crate) scene: Scene,
     /// Parley layout context for paint-time text layout.
@@ -135,8 +138,8 @@ impl RinchApp {
     pub fn new(component: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static) -> Self {
         Self {
             component: Some(Box::new(component)),
-            doc: None,
             _render_scope: None,
+            doc: None,
             scene: Scene::new(),
             paint_layout_cx: parley::LayoutContext::new(),
             cursor_pos: None,

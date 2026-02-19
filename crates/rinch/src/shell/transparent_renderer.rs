@@ -26,14 +26,16 @@ use winit::window::Window;
 
 const DEFAULT_THREADS: Option<NonZero<usize>> = None;
 
+/// Field order matters for drop safety: GPU resources (`renderer`,
+/// `render_texture`) that reference the device must drop before `device`/`queue`.
 struct ActiveRenderState {
     renderer: VelloRenderer,
+    // Intermediate texture for Vello's compute shaders (needs STORAGE_BINDING)
+    render_texture: Texture,
     surface: Surface<'static>,
     surface_config: SurfaceConfiguration,
     device: Device,
     queue: Queue,
-    // Intermediate texture for Vello's compute shaders (needs STORAGE_BINDING)
-    render_texture: Texture,
 }
 
 enum RenderState {
@@ -279,11 +281,11 @@ impl TransparentWindowRenderer {
 
         ActiveRenderState {
             renderer,
+            render_texture,
             surface,
             surface_config,
             device,
             queue,
-            render_texture,
         }
     }
 
