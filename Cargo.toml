@@ -50,6 +50,7 @@ muda = "0.14"
 
 # System tray
 tray-icon = "0.19"
+ksni = { version = "0.3", default-features = false, features = ["blocking", "tokio"] }
 
 # File dialogs
 rfd = "0.15"

@@ -22,6 +22,9 @@ pub trait PlatformWindow {
     /// Set whether the window is maximized.
     fn set_maximized(&self, maximized: bool);
 
+    /// Set whether the window is visible.
+    fn set_visible(&self, visible: bool);
+
     /// Query whether the window is currently maximized.
     fn is_maximized(&self) -> bool;
 

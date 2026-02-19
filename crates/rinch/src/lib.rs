@@ -168,7 +168,8 @@ pub mod prelude {
     // Window control functions
     #[cfg(feature = "desktop")]
     pub use crate::windows::{
-        close_current_window, minimize_current_window, toggle_maximize_current_window,
+        close_current_window, hide_current_window, minimize_current_window,
+        show_current_window, toggle_maximize_current_window,
     };
     // Fine-grained rendering types
     pub use rinch_core::dom::{
@@ -200,7 +201,8 @@ pub mod prelude {
 
 // Re-export core types at crate root
 pub use rinch_core::element::{
-    AppMenuProps, Children, Element, MenuItemProps, MenuProps, ThemeProviderProps, WindowProps,
+    AppMenuProps, Children, CloseRequestCallback, Element, MenuItemProps, MenuProps,
+    ThemeProviderProps, WindowProps,
 };
 pub use rinch_core::{Effect, Memo, Scope, Signal, batch, derived, untracked};
 pub use rinch_macros::{component, rsx};

@@ -807,17 +807,37 @@ if has_text() {
 Enable with `features = ["system-tray"]`:
 
 ```rust
+use rinch::prelude::*;
 use rinch::tray::{TrayIconBuilder, TrayMenu, TrayMenuItem};
 
 let menu = TrayMenu::new()
-    .add_item(TrayMenuItem::new("Show").on_click(|| println!("clicked")))
+    .add_item(TrayMenuItem::new("Show").on_click(|| show_current_window()))
     .add_separator()
-    .add_item(TrayMenuItem::new("Quit"));
+    .add_item(TrayMenuItem::new("Quit").on_click(|| close_current_window()));
 
 let tray = TrayIconBuilder::new()
     .with_tooltip("My App")
+    .with_icon_png(include_bytes!("../assets/icon.png"))?  // PNG icon support
     .with_menu(menu)
     .build()?;
+```
+
+**Key features:**
+- `with_icon_png(data)` — Load tray icon from PNG bytes (use `include_bytes!`)
+- `with_icon_rgba(rgba, w, h)` — Load from raw RGBA pixel data
+- `with_icon_path(path)` — Load from a PNG file path
+- **Auto-polling** — `TrayIconBuilder::build()` auto-registers callbacks with the runtime. Menu events are polled automatically in the event loop; no manual `poll_events()` needed.
+
+**Minimize-to-tray pattern:** Combine system tray with `on_close_requested` + `hide_current_window()`:
+
+```rust
+let window_props = WindowProps {
+    on_close_requested: Some(Arc::new(|| {
+        hide_current_window();
+        false // Don't exit, just hide
+    })),
+    ..Default::default()
+};
 ```
 
 ### Theme System (optional)
@@ -973,9 +993,28 @@ use rinch::prelude::*;
 button { onclick: || minimize_current_window(), "−" }
 button { onclick: || toggle_maximize_current_window(), "□" }
 button { onclick: || close_current_window(), "×" }
+
+// Window visibility (for minimize-to-tray):
+button { onclick: || hide_current_window(), "Hide to Tray" }
+// From a tray menu callback:
+TrayMenuItem::new("Show").on_click(|| show_current_window())
 ```
 
 These functions are available in the prelude and work from onclick handlers.
+
+**`on_close_requested` callback:** Intercept the window close button to hide instead of exit:
+
+```rust
+use std::sync::Arc;
+
+let window_props = WindowProps {
+    on_close_requested: Some(Arc::new(|| {
+        hide_current_window();
+        false // Return false to cancel exit, true to proceed
+    })),
+    ..Default::default()
+};
+```
 
 ### wgpu Fork
 

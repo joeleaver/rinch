@@ -46,6 +46,10 @@ pub enum RinchEvent {
     ToggleMaximizeWindow { window_id: WindowId },
     /// Close a window (from window controls).
     CloseWindowControl { window_id: WindowId },
+    /// Show a window (restore from hidden/tray).
+    ShowWindow { window_id: WindowId },
+    /// Hide a window (minimize to tray).
+    HideWindow { window_id: WindowId },
     /// Refresh the DevTools window content.
     RefreshDevTools,
 }

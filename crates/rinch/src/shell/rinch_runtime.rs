@@ -104,6 +104,10 @@ pub enum RinchNativeEvent {
     ToggleMaximizeWindow,
     /// Close the window (from window controls).
     CloseWindowControl,
+    /// Show the window.
+    ShowWindow,
+    /// Hide the window.
+    HideWindow,
 }
 
 // ── RinchRuntime ─────────────────────────────────────────────────────────────
@@ -192,6 +196,31 @@ impl RinchRuntime {
             if let (Some(x), Some(y)) = (props.x, props.y) {
                 window_attrs = window_attrs.with_position(winit::dpi::LogicalPosition::new(x, y));
             }
+            if let Some(icon_data) = props.icon {
+                // Set window icon (works on X11 and Windows)
+                match load_window_icon(icon_data) {
+                    Ok(icon) => {
+                        window_attrs = window_attrs.with_window_icon(Some(icon));
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to load window icon: {}", e);
+                    }
+                }
+                // On Wayland, write icon to a temp file and install a .desktop entry
+                // so the compositor can find it via the app_id.
+                #[cfg(target_os = "linux")]
+                {
+                    let app_id = props.app_id.as_deref().unwrap_or("rinch-app");
+                    install_wayland_icon(app_id, icon_data);
+                }
+            }
+            // Set app_id / WM_CLASS on Linux for desktop integration
+            #[cfg(target_os = "linux")]
+            {
+                let app_id = props.app_id.as_deref().unwrap_or("rinch-app");
+                use winit::platform::wayland::WindowAttributesExtWayland;
+                window_attrs = window_attrs.with_name(app_id, app_id);
+            }
         }
 
         let window = event_loop
@@ -214,6 +243,74 @@ impl RinchRuntime {
             .mount_component(size.width as f32, size.height as f32);
 
         // Request initial draw
+        window.request_redraw();
+    }
+
+    /// Hide the window by destroying the OS window and GPU surface.
+    ///
+    /// On Wayland, `set_visible(false)` is a no-op, so we must destroy the
+    /// actual winit Window (which destroys the xdg_toplevel) to make it
+    /// disappear. The app state and DOM are preserved.
+    fn hide_window(&mut self) {
+        // Drop renderer first — it holds a reference to the window surface.
+        drop(self.renderer.take());
+        drop(self.window.take());
+    }
+
+    /// Show a previously hidden window by recreating the OS window and GPU surface.
+    ///
+    /// Rebuilds the winit Window and wgpu renderer, then triggers a repaint
+    /// of the existing DOM.
+    fn show_window(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return; // Already visible
+        }
+
+        let mut window_attrs = Window::default_attributes()
+            .with_title(&self.title)
+            .with_inner_size(winit::dpi::LogicalSize::new(self.width, self.height));
+
+        if let Some(props) = &self.app.window_props {
+            if props.borderless {
+                window_attrs = window_attrs.with_decorations(false);
+            }
+            if props.transparent {
+                window_attrs = window_attrs.with_transparent(true);
+            }
+            if !props.resizable {
+                window_attrs = window_attrs.with_resizable(false);
+            }
+            if props.always_on_top {
+                window_attrs =
+                    window_attrs.with_window_level(winit::window::WindowLevel::AlwaysOnTop);
+            }
+            if let Some(icon_data) = props.icon {
+                if let Ok(icon) = load_window_icon(icon_data) {
+                    window_attrs = window_attrs.with_window_icon(Some(icon));
+                }
+            }
+            #[cfg(target_os = "linux")]
+            {
+                let app_id = props.app_id.as_deref().unwrap_or("rinch-app");
+                use winit::platform::wayland::WindowAttributesExtWayland;
+                window_attrs = window_attrs.with_name(app_id, app_id);
+            }
+        }
+
+        let window = event_loop
+            .create_window(window_attrs)
+            .expect("Failed to recreate window");
+        let window = Arc::new(window);
+
+        let size = window.inner_size();
+        let gpu = WgpuRenderer::new(&window, size.width.max(1), size.height.max(1));
+        self.renderer = Some(gpu);
+
+        let winit_window = WinitWindow::new(window.clone());
+        self.window = Some(winit_window);
+
+        // Trigger a full repaint of the existing DOM
+        self.app.scene_dirty = true;
         window.request_redraw();
     }
 
@@ -285,6 +382,13 @@ impl RinchRuntime {
                     if let Some(w) = &self.window {
                         let is_max = w.is_maximized();
                         w.set_maximized(!is_max);
+                    }
+                }
+                AppAction::SetVisible(visible) => {
+                    if visible {
+                        self.show_window(event_loop);
+                    } else {
+                        self.hide_window();
                     }
                 }
                 AppAction::DragWindow => {
@@ -545,6 +649,8 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
             RinchNativeEvent::CloseWindowControl => {
                 PlatformEvent::UserEvent(UserEvent::CloseWindow)
             }
+            RinchNativeEvent::ShowWindow => PlatformEvent::UserEvent(UserEvent::ShowWindow),
+            RinchNativeEvent::HideWindow => PlatformEvent::UserEvent(UserEvent::HideWindow),
         };
         let size = self.window_size();
         let scale = self.scale_factor();
@@ -829,4 +935,154 @@ where
 
     event_loop.set_control_flow(ControlFlow::Wait);
     event_loop.run_app(&mut runtime).expect("Event loop error");
+}
+
+/// Decode a PNG from raw bytes into RGBA pixel data.
+///
+/// Returns `(rgba_bytes, width, height)`.
+pub(crate) fn decode_png_to_rgba(png_data: &[u8]) -> Result<(Vec<u8>, u32, u32), Box<dyn std::error::Error>> {
+    let decoder = png::Decoder::new(png_data);
+    let mut reader = decoder.read_info()?;
+    let mut buf = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf)?;
+    let bytes = &buf[..info.buffer_size()];
+
+    // Convert to RGBA8 if needed
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => bytes.to_vec(),
+        png::ColorType::Rgb => {
+            let mut rgba = Vec::with_capacity(bytes.len() / 3 * 4);
+            for chunk in bytes.chunks(3) {
+                rgba.extend_from_slice(chunk);
+                rgba.push(255);
+            }
+            rgba
+        }
+        other => {
+            return Err(format!("Unsupported PNG color type: {:?}", other).into());
+        }
+    };
+
+    Ok((rgba, info.width, info.height))
+}
+
+/// Decode a PNG icon from raw bytes into a winit Icon.
+fn load_window_icon(png_data: &[u8]) -> Result<winit::window::Icon, Box<dyn std::error::Error>> {
+    let (rgba, width, height) = decode_png_to_rgba(png_data)?;
+    Ok(winit::window::Icon::from_rgba(rgba, width, height)?)
+}
+
+/// Write the icon PNG to a data directory and create a `.desktop` file so Wayland
+/// compositors can display the icon in the taskbar via `app_id` matching.
+#[cfg(target_os = "linux")]
+fn install_wayland_icon(app_id: &str, png_data: &[u8]) {
+    let Some(data_home) = std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs_icon_fallback())
+    else {
+        return;
+    };
+
+    // Decode and resize icon to 256x256 for desktop integration
+    let icon_dir = data_home.join("rinch/icons");
+    if std::fs::create_dir_all(&icon_dir).is_err() {
+        return;
+    }
+    let icon_path = icon_dir.join(format!("{app_id}.png"));
+    let resized_png = match resize_png_icon(png_data, 256) {
+        Ok(data) => data,
+        Err(e) => {
+            tracing::warn!("Failed to resize icon: {}", e);
+            return;
+        }
+    };
+    if std::fs::write(&icon_path, &resized_png).is_err() {
+        return;
+    }
+
+    // Write .desktop file with absolute icon path (most reliable across compositors)
+    let desktop_dir = data_home.join("applications");
+    if std::fs::create_dir_all(&desktop_dir).is_err() {
+        return;
+    }
+    let desktop_path = desktop_dir.join(format!("{app_id}.desktop"));
+    let desktop_content = format!(
+        "[Desktop Entry]\nType=Application\nName={app_id}\nIcon={}\nNoDisplay=true\n",
+        icon_path.display()
+    );
+    let _ = std::fs::write(&desktop_path, desktop_content);
+}
+
+#[cfg(target_os = "linux")]
+fn dirs_icon_fallback() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share"))
+}
+
+/// Decode a PNG, resize to `target_size` x `target_size` with bilinear filtering, re-encode as PNG.
+#[cfg(target_os = "linux")]
+fn resize_png_icon(
+    png_data: &[u8],
+    target_size: u32,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    // Decode source PNG
+    let decoder = png::Decoder::new(png_data);
+    let mut reader = decoder.read_info()?;
+    let mut src_buf = vec![0u8; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut src_buf)?;
+    let src = &src_buf[..info.buffer_size()];
+    let (sw, sh) = (info.width as usize, info.height as usize);
+
+    // Convert to RGBA if needed
+    let rgba_src: Vec<u8> = match info.color_type {
+        png::ColorType::Rgba => src.to_vec(),
+        png::ColorType::Rgb => {
+            let mut rgba = Vec::with_capacity(sw * sh * 4);
+            for chunk in src.chunks(3) {
+                rgba.extend_from_slice(chunk);
+                rgba.push(255);
+            }
+            rgba
+        }
+        other => return Err(format!("Unsupported color type: {:?}", other).into()),
+    };
+
+    let ts = target_size as usize;
+    let mut dst = vec![0u8; ts * ts * 4];
+
+    // Bilinear downscale
+    for dy in 0..ts {
+        for dx in 0..ts {
+            let sx_f = (dx as f64 + 0.5) * sw as f64 / ts as f64 - 0.5;
+            let sy_f = (dy as f64 + 0.5) * sh as f64 / ts as f64 - 0.5;
+            let x0 = (sx_f.floor() as isize).clamp(0, sw as isize - 1) as usize;
+            let y0 = (sy_f.floor() as isize).clamp(0, sh as isize - 1) as usize;
+            let x1 = (x0 + 1).min(sw - 1);
+            let y1 = (y0 + 1).min(sh - 1);
+            let fx = (sx_f - x0 as f64).clamp(0.0, 1.0);
+            let fy = (sy_f - y0 as f64).clamp(0.0, 1.0);
+
+            for c in 0..4 {
+                let p00 = rgba_src[(y0 * sw + x0) * 4 + c] as f64;
+                let p10 = rgba_src[(y0 * sw + x1) * 4 + c] as f64;
+                let p01 = rgba_src[(y1 * sw + x0) * 4 + c] as f64;
+                let p11 = rgba_src[(y1 * sw + x1) * 4 + c] as f64;
+                let val = p00 * (1.0 - fx) * (1.0 - fy)
+                    + p10 * fx * (1.0 - fy)
+                    + p01 * (1.0 - fx) * fy
+                    + p11 * fx * fy;
+                dst[(dy * ts + dx) * 4 + c] = val.round() as u8;
+            }
+        }
+    }
+
+    // Encode to PNG
+    let mut out = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut out, target_size, target_size);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header()?;
+        writer.write_image_data(&dst)?;
+    }
+    Ok(out)
 }

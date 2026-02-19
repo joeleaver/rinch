@@ -430,6 +430,68 @@ pub fn toggle_maximize_current_window() {
     }
 }
 
+/// Hide the current window (minimize to tray pattern).
+///
+/// The window becomes invisible but the application continues running.
+/// Use `show_current_window()` to make it visible again.
+///
+/// # Example
+///
+/// ```ignore
+/// button { onclick: || hide_current_window(), "Hide to Tray" }
+/// ```
+pub fn hide_current_window() {
+    let sent = NATIVE_PROXY.with(|p| {
+        if let Some(proxy) = p.borrow().as_ref() {
+            let _ = proxy.send_event(RinchNativeEvent::HideWindow);
+            return true;
+        }
+        false
+    });
+    if sent {
+        return;
+    }
+
+    if let Some(window_id) = get_current_window_id() {
+        EVENT_PROXY.with(|p| {
+            if let Some(proxy) = p.borrow().as_ref() {
+                let _ = proxy.send_event(RinchEvent::HideWindow { window_id });
+            }
+        });
+    }
+}
+
+/// Show the current window (restore from tray).
+///
+/// Makes a previously hidden window visible again and brings it to focus.
+///
+/// # Example
+///
+/// ```ignore
+/// // In a tray menu callback:
+/// TrayMenuItem::new("Show").on_click(|| show_current_window())
+/// ```
+pub fn show_current_window() {
+    let sent = NATIVE_PROXY.with(|p| {
+        if let Some(proxy) = p.borrow().as_ref() {
+            let _ = proxy.send_event(RinchNativeEvent::ShowWindow);
+            return true;
+        }
+        false
+    });
+    if sent {
+        return;
+    }
+
+    if let Some(window_id) = get_current_window_id() {
+        EVENT_PROXY.with(|p| {
+            if let Some(proxy) = p.borrow().as_ref() {
+                let _ = proxy.send_event(RinchEvent::ShowWindow { window_id });
+            }
+        });
+    }
+}
+
 /// Close the current window.
 ///
 /// Call this from an event handler (e.g., onclick) to close the window

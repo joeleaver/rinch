@@ -54,6 +54,10 @@ pub enum UserEvent {
     ToggleMaximizeWindow,
     /// Close the window.
     CloseWindow,
+    /// Show the window.
+    ShowWindow,
+    /// Hide the window.
+    HideWindow,
     /// A debug command is ready (debug feature only).
     DebugCommand,
 }
@@ -69,6 +73,8 @@ pub enum AppAction {
     SetMinimized(bool),
     /// Set maximized state.
     SetMaximized(bool),
+    /// Set window visibility.
+    SetVisible(bool),
     /// Initiate a window drag (for custom titlebars).
     DragWindow,
     /// Set the mouse cursor icon. Values match CSS cursor keywords.

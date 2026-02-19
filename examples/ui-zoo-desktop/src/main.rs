@@ -7,6 +7,7 @@
 use std::rc::Rc;
 
 use rinch::prelude::*;
+use rinch::tray::{TrayIconBuilder, TrayMenu, TrayMenuItem};
 use rinch::{WindowProps, run_with_window_props};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use ui_zoo::{
@@ -58,6 +59,18 @@ fn app() -> NodeHandle {
         }
     });
 
+    // Right section: hide-to-tray button (before window controls)
+    let right_section: SectionRenderer = Rc::new(move |__scope| {
+        rsx! {
+            ActionIcon {
+                variant: "subtle",
+                size: "sm",
+                onclick: move || hide_current_window(),
+                {render_tabler_icon(__scope, TablerIcon::ArrowBarDown, TablerIconStyle::Outline)}
+            }
+        }
+    });
+
     let nav = move |idx: usize| {
         move || {
             current_section.set(idx);
@@ -76,6 +89,7 @@ fn app() -> NodeHandle {
                 title: "UI Zoo",
                 radius: "md",
                 left_section: Some(left_section),
+                right_section: Some(right_section),
                 on_minimize: || minimize_current_window(),
                 on_maximize: || toggle_maximize_current_window(),
                 on_close: || close_current_window(),
@@ -108,12 +122,33 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
+    // Set up system tray icon with Show/Quit menu
+    let menu = TrayMenu::new()
+        .add_item(TrayMenuItem::new("Show Window").on_click(show_current_window))
+        .add_separator()
+        .add_item(TrayMenuItem::new("Quit").on_click(close_current_window));
+
+    let _tray = TrayIconBuilder::new()
+        .with_tooltip("UI Zoo")
+        .with_icon_png(include_bytes!("../../../rinch-icon.png"))
+        .expect("failed to load tray icon")
+        .with_menu(menu)
+        .build()
+        .expect("failed to create tray icon");
+
     let window_props = WindowProps {
         title: "UI Zoo - Rinch Component Library".into(),
         width: 1200,
         height: 800,
         borderless: true,
         transparent: true,
+        icon: Some(include_bytes!("../../../rinch-icon.png")),
+        app_id: Some("ui-zoo".into()),
+        on_close_requested: Some(std::sync::Arc::new(|| {
+            // Hide to tray instead of quitting
+            hide_current_window();
+            false // Don't exit
+        })),
         ..Default::default()
     };
 

@@ -56,6 +56,10 @@ impl PlatformWindow for WinitWindow {
         self.window.set_maximized(maximized);
     }
 
+    fn set_visible(&self, visible: bool) {
+        self.window.set_visible(visible);
+    }
+
     fn is_maximized(&self) -> bool {
         self.window.is_maximized()
     }

@@ -2,6 +2,7 @@
 
 use std::any::Any;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Trait for extensible components.
 ///
@@ -354,8 +355,23 @@ fn render_element_to_dom(
     }
 }
 
+/// Callback invoked when the window close button is pressed.
+///
+/// Return `true` to proceed with closing (exit), or `false` to cancel
+/// the close (e.g., to hide the window to the system tray instead).
+///
+/// # Example
+///
+/// ```ignore
+/// let on_close: CloseRequestCallback = Arc::new(|| {
+///     hide_current_window();
+///     false // Don't exit, just hide
+/// });
+/// ```
+pub type CloseRequestCallback = Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// Properties for the Window component.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WindowProps {
     pub title: String,
     pub width: u32,
@@ -376,6 +392,29 @@ pub struct WindowProps {
     /// Set to `None` to disable custom resize handles (use native window chrome).
     /// Default is `Some(8.0)` for borderless windows.
     pub resize_inset: Option<f32>,
+    /// PNG data for the window icon (use `include_bytes!`).
+    ///
+    /// Sets the icon shown in the taskbar and title bar on Windows and Linux (X11).
+    /// On Wayland, a `.desktop` file is auto-generated using the `app_id`.
+    /// On macOS this is a no-op (use an app bundle with `.icns` instead).
+    ///
+    /// ```rust,ignore
+    /// icon: Some(include_bytes!("../assets/icon.png")),
+    /// ```
+    pub icon: Option<&'static [u8]>,
+    /// Application ID for desktop integration (Linux).
+    ///
+    /// On Wayland, this sets the `app_id` used by compositors to match `.desktop` files.
+    /// On X11, this sets the `WM_CLASS`. Defaults to `"rinch-app"` if not set.
+    pub app_id: Option<String>,
+    /// Callback invoked when the window close button (X) is pressed.
+    ///
+    /// Return `true` to proceed with closing, or `false` to cancel.
+    /// This enables "minimize to tray" patterns where clicking X hides
+    /// the window instead of exiting.
+    ///
+    /// If `None`, the default behavior is to exit the application.
+    pub on_close_requested: Option<CloseRequestCallback>,
 }
 
 impl Default for WindowProps {
@@ -392,7 +431,23 @@ impl Default for WindowProps {
             always_on_top: false,
             visible: true,
             resize_inset: None,
+            icon: None,
+            app_id: None,
+            on_close_requested: None,
         }
+    }
+}
+
+impl std::fmt::Debug for WindowProps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowProps")
+            .field("title", &self.title)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("borderless", &self.borderless)
+            .field("transparent", &self.transparent)
+            .field("on_close_requested", &self.on_close_requested.as_ref().map(|_| "Fn() -> bool"))
+            .finish()
     }
 }
 

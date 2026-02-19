@@ -18,7 +18,14 @@ impl RinchApp {
                 // Handled by the shell (window creation)
             }
             PlatformEvent::CloseRequested => {
-                actions.push(AppAction::Exit);
+                let should_exit = self
+                    .window_props
+                    .as_ref()
+                    .and_then(|p| p.on_close_requested.as_ref())
+                    .is_none_or(|cb| cb());
+                if should_exit {
+                    actions.push(AppAction::Exit);
+                }
             }
             PlatformEvent::Resized { width, height } => {
                 self.resize_layout(width, height);
@@ -396,6 +403,12 @@ impl RinchApp {
             }
             PlatformEvent::UserEvent(UserEvent::CloseWindow) => {
                 actions.push(AppAction::Exit);
+            }
+            PlatformEvent::UserEvent(UserEvent::ShowWindow) => {
+                actions.push(AppAction::SetVisible(true));
+            }
+            PlatformEvent::UserEvent(UserEvent::HideWindow) => {
+                actions.push(AppAction::SetVisible(false));
             }
             PlatformEvent::UserEvent(UserEvent::DebugCommand) => {
                 #[cfg(feature = "debug")]

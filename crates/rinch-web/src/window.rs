@@ -40,6 +40,10 @@ impl PlatformWindow for WebWindow {
         // No-op on web - browsers don't expose window minimization.
     }
 
+    fn set_visible(&self, _visible: bool) {
+        // No-op on web - the canvas is always visible.
+    }
+
     fn set_maximized(&self, _maximized: bool) {
         // Could toggle fullscreen in the future.
         // TODO: Implement fullscreen API integration.

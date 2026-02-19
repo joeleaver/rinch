@@ -39,6 +39,10 @@ keyboard-types = { version = "0.7", optional = true }
 rfd = { workspace = true, optional = true }
 rinch-clipboard = { workspace = true, optional = true }
 tray-icon = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18", optional = true }
+ksni = { workspace = true, optional = true }
 memory-stats = { version = "1.2", optional = true }
 rinch-theme = { workspace = true, optional = true }
 rinch-components = { workspace = true, optional = true }
@@ -61,7 +65,7 @@ desktop = [
 ]
 file-dialogs = ["rfd"]
 clipboard = ["dep:rinch-clipboard"]
-system-tray = ["tray-icon"]
+system-tray = ["tray-icon", "gtk", "ksni"]
 memory-profile = ["memory-stats"]
 theme = ["dep:rinch-theme", "rinch-core/theme"]
 components = ["theme", "dep:rinch-components"]
