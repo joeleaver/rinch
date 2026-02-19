@@ -82,8 +82,7 @@ examples/
 ├── ui-zoo-web/                # WASM browser-native DOM entry point
 ├── hello_rinch_dom/           # Minimal hello world
 ├── fine_grained_window/       # Fine-grained rendering demo
-├── contenteditable_spike/     # ContentEditable investigation
-└── hidden_textarea_spike/     # Hidden textarea rich-text approach
+└── todo-app/                  # Todo app example
 ```
 
 ## Element Enum

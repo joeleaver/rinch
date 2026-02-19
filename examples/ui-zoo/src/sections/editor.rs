@@ -1,272 +1,249 @@
-//! Rich Text Editor section - Working editor with toolbar, content, and status bar.
-
-use std::cell::RefCell;
-use std::rc::Rc;
+//! Rich Text Editor section — showcases contenteditable + CE API.
+//!
+//! Users don't interact with CeOps directly. They set `contenteditable="true"`
+//! on a div and the framework handles everything. For programmatic access
+//! (toolbar buttons), `with_active_ce_api()` provides the thread-local CE API.
 
 use rinch::prelude::*;
-use rinch_core::dom::RenderScope as CoreRenderScope;
-use rinch_core::reactive::Effect;
-use rinch_editor::bridge::EditorBridge;
-use rinch_editor::editor::{Editor, EditorConfig};
-use rinch_editor::schema::Schema;
-use rinch_editor_components::{ControlButton, ToolbarConfig, render_status_bar, render_toolbar};
+use rinch_core::with_active_ce_api;
 
-/// State for the Editor section, stored in context.
-#[derive(Clone)]
-pub struct EditorSectionState {
-    pub toolbar_preset: Signal<usize>, // 0=Full, 1=Minimal, 2=Markdown
-    pub editor: Rc<RefCell<Editor>>,
-}
-
-/// Initialize the Editor section state. Call this from the main app function.
-pub fn init_editor_state() {
-    let editor = Editor::new(Schema::starter_kit(), EditorConfig::default())
-        .expect("Failed to create editor");
-    create_context(EditorSectionState {
-        toolbar_preset: Signal::new(0),
-        editor: Rc::new(RefCell::new(editor)),
-    });
-}
-
-fn get_toolbar_config(preset: usize) -> ToolbarConfig {
-    match preset {
-        1 => ToolbarConfig::default_minimal(),
-        2 => ToolbarConfig::default_markdown(),
-        _ => ToolbarConfig::default_full(),
-    }
-}
-
-fn preset_name(preset: usize) -> &'static str {
-    match preset {
-        1 => "Minimal",
-        2 => "Markdown",
-        _ => "Full",
-    }
+/// Helper: call a CE API method on the active contenteditable element.
+fn ce_do(f: impl FnOnce(&mut dyn rinch_core::ce::ContentEditableApi) + 'static) {
+    with_active_ce_api(|api| f(&mut *api.borrow_mut()));
 }
 
 #[component]
 pub fn editor_section() -> NodeHandle {
-    let state = use_context::<EditorSectionState>();
-
-    let toolbar_preset = state.toolbar_preset;
-    let editor = state.editor.clone();
-
-    // Version signal bumped after every editor change for reactive updates
-    let version = use_signal(|| 0u64);
-
-    // on_change callback: bumps version signal to trigger reactive toolbar/status updates.
-    // The bridge's internal reconcile callback handles DOM reconciliation before calling this.
-    let on_change: Rc<dyn Fn()> = Rc::new(move || {
-        version.update(|v| *v += 1);
-    });
-
-    // ContentEditable div - the editor surface
-    let ce_div = __scope.create_element("div");
-    ce_div.set_attribute("class", "editor-content");
-    ce_div.set_attribute("contenteditable", "true");
-    ce_div.set_attribute(
-        "style",
-        "min-height: 300px; padding: 16px 24px; background: var(--rinch-color-body); \
-         font-size: 16px; line-height: 1.6; color: var(--rinch-color-text); \
-         outline: none; cursor: text;",
-    );
-
-    // Mount the bridge: installs keyboard/CE interceptors + performs initial DOM render
-    let bridge = Rc::new(EditorBridge::mount(
-        __scope,
-        editor.clone(),
-        ce_div.clone(),
-        on_change.clone(),
-    ));
-
-    // Keep bridge alive for the component's lifetime
-    let bridge_store = use_ref(|| None::<Rc<EditorBridge>>);
-    *bridge_store.borrow_mut() = Some(bridge.clone());
-
-    // Toolbar on_change: reconcile DOM after toolbar commands + bump version
-    let toolbar_on_change: Rc<dyn Fn()> = {
-        let bridge = bridge.clone();
-        Rc::new(move || {
-            bridge.reconcile();
-            version.update(|v| *v += 1);
-        })
-    };
-
-    // Render the working toolbar
-    let toolbar_config = get_toolbar_config(toolbar_preset.get());
-    let toolbar_node = render_toolbar(
-        __scope,
-        editor.clone(),
-        &toolbar_config,
-        toolbar_on_change,
-    );
-
-    // Build reactive status bar
-    let status_div = __scope.create_element("div");
-    {
-        let status_handle = status_div.clone();
-        let editor_for_status = editor.clone();
-        let doc_weak = __scope.doc_weak();
-        let container_id = status_div.node_id();
-        let current_content: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
-        let current_scope: Rc<RefCell<Option<CoreRenderScope>>> = Rc::new(RefCell::new(None));
-        let prev_version: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
-
-        let effect = Effect::new(move || {
-            let v = version.get();
-            if let Some(prev) = *prev_version.borrow()
-                && v == prev
-            {
-                return;
-            }
-            *prev_version.borrow_mut() = Some(v);
-
-            if let Some(old_scope) = current_scope.borrow_mut().take() {
-                old_scope.dispose();
-            }
-            if let Some(old_content) = current_content.borrow_mut().take() {
-                old_content.clear_animations();
-                old_content.remove();
-            }
-
-            if let Some(doc) = doc_weak.upgrade() {
-                let mut child_scope = CoreRenderScope::new(doc, container_id);
-                let new_status = render_status_bar(&mut child_scope, &editor_for_status);
-                status_handle.append_child(&new_status);
-                *current_content.borrow_mut() = Some(new_status);
-                *current_scope.borrow_mut() = Some(child_scope);
-            }
-        });
-        __scope.create_effect_from(effect);
-    }
-
     rsx! {
         Fragment {
             Stack { gap: "xs",
                 Title { order: 1, "Rich Text Editor" }
                 Text { size: "lg", color: "dimmed",
-                    "Working rich-text editor with toolbar, keyboard shortcuts, and content rendering."
+                    "ContentEditable powered by the CE API. Set contenteditable=\"true\" on any div — the framework handles input, cursor, and block structure. Use with_active_ce_api() for programmatic formatting."
                 }
             }
             Space { h: "xl" }
 
-            // Preset selector
-            Group { gap: "sm",
-                Button {
-                    variant: "filled",
-                    onclick: move || toolbar_preset.set(0),
-                    "Full"
+            // ── Toolbar ─────────────────────────────────────────────
+            Paper { p: "xs", radius: "md", with_border: true,
+                style: "border-bottom: none; border-bottom-left-radius: 0; border-bottom-right-radius: 0;",
+                Group { gap: "2",
+                    // Inline formatting
+                    ActionIcon { variant: "subtle", size: "sm",
+                        onclick: move || ce_do(|api| api.toggle_wrap("strong")),
+                        span { style: "font-weight: 700; font-size: 14px;", "B" }
+                    }
+                    ActionIcon { variant: "subtle", size: "sm",
+                        onclick: move || ce_do(|api| api.toggle_wrap("em")),
+                        span { style: "font-style: italic; font-size: 14px;", "I" }
+                    }
+                    ActionIcon { variant: "subtle", size: "sm",
+                        onclick: move || ce_do(|api| api.toggle_wrap("u")),
+                        span { style: "text-decoration: underline; font-size: 14px;", "U" }
+                    }
+                    ActionIcon { variant: "subtle", size: "sm",
+                        onclick: move || ce_do(|api| api.toggle_wrap("s")),
+                        span { style: "text-decoration: line-through; font-size: 14px;", "S" }
+                    }
+                    ActionIcon { variant: "subtle", size: "sm",
+                        onclick: move || ce_do(|api| api.toggle_wrap("code")),
+                        span { style: "font-family: monospace; font-size: 13px;", "<>" }
+                    }
+
+                    // Separator
+                    div { style: "width: 1px; height: 20px; background: var(--rinch-color-gray-3); margin: 0 4px;" }
+
+                    // Block types
+                    ActionIcon { variant: "subtle", size: "sm",
+                        onclick: move || ce_do(|api| api.set_block_type("h1")),
+                        span { style: "font-weight: 700; font-size: 14px;", "H1" }
+                    }
+                    ActionIcon { variant: "subtle", size: "sm",
+                        onclick: move || ce_do(|api| api.set_block_type("h2")),
+                        span { style: "font-weight: 700; font-size: 13px;", "H2" }
+                    }
+                    ActionIcon { variant: "subtle", size: "sm",
+                        onclick: move || ce_do(|api| api.set_block_type("h3")),
+                        span { style: "font-weight: 600; font-size: 12px;", "H3" }
+                    }
+                    ActionIcon { variant: "subtle", size: "sm",
+                        onclick: move || ce_do(|api| api.set_block_type("p")),
+                        span { style: "font-size: 13px;", "P" }
+                    }
+
+                    // Separator
+                    div { style: "width: 1px; height: 20px; background: var(--rinch-color-gray-3); margin: 0 4px;" }
+
+                    // Block quote
+                    ActionIcon { variant: "subtle", size: "sm",
+                        onclick: move || ce_do(|api| api.set_block_type("blockquote")),
+                        span { style: "font-size: 16px;", "\u{201C}" }
+                    }
+
+                    // Lists
+                    ActionIcon { variant: "subtle", size: "sm",
+                        onclick: move || ce_do(|api| api.set_block_type("ul")),
+                        span { style: "font-size: 13px;", "UL" }
+                    }
+                    ActionIcon { variant: "subtle", size: "sm",
+                        onclick: move || ce_do(|api| api.set_block_type("ol")),
+                        span { style: "font-size: 13px;", "OL" }
+                    }
+
+                    // Separator
+                    div { style: "width: 1px; height: 20px; background: var(--rinch-color-gray-3); margin: 0 4px;" }
+
+                    // Indent / Outdent
+                    ActionIcon { variant: "subtle", size: "sm",
+                        onclick: move || ce_do(|api| api.indent()),
+                        span { style: "font-size: 16px;", "\u{2192}" }
+                    }
+                    ActionIcon { variant: "subtle", size: "sm",
+                        onclick: move || ce_do(|api| api.outdent()),
+                        span { style: "font-size: 16px;", "\u{2190}" }
+                    }
+
+                    // Separator
+                    div { style: "width: 1px; height: 20px; background: var(--rinch-color-gray-3); margin: 0 4px;" }
+
+                    // Undo / Redo
+                    ActionIcon { variant: "subtle", size: "sm",
+                        onclick: move || ce_do(|api| api.undo()),
+                        span { style: "font-size: 16px;", "\u{21A9}" }
+                    }
+                    ActionIcon { variant: "subtle", size: "sm",
+                        onclick: move || ce_do(|api| api.redo()),
+                        span { style: "font-size: 16px;", "\u{21AA}" }
+                    }
                 }
-                Button {
-                    variant: "light",
-                    onclick: move || toolbar_preset.set(1),
-                    "Minimal"
+            }
+
+            // ── Editor Surface ──────────────────────────────────────
+            Paper { p: "0", radius: "md", with_border: true,
+                style: "border-top-left-radius: 0; border-top-right-radius: 0;",
+                div {
+                    contenteditable: "true",
+                    class: "editor-content",
+                    style: "min-height: 300px; padding: 16px 24px; background: var(--rinch-color-body); \
+                            font-size: 16px; line-height: 1.6; color: var(--rinch-color-text); \
+                            outline: none; cursor: text;",
+                    p { "Start typing here. Select text and use the toolbar buttons or keyboard shortcuts to format." }
+                    p { "The editor uses " strong { "contenteditable" } " with the " em { "CE API" } " for all mutations." }
                 }
-                Button {
-                    variant: "light",
-                    onclick: move || toolbar_preset.set(2),
-                    "Markdown"
-                }
-                Text { size: "sm", color: "dimmed",
-                    "Active: "
-                    {|| preset_name(toolbar_preset.get()).to_string()}
-                }
+            }
+
+            Space { h: "xl" }
+
+            // ── CE API Reference ────────────────────────────────────
+            Title { order: 3, "CE API Reference" }
+            Space { h: "sm" }
+            Text { color: "dimmed", size: "sm",
+                "Available methods via with_active_ce_api(). The framework calls these automatically for keyboard input. Toolbar buttons call them programmatically."
             }
             Space { h: "md" }
 
-            // Editor container
-            Paper { p: "0", radius: "md", with_border: true,
-                // Toolbar
-                {toolbar_node}
-
-                // Content area (contentEditable, managed by bridge)
-                {ce_div}
-
-                // Status bar (reactive)
-                {status_div}
+            Paper { p: "xl", radius: "md", with_border: true,
+                Stack { gap: "xs",
+                    {render_api_row(__scope, "insert_text(text)", "Insert text at cursor")}
+                    {render_api_row(__scope, "delete_backward()", "Backspace")}
+                    {render_api_row(__scope, "delete_forward()", "Delete key")}
+                    {render_api_row(__scope, "delete_selection()", "Delete selected text")}
+                    {render_api_row(__scope, "split_block()", "Enter — split block at cursor")}
+                    {render_api_row(__scope, "set_block_type(tag)", "Change block to h1, h2, p, blockquote, etc.")}
+                    {render_api_row(__scope, "toggle_wrap(tag)", "Toggle bold/italic/underline/code")}
+                    {render_api_row(__scope, "wrap_selection(tag)", "Wrap selection in formatting element")}
+                    {render_api_row(__scope, "unwrap_selection(tag)", "Remove formatting from selection")}
+                    {render_api_row(__scope, "indent()", "Indent block / increase list nesting")}
+                    {render_api_row(__scope, "outdent()", "Outdent block / decrease list nesting")}
+                    {render_api_row(__scope, "undo() / redo()", "Undo and redo operations")}
+                    {render_api_row(__scope, "get_selection()", "Read current cursor / selection state")}
+                    {render_api_row(__scope, "set_selection(sel)", "Set cursor / selection position")}
+                }
             }
 
             Space { h: "xl" }
+
+            // ── Keyboard Shortcuts ──────────────────────────────────
+            Title { order: 3, "Keyboard Shortcuts" }
+            Space { h: "sm" }
+            Text { color: "dimmed", size: "sm", "Built-in shortcuts handled by the framework." }
+            Space { h: "md" }
+
+            Paper { p: "xl", radius: "md", with_border: true,
+                Stack { gap: "xs",
+                    {render_shortcut_row(__scope, "Ctrl+B", "Bold")}
+                    {render_shortcut_row(__scope, "Ctrl+I", "Italic")}
+                    {render_shortcut_row(__scope, "Ctrl+U", "Underline")}
+                    {render_shortcut_row(__scope, "Ctrl+Shift+S", "Strikethrough")}
+                    {render_shortcut_row(__scope, "Ctrl+E", "Inline code")}
+                    {render_shortcut_row(__scope, "Ctrl+Z", "Undo")}
+                    {render_shortcut_row(__scope, "Ctrl+Shift+Z", "Redo")}
+                    {render_shortcut_row(__scope, "Enter", "Split block")}
+                    {render_shortcut_row(__scope, "Tab", "Indent")}
+                    {render_shortcut_row(__scope, "Shift+Tab", "Outdent")}
+                    {render_shortcut_row(__scope, "Backspace", "Delete backward")}
+                    {render_shortcut_row(__scope, "Delete", "Delete forward")}
+                }
+            }
 
             // Editor CSS
             div {
                 style: "display: none;",
                 {render_editor_styles(__scope)}
             }
-
-            // Keyboard Shortcuts Reference
-            Title { order: 3, "Keyboard Shortcuts" }
-            Space { h: "sm" }
-            Text { color: "dimmed", size: "sm", "Controls with keyboard shortcuts from the current toolbar preset." }
-            Space { h: "md" }
-
-            Paper { p: "xl", radius: "md", with_border: true,
-                div {
-                    {render_shortcuts_list(__scope, toolbar_preset)}
-                }
-            }
-
-            Space { h: "xl" }
-
-            // Configuration info
-            Title { order: 3, "Configuration" }
-            Space { h: "sm" }
-
-            Paper { p: "xl", radius: "md", with_border: true,
-                Stack { gap: "md",
-                    Text { size: "sm",
-                        "The toolbar is configured using the builder API. Choose from built-in presets or create a custom configuration with ToolbarConfig."
-                    }
-                    Space { h: "xs" }
-
-                    SimpleGrid { cols: Some(3), spacing: "md",
-                        Paper { p: "md", radius: "sm", with_border: true,
-                            Stack { gap: "xs",
-                                Text { weight: "600", "Full" }
-                                Text { size: "sm", color: "dimmed",
-                                    {format!("{} controls in {} groups",
-                                        ToolbarConfig::default_full().control_count(),
-                                        ToolbarConfig::default_full().groups.len())}
-                                }
-                            }
-                        }
-                        Paper { p: "md", radius: "sm", with_border: true,
-                            Stack { gap: "xs",
-                                Text { weight: "600", "Minimal" }
-                                Text { size: "sm", color: "dimmed",
-                                    {format!("{} controls in {} groups",
-                                        ToolbarConfig::default_minimal().control_count(),
-                                        ToolbarConfig::default_minimal().groups.len())}
-                                }
-                            }
-                        }
-                        Paper { p: "md", radius: "sm", with_border: true,
-                            Stack { gap: "xs",
-                                Text { weight: "600", "Markdown" }
-                                Text { size: "sm", color: "dimmed",
-                                    {format!("{} controls in {} groups",
-                                        ToolbarConfig::default_markdown().control_count(),
-                                        ToolbarConfig::default_markdown().groups.len())}
-                                }
-                            }
-                        }
-                    }
-
-                    Space { h: "xs" }
-                    Text { size: "sm", color: "dimmed",
-                        "Current preset: "
-                        {|| {
-                            let config = get_toolbar_config(toolbar_preset.get());
-                            format!("{} controls across {} groups", config.control_count(), config.groups.len())
-                        }}
-                    }
-                }
-            }
         }
     }
 }
 
-/// Render editor-specific CSS styles.
+/// Render a single API reference row.
+fn render_api_row(__scope: &mut RenderScope, method: &str, desc: &str) -> NodeHandle {
+    let row = __scope.create_element("div");
+    row.set_attribute(
+        "style",
+        "display: flex; justify-content: space-between; align-items: center; \
+         padding: 4px 8px; border-radius: 4px; background: var(--rinch-color-gray-0);",
+    );
+
+    let code = __scope.create_element("span");
+    code.set_attribute("style", "font-family: monospace; font-size: 13px; font-weight: 600;");
+    code.set_text(method);
+    row.append_child(&code);
+
+    let label = __scope.create_element("span");
+    label.set_attribute("style", "font-size: 13px; color: var(--rinch-color-dimmed);");
+    label.set_text(desc);
+    row.append_child(&label);
+
+    row
+}
+
+/// Render a single keyboard shortcut row.
+fn render_shortcut_row(__scope: &mut RenderScope, shortcut: &str, desc: &str) -> NodeHandle {
+    let row = __scope.create_element("div");
+    row.set_attribute(
+        "style",
+        "display: flex; justify-content: space-between; align-items: center; \
+         padding: 4px 8px; border-radius: 4px; background: var(--rinch-color-gray-0);",
+    );
+
+    let label = __scope.create_element("span");
+    label.set_attribute("style", "font-size: 13px;");
+    label.set_text(desc);
+    row.append_child(&label);
+
+    let badge = __scope.create_element("span");
+    badge.set_attribute(
+        "style",
+        "font-size: 11px; font-family: monospace; padding: 2px 8px; border-radius: 4px; \
+         background: var(--rinch-color-gray-2); color: var(--rinch-color-text);",
+    );
+    badge.set_text(shortcut);
+    row.append_child(&badge);
+
+    row
+}
+
+/// Editor-specific CSS styles for content elements.
 #[component]
 fn render_editor_styles() -> NodeHandle {
     let style = __scope.create_element("style");
@@ -320,56 +297,8 @@ fn render_editor_styles() -> NodeHandle {
         .editor-content s { text-decoration: line-through; }
         .editor-content sub { vertical-align: sub; font-size: smaller; }
         .editor-content sup { vertical-align: super; font-size: smaller; }
-        .editor-document { min-height: 100px; }
-        .editor-toolbar div:hover {
-            background: var(--rinch-color-gray-1);
-        }
     "#;
 
     style.set_text(css);
     style
-}
-
-/// Renders a list of controls that have keyboard shortcuts.
-#[component]
-fn render_shortcuts_list(preset: Signal<usize>) -> NodeHandle {
-    let config = get_toolbar_config(preset.get());
-
-    let container = __scope.create_element("div");
-    container.set_attribute("style", "display: flex; flex-direction: column; gap: 6px;");
-
-    for group in &config.groups {
-        for control in &group.controls {
-            let btn_meta = ControlButton::from_control(control.clone());
-            if let Some(shortcut) = btn_meta.shortcut_hint() {
-                let row = __scope.create_element("div");
-                row.set_attribute(
-                    "style",
-                    "display: flex; justify-content: space-between; align-items: center; \
-                     padding: 4px 8px; border-radius: 4px; \
-                     background: var(--rinch-color-gray-0);",
-                );
-
-                let label = __scope.create_element("span");
-                label.set_attribute("style", "font-size: 13px;");
-                label.set_text(btn_meta.tooltip());
-                row.append_child(&label);
-
-                let badge = __scope.create_element("span");
-                badge.set_attribute(
-                    "style",
-                    "font-size: 11px; font-family: monospace; \
-                     padding: 2px 8px; border-radius: 4px; \
-                     background: var(--rinch-color-gray-2); \
-                     color: var(--rinch-color-text);",
-                );
-                badge.set_text(shortcut);
-                row.append_child(&badge);
-
-                container.append_child(&row);
-            }
-        }
-    }
-
-    container
 }

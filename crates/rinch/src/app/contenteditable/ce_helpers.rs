@@ -5,7 +5,7 @@ impl RinchApp {
 
     /// Extract plain text content from a node and its children.
     /// Block-level elements are separated by newlines (flat text model).
-    pub(super) fn extract_text_content(tree: &rinch_dom::NodeTree, node_id: usize) -> String {
+    pub(crate) fn extract_text_content(tree: &rinch_dom::NodeTree, node_id: usize) -> String {
         let mut text = String::new();
         Self::collect_text_recursive(tree, node_id, &mut text);
         // Remove trailing newline if present
@@ -15,7 +15,7 @@ impl RinchApp {
         text
     }
 
-    pub(super) fn collect_text_recursive(
+    pub(crate) fn collect_text_recursive(
         tree: &rinch_dom::NodeTree,
         node_id: usize,
         out: &mut String,
@@ -41,7 +41,7 @@ impl RinchApp {
     }
 
     /// Check if a tag name represents a block-level element.
-    pub(super) fn is_block_element(tag: &str) -> bool {
+    pub(crate) fn is_block_element(tag: &str) -> bool {
         matches!(
             tag,
             "div"
@@ -74,16 +74,16 @@ impl RinchApp {
         )
     }
 
-    pub(super) fn is_heading(tag: &str) -> bool {
+    pub(crate) fn is_heading(tag: &str) -> bool {
         matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
     }
 
-    pub(super) fn is_list_tag(tag: &str) -> bool {
+    pub(crate) fn is_list_tag(tag: &str) -> bool {
         matches!(tag, "ul" | "ol")
     }
 
     /// Strip specific CSS properties from an inline style string.
-    pub(super) fn strip_css_properties(style: &str, properties: &[&str]) -> String {
+    pub(crate) fn strip_css_properties(style: &str, properties: &[&str]) -> String {
         style
             .split(';')
             .filter(|decl| {
@@ -143,7 +143,7 @@ impl RinchApp {
     // ── Misc utilities ───────────────────────────────────────────────────
 
     /// Compute line-height in pixels from a block element's computed style.
-    pub(super) fn line_height_px(tree: &rinch_dom::NodeTree, block_id: usize) -> f32 {
+    pub(crate) fn line_height_px(tree: &rinch_dom::NodeTree, block_id: usize) -> f32 {
         if let Some(node) = tree.get(block_id) {
             let cs = &node.computed_style;
             match cs.line_height {
@@ -159,14 +159,14 @@ impl RinchApp {
     }
 
     /// Check if a DomCursor targets an element (empty block) rather than a text node.
-    pub(super) fn is_element_cursor(tree: &rinch_dom::NodeTree, cursor: &DomCursor) -> bool {
+    pub(crate) fn is_element_cursor(tree: &rinch_dom::NodeTree, cursor: &DomCursor) -> bool {
         tree.get(cursor.node_id)
             .map(|n| n.is_element())
             .unwrap_or(false)
     }
 
     /// Snapshot all text nodes under `root` for undo.
-    pub(super) fn snapshot_text_nodes(
+    pub(crate) fn snapshot_text_nodes(
         tree: &rinch_dom::NodeTree,
         root: usize,
     ) -> Vec<(usize, String)> {
@@ -191,7 +191,7 @@ impl RinchApp {
     }
 
     /// Collect all node IDs in a subtree (for undo diffing).
-    pub(super) fn collect_subtree_ids(tree: &rinch_dom::NodeTree, root: usize) -> Vec<usize> {
+    pub(crate) fn collect_subtree_ids(tree: &rinch_dom::NodeTree, root: usize) -> Vec<usize> {
         let mut ids = Vec::new();
         Self::collect_subtree_ids_recursive(tree, root, &mut ids);
         ids

@@ -255,7 +255,7 @@ impl RinchApp {
 
     /// Find the first text node (depth-first) under `root` and return cursor at offset 0.
     /// For empty block elements, returns an element-level cursor at the block.
-    pub(in crate::app) fn first_text_cursor(tree: &rinch_dom::NodeTree, root: usize) -> Option<DomCursor> {
+    pub(crate) fn first_text_cursor(tree: &rinch_dom::NodeTree, root: usize) -> Option<DomCursor> {
         let node = tree.get(root)?;
         if node.text_content().is_some() {
             return Some(DomCursor {
@@ -283,7 +283,7 @@ impl RinchApp {
 
     /// Find the last text node (depth-first) under `root` and return cursor at end.
     /// For empty block elements, returns an element-level cursor at the block.
-    pub(in crate::app) fn last_text_cursor(tree: &rinch_dom::NodeTree, root: usize) -> Option<DomCursor> {
+    pub(crate) fn last_text_cursor(tree: &rinch_dom::NodeTree, root: usize) -> Option<DomCursor> {
         let node = tree.get(root)?;
         // Check children in reverse
         for &child_id in node.children.iter().rev() {

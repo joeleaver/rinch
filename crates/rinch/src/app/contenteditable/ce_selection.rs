@@ -4,7 +4,7 @@ impl RinchApp {
     // ── Selection helpers ────────────────────────────────────────────────
 
     /// Delete the current selection, updating the CE cursor.
-    pub(super) fn ce_delete_selection(&mut self) {
+    pub(crate) fn ce_delete_selection(&mut self) {
         let ce = match self.focused_contenteditable.as_mut() {
             Some(ce) => ce,
             None => return,
@@ -150,7 +150,7 @@ impl RinchApp {
     /// If the cursor is on an empty text node, move it to an adjacent sibling
     /// and remove the empty node.  Empty text nodes have no IfcTextRange and
     /// break IFC-based navigation (up/down).
-    pub(super) fn cleanup_empty_cursor_node(&mut self) {
+    pub(crate) fn cleanup_empty_cursor_node(&mut self) {
         let ce = match self.focused_contenteditable.as_ref() {
             Some(ce) => ce,
             None => return,
@@ -225,7 +225,7 @@ impl RinchApp {
     }
 
     /// Order two cursors into (start, end) in document order.
-    fn order_cursors(
+    pub(crate) fn order_cursors(
         tree: &rinch_dom::NodeTree,
         ce_root: usize,
         a: DomCursor,
@@ -247,7 +247,7 @@ impl RinchApp {
 
     /// Extract text between two cursors (for copy/cut).
     #[allow(dead_code)]
-    pub(super) fn extract_selection_text(
+    pub(crate) fn extract_selection_text(
         tree: &rinch_dom::NodeTree,
         ce_root: usize,
         anchor: DomCursor,
@@ -307,7 +307,7 @@ impl RinchApp {
     /// Walks the DOM tree and serializes the selected range as an HTML fragment,
     /// preserving element tags, inline styles, and classes.
     #[allow(dead_code)]
-    pub(super) fn extract_selection_html(
+    pub(crate) fn extract_selection_html(
         tree: &rinch_dom::NodeTree,
         ce_root: usize,
         anchor: DomCursor,

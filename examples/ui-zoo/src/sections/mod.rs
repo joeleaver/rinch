@@ -17,7 +17,7 @@ mod typography;
 pub use buttons::{buttons_section, init_buttons_state};
 pub use css_features::css_features_section;
 pub use data_display::data_display_section;
-pub use editor::{editor_section, init_editor_state};
+pub use editor::editor_section;
 pub use feedback::{feedback_section, init_feedback_state};
 pub use icons::{icons_section, init_icons_state};
 pub use inputs::{init_inputs_state, inputs_section};

@@ -21,7 +21,6 @@ pub fn init_all_sections() {
     init_feedback_state();
     init_icons_state();
     init_tree_state();
-    init_editor_state();
 }
 
 /// Render the navigation links list.

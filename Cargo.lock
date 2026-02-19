@@ -829,22 +829,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "contenteditable-test"
-version = "0.1.0"
-dependencies = [
- "rinch",
-]
-
-[[package]]
-name = "contenteditable_spike"
-version = "0.1.0"
-dependencies = [
- "rinch",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2066,15 +2050,6 @@ name = "hexf-parse"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
-
-[[package]]
-name = "hidden_textarea_spike"
-version = "0.1.0"
-dependencies = [
- "rinch",
- "tracing",
- "tracing-subscriber",
-]
 
 [[package]]
 name = "http"
@@ -5276,8 +5251,6 @@ version = "0.1.0"
 dependencies = [
  "rinch",
  "rinch-core",
- "rinch-editor",
- "rinch-editor-components",
  "rinch-macros",
  "rinch-platform",
  "rinch-tabler-icons",

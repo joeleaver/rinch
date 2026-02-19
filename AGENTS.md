@@ -37,9 +37,7 @@ examples/
 ├── ui-zoo-web/          # WASM entry (excluded from workspace, not functional via rinch-web)
 ├── hello_rinch_dom/     # Minimal hello world
 ├── fine_grained_window/ # Fine-grained rendering demo
-├── contenteditable_spike/
-├── contenteditable_test/
-└── hidden_textarea_spike/
+└── todo-app/
 ```
 
 ## Crate Dependency Graph

@@ -5,7 +5,7 @@ impl RinchApp {
 
     /// Change a block element's tag while preserving children and attributes.
     /// Returns the new node's `NodeId`.
-    pub(super) fn convert_block_tag(
+    pub(crate) fn convert_block_tag(
         d: &mut RinchDocument,
         block_id: usize,
         new_tag: &str,
@@ -72,7 +72,7 @@ impl RinchApp {
     /// Outdent a `<li>` from its parent list: convert to `<div>`, split list if needed.
     /// Works for any position (first, middle, last).
     /// Returns the new `<div>` node id.
-    pub(super) fn outdent_li(
+    pub(crate) fn outdent_li(
         d: &mut RinchDocument,
         li_id: usize,
         list_id: usize,
@@ -231,7 +231,7 @@ impl RinchApp {
     /// Walk up from `node_id` to find the nearest block-level ancestor
     /// and its parent. Stops at `ce_root_id` (the contenteditable element).
     /// Returns `(block_element_id, parent_of_block_id)`.
-    pub(super) fn find_block_and_parent(
+    pub(crate) fn find_block_and_parent(
         tree: &rinch_dom::NodeTree,
         node_id: usize,
         ce_root_id: usize,
@@ -272,7 +272,7 @@ impl RinchApp {
     /// This handles the case where `find_block_and_parent` returns a wrapper `<div>`
     /// (created by Tab indent) inside an `<li>` — we want to outdent the `<li>`, not
     /// merge the `<div>` with the previous block.
-    pub(super) fn find_li_ancestor_for_outdent(
+    pub(crate) fn find_li_ancestor_for_outdent(
         tree: &rinch_dom::NodeTree,
         block_id: usize,
         ce_root: usize,
