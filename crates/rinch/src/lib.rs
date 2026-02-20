@@ -109,6 +109,12 @@ pub mod windows;
 #[cfg(feature = "image-network")]
 pub mod image_loader;
 
+/// Video playback (enable with `video` feature).
+#[cfg(feature = "video")]
+pub mod video {
+    pub use rinch_video::*;
+}
+
 #[cfg(feature = "file-dialogs")]
 pub mod dialogs;
 
@@ -197,6 +203,10 @@ pub mod prelude {
     // Re-export components when the components feature is enabled
     #[cfg(feature = "components")]
     pub use rinch_components::*;
+
+    // Video playback
+    #[cfg(feature = "video")]
+    pub use rinch_video::{VideoViewport, VideoControls, VideoPlayer, use_video_player};
 }
 
 // Re-export core types at crate root

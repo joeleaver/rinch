@@ -13,6 +13,7 @@ mod overlays;
 mod overview;
 mod tree;
 mod typography;
+mod video;
 
 pub use buttons::{buttons_section, init_buttons_state};
 pub use css_features::css_features_section;
@@ -27,3 +28,4 @@ pub use overlays::{OverlaysSectionState, init_overlays_state, overlays_section};
 pub use overview::overview_section;
 pub use tree::{init_tree_state, tree_section};
 pub use typography::typography_section;
+pub use video::video_section;

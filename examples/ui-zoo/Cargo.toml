@@ -15,3 +15,4 @@ rinch-core = { workspace = true }
 rinch-macros = { workspace = true }
 rinch-platform = { workspace = true }
 rinch-tabler-icons.workspace = true
+rinch-video = { workspace = true }

@@ -33,6 +33,7 @@ rinch-editable = { path = "crates/rinch-editable" }
 rinch-platform = { path = "crates/rinch-platform" }
 rinch-visual-test = { path = "crates/rinch-visual-test" }
 rinch-web = { path = "crates/rinch-web" }
+rinch-video = { path = "crates/rinch-video" }
 
 # Rendering
 anyrender = "0.7"

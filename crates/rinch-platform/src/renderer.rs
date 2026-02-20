@@ -34,6 +34,32 @@ pub trait PlatformRenderer {
     /// Used by the debug protocol for remote inspection.
     /// Returns (width, height, rgba_bytes).
     fn capture_screenshot(&self) -> Result<(u32, u32, Vec<u8>), RenderError>;
+
+    /// Set video layers to composite underneath the Vello UI.
+    ///
+    /// Each layer contains a video texture and a viewport rect (in logical
+    /// pixels). When layers are present, `render_scene` composites them
+    /// underneath the UI instead of doing a simple texture copy.
+    ///
+    /// Default implementation does nothing (no video support).
+    fn set_video_layers(&mut self, _layers: Vec<VideoLayer>) {}
+
+    /// Check whether there are active video layers to composite.
+    fn has_video_layers(&self) -> bool {
+        false
+    }
+}
+
+/// A video layer to composite underneath the Vello UI.
+pub struct VideoLayer {
+    /// RGBA pixel data of the decoded video frame.
+    pub pixels: Vec<u8>,
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// Viewport rectangle in logical pixels: (x, y, w, h).
+    pub viewport: (f32, f32, f32, f32),
 }
 
 /// Errors that can occur during rendering.

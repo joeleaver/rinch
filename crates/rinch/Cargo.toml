@@ -48,6 +48,7 @@ rinch-theme = { workspace = true, optional = true }
 rinch-components = { workspace = true, optional = true }
 rinch-debug = { path = "../rinch-debug", optional = true }
 rinch-web = { workspace = true, optional = true }
+rinch-video = { workspace = true, optional = true }
 ureq = { version = "3", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -71,4 +72,5 @@ theme = ["dep:rinch-theme", "rinch-core/theme"]
 components = ["theme", "dep:rinch-components"]
 debug = ["dep:rinch-debug"]
 web = ["dep:rinch-web"]
+video = ["dep:rinch-video"]
 image-network = ["dep:ureq"]

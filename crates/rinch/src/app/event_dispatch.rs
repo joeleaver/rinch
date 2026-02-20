@@ -436,8 +436,30 @@ impl RinchApp {
                     }
                 }
 
-                // Keep the render loop active while transitions are running
-                if any_transitions {
+                // Poll active video players for signal updates (position, duration, etc.)
+                // and keep the render loop active while video is playing.
+                let any_video = {
+                    #[cfg(feature = "video")]
+                    {
+                        let active = rinch_video::is_video_active();
+                        if active {
+                            rinch_video::poll_active_players();
+                        }
+                        active
+                    }
+                    #[cfg(not(feature = "video"))]
+                    { false }
+                };
+
+                // Video polling may have dirtied nodes (signal updates) — check again
+                if any_video && self.has_dirty_nodes() {
+                    let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+                    if self.resolve_and_repaint(w, h) {
+                        actions.push(AppAction::RequestRedraw);
+                    }
+                }
+
+                if any_transitions || any_video {
                     actions.push(AppAction::RequestRedraw);
                 }
             }

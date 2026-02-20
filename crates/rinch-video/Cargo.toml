@@ -1,0 +1,32 @@
+[package]
+name = "rinch-video"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Video playback for rinch applications"
+
+[dependencies]
+# Always available (all platforms)
+rinch-core.workspace = true
+rinch-macros.workspace = true
+tracing.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+libmpv2 = "5"
+libmpv2-sys = "4"
+wgpu = { workspace = true }
+bytemuck = { version = "1", features = ["derive"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = [
+    "HtmlVideoElement",
+    "HtmlMediaElement",
+    "MediaError",
+    "TimeRanges",
+    "Document",
+    "Element",
+    "EventTarget",
+    "Event",
+] }
+wasm-bindgen = "0.2"
+js-sys = "0.3"

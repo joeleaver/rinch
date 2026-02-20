@@ -99,6 +99,11 @@ pub fn nav_links<F: Fn() + 'static>(
                 active_fn: move || current_section.get() == 12,
                 onclick: nav(12)
             }
+            NavLink {
+                label: "Video",
+                active_fn: move || current_section.get() == 13,
+                onclick: nav(13)
+            }
         }
     }
 }
@@ -160,6 +165,7 @@ pub fn section_content(__scope: &mut RenderScope, current_section: Signal<usize>
                 10 => { tree_section(__scope) },
                 11 => { editor_section(__scope) },
                 12 => { css_features_section(__scope) },
+                13 => { video_section(__scope) },
                 _ => div { },
             }
         }
