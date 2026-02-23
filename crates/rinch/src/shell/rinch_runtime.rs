@@ -130,6 +130,8 @@ pub struct RinchRuntime {
     height: u32,
     /// Current keyboard modifier state (winit-specific).
     modifiers: winit::keyboard::ModifiersState,
+    /// Native menu bar (attached to the window).
+    native_menu: Option<muda::Menu>,
 }
 
 impl RinchRuntime {
@@ -148,6 +150,7 @@ impl RinchRuntime {
             width,
             height,
             modifiers: winit::keyboard::ModifiersState::empty(),
+            native_menu: None,
         }
     }
 
@@ -233,6 +236,11 @@ impl RinchRuntime {
         // Create GPU renderer
         let gpu = WgpuRenderer::new(&window, size.width.max(1), size.height.max(1));
         self.renderer = Some(gpu);
+
+        // Attach native menu bar to the window if configured
+        if let Some(menu) = &self.native_menu {
+            crate::menu::attach_menu_to_window(menu, &window);
+        }
 
         // Wrap the winit window
         let winit_window = WinitWindow::new(window.clone());
@@ -447,6 +455,11 @@ impl RinchRuntime {
                 AppAction::DragWindow => {
                     if let Some(w) = &self.window {
                         let _ = w.drag_window();
+                    }
+                }
+                AppAction::DragResizeWindow(dir) => {
+                    if let Some(w) = &self.window {
+                        let _ = w.drag_resize_window(dir);
                     }
                 }
                 AppAction::SetCursor(style) => {
@@ -821,8 +834,19 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                     },
                 ..
             } => {
-                let platform_key = Self::translate_key(key_code);
+                // Check menu shortcuts first — if matched, consume the event
                 let mods = self.translate_modifiers();
+                if crate::menu::match_shortcut(
+                    mods.ctrl, mods.meta, mods.alt, mods.shift, key_code,
+                ) {
+                    // Shortcut matched and callback dispatched; request redraw
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                    return;
+                }
+
+                let platform_key = Self::translate_key(key_code);
                 PlatformEvent::KeyDown {
                     key: platform_key,
                     text: text.as_ref().map(|t| t.to_string()),
@@ -905,6 +929,9 @@ where
     let mut runtime = RinchRuntime::new(title, width, height, component);
     runtime.proxy = Some(proxy.clone());
 
+    // Install push-based menu event handler (covers native + tray menus)
+    crate::menu::install_menu_event_handler();
+
     // Set native proxy for window control functions
     NATIVE_PROXY.with(|p| *p.borrow_mut() = Some(proxy.clone()));
 
@@ -941,6 +968,17 @@ pub fn run_rinch_with_window_props<F>(component: F, props: rinch_core::element::
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
+    run_rinch_with_window_props_and_menu(component, props, None);
+}
+
+/// Run a rinch-dom application with full window configuration and optional native menu.
+pub fn run_rinch_with_window_props_and_menu<F>(
+    component: F,
+    props: rinch_core::element::WindowProps,
+    native_menu: Option<muda::Menu>,
+) where
+    F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
+{
     let _ = tracing_subscriber::fmt::try_init();
 
     events::clear_handlers();
@@ -960,6 +998,10 @@ where
     let mut runtime = RinchRuntime::new(&props.title, props.width, props.height, component);
     runtime.proxy = Some(proxy.clone());
     runtime.app.set_window_props(props.clone());
+    runtime.native_menu = native_menu;
+
+    // Install push-based menu event handler (covers native + tray menus)
+    crate::menu::install_menu_event_handler();
 
     // Set native proxy for window control functions
     NATIVE_PROXY.with(|p| *p.borrow_mut() = Some(proxy.clone()));

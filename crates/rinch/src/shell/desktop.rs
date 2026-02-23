@@ -70,6 +70,24 @@ impl PlatformWindow for WinitWindow {
             .map_err(|e| format!("drag_window failed: {e}"))
     }
 
+    fn drag_resize_window(&self, direction: rinch_platform::ResizeDirection) -> Result<(), String> {
+        use rinch_platform::ResizeDirection as RD;
+        use winit::window::ResizeDirection as WRD;
+        let wd = match direction {
+            RD::North => WRD::North,
+            RD::South => WRD::South,
+            RD::East => WRD::East,
+            RD::West => WRD::West,
+            RD::NorthEast => WRD::NorthEast,
+            RD::NorthWest => WRD::NorthWest,
+            RD::SouthEast => WRD::SouthEast,
+            RD::SouthWest => WRD::SouthWest,
+        };
+        self.window
+            .drag_resize_window(wd)
+            .map_err(|e| format!("drag_resize_window failed: {e}"))
+    }
+
     fn set_title(&self, title: &str) {
         self.window.set_title(title);
     }

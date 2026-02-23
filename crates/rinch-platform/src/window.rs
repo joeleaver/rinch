@@ -33,6 +33,13 @@ pub trait PlatformWindow {
     /// Returns `Err` if the platform does not support programmatic window dragging.
     fn drag_window(&self) -> Result<(), String>;
 
+    /// Initiate a window resize drag from an edge or corner.
+    ///
+    /// Returns `Err` if the platform does not support programmatic window resizing.
+    fn drag_resize_window(&self, _direction: crate::ResizeDirection) -> Result<(), String> {
+        Err("drag_resize_window not supported".into())
+    }
+
     /// Set the window title.
     fn set_title(&self, title: &str);
 }

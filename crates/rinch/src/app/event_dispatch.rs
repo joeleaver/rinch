@@ -37,6 +37,24 @@ impl RinchApp {
             PlatformEvent::MouseMove { x, y } => {
                 self.cursor_pos = Some((x, y));
 
+                // Check resize edge for borderless windows
+                if let Some(ref props) = self.window_props {
+                    if props.borderless && props.resizable {
+                        if let Some(inset) = props.resize_inset {
+                            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+                            let inset_physical = inset * scale_factor as f32;
+                            if let Some(dir) =
+                                detect_resize_edge(x, y, w, h, inset_physical)
+                            {
+                                actions.push(AppAction::SetCursor(
+                                    resize_direction_to_cursor(&dir),
+                                ));
+                                return actions;
+                            }
+                        }
+                    }
+                }
+
                 // Handle component drag (sliders, floating panels, etc.)
                 if rinch_core::update_drag(x, y) {
                     let (w, h) = (window_size.0 as f32, window_size.1 as f32);
@@ -101,6 +119,10 @@ impl RinchApp {
                     };
                     let changed = doc.borrow_mut().update_hover(hovered);
                     if changed {
+                        // Dispatch data-onenter handlers on newly hovered node
+                        if let Some(hit_id) = hovered {
+                            Self::dispatch_onenter(doc, hit_id);
+                        }
                         actions.push(AppAction::RequestRedraw);
                     }
                     actions.push(AppAction::SetCursor(cursor_style));
@@ -111,6 +133,22 @@ impl RinchApp {
                 y,
                 button: MouseButton::Left,
             } => {
+                // Check resize edge for borderless windows
+                if let Some(ref props) = self.window_props {
+                    if props.borderless && props.resizable {
+                        if let Some(inset) = props.resize_inset {
+                            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+                            let inset_physical = inset * scale_factor as f32;
+                            if let Some(dir) =
+                                detect_resize_edge(x, y, w, h, inset_physical)
+                            {
+                                actions.push(AppAction::DragResizeWindow(dir));
+                                return actions;
+                            }
+                        }
+                    }
+                }
+
                 // Multi-click detection
                 let now = Instant::now();
                 let elapsed = now.duration_since(self.last_click_time);
@@ -466,5 +504,34 @@ impl RinchApp {
         }
 
         actions
+    }
+
+    /// Dispatch `data-onenter` handler for the hovered node or its ancestors.
+    ///
+    /// Walks up from `hit_id` looking for a `data-onenter` attribute. If found,
+    /// dispatches the registered event handler. Used for menu hover-to-switch.
+    pub(super) fn dispatch_onenter(doc: &Rc<RefCell<RinchDocument>>, hit_id: usize) {
+        let handler_id = {
+            let d = doc.borrow();
+            let mut current = Some(hit_id);
+            let mut found = None;
+            while let Some(nid) = current {
+                if let Some(node) = d.tree.get(nid) {
+                    if let Some(val) = node.attributes.get("data-onenter") {
+                        if let Ok(id) = val.parse::<usize>() {
+                            found = Some(id);
+                        }
+                        break;
+                    }
+                    current = node.parent;
+                } else {
+                    break;
+                }
+            }
+            found
+        };
+        if let Some(id) = handler_id {
+            events::dispatch_event(events::EventHandlerId(id));
+        }
     }
 }

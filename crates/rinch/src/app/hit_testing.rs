@@ -20,12 +20,14 @@ fn hit_test_node(
     let nw = node.layout.width;
     let nh = node.layout.height;
 
-    if x < nx || x > nx + nw || y < ny || y > ny + nh {
-        return None;
-    }
+    let point_in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
 
-    // Check children in reverse order (topmost first)
-    // Children are always checked even if this element has pointer-events: none
+    // Check children in reverse order (topmost first).
+    // Children with position: absolute/fixed can extend beyond parent bounds,
+    // and their containing blocks (position: relative parents) may also be outside
+    // our bounds. We check all children unconditionally so that deeply nested
+    // absolute-positioned elements (e.g., dropdown menus) remain clickable.
+    // Each child does its own bounds check, so the overhead is minimal.
     let sx = node.scroll_offset.0 as f32;
     let sy = node.scroll_offset.1 as f32;
     let children: Vec<_> = node.children.clone();
@@ -33,6 +35,10 @@ fn hit_test_node(
         if let Some(hit) = hit_test_node(tree, child_id, nx - sx, ny - sy, x, y) {
             return Some(hit);
         }
+    }
+
+    if !point_in_bounds {
+        return None;
     }
 
     // Skip this element if pointer-events: none (children still checked above)
@@ -43,10 +49,75 @@ fn hit_test_node(
         return None;
     }
 
+    // Skip hidden elements — visibility: hidden should not receive pointer events
+    if matches!(
+        node.computed_style.visibility,
+        rinch_dom::computed_style::VisibilityValue::Hidden
+            | rinch_dom::computed_style::VisibilityValue::Collapse
+    ) {
+        return None;
+    }
+
     Some(node_id)
 }
 
-/// Convert a CursorValue from computed style to a platform CursorStyle.
+/// Detect whether a mouse position is near a window edge for resize.
+///
+/// All coordinates are in the same unit (physical pixels).
+/// Returns the resize direction if the cursor is within the grab zone.
+pub(crate) fn detect_resize_edge(
+    x: f32,
+    y: f32,
+    window_width: f32,
+    window_height: f32,
+    inset: f32,
+) -> Option<rinch_platform::ResizeDirection> {
+    use rinch_platform::ResizeDirection::*;
+    let grab = 8.0;
+    let edge = inset + grab;
+    let corner = inset + 16.0;
+
+    let near_left = x < edge;
+    let near_right = x > window_width - edge;
+    let near_top = y < edge;
+    let near_bottom = y > window_height - edge;
+
+    let corner_left = x < corner;
+    let corner_right = x > window_width - corner;
+    let corner_top = y < corner;
+    let corner_bottom = y > window_height - corner;
+
+    match (near_top, near_bottom, near_left, near_right) {
+        (true, _, true, _) if corner_top || corner_left => Some(NorthWest),
+        (true, _, _, true) if corner_top || corner_right => Some(NorthEast),
+        (_, true, true, _) if corner_bottom || corner_left => Some(SouthWest),
+        (_, true, _, true) if corner_bottom || corner_right => Some(SouthEast),
+        (true, _, _, _) => Some(North),
+        (_, true, _, _) => Some(South),
+        (_, _, true, _) => Some(West),
+        (_, _, _, true) => Some(East),
+        _ => None,
+    }
+}
+
+/// Map a resize direction to the appropriate cursor style.
+pub(crate) fn resize_direction_to_cursor(
+    dir: &rinch_platform::ResizeDirection,
+) -> rinch_platform::CursorStyle {
+    use rinch_platform::CursorStyle as CS;
+    use rinch_platform::ResizeDirection as RD;
+    match dir {
+        RD::North => CS::NResize,
+        RD::South => CS::SResize,
+        RD::East => CS::EResize,
+        RD::West => CS::WResize,
+        RD::NorthEast => CS::NeResize,
+        RD::NorthWest => CS::NwResize,
+        RD::SouthEast => CS::SeResize,
+        RD::SouthWest => CS::SwResize,
+    }
+}
+
 /// Convert a CursorValue from computed style to a platform CursorStyle.
 pub(super) fn cursor_value_to_style(
     cursor: &rinch_dom::computed_style::CursorValue,

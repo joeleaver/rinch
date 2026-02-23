@@ -62,6 +62,19 @@ pub enum UserEvent {
     DebugCommand,
 }
 
+/// Direction for window resize drag operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeDirection {
+    North,
+    South,
+    East,
+    West,
+    NorthEast,
+    NorthWest,
+    SouthEast,
+    SouthWest,
+}
+
 /// Actions the runtime requests from the platform backend.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppAction {
@@ -77,6 +90,8 @@ pub enum AppAction {
     SetVisible(bool),
     /// Initiate a window drag (for custom titlebars).
     DragWindow,
+    /// Initiate a window resize drag from an edge or corner.
+    DragResizeWindow(ResizeDirection),
     /// Set the mouse cursor icon. Values match CSS cursor keywords.
     SetCursor(CursorStyle),
 }
