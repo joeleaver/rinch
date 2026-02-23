@@ -1,7 +1,7 @@
 //! DevTools state for rinch applications.
 //!
-//! Provides a developer tools panel for inspecting the UI tree,
-//! viewing element styles, and debugging hook state.
+//! Provides a developer tools panel for inspecting the UI tree
+//! and viewing element styles.
 
 /// The currently active panel in the devtools.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -11,8 +11,6 @@ pub enum DevToolsPanel {
     Elements,
     /// Computed styles viewer.
     Styles,
-    /// Hook state inspector.
-    Hooks,
 }
 
 /// State for the developer tools overlay.

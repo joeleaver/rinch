@@ -7,7 +7,7 @@
 //! For reactive active state without re-rendering, use the `active_fn` prop:
 //!
 //! ```ignore
-//! let current_page = use_signal(|| "home".to_string());
+//! let current_page = Signal::new("home".to_string());
 //!
 //! rsx! {
 //!     NavLink {

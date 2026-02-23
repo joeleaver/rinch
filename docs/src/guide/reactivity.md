@@ -32,15 +32,15 @@ use rinch::prelude::*;
 #[component]
 fn counter() -> NodeHandle {
     // Create reactive state
-    let count = use_signal(|| 0);
+    let count = Signal::new(0);
 
     // Create a derived value (Memo is Copy, just like Signal)
-    let doubled = use_derived(move || count.get() * 2);
+    let doubled = Memo::new(move || count.get() * 2);
 
-    // Side effect: log when count changes
-    use_effect(|| {
+    // Side effect: log when count changes (auto-tracks dependencies)
+    Effect::new(move || {
         println!("Count changed to: {}", count.get());
-    }, count.get());
+    });
 
     rsx! {
         div {

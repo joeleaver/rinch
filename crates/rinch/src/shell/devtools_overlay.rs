@@ -3,7 +3,6 @@
 //! Generates HTML for the devtools panel overlay.
 
 use super::devtools::{DevToolsPanel, DevToolsState};
-use rinch_core::hooks::get_hooks_debug_info;
 
 /// Render the devtools overlay as HTML.
 ///
@@ -18,7 +17,6 @@ pub fn render_overlay(state: &DevToolsState) -> String {
     let panel_content = match state.active_panel {
         DevToolsPanel::Elements => render_elements_panel(state),
         DevToolsPanel::Styles => render_styles_panel(state),
-        DevToolsPanel::Hooks => render_hooks_panel(),
     };
 
     let elements_active = if state.active_panel == DevToolsPanel::Elements {
@@ -27,11 +25,6 @@ pub fn render_overlay(state: &DevToolsState) -> String {
         ""
     };
     let styles_active = if state.active_panel == DevToolsPanel::Styles {
-        "background: #2a2a2a;"
-    } else {
-        ""
-    };
-    let hooks_active = if state.active_panel == DevToolsPanel::Hooks {
         "background: #2a2a2a;"
     } else {
         ""
@@ -80,14 +73,6 @@ pub fn render_overlay(state: &DevToolsState) -> String {
                     cursor: pointer;
                     {styles_active}
                 ">Styles</button>
-                <button data-devtools-panel="hooks" style="
-                    flex: 1;
-                    padding: 8px;
-                    border: none;
-                    color: #d4d4d4;
-                    cursor: pointer;
-                    {hooks_active}
-                ">Hooks</button>
             </div>
             <div style="
                 padding: 4px 8px;
@@ -165,47 +150,6 @@ fn render_styles_panel(state: &DevToolsState) -> String {
         </div>"#
             .to_string()
     }
-}
-
-/// Render the Hooks panel showing reactive state.
-fn render_hooks_panel() -> String {
-    let hooks_info = get_hooks_debug_info();
-
-    if hooks_info.is_empty() {
-        return r#"<div>
-            <div style="font-weight: bold; margin-bottom: 8px; color: #dcdcaa;">Hooks State</div>
-            <div style="color: #808080;">No hooks registered.</div>
-        </div>"#
-            .to_string();
-    }
-
-    let hooks_html: String = hooks_info
-        .iter()
-        .enumerate()
-        .map(|(i, info)| {
-            format!(
-                r#"<div style="
-                    padding: 6px 8px;
-                    background: #2d2d2d;
-                    border-radius: 4px;
-                    margin-bottom: 4px;
-                ">
-                    <div style="color: #569cd6;">#{} {}</div>
-                    <div style="color: #808080; font-size: 11px;">{}</div>
-                </div>"#,
-                i, info.hook_type, info.value_type
-            )
-        })
-        .collect();
-
-    format!(
-        r#"<div>
-            <div style="font-weight: bold; margin-bottom: 8px; color: #dcdcaa;">Hooks State ({} hooks)</div>
-            {}
-        </div>"#,
-        hooks_info.len(),
-        hooks_html
-    )
 }
 
 /// CSS styles for the devtools overlay.

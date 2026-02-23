@@ -1,7 +1,5 @@
 # Effects
 
-> Inside `#[component]` functions, prefer `use_effect(|| ...)` over `Effect::new(|| ...)`. See [Hooks](hooks.md).
-
 An **Effect** is a side-effect that runs when its dependencies change. Effects automatically track which signals they read and re-run when any of those signals update.
 
 ## Creating Effects

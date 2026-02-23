@@ -295,7 +295,7 @@ use rinch_core::element::WindowProps;
 
 #[component]
 fn app() -> NodeHandle {
-    let settings_handle = use_signal(|| None::<WindowHandle>);
+    let settings_handle = Signal::new(None::<WindowHandle>);
     let handle_clone = settings_handle.clone();
 
     rsx! {
@@ -368,7 +368,7 @@ use rinch::windows::{open_window, close_window, WindowBuilder, WindowHandle};
 
 #[component]
 fn app() -> NodeHandle {
-    let dialogs = use_signal(|| Vec::<WindowHandle>::new());
+    let dialogs = Signal::new(Vec::<WindowHandle>::new());
     let dialogs_open = dialogs.clone();
     let dialogs_close = dialogs.clone();
     let dialogs_display = dialogs.clone();

@@ -12,7 +12,7 @@
   - [Signals](./guide/signals.md)
   - [Effects](./guide/effects.md)
   - [Memos](./guide/memos.md)
-- [Hooks](./guide/hooks.md)
+- [State Management](./guide/hooks.md)
 - [Sharing State](./guide/sharing-state.md)
 - [Theming](./guide/theming.md)
 - [Components](./guide/components.md)

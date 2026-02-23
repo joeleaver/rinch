@@ -23,7 +23,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::dom::{NodeHandle, RenderScope};
-use crate::hooks::with_render_context;
 use crate::reactive::Effect;
 
 /// A boxed render closure for a single match branch.
@@ -80,7 +79,7 @@ where
     ) {
         if let Some(doc) = doc_weak.upgrade() {
             let mut child_scope = RenderScope::new(doc, parent_id);
-            let content = with_render_context(|| branch_fn(&mut child_scope));
+            let content = branch_fn(&mut child_scope);
             marker.insert_after(&content);
             current_content.borrow_mut().push(content);
             *current_scope.borrow_mut() = Some(child_scope);

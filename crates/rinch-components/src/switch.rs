@@ -7,7 +7,7 @@
 //! For reactive checked state without re-rendering, use the `checked_fn` prop:
 //!
 //! ```ignore
-//! let is_on = use_signal(|| false);
+//! let is_on = Signal::new(false);
 //!
 //! rsx! {
 //!     Switch {

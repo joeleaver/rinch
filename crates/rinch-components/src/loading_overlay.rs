@@ -13,7 +13,7 @@ use rinch_core::dom::{NodeHandle, RenderScope};
 /// # Example
 ///
 /// ```ignore
-/// let loading = use_signal(|| true);
+/// let loading = Signal::new(true);
 ///
 /// rsx! {
 ///     div { style: "position: relative;",

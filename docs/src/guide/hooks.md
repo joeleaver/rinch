@@ -1,20 +1,22 @@
-# Hooks
+# State Management
 
-Rinch provides a **React-style hooks API** for managing state and side effects in your components. Hooks offer a clean, ergonomic alternative to manually managing `Signal`, `Effect`, and `Memo` instances.
+Rinch uses **fine-grained reactive primitives** for managing state in your components. Components run once to build the DOM, and reactive primitives handle all subsequent updates surgically.
 
-## Why Hooks?
+## Core Primitives
 
-Hooks provide:
-- **Automatic lifecycle management** - State persists across re-renders without manual setup
-- **Familiar API** - If you've used React, you'll feel right at home
-- **Cleaner code** - No need for `thread_local!` or manual `Rc` cloning
+| Primitive | Purpose |
+|-----------|---------|
+| [`Signal::new()`](#signal) | Reactive state that triggers updates |
+| [`Effect::new()`](#effect) | Side effects that auto-track dependencies |
+| [`Memo::new()`](#memo) | Cached computed values |
+| [`create_context()`](#context) | Shared state across components |
 
 ```rust
 use rinch::prelude::*;
 
 #[component]
 fn counter() -> NodeHandle {
-    let count = use_signal(|| 0);
+    let count = Signal::new(0);
 
     rsx! {
         button { onclick: move || count.update(|n| *n += 1),
@@ -26,44 +28,28 @@ fn counter() -> NodeHandle {
 
 > **Note:** The `#[component]` attribute macro is the recommended way to define components. It automatically injects the `__scope: &mut RenderScope` parameter needed by `rsx!`.
 
-## Available Hooks
-
-| Hook | Purpose |
-|------|---------|
-| [`use_signal`](#use_signal) | Reactive state that triggers re-renders |
-| [`use_state`](#use_state) | State with `(value, setter)` tuple API |
-| [`use_ref`](#use_ref) | Mutable reference (no re-renders) |
-| [`use_effect`](#use_effect) | Side effects when deps change |
-| [`use_effect_cleanup`](#use_effect_cleanup) | Effects with cleanup functions |
-| [`use_mount`](#use_mount) | One-time effect on first render |
-| [`use_memo`](#use_memo) | Memoized computations |
-| [`use_callback`](#use_callback) | Memoized callbacks |
-| [`use_context`](#use_context) | Access shared state (panics if not found) |
-| [`try_use_context`](#try_use_context) | Access shared state (returns Option) |
-| [`use_derived`](#use_derived) | Computed state from signals |
-
 ---
 
-## use_signal
+## Signal
 
-The primary state hook. Returns a `Signal<T>` that persists across re-renders.
+The primary state primitive. Creates a reactive value that notifies subscribers when it changes.
 
 ```rust
-let count = use_signal(|| 0);
+let count = Signal::new(0);
 
 count.get();              // Read value
 count.set(5);             // Set new value
 count.update(|n| *n += 1); // Update with function
 ```
 
-The initialization function only runs on the first render. Subsequent renders return the existing signal.
+`Signal<T>` implements `Copy`, so you can use it in multiple closures without `.clone()`.
 
 ### Example: Toggle
 
 ```rust
 #[component]
 fn toggle() -> NodeHandle {
-    let enabled = use_signal(|| false);
+    let enabled = Signal::new(false);
 
     rsx! {
         button { onclick: move || enabled.update(|b| *b = !*b),
@@ -73,171 +59,56 @@ fn toggle() -> NodeHandle {
 }
 ```
 
----
-
-## use_state
-
-React-style tuple API. Returns `(value, setter)` for simpler cases.
-
-```rust
-let (count, set_count) = use_state(|| 0);
-
-// Read directly
-println!("Count: {}", count);
-
-// Set with closure
-set_count(count + 1);
-```
-
-### When to Use
-
-- `use_signal` when you need `.update()` or `.with()` methods
-- `use_state` for simple read/write patterns
+For more details, see [Signals](./signals.md).
 
 ---
 
-## use_ref
+## Effect
 
-Mutable reference that does **not** trigger re-renders. Useful for:
-- Storing values that shouldn't cause updates
-- Tracking render counts
-- Caching expensive computations
+Run side effects that automatically track which signals they read and re-run when those signals change.
 
 ```rust
-let render_count = use_ref(|| 0);
-*render_count.borrow_mut() += 1;
+let count = Signal::new(0);
 
-let cached_data = use_ref(|| load_expensive_data());
-```
-
----
-
-## use_effect
-
-Run side effects when dependencies change.
-
-```rust
-let count = use_signal(|| 0);
-
-// Re-runs when count changes
-use_effect(|| {
+// Auto-tracks count — re-runs when count changes
+Effect::new(move || {
     println!("Count changed to: {}", count.get());
-}, count.get());
-```
-
-The second argument is the dependency. When it changes (compared by equality), the effect re-runs.
-
-### Multiple Dependencies
-
-Use a tuple for multiple dependencies:
-
-```rust
-let a = use_signal(|| 0);
-let b = use_signal(|| 0);
-
-use_effect(|| {
-    println!("a={}, b={}", a.get(), b.get());
-}, (a.get(), b.get()));
-```
-
----
-
-## use_effect_cleanup
-
-Effects that need cleanup (like subscriptions or timers).
-
-```rust
-let id = use_signal(|| 1);
-
-use_effect_cleanup(|| {
-    let current_id = id.get();
-    subscribe_to_updates(current_id);
-
-    // Return cleanup function
-    move || {
-        unsubscribe_from_updates(current_id);
-    }
-}, id.get());
-```
-
-The cleanup function runs:
-1. Before the effect re-runs (when deps change)
-2. When the component unmounts
-
----
-
-## use_mount
-
-Run an effect only once, on first render.
-
-```rust
-use_mount(|| {
-    println!("Component mounted!");
-
-    // Optional: return cleanup function
-    || println!("Component unmounted!")
 });
 ```
 
-Equivalent to `useEffect(() => { ... }, [])` in React.
+No dependency arrays needed — dependencies are discovered automatically at runtime.
+
+For more details, see [Effects](./effects.md).
 
 ---
 
-## use_memo
+## Memo
 
-Memoize expensive computations. Only recomputes when dependencies change.
+Create cached computed values that only recompute when dependencies change.
 
 ```rust
-let items = use_signal(|| vec![1, 2, 3, 4, 5]);
+let first_name = Signal::new("Alice".to_string());
+let last_name = Signal::new("Smith".to_string());
 
-// Only recomputes when items change
-let sum = use_memo(|| {
-    items.get().iter().sum::<i32>()
-}, items.get());
+// Automatically updates when first_name or last_name change
+let full_name = Memo::new(move || {
+    format!("{} {}", first_name.get(), last_name.get())
+});
 
-let total = sum.get(); // Cached value
+println!("Full name: {}", full_name.get());
 ```
 
-### When to Use
+`Memo<T>` implements `Copy` just like `Signal<T>` — use it in multiple closures without `.clone()`.
 
-- Expensive calculations (sorting, filtering, aggregating)
-- Derived data that multiple components need
-- Avoiding redundant computation on every render
+For more details, see [Memos](./memos.md).
 
 ---
 
-## use_callback
+## Context
 
-Memoize callback functions. Useful for passing stable callbacks to child components.
-
-```rust
-let count = use_signal(|| 0);
-
-let increment = use_callback(|| {
-    count.update(|n| *n += 1);
-}, count.get());
-
-// `increment` has a stable identity when `count` hasn't changed
-```
-
----
-
-## use_context
-
-Access shared state across components without prop drilling.
-
-`use_context::<T>()` returns `T` directly. It **panics** with a helpful message if the context was not found:
-
-```
-Context not found: TypeName
-Did you forget to call create_context() in a parent component?
-```
-
-For fallible access that doesn't panic, use [`try_use_context`](#try_use_context) instead.
+Share state across components without prop drilling. Call `create_context()` in an ancestor component, then `use_context::<T>()` in any descendant.
 
 ### Creating Context
-
-At the top of your component tree:
 
 ```rust
 #[derive(Clone)]
@@ -248,7 +119,6 @@ struct Theme {
 
 #[component]
 fn app() -> NodeHandle {
-    // Create context available to all descendants
     create_context(Theme {
         primary: "#007bff".into(),
         background: "#ffffff".into(),
@@ -264,13 +134,17 @@ fn app() -> NodeHandle {
 
 ### Consuming Context
 
-In any descendant component:
+`use_context::<T>()` returns `T` directly. It **panics** with a helpful message if the context was not found:
+
+```
+Context not found: TypeName
+Did you forget to call create_context() in a parent component?
+```
 
 ```rust
 #[component]
 fn themed_button() -> NodeHandle {
     let theme = use_context::<Theme>();
-    // theme is directly Theme, not Option<Theme>
 
     rsx! {
         button { style: {|| format!("background: {}", theme.primary)},
@@ -280,17 +154,14 @@ fn themed_button() -> NodeHandle {
 }
 ```
 
----
+### Fallible Access
 
-## try_use_context
-
-Like `use_context`, but returns `Option<T>` instead of panicking when the context is not found. Use this when a context may legitimately be absent.
+Use `try_use_context::<T>()` when a context may legitimately be absent — it returns `Option<T>` instead of panicking:
 
 ```rust
 #[component]
 fn themed_button() -> NodeHandle {
     let theme = try_use_context::<Theme>();
-
     let bg = theme.map(|t| t.primary).unwrap_or("#ccc".into());
 
     rsx! {
@@ -301,107 +172,7 @@ fn themed_button() -> NodeHandle {
 }
 ```
 
----
-
-## use_derived
-
-Create computed state that automatically tracks signal dependencies.
-
-```rust
-let first_name = use_signal(|| "Alice".to_string());
-let last_name = use_signal(|| "Smith".to_string());
-
-// Automatically updates when first_name or last_name change
-let full_name = use_derived(|| {
-    format!("{} {}", first_name.get(), last_name.get())
-});
-
-println!("Full name: {}", full_name.get());
-```
-
-Unlike `use_memo`, `use_derived` doesn't require explicit dependencies - it automatically tracks any signals read inside the closure.
-
-> **Note:** `use_derived` returns a `Memo<T>`, which implements `Copy` just like `Signal<T>`. You can use it in multiple closures without `.clone()`.
-
-### Hooks in For Loop Bodies
-
-Hooks work inside `for` loop bodies in RSX. Each item gets its own isolated hook scope, so per-item state is fully supported:
-
-```rust
-for todo in todos.get() {
-    // Per-item hook state — each item gets its own signal
-    let editing = use_signal(|| false);
-
-    div { key: todo.id,
-        span { {todo.name.clone()} }
-        button {
-            onclick: move || editing.update(|v| *v = !*v),
-            {|| if editing.get() { "Done" } else { "Edit" }}
-        }
-    }
-}
-```
-
----
-
-## Rules of Hooks
-
-Hooks must be called **in the same order** every render. This is how rinch tracks which hook corresponds to which state.
-
-### Do: Call at Top Level
-
-```rust
-#[component]
-fn app() -> NodeHandle {
-    let count = use_signal(|| 0);      // Always first
-    let name = use_signal(|| "".into()); // Always second
-
-    rsx! { /* ... */ }
-}
-```
-
-### Don't: Call Conditionally
-
-```rust
-#[component]
-fn app() -> NodeHandle {
-    let show = use_signal(|| false);
-
-    // BAD: Hook order changes based on condition
-    if show.get() {
-        let extra = use_signal(|| 0);  // Sometimes first, sometimes not!
-    }
-
-    rsx! { /* ... */ }
-}
-```
-
-### Don't: Call in Loops
-
-```rust
-#[component]
-fn app() -> NodeHandle {
-    // BAD: Number of hooks depends on items length
-    for i in 0..items.len() {
-        let state = use_signal(|| i);  // Wrong!
-    }
-
-    rsx! { /* ... */ }
-}
-```
-
-### Don't: Call in Event Handlers
-
-```rust
-#[component]
-fn app() -> NodeHandle {
-    rsx! {
-        button { onclick: || {
-            let x = use_signal(|| 0);  // Wrong! Not during render
-        }}
-    }
-}
-```
+For more details, see [Sharing State](./sharing-state.md).
 
 ---
 
@@ -420,21 +191,15 @@ fn app() -> NodeHandle {
     // Create shared settings context
     create_context(AppSettings { dark_mode: false });
 
-    let todos = use_signal(|| vec!["Learn Rust".to_string()]);
-    let input = use_signal(|| String::new());
+    let todos = Signal::new(vec!["Learn Rust".to_string()]);
+    let input = Signal::new(String::new());
 
     // Derived state
-    let count = use_derived(|| todos.get().len());
+    let count = Memo::new(move || todos.get().len());
 
     // Log changes
-    use_effect(|| {
+    Effect::new(move || {
         println!("Todo count: {}", count.get());
-    }, count.get());
-
-    // Setup on mount
-    use_mount(|| {
-        println!("App started!");
-        || println!("App closing...")
     });
 
     // Extract shared handler — both Enter key and button click add a todo.

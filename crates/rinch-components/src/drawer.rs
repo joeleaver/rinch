@@ -7,7 +7,7 @@
 //! For reactive opened state without re-rendering, use the `opened_fn` prop:
 //!
 //! ```ignore
-//! let drawer_opened = use_signal(|| false);
+//! let drawer_opened = Signal::new(false);
 //!
 //! rsx! {
 //!     Drawer {
@@ -107,7 +107,7 @@ pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 /// # Example
 ///
 /// ```ignore
-/// let show_drawer = use_signal(|| false);
+/// let show_drawer = Signal::new(false);
 ///
 /// rsx! {
 ///     Button { onclick: move || show_drawer.set(true), "Open Drawer" }

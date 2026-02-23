@@ -18,10 +18,10 @@ use rinch_core::{
 /// # Example
 ///
 /// ```ignore
-/// let x = use_signal(|| 100.0);
-/// let y = use_signal(|| 100.0);
-/// let w = use_signal(|| 300.0);
-/// let h = use_signal(|| 200.0);
+/// let x = Signal::new(100.0);
+/// let y = Signal::new(100.0);
+/// let w = Signal::new(300.0);
+/// let h = Signal::new(200.0);
 ///
 /// rsx! {
 ///     FloatingPanel {

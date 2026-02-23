@@ -55,7 +55,7 @@ fn my_component(__scope: &mut RenderScope) -> NodeHandle {
 
 ```rust
 fn counter(__scope: &mut RenderScope) -> NodeHandle {
-    let count = use_signal(|| 0);
+    let count = Signal::new(0);
     let span = __scope.create_element("span");
 
     // Create an Effect that updates the span when count changes

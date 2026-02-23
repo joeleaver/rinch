@@ -34,7 +34,7 @@
 //! # Example
 //!
 //! ```ignore
-//! let items = use_signal(|| vec![
+//! let items = Signal::new(vec![
 //!     Item { id: "1", name: "Alice" },
 //!     Item { id: "2", name: "Bob" },
 //! ]);
@@ -62,7 +62,6 @@ use std::rc::Rc;
 
 use crate::dom::{NodeHandle, RenderScope};
 use crate::element::ForItem;
-use crate::hooks::{HookEntry, pop_hook_scope, push_hook_scope, with_render_context};
 use crate::reactive::Effect;
 use crate::reconcile::diff_keyed;
 
@@ -95,8 +94,6 @@ struct ItemState {
     node: NodeHandle,
     /// The ForItem data (stored for re-rendering if needed).
     item: ForItem,
-    /// Hook state for this item (preserved across re-renders).
-    hooks: Vec<HookEntry>,
     /// The render scope for this item (cleaned up on removal).
     scope: Option<RenderScope>,
 }
@@ -166,9 +163,7 @@ where
         for item in initial_items {
             if let Some(doc) = doc_weak.upgrade() {
                 let mut child_scope = RenderScope::new(doc, parent_id);
-                push_hook_scope(None); // Fresh scope for new item
-                let node = with_render_context(|| view(&item, &mut child_scope));
-                let hooks = pop_hook_scope();
+                let node = view(&item, &mut child_scope);
 
                 if initial_nodes.is_empty() {
                     marker.insert_after(&node);
@@ -183,7 +178,6 @@ where
                     ItemState {
                         node,
                         item,
-                        hooks,
                         scope: Some(child_scope),
                     },
                 );
@@ -245,9 +239,7 @@ where
                         && let Some(doc) = doc_weak_clone.upgrade()
                     {
                         let mut child_scope = RenderScope::new(doc, parent_id);
-                        push_hook_scope(None);
-                        let node = with_render_context(|| view_clone(item, &mut child_scope));
-                        let hooks = pop_hook_scope();
+                        let node = view_clone(item, &mut child_scope);
 
                         // Insert at the correct position as sibling.
                         // Find the node to insert after: either the previous
@@ -284,7 +276,6 @@ where
                             ItemState {
                                 node,
                                 item: item.clone(),
-                                hooks,
                                 scope: Some(child_scope),
                             },
                         );
@@ -358,15 +349,11 @@ where
                                 old_scope.dispose();
                             }
                             let mut child_scope = RenderScope::new(doc, parent_id);
-                            push_hook_scope(Some(std::mem::take(&mut old_state.hooks)));
-                            let new_node =
-                                with_render_context(|| view_clone(item, &mut child_scope));
-                            let hooks = pop_hook_scope();
+                            let new_node = view_clone(item, &mut child_scope);
                             old_state.node.insert_after(&new_node);
                             old_state.node.remove();
                             old_state.node = new_node;
                             old_state.item = item.clone();
-                            old_state.hooks = hooks;
                             old_state.scope = Some(child_scope);
                         }
                     }
@@ -463,7 +450,7 @@ where
 /// # Example
 ///
 /// ```ignore
-/// let items = use_signal(|| vec![...]);
+/// let items = Signal::new(vec![...]);
 ///
 /// FineForBuilder::new(move || items.get())
 ///     .view(|item, scope| {

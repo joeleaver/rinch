@@ -85,7 +85,7 @@ pub fn overview_section() -> NodeHandle {
                         }
                         Title { order: 4, "Reactive State" }
                         Text { size: "sm", color: "dimmed",
-                            "Built-in reactive primitives with use_signal, use_effect, and use_derived for automatic UI updates. Fine-grained reactivity ensures minimal re-renders."
+                            "Built-in reactive primitives with Signal, Effect, and Memo for automatic UI updates. Fine-grained reactivity ensures minimal re-renders."
                         }
                         Group { gap: "xs",
                             Badge { color: "violet", "Signals" }

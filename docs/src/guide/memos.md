@@ -1,7 +1,5 @@
 # Memos
 
-> Inside `#[component]` functions, prefer `use_memo(|| ...)` or `use_derived(|| ...)` over `Memo::new(|| ...)`. See [Hooks](hooks.md).
-
 A **Memo** is a cached computed value that only recomputes when its dependencies change. Memos are perfect for derived state that's expensive to calculate.
 
 ## Creating Memos

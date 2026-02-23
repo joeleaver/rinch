@@ -129,7 +129,7 @@ pub fn try_use_context<T: Clone + 'static>() -> Option<T> {
     })
 }
 
-/// Clear all context (called internally during app reset).
-pub(crate) fn clear_context() {
+/// Clear all context (called during app reset).
+pub fn clear_context() {
     CONTEXT_STORE.with(|store| store.borrow_mut().clear());
 }

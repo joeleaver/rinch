@@ -69,7 +69,7 @@ impl std::str::FromStr for DropdownMenuPosition {
 /// # Example
 ///
 /// ```ignore
-/// let show_menu = use_signal(|| false);
+/// let show_menu = Signal::new(false);
 ///
 /// rsx! {
 ///     DropdownMenu { opened: show_menu.get(),

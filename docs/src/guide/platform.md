@@ -222,7 +222,7 @@ use rinch::clipboard::{copy_text, paste_text};
 
 #[component]
 fn app() -> NodeHandle {
-    let text = use_signal(|| String::new());
+    let text = Signal::new(String::new());
     let text_copy = text.clone();
     let text_paste = text.clone();
 

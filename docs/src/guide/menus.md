@@ -209,8 +209,8 @@ use rinch_core::element::{MenuProps, MenuItemProps, MenuItemCallback};
 
 #[component]
 fn app() -> NodeHandle {
-    let file_path = use_signal(|| None::<String>);
-    let show_about = use_signal(|| false);
+    let file_path = Signal::new(None::<String>);
+    let show_about = Signal::new(false);
     rsx! {
         div {
             h1 { "Application with Menus" }

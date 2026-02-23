@@ -202,11 +202,11 @@ const SMALL_BTN: &str = "width:28px;height:28px;border-radius:6px;\
 
 #[component]
 fn game_ui() -> NodeHandle {
-    let bg_color = use_signal(|| [0.1f32, 0.1, 0.15]);
-    let cube_tint = use_signal(|| [1.0f32, 1.0, 1.0]);
-    let rotation_speed = use_signal(|| 1.0f32);
-    let auto_rotate = use_signal(|| true);
-    let label = use_signal(String::new);
+    let bg_color = Signal::new([0.1f32, 0.1, 0.15]);
+    let cube_tint = Signal::new([1.0f32, 1.0, 1.0]);
+    let rotation_speed = Signal::new(1.0f32);
+    let auto_rotate = Signal::new(true);
+    let label = Signal::new(String::new());
 
     // Export signals so the game loop can read them
     GAME_STATE.set(Some(GameState {

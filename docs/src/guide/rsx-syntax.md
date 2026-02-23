@@ -135,7 +135,7 @@ For fine-grained reactivity, use **closure syntax** `{|| expr}` to create expres
 ### Static vs Reactive
 
 ```rust
-let count = use_signal(|| 0);
+let count = Signal::new(0);
 
 rsx! {
     // ❌ STATIC: Captured once, never updates
@@ -151,8 +151,8 @@ rsx! {
 Wrap dynamic text in a closure to make it reactive:
 
 ```rust
-let name = use_signal(|| "World".to_string());
-let count = use_signal(|| 0);
+let name = Signal::new("World".to_string());
+let count = Signal::new(0);
 
 rsx! {
     // Simple reactive text
@@ -171,8 +171,8 @@ rsx! {
 Style attributes can also be reactive:
 
 ```rust
-let progress = use_signal(|| 50);
-let is_active = use_signal(|| false);
+let progress = Signal::new(50);
+let is_active = Signal::new(false);
 
 rsx! {
     // Reactive width
@@ -197,8 +197,8 @@ rsx! {
 Dynamically change CSS classes based on state:
 
 ```rust
-let is_selected = use_signal(|| false);
-let variant = use_signal(|| "primary");
+let is_selected = Signal::new(false);
+let variant = Signal::new("primary");
 
 rsx! {
     // Conditional class
@@ -218,7 +218,7 @@ rsx! {
 The `{|| ...}` pattern requires the closure to be the **direct expression** inside the braces. Block expressions with setup code now work:
 
 ```rust
-let count = use_signal(|| 0);
+let count = Signal::new(0);
 
 rsx! {
     // ✅ CORRECT: Closure is the direct expression
@@ -279,8 +279,8 @@ Rinch supports native Rust control flow directly in RSX. All control flow is **a
 Write standard Rust `if`/`else` directly in RSX:
 
 ```rust
-let visible = use_signal(|| true);
-let count = use_signal(|| 5);
+let visible = Signal::new(true);
+let count = Signal::new(5);
 
 rsx! {
     div {
@@ -313,7 +313,7 @@ rsx! {
 Pattern matching with `if let` is also supported:
 
 ```rust
-let current_user = use_signal(|| Some("Alice".to_string()));
+let current_user = Signal::new(Some("Alice".to_string()));
 
 rsx! {
     div {
@@ -339,7 +339,7 @@ The `if` block desugars to `show_dom()` — the same runtime function used by th
 Write standard `for..in` loops directly in RSX:
 
 ```rust
-let todos = use_signal(|| vec![
+let todos = Signal::new(vec![
     Todo { id: 1, name: "Buy groceries".into() },
     Todo { id: 2, name: "Write code".into() },
     Todo { id: 3, name: "Take a walk".into() },
@@ -408,7 +408,7 @@ for todo in todos.get() {
 
 The `for` loop expression itself is reactive — it reads a Signal, which creates an Effect. When that Signal changes, the loop re-evaluates and reconciles the list. Items whose data changed (per `PartialEq`) get their component **re-created** with fresh props. This means the component function runs again with the new values.
 
-Because of this, **closures on plain props inside for-loop components are unnecessary** — the whole function runs again with new values when the item changes. Closures *are* needed for per-item Signals created with `use_signal` inside the loop body, since those change independently of the list data.
+Because of this, **closures on plain props inside for-loop components are unnecessary** — the whole function runs again with new values when the item changes. Closures *are* needed for per-item Signals created with `Signal::new()` inside the loop body, since those change independently of the list data.
 
 ```rust
 // Props are plain values from the for loop — no closure needed
@@ -425,7 +425,7 @@ pub fn TodoItem(label: String, completed: bool) -> NodeHandle {
 
 // Per-item Signal — closure IS needed
 for todo in todos.get() {
-    let editing = use_signal(|| false);  // Per-item state
+    let editing = Signal::new(false);  // Per-item state
     div { key: todo.id,
         // ✅ Closure needed: `editing` is a Signal that changes independently
         span { style: {|| if editing.get() { "outline: 1px solid blue" } else { "" }} }
@@ -440,8 +440,8 @@ for todo in todos.get() {
 You can filter, map, and transform the collection inline in the `for` expression. The entire expression is wrapped in a reactive closure by the macro, so all Signals read inside it are tracked:
 
 ```rust
-let todos = use_signal(|| vec![/* ... */]);
-let filter = use_signal(|| Filter::All);
+let todos = Signal::new(vec![/* ... */]);
+let filter = Signal::new(Filter::All);
 
 rsx! {
     div {
@@ -466,7 +466,7 @@ Both `todos` and `filter` are tracked — the loop re-evaluates when either Sign
 Write standard Rust `match` directly in RSX:
 
 ```rust
-let tab = use_signal(|| 0);
+let tab = Signal::new(0);
 
 rsx! {
     div {
@@ -485,7 +485,7 @@ rsx! {
 Patterns that bind variables work — each arm re-evaluates the scrutinee to extract the bound values:
 
 ```rust
-let result = use_signal(|| Ok::<String, String>("Hello".into()));
+let result = Signal::new(Ok::<String, String>("Hello".into()));
 
 rsx! {
     div {
@@ -583,7 +583,7 @@ Events use the `onevent: handler` syntax:
 
 ```rust
 // Inside a #[component] function:
-let count = use_signal(|| 0);
+let count = Signal::new(0);
 
 rsx! {
     button {
@@ -598,8 +598,8 @@ rsx! {
 You can extract event handlers into variables and reuse them across multiple elements. This is especially useful when a button and a text input should trigger the same action:
 
 ```rust
-let input_text = use_signal(|| String::new());
-let todos = use_signal(|| Vec::<String>::new());
+let input_text = Signal::new(String::new());
+let todos = Signal::new(Vec::<String>::new());
 
 // Extract shared logic into a closure
 let add_todo = move || {
@@ -659,7 +659,7 @@ Stack { gap: "md", p: "xl", maw: "600px",
 }
 
 // Reactive shorthands
-let big = use_signal(|| false);
+let big = Signal::new(false);
 div { p: {|| if big.get() { "xl" } else { "sm" }}, "Dynamic padding" }
 
 // Spacing scale values auto-resolve

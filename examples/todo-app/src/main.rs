@@ -65,10 +65,10 @@ enum Filter {
 #[component]
 fn app() -> NodeHandle {
     // State
-    let todos = use_signal(|| Vec::<Todo>::new());
-    let input_text = use_signal(|| String::new());
-    let filter = use_signal(|| Filter::All);
-    let next_id = use_signal(|| 1u32);
+    let todos = Signal::new(Vec::<Todo>::new());
+    let input_text = Signal::new(String::new());
+    let filter = Signal::new(Filter::All);
+    let next_id = Signal::new(1u32);
 
     // Add todo handler - shared between TextInput onsubmit and Button onclick
     let add_todo = move || {

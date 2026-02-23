@@ -52,7 +52,7 @@ count.set(5);
 count.update(|n| *n += 1);
 ```
 
-> **Note:** `Signal::new()` is the low-level primitive. In component code, prefer the `use_signal()` hook which integrates with the scope lifecycle: `let count = use_signal(|| 0);`
+> **Note:** `Signal<T>` implements `Copy`, so you can use the same signal in multiple closures without `.clone()`.
 
 **Tracking:** When `get()` is called inside an Effect, that Effect becomes a subscriber. When `set()` is called, all subscribers are notified and re-run.
 

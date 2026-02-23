@@ -11,7 +11,7 @@
 //! use rinch::windows::{open_window, close_window, WindowHandle};
 //!
 //! fn app() -> Element {
-//!     let settings_window = use_signal(|| None::<WindowHandle>);
+//!     let settings_window = Signal::new(None::<WindowHandle>);
 //!     let settings_open = settings_window.clone();
 //!     let settings_close = settings_window.clone();
 //!

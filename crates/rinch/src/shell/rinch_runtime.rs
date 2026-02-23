@@ -29,7 +29,7 @@ use winit::window::{Window, WindowId};
 
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::events;
-use rinch_core::hooks::clear_hooks;
+use rinch_core::clear_context;
 use rinch_platform::{
     AppAction, KeyCode, Modifiers, MouseButton as PlatformMouseButton, PlatformEvent,
     PlatformRenderer, PlatformWindow, UserEvent,
@@ -66,7 +66,7 @@ static MAIN_QUEUE: Mutex<Vec<Box<dyn FnOnce() + Send>>> = Mutex::new(Vec::new())
 /// # Example
 ///
 /// ```ignore
-/// let loading = use_signal(|| false);
+/// let loading = Signal::new(false);
 /// std::thread::spawn(move || {
 ///     let result = do_work();
 ///     rinch::run_on_main_thread(move || {
@@ -861,7 +861,7 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
 /// use rinch::prelude::*;
 ///
 /// fn app(__scope: &mut RenderScope) -> NodeHandle {
-///     let count = use_signal(|| 0);
+///     let count = Signal::new(0);
 ///     let count_inc = count.clone();
 ///     rsx! {
 ///         div { style: "display: flex; flex-direction: column; padding: 20px; gap: 10px;",
@@ -888,7 +888,7 @@ where
 
     // Clear stale state
     events::clear_handlers();
-    clear_hooks();
+    clear_context();
 
     let event_loop = EventLoop::<RinchNativeEvent>::with_user_event()
         .build()
@@ -944,7 +944,7 @@ where
     let _ = tracing_subscriber::fmt::try_init();
 
     events::clear_handlers();
-    clear_hooks();
+    clear_context();
 
     let event_loop = EventLoop::<RinchNativeEvent>::with_user_event()
         .build()

@@ -85,11 +85,8 @@ This includes:
 - `batch`, `derived`, `untracked`
 
 **Hooks**:
-- `use_signal`, `use_state`, `use_ref`
-- `use_effect`, `use_effect_cleanup`, `use_mount`
-- `use_memo`, `use_callback`, `use_derived`
-- `use_context`, `try_use_context`, `create_context`
-- `RefHandle`
+- `Signal::new`, `Memo::new`, `Effect::new`
+- `create_context`, `use_context`, `try_use_context`
 
 **DOM construction**:
 - `NodeHandle`, `RenderScope`, `with_render_scope`

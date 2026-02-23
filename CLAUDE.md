@@ -37,7 +37,7 @@ crates/
 │   └── ...
 ├── rinch-core/               # Core types
 │   ├── src/element.rs        # Element enum (Html, Fragment, Component only), prop types
-│   ├── src/hooks.rs          # React-style hooks API (use_signal, use_effect, etc.)
+│   ├── src/context.rs        # Context API (create_context, use_context)
 │   ├── src/reactive.rs       # Signal, Effect, Memo primitives
 │   ├── src/dom.rs            # NodeHandle, RenderScope, DomDocument trait
 │   └── src/icon.rs           # Icon enum for type-safe icons
@@ -222,7 +222,7 @@ use rinch::prelude::*;
 
 #[component]
 fn app() -> NodeHandle {
-    let count = use_signal(|| 0);
+    let count = Signal::new(0);
     rsx! {
         div {
             p { "Count: " {|| count.get().to_string()} }
@@ -262,7 +262,7 @@ use rinch::prelude::*;
 
 #[component]
 fn app() -> NodeHandle {
-    let count = use_signal(|| 0);
+    let count = Signal::new(0);
     rsx! {
         div {
             p { "Count: " {|| count.get().to_string()} }
@@ -381,7 +381,7 @@ For a complete reference of every component's props (fields, types, defaults), s
 Use closure syntax `{|| expr}` for reactive expressions that update automatically:
 
 ```rust
-let count = use_signal(|| 0);
+let count = Signal::new(0);
 
 rsx! {
     // Static - captured once at render time
@@ -412,8 +412,8 @@ rsx! { div { style: {move || format!("width: {}px", count.get() * m)} } }
 **Note:** Both `Signal` and `Memo` implement `Copy` — no `.clone()` needed before closures:
 
 ```rust
-let count = use_signal(|| 0);
-let doubled = use_derived(move || count.get() * 2);
+let count = Signal::new(0);
+let doubled = Memo::new(move || count.get() * 2);
 
 rsx! {
     // Both count (Signal) and doubled (Memo) can be used in multiple closures without .clone()
@@ -423,26 +423,20 @@ rsx! {
 }
 ```
 
-## Hooks API
+## State Management
 
-Rinch provides a React-style hooks API for managing state. Hooks replace the verbose `thread_local!` pattern with a clean, ergonomic API.
+Rinch uses reactive primitives directly for state management. Component functions run **once** to build the DOM, and Effects handle all subsequent updates surgically.
 
-### Available Hooks
+### Core Primitives
 
-| Hook | Purpose |
-|------|---------|
-| `use_signal` | Reactive state that triggers re-renders |
-| `use_state` | Simple state with `(value, setter)` tuple |
-| `use_ref` | Mutable reference (no re-renders) |
-| `use_effect` | Side effects when deps change |
-| `use_effect_cleanup` | Effects with cleanup functions |
-| `use_mount` | One-time effect on first render |
-| `use_memo` | Memoized computations |
-| `use_callback` | Memoized callbacks |
-| `use_derived` | Auto-tracking computed values (uses reactive Memo) |
-| `use_context` | Access shared context values (returns T, panics if missing) |
-| `try_use_context` | Try to access shared context (returns Option<T>) |
-| `create_context` | Create shared context values |
+| Primitive | Purpose |
+|-----------|---------|
+| `Signal::new(value)` | Reactive state that triggers updates |
+| `Effect::new(closure)` | Side effects with auto-tracked dependencies |
+| `Memo::new(closure)` | Cached computed values |
+| `create_context(value)` | Shared state across components |
+| `use_context::<T>()` | Access shared context (panics if missing) |
+| `try_use_context::<T>()` | Try to access shared context (returns Option<T>) |
 
 ### Basic Example
 
@@ -451,9 +445,8 @@ use rinch::prelude::*;
 
 #[component]
 fn app() -> NodeHandle {
-    // Persistent state - survives across re-renders
-    let count = use_signal(|| 0);
-    let name = use_signal(|| String::from("World"));
+    let count = Signal::new(0);
+    let name = Signal::new(String::from("World"));
 
     rsx! {
         div {
@@ -468,99 +461,38 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    run("Hooks Demo", 800, 600, app);
+    run("My App", 800, 600, app);
 }
 ```
 
 > **Important:** The closure syntax `{|| expr}` is required for fine-grained reactive updates. Without it, values are captured once at initial render and never update. See [RSX Syntax - Reactive Expressions](docs/src/guide/rsx-syntax.md#reactive-expressions). The `#[component]` macro injects `__scope` automatically, so the `rsx!` macro works without manually declaring it.
 
-### Rules of Hooks
+### Primitive Reference
 
-**Hooks must be called in the same order every render:**
-
+**`Signal::new()`** - Reactive state:
 ```rust
-// ✅ DO: Call hooks at the top level
-#[component]
-fn app() -> NodeHandle {
-    let count = use_signal(|| 0);
-    let name = use_signal(|| String::new());
-    rsx! { /* ... */ }
-}
-
-// ❌ DON'T: Call hooks conditionally
-#[component]
-fn app() -> NodeHandle {
-    let show = use_signal(|| false);
-    if show.get() {
-        let extra = use_signal(|| 0);  // WRONG!
-    }
-    rsx! { /* ... */ }
-}
-
-// ❌ DON'T: Call hooks in event handlers
-#[component]
-fn app() -> NodeHandle {
-    rsx! {
-        button { onclick: || {
-            let x = use_signal(|| 0);  // WRONG!
-        }}
-    }
-}
-```
-
-### Hook Reference
-
-**`use_signal`** - Primary state hook:
-```rust
-let count = use_signal(|| 0);
+let count = Signal::new(0);
 count.get();              // Read value
 count.set(5);             // Set new value
 count.update(|n| *n += 1); // Update with function
 ```
 
-**`use_state`** - React-style tuple API:
+**`Effect::new()`** - Side effects with auto-tracking:
 ```rust
-let (count, set_count) = use_state(|| 0);
-set_count(count + 1);
-```
-
-**`use_ref`** - Mutable reference (no re-renders):
-```rust
-let render_count = use_ref(|| 0);
-*render_count.borrow_mut() += 1;
-```
-
-**`use_effect`** - Side effects:
-```rust
-let count = use_signal(|| 0);
-use_effect(|| {
+let count = Signal::new(0);
+Effect::new(move || {
     println!("Count changed to: {}", count.get());
-}, count.get());  // Re-runs when count changes
-```
-
-**`use_memo`** - Memoized computation:
-```rust
-let items = use_signal(|| vec![1, 2, 3, 4, 5]);
-let sum = use_memo(|| {
-    items.get().iter().sum::<i32>()
-}, items.get());  // Only recomputes when items change
-```
-
-**`use_mount`** - One-time setup:
-```rust
-use_mount(|| {
-    println!("Component mounted!");
-    || println!("Component unmounted!")  // Cleanup function
 });
+// Re-runs automatically when count changes — no dependency arrays needed
 ```
 
-**`use_derived`** - Auto-tracking computed values:
+**`Memo::new()`** - Cached computed values:
 ```rust
-let count = use_signal(|| 0);
-let multiplier = use_signal(|| 2);
+let count = Signal::new(0);
+let multiplier = Signal::new(2);
 
-// Automatically tracks count and multiplier - no deps needed!
-let result = use_derived(move || count.get() * multiplier.get());
+// Automatically tracks count and multiplier
+let result = Memo::new(move || count.get() * multiplier.get());
 ```
 
 **`create_context` / `use_context`** - Shared state:
@@ -637,7 +569,7 @@ fn main() {
 Menu callbacks can modify signals (Signal is Copy, so no clone needed):
 
 ```rust
-let count = use_signal(|| 0);
+let count = Signal::new(0);
 
 // In menu construction:
 MenuEntry::Item(MenuItemProps {
@@ -693,7 +625,7 @@ Press F12 to toggle the DevTools panel which shows:
 - **Performance**: FPS, frame time, and render time
 - **Elements**: DOM tree inspection
 - **Styles**: Computed styles for selected elements (enable inspect mode with Alt+I)
-- **Hooks**: Current hook state for debugging
+- **Styles**: Computed styles for selected elements (enable inspect mode with Alt+I)
 
 ### Debug & MCP Server (optional)
 
@@ -945,7 +877,7 @@ use rinch::prelude::*;
 #[component]
 fn app() -> NodeHandle {
     // For custom left section (e.g., menu button)
-    let menu_signal = use_signal(|| false);
+    let menu_signal = Signal::new(false);
     let left_section: SectionRenderer = Rc::new(move |__scope| {
         rsx! {
             ActionIcon { onclick: move || menu_signal.update(|v| *v = !*v) }
@@ -1101,7 +1033,7 @@ use rinch::prelude::*;
 
 #[component]
 fn counter() -> NodeHandle {
-    let count = use_signal(|| 0);
+    let count = Signal::new(0);
 
     rsx! {
         div {
@@ -1142,8 +1074,8 @@ The `rsx!` macro supports native Rust control flow. All control flow is **always
 
 **`if` / `else` / `if let`:**
 ```rust
-let visible = use_signal(|| true);
-let user = use_signal(|| Some("Alice".to_string()));
+let visible = Signal::new(true);
+let user = Signal::new(Some("Alice".to_string()));
 
 rsx! {
     div {
@@ -1164,7 +1096,7 @@ rsx! {
 
 **`for` loops with keyed reconciliation:**
 ```rust
-let todos = use_signal(|| vec![
+let todos = Signal::new(vec![
     Todo { id: 1, name: "Buy groceries".into() },
     Todo { id: 2, name: "Write code".into() },
 ]);
@@ -1184,7 +1116,7 @@ The `key:` prop enables efficient keyed reconciliation. Items with matching keys
 
 **`match` with multi-branch rendering:**
 ```rust
-let tab = use_signal(|| 0);
+let tab = Signal::new(0);
 
 rsx! {
     div {
@@ -1227,11 +1159,11 @@ When the list changes, `for` uses keyed reconciliation (LIS algorithm) to comput
 - **Changed**: Surviving items with different data (via `PartialEq`) are re-rendered
 - **Unchanged**: Items with matching keys and equal data keep their DOM nodes
 
-**Hooks in for bodies**: Hooks work inside `for` loop bodies. Each item gets its own isolated hook scope, so per-item state is fully supported:
+**Per-item state in for bodies**: Per-item reactive state works inside `for` loop bodies. Each item gets its own isolated scope:
 
 ```rust
 for todo in todos.get() {
-    let editing = use_signal(|| false);  // Per-item state
+    let editing = Signal::new(false);  // Per-item state
     div { key: todo.id,
         {todo.name.clone()}
         button {
@@ -1264,7 +1196,7 @@ Some components support reactive value binding via `_fn` props. The `rsx!` macro
 
 Example - controlled TextInput with submit:
 ```rust
-let input_text = use_signal(|| String::new());
+let input_text = Signal::new(String::new());
 
 rsx! {
     TextInput {
@@ -1366,7 +1298,7 @@ Text {
 **All component props support reactive closures.** Pass `{|| expr}` to any component prop (`variant`, `color`, `size`, `disabled`, etc.) to make it reactive — when signals change, the component re-renders automatically:
 
 ```rust
-let active = use_signal(|| false);
+let active = Signal::new(false);
 Button {
     variant: {|| if active.get() { "filled" } else { "light" }},
     onclick: move || active.update(|v| *v = !*v),
@@ -1463,10 +1395,10 @@ Make changes, rebuild, launch again. The full cycle:
 
 1. **User Guide** (`docs/src/guide/`): Update relevant guide pages when adding new user-facing features, APIs, or changing behavior
 2. **API docs**: Ensure doc comments are added/updated for public APIs
-3. **CLAUDE.md**: Update this file when adding new hooks, element types, or architectural changes
+3. **CLAUDE.md**: Update this file when adding new reactive primitives, element types, or architectural changes
 
 Documentation locations:
-- `docs/src/guide/hooks.md` - Hooks API guide
+- `docs/src/guide/hooks.md` - State management guide
 - `docs/src/guide/menus.md` - Menu and shortcut guide
 - `docs/src/guide/windows.md` - Window management
 - `docs/src/guide/reactivity.md` - Signals, effects, memos

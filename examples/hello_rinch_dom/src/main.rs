@@ -2,7 +2,7 @@ use rinch::prelude::*;
 
 #[component]
 fn app() -> NodeHandle {
-    let count = use_signal(|| 0);
+    let count = Signal::new(0);
     let count_inc = count;
 
     rsx! {

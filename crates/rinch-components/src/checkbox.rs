@@ -7,7 +7,7 @@
 //! For reactive checked state without re-rendering, use the `checked_fn` prop:
 //!
 //! ```ignore
-//! let is_checked = use_signal(|| false);
+//! let is_checked = Signal::new(false);
 //!
 //! rsx! {
 //!     Checkbox {

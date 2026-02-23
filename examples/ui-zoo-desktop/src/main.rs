@@ -40,10 +40,10 @@ body {
 
 #[component]
 fn app() -> NodeHandle {
-    let current_section = use_signal(|| 0_usize);
-    let primary_color = use_signal(|| "blue");
-    let dark_mode = use_signal(|| false);
-    let drawer_opened = use_signal(|| false);
+    let current_section = Signal::new(0_usize);
+    let primary_color = Signal::new("blue");
+    let dark_mode = Signal::new(false);
+    let drawer_opened = Signal::new(false);
 
     init_all_sections();
 

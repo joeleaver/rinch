@@ -24,33 +24,33 @@ fn main() {
 #[component]
 fn app() -> NodeHandle {
     // Toolbar panel state
-    let tb_x = use_signal(|| 16.0f32);
-    let tb_y = use_signal(|| 16.0f32);
-    let tb_w = use_signal(|| 320.0f32);
-    let tb_h = use_signal(|| 80.0f32);
+    let tb_x = Signal::new(16.0f32);
+    let tb_y = Signal::new(16.0f32);
+    let tb_w = Signal::new(320.0f32);
+    let tb_h = Signal::new(80.0f32);
 
     // Properties panel state
-    let props_x = use_signal(|| 900.0f32);
-    let props_y = use_signal(|| 16.0f32);
-    let props_w = use_signal(|| 280.0f32);
-    let props_h = use_signal(|| 580.0f32);
-    let props_visible = use_signal(|| true);
+    let props_x = Signal::new(900.0f32);
+    let props_y = Signal::new(16.0f32);
+    let props_w = Signal::new(280.0f32);
+    let props_h = Signal::new(580.0f32);
+    let props_visible = Signal::new(true);
 
     // Editor panel state
-    let ed_x = use_signal(|| 16.0f32);
-    let ed_y = use_signal(|| 120.0f32);
-    let ed_w = use_signal(|| 420.0f32);
-    let ed_h = use_signal(|| 500.0f32);
-    let ed_visible = use_signal(|| true);
+    let ed_x = Signal::new(16.0f32);
+    let ed_y = Signal::new(120.0f32);
+    let ed_w = Signal::new(420.0f32);
+    let ed_h = Signal::new(500.0f32);
+    let ed_visible = Signal::new(true);
 
     // Canvas state
-    let active_tool = use_signal(|| "select");
-    let canvas_color = use_signal(|| "#e7f5ff");
-    let shape_x = use_signal(|| 250);
-    let shape_y = use_signal(|| 150);
-    let shape_size = use_signal(|| 120);
-    let shape_color = use_signal(|| "#228be6");
-    let shape_radius = use_signal(|| 8);
+    let active_tool = Signal::new("select");
+    let canvas_color = Signal::new("#e7f5ff");
+    let shape_x = Signal::new(250);
+    let shape_y = Signal::new(150);
+    let shape_size = Signal::new(120);
+    let shape_color = Signal::new("#228be6");
+    let shape_radius = Signal::new(8);
 
     rsx! {
         // Full-window relative container

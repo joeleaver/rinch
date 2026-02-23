@@ -18,7 +18,6 @@ use rinch::prelude::*;
 use rinch_core::dom::*;
 use rinch_core::element::ThemeProviderProps;
 use rinch_core::events;
-use rinch_core::hooks::{begin_render, clear_hooks, end_render};
 use ui_zoo::{init_all_sections, nav_links, overlays_demo_overlays, section_content, theme_controls};
 
 /// Global CSS for the web app layout with sidebar.
@@ -65,9 +64,9 @@ html, body {
 /// The web app shell: sidebar navigation layout.
 #[component]
 fn app() -> NodeHandle {
-    let current_section = use_signal(|| 0_usize);
-    let primary_color = use_signal(|| "blue");
-    let dark_mode = use_signal(|| false);
+    let current_section = Signal::new(0_usize);
+    let primary_color = Signal::new("blue");
+    let dark_mode = Signal::new(false);
 
     init_all_sections();
 
@@ -341,7 +340,7 @@ pub fn start() {
 
     // Clear stale state from any previous run
     events::clear_handlers();
-    clear_hooks();
+    rinch_core::clear_context();
 
     // Set up theme CSS before mounting
     let theme = ThemeProviderProps {
@@ -365,7 +364,6 @@ pub fn start() {
     let scope = Rc::new(RefCell::new(RenderScope::new(doc_as_dom, body_id)));
 
     set_render_scope(scope.clone());
-    begin_render();
 
     let root = {
         let mut scope_ref = scope.borrow_mut();
@@ -376,7 +374,6 @@ pub fn start() {
         .borrow_mut()
         .append_child(body_id, root.node_id());
 
-    end_render();
     clear_render_scope();
 
     // Inject theme CSS as a <style> element

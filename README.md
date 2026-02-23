@@ -33,7 +33,7 @@ Unlike virtual DOM approaches, Rinch tracks which signals each reactive expressi
 - **Fine-Grained Reactivity** — Signals, Effects, Memos. Only changed DOM nodes update.
 - **55+ Components** — Mantine-inspired UI components (buttons, inputs, cards, navigation, overlays, etc.)
 - **HTML/CSS Rendering** — Stylo CSS engine, Taffy flexbox, Parley text shaping
-- **React-Style Hooks** — `use_signal`, `use_effect`, `use_memo`, `use_context`, `use_derived`, and more
+- **Reactive Primitives** — `Signal::new()`, `Effect::new()`, `Memo::new()`, `create_context()` with automatic dependency tracking
 - **RSX Macro** — JSX-like syntax with reactive closures for declarative UIs
 - **Theme System** — CSS variables, 20 color palettes, dark mode support, spacing/radius/typography scales
 - **5000+ Icons** — Tabler Icons with type-safe enum API
@@ -63,7 +63,7 @@ use rinch::prelude::*;
 
 #[component]
 fn app() -> NodeHandle {
-    let count = use_signal(|| 0);
+    let count = Signal::new(0);
 
     rsx! {
         div {
@@ -101,8 +101,8 @@ use rinch::prelude::*;
 
 #[component]
 fn app() -> NodeHandle {
-    let name = use_signal(|| String::from("World"));
-    let count = use_signal(|| 0);
+    let name = Signal::new(String::from("World"));
+    let count = Signal::new(0);
 
     rsx! {
         div {
@@ -130,7 +130,7 @@ Rinch is organized as a workspace of specialized crates:
 
 | Layer | Crates | Purpose |
 |-------|--------|---------|
-| **Core** | rinch, rinch-core, rinch-macros, rinch-dom | Foundation types, hooks, reactive primitives, rsx! macro, DOM implementation |
+| **Core** | rinch, rinch-core, rinch-macros, rinch-dom | Foundation types, reactive primitives, rsx! macro, DOM implementation |
 | **Platform** | rinch-platform, rinch-web | Platform abstraction traits, WASM backend |
 | **UI** | rinch-components, rinch-theme, rinch-tabler-icons | 55+ components, theme system, 5000+ icons |
 | **Editor** | rinch-editor, rinch-editor-macros, rinch-editor-components, rinch-editable | Rich-text editor with CRDT backing, editing utilities |

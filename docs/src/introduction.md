@@ -19,7 +19,7 @@ use rinch::prelude::*;
 
 #[component]
 fn app() -> NodeHandle {
-    let count = use_signal(|| 0);
+    let count = Signal::new(0);
     let count_inc = count.clone();
 
     rsx! {
@@ -38,7 +38,7 @@ fn main() {
 ## Features
 
 - **RSX Macro** - JSX-like syntax for building UI
-- **Hooks (React-style)** - use_signal, use_effect, use_memo, and more
+- **Reactive Primitives** - Signal, Effect, Memo, and more
 - **Fine-grained Reactivity** - Surgical DOM updates with signals and effects
 - **Theme System (Mantine-inspired)** - CSS variables, color palettes, spacing scales
 - **80+ Components** - Buttons, inputs, modals, dropdowns, and more

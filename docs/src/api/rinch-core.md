@@ -143,7 +143,7 @@ pub trait Component: std::fmt::Debug + 'static {
 
 ### `Signal<T>`
 
-A reactive container for mutable state. In components, prefer `use_signal()` to create signals tied to the component lifecycle.
+A reactive container for mutable state. Create signals directly with `Signal::new(value)`.
 
 ```rust
 impl<T> Signal<T> {
@@ -163,7 +163,7 @@ impl<T: Clone> Signal<T> {
 ```rust
 #[component]
 fn counter() -> NodeHandle {
-    let count = use_signal(|| 0);
+    let count = Signal::new(0);
     rsx! {
         p { {|| count.get().to_string()} }
         button { onclick: move || count.update(|n| *n += 1), "+" }
@@ -184,7 +184,7 @@ impl Effect {
 }
 ```
 
-In practice, Effects are created automatically by the `rsx!` macro for reactive expressions (`{|| expr}`), and by `use_effect()` for explicit side effects.
+In practice, Effects are created automatically by the `rsx!` macro for reactive expressions (`{|| expr}`), and by `Effect::new()` for explicit side effects.
 
 ### `Memo<T>`
 
@@ -210,24 +210,16 @@ impl Scope {
 }
 ```
 
-## Hooks API
+## Reactive Primitives
 
-React-style hooks for managing state in components. All hooks must be called at the top level of a component, in the same order every render.
-
-| Hook | Purpose |
-|------|---------|
-| `use_signal(init)` | Reactive state that triggers re-renders |
-| `use_state(init)` | Simple state with `(value, setter)` tuple |
-| `use_ref(init)` | Mutable reference (no re-renders) |
-| `use_effect(f, deps)` | Side effects when deps change |
-| `use_effect_cleanup(f, deps)` | Effects with cleanup functions |
-| `use_mount(f)` | One-time effect on first render |
-| `use_memo(f, deps)` | Memoized computations |
-| `use_callback(f, deps)` | Memoized callbacks |
-| `use_derived(f)` | Auto-tracking computed values (uses Memo) |
+| Primitive | Purpose |
+|-----------|---------|
+| `Signal::new(value)` | Reactive state container |
+| `Effect::new(closure)` | Side effects with auto-tracked dependencies |
+| `Memo::new(closure)` | Cached computed values |
 | `create_context(value)` | Create shared context |
-| `use_context::<T>()` | Access shared context (returns T directly, panics if not found) |
-| `try_use_context::<T>()` | Access shared context (returns Option<T>) |
+| `use_context::<T>()` | Access shared context (panics if missing) |
+| `try_use_context::<T>()` | Access shared context (returns Option) |
 
 ## Utility Functions
 
@@ -264,7 +256,7 @@ Reactive conditional rendering. Swaps DOM content when the condition changes:
 ```rust
 #[component]
 fn example() -> NodeHandle {
-    let visible = use_signal(|| true);
+    let visible = Signal::new(true);
     rsx! {
         Show {
             when: {move || visible.get()},
@@ -281,7 +273,7 @@ Keyed list rendering with minimal DOM operations via LIS-based reconciliation:
 ```rust
 #[component]
 fn example() -> NodeHandle {
-    let items = use_signal(|| vec!["a", "b", "c"]);
+    let items = Signal::new(vec!["a", "b", "c"]);
     rsx! {
         For {
             each: {move || items.get().into_iter().map(|s| ForItem::new(s, s)).collect()},

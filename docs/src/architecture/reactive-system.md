@@ -146,7 +146,7 @@ A **Scope** manages the lifetime of reactive primitives. In practice, `RenderSco
 // and disposed when the scope is dropped.
 
 fn my_component(__scope: &mut RenderScope) -> NodeHandle {
-    let signal = use_signal(|| 0);
+    let signal = Signal::new(0);
     __scope.create_effect(|| { /* tracked by this scope */ });
     // signal and effect belong to this scope
     rsx! { div { } }
@@ -174,7 +174,7 @@ The reactive system integrates with the rendering pipeline:
 ```rust
 #[component]
 fn counter() -> NodeHandle {
-    let count = use_signal(|| 0);
+    let count = Signal::new(0);
 
     rsx! {
         div {
@@ -189,7 +189,7 @@ fn counter() -> NodeHandle {
 }
 ```
 
-> **Note:** `Signal::new()` is the low-level primitive. In component code, prefer the `use_signal()` hook which integrates with the scope lifecycle. The closure syntax `{|| expr}` is required for reactive updates -- without it, values are captured once at initial render and never update.
+> **Note:** The closure syntax `{|| expr}` is required for reactive updates — without it, values are captured once at initial render and never update.
 
 ## Thread Safety
 

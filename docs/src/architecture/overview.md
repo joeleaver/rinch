@@ -121,7 +121,7 @@ The foundation layer containing:
 
 - **Reactive primitives** - `Signal<T>`, `Effect`, `Memo<T>` for state management
 - **DOM abstractions** - `RenderScope`, `NodeHandle`, `DomDocument` trait
-- **Hooks API** - `use_signal`, `use_effect`, `use_memo`, `use_context`
+- **Reactive Primitives** - `Signal::new()`, `Effect::new()`, `Memo::new()`, `create_context()`
 - **Element types** - Minimal enum: `Html`, `Fragment`, `Component` only
 - **Event handling** - Input and click event dispatch
 - **Icon enum** - Curated set of ~40 common icons for components

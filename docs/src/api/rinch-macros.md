@@ -90,7 +90,7 @@ rsx! {
 Use closure syntax `{|| expr}` for values that update automatically when signals change:
 
 ```rust
-let count = use_signal(|| 0);
+let count = Signal::new(0);
 
 rsx! {
     // Static - captured once, never updates

@@ -7,7 +7,7 @@
 //! For reactive opened state without re-rendering, use the `opened_fn` prop:
 //!
 //! ```ignore
-//! let notification_visible = use_signal(|| false);
+//! let notification_visible = Signal::new(false);
 //!
 //! rsx! {
 //!     Notification {
@@ -74,7 +74,7 @@ impl std::str::FromStr for NotificationPosition {
 /// # Example
 ///
 /// ```ignore
-/// let show_notification = use_signal(|| false);
+/// let show_notification = Signal::new(false);
 ///
 /// rsx! {
 ///     Button { onclick: move || show_notification.set(true), "Show Notification" }

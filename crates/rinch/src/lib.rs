@@ -11,7 +11,7 @@
 //!
 //! #[component]
 //! fn app() -> NodeHandle {
-//!     let count = use_signal(|| 0);
+//!     let count = Signal::new(0);
 //!
 //!     rsx! {
 //!         div {
@@ -26,71 +26,20 @@
 //! }
 //! ```
 //!
-//! # State Management with Hooks
+//! # State Management
 //!
-//! Rinch provides React-style hooks for managing state.
-//! See the [`rinch_core::hooks`] module for comprehensive documentation.
+//! Rinch uses fine-grained reactive primitives for state management.
+//! Components run **once** to build the DOM, and reactive Effects
+//! handle all subsequent updates surgically.
 //!
-//! ## Available Hooks
-//!
-//! | Hook | Purpose |
-//! |------|---------|
-//! | [`use_signal`] | Reactive state that triggers effects |
-//! | [`use_state`] | Simple state with `(value, setter)` tuple |
-//! | [`use_ref`] | Mutable reference (doesn't trigger effects) |
-//! | [`use_effect`] | Side effects when dependencies change |
-//! | [`use_effect_cleanup`] | Effects with cleanup functions |
-//! | [`use_mount`] | One-time effect on first render |
-//! | [`use_memo`] | Memoized expensive computations |
-//! | [`use_callback`] | Memoized callbacks |
-//! | [`use_derived`] | Auto-tracking computed values |
-//!
-//! ## Example with State
-//!
-//! ```ignore
-//! use rinch::prelude::*;
-//!
-//! #[component]
-//! fn counter() -> NodeHandle {
-//!     let count = use_signal(|| 0);
-//!     let name = use_signal(|| String::from("World"));
-//!
-//!     rsx! {
-//!         div {
-//!             // Reactive text - updates when name changes
-//!             h1 { "Hello, " {|| name.get()} "!" }
-//!             // Reactive formatted text
-//!             p { {|| format!("Count: {}", count.get())} }
-//!             button {
-//!                 onclick: move || count.update(|n| *n += 1),
-//!                 "Increment"
-//!             }
-//!         }
-//!     }
-//! }
-//! ```
-//!
-//! ## Rules of Hooks
-//!
-//! Hooks must be called in the **same order** on every render:
-//!
-//! - Call hooks at the top level of your component function
-//! - Don't call hooks inside conditionals (`if`/`match`)
-//! - Don't call hooks inside loops
-//! - Don't call hooks after early returns
-//! - Don't call hooks in event handlers
-//!
-//! See [`rinch_core::hooks`] for detailed documentation and examples.
-//!
-//! [`use_signal`]: prelude::use_signal
-//! [`use_state`]: prelude::use_state
-//! [`use_ref`]: prelude::use_ref
-//! [`use_effect`]: prelude::use_effect
-//! [`use_effect_cleanup`]: prelude::use_effect_cleanup
-//! [`use_mount`]: prelude::use_mount
-//! [`use_memo`]: prelude::use_memo
-//! [`use_callback`]: prelude::use_callback
-//! [`use_derived`]: prelude::use_derived
+//! | Primitive | Purpose |
+//! |-----------|---------|
+//! | [`Signal`] | Reactive state that triggers effects |
+//! | [`Effect`] | Side effects that auto-track signal dependencies |
+//! | [`Memo`] | Memoized computed values with auto-tracking |
+//! | [`derived`] | Shorthand for creating a Memo |
+//! | [`create_context`] | Share state across components |
+//! | [`use_context`] | Access shared context values |
 
 #[cfg(feature = "desktop")]
 pub mod app;
@@ -161,11 +110,8 @@ pub mod prelude {
     pub use crate::shell::{run, run_with_theme};
     pub use rinch_core::element::*;
     pub use rinch_core::{Effect, Memo, Scope, Signal, batch, derived, untracked};
-    // Hooks for ergonomic state management
-    pub use rinch_core::{
-        RefHandle, create_context, try_use_context, use_callback, use_context, use_derived, use_effect,
-        use_effect_cleanup, use_memo, use_mount, use_ref, use_signal, use_state,
-    };
+    // Context for sharing state across components
+    pub use rinch_core::{create_context, try_use_context, use_context};
     // Event handling - click context, drag support, and input callbacks
     pub use rinch_core::{
         ClickContext, InputCallback, get_click_context, start_drag, start_drag_absolute,

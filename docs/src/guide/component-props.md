@@ -25,7 +25,7 @@ See [Style Shorthands](./rsx-syntax.md#style-shorthands) for the full list.
 **All props are reactive:** Every component prop accepts a reactive closure `{|| expr}` in addition to a static value. When any prop uses a closure, the component automatically re-renders when the signals inside change:
 
 ```rust
-let active = use_signal(|| false);
+let active = Signal::new(false);
 
 // Static prop value
 Button { variant: "filled", "Always filled" }

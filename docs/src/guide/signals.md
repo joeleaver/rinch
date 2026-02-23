@@ -1,7 +1,5 @@
 # Signals
 
-> Inside `#[component]` functions, prefer `use_signal(|| value)` over `Signal::new(value)`. See [Hooks](hooks.md).
-
 A **Signal** is a reactive container that holds a value and notifies subscribers when that value changes. Signals are the foundation of rinch's reactivity system.
 
 ## Creating Signals

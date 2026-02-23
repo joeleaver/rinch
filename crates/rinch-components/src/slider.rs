@@ -50,7 +50,7 @@ impl std::str::FromStr for SliderSize {
 /// # Example (with signal for fine-grained updates)
 ///
 /// ```ignore
-/// let volume = use_signal(|| 50.0);
+/// let volume = Signal::new(50.0);
 ///
 /// rsx! {
 ///     Slider {
@@ -65,7 +65,7 @@ impl std::str::FromStr for SliderSize {
 /// # Example (static value - legacy)
 ///
 /// ```ignore
-/// let volume = use_signal(|| 50.0);
+/// let volume = Signal::new(50.0);
 ///
 /// rsx! {
 ///     Slider {

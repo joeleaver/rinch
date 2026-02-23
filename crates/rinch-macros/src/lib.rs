@@ -36,7 +36,7 @@ use node::RsxNode;
 ///
 /// #[component]
 /// fn counter() -> NodeHandle {
-///     let count = use_signal(|| 0);
+///     let count = Signal::new(0);
 ///     let count_inc = count.clone();
 ///
 ///     rsx! {

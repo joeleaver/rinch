@@ -1,16 +1,14 @@
-//! Video player hook.
+//! Video player creation.
 //!
 //! Provides [`use_video_player`] for creating and managing a video player
-//! instance within a component lifecycle.
-
-use rinch_core::{use_mount, use_ref};
+//! instance within a component.
 
 use crate::VideoPlayer;
 
 /// Create a video player for the given source.
 ///
-/// The player persists across re-renders and is cleaned up when the
-/// component unmounts. If `src` changes, the player loads the new source.
+/// The player is created directly since component functions run once.
+/// No hook registry needed — just create the player and return it.
 ///
 /// # Example
 ///
@@ -42,19 +40,8 @@ pub fn use_video_player_paused(src: &str) -> VideoPlayer {
 }
 
 fn use_video_player_impl(src: &str, start_paused: bool) -> VideoPlayer {
-    // Use use_ref to persist the player across re-renders.
-    // use_ref stores an Rc<RefCell<T>> that survives re-renders.
-    let player_ref = use_ref(|| create_platform_player(src, start_paused));
-
-    let player = player_ref.borrow().clone();
-
-    // Cleanup on unmount
-    let player_cleanup = player.clone();
-    use_mount(move || {
-        move || player_cleanup.cleanup()
-    });
-
-    player
+    // Component functions run once, so just create the player directly.
+    create_platform_player(src, start_paused)
 }
 
 /// Create a platform-appropriate video player.

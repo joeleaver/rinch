@@ -68,13 +68,13 @@ fn test_braced_expression() -> NodeHandle {
 
 #[component]
 fn test_reactive_closure() -> NodeHandle {
-    let count = use_signal(|| 0);
+    let count = Signal::new(0);
     rsx! { div { {|| count.get().to_string()} } }
 }
 
 #[component]
 fn test_reactive_attribute() -> NodeHandle {
-    let count = use_signal(|| 0);
+    let count = Signal::new(0);
     rsx! {
         div {
             class: {|| if count.get() > 5 { "high" } else { "low" }},
@@ -89,7 +89,7 @@ fn test_reactive_attribute() -> NodeHandle {
 
 #[component]
 fn test_onclick() -> NodeHandle {
-    let count = use_signal(|| 0);
+    let count = Signal::new(0);
     rsx! {
         button {
             onclick: move || count.update(|n| *n += 1),
@@ -104,7 +104,7 @@ fn test_onclick() -> NodeHandle {
 
 #[component]
 fn test_if_basic() -> NodeHandle {
-    let visible = use_signal(|| true);
+    let visible = Signal::new(true);
     rsx! {
         div {
             if visible.get() {
@@ -116,7 +116,7 @@ fn test_if_basic() -> NodeHandle {
 
 #[component]
 fn test_if_else() -> NodeHandle {
-    let visible = use_signal(|| true);
+    let visible = Signal::new(true);
     rsx! {
         div {
             if visible.get() {
@@ -140,7 +140,7 @@ struct TestItem {
 
 #[component]
 fn test_for_basic() -> NodeHandle {
-    let items = use_signal(|| vec![
+    let items = Signal::new(vec![
         TestItem { id: 1, name: "Alice".into() },
         TestItem { id: 2, name: "Bob".into() },
     ]);
@@ -155,7 +155,7 @@ fn test_for_basic() -> NodeHandle {
 
 #[component]
 fn test_for_with_closures() -> NodeHandle {
-    let items = use_signal(|| vec![
+    let items = Signal::new(vec![
         TestItem { id: 1, name: "Alice".into() },
         TestItem { id: 2, name: "Bob".into() },
     ]);
@@ -220,7 +220,7 @@ mod component_tests {
 
     #[component]
     fn test_component_with_reactive_style() -> NodeHandle {
-        let active = use_signal(|| false);
+        let active = Signal::new(false);
         rsx! {
             Button {
                 variant: "filled",
@@ -232,7 +232,7 @@ mod component_tests {
 
     #[component]
     fn test_component_with_reactive_class() -> NodeHandle {
-        let active = use_signal(|| false);
+        let active = Signal::new(false);
         rsx! {
             Button {
                 variant: "filled",
@@ -262,7 +262,7 @@ mod component_tests {
 
     #[component]
     fn test_for_inside_component() -> NodeHandle {
-        let items = use_signal(|| vec![
+        let items = Signal::new(vec![
             TestItem { id: 1, name: "Alice".into() },
             TestItem { id: 2, name: "Bob".into() },
         ]);
@@ -278,7 +278,7 @@ mod component_tests {
 
     #[component]
     fn test_if_inside_component() -> NodeHandle {
-        let visible = use_signal(|| true);
+        let visible = Signal::new(true);
         rsx! {
             Stack {
                 if visible.get() {

@@ -7,7 +7,7 @@
 //! For reactive progress value without re-rendering, use the `value_fn` prop:
 //!
 //! ```ignore
-//! let progress = use_signal(|| 0.0);
+//! let progress = Signal::new(0.0);
 //!
 //! rsx! {
 //!     Progress {

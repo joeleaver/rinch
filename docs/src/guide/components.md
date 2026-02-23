@@ -151,7 +151,7 @@ TextInput {
 }
 
 // Controlled input (value_fn + oninput)
-let input_text = use_signal(|| String::new());
+let input_text = Signal::new(String::new());
 TextInput {
     placeholder: "Type here...",
     value_fn: move || input_text.get(),
@@ -159,7 +159,7 @@ TextInput {
 }
 
 // TextInput with onsubmit (fires on Enter key)
-let search = use_signal(|| String::new());
+let search = Signal::new(String::new());
 TextInput {
     placeholder: "Search...",
     value_fn: move || search.get(),
@@ -186,7 +186,7 @@ Textarea {
 }
 
 // Checkbox
-let checked = use_signal(|| false);
+let checked = Signal::new(false);
 Checkbox {
     label: "Accept terms",
     checked: checked.get(),
@@ -458,7 +458,7 @@ NavLink { label: "Disabled", disabled: true }
 NavLink { label: "With handler", onclick: move || navigate("/page") }
 
 // Stepper
-let step = use_signal(|| 1u32);
+let step = Signal::new(1u32);
 Stepper { active: step.get(),
     StepperStep { label: "Account", description: "Create account" }
     StepperStep { label: "Verify", description: "Verify email" }
@@ -480,7 +480,7 @@ Stepper { active: step.get(),
 
 ```rust
 // Modal
-let modal_open = use_signal(|| false);
+let modal_open = Signal::new(false);
 
 Button { onclick: move || modal_open.set(true), "Open Modal" }
 
@@ -580,7 +580,7 @@ use std::rc::Rc;
 #[component]
 fn app() -> NodeHandle {
     // For custom left section (e.g., menu button)
-    let menu_open = use_signal(|| false);
+    let menu_open = Signal::new(false);
     let left_section: SectionRenderer = Rc::new(move |__scope| {
         rsx! {
             ActionIcon { onclick: move || menu_open.update(|v| *v = !*v),
@@ -1104,7 +1104,7 @@ Rinch supports two mechanisms for making component props reactive:
 Pass a closure `{|| expr}` to any component prop (like `variant`, `color`, `size`, `disabled`). When signals inside the closure change, the entire component re-renders with the new prop values:
 
 ```rust
-let active = use_signal(|| false);
+let active = Signal::new(false);
 
 rsx! {
     Button {
@@ -1123,8 +1123,8 @@ This works on **all component props** — the macro detects closures and wraps t
 For components that support `_fn` props, these provide more efficient updates that only touch the specific DOM node, without re-rendering the entire component. The `rsx!` macro auto-wraps `_fn` props — just pass a closure directly:
 
 ```rust
-let is_checked = use_signal(|| false);
-let input_text = use_signal(|| String::new());
+let is_checked = Signal::new(false);
+let input_text = Signal::new(String::new());
 
 rsx! {
     // Auto-wrapped: just pass a closure, no Rc::new() needed
@@ -1170,7 +1170,7 @@ rsx! {
 For controlled inputs, use `value_fn` + `oninput` together. `value_fn` keeps the DOM in sync with your signal; `oninput` updates the signal from user input. Without `value_fn`, programmatic `signal.set("")` won't clear the input visually:
 
 ```rust
-let text = use_signal(|| String::new());
+let text = Signal::new(String::new());
 
 rsx! {
     TextInput {

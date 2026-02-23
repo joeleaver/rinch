@@ -42,7 +42,7 @@
 //! // Using #[component] and rsx! is the idiomatic approach:
 //! #[component]
 //! fn counter() -> NodeHandle {
-//!     let count = use_signal(|| 0);
+//!     let count = Signal::new(0);
 //!     rsx! {
 //!         div { "Count: " {|| count.get().to_string()} }
 //!     }
@@ -50,7 +50,7 @@
 //!
 //! // The lower-level RenderScope API (used internally by rsx!):
 //! fn counter_manual(__scope: &mut RenderScope) -> NodeHandle {
-//!     let count = use_signal(|| 0);
+//!     let count = Signal::new(0);
 //!
 //!     // Create static structure once
 //!     let div = __scope.create_element("div");
@@ -543,8 +543,6 @@ pub fn reactive_component_dom<R>(
 where
     R: Fn(&mut RenderScope) -> NodeHandle + 'static,
 {
-    use crate::hooks::with_render_context;
-
     let marker = scope.create_comment("component");
     parent.append_child(&marker);
 
@@ -570,7 +568,7 @@ where
         // Render fresh
         if let Some(doc) = doc_weak.upgrade() {
             let mut child_scope = RenderScope::new(doc, parent_id);
-            let node = with_render_context(|| render_fn(&mut child_scope));
+            let node = render_fn(&mut child_scope);
             m.insert_after(&node);
             cc.borrow_mut().push(node);
             *cs.borrow_mut() = Some(child_scope);

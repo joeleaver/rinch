@@ -31,7 +31,7 @@ use rinch_core::element::ThemeProviderProps;
 /// use rinch::prelude::*;
 ///
 /// fn app(__scope: &mut RenderScope) -> NodeHandle {
-///     let count = use_signal(|| 0);
+///     let count = Signal::new(0);
 ///     rsx! {
 ///         div {
 ///             p { "Count: " {|| count.get().to_string()} }

@@ -1,12 +1,12 @@
 //! Core types and traits for rinch.
 
 pub mod ce;
+pub mod context;
 pub mod dom;
 pub mod element;
 pub mod event;
 pub mod events;
 pub mod for_loop;
-pub mod hooks;
 pub mod image;
 pub mod match_dom;
 pub mod reactive;
@@ -37,13 +37,8 @@ pub use reactive::{
     set_on_signal_change, signals_changed, untracked,
 };
 
-// Re-export hooks for ergonomic state management
-pub use hooks::{
-    HookEntry, HookMeta, RefHandle, begin_render, clear_hooks, create_context, end_render,
-    get_hooks_debug_info, pop_hook_scope, push_hook_scope, try_use_context, use_callback, use_context, use_derived,
-    use_effect, use_effect_cleanup, use_memo, use_mount, use_ref, use_signal, use_state,
-    with_render_context,
-};
+// Re-export context for sharing state across components
+pub use context::{clear_context, create_context, try_use_context, use_context};
 
 // Re-export event handling types
 pub use events::{

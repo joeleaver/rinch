@@ -7,7 +7,7 @@
 //! For reactive opened state without re-rendering, use the `opened_fn` prop:
 //!
 //! ```ignore
-//! let modal_opened = use_signal(|| false);
+//! let modal_opened = Signal::new(false);
 //!
 //! rsx! {
 //!     Modal {
@@ -73,7 +73,7 @@ pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 /// # Example
 ///
 /// ```ignore
-/// let show_modal = use_signal(|| false);
+/// let show_modal = Signal::new(false);
 ///
 /// rsx! {
 ///     Button { onclick: move || show_modal.set(true), "Open Modal" }

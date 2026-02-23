@@ -32,7 +32,6 @@ use std::rc::Rc;
 
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::element::ValueCallback;
-use rinch_core::hooks::use_signal;
 use rinch_core::reactive::Signal;
 use rinch_core::{Component, show_dom};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
@@ -261,8 +260,8 @@ impl TreeController {
 /// tree.controller.expand("child1");
 /// ```
 pub fn use_tree(options: UseTreeOptions) -> UseTreeReturn {
-    let expanded = use_signal(|| options.initial_expanded.clone());
-    let selected = use_signal(|| options.initial_selected.clone());
+    let expanded = Signal::new(options.initial_expanded.clone());
+    let selected = Signal::new(options.initial_selected.clone());
 
     let controller = TreeController {
         expanded,

@@ -68,8 +68,8 @@ pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 /// # Fine-Grained Reactivity Example
 ///
 /// ```ignore
-/// let visible = use_signal(|| false);
-/// let password = use_signal(|| String::new());
+/// let visible = Signal::new(false);
+/// let password = Signal::new(String::new());
 ///
 /// rsx! {
 ///     PasswordInput {

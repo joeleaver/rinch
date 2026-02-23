@@ -68,7 +68,7 @@ impl std::str::FromStr for PopoverPosition {
 /// # Example
 ///
 /// ```ignore
-/// let show_popover = use_signal(|| false);
+/// let show_popover = Signal::new(false);
 ///
 /// rsx! {
 ///     Popover { opened: show_popover.get(), position: "bottom",

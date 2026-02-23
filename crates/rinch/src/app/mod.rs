@@ -24,7 +24,6 @@ use std::rc::Rc;
 use rinch_core::ce::{self, ContentEditableApi};
 use rinch_core::dom::{DomDocument, NodeHandle, RenderScope, clear_render_scope, set_render_scope};
 use rinch_core::events;
-use rinch_core::hooks::{begin_render, end_render};
 use crate::ce_ops::CeOps;
 use rinch_dom::RinchDocument;
 #[cfg(feature = "debug")]
@@ -315,7 +314,6 @@ impl RinchApp {
 
         // Set thread-local context
         set_render_scope(scope.clone());
-        begin_render();
 
         // Run the component
         let component = self.component.take().expect("component already consumed");
@@ -327,7 +325,6 @@ impl RinchApp {
         // Append root to body
         doc.borrow_mut().append_child(body_id, root.node_id());
 
-        end_render();
         clear_render_scope();
 
         // Initial layout

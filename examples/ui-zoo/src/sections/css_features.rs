@@ -307,10 +307,10 @@ pub fn css_features_section() -> NodeHandle {
 
 #[component]
 fn click_transition_demos() -> NodeHandle {
-    let bg_active = use_signal(|| false);
-    let opacity_active = use_signal(|| false);
-    let scale_active = use_signal(|| false);
-    let multi_active = use_signal(|| false);
+    let bg_active = Signal::new(false);
+    let opacity_active = Signal::new(false);
+    let scale_active = Signal::new(false);
+    let multi_active = Signal::new(false);
 
     rsx! {
         Group { gap: "md",

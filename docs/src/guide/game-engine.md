@@ -12,7 +12,7 @@ use rinch::embed::{RinchContext, RinchContextConfig, RinchOverlayRenderer};
 
 #[component]
 fn game_hud() -> NodeHandle {
-    let health = use_signal(|| 100);
+    let health = Signal::new(100);
     rsx! {
         div { style: "position: absolute; top: 10px; left: 10px;",
             Text { size: "lg", color: "white", {|| format!("HP: {}", health.get())} }

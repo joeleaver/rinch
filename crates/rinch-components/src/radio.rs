@@ -7,7 +7,7 @@
 //! For reactive checked state without re-rendering, use the `checked_fn` prop:
 //!
 //! ```ignore
-//! let selected = use_signal(|| "option1".to_string());
+//! let selected = Signal::new("option1".to_string());
 //!
 //! rsx! {
 //!     Radio {

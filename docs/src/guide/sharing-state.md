@@ -22,7 +22,7 @@ pub fn Counter(count: Signal<i32>, children: &[NodeHandle]) -> NodeHandle {
 #[component]
 fn app() -> NodeHandle {
     // State lives here, shared with both children
-    let count = use_signal(|| 0);
+    let count = Signal::new(0);
 
     rsx! {
         div {
@@ -129,8 +129,8 @@ struct AppState {
 #[component]
 fn app() -> NodeHandle {
     create_context(AppState {
-        dark_mode: use_signal(|| false),
-        user_name: use_signal(|| "Guest".into()),
+        dark_mode: Signal::new(false),
+        user_name: Signal::new("Guest".into()),
     });
 
     rsx! {
