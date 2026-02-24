@@ -8,10 +8,6 @@
 pub enum ToolbarStyle {
     /// Always visible at top of editor.
     Fixed,
-    /// Shows on text selection (floating).
-    Bubble,
-    /// Both fixed toolbar and bubble menu.
-    Both,
 }
 
 /// A single toolbar control (button/action).
@@ -85,7 +81,6 @@ impl ToolbarGroup {
 #[derive(Debug, Clone)]
 pub struct ToolbarConfig {
     pub groups: Vec<ToolbarGroup>,
-    pub sticky: bool,
     pub style: ToolbarStyle,
 }
 
@@ -99,7 +94,6 @@ impl ToolbarConfig {
     /// Full toolbar with all controls (~35+), organized into groups.
     pub fn default_full() -> Self {
         Self {
-            sticky: true,
             style: ToolbarStyle::Fixed,
             groups: vec![
                 ToolbarGroup::new("History", vec![ToolbarControl::Undo, ToolbarControl::Redo]),
@@ -153,7 +147,6 @@ impl ToolbarConfig {
     /// Minimal toolbar: bold, italic, link, heading dropdown.
     pub fn default_minimal() -> Self {
         Self {
-            sticky: true,
             style: ToolbarStyle::Fixed,
             groups: vec![
                 ToolbarGroup::new(
@@ -172,7 +165,6 @@ impl ToolbarConfig {
     /// Toolbar optimized for markdown-style editing.
     pub fn default_markdown() -> Self {
         Self {
-            sticky: true,
             style: ToolbarStyle::Fixed,
             groups: vec![
                 ToolbarGroup::new(

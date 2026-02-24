@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use crate::document::{Position, Range};
+use crate::extensions::table_model::TableModel;
 
 /// An operation that can be undone.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,7 +22,11 @@ pub enum UndoOperation {
     },
 
     /// Remove a mark from a range.
-    RemoveMark { range: Range, mark_type: String },
+    RemoveMark {
+        range: Range,
+        mark_type: String,
+        attrs: HashMap<String, String>,
+    },
 
     /// Split a block at a position.
     SplitBlock {
@@ -46,6 +51,17 @@ pub enum UndoOperation {
         old_attrs: HashMap<String, String>,
         new_attrs: HashMap<String, String>,
     },
+
+    /// A compound operation that groups multiple sub-operations as one undo step.
+    CompoundOperation(Vec<UndoOperation>),
+
+    /// Snapshot a table's entire state before and after a mutation.
+    /// Used for undoing table structural operations (insert/delete rows/cols, merge, etc.)
+    TableSnapshot {
+        table_id: String,
+        before: Option<TableModel>,
+        after: Option<TableModel>,
+    },
 }
 
 impl UndoOperation {
@@ -68,16 +84,21 @@ impl UndoOperation {
             UndoOperation::AddMark {
                 range,
                 mark_type,
-                attrs: _,
+                attrs,
             } => UndoOperation::RemoveMark {
                 range: *range,
                 mark_type: mark_type.clone(),
+                attrs: attrs.clone(),
             },
 
-            UndoOperation::RemoveMark { range, mark_type } => UndoOperation::AddMark {
+            UndoOperation::RemoveMark {
+                range,
+                mark_type,
+                attrs,
+            } => UndoOperation::AddMark {
                 range: *range,
                 mark_type: mark_type.clone(),
-                attrs: HashMap::new(), // Note: we lose attrs on undo of remove
+                attrs: attrs.clone(),
             },
 
             UndoOperation::SplitBlock {
@@ -109,6 +130,18 @@ impl UndoOperation {
                 old_attrs: new_attrs.clone(),
                 new_attrs: old_attrs.clone(),
             },
+
+            UndoOperation::CompoundOperation(ops) => {
+                UndoOperation::CompoundOperation(
+                    ops.iter().rev().map(|op| op.inverse()).collect()
+                )
+            }
+
+            UndoOperation::TableSnapshot { table_id, before, after } => UndoOperation::TableSnapshot {
+                table_id: table_id.clone(),
+                before: after.clone(),
+                after: before.clone(),
+            },
         }
     }
 
@@ -127,13 +160,17 @@ impl UndoOperation {
                 },
             ) => {
                 // Can merge if the second insertion is right after the first
-                // and both are single characters (typing)
+                // and the new character is a single character (typing).
+                // The accumulator (text1) may already be multiple chars from prior merges.
                 *pos2 == *pos1 + text1.len()
-                    && text1.chars().count() == 1
                     && text2.chars().count() == 1
                     && !text1.contains('\n')
                     && !text2.contains('\n')
             }
+            // Compound operations don't merge
+            (UndoOperation::CompoundOperation(_), _) | (_, UndoOperation::CompoundOperation(_)) => false,
+            // Table snapshots don't merge
+            (UndoOperation::TableSnapshot { .. }, _) | (_, UndoOperation::TableSnapshot { .. }) => false,
             _ => false,
         }
     }
@@ -205,6 +242,7 @@ mod tests {
             UndoOperation::RemoveMark {
                 range: Range::new(0usize, 5usize),
                 mark_type: "bold".into(),
+                attrs: HashMap::new(),
             }
         );
     }
@@ -214,6 +252,7 @@ mod tests {
         let op = UndoOperation::RemoveMark {
             range: Range::new(0usize, 5usize),
             mark_type: "italic".into(),
+            attrs: HashMap::new(),
         };
         let inv = op.inverse();
         assert_eq!(
@@ -340,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn cannot_merge_multi_char_inserts() {
+    fn can_merge_multi_char_into_chain() {
         let op1 = UndoOperation::InsertText {
             position: Position(0),
             text: "ab".into(),
@@ -349,7 +388,8 @@ mod tests {
             position: Position(2),
             text: "c".into(),
         };
-        assert!(!op1.can_merge(&op2));
+        // After 2a fix: merged accumulator can accept more single-char inserts
+        assert!(op1.can_merge(&op2));
     }
 
     #[test]

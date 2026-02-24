@@ -180,8 +180,18 @@ impl Editor {
     /// Iterates over blocks to extract the text spanning the range.
     pub fn text_in_range(&self, range: Range) -> String {
         let full_text = self.doc.to_text();
-        let start = range.start.0.min(full_text.len());
-        let end = range.end.0.min(full_text.len());
+        let mut start = range.start.0.min(full_text.len());
+        let mut end = range.end.0.min(full_text.len());
+        // Clamp to nearest char boundary to avoid panics on multi-byte chars
+        while start > 0 && !full_text.is_char_boundary(start) {
+            start -= 1;
+        }
+        while end > 0 && end < full_text.len() && !full_text.is_char_boundary(end) {
+            end += 1;
+        }
+        if start > end {
+            return String::new();
+        }
         full_text[start..end].to_string()
     }
 
@@ -306,6 +316,9 @@ impl Editor {
         // Clear the first block's content
         self.doc
             .delete_range(crate::document::Range::new(0usize, self.doc.text_length()))?;
+
+        // Reset first block type to paragraph (it may have been a heading, etc.)
+        let _ = self.doc.set_block_type(0, "paragraph", None);
 
         // Insert fragment blocks
         let mut first = true;
@@ -468,7 +481,7 @@ impl Editor {
                 };
                 self.doc.add_mark(*range, mark)?;
             }
-            UndoOperation::RemoveMark { range, mark_type } => {
+            UndoOperation::RemoveMark { range, mark_type, .. } => {
                 self.doc.remove_mark(*range, mark_type)?;
             }
             UndoOperation::SplitBlock { position, .. } => {
@@ -494,8 +507,30 @@ impl Editor {
                 };
                 self.doc.set_block_type(*block_index, new_type, attrs)?;
             }
+            UndoOperation::CompoundOperation(ops) => {
+                for op in ops {
+                    self.apply_operation(op)?;
+                }
+            }
+            UndoOperation::TableSnapshot { table_id, before: _, after } => {
+                match after {
+                    Some(model) => {
+                        // Replace or insert the table
+                        self.tables.insert(table_id.clone(), model.clone());
+                    }
+                    None => {
+                        // Table was deleted
+                        self.tables.remove(table_id);
+                    }
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Get a clone of a table's model for snapshotting (used by the undo system).
+    pub fn get_table_cloned(&self, table_id: &str) -> Option<TableModel> {
+        self.tables.get(table_id).cloned()
     }
 }
 

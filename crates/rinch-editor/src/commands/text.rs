@@ -39,6 +39,9 @@ impl TextCommands {
             editor.doc.insert_text(insert_pos, text)?;
         }
 
+        // Clear stored marks after insertion so they don't persist to next character
+        editor.clear_stored_marks();
+
         // Record undo operation (merge single chars for typing)
         let op = UndoOperation::InsertText {
             position: insert_pos,
@@ -73,15 +76,17 @@ impl TextCommands {
     pub fn replace_text(editor: &mut Editor, range: Range, text: &str) -> Result<(), EditorError> {
         let deleted_text = editor.text_in_range(range);
         editor.doc.delete_range(range)?;
-        editor.record_undo(UndoOperation::DeleteText {
-            range,
-            deleted_text,
-        });
         editor.doc.insert_text(range.start, text)?;
-        editor.record_undo(UndoOperation::InsertText {
-            position: range.start,
-            text: text.to_string(),
-        });
+        editor.record_undo(UndoOperation::CompoundOperation(vec![
+            UndoOperation::DeleteText {
+                range,
+                deleted_text,
+            },
+            UndoOperation::InsertText {
+                position: range.start,
+                text: text.to_string(),
+            },
+        ]));
         let new_pos = range.start + text.len();
         editor.set_selection(Selection::cursor(new_pos));
         Ok(())
@@ -98,7 +103,15 @@ impl TextCommands {
         if pos.0 == 0 {
             return Ok(()); // At start of document
         }
-        let range = Range::new(pos - 1, pos);
+        // Find previous char boundary using the full document text
+        let full_text = editor.doc.to_text();
+        let byte_pos = pos.0.min(full_text.len());
+        let prev_boundary = full_text[..byte_pos]
+            .char_indices()
+            .next_back()
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        let range = Range::new(Position::new(prev_boundary), pos);
         Self::delete_range(editor, range)
     }
 
@@ -113,7 +126,15 @@ impl TextCommands {
         if pos.0 >= doc_len {
             return Ok(()); // At end of document
         }
-        let range = Range::new(pos, pos + 1);
+        // Find next char boundary using the full document text
+        let full_text = editor.doc.to_text();
+        let byte_pos = pos.0.min(full_text.len());
+        let next_boundary = full_text[byte_pos..]
+            .char_indices()
+            .nth(1)
+            .map(|(i, _)| byte_pos + i)
+            .unwrap_or(full_text.len());
+        let range = Range::new(pos, Position::new(next_boundary));
         Self::delete_range(editor, range)
     }
 

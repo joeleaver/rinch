@@ -1,5 +1,7 @@
 //! Local undo stack for single-user undo/redo.
 
+use std::collections::VecDeque;
+
 use crate::error::EditorError;
 
 use super::operations::UndoOperation;
@@ -8,9 +10,9 @@ use super::operations::UndoOperation;
 #[derive(Debug)]
 pub struct LocalUndoStack {
     /// Stack of undo items
-    undo_stack: Vec<UndoItem>,
+    undo_stack: VecDeque<UndoItem>,
     /// Stack of redo items
-    redo_stack: Vec<UndoItem>,
+    redo_stack: VecDeque<UndoItem>,
     /// Maximum stack size
     max_size: usize,
 }
@@ -24,8 +26,8 @@ impl LocalUndoStack {
     /// Create a new undo stack with specified max size.
     pub fn with_capacity(max_size: usize) -> Self {
         Self {
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
+            undo_stack: VecDeque::new(),
+            redo_stack: VecDeque::new(),
             max_size,
         }
     }
@@ -37,16 +39,16 @@ impl LocalUndoStack {
 
         // Enforce max size by removing oldest items
         if self.undo_stack.len() >= self.max_size {
-            self.undo_stack.remove(0);
+            self.undo_stack.pop_front();
         }
 
-        self.undo_stack.push(item);
+        self.undo_stack.push_back(item);
     }
 
     /// Undo the last operation.
     pub fn undo(&mut self) -> Result<Option<UndoItem>, EditorError> {
-        if let Some(item) = self.undo_stack.pop() {
-            self.redo_stack.push(item.clone());
+        if let Some(item) = self.undo_stack.pop_back() {
+            self.redo_stack.push_back(item.clone());
             Ok(Some(item))
         } else {
             Ok(None)
@@ -55,8 +57,8 @@ impl LocalUndoStack {
 
     /// Redo the last undone operation.
     pub fn redo(&mut self) -> Result<Option<UndoItem>, EditorError> {
-        if let Some(item) = self.redo_stack.pop() {
-            self.undo_stack.push(item.clone());
+        if let Some(item) = self.redo_stack.pop_back() {
+            self.undo_stack.push_back(item.clone());
             Ok(Some(item))
         } else {
             Ok(None)
@@ -87,7 +89,7 @@ impl LocalUndoStack {
     /// Used for grouping consecutive typing into a single undo step.
     /// Returns true if merge was successful.
     pub fn merge_last(&mut self, new_op: &UndoOperation) -> bool {
-        if let Some(last_item) = self.undo_stack.last_mut()
+        if let Some(last_item) = self.undo_stack.back_mut()
             && last_item.operation.can_merge(new_op)
         {
             last_item.operation.merge(new_op);

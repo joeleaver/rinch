@@ -28,10 +28,16 @@ impl FormattingCommands {
         let has_mark = marks.iter().any(|m| m.mark_type == mark_type);
 
         if has_mark {
+            let existing_attrs = marks
+                .iter()
+                .find(|m| m.mark_type == mark_type)
+                .map(|m| m.attrs.clone())
+                .unwrap_or_default();
             editor.doc.remove_mark(range, mark_type)?;
             editor.record_undo(UndoOperation::RemoveMark {
                 range,
                 mark_type: mark_type.to_string(),
+                attrs: existing_attrs,
             });
         } else {
             editor.doc.add_mark(range, MarkData::new(mark_type))?;
@@ -53,6 +59,11 @@ impl FormattingCommands {
         }
         let range = sel.range();
         editor.doc.add_mark(range, MarkData::new(mark_type))?;
+        editor.record_undo(UndoOperation::AddMark {
+            range,
+            mark_type: mark_type.to_string(),
+            attrs: HashMap::new(),
+        });
 
         Ok(())
     }
@@ -64,7 +75,20 @@ impl FormattingCommands {
             return Ok(());
         }
         let range = sel.range();
+        // Capture existing mark attrs before removal so undo can restore them
+        let attrs = editor
+            .doc
+            .marks_at(range.start)
+            .iter()
+            .find(|m| m.mark_type == mark_type)
+            .map(|m| m.attrs.clone())
+            .unwrap_or_default();
         editor.doc.remove_mark(range, mark_type)?;
+        editor.record_undo(UndoOperation::RemoveMark {
+            range,
+            mark_type: mark_type.to_string(),
+            attrs,
+        });
 
         Ok(())
     }
@@ -77,10 +101,23 @@ impl FormattingCommands {
         }
         let range = sel.range();
 
-        // Get all known mark types from schema and remove each
+        // Get all known mark types from schema and remove each, recording undo for each
         let mark_types: Vec<String> = editor.schema.marks.keys().cloned().collect();
         for mark_type in &mark_types {
+            // Capture existing mark attrs before removal so undo can restore them
+            let attrs = editor
+                .doc
+                .marks_at(range.start)
+                .iter()
+                .find(|m| &m.mark_type == mark_type)
+                .map(|m| m.attrs.clone())
+                .unwrap_or_default();
             editor.doc.remove_mark(range, mark_type)?;
+            editor.record_undo(UndoOperation::RemoveMark {
+                range,
+                mark_type: mark_type.to_string(),
+                attrs,
+            });
         }
 
         Ok(())

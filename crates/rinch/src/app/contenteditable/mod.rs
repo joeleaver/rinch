@@ -33,7 +33,9 @@ pub(crate) struct ContentEditableFocus {
     /// Input handler for mapping keys to edit commands (from rinch_editable).
     pub(in crate::app) input_handler: InputHandler,
     /// Undo stack for text changes.
-    pub(in crate::app) undo_stack: Vec<UndoEntry>,
+    pub(in crate::app) undo_stack: std::collections::VecDeque<UndoEntry>,
+    /// Redo stack for undone changes.
+    pub(in crate::app) redo_stack: std::collections::VecDeque<UndoEntry>,
 }
 
 impl std::fmt::Debug for ContentEditableFocus {
@@ -271,13 +273,13 @@ impl RinchApp {
                 | EditCommand::Indent
                 | EditCommand::Outdent
         );
-        let mut pre_edit_ids: Vec<usize> = Vec::new();
+        let mut pre_edit_ids: std::collections::HashSet<usize> = std::collections::HashSet::new();
         if is_mutating && let Some(doc) = &self.doc {
             let d = doc.borrow();
             let snapshots = Self::snapshot_text_nodes(&d.tree, ce_node_id);
-            pre_edit_ids = Self::collect_subtree_ids(&d.tree, ce_node_id);
+            pre_edit_ids = Self::collect_subtree_ids(&d.tree, ce_node_id).into_iter().collect();
             let ce = self.focused_contenteditable.as_mut().unwrap();
-            ce.undo_stack.push(UndoEntry {
+            ce.undo_stack.push_back(UndoEntry {
                 cursor,
                 anchor,
                 text_snapshots: snapshots,
@@ -285,8 +287,9 @@ impl RinchApp {
             });
             // Cap undo stack at 100 entries
             if ce.undo_stack.len() > 100 {
-                ce.undo_stack.remove(0);
+                ce.undo_stack.pop_front();
             }
+            ce.redo_stack.clear();
         }
 
         match cmd {
@@ -446,18 +449,28 @@ impl RinchApp {
             // ── Undo ──────────────────────────────────────────────────
             EditCommand::Undo => {
                 let ce = self.focused_contenteditable.as_mut().unwrap();
-                if let Some(entry) = ce.undo_stack.pop() {
+                if let Some(entry) = ce.undo_stack.pop_back() {
+                    // Snapshot current state for redo before restoring
+                    if let Some(doc) = &self.doc {
+                        let d = doc.borrow();
+                        let current_snapshots = Self::snapshot_text_nodes(&d.tree, ce_node_id);
+                        ce.redo_stack.push_back(UndoEntry {
+                            cursor: ce.cursor,
+                            anchor: ce.anchor,
+                            text_snapshots: current_snapshots,
+                            created_nodes: entry.created_nodes.clone(),
+                        });
+                    }
+
                     let restore_cursor = entry.cursor;
                     let restore_anchor = entry.anchor;
                     if let Some(doc) = &self.doc {
                         let mut d = doc.borrow_mut();
-                        // Remove nodes that were created during the edit
                         for &node_id in &entry.created_nodes {
                             if d.tree.get(node_id).is_some() {
                                 d.remove_node(rinch_core::dom::NodeId(node_id));
                             }
                         }
-                        // Restore text content
                         for (node_id, old_text) in &entry.text_snapshots {
                             if d.tree.get(*node_id).is_some() {
                                 d.set_text_content(rinch_core::dom::NodeId(*node_id), old_text);
@@ -529,7 +542,45 @@ impl RinchApp {
                 text_changed = true;
             }
 
-            // ── Unhandled commands (Escape, Redo, etc.) ───────────────
+            // ── Redo ──────────────────────────────────────────────────
+            EditCommand::Redo => {
+                let ce = self.focused_contenteditable.as_mut().unwrap();
+                if let Some(entry) = ce.redo_stack.pop_back() {
+                    // Snapshot current state for undo before restoring
+                    if let Some(doc) = &self.doc {
+                        let d = doc.borrow();
+                        let current_snapshots = Self::snapshot_text_nodes(&d.tree, ce_node_id);
+                        ce.undo_stack.push_back(UndoEntry {
+                            cursor: ce.cursor,
+                            anchor: ce.anchor,
+                            text_snapshots: current_snapshots,
+                            created_nodes: entry.created_nodes.clone(),
+                        });
+                    }
+
+                    let restore_cursor = entry.cursor;
+                    let restore_anchor = entry.anchor;
+                    if let Some(doc) = &self.doc {
+                        let mut d = doc.borrow_mut();
+                        for &node_id in &entry.created_nodes {
+                            if d.tree.get(node_id).is_some() {
+                                d.remove_node(rinch_core::dom::NodeId(node_id));
+                            }
+                        }
+                        for (node_id, old_text) in &entry.text_snapshots {
+                            if d.tree.get(*node_id).is_some() {
+                                d.set_text_content(rinch_core::dom::NodeId(*node_id), old_text);
+                            }
+                        }
+                    }
+                    let ce = self.focused_contenteditable.as_mut().unwrap();
+                    ce.cursor = restore_cursor;
+                    ce.anchor = restore_anchor;
+                    text_changed = true;
+                }
+            }
+
+            // ── Unhandled commands (Escape, etc.) ───────────────
             _ => {
                 return false;
             }
@@ -550,7 +601,7 @@ impl RinchApp {
             }
             if !created.is_empty() {
                 let ce = self.focused_contenteditable.as_mut().unwrap();
-                if let Some(entry) = ce.undo_stack.last_mut() {
+                if let Some(entry) = ce.undo_stack.back_mut() {
                     entry.created_nodes = created;
                 }
             }

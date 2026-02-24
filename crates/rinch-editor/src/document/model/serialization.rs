@@ -100,6 +100,13 @@ impl EditorDocument {
                 }
                 "blockquote" => "blockquote",
                 "code_block" => "pre",
+                "bullet_list" => "ul",
+                "ordered_list" => "ol",
+                "list_item" => "li",
+                "horizontal_rule" => {
+                    html.push_str("<hr />");
+                    continue;
+                }
                 other => other,
             };
             html.push_str(&format!("<{}>", tag));
@@ -165,6 +172,17 @@ pub(crate) fn wrap_mark(content: &str, mark: &MarkData) -> String {
         "link" => {
             let href = mark.attrs.get("href").map(|s| s.as_str()).unwrap_or("#");
             format!("<a href=\"{}\">{}</a>", html_escape(href), content)
+        }
+        "highlight" => format!("<mark>{}</mark>", content),
+        "subscript" => format!("<sub>{}</sub>", content),
+        "superscript" => format!("<sup>{}</sup>", content),
+        "textColor" | "text_color" => {
+            let color = mark.attrs.get("color").map(|s| s.as_str()).unwrap_or("");
+            if color.is_empty() {
+                content.to_string()
+            } else {
+                format!("<span style=\"color:{}\">{}</span>", html_escape(color), content)
+            }
         }
         _ => content.to_string(),
     }

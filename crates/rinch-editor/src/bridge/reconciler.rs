@@ -86,6 +86,8 @@ pub fn reconcile(
 
         // Full render for new or structurally changed blocks
         let (block_node, text_mappings) = render_block(scope, doc, i, tables, table_selection);
+        // Re-query children after potential removal above so index i is correct
+        // (removal shifts subsequent children down; querying fresh gives the right reference).
         let children = container.children();
         if i < children.len() {
             container.insert_before(&block_node, &children[i]);
@@ -215,11 +217,13 @@ fn compute_structure_hash(
         bt.hash(&mut hasher);
     }
 
-    // Hash block attrs
+    // Hash block attrs — sort keys for deterministic hash regardless of HashMap iteration order
     if let Some(attrs) = doc.block_attrs(block_index) {
-        for (k, v) in &attrs {
+        let mut keys: Vec<_> = attrs.keys().collect();
+        keys.sort();
+        for k in &keys {
             k.hash(&mut hasher);
-            v.hash(&mut hasher);
+            attrs[*k].hash(&mut hasher);
         }
 
         // For table blocks, also hash the table content
@@ -247,9 +251,12 @@ fn compute_structure_hash(
         run.marks.len().hash(&mut hasher);
         for mark in &run.marks {
             mark.mark_type.hash(&mut hasher);
-            for (k, v) in &mark.attrs {
+            // Sort mark attr keys for deterministic hash regardless of HashMap iteration order
+            let mut mark_keys: Vec<_> = mark.attrs.keys().collect();
+            mark_keys.sort();
+            for k in &mark_keys {
                 k.hash(&mut hasher);
-                v.hash(&mut hasher);
+                mark.attrs[*k].hash(&mut hasher);
             }
         }
     }

@@ -59,6 +59,16 @@ impl ViewDesc {
     /// Add a block mapping after rendering a block.
     pub fn add_block(&mut self, mapping: BlockMapping) {
         let block_index = mapping.block_index;
+        // Remove old entries for the block being replaced to prevent stale lookups.
+        // This matters when the same block index is re-rendered with new DOM node IDs
+        // (e.g. after a structure change): old IDs must be evicted before inserting new ones.
+        if block_index < self.blocks.len() {
+            let old = &self.blocks[block_index];
+            self.text_node_index.remove(&old.dom_node_id);
+            for tn in &old.text_nodes {
+                self.text_node_index.remove(&tn.dom_node_id);
+            }
+        }
         for tn in &mapping.text_nodes {
             self.text_node_index.insert(
                 tn.dom_node_id,

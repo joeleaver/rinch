@@ -3,43 +3,45 @@ pub trait Invertible: Clone {
     fn inverse(&self) -> Self;
 }
 
+use std::collections::VecDeque;
+
 /// Generic undo/redo stack.
 #[derive(Debug)]
 pub struct UndoStack<T> {
-    undo: Vec<T>,
-    redo: Vec<T>,
+    undo: VecDeque<T>,
+    redo: VecDeque<T>,
     max_size: usize,
 }
 
 impl<T: Invertible> UndoStack<T> {
     pub fn new(max_size: usize) -> Self {
         Self {
-            undo: Vec::new(),
-            redo: Vec::new(),
+            undo: VecDeque::new(),
+            redo: VecDeque::new(),
             max_size,
         }
     }
 
     pub fn push(&mut self, op: T) {
-        self.undo.push(op);
+        self.undo.push_back(op);
         self.redo.clear(); // Clear redo stack on new operation
 
         // Limit size
         while self.undo.len() > self.max_size {
-            self.undo.remove(0);
+            self.undo.pop_front();
         }
     }
 
     pub fn undo(&mut self) -> Option<T> {
-        let op = self.undo.pop()?;
+        let op = self.undo.pop_back()?;
         let inverse = op.inverse();
-        self.redo.push(op);
+        self.redo.push_back(op);
         Some(inverse)
     }
 
     pub fn redo(&mut self) -> Option<T> {
-        let op = self.redo.pop()?;
-        self.undo.push(op.clone());
+        let op = self.redo.pop_back()?;
+        self.undo.push_back(op.clone());
         Some(op)
     }
 
@@ -60,8 +62,8 @@ impl<T: Invertible> UndoStack<T> {
 impl<T> Default for UndoStack<T> {
     fn default() -> Self {
         Self {
-            undo: Vec::new(),
-            redo: Vec::new(),
+            undo: VecDeque::new(),
+            redo: VecDeque::new(),
             max_size: 1000,
         }
     }

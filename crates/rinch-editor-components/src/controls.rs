@@ -103,11 +103,10 @@ fn control_metadata(
         ToolbarControl::SplitCell => ("⊟", "Split cell", None),
         ToolbarControl::DeleteTable => ("×⊞", "Delete table", None),
         ToolbarControl::Custom { label, .. } => {
-            // Can't return &'static str from dynamic data; handled specially.
-            // We leak here for simplicity in a config-only context.
-            // In practice custom controls are few.
-            let _ = label;
-            ("?", "Custom action", None)
+            // Leak the label string to get a &'static str.
+            // Custom controls are few in practice, so the allocation is negligible.
+            let label_static: &'static str = Box::leak(label.clone().into_boxed_str());
+            (label_static, "Custom action", None)
         }
     }
 }

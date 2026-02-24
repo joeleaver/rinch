@@ -4,7 +4,7 @@ use crate::error::EditorError;
 use std::collections::HashMap;
 
 /// A table in the document model.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableModel {
     /// Table rows.
     pub rows: Vec<TableRow>,
@@ -13,14 +13,14 @@ pub struct TableModel {
 }
 
 /// A row in a table.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableRow {
     /// Cells in this row.
     pub cells: Vec<TableCell>,
 }
 
 /// A cell in a table row.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableCell {
     /// Cell text content.
     pub content: String,

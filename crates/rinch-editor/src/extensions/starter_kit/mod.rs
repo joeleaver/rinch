@@ -1,4 +1,4 @@
-//! StarterKit: 23 default extensions for a full-featured rich-text editor.
+//! StarterKit: 24 default extensions for a full-featured rich-text editor.
 //!
 //! Modeled after TipTap/Mantine's StarterKit, this module provides all the
 //! standard node and mark extensions with keyboard shortcuts, commands,
@@ -184,10 +184,6 @@ mod tests {
             assert_eq!(*cmd, format!("set_heading_{}", i + 1));
         }
     }
-
-    // TODO: heading input rules not yet implemented
-    // #[test]
-    // fn heading_ext_has_input_rules() { ... }
 
     #[test]
     fn heading_ext_has_level_attr() {

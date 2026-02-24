@@ -15,12 +15,16 @@ use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use rinch_editor::Editor;
 use rinch_editor::commands::{FormattingCommands, StructureCommands, TextCommands};
 use rinch_editor::document::Position;
+use rinch_editor::history::UndoOperation;
 use rinch_editor::selection::Selection;
 
-// Thread-local state for dropdown open/close persistence across re-renders.
-thread_local! {
-    static HEADING_DROPDOWN_OPEN: RefCell<bool> = const { RefCell::new(false) };
-    static COLOR_PICKER_OPEN: RefCell<bool> = const { RefCell::new(false) };
+/// Shared dropdown open/close state threaded through toolbar rendering functions.
+#[derive(Clone)]
+struct DropdownState {
+    heading_open: Rc<RefCell<bool>>,
+    color_open: Rc<RefCell<bool>>,
+    link_input_open: Rc<RefCell<bool>>,
+    link_url: Rc<RefCell<String>>,
 }
 
 /// Render the full toolbar from a ToolbarConfig.
@@ -30,6 +34,14 @@ pub fn render_toolbar(
     config: &ToolbarConfig,
     on_change: Rc<dyn Fn()>,
 ) -> NodeHandle {
+    // Dropdown open/close state (replaces thread_local).
+    let ds = DropdownState {
+        heading_open: Rc::new(RefCell::new(false)),
+        color_open: Rc::new(RefCell::new(false)),
+        link_input_open: Rc::new(RefCell::new(false)),
+        link_url: Rc::new(RefCell::new(String::from("https://"))),
+    };
+
     let toolbar = scope.create_element("div");
     toolbar.set_attribute("class", "editor-toolbar");
     toolbar.set_attribute(
@@ -49,8 +61,36 @@ pub fn render_toolbar(
             toolbar.append_child(&divider);
         }
 
-        let group_node = render_toolbar_group(scope, editor.clone(), group, on_change.clone());
+        let group_node =
+            render_toolbar_group(scope, editor.clone(), group, on_change.clone(), ds.clone());
         toolbar.append_child(&group_node);
+    }
+
+    // Backdrop overlay: when any dropdown is open, render a transparent full-screen
+    // div behind the dropdowns. Clicking it closes all dropdowns.
+    let any_open = *ds.heading_open.borrow()
+        || *ds.color_open.borrow()
+        || *ds.link_input_open.borrow();
+    if any_open {
+        let backdrop = scope.create_element("div");
+        backdrop.set_attribute(
+            "style",
+            "position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; \
+             z-index: 999; background: transparent;",
+        );
+
+        let h = ds.heading_open.clone();
+        let c = ds.color_open.clone();
+        let l = ds.link_input_open.clone();
+        let on_change_clone = on_change.clone();
+        let handler = scope.register_handler(move || {
+            *h.borrow_mut() = false;
+            *c.borrow_mut() = false;
+            *l.borrow_mut() = false;
+            on_change_clone();
+        });
+        backdrop.set_attribute("data-rid", &handler.to_string());
+        toolbar.append_child(&backdrop);
     }
 
     toolbar
@@ -62,12 +102,19 @@ fn render_toolbar_group(
     editor: Rc<RefCell<Editor>>,
     group: &ToolbarGroup,
     on_change: Rc<dyn Fn()>,
+    ds: DropdownState,
 ) -> NodeHandle {
     let group_div = scope.create_element("div");
     group_div.set_attribute("style", "display: flex; gap: 2px; align-items: center;");
 
     for control in &group.controls {
-        let btn_node = render_toolbar_button(scope, editor.clone(), control, on_change.clone());
+        let btn_node = render_toolbar_button(
+            scope,
+            editor.clone(),
+            control,
+            on_change.clone(),
+            ds.clone(),
+        );
         group_div.append_child(&btn_node);
     }
 
@@ -80,14 +127,18 @@ fn render_toolbar_button(
     editor: Rc<RefCell<Editor>>,
     control: &ToolbarControl,
     on_change: Rc<dyn Fn()>,
+    ds: DropdownState,
 ) -> NodeHandle {
     // Dispatch to specialized renderers for dropdown controls.
     match control {
         ToolbarControl::HeadingDropdown => {
-            return render_heading_dropdown(scope, editor, on_change);
+            return render_heading_dropdown(scope, editor, on_change, ds);
         }
         ToolbarControl::TextColorPicker => {
-            return render_color_picker(scope, editor, on_change);
+            return render_color_picker(scope, editor, on_change, ds);
+        }
+        ToolbarControl::Link => {
+            return render_link_popover(scope, editor, on_change, ds);
         }
         _ => {}
     }
@@ -186,8 +237,9 @@ fn render_heading_dropdown(
     scope: &mut RenderScope,
     editor: Rc<RefCell<Editor>>,
     on_change: Rc<dyn Fn()>,
+    ds: DropdownState,
 ) -> NodeHandle {
-    let is_open = HEADING_DROPDOWN_OPEN.with(|o| *o.borrow());
+    let is_open = *ds.heading_open.borrow();
 
     let container = scope.create_element("div");
     container.set_attribute(
@@ -220,13 +272,14 @@ fn render_heading_dropdown(
 
     // Toggle dropdown on click
     let on_change_toggle = on_change.clone();
+    let ds_toggle = ds.clone();
     let toggle_handler = scope.register_handler(move || {
-        HEADING_DROPDOWN_OPEN.with(|o| {
-            let mut v = o.borrow_mut();
-            *v = !*v;
-        });
-        // Close color picker if open
-        COLOR_PICKER_OPEN.with(|o| *o.borrow_mut() = false);
+        let mut v = ds_toggle.heading_open.borrow_mut();
+        *v = !*v;
+        drop(v);
+        // Close other dropdowns if open
+        *ds_toggle.color_open.borrow_mut() = false;
+        *ds_toggle.link_input_open.borrow_mut() = false;
         on_change_toggle();
     });
     btn.set_attribute("data-rid", &toggle_handler.to_string());
@@ -275,9 +328,10 @@ fn render_heading_dropdown(
 
             let editor_clone = editor.clone();
             let on_change_clone = on_change.clone();
+            let ho_clone = ds.heading_open.clone();
             let item_handler = scope.register_handler(move || {
                 // Close dropdown
-                HEADING_DROPDOWN_OPEN.with(|o| *o.borrow_mut() = false);
+                *ho_clone.borrow_mut() = false;
 
                 if let Ok(mut ed) = editor_clone.try_borrow_mut() {
                     if let Some(lvl) = level {
@@ -321,8 +375,9 @@ fn render_color_picker(
     scope: &mut RenderScope,
     editor: Rc<RefCell<Editor>>,
     on_change: Rc<dyn Fn()>,
+    ds: DropdownState,
 ) -> NodeHandle {
-    let is_open = COLOR_PICKER_OPEN.with(|o| *o.borrow());
+    let is_open = *ds.color_open.borrow();
 
     let container = scope.create_element("div");
     container.set_attribute(
@@ -355,13 +410,14 @@ fn render_color_picker(
 
     // Toggle dropdown on click
     let on_change_toggle = on_change.clone();
+    let ds_toggle = ds.clone();
     let toggle_handler = scope.register_handler(move || {
-        COLOR_PICKER_OPEN.with(|o| {
-            let mut v = o.borrow_mut();
-            *v = !*v;
-        });
-        // Close heading dropdown if open
-        HEADING_DROPDOWN_OPEN.with(|o| *o.borrow_mut() = false);
+        let mut v = ds_toggle.color_open.borrow_mut();
+        *v = !*v;
+        drop(v);
+        // Close other dropdowns if open
+        *ds_toggle.heading_open.borrow_mut() = false;
+        *ds_toggle.link_input_open.borrow_mut() = false;
         on_change_toggle();
     });
     btn.set_attribute("data-rid", &toggle_handler.to_string());
@@ -392,14 +448,18 @@ fn render_color_picker(
 
             let editor_clone = editor.clone();
             let on_change_clone = on_change.clone();
+            let co_clone = ds.color_open.clone();
             let color_value = color_hex.to_string();
             let swatch_handler = scope.register_handler(move || {
                 // Close dropdown
-                COLOR_PICKER_OPEN.with(|o| *o.borrow_mut() = false);
+                *co_clone.borrow_mut() = false;
 
                 if let Ok(mut ed) = editor_clone.try_borrow_mut() {
                     let sel = ed.get_selection().clone();
-                    if !sel.is_cursor() {
+                    if sel.is_cursor() {
+                        // Set stored mark so next typed text gets this color
+                        ed.toggle_stored_mark("textColor");
+                    } else {
                         let range = sel.range();
                         let mut attrs = HashMap::new();
                         attrs.insert("color".to_string(), color_value.clone());
@@ -417,6 +477,141 @@ fn render_color_picker(
         }
 
         container.append_child(&dropdown);
+    }
+
+    container
+}
+
+/// Render the link button with a URL input popover.
+fn render_link_popover(
+    scope: &mut RenderScope,
+    editor: Rc<RefCell<Editor>>,
+    on_change: Rc<dyn Fn()>,
+    ds: DropdownState,
+) -> NodeHandle {
+    let is_open = *ds.link_input_open.borrow();
+    let link_url = ds.link_url.clone();
+
+    let container = scope.create_element("div");
+    container.set_attribute(
+        "style",
+        "position: relative; display: inline-flex; align-items: center;",
+    );
+
+    // Check active state (link mark present)
+    let is_active = if let Ok(ed) = editor.try_borrow() {
+        ed.has_stored_mark("link")
+    } else {
+        false
+    };
+
+    // Link button
+    let btn = scope.create_element("div");
+    let style = if is_active {
+        "display: inline-flex; align-items: center; justify-content: center; \
+         width: 32px; height: 32px; border-radius: 4px; cursor: pointer; \
+         border: 1px solid var(--rinch-primary-color); \
+         background: var(--rinch-color-blue-1); \
+         color: var(--rinch-primary-color); \
+         transition: background 0.15s;"
+    } else {
+        "display: inline-flex; align-items: center; justify-content: center; \
+         width: 32px; height: 32px; border-radius: 4px; cursor: pointer; \
+         border: 1px solid transparent; \
+         transition: background 0.15s;"
+    };
+    btn.set_attribute("style", style);
+    btn.set_attribute("title", "Insert link");
+
+    let icon_node = render_tabler_icon(scope, TablerIcon::Link, TablerIconStyle::Outline);
+    btn.append_child(&icon_node);
+
+    // Toggle popover on click
+    let on_change_toggle = on_change.clone();
+    let ds_toggle = ds.clone();
+    let toggle_handler = scope.register_handler(move || {
+        let mut v = ds_toggle.link_input_open.borrow_mut();
+        *v = !*v;
+        drop(v);
+        // Close other dropdowns if open
+        *ds_toggle.heading_open.borrow_mut() = false;
+        *ds_toggle.color_open.borrow_mut() = false;
+        on_change_toggle();
+    });
+    btn.set_attribute("data-rid", &toggle_handler.to_string());
+    container.append_child(&btn);
+
+    // URL input popover
+    if is_open {
+        let popover = scope.create_element("div");
+        popover.set_attribute(
+            "style",
+            "position: absolute; top: 100%; left: 0; z-index: 1000; \
+             background: var(--rinch-color-body, #fff); \
+             border: 1px solid var(--rinch-color-gray-3); \
+             border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.12); \
+             padding: 8px; display: flex; gap: 4px; align-items: center;",
+        );
+
+        // URL text input
+        let input = scope.create_element("input");
+        input.set_attribute("type", "text");
+        input.set_attribute("value", &link_url.borrow());
+        input.set_attribute("placeholder", "Enter URL...");
+        input.set_attribute(
+            "style",
+            "width: 200px; padding: 4px 8px; \
+             border: 1px solid var(--rinch-color-gray-4); \
+             border-radius: 4px; font-size: 13px;",
+        );
+
+        let url_state = link_url.clone();
+        let input_handler = scope.register_input_handler(move |value: String| {
+            *url_state.borrow_mut() = value;
+        });
+        input.set_attribute("data-oninput", &input_handler.to_string());
+        popover.append_child(&input);
+
+        // "Apply" button
+        let apply_btn = scope.create_element("div");
+        apply_btn.set_attribute(
+            "style",
+            "padding: 4px 12px; border-radius: 4px; cursor: pointer; \
+             background: var(--rinch-primary-color, #1971c2); color: #fff; \
+             font-size: 13px; font-weight: 500; white-space: nowrap;",
+        );
+        apply_btn.set_text("Apply");
+
+        let link_open_clone = ds.link_input_open.clone();
+        let link_url_clone = link_url.clone();
+        let editor_clone = editor.clone();
+        let on_change_clone = on_change.clone();
+        let apply_handler = scope.register_handler(move || {
+            *link_open_clone.borrow_mut() = false;
+            let url = link_url_clone.borrow().clone();
+            if let Ok(mut ed) = editor_clone.try_borrow_mut() {
+                let sel = ed.get_selection().clone();
+                let mut attrs = HashMap::new();
+                attrs.insert("href".to_string(), url);
+                if sel.is_cursor() {
+                    // No selection: insert placeholder link text, then select it
+                    let _ = TextCommands::insert_text(&mut ed, "link text");
+                    let end_pos = ed.get_selection().head;
+                    let start = Position::new(end_pos.0 - "link text".len());
+                    ed.set_selection(Selection::new(start, end_pos));
+                }
+                let range = ed.get_selection().range();
+                let _ = ed.doc.add_mark(
+                    range,
+                    rinch_editor::document::MarkData::with_attrs("link", attrs),
+                );
+            }
+            on_change_clone();
+        });
+        apply_btn.set_attribute("data-rid", &apply_handler.to_string());
+        popover.append_child(&apply_btn);
+
+        container.append_child(&popover);
     }
 
     container
@@ -602,15 +797,38 @@ fn control_to_tabler_icon(control: &ToolbarControl) -> Option<TablerIcon> {
 
 /// Helper: find the table at the cursor and return (table_id, row, col).
 fn find_cursor_table(editor: &Editor) -> Option<(String, usize, usize)> {
+    // Use table_selection if available (tracks actual cursor cell)
+    if let Some(cell_ref) = editor.selected_table_cell() {
+        return Some((cell_ref.table_id.clone(), cell_ref.row, cell_ref.col));
+    }
+    // Fallback: resolve from cursor position
     let sel = editor.get_selection();
     if let Ok(rp) = editor.doc.resolve_position(sel.head)
         && let Some(table_id) = editor.table_id_for_block(rp.block_index)
     {
-        // For now, default to row 0, col 0 — a proper implementation would
-        // track the cursor cell within the table.
         return Some((table_id, 0, 0));
     }
     None
+}
+
+/// Set text alignment for the current block.
+fn set_alignment(editor: &Rc<RefCell<Editor>>, alignment: Option<&str>) {
+    if let Ok(mut ed) = editor.try_borrow_mut() {
+        let sel = ed.get_selection().clone();
+        if let Ok(rp) = ed.doc.resolve_position(sel.head) {
+            let mut attrs = ed.doc.block_attrs(rp.block_index).unwrap_or_default();
+            if let Some(align) = alignment {
+                attrs.insert("align".to_string(), align.to_string());
+            } else {
+                attrs.remove("align");
+            }
+            let block_type = ed
+                .doc
+                .block_type(rp.block_index)
+                .unwrap_or_else(|| "paragraph".to_string());
+            let _ = StructureCommands::set_block_type_with_attrs(&mut ed, &block_type, attrs);
+        }
+    }
 }
 
 /// Execute the editor command associated with a toolbar control.
@@ -697,41 +915,14 @@ fn execute_toolbar_command(
                 let _ = FormattingCommands::toggle_mark(&mut ed, "superscript");
             }
         }
-        ToolbarControl::Link => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let sel = ed.get_selection().clone();
-                if sel.is_cursor() {
-                    // No selection: insert placeholder link text
-                    let _ = TextCommands::insert_text(&mut ed, "link text");
-                    // Select the inserted text
-                    let end_pos = ed.get_selection().head;
-                    let start_pos =
-                        rinch_editor::document::Position::new(end_pos.0 - "link text".len());
-                    ed.set_selection(rinch_editor::selection::Selection::new(start_pos, end_pos));
-                    // Add link mark
-                    let mut attrs = HashMap::new();
-                    attrs.insert("href".to_string(), "https://example.com".to_string());
-                    let range = ed.get_selection().range();
-                    let _ = ed.doc.add_mark(
-                        range,
-                        rinch_editor::document::MarkData::with_attrs("link", attrs),
-                    );
-                } else {
-                    // Has selection: add link mark to selected text
-                    let range = sel.range();
-                    let mut attrs = HashMap::new();
-                    attrs.insert("href".to_string(), "https://example.com".to_string());
-                    let _ = ed.doc.add_mark(
-                        range,
-                        rinch_editor::document::MarkData::with_attrs("link", attrs),
-                    );
-                }
-            }
-        }
+        // Link is now handled by render_link_popover; no-op here.
+        ToolbarControl::Link => {}
         ToolbarControl::TextColor(color) => {
             if let Ok(mut ed) = editor.try_borrow_mut() {
                 let sel = ed.get_selection().clone();
-                if !sel.is_cursor() {
+                if sel.is_cursor() {
+                    ed.toggle_stored_mark("textColor");
+                } else {
                     let range = sel.range();
                     let mut attrs = HashMap::new();
                     attrs.insert("color".to_string(), color.clone());
@@ -806,147 +997,172 @@ fn execute_toolbar_command(
                 let _ = ed.insert_table(3, 3);
             }
         }
-        ToolbarControl::AlignLeft => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let sel = ed.get_selection().clone();
-                if let Ok(rp) = ed.doc.resolve_position(sel.head) {
-                    let mut attrs = ed.doc.block_attrs(rp.block_index).unwrap_or_default();
-                    attrs.remove("align");
-                    let block_type = ed
-                        .doc
-                        .block_type(rp.block_index)
-                        .unwrap_or_else(|| "paragraph".to_string());
-                    let _ =
-                        StructureCommands::set_block_type_with_attrs(&mut ed, &block_type, attrs);
-                }
-            }
-        }
-        ToolbarControl::AlignCenter => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let sel = ed.get_selection().clone();
-                if let Ok(rp) = ed.doc.resolve_position(sel.head) {
-                    let mut attrs = ed.doc.block_attrs(rp.block_index).unwrap_or_default();
-                    attrs.insert("align".to_string(), "center".to_string());
-                    let block_type = ed
-                        .doc
-                        .block_type(rp.block_index)
-                        .unwrap_or_else(|| "paragraph".to_string());
-                    let _ =
-                        StructureCommands::set_block_type_with_attrs(&mut ed, &block_type, attrs);
-                }
-            }
-        }
-        ToolbarControl::AlignRight => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let sel = ed.get_selection().clone();
-                if let Ok(rp) = ed.doc.resolve_position(sel.head) {
-                    let mut attrs = ed.doc.block_attrs(rp.block_index).unwrap_or_default();
-                    attrs.insert("align".to_string(), "right".to_string());
-                    let block_type = ed
-                        .doc
-                        .block_type(rp.block_index)
-                        .unwrap_or_else(|| "paragraph".to_string());
-                    let _ =
-                        StructureCommands::set_block_type_with_attrs(&mut ed, &block_type, attrs);
-                }
-            }
-        }
-        ToolbarControl::AlignJustify => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let sel = ed.get_selection().clone();
-                if let Ok(rp) = ed.doc.resolve_position(sel.head) {
-                    let mut attrs = ed.doc.block_attrs(rp.block_index).unwrap_or_default();
-                    attrs.insert("align".to_string(), "justify".to_string());
-                    let block_type = ed
-                        .doc
-                        .block_type(rp.block_index)
-                        .unwrap_or_else(|| "paragraph".to_string());
-                    let _ =
-                        StructureCommands::set_block_type_with_attrs(&mut ed, &block_type, attrs);
-                }
-            }
-        }
+        ToolbarControl::AlignLeft => set_alignment(editor, None),
+        ToolbarControl::AlignCenter => set_alignment(editor, Some("center")),
+        ToolbarControl::AlignRight => set_alignment(editor, Some("right")),
+        ToolbarControl::AlignJustify => set_alignment(editor, Some("justify")),
         // HeadingDropdown and TextColorPicker are handled by their own renderers
         ToolbarControl::HeadingDropdown | ToolbarControl::TextColorPicker => {}
-        // Table manipulation commands
+        // Table manipulation commands with snapshot-based undo
         ToolbarControl::InsertRowBefore => {
             if let Ok(mut ed) = editor.try_borrow_mut()
                 && let Some((table_id, row, _col)) = find_cursor_table(&ed)
-                && let Some(table) = ed.get_table_mut(&table_id)
             {
-                table.insert_row(row);
+                let before = ed.get_table_cloned(&table_id);
+                if let Some(table) = ed.get_table_mut(&table_id) {
+                    table.insert_row(row);
+                }
+                let after = ed.get_table_cloned(&table_id);
+                ed.record_undo(UndoOperation::TableSnapshot {
+                    table_id,
+                    before,
+                    after,
+                });
             }
         }
         ToolbarControl::InsertRowAfter => {
             if let Ok(mut ed) = editor.try_borrow_mut()
                 && let Some((table_id, row, _col)) = find_cursor_table(&ed)
-                && let Some(table) = ed.get_table_mut(&table_id)
             {
-                table.insert_row(row + 1);
+                let before = ed.get_table_cloned(&table_id);
+                if let Some(table) = ed.get_table_mut(&table_id) {
+                    table.insert_row(row + 1);
+                }
+                let after = ed.get_table_cloned(&table_id);
+                ed.record_undo(UndoOperation::TableSnapshot {
+                    table_id,
+                    before,
+                    after,
+                });
             }
         }
         ToolbarControl::InsertColBefore => {
             if let Ok(mut ed) = editor.try_borrow_mut()
                 && let Some((table_id, _row, col)) = find_cursor_table(&ed)
-                && let Some(table) = ed.get_table_mut(&table_id)
             {
-                table.insert_column(col);
+                let before = ed.get_table_cloned(&table_id);
+                if let Some(table) = ed.get_table_mut(&table_id) {
+                    table.insert_column(col);
+                }
+                let after = ed.get_table_cloned(&table_id);
+                ed.record_undo(UndoOperation::TableSnapshot {
+                    table_id,
+                    before,
+                    after,
+                });
             }
         }
         ToolbarControl::InsertColAfter => {
             if let Ok(mut ed) = editor.try_borrow_mut()
                 && let Some((table_id, _row, col)) = find_cursor_table(&ed)
-                && let Some(table) = ed.get_table_mut(&table_id)
             {
-                table.insert_column(col + 1);
+                let before = ed.get_table_cloned(&table_id);
+                if let Some(table) = ed.get_table_mut(&table_id) {
+                    table.insert_column(col + 1);
+                }
+                let after = ed.get_table_cloned(&table_id);
+                ed.record_undo(UndoOperation::TableSnapshot {
+                    table_id,
+                    before,
+                    after,
+                });
             }
         }
         ToolbarControl::DeleteRow => {
             if let Ok(mut ed) = editor.try_borrow_mut()
                 && let Some((table_id, row, _col)) = find_cursor_table(&ed)
-                && let Some(table) = ed.get_table_mut(&table_id)
             {
-                let _ = table.delete_row(row);
+                let before = ed.get_table_cloned(&table_id);
+                if let Some(table) = ed.get_table_mut(&table_id) {
+                    let _ = table.delete_row(row);
+                }
+                let after = ed.get_table_cloned(&table_id);
+                ed.record_undo(UndoOperation::TableSnapshot {
+                    table_id,
+                    before,
+                    after,
+                });
             }
         }
         ToolbarControl::DeleteCol => {
             if let Ok(mut ed) = editor.try_borrow_mut()
                 && let Some((table_id, _row, col)) = find_cursor_table(&ed)
-                && let Some(table) = ed.get_table_mut(&table_id)
             {
-                let _ = table.delete_column(col);
+                let before = ed.get_table_cloned(&table_id);
+                if let Some(table) = ed.get_table_mut(&table_id) {
+                    let _ = table.delete_column(col);
+                }
+                let after = ed.get_table_cloned(&table_id);
+                ed.record_undo(UndoOperation::TableSnapshot {
+                    table_id,
+                    before,
+                    after,
+                });
             }
         }
         ToolbarControl::ToggleHeaderRow => {
             if let Ok(mut ed) = editor.try_borrow_mut()
                 && let Some((table_id, _row, _col)) = find_cursor_table(&ed)
-                && let Some(table) = ed.get_table_mut(&table_id)
             {
-                table.toggle_header_row();
+                let before = ed.get_table_cloned(&table_id);
+                if let Some(table) = ed.get_table_mut(&table_id) {
+                    table.toggle_header_row();
+                }
+                let after = ed.get_table_cloned(&table_id);
+                ed.record_undo(UndoOperation::TableSnapshot {
+                    table_id,
+                    before,
+                    after,
+                });
             }
         }
         ToolbarControl::MergeCells => {
             if let Ok(mut ed) = editor.try_borrow_mut()
                 && let Some((table_id, row, col)) = find_cursor_table(&ed)
-                && let Some(table) = ed.get_table_mut(&table_id)
             {
-                // Merge the current cell with the one to the right
-                let _ = table.merge_cells((row, col), (row, col.saturating_add(1)));
+                let before = ed.get_table_cloned(&table_id);
+                if let Some(table) = ed.get_table_mut(&table_id) {
+                    // Merge the current cell with the one to the right
+                    let _ = table.merge_cells((row, col), (row, col.saturating_add(1)));
+                }
+                let after = ed.get_table_cloned(&table_id);
+                ed.record_undo(UndoOperation::TableSnapshot {
+                    table_id,
+                    before,
+                    after,
+                });
             }
         }
         ToolbarControl::SplitCell => {
             if let Ok(mut ed) = editor.try_borrow_mut()
                 && let Some((table_id, row, col)) = find_cursor_table(&ed)
-                && let Some(table) = ed.get_table_mut(&table_id)
             {
-                let _ = table.split_cell(row, col);
+                let before = ed.get_table_cloned(&table_id);
+                if let Some(table) = ed.get_table_mut(&table_id) {
+                    let _ = table.split_cell(row, col);
+                }
+                let after = ed.get_table_cloned(&table_id);
+                ed.record_undo(UndoOperation::TableSnapshot {
+                    table_id,
+                    before,
+                    after,
+                });
             }
         }
         ToolbarControl::DeleteTable => {
             if let Ok(mut ed) = editor.try_borrow_mut() {
                 let sel = ed.get_selection().clone();
-                if let Ok(rp) = ed.doc.resolve_position(sel.head) {
+                if let Ok(rp) = ed.doc.resolve_position(sel.head)
+                    && let Some(table_id) = ed.table_id_for_block(rp.block_index)
+                {
+                    let before = ed.get_table_cloned(&table_id);
                     let _ = ed.delete_table(rp.block_index);
+                    let after = ed.get_table_cloned(&table_id); // Should be None after deletion
+                    ed.record_undo(UndoOperation::TableSnapshot {
+                        table_id,
+                        before,
+                        after,
+                    });
                 }
             }
         }

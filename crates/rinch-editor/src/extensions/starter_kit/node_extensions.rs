@@ -13,6 +13,13 @@ use crate::extensions::{CommandRegistration, Extension};
 use crate::input::{InputRule, KeyboardShortcut};
 use crate::schema::node::{AttrSpec, MarkSet, NodeSpec};
 
+/// Get the block type at the cursor's current position.
+fn cursor_block_type(editor: &Editor) -> Option<String> {
+    let sel = editor.get_selection();
+    let resolved = editor.doc.resolve_position(sel.head).ok()?;
+    editor.doc.block_type(resolved.block_index)
+}
+
 // =============================================================================
 // Input rule helpers
 // =============================================================================
@@ -159,25 +166,37 @@ impl Extension for HeadingExt {
     fn commands(&self) -> Vec<CommandRegistration> {
         vec![
             CommandRegistration::new("set_heading_1", |editor| {
-                StructureCommands::set_block_type(editor, "heading")
+                let mut attrs = HashMap::new();
+                attrs.insert("level".to_string(), "1".to_string());
+                StructureCommands::set_block_type_with_attrs(editor, "heading", attrs)
             }),
             CommandRegistration::new("set_heading_2", |editor| {
-                StructureCommands::set_block_type(editor, "heading")
+                let mut attrs = HashMap::new();
+                attrs.insert("level".to_string(), "2".to_string());
+                StructureCommands::set_block_type_with_attrs(editor, "heading", attrs)
             }),
             CommandRegistration::new("set_heading_3", |editor| {
-                StructureCommands::set_block_type(editor, "heading")
+                let mut attrs = HashMap::new();
+                attrs.insert("level".to_string(), "3".to_string());
+                StructureCommands::set_block_type_with_attrs(editor, "heading", attrs)
             }),
             CommandRegistration::new("set_heading_4", |editor| {
-                StructureCommands::set_block_type(editor, "heading")
+                let mut attrs = HashMap::new();
+                attrs.insert("level".to_string(), "4".to_string());
+                StructureCommands::set_block_type_with_attrs(editor, "heading", attrs)
             }),
             CommandRegistration::new("set_heading_5", |editor| {
-                StructureCommands::set_block_type(editor, "heading")
+                let mut attrs = HashMap::new();
+                attrs.insert("level".to_string(), "5".to_string());
+                StructureCommands::set_block_type_with_attrs(editor, "heading", attrs)
             }),
             CommandRegistration::new("set_heading_6", |editor| {
-                StructureCommands::set_block_type(editor, "heading")
+                let mut attrs = HashMap::new();
+                attrs.insert("level".to_string(), "6".to_string());
+                StructureCommands::set_block_type_with_attrs(editor, "heading", attrs)
             }),
             CommandRegistration::new("toggle_heading", |editor| {
-                let current = editor.doc.block_type(0);
+                let current = cursor_block_type(editor);
                 if current.as_deref() == Some("heading") {
                     StructureCommands::set_block_type(editor, "paragraph")
                 } else {
@@ -246,7 +265,7 @@ impl Extension for BlockquoteExt {
 
     fn commands(&self) -> Vec<CommandRegistration> {
         vec![CommandRegistration::new("toggle_blockquote", |editor| {
-            let current = editor.doc.block_type(0);
+            let current = cursor_block_type(editor);
             if current.as_deref() == Some("blockquote") {
                 StructureCommands::set_block_type(editor, "paragraph")
             } else {
@@ -292,7 +311,7 @@ impl Extension for BulletListExt {
 
     fn commands(&self) -> Vec<CommandRegistration> {
         vec![CommandRegistration::new("toggle_bullet_list", |editor| {
-            let current = editor.doc.block_type(0);
+            let current = cursor_block_type(editor);
             if current.as_deref() == Some("bullet_list") {
                 StructureCommands::lift(editor)
             } else {
@@ -346,7 +365,7 @@ impl Extension for OrderedListExt {
 
     fn commands(&self) -> Vec<CommandRegistration> {
         vec![CommandRegistration::new("toggle_ordered_list", |editor| {
-            let current = editor.doc.block_type(0);
+            let current = cursor_block_type(editor);
             if current.as_deref() == Some("ordered_list") {
                 StructureCommands::lift(editor)
             } else {
@@ -413,7 +432,7 @@ impl Extension for CodeBlockExt {
 
     fn commands(&self) -> Vec<CommandRegistration> {
         vec![CommandRegistration::new("toggle_code_block", |editor| {
-            let current = editor.doc.block_type(0);
+            let current = cursor_block_type(editor);
             if current.as_deref() == Some("code_block") {
                 StructureCommands::set_block_type(editor, "paragraph")
             } else {

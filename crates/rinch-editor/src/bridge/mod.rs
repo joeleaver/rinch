@@ -332,7 +332,10 @@ fn handle_ce_event(
                 if let Some(pos) = vd.dom_cursor_to_position(&cursor, &ed) {
                     let block_index = vd.block_index_for_node(*node_id);
                     drop(vd);
-                    let _ = ed.doc.insert_text(pos, text);
+                    if let Err(e) = ed.doc.insert_text(pos, text) {
+                        eprintln!("[bridge] TextInserted: model insert failed: {e:?}");
+                        return;
+                    }
                     let new_pos = Position::new((pos.0 + text.len()).min(ed.doc.text_length()));
                     ed.set_selection(Selection::cursor(new_pos));
                     sync_cursor_attrs(ce_root, ed.get_selection());
@@ -343,9 +346,9 @@ fn handle_ce_event(
                             .borrow_mut()
                             .shift_block_ranges(bi, *offset, text.len() as isize);
                     }
+                    on_change();
                 }
             }
-            on_change();
         }
 
         CeEvent::TextDeleted {
@@ -365,7 +368,10 @@ fn handle_ce_event(
                     let block_index = vd.block_index_for_node(*node_id);
                     drop(vd);
                     let range = Range::new(start_pos, end_pos);
-                    let _ = ed.doc.delete_range(range);
+                    if let Err(e) = ed.doc.delete_range(range) {
+                        eprintln!("[bridge] TextDeleted: model delete failed: {e:?}");
+                        return;
+                    }
                     ed.set_selection(Selection::cursor(start_pos));
                     sync_cursor_attrs(ce_root, ed.get_selection());
                     drop(ed);
@@ -375,9 +381,9 @@ fn handle_ce_event(
                             .borrow_mut()
                             .shift_block_ranges(bi, *offset, -(*length as isize));
                     }
+                    on_change();
                 }
             }
-            on_change();
         }
 
         // ── Block Structure Events (model sync + full reconcile) ──────

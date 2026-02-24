@@ -5,11 +5,50 @@
 use regex::Regex;
 use std::collections::HashMap;
 
-use crate::commands::{FormattingCommands, StructureCommands};
+use crate::commands::{FormattingCommands, StructureCommands, TextCommands};
+use crate::document::Range;
+use crate::editor::Editor;
+use crate::error::EditorError;
 use crate::extensions::{CommandRegistration, Extension};
 use crate::input::{InputRule, KeyboardShortcut};
 use crate::schema::mark::MarkSpec;
 use crate::schema::node::AttrSpec;
+use crate::selection::Selection;
+
+/// Helper for markdown mark input rules (e.g., `**bold**`, `*italic*`, `~~strike~~`).
+///
+/// Extracts the captured text (without delimiters), replaces the full match with
+/// just the captured text, then applies the specified mark to the inserted range.
+fn apply_mark_input_rule(
+    editor: &mut Editor,
+    caps: &regex::Captures,
+    mark_type: &str,
+) -> Result<(), EditorError> {
+    let full_match = caps.get(0).unwrap();
+    let captured_text = caps.get(1).unwrap().as_str().to_string();
+    let full_match_len = full_match.as_str().len();
+
+    // The regex ends with `$`, so the match ends at the cursor position.
+    let sel = editor.get_selection().clone();
+    let match_end = sel.head;
+    let match_start = match_end - full_match_len;
+
+    let match_range = Range::new(match_start, match_end);
+
+    // Replace the full match (including delimiters) with just the captured text.
+    // TextCommands::replace_text handles undo recording as a compound operation.
+    TextCommands::replace_text(editor, match_range, &captured_text)?;
+
+    // Now the captured text sits at [match_start, match_start + captured_text.len()).
+    // Apply the mark to that range.
+    let mark_range = Range::new(match_start, match_start + captured_text.len());
+    editor.set_selection(Selection::new(mark_range.start, mark_range.end));
+    FormattingCommands::add_mark(editor, mark_type)?;
+
+    // Move cursor to end of the marked text.
+    editor.set_selection(Selection::cursor(mark_range.end));
+    Ok(())
+}
 
 /// Bold formatting (`<strong>`).
 #[derive(Debug)]
@@ -43,7 +82,7 @@ impl Extension for BoldExt {
         vec![InputRule::new(
             Regex::new(r"\*\*(.+)\*\*$").unwrap(),
             "Bold (markdown)",
-            |editor, _caps| FormattingCommands::toggle_mark(editor, "bold"),
+            |editor, caps| apply_mark_input_rule(editor, caps, "bold"),
         )]
     }
 }
@@ -80,7 +119,7 @@ impl Extension for ItalicExt {
         vec![InputRule::new(
             Regex::new(r"\*(.+)\*$").unwrap(),
             "Italic (markdown)",
-            |editor, _caps| FormattingCommands::toggle_mark(editor, "italic"),
+            |editor, caps| apply_mark_input_rule(editor, caps, "italic"),
         )]
     }
 }
@@ -117,7 +156,7 @@ impl Extension for StrikeExt {
         vec![InputRule::new(
             Regex::new(r"~~(.+)~~$").unwrap(),
             "Strikethrough (markdown)",
-            |editor, _caps| FormattingCommands::toggle_mark(editor, "strike"),
+            |editor, caps| apply_mark_input_rule(editor, caps, "strike"),
         )]
     }
 }

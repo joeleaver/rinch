@@ -245,11 +245,9 @@ impl CeEventDispatcher {
         Self::default()
     }
 
-    /// Subscribe to CE events. Returns a listener index for unsubscribing.
-    pub fn subscribe(&mut self, callback: CeEventCallback) -> usize {
-        let idx = self.listeners.len();
+    /// Subscribe to CE events.
+    pub fn subscribe(&mut self, callback: CeEventCallback) {
         self.listeners.push(callback);
-        idx
     }
 
     /// Dispatch an event to all listeners.
@@ -370,8 +368,8 @@ thread_local! {
 
 /// Subscribe to CE events globally.
 ///
-/// Called by the editor bridge when mounting. Returns a listener index.
-pub fn subscribe_ce_events(callback: CeEventCallback) -> usize {
+/// Called by the editor bridge when mounting.
+pub fn subscribe_ce_events(callback: CeEventCallback) {
     CE_EVENT_DISPATCHER.with(|d| d.borrow_mut().subscribe(callback))
 }
 

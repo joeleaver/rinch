@@ -541,20 +541,23 @@ impl<D: EditableDocument> EditableState<D> {
             return 0;
         }
 
-        let bytes = text.as_bytes();
-        let mut i = pos;
+        let before = &text[..pos.min(text.len())];
+        let mut chars = before.char_indices().rev();
 
-        // Skip whitespace backwards
-        while i > 0 && bytes[i - 1].is_ascii_whitespace() {
-            i -= 1;
+        // Skip whitespace backwards, then skip non-whitespace to find word start
+        for (_, ch) in &mut chars {
+            if !ch.is_whitespace() {
+                // Found a word char; now scan back past remaining word chars
+                for (j, ch2) in chars {
+                    if ch2.is_whitespace() {
+                        return j + ch2.len_utf8();
+                    }
+                }
+                return 0;
+            }
         }
 
-        // Skip word characters backwards
-        while i > 0 && !bytes[i - 1].is_ascii_whitespace() {
-            i -= 1;
-        }
-
-        i
+        0
     }
 
     fn find_word_end(&self, pos: usize) -> usize {
@@ -564,20 +567,22 @@ impl<D: EditableDocument> EditableState<D> {
             return len;
         }
 
-        let bytes = text.as_bytes();
-        let mut i = pos;
+        let after = &text[pos.min(len)..];
+        let mut chars = after.char_indices();
 
-        // Skip word characters forwards
-        while i < len && !bytes[i].is_ascii_whitespace() {
-            i += 1;
+        // Skip non-whitespace (word chars) forwards, then skip whitespace
+        let mut found_word = false;
+        for (i, ch) in &mut chars {
+            if ch.is_whitespace() {
+                if found_word {
+                    return pos + i;
+                }
+            } else {
+                found_word = true;
+            }
         }
 
-        // Skip whitespace forwards
-        while i < len && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-
-        i
+        len
     }
 }
 
