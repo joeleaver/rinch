@@ -20,6 +20,17 @@ fn hit_test_node(
     let nw = node.layout.width;
     let nh = node.layout.height;
 
+    // Skip entire subtree when visibility: hidden — per CSS spec, hidden elements
+    // and their descendants don't receive pointer events. This also guards against
+    // Stylo not cascading visibility to children when a parent's class changes.
+    if matches!(
+        node.computed_style.visibility,
+        rinch_dom::computed_style::VisibilityValue::Hidden
+            | rinch_dom::computed_style::VisibilityValue::Collapse
+    ) {
+        return None;
+    }
+
     let point_in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
 
     // Check children in reverse order (topmost first).
@@ -45,15 +56,6 @@ fn hit_test_node(
     if matches!(
         node.computed_style.pointer_events,
         rinch_dom::computed_style::PointerEventsValue::None
-    ) {
-        return None;
-    }
-
-    // Skip hidden elements — visibility: hidden should not receive pointer events
-    if matches!(
-        node.computed_style.visibility,
-        rinch_dom::computed_style::VisibilityValue::Hidden
-            | rinch_dom::computed_style::VisibilityValue::Collapse
     ) {
         return None;
     }
@@ -308,6 +310,16 @@ fn find_scrollbar_hit_node(
     y: f32,
 ) -> Option<(usize, f64, f64)> {
     let node = tree.get(node_id)?;
+
+    // Skip hidden subtrees
+    if matches!(
+        node.computed_style.visibility,
+        rinch_dom::computed_style::VisibilityValue::Hidden
+            | rinch_dom::computed_style::VisibilityValue::Collapse
+    ) {
+        return None;
+    }
+
     let nx = offset_x + node.layout.x;
     let ny = offset_y + node.layout.y;
     let nw = node.layout.width;
