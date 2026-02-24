@@ -1,0 +1,8 @@
+[package]
+name = "drag-and-drop-demo"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop", "components", "theme", "debug"] }
+rinch-tabler-icons = { workspace = true }
