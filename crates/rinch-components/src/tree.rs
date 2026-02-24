@@ -16,7 +16,7 @@
 //!         ]),
 //! ];
 //!
-//! let tree_state = use_tree(UseTreeOptions::default());
+//! let tree_state = UseTreeReturn::new(UseTreeOptions::default());
 //!
 //! rsx! {
 //!     Tree {
@@ -32,8 +32,9 @@ use std::rc::Rc;
 
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::element::ValueCallback;
+use rinch_core::for_each_dom_typed;
 use rinch_core::reactive::Signal;
-use rinch_core::{Component, show_dom};
+use rinch_core::Component;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
 // =============================================================================
@@ -55,6 +56,21 @@ pub struct TreeNodeData {
     pub icon: Option<TablerIcon>,
     /// Optional payload data.
     pub payload: Option<Rc<dyn Any>>,
+}
+
+impl PartialEq for TreeNodeData {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+            && self.label == other.label
+            && self.children == other.children
+            && self.disabled == other.disabled
+            && self.icon == other.icon
+            && match (&self.payload, &other.payload) {
+                (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
 }
 
 impl TreeNodeData {
@@ -126,7 +142,7 @@ pub struct UseTreeOptions {
     pub multiple: bool,
 }
 
-/// Return value from `use_tree` hook.
+/// Tree state container. Create with `UseTreeReturn::new()`.
 #[derive(Clone, Copy)]
 pub struct UseTreeReturn {
     /// Signal containing expanded node values.
@@ -138,9 +154,7 @@ pub struct UseTreeReturn {
 }
 
 impl UseTreeReturn {
-    /// Create tree state without using hooks.
-    /// Use this when you need to create tree state outside of component rendering,
-    /// such as in context initialization.
+    /// Create tree state.
     pub fn new(options: UseTreeOptions) -> Self {
         let expanded = Signal::new(options.initial_expanded);
         let selected = Signal::new(options.initial_selected);
@@ -246,36 +260,6 @@ impl TreeController {
     }
 }
 
-/// Hook for managing tree state.
-///
-/// # Example
-///
-/// ```ignore
-/// let tree = use_tree(UseTreeOptions {
-///     initial_expanded: HashSet::from(["root".to_string()]),
-///     ..Default::default()
-/// });
-///
-/// // Later, programmatically expand a node:
-/// tree.controller.expand("child1");
-/// ```
-pub fn use_tree(options: UseTreeOptions) -> UseTreeReturn {
-    let expanded = Signal::new(options.initial_expanded.clone());
-    let selected = Signal::new(options.initial_selected.clone());
-
-    let controller = TreeController {
-        expanded,
-        selected,
-        multiple: options.multiple,
-    };
-
-    UseTreeReturn {
-        expanded,
-        selected,
-        controller,
-    }
-}
-
 /// Generate initial expanded state from tree data.
 ///
 /// Pass `&["*"]` to expand all nodes, or specific node values to expand.
@@ -321,18 +305,45 @@ pub fn get_tree_expanded_state(data: &[TreeNodeData], values: &[&str]) -> HashSe
 pub struct RenderTreeNodePayload<'a> {
     /// The node being rendered.
     pub node: &'a TreeNodeData,
-    /// Whether the node is expanded.
-    pub expanded: bool,
-    /// Whether the node is selected.
-    pub selected: bool,
+    /// Signal for expanded state — create Effects to react to changes.
+    pub expanded_signal: Signal<HashSet<String>>,
+    /// Signal for selected state — create Effects to react to changes.
+    pub selected_signal: Signal<HashSet<String>>,
+    /// The value of this node (for checking against the signals).
+    pub node_value: &'a str,
     /// Whether the node has children.
     pub has_children: bool,
     /// Nesting level (0 = root).
     pub level: usize,
 }
 
+impl<'a> RenderTreeNodePayload<'a> {
+    /// Check if this node is currently expanded.
+    pub fn is_expanded(&self) -> bool {
+        self.expanded_signal.get().contains(self.node_value)
+    }
+
+    /// Check if this node is currently selected.
+    pub fn is_selected(&self) -> bool {
+        self.selected_signal.get().contains(self.node_value)
+    }
+}
+
 /// Custom render function type for tree nodes.
 pub type RenderTreeNode = Rc<dyn Fn(&RenderTreeNodePayload, &mut RenderScope) -> NodeHandle>;
+
+// =============================================================================
+// Internal TreeConfig (shared across recursive renders)
+// =============================================================================
+
+struct TreeConfig {
+    expand_on_click: bool,
+    select_on_click: bool,
+    render_node: Option<RenderTreeNode>,
+    onselect: Option<ValueCallback<String>>,
+    onexpand: Option<ValueCallback<String>>,
+    oncollapse: Option<ValueCallback<String>>,
+}
 
 // =============================================================================
 // Tree Component
@@ -352,7 +363,7 @@ pub type RenderTreeNode = Rc<dyn Fn(&RenderTreeNodePayload, &mut RenderScope) ->
 ///         ]),
 /// ];
 ///
-/// let tree = use_tree(UseTreeOptions::default());
+/// let tree = UseTreeReturn::new(UseTreeOptions::default());
 ///
 /// rsx! {
 ///     Tree {
@@ -367,7 +378,7 @@ pub type RenderTreeNode = Rc<dyn Fn(&RenderTreeNodePayload, &mut RenderScope) ->
 pub struct Tree {
     /// Tree data to display.
     pub data: Vec<TreeNodeData>,
-    /// Tree state (from `use_tree` hook).
+    /// Tree state (from `UseTreeReturn::new()`).
     pub tree: Option<UseTreeReturn>,
     /// Indentation per level (spacing scale: xs, sm, md, lg, xl or custom CSS).
     pub level_offset: String,
@@ -383,6 +394,8 @@ pub struct Tree {
     pub onexpand: Option<ValueCallback<String>>,
     /// Callback when a node is collapsed.
     pub oncollapse: Option<ValueCallback<String>>,
+    /// Reactive data source. When provided, root nodes update when this changes.
+    pub data_source: Option<Rc<dyn Fn() -> Vec<TreeNodeData>>>,
 }
 
 impl std::fmt::Debug for Tree {
@@ -408,6 +421,7 @@ impl Default for Tree {
             onselect: None,
             onexpand: None,
             oncollapse: None,
+            data_source: None,
         }
     }
 }
@@ -434,274 +448,324 @@ impl Component for Tree {
         };
         container.set_attribute("style", &format!("--tree-level-offset: {}", offset_value));
 
-        // Render root nodes
-        for node in &self.data {
-            let node_handle = self.render_node_recursive(scope, node, 0);
-            container.append_child(&node_handle);
+        // Build shared config
+        let config = Rc::new(TreeConfig {
+            expand_on_click: self.expand_on_click,
+            select_on_click: self.select_on_click,
+            render_node: self.render_node.clone(),
+            onselect: self.onselect.clone(),
+            onexpand: self.onexpand.clone(),
+            oncollapse: self.oncollapse.clone(),
+        });
+
+        if let Some(ref tree_state) = self.tree {
+            let tree_state = *tree_state;
+            let cfg = config.clone();
+
+            // Use for_each_dom_typed for reactive root-level rendering
+            let collection: Rc<dyn Fn() -> Vec<TreeNodeData>> =
+                if let Some(ref data_source) = self.data_source {
+                    data_source.clone()
+                } else {
+                    let data = self.data.clone();
+                    Rc::new(move || data.clone())
+                };
+
+            for_each_dom_typed(
+                scope,
+                &container,
+                move || collection(),
+                |node: &TreeNodeData| node.value.clone(),
+                move |node: TreeNodeData, scope: &mut RenderScope| {
+                    render_tree_node(scope, &node, 0, tree_state, cfg.clone())
+                },
+            );
+        } else {
+            // No tree state — render statically
+            for node in &self.data {
+                let node_handle = render_tree_node_static(scope, node, 0, &config);
+                container.append_child(&node_handle);
+            }
         }
 
         container
     }
 }
 
-impl Tree {
-    fn render_node_recursive(
-        &self,
-        scope: &mut RenderScope,
-        node: &TreeNodeData,
-        level: usize,
-    ) -> NodeHandle {
-        let tree_state = self.tree.as_ref();
-        let expanded = tree_state
-            .map(|t| t.controller.is_expanded(&node.value))
-            .unwrap_or(false);
-        let selected = tree_state
-            .map(|t| t.controller.is_selected(&node.value))
-            .unwrap_or(false);
-        let has_children = node.has_children();
+// =============================================================================
+// Render Functions
+// =============================================================================
 
-        // Create <li> wrapper
-        let li = scope.create_element("li");
-        li.set_attribute("class", "rinch-tree__node");
-        li.set_attribute("role", "treeitem");
-        li.set_attribute("data-value", &node.value);
-        if has_children {
-            li.set_attribute("aria-expanded", if expanded { "true" } else { "false" });
-        }
-        if selected {
-            li.set_attribute("aria-selected", "true");
-        }
+/// Render a single tree node with full reactive state.
+fn render_tree_node(
+    scope: &mut RenderScope,
+    node: &TreeNodeData,
+    level: usize,
+    tree_state: UseTreeReturn,
+    config: Rc<TreeConfig>,
+) -> NodeHandle {
+    let expanded_signal = tree_state.expanded;
+    let selected_signal = tree_state.selected;
+    let has_children = node.has_children();
+    let node_value = node.value.clone();
 
-        // Create content wrapper
-        let content = scope.create_element("div");
-        let base_class = if node.disabled {
-            "rinch-tree__node-content rinch-tree__node-content--disabled"
-        } else {
-            "rinch-tree__node-content"
-        };
-        let mut classes = vec![base_class];
-        if selected {
-            classes.push("rinch-tree__node-content--selected");
-        }
-        content.set_attribute("class", &classes.join(" "));
-        content.set_attribute(
-            "style",
-            &format!("padding-left: calc(var(--tree-level-offset) * {})", level),
-        );
-        content.set_attribute("tabindex", "0");
+    // Create <li> wrapper
+    let li = scope.create_element("li");
+    li.set_attribute("class", "rinch-tree__node");
+    li.set_attribute("role", "treeitem");
+    li.set_attribute("data-value", &node.value);
 
-        // Reactive Effect for selected class updates
-        if let Some(ts) = tree_state {
-            let content_clone = content.clone();
-            let selected_signal = ts.selected;
-            let node_value = node.value.clone();
-            let is_disabled = node.disabled;
+    // Reactive aria-expanded
+    if has_children {
+        let li_clone = li.clone();
+        let nv = node_value.clone();
+        scope.create_effect(move || {
+            let is_expanded = expanded_signal.get().contains(&nv);
+            li_clone.set_attribute("aria-expanded", if is_expanded { "true" } else { "false" });
+        });
+    }
 
-            scope.create_effect(move || {
-                let is_selected = selected_signal.get().contains(&node_value);
-                let class = if is_selected {
-                    if is_disabled {
-                        "rinch-tree__node-content rinch-tree__node-content--disabled rinch-tree__node-content--selected"
-                    } else {
-                        "rinch-tree__node-content rinch-tree__node-content--selected"
-                    }
-                } else if is_disabled {
-                    "rinch-tree__node-content rinch-tree__node-content--disabled"
+    // Reactive aria-selected
+    {
+        let li_clone = li.clone();
+        let nv = node_value.clone();
+        scope.create_effect(move || {
+            let is_selected = selected_signal.get().contains(&nv);
+            if is_selected {
+                li_clone.set_attribute("aria-selected", "true");
+            } else {
+                li_clone.set_attribute("aria-selected", "false");
+            }
+        });
+    }
+
+    // Create content wrapper
+    let content = scope.create_element("div");
+    content.set_attribute("tabindex", "0");
+    content.set_attribute(
+        "style",
+        &format!("padding-left: calc(var(--tree-level-offset) * {})", level),
+    );
+
+    // Reactive class for content (selected + disabled)
+    {
+        let content_clone = content.clone();
+        let nv = node_value.clone();
+        let is_disabled = node.disabled;
+        scope.create_effect(move || {
+            let is_selected = selected_signal.get().contains(&nv);
+            let class = if is_selected {
+                if is_disabled {
+                    "rinch-tree__node-content rinch-tree__node-content--disabled rinch-tree__node-content--selected"
                 } else {
-                    "rinch-tree__node-content"
-                };
-                content_clone.set_attribute("class", class);
-            });
-        }
+                    "rinch-tree__node-content rinch-tree__node-content--selected"
+                }
+            } else if is_disabled {
+                "rinch-tree__node-content rinch-tree__node-content--disabled"
+            } else {
+                "rinch-tree__node-content"
+            };
+            content_clone.set_attribute("class", class);
+        });
+    }
 
-        // Chevron (for expandable nodes)
-        if has_children {
-            let chevron = scope.create_element("span");
-            chevron.set_attribute(
+    // Chevron (for expandable nodes)
+    if has_children {
+        let chevron = scope.create_element("span");
+        let icon = crate::icons::chevron_right_dom(scope);
+        chevron.append_child(&icon);
+
+        // Reactive chevron class
+        let chevron_clone = chevron.clone();
+        let nv = node_value.clone();
+        scope.create_effect(move || {
+            let is_expanded = expanded_signal.get().contains(&nv);
+            chevron_clone.set_attribute(
                 "class",
-                if expanded {
+                if is_expanded {
                     "rinch-tree__chevron rinch-tree__chevron--expanded"
                 } else {
                     "rinch-tree__chevron"
                 },
             );
-            let icon = crate::icons::chevron_right_dom(scope);
-            chevron.append_child(&icon);
-            content.append_child(&chevron);
+        });
 
-            // Reactive Effect for chevron class updates
-            if let Some(ts) = tree_state {
-                let chevron_clone = chevron.clone();
-                let expanded_signal = ts.expanded;
-                let node_value = node.value.clone();
-
-                scope.create_effect(move || {
-                    let is_expanded = expanded_signal.get().contains(&node_value);
-                    chevron_clone.set_attribute(
-                        "class",
-                        if is_expanded {
-                            "rinch-tree__chevron rinch-tree__chevron--expanded"
-                        } else {
-                            "rinch-tree__chevron"
-                        },
-                    );
-                });
-            }
-
-            // Reactive Effect for aria-expanded
-            if let Some(ts) = tree_state {
-                let li_clone = li.clone();
-                let expanded_signal = ts.expanded;
-                let node_value = node.value.clone();
-
-                scope.create_effect(move || {
-                    let is_expanded = expanded_signal.get().contains(&node_value);
-                    li_clone
-                        .set_attribute("aria-expanded", if is_expanded { "true" } else { "false" });
-                });
-            }
-        } else {
-            let spacer = scope.create_element("span");
-            spacer.set_attribute("class", "rinch-tree__spacer");
-            content.append_child(&spacer);
-        }
-
-        // Render node icon if present
-        if let Some(ref icon) = node.icon {
-            let icon_wrapper = scope.create_element("span");
-            icon_wrapper.set_attribute("class", "rinch-tree__icon");
-            let icon_el = render_tabler_icon(scope, *icon, TablerIconStyle::Outline);
-            icon_wrapper.append_child(&icon_el);
-            content.append_child(&icon_wrapper);
-        }
-
-        // Label or custom render
-        if let Some(ref render_fn) = self.render_node {
-            let payload = RenderTreeNodePayload {
-                node,
-                expanded,
-                selected,
-                has_children,
-                level,
-            };
-            let custom = render_fn(&payload, scope);
-            content.append_child(&custom);
-        } else {
-            let label = scope.create_element("span");
-            label.set_attribute("class", "rinch-tree__label");
-            let text = scope.create_text(&node.label);
-            label.append_child(&text);
-            content.append_child(&label);
-        }
-
-        // Click handler
-        if !node.disabled
-            && let Some(ref tree_state) = self.tree
-        {
-            let controller = tree_state.controller;
-            let expanded_signal = tree_state.expanded;
-            let value = node.value.clone();
-            let expand_on_click = self.expand_on_click && has_children;
-            let select_on_click = self.select_on_click;
-            let onselect = self.onselect.clone();
-            let onexpand = self.onexpand.clone();
-            let oncollapse = self.oncollapse.clone();
-
-            let handler_id = scope.register_handler(move || {
-                if expand_on_click {
-                    // Check current state before toggling
-                    let was_expanded = expanded_signal.get().contains(&value);
-                    controller.toggle(&value);
-                    if !was_expanded {
-                        if let Some(ref cb) = onexpand {
-                            cb.invoke(value.clone());
-                        }
-                    } else if let Some(ref cb) = oncollapse {
-                        cb.invoke(value.clone());
-                    }
-                }
-                if select_on_click {
-                    controller.select(&value);
-                    if let Some(ref cb) = onselect {
-                        cb.invoke(value.clone());
-                    }
-                }
-            });
-            content.set_attribute("data-rid", &handler_id.0.to_string());
-        }
-
-        li.append_child(&content);
-
-        // Children - use show_dom for reactive visibility
-        if has_children {
-            if let Some(ts) = tree_state {
-                let expanded_signal = ts.expanded;
-                let node_value = node.value.clone();
-
-                // Clone all the data we need to render children inside the closure
-                let children_data: Vec<TreeNodeData> = node.children.clone();
-                let child_level = level + 1;
-                let level_offset = self.level_offset.clone();
-                let expand_on_click = self.expand_on_click;
-                let select_on_click = self.select_on_click;
-                let render_node = self.render_node.clone();
-                let onselect = self.onselect.clone();
-                let onexpand = self.onexpand.clone();
-                let oncollapse = self.oncollapse.clone();
-                let tree_state_clone = self.tree;
-
-                // show_dom inserts marker + content directly into li
-                show_dom(
-                    scope,
-                    &li,
-                    move || expanded_signal.get().contains(&node_value),
-                    move |child_scope| {
-                        let children_ul = child_scope.create_element("ul");
-                        children_ul.set_attribute("class", "rinch-tree__subtree");
-                        children_ul.set_attribute("role", "group");
-
-                        // Render children recursively
-                        for child_node in &children_data {
-                            let child_tree = Tree {
-                                data: vec![child_node.clone()],
-                                tree: tree_state_clone,
-                                level_offset: level_offset.clone(),
-                                expand_on_click,
-                                select_on_click,
-                                render_node: render_node.clone(),
-                                onselect: onselect.clone(),
-                                onexpand: onexpand.clone(),
-                                oncollapse: oncollapse.clone(),
-                            };
-                            let child_handle = child_tree.render_node_recursive(
-                                child_scope,
-                                child_node,
-                                child_level,
-                            );
-                            children_ul.append_child(&child_handle);
-                        }
-
-                        children_ul
-                    },
-                    None::<fn(&mut RenderScope) -> NodeHandle>,
-                );
-            } else {
-                // No tree state - render children statically if expanded
-                if expanded {
-                    let children_ul = scope.create_element("ul");
-                    children_ul.set_attribute("class", "rinch-tree__subtree");
-                    children_ul.set_attribute("role", "group");
-
-                    for child in &node.children {
-                        let child_node = self.render_node_recursive(scope, child, level + 1);
-                        children_ul.append_child(&child_node);
-                    }
-
-                    li.append_child(&children_ul);
-                }
-            }
-        }
-
-        li
+        content.append_child(&chevron);
+    } else {
+        let spacer = scope.create_element("span");
+        spacer.set_attribute("class", "rinch-tree__spacer");
+        content.append_child(&spacer);
     }
+
+    // Render node icon if present
+    if let Some(ref icon) = node.icon {
+        let icon_wrapper = scope.create_element("span");
+        icon_wrapper.set_attribute("class", "rinch-tree__icon");
+        let icon_el = render_tabler_icon(scope, *icon, TablerIconStyle::Outline);
+        icon_wrapper.append_child(&icon_el);
+        content.append_child(&icon_wrapper);
+    }
+
+    // Label or custom render
+    if let Some(ref render_fn) = config.render_node {
+        let payload = RenderTreeNodePayload {
+            node,
+            expanded_signal,
+            selected_signal,
+            node_value: &node.value,
+            has_children,
+            level,
+        };
+        let custom = render_fn(&payload, scope);
+        content.append_child(&custom);
+    } else {
+        let label = scope.create_element("span");
+        label.set_attribute("class", "rinch-tree__label");
+        let text = scope.create_text(&node.label);
+        label.append_child(&text);
+        content.append_child(&label);
+    }
+
+    // Click handler
+    if !node.disabled {
+        let controller = tree_state.controller;
+        let value = node.value.clone();
+        let expand_on_click = config.expand_on_click && has_children;
+        let select_on_click = config.select_on_click;
+        let onselect = config.onselect.clone();
+        let onexpand = config.onexpand.clone();
+        let oncollapse = config.oncollapse.clone();
+
+        let handler_id = scope.register_handler(move || {
+            if expand_on_click {
+                let was_expanded = expanded_signal.get().contains(&value);
+                controller.toggle(&value);
+                if !was_expanded {
+                    if let Some(ref cb) = onexpand {
+                        cb.invoke(value.clone());
+                    }
+                } else if let Some(ref cb) = oncollapse {
+                    cb.invoke(value.clone());
+                }
+            }
+            if select_on_click {
+                controller.select(&value);
+                if let Some(ref cb) = onselect {
+                    cb.invoke(value.clone());
+                }
+            }
+        });
+        content.set_attribute("data-rid", &handler_id.0.to_string());
+    }
+
+    li.append_child(&content);
+
+    // Children — always render, toggle visibility with display:none
+    if has_children {
+        let children_ul = scope.create_element("ul");
+        children_ul.set_attribute("class", "rinch-tree__subtree");
+        children_ul.set_attribute("role", "group");
+
+        // Reactive display toggle — preserves all child DOM and Effects
+        let children_ul_vis = children_ul.clone();
+        let nv = node_value.clone();
+        scope.create_effect(move || {
+            if expanded_signal.get().contains(&nv) {
+                children_ul_vis.set_style("display", "");
+            } else {
+                children_ul_vis.set_style("display", "none");
+            }
+        });
+
+        // Render children using for_each_dom_typed for keyed reconciliation
+        let children_data = node.children.clone();
+        let child_level = level + 1;
+        let cfg = config.clone();
+
+        for_each_dom_typed(
+            scope,
+            &children_ul,
+            move || children_data.clone(),
+            |node: &TreeNodeData| node.value.clone(),
+            move |child_node: TreeNodeData, scope: &mut RenderScope| {
+                render_tree_node(scope, &child_node, child_level, tree_state, cfg.clone())
+            },
+        );
+
+        li.append_child(&children_ul);
+    }
+
+    li
+}
+
+/// Render a tree node without reactive state (fallback when no tree state provided).
+#[allow(clippy::only_used_in_recursion)]
+fn render_tree_node_static(
+    scope: &mut RenderScope,
+    node: &TreeNodeData,
+    level: usize,
+    config: &Rc<TreeConfig>,
+) -> NodeHandle {
+    let has_children = node.has_children();
+
+    let li = scope.create_element("li");
+    li.set_attribute("class", "rinch-tree__node");
+    li.set_attribute("role", "treeitem");
+    li.set_attribute("data-value", &node.value);
+
+    let content = scope.create_element("div");
+    let base_class = if node.disabled {
+        "rinch-tree__node-content rinch-tree__node-content--disabled"
+    } else {
+        "rinch-tree__node-content"
+    };
+    content.set_attribute("class", base_class);
+    content.set_attribute(
+        "style",
+        &format!("padding-left: calc(var(--tree-level-offset) * {})", level),
+    );
+    content.set_attribute("tabindex", "0");
+
+    if has_children {
+        let chevron = scope.create_element("span");
+        chevron.set_attribute("class", "rinch-tree__chevron");
+        let icon = crate::icons::chevron_right_dom(scope);
+        chevron.append_child(&icon);
+        content.append_child(&chevron);
+    } else {
+        let spacer = scope.create_element("span");
+        spacer.set_attribute("class", "rinch-tree__spacer");
+        content.append_child(&spacer);
+    }
+
+    if let Some(ref icon) = node.icon {
+        let icon_wrapper = scope.create_element("span");
+        icon_wrapper.set_attribute("class", "rinch-tree__icon");
+        let icon_el = render_tabler_icon(scope, *icon, TablerIconStyle::Outline);
+        icon_wrapper.append_child(&icon_el);
+        content.append_child(&icon_wrapper);
+    }
+
+    let label = scope.create_element("span");
+    label.set_attribute("class", "rinch-tree__label");
+    let text = scope.create_text(&node.label);
+    label.append_child(&text);
+    content.append_child(&label);
+
+    li.append_child(&content);
+
+    if has_children {
+        let children_ul = scope.create_element("ul");
+        children_ul.set_attribute("class", "rinch-tree__subtree");
+        children_ul.set_attribute("role", "group");
+
+        for child in &node.children {
+            let child_handle = render_tree_node_static(scope, child, level + 1, config);
+            children_ul.append_child(&child_handle);
+        }
+
+        li.append_child(&children_ul);
+    }
+
+    li
 }

@@ -5237,6 +5237,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-demo"
+version = "0.1.0"
+dependencies = [
+ "rinch",
+ "rinch-tabler-icons",
+]
+
+[[package]]
 name = "ttf-parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

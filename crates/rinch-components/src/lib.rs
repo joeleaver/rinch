@@ -79,7 +79,7 @@
 //! - [`Pagination`] - Page navigation
 //! - [`NavLink`] - Navigation link with active state
 //! - [`Stepper`] - Step progress + [`StepperStep`], [`StepperCompleted`]
-//! - [`Tree`] - Hierarchical tree view + [`TreeNodeData`], [`use_tree`]
+//! - [`Tree`] - Hierarchical tree view + [`TreeNodeData`], [`UseTreeReturn`]
 //!
 //! # Example
 //!
@@ -215,7 +215,7 @@ pub use title::Title;
 pub use tooltip::Tooltip;
 pub use tree::{
     RenderTreeNode, RenderTreeNodePayload, Tree, TreeController, TreeNodeData, UseTreeOptions,
-    UseTreeReturn, get_tree_expanded_state, use_tree,
+    UseTreeReturn, get_tree_expanded_state,
 };
 
 // Tier 4: Overlays

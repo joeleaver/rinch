@@ -828,7 +828,7 @@ Custom Default: `level_offset` defaults to `Some("md")`, `expand_on_click` defau
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `data` | `Vec<TreeNodeData>` | `[]` | Tree data |
-| `tree` | `Option<UseTreeReturn>` | `None` | State from `use_tree` hook |
+| `tree` | `Option<UseTreeReturn>` | `None` | State from `UseTreeReturn::new()` |
 | `level_offset` | `Option<String>` | **`Some("md")`** | Indentation per level |
 | `expand_on_click` | `bool` | **`true`** | Click expands/collapses |
 | `select_on_click` | `bool` | `false` | Click selects |

@@ -350,7 +350,7 @@ fn tree_demo() -> NodeHandle {
         TreeNodeData::new("README.md", "README.md"),
     ];
 
-    let tree = use_tree(UseTreeOptions {
+    let tree = UseTreeReturn::new(UseTreeOptions {
         initial_expanded: get_tree_expanded_state(&data, &["src"]),
         ..Default::default()
     });
@@ -384,7 +384,7 @@ fn tree_selection_demo() -> NodeHandle {
         ]),
     ];
 
-    let tree = use_tree(UseTreeOptions {
+    let tree = UseTreeReturn::new(UseTreeOptions {
         initial_expanded: get_tree_expanded_state(&data, &["documents"]),
         ..Default::default()
     });
