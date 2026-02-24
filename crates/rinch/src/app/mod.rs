@@ -47,6 +47,34 @@ use {
     serde_json::json,
 };
 
+// ── Drag-and-drop state ──────────────────────────────────────────────────────
+
+/// Pending drag: mousedown happened on a draggable element but the movement
+/// threshold has not yet been crossed.
+pub(crate) struct PendingDrag {
+    /// The DOM node with `draggable="true"`.
+    pub node_id: usize,
+    /// Mouse position at mousedown (physical pixels).
+    pub mousedown_pos: (f32, f32),
+}
+
+/// Active drag: movement threshold was crossed, snapshot captured.
+pub(crate) struct ActiveDrag {
+    /// The draggable source element.
+    pub node_id: usize,
+    /// Captured Vello scene of the source element's subtree (at origin).
+    pub snapshot: Scene,
+    /// Offset within element where the grab happened (physical px, relative to element top-left).
+    pub anchor: (f32, f32),
+    /// Current cursor position (physical pixels).
+    pub cursor: (f32, f32),
+    /// Node ID of the current drop target (if hovering over one).
+    pub over_target: Option<usize>,
+}
+
+/// Movement threshold in physical pixels before a drag activates.
+const DRAG_THRESHOLD: f32 = 5.0;
+
 // ── ScrollbarDrag ────────────────────────────────────────────────────────────
 
 /// State for an active scrollbar drag operation.
@@ -91,6 +119,10 @@ pub struct RinchApp {
     pub(crate) cursor_pos: Option<(f32, f32)>,
     /// Active scrollbar drag state.
     pub(crate) scrollbar_drag: Option<ScrollbarDrag>,
+    /// Pending drag-and-drop: mousedown on draggable, awaiting threshold.
+    pub(crate) pending_drag: Option<PendingDrag>,
+    /// Active drag-and-drop: threshold crossed, snapshot captured.
+    pub(crate) active_dnd: Option<ActiveDrag>,
     /// DevTools state.
     #[cfg(feature = "desktop")]
     pub(crate) devtools: DevToolsState,
@@ -149,6 +181,8 @@ impl RinchApp {
             paint_layout_cx: parley::LayoutContext::new(),
             cursor_pos: None,
             scrollbar_drag: None,
+            pending_drag: None,
+            active_dnd: None,
             #[cfg(feature = "desktop")]
             devtools: DevToolsState::new(),
             last_theme_css: None,
@@ -425,6 +459,16 @@ impl RinchApp {
                 &mut d.layout_cx,
             );
         }
+
+        // Render drag-and-drop snapshot overlay
+        if let Some(ref drag) = self.active_dnd {
+            use peniko::kurbo::Affine;
+            let tx = (drag.cursor.0 - drag.anchor.0) as f64;
+            let ty = (drag.cursor.1 - drag.anchor.1) as f64;
+            self.scene
+                .append(&drag.snapshot, Some(Affine::translate((tx, ty))));
+        }
+
         self.scene_dirty = false;
         &self.scene
     }

@@ -98,20 +98,156 @@ impl RinchApp {
                 DebugResult::Json { data: json!(null) }
             }
             DebugCommandKind::MouseDown { x, y } => {
-                // Same as PlatformEvent::MouseDown{Left}: handle click and start selection tracking
-                let click_actions = self.handle_click(x, y, scale_factor);
-                actions.extend(click_actions);
+                self.cursor_pos = Some((x, y));
+
+                // Update :active and :focus
+                if let Some(doc) = &self.doc {
+                    let hit = {
+                        let d = doc.borrow();
+                        hit_test(&d.tree, x, y)
+                    };
+                    let active_changed = doc.borrow_mut().update_active(hit);
+                    let focus_changed = doc.borrow_mut().update_focus(hit);
+                    if active_changed || focus_changed {
+                        actions.push(AppAction::RequestRedraw);
+                    }
+                }
+
+                // Check for draggable element — enter pending drag
+                let draggable_node = if let Some(doc) = &self.doc {
+                    let d = doc.borrow();
+                    if let Some(hit_id) = hit_test(&d.tree, x, y) {
+                        Self::find_draggable(&d.tree, hit_id)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(drag_node_id) = draggable_node {
+                    self.pending_drag = Some(PendingDrag {
+                        node_id: drag_node_id,
+                        mousedown_pos: (x, y),
+                    });
+                } else {
+                    let click_actions = self.handle_click(x, y, scale_factor);
+                    actions.extend(click_actions);
+                }
                 actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
             }
-            DebugCommandKind::MouseUp { x: _, y: _ } => {
+            DebugCommandKind::MouseUp { x, y } => {
+                // Dispatch MouseUp to focused render surface
+                if let Some(surface_id) = crate::render_surface::focused_surface_id() {
+                    if let Some(doc) = &self.doc {
+                        let surface_hit = {
+                            let d = doc.borrow();
+                            if let Some(hit_id) = hit_test(&d.tree, x, y) {
+                                Self::find_render_surface_at(&d.tree, hit_id, x, y)
+                            } else {
+                                None
+                            }
+                        };
+                        let (local_x, local_y) = surface_hit
+                            .filter(|(sid, _, _)| *sid == surface_id)
+                            .map(|(_, lx, ly)| (lx, ly))
+                            .unwrap_or((x, y));
+                        crate::render_surface::dispatch_surface_event(
+                            surface_id,
+                            crate::render_surface::SurfaceEvent::MouseUp {
+                                x: local_x,
+                                y: local_y,
+                                button: crate::render_surface::SurfaceMouseButton::Left,
+                            },
+                        );
+                    }
+                }
+
+                // Drag-and-drop: complete or cancel
+                if let Some(pending) = self.pending_drag.take() {
+                    // Threshold never crossed — fire normal click
+                    let (px, py) = pending.mousedown_pos;
+                    let click_actions = self.handle_click(px, py, scale_factor);
+                    actions.extend(click_actions);
+                } else if let Some(drag) = self.active_dnd.take() {
+                    // Fire ondrop on target if present
+                    if let Some(target_id) = drag.over_target {
+                        if let Some(doc) = &self.doc {
+                            Self::dispatch_drag_attr(doc, target_id, "data-ondrop");
+                        }
+                    }
+                    // Fire ondragend on dragged element
+                    if let Some(doc) = &self.doc {
+                        Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragend");
+                    }
+                    let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+                    self.resolve_and_repaint(w, h);
+                }
+
                 rinch_core::stop_drag();
                 self.scrollbar_drag = None;
                 self.ce_selecting = false;
+                actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
             }
             DebugCommandKind::MouseMove { x, y } => {
                 self.cursor_pos = Some((x, y));
+
+                // Drag-and-drop: pending → active transition
+                if let Some(ref pending) = self.pending_drag {
+                    let dx = x - pending.mousedown_pos.0;
+                    let dy = y - pending.mousedown_pos.1;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    if dist >= DRAG_THRESHOLD {
+                        let node_id = pending.node_id;
+                        let mousedown_pos = pending.mousedown_pos;
+                        self.pending_drag = None;
+
+                        self.activate_drag(node_id, mousedown_pos, (x, y), scale_factor);
+
+                        if let Some(doc) = &self.doc {
+                            Self::dispatch_drag_attr(doc, node_id, "data-ondragstart");
+                        }
+                        let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+                        self.resolve_and_repaint(w, h);
+                        actions.push(AppAction::RequestRedraw);
+                        return DebugResult::Json { data: json!(null) };
+                    }
+                    return DebugResult::Json { data: json!(null) };
+                }
+
+                // Drag-and-drop: active drag tracking
+                if let Some(ref mut drag) = self.active_dnd {
+                    drag.cursor = (x, y);
+
+                    let new_target = if let Some(doc) = &self.doc {
+                        let d = doc.borrow();
+                        hit_test(&d.tree, x, y)
+                            .and_then(|hit_id| Self::find_drop_target(&d.tree, hit_id))
+                    } else {
+                        None
+                    };
+
+                    let old_target = drag.over_target;
+                    if new_target != old_target {
+                        drag.over_target = new_target;
+                        if let Some(doc) = &self.doc {
+                            if let Some(old_id) = old_target {
+                                Self::dispatch_drag_attr(doc, old_id, "data-ondragleave");
+                            }
+                            if let Some(new_id) = new_target {
+                                Self::dispatch_drag_attr(doc, new_id, "data-ondragenter");
+                            }
+                        }
+                    }
+
+                    self.scene_dirty = true;
+                    let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+                    self.resolve_and_repaint(w, h);
+                    actions.push(AppAction::RequestRedraw);
+                    return DebugResult::Json { data: json!(null) };
+                }
 
                 // Handle component drag (sliders, floating panels, etc.)
                 if rinch_core::update_drag(x, y) {
@@ -155,6 +291,23 @@ impl RinchApp {
                         }
                         actions.push(AppAction::RequestRedraw);
                     }
+
+                    // Dispatch MouseMove to render surface under cursor
+                    if let Some(hit_id) = hovered {
+                        let surface_hit = {
+                            let d = doc.borrow();
+                            Self::find_render_surface_at(&d.tree, hit_id, x, y)
+                        };
+                        if let Some((surface_id, local_x, local_y)) = surface_hit {
+                            crate::render_surface::dispatch_surface_event(
+                                surface_id,
+                                crate::render_surface::SurfaceEvent::MouseMove {
+                                    x: local_x,
+                                    y: local_y,
+                                },
+                            );
+                        }
+                    }
                 }
                 DebugResult::Json { data: json!(null) }
             }
@@ -165,6 +318,39 @@ impl RinchApp {
                 delta_y,
             } => {
                 self.cursor_pos = Some((x, y));
+
+                // Dispatch scroll to render surface if applicable
+                let surface_consumed = if let Some(doc) = &self.doc {
+                    let surface_hit = {
+                        let d = doc.borrow();
+                        if let Some(hit_id) = hit_test(&d.tree, x, y) {
+                            Self::find_render_surface_at(&d.tree, hit_id, x, y)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some((surface_id, local_x, local_y)) = surface_hit {
+                        crate::render_surface::dispatch_surface_event(
+                            surface_id,
+                            crate::render_surface::SurfaceEvent::MouseWheel {
+                                x: local_x,
+                                y: local_y,
+                                delta_x: _delta_x as f32,
+                                delta_y: delta_y as f32,
+                            },
+                        );
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if surface_consumed {
+                    actions.push(AppAction::RequestRedraw);
+                    return DebugResult::Json { data: json!(null) };
+                }
 
                 if let Some(doc) = &self.doc {
                     let hit_node = hit_test(&doc.borrow().tree, x, y);
@@ -264,6 +450,28 @@ impl RinchApp {
                 }
             }
             DebugCommandKind::KeyPress { key, shift, ctrl } => {
+                // Escape cancels active drag-and-drop
+                if key == "Escape" {
+                    if let Some(drag) = self.active_dnd.take() {
+                        if let Some(doc) = &self.doc {
+                            if let Some(target_id) = drag.over_target {
+                                Self::dispatch_drag_attr(doc, target_id, "data-ondragleave");
+                            }
+                            Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragend");
+                        }
+                        rinch_core::stop_drag();
+                        self.scene_dirty = true;
+                        let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+                        self.resolve_and_repaint(w, h);
+                        actions.push(AppAction::RequestRedraw);
+                        return DebugResult::Json { data: json!(null) };
+                    }
+                    if self.pending_drag.take().is_some() {
+                        actions.push(AppAction::RequestRedraw);
+                        return DebugResult::Json { data: json!(null) };
+                    }
+                }
+
                 let key_data = events::KeyEventData {
                     key: key.clone(),
                     code: key.clone(),

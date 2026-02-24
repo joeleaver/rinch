@@ -154,8 +154,10 @@ impl RinchDocument {
             }
 
             /* Default body margin - set to 0 for GUI apps */
+            /* overflow-y: auto enables viewport scrolling like browsers */
             body {
                 margin: 0;
+                overflow-y: auto;
             }
         "#;
 
@@ -237,6 +239,12 @@ impl RinchDocument {
             .collect();
 
         for node_id in layout_dirty {
+            // Skip root and html nodes — their Taffy styles are manually set
+            // during NodeTree construction and must not be overwritten from
+            // computed_style (which has default width:auto instead of 100%).
+            if node_id == self.tree.root_id || node_id == self.tree.html_id {
+                continue;
+            }
             if !self.tree.contains(node_id) {
                 continue;
             }
@@ -246,7 +254,18 @@ impl RinchDocument {
             }
             if let Some(taffy_id) = node.taffy_id {
                 let dd = self.default_display_for_node(node_id);
-                let taffy_style = node.computed_style.to_taffy_style(dd);
+                let mut taffy_style = node.computed_style.to_taffy_style(dd);
+
+                // Body node needs the same overrides as apply_stylo_styles_to_taffy
+                if node_id == self.tree.body_id {
+                    if taffy_style.flex_grow == 0.0 {
+                        taffy_style.flex_grow = 1.0;
+                    }
+                    if taffy_style.size.width == taffy::Dimension::auto() {
+                        taffy_style.size.width = taffy::Dimension::percent(1.0);
+                    }
+                }
+
                 let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
             }
         }

@@ -5,11 +5,109 @@ use super::*;
 impl RinchApp {
     // ── Click handling ───────────────────────────────────────────────────
 
-    pub(super) fn handle_click(&mut self, x: f32, y: f32, _scale_factor: f64) -> Vec<AppAction> {
+    pub(super) fn handle_click(&mut self, x: f32, y: f32, scale_factor: f64) -> Vec<AppAction> {
+        self.handle_click_with_button(x, y, scale_factor, MouseButton::Left)
+    }
+
+    pub(super) fn handle_click_with_button(
+        &mut self,
+        x: f32,
+        y: f32,
+        _scale_factor: f64,
+        button: MouseButton,
+    ) -> Vec<AppAction> {
         let mut actions = Vec::new();
         let Some(doc) = &self.doc else {
             return actions;
         };
+
+        // ── Phase 0: render surface detection ────────────────────────
+        // Check if the click lands on a render surface. If so, dispatch
+        // the event, set focus, and return early.
+        {
+            let surface_hit = {
+                let d = doc.borrow();
+                if let Some(hit_id) = hit_test(&d.tree, x, y) {
+                    Self::find_render_surface_at(&d.tree, hit_id, x, y)
+                } else {
+                    None
+                }
+            };
+
+            if let Some((surface_id, local_x, local_y)) = surface_hit {
+                // Dispatch MouseDown to the surface
+                crate::render_surface::dispatch_surface_event(
+                    surface_id,
+                    crate::render_surface::SurfaceEvent::MouseDown {
+                        x: local_x,
+                        y: local_y,
+                        button: crate::render_surface::SurfaceMouseButton::from_platform(button),
+                    },
+                );
+
+                // Focus the surface
+                let prev_focused = crate::render_surface::focused_surface_id();
+                if prev_focused != Some(surface_id) {
+                    // Dispatch FocusLost to the previous surface
+                    if let Some(prev_id) = prev_focused {
+                        crate::render_surface::dispatch_surface_event(
+                            prev_id,
+                            crate::render_surface::SurfaceEvent::FocusLost,
+                        );
+                    }
+                    crate::render_surface::set_focused_surface(Some(surface_id));
+                    crate::render_surface::dispatch_surface_event(
+                        surface_id,
+                        crate::render_surface::SurfaceEvent::FocusGained,
+                    );
+
+                    // Install keyboard interceptor that forwards all keys to the surface
+                    let sid = surface_id;
+                    events::set_keyboard_interceptor(move |key_data| {
+                        crate::render_surface::dispatch_surface_event(
+                            sid,
+                            crate::render_surface::SurfaceEvent::KeyDown(
+                                crate::render_surface::SurfaceKeyData {
+                                    key: key_data.key.clone(),
+                                    code: key_data.code.clone(),
+                                    ctrl: key_data.ctrl,
+                                    shift: key_data.shift,
+                                    alt: key_data.alt,
+                                    meta: key_data.meta,
+                                },
+                            ),
+                        );
+                        true // consume all keys
+                    });
+                }
+
+                // Clear any existing input/CE focus
+                self.clear_input_focus_attrs();
+                self.focused_input_handler_id = None;
+                self.focused_input_value.clear();
+                self.focused_input_state = None;
+                self.focused_input_node_id = None;
+                if let Some(prev_ce) = self.focused_contenteditable.take() {
+                    ce::clear_active_ce_api();
+                    self.ce_ops = None;
+                    self.set_contenteditable_attributes(prev_ce.ce_node_id, false, 0, 0);
+                }
+
+                actions.push(AppAction::RequestRedraw);
+                return actions;
+            }
+
+            // If clicking outside a focused render surface, unfocus it
+            if crate::render_surface::focused_surface_id().is_some() {
+                let prev_id = crate::render_surface::focused_surface_id().unwrap();
+                crate::render_surface::dispatch_surface_event(
+                    prev_id,
+                    crate::render_surface::SurfaceEvent::FocusLost,
+                );
+                crate::render_surface::set_focused_surface(None);
+                events::clear_keyboard_interceptor();
+            }
+        }
 
         // ── Phase 1: contenteditable detection (short borrow) ───────
         // Do a quick read-only scan to decide if we hit a contenteditable.
@@ -475,5 +573,48 @@ impl RinchApp {
         } else {
             byte_offset
         }
+    }
+
+    /// Walk up from `hit_id` looking for a `data-render-surface` attribute.
+    ///
+    /// Returns `(surface_id, local_x, local_y)` where local coords are
+    /// relative to the surface element's top-left corner.
+    pub(crate) fn find_render_surface_at(
+        tree: &rinch_dom::NodeTree,
+        hit_id: usize,
+        screen_x: f32,
+        screen_y: f32,
+    ) -> Option<(usize, f32, f32)> {
+        let mut current = Some(hit_id);
+        while let Some(nid) = current {
+            if let Some(node) = tree.get(nid) {
+                if let Some(id_str) = node.attributes.get("data-render-surface") {
+                    if let Ok(surface_id) = id_str.parse::<usize>() {
+                        // Compute absolute position of the surface element
+                        let mut abs_x = node.layout.x;
+                        let mut abs_y = node.layout.y;
+                        let mut pid = node.parent;
+                        while let Some(p) = pid {
+                            if let Some(pn) = tree.get(p) {
+                                abs_x += pn.layout.x;
+                                abs_y += pn.layout.y;
+                                abs_x -= pn.scroll_offset.0 as f32;
+                                abs_y -= pn.scroll_offset.1 as f32;
+                                pid = pn.parent;
+                            } else {
+                                break;
+                            }
+                        }
+                        let local_x = screen_x - abs_x;
+                        let local_y = screen_y - abs_y;
+                        return Some((surface_id, local_x, local_y));
+                    }
+                }
+                current = node.parent;
+            } else {
+                break;
+            }
+        }
+        None
     }
 }

@@ -51,6 +51,8 @@ pub mod embed;
 #[cfg(feature = "desktop")]
 pub mod menu;
 #[cfg(feature = "desktop")]
+pub mod render_surface;
+#[cfg(feature = "desktop")]
 pub mod shell;
 pub mod window;
 #[cfg(feature = "desktop")]
@@ -115,7 +117,8 @@ pub mod prelude {
     pub use rinch_core::{create_context, try_use_context, use_context};
     // Event handling - click context, drag support, and input callbacks
     pub use rinch_core::{
-        ClickContext, InputCallback, get_click_context, start_drag, start_drag_absolute,
+        ClickContext, DragContext, InputCallback, get_click_context, start_drag,
+        start_drag_absolute,
     };
     pub use rinch_macros::{component, rsx};
     // Window control functions
@@ -139,6 +142,13 @@ pub mod prelude {
     #[cfg(feature = "desktop")]
     pub use crate::embed::{
         GameViewport, LayoutRect, RinchContext, RinchContextConfig, RinchOverlayRenderer,
+    };
+
+    // Render surface API for embedding external renderers
+    #[cfg(feature = "desktop")]
+    pub use crate::render_surface::{
+        RenderSurface, RenderSurfaceHandle, SurfaceEvent, SurfaceKeyData, SurfaceMouseButton,
+        SurfaceWriter, create_render_surface,
     };
 
     // Re-export theme types when the theme feature is enabled

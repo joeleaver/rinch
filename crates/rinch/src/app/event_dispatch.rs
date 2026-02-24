@@ -37,6 +37,69 @@ impl RinchApp {
             PlatformEvent::MouseMove { x, y } => {
                 self.cursor_pos = Some((x, y));
 
+                // ── Drag-and-drop: pending → active transition ────────────
+                if let Some(ref pending) = self.pending_drag {
+                    let dx = x - pending.mousedown_pos.0;
+                    let dy = y - pending.mousedown_pos.1;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    if dist >= DRAG_THRESHOLD {
+                        let node_id = pending.node_id;
+                        let mousedown_pos = pending.mousedown_pos;
+                        self.pending_drag = None;
+
+                        // Capture snapshot and compute anchor
+                        self.activate_drag(node_id, mousedown_pos, (x, y), scale_factor);
+
+                        // Fire ondragstart handler
+                        if let Some(doc) = &self.doc {
+                            Self::dispatch_drag_attr(doc, node_id, "data-ondragstart");
+                        }
+
+                        actions.push(AppAction::SetCursor(
+                            rinch_platform::CursorStyle::Grabbing,
+                        ));
+                        actions.push(AppAction::RequestRedraw);
+                        return actions;
+                    }
+                    // Under threshold — stay pending, suppress all other mouse handling
+                    return actions;
+                }
+
+                // ── Drag-and-drop: active drag tracking ───────────────────
+                if let Some(ref mut drag) = self.active_dnd {
+                    drag.cursor = (x, y);
+
+                    // Hit test for drop targets
+                    let new_target = if let Some(doc) = &self.doc {
+                        let d = doc.borrow();
+                        hit_test(&d.tree, x, y)
+                            .and_then(|hit_id| Self::find_drop_target(&d.tree, hit_id))
+                    } else {
+                        None
+                    };
+
+                    let old_target = drag.over_target;
+                    if new_target != old_target {
+                        drag.over_target = new_target;
+                        // Fire leave/enter events
+                        if let Some(doc) = &self.doc {
+                            if let Some(old_id) = old_target {
+                                Self::dispatch_drag_attr(doc, old_id, "data-ondragleave");
+                            }
+                            if let Some(new_id) = new_target {
+                                Self::dispatch_drag_attr(doc, new_id, "data-ondragenter");
+                            }
+                        }
+                    }
+
+                    self.scene_dirty = true;
+                    actions.push(AppAction::SetCursor(
+                        rinch_platform::CursorStyle::Grabbing,
+                    ));
+                    actions.push(AppAction::RequestRedraw);
+                    return actions;
+                }
+
                 // Check resize edge for borderless windows
                 if let Some(ref props) = self.window_props {
                     if props.borderless && props.resizable {
@@ -123,6 +186,23 @@ impl RinchApp {
                         actions.push(AppAction::RequestRedraw);
                     }
                     actions.push(AppAction::SetCursor(cursor_style));
+
+                    // Dispatch MouseMove to render surface under cursor
+                    if let Some(hit_id) = hovered {
+                        let surface_hit = {
+                            let d = doc.borrow();
+                            Self::find_render_surface_at(&d.tree, hit_id, x, y)
+                        };
+                        if let Some((surface_id, local_x, local_y)) = surface_hit {
+                            crate::render_surface::dispatch_surface_event(
+                                surface_id,
+                                crate::render_surface::SurfaceEvent::MouseMove {
+                                    x: local_x,
+                                    y: local_y,
+                                },
+                            );
+                        }
+                    }
                 }
             }
             PlatformEvent::MouseDown {
@@ -178,6 +258,28 @@ impl RinchApp {
                     }
                 }
 
+                // Check for draggable element — enter pending drag instead of
+                // immediate click handling
+                let draggable_node = if let Some(doc) = &self.doc {
+                    let d = doc.borrow();
+                    if let Some(hit_id) = hit_test(&d.tree, x, y) {
+                        Self::find_draggable(&d.tree, hit_id)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(drag_node_id) = draggable_node {
+                    self.pending_drag = Some(PendingDrag {
+                        node_id: drag_node_id,
+                        mousedown_pos: (x, y),
+                    });
+                    // Don't fire click yet — wait for threshold or mouseup
+                    return actions;
+                }
+
                 // Check scrollbar hit first
                 let scrollbar_hit = if let Some(doc) = &self.doc {
                     let d = doc.borrow();
@@ -217,10 +319,78 @@ impl RinchApp {
                     actions.extend(drag_action);
                 }
             }
-            PlatformEvent::MouseDown { .. } => {
-                // Non-left button clicks: no-op for now
+            PlatformEvent::MouseDown { x, y, button } => {
+                // Non-left button clicks: dispatch to render surfaces if applicable
+                if let Some(doc) = &self.doc {
+                    let surface_hit = {
+                        let d = doc.borrow();
+                        if let Some(hit_id) = hit_test(&d.tree, x, y) {
+                            Self::find_render_surface_at(&d.tree, hit_id, x, y)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some((surface_id, local_x, local_y)) = surface_hit {
+                        crate::render_surface::dispatch_surface_event(
+                            surface_id,
+                            crate::render_surface::SurfaceEvent::MouseDown {
+                                x: local_x,
+                                y: local_y,
+                                button: crate::render_surface::SurfaceMouseButton::from_platform(button),
+                            },
+                        );
+                    }
+                }
             }
-            PlatformEvent::MouseUp { .. } => {
+            PlatformEvent::MouseUp { x, y, button } => {
+                // ── Drag-and-drop: complete or cancel ─────────────────────
+                if let Some(pending) = self.pending_drag.take() {
+                    // Threshold was never crossed — fire normal click instead
+                    let (px, py) = pending.mousedown_pos;
+                    let click_actions = self.handle_click(px, py, scale_factor);
+                    actions.extend(click_actions);
+                } else if let Some(drag) = self.active_dnd.take() {
+                    // Fire ondrop on target if present
+                    if let Some(target_id) = drag.over_target {
+                        if let Some(doc) = &self.doc {
+                            Self::dispatch_drag_attr(doc, target_id, "data-ondrop");
+                            Self::dispatch_drag_attr(doc, target_id, "data-ondragleave");
+                        }
+                    }
+                    // Fire ondragend on source
+                    if let Some(doc) = &self.doc {
+                        Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragend");
+                    }
+                    self.scene_dirty = true;
+                    actions.push(AppAction::RequestRedraw);
+                }
+
+                // Dispatch MouseUp to focused render surface
+                if let Some(surface_id) = crate::render_surface::focused_surface_id() {
+                    if let Some(doc) = &self.doc {
+                        let surface_hit = {
+                            let d = doc.borrow();
+                            if let Some(hit_id) = hit_test(&d.tree, x, y) {
+                                Self::find_render_surface_at(&d.tree, hit_id, x, y)
+                            } else {
+                                None
+                            }
+                        };
+                        let (local_x, local_y) = surface_hit
+                            .filter(|(sid, _, _)| *sid == surface_id)
+                            .map(|(_, lx, ly)| (lx, ly))
+                            .unwrap_or((x, y));
+                        crate::render_surface::dispatch_surface_event(
+                            surface_id,
+                            crate::render_surface::SurfaceEvent::MouseUp {
+                                x: local_x,
+                                y: local_y,
+                                button: crate::render_surface::SurfaceMouseButton::from_platform(button),
+                            },
+                        );
+                    }
+                }
+
                 rinch_core::stop_drag();
                 self.scrollbar_drag = None;
                 self.ce_selecting = false;
@@ -240,7 +410,36 @@ impl RinchApp {
                 delta_y,
             } => {
                 self.cursor_pos = Some((x, y));
-                if let Some(doc) = &self.doc {
+
+                // Check if scrolling over a render surface — dispatch and skip normal scroll
+                let surface_consumed = if let Some(doc) = &self.doc {
+                    let surface_hit = {
+                        let d = doc.borrow();
+                        if let Some(hit_id) = hit_test(&d.tree, x, y) {
+                            Self::find_render_surface_at(&d.tree, hit_id, x, y)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some((surface_id, local_x, local_y)) = surface_hit {
+                        crate::render_surface::dispatch_surface_event(
+                            surface_id,
+                            crate::render_surface::SurfaceEvent::MouseWheel {
+                                x: local_x,
+                                y: local_y,
+                                delta_x: delta_x as f32,
+                                delta_y: delta_y as f32,
+                            },
+                        );
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if !surface_consumed && let Some(doc) = &self.doc {
                     let hit_node = hit_test(&doc.borrow().tree, x, y);
                     if let Some(hit_node) = hit_node {
                         let mut doc_mut = doc.borrow_mut();
@@ -300,6 +499,24 @@ impl RinchApp {
                 text,
                 modifiers,
             } => {
+                // ── Drag-and-drop: Escape cancels active drag ─────────────
+                if key == KeyCode::Escape {
+                    if let Some(drag) = self.active_dnd.take() {
+                        if let Some(doc) = &self.doc {
+                            if let Some(target_id) = drag.over_target {
+                                Self::dispatch_drag_attr(doc, target_id, "data-ondragleave");
+                            }
+                            Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragend");
+                        }
+                        self.scene_dirty = true;
+                        actions.push(AppAction::RequestRedraw);
+                        return actions;
+                    }
+                    if self.pending_drag.take().is_some() {
+                        return actions;
+                    }
+                }
+
                 let shift = modifiers.shift;
                 let ctrl = modifiers.primary();
                 let alt = modifiers.alt;
@@ -362,6 +579,17 @@ impl RinchApp {
                 };
 
                 if handled_by_interceptor {
+                    // If a render surface is focused, also forward text input
+                    if let Some(surface_id) = crate::render_surface::focused_surface_id() {
+                        if let Some(ref t) = text {
+                            if !t.is_empty() && t.chars().all(|c| !c.is_control()) {
+                                crate::render_surface::dispatch_surface_event(
+                                    surface_id,
+                                    crate::render_surface::SurfaceEvent::TextInput(t.clone()),
+                                );
+                            }
+                        }
+                    }
                     actions.push(AppAction::RequestRedraw);
                 } else if self.focused_contenteditable.is_some() {
                     // Route keyboard events to the contenteditable editing state
@@ -494,7 +722,10 @@ impl RinchApp {
                     }
                 }
 
-                if any_transitions || any_video {
+                // Check if any render surface has new frames — request redraw
+                let any_surfaces = crate::render_surface::any_surface_dirty();
+
+                if any_transitions || any_video || any_surfaces {
                     actions.push(AppAction::RequestRedraw);
                 }
             }
@@ -530,5 +761,118 @@ impl RinchApp {
         if let Some(id) = handler_id {
             events::dispatch_event(events::EventHandlerId(id));
         }
+    }
+
+    // ── Drag-and-drop helpers ─────────────────────────────────────────────
+
+    /// Walk up from `hit_id` looking for a `draggable="true"` attribute.
+    /// Returns the node ID of the first draggable ancestor (or self).
+    pub(crate) fn find_draggable(tree: &rinch_dom::NodeTree, hit_id: usize) -> Option<usize> {
+        let mut current = Some(hit_id);
+        while let Some(nid) = current {
+            if let Some(node) = tree.get(nid) {
+                if node.attributes.get("draggable").map(|v| v.as_str()) == Some("true") {
+                    return Some(nid);
+                }
+                current = node.parent;
+            } else {
+                break;
+            }
+        }
+        None
+    }
+
+    /// Walk up from `hit_id` looking for a `data-ondrop` attribute.
+    /// Returns the node ID of the first drop target ancestor (or self).
+    pub(crate) fn find_drop_target(tree: &rinch_dom::NodeTree, hit_id: usize) -> Option<usize> {
+        let mut current = Some(hit_id);
+        while let Some(nid) = current {
+            if let Some(node) = tree.get(nid) {
+                if node.attributes.contains_key("data-ondrop") {
+                    return Some(nid);
+                }
+                current = node.parent;
+            } else {
+                break;
+            }
+        }
+        None
+    }
+
+    /// Dispatch a drag event attribute (data-ondragstart, data-ondrop, etc.)
+    /// by walking up from `node_id` looking for the specified attribute.
+    pub(crate) fn dispatch_drag_attr(
+        doc: &Rc<RefCell<RinchDocument>>,
+        node_id: usize,
+        attr: &str,
+    ) {
+        let handler_id = {
+            let d = doc.borrow();
+            let mut current = Some(node_id);
+            let mut found = None;
+            while let Some(nid) = current {
+                if let Some(node) = d.tree.get(nid) {
+                    if let Some(val) = node.attributes.get(attr) {
+                        if let Ok(id) = val.parse::<usize>() {
+                            found = Some(id);
+                        }
+                        break;
+                    }
+                    current = node.parent;
+                } else {
+                    break;
+                }
+            }
+            found
+        };
+        if let Some(id) = handler_id {
+            events::dispatch_event(events::EventHandlerId(id));
+        }
+    }
+
+    /// Transition from pending drag to active drag: capture snapshot and set
+    /// up the active drag state.
+    pub(crate) fn activate_drag(
+        &mut self,
+        node_id: usize,
+        mousedown_pos: (f32, f32),
+        cursor: (f32, f32),
+        scale_factor: f64,
+    ) {
+        let Some(doc) = &self.doc else { return };
+
+        let mut snapshot = Scene::new();
+        let anchor;
+
+        {
+            let mut d = doc.borrow_mut();
+            let d = &mut *d;
+
+            // Compute the element's absolute position for the anchor
+            let (abs_x, abs_y) =
+                rinch_dom::paint::compute_absolute_position(&d.tree, node_id, scale_factor);
+            anchor = (
+                mousedown_pos.0 - abs_x as f32,
+                mousedown_pos.1 - abs_y as f32,
+            );
+
+            // Paint the subtree into the snapshot scene at (0, 0)
+            rinch_dom::paint::paint_subtree(
+                &d.tree,
+                &mut snapshot,
+                node_id,
+                scale_factor,
+                &mut d.font_cx,
+                &mut d.layout_cx,
+            );
+        }
+
+        self.active_dnd = Some(ActiveDrag {
+            node_id,
+            snapshot,
+            anchor,
+            cursor,
+            over_target: None,
+        });
     }
 }

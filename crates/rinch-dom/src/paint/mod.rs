@@ -20,9 +20,72 @@ use peniko::{Brush, Fill};
 use vello::Scene;
 
 use crate::computed_style::{
-    BackgroundValue, LineHeightValue, OverflowValue, PositionValue, VisibilityValue,
+    BackgroundValue, DisplayValue, LineHeightValue, OverflowValue, PositionValue, VisibilityValue,
 };
 use crate::node::{NodeKind, NodeTree, RawNodeId};
+
+/// Compute the absolute position of a node in physical pixels by walking
+/// up the parent chain, summing layout offsets and subtracting scroll offsets.
+pub fn compute_absolute_position(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+) -> (f64, f64) {
+    let mut x = 0.0_f64;
+    let mut y = 0.0_f64;
+    let mut current = Some(node_id);
+    while let Some(id) = current {
+        if let Some(node) = tree.get(id) {
+            x += node.layout.x as f64 * scale;
+            y += node.layout.y as f64 * scale;
+            if let Some(parent_id) = node.parent {
+                if let Some(parent) = tree.get(parent_id) {
+                    x -= parent.scroll_offset.0 * scale;
+                    y -= parent.scroll_offset.1 * scale;
+                }
+            }
+            current = node.parent;
+        } else {
+            break;
+        }
+    }
+    (x, y)
+}
+
+/// Paint a subtree rooted at `root_node_id` into `scene`, positioned at (0, 0).
+///
+/// Used for drag-and-drop snapshot capture. The subtree is translated so its
+/// top-left corner is at the scene origin, making it easy to reposition later
+/// via `Scene::append()` with an `Affine::translate()`.
+pub fn paint_subtree(
+    tree: &NodeTree,
+    scene: &mut Scene,
+    root_node_id: RawNodeId,
+    scale: f64,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<Brush>,
+) {
+    // paint_node computes each node's position as: offset + layout.x * scale.
+    // To place the subtree root at (0, 0), we negate just the root's own
+    // layout position — NOT the full absolute position (which would over-shift
+    // by the entire ancestor chain).
+    let Some(node) = tree.get(root_node_id) else {
+        return;
+    };
+    let offset_x = -(node.layout.x as f64 * scale);
+    let offset_y = -(node.layout.y as f64 * scale);
+    paint_node(
+        tree,
+        root_node_id,
+        scene,
+        scale,
+        offset_x,
+        offset_y,
+        font_cx,
+        layout_cx,
+        Affine::IDENTITY,
+    );
+}
 
 /// Paint the entire document to a Vello scene.
 ///
@@ -77,8 +140,25 @@ fn paint_node(
     }
     let layout = &node.layout;
 
-    // Skip zero-size elements (display: none produces 0x0 layout)
+    // Skip zero-size elements (display: none produces 0x0 layout).
+    // display:contents nodes also have 0x0 layout (no box), but their children
+    // still need to be painted — recurse into children then return.
     if layout.width == 0.0 && layout.height == 0.0 {
+        if node.computed_style.display == DisplayValue::Contents {
+            for &child_id in &node.children {
+                paint_node(
+                    tree,
+                    child_id,
+                    scene,
+                    scale,
+                    offset_x,
+                    offset_y,
+                    font_cx,
+                    layout_cx,
+                    parent_transform,
+                );
+            }
+        }
         return;
     }
 

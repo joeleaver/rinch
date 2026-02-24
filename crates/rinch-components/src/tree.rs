@@ -590,6 +590,27 @@ fn render_tree_node(
             );
         });
 
+        // Dedicated click handler on chevron — always toggles expand/collapse
+        // so that expand_on_click can be false while the chevron still works.
+        {
+            let controller = tree_state.controller;
+            let value = node_value.clone();
+            let onexpand = config.onexpand.clone();
+            let oncollapse = config.oncollapse.clone();
+            let handler_id = scope.register_handler(move || {
+                let was_expanded = expanded_signal.get().contains(&value);
+                controller.toggle(&value);
+                if !was_expanded {
+                    if let Some(ref cb) = onexpand {
+                        cb.invoke(value.clone());
+                    }
+                } else if let Some(ref cb) = oncollapse {
+                    cb.invoke(value.clone());
+                }
+            });
+            chevron.set_attribute("data-rid", &handler_id.0.to_string());
+        }
+
         content.append_child(&chevron);
     } else {
         let spacer = scope.create_element("span");

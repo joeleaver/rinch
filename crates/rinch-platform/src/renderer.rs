@@ -35,32 +35,47 @@ pub trait PlatformRenderer {
     /// Returns (width, height, rgba_bytes).
     fn capture_screenshot(&self) -> Result<(u32, u32, Vec<u8>), RenderError>;
 
-    /// Set video layers to composite underneath the Vello UI.
+    /// Set composite layers to render underneath the Vello UI.
     ///
-    /// Each layer contains a video texture and a viewport rect (in logical
+    /// Each layer contains pixel data and a viewport rect (in physical
     /// pixels). When layers are present, `render_scene` composites them
     /// underneath the UI instead of doing a simple texture copy.
     ///
-    /// Default implementation does nothing (no video support).
-    fn set_video_layers(&mut self, _layers: Vec<VideoLayer>) {}
+    /// Default implementation does nothing (no compositing support).
+    fn set_composite_layers(&mut self, _layers: Vec<CompositeLayer>) {}
 
-    /// Check whether there are active video layers to composite.
-    fn has_video_layers(&self) -> bool {
+    /// Check whether there are active composite layers.
+    fn has_composite_layers(&self) -> bool {
         false
+    }
+
+    /// Backward-compatible alias for [`set_composite_layers`](Self::set_composite_layers).
+    fn set_video_layers(&mut self, layers: Vec<VideoLayer>) {
+        self.set_composite_layers(layers);
+    }
+
+    /// Backward-compatible alias for [`has_composite_layers`](Self::has_composite_layers).
+    fn has_video_layers(&self) -> bool {
+        self.has_composite_layers()
     }
 }
 
-/// A video layer to composite underneath the Vello UI.
-pub struct VideoLayer {
-    /// RGBA pixel data of the decoded video frame.
+/// A composite layer to render underneath the Vello UI.
+///
+/// Used for video frames, render surfaces, and other external pixel sources.
+pub struct CompositeLayer {
+    /// RGBA pixel data.
     pub pixels: Vec<u8>,
     /// Frame width in pixels.
     pub width: u32,
     /// Frame height in pixels.
     pub height: u32,
-    /// Viewport rectangle in logical pixels: (x, y, w, h).
+    /// Viewport rectangle in physical pixels: (x, y, w, h).
     pub viewport: (f32, f32, f32, f32),
 }
+
+/// Backward-compatible alias.
+pub type VideoLayer = CompositeLayer;
 
 /// Errors that can occur during rendering.
 #[derive(Debug, Clone)]

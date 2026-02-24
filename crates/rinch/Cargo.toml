@@ -21,6 +21,7 @@ vello = { version = "0.7", optional = true }
 serde_json = { version = "1", optional = true }
 
 # Desktop-only windowing/rendering (optional, enabled by `desktop` feature)
+bytemuck = { version = "1", features = ["derive"], optional = true }
 rinch-renderer = { workspace = true, optional = true }
 anyrender = { workspace = true, optional = true }
 anyrender_vello = { workspace = true, optional = true }
@@ -63,6 +64,7 @@ desktop = [
     "dep:wgpu", "dep:winit", "dep:muda", "dep:tokio", "dep:pollster",
     "dep:futures-util", "dep:tracing-subscriber",
     "dep:png", "dep:base64", "dep:keyboard-types",
+    "dep:bytemuck",
 ]
 file-dialogs = ["rfd"]
 clipboard = ["dep:rinch-clipboard"]

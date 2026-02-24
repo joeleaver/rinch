@@ -335,7 +335,11 @@ impl RinchRuntime {
         let size = window.inner_size();
         let transparent = self.app.is_transparent();
 
-        // Extract video frames and set video layers for compositing
+        // Collect all composite layers (video + render surfaces)
+        let mut all_layers: Vec<rinch_platform::CompositeLayer> = Vec::new();
+        let s = scale as f32;
+
+        // Extract video frames for compositing
         #[cfg(feature = "video")]
         {
             // When videos are actively playing, grab new frames for compositing.
@@ -343,57 +347,78 @@ impl RinchRuntime {
             // Only clear video layers when all videos are fully unloaded (cleanup).
             if rinch_video::is_video_active() {
                 let frames = rinch_video::collect_video_frames();
-                if !frames.is_empty() {
-                    let s = scale as f32;
-                    let layers: Vec<rinch_platform::VideoLayer> = frames
-                        .into_iter()
-                        .filter_map(|(viewport_name, pixels, vid_w, vid_h)| {
-                            // Query the video viewport rect from the DOM using the player's viewport name
-                            let viewport = self.app.viewport_rect(&viewport_name)?;
-                            // Scale viewport from logical to physical pixels
-                            let viewport = (
-                                viewport.0 * s,
-                                viewport.1 * s,
-                                viewport.2 * s,
-                                viewport.3 * s,
-                            );
+                for (viewport_name, pixels, vid_w, vid_h) in frames {
+                    if let Some(viewport) = self.app.viewport_rect(&viewport_name) {
+                        // Scale viewport from logical to physical pixels
+                        let viewport = (
+                            viewport.0 * s,
+                            viewport.1 * s,
+                            viewport.2 * s,
+                            viewport.3 * s,
+                        );
 
-                            // Letterbox: fit video within viewport preserving aspect ratio
-                            let viewport = {
-                                let (vx, vy, vw, vh) = viewport;
-                                let video_aspect = vid_w as f32 / vid_h as f32;
-                                let viewport_aspect = vw / vh;
-                                if video_aspect > viewport_aspect {
-                                    let fit_h = vw / video_aspect;
-                                    let offset_y = (vh - fit_h) / 2.0;
-                                    (vx, vy + offset_y, vw, fit_h)
-                                } else {
-                                    let fit_w = vh * video_aspect;
-                                    let offset_x = (vw - fit_w) / 2.0;
-                                    (vx + offset_x, vy, fit_w, vh)
-                                }
-                            };
+                        // Letterbox: fit video within viewport preserving aspect ratio
+                        let viewport = {
+                            let (vx, vy, vw, vh) = viewport;
+                            let video_aspect = vid_w as f32 / vid_h as f32;
+                            let viewport_aspect = vw / vh;
+                            if video_aspect > viewport_aspect {
+                                let fit_h = vw / video_aspect;
+                                let offset_y = (vh - fit_h) / 2.0;
+                                (vx, vy + offset_y, vw, fit_h)
+                            } else {
+                                let fit_w = vh * video_aspect;
+                                let offset_x = (vw - fit_w) / 2.0;
+                                (vx + offset_x, vy, fit_w, vh)
+                            }
+                        };
 
-                            Some(rinch_platform::VideoLayer {
-                                pixels,
-                                width: vid_w,
-                                height: vid_h,
-                                viewport,
-                            })
-                        })
-                        .collect();
-
-                    if !layers.is_empty() {
-                        renderer.set_video_layers(layers);
+                        all_layers.push(rinch_platform::CompositeLayer {
+                            pixels,
+                            width: vid_w,
+                            height: vid_h,
+                            viewport,
+                        });
                     }
                 }
-            } else if !rinch_video::is_video_loaded() {
-                // Video fully unloaded (cleanup) — clear compositor layers
-                if renderer.has_video_layers() {
-                    renderer.set_video_layers(vec![]);
+            }
+        }
+
+        // Extract render surface frames for compositing
+        {
+            let surface_frames = crate::render_surface::collect_surface_frames();
+            for (viewport_name, pixels, surf_w, surf_h) in surface_frames {
+                if let Some(viewport) = self.app.viewport_rect(&viewport_name) {
+                    // Scale viewport from logical to physical pixels
+                    let viewport = (
+                        viewport.0 * s,
+                        viewport.1 * s,
+                        viewport.2 * s,
+                        viewport.3 * s,
+                    );
+                    all_layers.push(rinch_platform::CompositeLayer {
+                        pixels,
+                        width: surf_w,
+                        height: surf_h,
+                        viewport,
+                    });
                 }
             }
-            // else: paused/ended but loaded — keep last frame visible (no-op)
+        }
+
+        // Set or clear composite layers on the renderer
+        if !all_layers.is_empty() {
+            renderer.set_composite_layers(all_layers);
+        } else if renderer.has_composite_layers() {
+            // Clear layers only when nothing is active (no video, no surfaces)
+            #[cfg(feature = "video")]
+            let video_loaded = rinch_video::is_video_loaded();
+            #[cfg(not(feature = "video"))]
+            let video_loaded = false;
+
+            if !video_loaded && !crate::render_surface::any_surfaces_registered() {
+                renderer.set_composite_layers(vec![]);
+            }
         }
 
         // Build scene from document

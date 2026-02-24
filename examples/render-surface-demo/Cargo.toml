@@ -1,0 +1,9 @@
+[package]
+name = "render-surface-demo"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop", "debug", "components", "theme"] }
+rinch-tabler-icons = { workspace = true }
+fastrand = "2"

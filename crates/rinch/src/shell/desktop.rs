@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use peniko::Color;
-use rinch_platform::{PlatformRenderer, PlatformWindow, RenderError, VideoLayer};
+use rinch_platform::{CompositeLayer, PlatformRenderer, PlatformWindow, RenderError};
 use vello::{AaConfig, AaSupport, RenderParams, Renderer as VelloRenderer, RendererOptions, Scene};
 use wgpu::{
     Backends, CommandEncoderDescriptor, Device, Extent3d, Instance, InstanceDescriptor, Limits,
@@ -108,18 +108,15 @@ pub struct WgpuRenderer {
     pub(crate) surface_config: SurfaceConfiguration,
     pub(crate) device: Device,
     pub(crate) queue: Queue,
-    /// Video compositor (created lazily when video layers are first set).
-    #[cfg(feature = "video")]
-    pub(crate) video_compositor: Option<rinch_video::native::compositor::VideoCompositor>,
-    /// Video frame uploader (reusable texture for decoded frames).
-    #[cfg(feature = "video")]
-    pub(crate) video_frame_uploader: Option<rinch_video::native::frame_upload::FrameUploader>,
-    /// Active video layers to composite underneath the UI.
-    pub(crate) video_layers: Vec<VideoLayer>,
-    /// Composited output texture (video + UI) for screenshot capture.
+    /// Layer compositor (created lazily when composite layers are first set).
+    pub(crate) layer_compositor: Option<super::compositor::LayerCompositor>,
+    /// Frame uploader (reusable texture for decoded frames).
+    pub(crate) layer_uploader: Option<super::frame_upload::FrameUploader>,
+    /// Active composite layers to render underneath the UI.
+    pub(crate) composite_layers: Vec<CompositeLayer>,
+    /// Composited output texture (layers + UI) for screenshot capture.
     /// Created lazily, invalidated on resize.
-    #[cfg(feature = "video")]
-    pub(crate) video_composited_texture: Option<Texture>,
+    pub(crate) composited_texture: Option<Texture>,
 }
 
 impl WgpuRenderer {
@@ -206,13 +203,10 @@ impl WgpuRenderer {
             surface_config,
             device,
             queue,
-            #[cfg(feature = "video")]
-            video_compositor: None,
-            #[cfg(feature = "video")]
-            video_frame_uploader: None,
-            video_layers: Vec::new(),
-            #[cfg(feature = "video")]
-            video_composited_texture: None,
+            layer_compositor: None,
+            layer_uploader: None,
+            composite_layers: Vec::new(),
+            composited_texture: None,
         }
     }
 
@@ -266,10 +260,7 @@ impl PlatformRenderer for WgpuRenderer {
         self.surface.configure(&self.device, &self.surface_config);
         self.render_texture =
             Self::create_render_texture(&self.device, self.surface_config.format, width, height);
-        #[cfg(feature = "video")]
-        {
-            self.video_composited_texture = None;
-        }
+        self.composited_texture = None;
     }
 
     fn render_scene(
@@ -288,9 +279,9 @@ impl PlatformRenderer for WgpuRenderer {
             .render_texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        // When video layers are present, render Vello with transparent background
-        // so we can composite it on top of the video frame.
-        let vello_base_color = if !self.video_layers.is_empty() {
+        // When composite layers are present, render Vello with transparent background
+        // so we can composite it on top of the layer content.
+        let vello_base_color = if !self.composite_layers.is_empty() {
             Color::TRANSPARENT
         } else {
             base_color
@@ -317,27 +308,23 @@ impl PlatformRenderer for WgpuRenderer {
                 label: Some("rinch-dom copy encoder"),
             });
 
-        #[cfg(feature = "video")]
-        if !self.video_layers.is_empty() {
-            // Composite video + UI using the compositor pipeline.
+        if !self.composite_layers.is_empty() {
+            // Composite layers + UI using the compositor pipeline.
             // We render to a composited_texture (not directly to swapchain)
             // so that screenshot capture can read the final composited result.
-            let compositor = self.video_compositor.get_or_insert_with(|| {
-                rinch_video::native::compositor::VideoCompositor::new(
-                    &self.device,
-                    self.surface_config.format,
-                )
+            let compositor = self.layer_compositor.get_or_insert_with(|| {
+                super::compositor::LayerCompositor::new(&self.device, self.surface_config.format)
             });
             let uploader = self
-                .video_frame_uploader
-                .get_or_insert_with(rinch_video::native::frame_upload::FrameUploader::new);
+                .layer_uploader
+                .get_or_insert_with(super::frame_upload::FrameUploader::new);
 
             // Create/reuse composited texture (RENDER_ATTACHMENT + COPY_SRC)
             let sw = self.surface_config.width;
             let sh = self.surface_config.height;
-            let composited = self.video_composited_texture.get_or_insert_with(|| {
+            let composited = self.composited_texture.get_or_insert_with(|| {
                 self.device.create_texture(&TextureDescriptor {
-                    label: Some("video composited texture"),
+                    label: Some("composited texture"),
                     size: Extent3d {
                         width: sw,
                         height: sh,
@@ -353,11 +340,17 @@ impl PlatformRenderer for WgpuRenderer {
             });
             let composited_view = composited.create_view(&wgpu::TextureViewDescriptor::default());
 
-            // Phase 1: Upload all video frames to separate GPU textures,
+            // Phase 1: Upload all layer frames to separate GPU textures,
             // then blit each into its viewport region.
-            // First layer clears to black, subsequent layers load (preserve prior).
-            for (i, layer) in self.video_layers.iter().enumerate() {
-                let video_texture = uploader.upload(
+            // First layer clears to base_color, subsequent layers load (preserve prior).
+            let wgpu_base_color = wgpu::Color {
+                r: base_color.components[0] as f64,
+                g: base_color.components[1] as f64,
+                b: base_color.components[2] as f64,
+                a: base_color.components[3] as f64,
+            };
+            for (i, layer) in self.composite_layers.iter().enumerate() {
+                let layer_texture = uploader.upload(
                     i,
                     &self.device,
                     &self.queue,
@@ -366,19 +359,23 @@ impl PlatformRenderer for WgpuRenderer {
                     layer.height,
                 );
 
-                compositor.blit_video(
+                compositor.blit_layer(
                     &self.device,
                     &self.queue,
                     &mut encoder,
-                    video_texture,
+                    layer_texture,
                     &composited_view,
                     layer.viewport,
                     (self.surface_config.width, self.surface_config.height),
-                    i == 0, // clear on first layer only
+                    if i == 0 {
+                        Some(wgpu_base_color)
+                    } else {
+                        None
+                    },
                 );
             }
 
-            // Phase 2: Alpha-blend Vello UI on top of all video layers.
+            // Phase 2: Alpha-blend Vello UI on top of all layers.
             compositor.overlay_ui(
                 &self.device,
                 &mut encoder,
@@ -446,12 +443,12 @@ impl PlatformRenderer for WgpuRenderer {
         Ok(())
     }
 
-    fn set_video_layers(&mut self, layers: Vec<VideoLayer>) {
-        self.video_layers = layers;
+    fn set_composite_layers(&mut self, layers: Vec<CompositeLayer>) {
+        self.composite_layers = layers;
     }
 
-    fn has_video_layers(&self) -> bool {
-        !self.video_layers.is_empty()
+    fn has_composite_layers(&self) -> bool {
+        !self.composite_layers.is_empty()
     }
 
     fn capture_screenshot(&self) -> Result<(u32, u32, Vec<u8>), RenderError> {
@@ -461,15 +458,12 @@ impl PlatformRenderer for WgpuRenderer {
             let h = self.surface_config.height;
             let fmt = self.surface_config.format;
 
-            // When video is active, read from the composited texture
-            // (which has video + UI blended). Otherwise read from render_texture.
-            #[cfg(feature = "video")]
+            // When compositing is active, read from the composited texture
+            // (which has layers + UI blended). Otherwise read from render_texture.
             let tex = self
-                .video_composited_texture
+                .composited_texture
                 .as_ref()
                 .unwrap_or(&self.render_texture);
-            #[cfg(not(feature = "video"))]
-            let tex = &self.render_texture;
 
             let rgba =
                 super::screenshot::capture_texture_rgba(&self.device, &self.queue, tex, w, h, fmt)

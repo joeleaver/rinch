@@ -93,11 +93,20 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                     }
                 }
             } else {
-                // Click and other events use register_handler with Fn()
+                // Drag-and-drop events get their own data- attributes so the
+                // runtime can distinguish them during walk-up dispatch.
+                let data_attr = match event_name.as_str() {
+                    "ondragstart" => "data-ondragstart",
+                    "ondragend" => "data-ondragend",
+                    "ondrop" => "data-ondrop",
+                    "ondragenter" => "data-ondragenter",
+                    "ondragleave" => "data-ondragleave",
+                    _ => "data-rid", // onclick and all other events
+                };
                 quote! {
                     {
                         let __handler_id = ::rinch::core::register_handler(std::rc::Rc::new(#handler));
-                        #elem_var.set_attribute("data-rid", &__handler_id.0.to_string());
+                        #elem_var.set_attribute(#data_attr, &__handler_id.0.to_string());
                     }
                 }
             }
