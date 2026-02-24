@@ -8,7 +8,7 @@ pub fn overview_section() -> NodeHandle {
         Fragment {
             // Hero section
             Center {
-                Stack { align: "center", gap: "md",
+                Stack { gap: "md", style: "text-align: center",
                     Title { order: 1, "Welcome to UI Zoo" }
                     Text { size: "lg", color: "dimmed",
                         "A comprehensive showcase of all Rinch components"
