@@ -2,8 +2,8 @@
 //!
 //! Step-by-step progress indicator.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Component;
+use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
 /// Stepper size.
@@ -203,7 +203,11 @@ pub struct StepperStep {
 impl Component for StepperStep {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         // State classes
-        let state = if self.state.is_empty() { "inactive" } else { &self.state };
+        let state = if self.state.is_empty() {
+            "inactive"
+        } else {
+            &self.state
+        };
         let state_class = match state {
             "completed" => "rinch-stepper__step--completed",
             "progress" => "rinch-stepper__step--progress",

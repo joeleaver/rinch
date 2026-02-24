@@ -101,10 +101,7 @@ impl EditorBridge {
         };
 
         // Install click/drag interceptors (keyboard is handled by app.rs → CeOps)
-        input::install_interceptors(
-            editor.clone(),
-            reconcile_callback,
-        );
+        input::install_interceptors(editor.clone(), reconcile_callback);
 
         // Subscribe to CE events from app.rs (observer pattern).
         // When app.rs handles input directly (mouse clicks, unintercepted keys),
@@ -259,7 +256,14 @@ fn handle_ce_event(
     match event {
         CeEvent::UndoApplied | CeEvent::RedoApplied => {
             // Undo/redo can affect any block — full reconcile required
-            full_reconcile_helper(editor, doc_weak, ce_root, block_cache, view_desc, container_id);
+            full_reconcile_helper(
+                editor,
+                doc_weak,
+                ce_root,
+                block_cache,
+                view_desc,
+                container_id,
+            );
             on_change();
         }
 
@@ -274,23 +278,17 @@ fn handle_ce_event(
             if let Ok(mut ed) = editor.try_borrow_mut() {
                 let vd = view_desc.borrow();
 
-                let head_pos = vd
-                    .dom_cursor_to_position(&selection.head, &ed)
-                    .or_else(|| {
-                        // Fallback: walk DOM to find block, use approximate offset
-                        let block_index =
-                            find_block_for_node(ce_root, doc_weak, selection.head.node_id)?;
-                        let block_start = ed.doc.block_start_position(block_index);
-                        let block_len = ed
-                            .doc
-                            .block_text(block_index)
-                            .map(|t| t.len())
-                            .unwrap_or(0);
-                        let offset = selection.head.offset.min(block_len);
-                        Some(Position::new(
-                            (block_start + offset).min(ed.doc.text_length()),
-                        ))
-                    });
+                let head_pos = vd.dom_cursor_to_position(&selection.head, &ed).or_else(|| {
+                    // Fallback: walk DOM to find block, use approximate offset
+                    let block_index =
+                        find_block_for_node(ce_root, doc_weak, selection.head.node_id)?;
+                    let block_start = ed.doc.block_start_position(block_index);
+                    let block_len = ed.doc.block_text(block_index).map(|t| t.len()).unwrap_or(0);
+                    let offset = selection.head.offset.min(block_len);
+                    Some(Position::new(
+                        (block_start + offset).min(ed.doc.text_length()),
+                    ))
+                });
 
                 if let Some(head_pos) = head_pos {
                     let anchor_pos = if selection.is_collapsed() {
@@ -304,11 +302,8 @@ fn handle_ce_event(
                                     selection.anchor.node_id,
                                 )?;
                                 let anchor_start = ed.doc.block_start_position(block_index);
-                                let anchor_len = ed
-                                    .doc
-                                    .block_text(block_index)
-                                    .map(|t| t.len())
-                                    .unwrap_or(0);
+                                let anchor_len =
+                                    ed.doc.block_text(block_index).map(|t| t.len()).unwrap_or(0);
                                 let anchor_off = selection.anchor.offset.min(anchor_len);
                                 Some(Position::new(
                                     (anchor_start + anchor_off).min(ed.doc.text_length()),
@@ -324,8 +319,11 @@ fn handle_ce_event(
         }
 
         // ── Text Events (incremental sync — no reconciler) ────────────
-
-        CeEvent::TextInserted { node_id, offset, text } => {
+        CeEvent::TextInserted {
+            node_id,
+            offset,
+            text,
+        } => {
             // Incremental sync: insert text into EditorDocument model.
             // This is the hot path — no reconciler, no rerender.
             if let Ok(mut ed) = editor.try_borrow_mut() {
@@ -335,26 +333,26 @@ fn handle_ce_event(
                     let block_index = vd.block_index_for_node(*node_id);
                     drop(vd);
                     let _ = ed.doc.insert_text(pos, text);
-                    let new_pos = Position::new(
-                        (pos.0 + text.len()).min(ed.doc.text_length()),
-                    );
+                    let new_pos = Position::new((pos.0 + text.len()).min(ed.doc.text_length()));
                     ed.set_selection(Selection::cursor(new_pos));
                     sync_cursor_attrs(ce_root, ed.get_selection());
                     drop(ed);
                     // Shift ViewDesc byte ranges for the affected block
                     if let Some(bi) = block_index {
-                        view_desc.borrow_mut().shift_block_ranges(
-                            bi,
-                            *offset,
-                            text.len() as isize,
-                        );
+                        view_desc
+                            .borrow_mut()
+                            .shift_block_ranges(bi, *offset, text.len() as isize);
                     }
                 }
             }
             on_change();
         }
 
-        CeEvent::TextDeleted { node_id, offset, length } => {
+        CeEvent::TextDeleted {
+            node_id,
+            offset,
+            length,
+        } => {
             // Incremental sync: delete text from EditorDocument model.
             if let Ok(mut ed) = editor.try_borrow_mut() {
                 let vd = view_desc.borrow();
@@ -373,11 +371,9 @@ fn handle_ce_event(
                     drop(ed);
                     // Shift ViewDesc byte ranges for the affected block
                     if let Some(bi) = block_index {
-                        view_desc.borrow_mut().shift_block_ranges(
-                            bi,
-                            *offset,
-                            -(*length as isize),
-                        );
+                        view_desc
+                            .borrow_mut()
+                            .shift_block_ranges(bi, *offset, -(*length as isize));
                     }
                 }
             }
@@ -385,15 +381,17 @@ fn handle_ce_event(
         }
 
         // ── Block Structure Events (model sync + full reconcile) ──────
-
-        CeEvent::BlockSplit { original_block_id, split_offset, .. } => {
+        CeEvent::BlockSplit {
+            original_block_id,
+            split_offset,
+            ..
+        } => {
             // Sync model: split the block at the given offset.
             if let Ok(mut ed) = editor.try_borrow_mut() {
                 let vd = view_desc.borrow();
                 if let Some(block_index) = vd.block_index_for_node(*original_block_id) {
                     let block_start = ed.doc.block_start_position(block_index);
-                    let block_len = ed.doc.block_text(block_index)
-                        .map(|t| t.len()).unwrap_or(0);
+                    let block_len = ed.doc.block_text(block_index).map(|t| t.len()).unwrap_or(0);
                     let clamped_offset = (*split_offset).min(block_len);
                     let pos = Position::new(block_start + clamped_offset);
                     drop(vd);
@@ -405,11 +403,22 @@ fn handle_ce_event(
                 }
             }
             // Full reconcile to rebuild ViewDesc after structural change
-            full_reconcile_helper(editor, doc_weak, ce_root, block_cache, view_desc, container_id);
+            full_reconcile_helper(
+                editor,
+                doc_weak,
+                ce_root,
+                block_cache,
+                view_desc,
+                container_id,
+            );
             on_change();
         }
 
-        CeEvent::BlockJoined { surviving_block_id, merge_offset, .. } => {
+        CeEvent::BlockJoined {
+            surviving_block_id,
+            merge_offset,
+            ..
+        } => {
             // Sync model: join two adjacent blocks by deleting the block boundary.
             if let Ok(mut ed) = editor.try_borrow_mut() {
                 let vd = view_desc.borrow();
@@ -419,8 +428,11 @@ fn handle_ce_event(
                     if surviving_idx + 1 < block_count {
                         // Delete range spanning the block boundary:
                         // from end of surviving block's text to start of next block's text.
-                        let surviving_text_len = ed.doc.block_text(surviving_idx)
-                            .map(|t| t.len()).unwrap_or(0);
+                        let surviving_text_len = ed
+                            .doc
+                            .block_text(surviving_idx)
+                            .map(|t| t.len())
+                            .unwrap_or(0);
                         let block_start = ed.doc.block_start_position(surviving_idx);
                         let del_start = Position::new(block_start + surviving_text_len);
                         let next_block_start = ed.doc.block_start_position(surviving_idx + 1);
@@ -429,19 +441,29 @@ fn handle_ce_event(
                             let _ = ed.doc.delete_range(Range::new(del_start, del_end));
                         }
                         // Place cursor at the merge point
-                        let cursor_pos = Position::new(
-                            (block_start + merge_offset).min(ed.doc.text_length()),
-                        );
+                        let cursor_pos =
+                            Position::new((block_start + merge_offset).min(ed.doc.text_length()));
                         ed.set_selection(Selection::cursor(cursor_pos));
                         sync_cursor_attrs(ce_root, ed.get_selection());
                     }
                 }
             }
-            full_reconcile_helper(editor, doc_weak, ce_root, block_cache, view_desc, container_id);
+            full_reconcile_helper(
+                editor,
+                doc_weak,
+                ce_root,
+                block_cache,
+                view_desc,
+                container_id,
+            );
             on_change();
         }
 
-        CeEvent::BlockTypeChanged { old_node_id, new_tag, .. } => {
+        CeEvent::BlockTypeChanged {
+            old_node_id,
+            new_tag,
+            ..
+        } => {
             // Sync model: change the block's type.
             if let Ok(mut ed) = editor.try_borrow_mut() {
                 let vd = view_desc.borrow();
@@ -451,12 +473,18 @@ fn handle_ce_event(
                     let _ = ed.doc.set_block_type(block_index, node_type, attrs);
                 }
             }
-            full_reconcile_helper(editor, doc_weak, ce_root, block_cache, view_desc, container_id);
+            full_reconcile_helper(
+                editor,
+                doc_weak,
+                ce_root,
+                block_cache,
+                view_desc,
+                container_id,
+            );
             on_change();
         }
 
         // ── Inline Formatting Events (model sync + full reconcile) ────
-
         CeEvent::SelectionWrapped { tag, .. } => {
             // Sync model: add mark to the selected text range.
             if let Some(mark_type) = tag_to_mark_type(tag)
@@ -467,7 +495,14 @@ fn handle_ce_event(
                     let _ = ed.doc.add_mark(sel.range(), MarkData::new(mark_type));
                 }
             }
-            full_reconcile_helper(editor, doc_weak, ce_root, block_cache, view_desc, container_id);
+            full_reconcile_helper(
+                editor,
+                doc_weak,
+                ce_root,
+                block_cache,
+                view_desc,
+                container_id,
+            );
             on_change();
         }
 
@@ -481,12 +516,18 @@ fn handle_ce_event(
                     let _ = ed.doc.remove_mark(sel.range(), mark_type);
                 }
             }
-            full_reconcile_helper(editor, doc_weak, ce_root, block_cache, view_desc, container_id);
+            full_reconcile_helper(
+                editor,
+                doc_weak,
+                ce_root,
+                block_cache,
+                view_desc,
+                container_id,
+            );
             on_change();
         }
 
         // ── Other Events (full reconcile as safe fallback) ────────────
-
         CeEvent::HtmlPasted { .. }
         | CeEvent::TextNodeCreated { .. }
         | CeEvent::NodeRemoved { .. }
@@ -496,7 +537,14 @@ fn handle_ce_event(
         | CeEvent::TableDeleted { .. } => {
             // These events involve complex structural changes.
             // Full reconcile keeps the model and ViewDesc consistent.
-            full_reconcile_helper(editor, doc_weak, ce_root, block_cache, view_desc, container_id);
+            full_reconcile_helper(
+                editor,
+                doc_weak,
+                ce_root,
+                block_cache,
+                view_desc,
+                container_id,
+            );
             on_change();
         }
     }
@@ -546,12 +594,30 @@ fn full_reconcile_helper(
 /// Map a DOM tag to an editor block type name and optional attributes.
 fn tag_to_block_type(tag: &str) -> (&str, Option<std::collections::HashMap<String, String>>) {
     match tag {
-        "h1" => ("heading", Some([("level".into(), "1".into())].into_iter().collect())),
-        "h2" => ("heading", Some([("level".into(), "2".into())].into_iter().collect())),
-        "h3" => ("heading", Some([("level".into(), "3".into())].into_iter().collect())),
-        "h4" => ("heading", Some([("level".into(), "4".into())].into_iter().collect())),
-        "h5" => ("heading", Some([("level".into(), "5".into())].into_iter().collect())),
-        "h6" => ("heading", Some([("level".into(), "6".into())].into_iter().collect())),
+        "h1" => (
+            "heading",
+            Some([("level".into(), "1".into())].into_iter().collect()),
+        ),
+        "h2" => (
+            "heading",
+            Some([("level".into(), "2".into())].into_iter().collect()),
+        ),
+        "h3" => (
+            "heading",
+            Some([("level".into(), "3".into())].into_iter().collect()),
+        ),
+        "h4" => (
+            "heading",
+            Some([("level".into(), "4".into())].into_iter().collect()),
+        ),
+        "h5" => (
+            "heading",
+            Some([("level".into(), "5".into())].into_iter().collect()),
+        ),
+        "h6" => (
+            "heading",
+            Some([("level".into(), "6".into())].into_iter().collect()),
+        ),
         "blockquote" => ("blockquote", None),
         "pre" => ("code_block", None),
         _ => ("paragraph", None), // div, p, and default

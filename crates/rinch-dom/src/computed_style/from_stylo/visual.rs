@@ -16,9 +16,7 @@ pub(super) fn visibility_from_stylo(
     }
 }
 
-pub(super) fn cursor_from_stylo(
-    cursor: &style::values::specified::ui::CursorKind,
-) -> CursorValue {
+pub(super) fn cursor_from_stylo(cursor: &style::values::specified::ui::CursorKind) -> CursorValue {
     use style::values::specified::ui::CursorKind;
     match *cursor {
         CursorKind::Auto => CursorValue::Auto,
@@ -201,6 +199,31 @@ pub(super) fn text_shadow_from_stylo(
         .collect()
 }
 
+pub(super) fn box_shadow_from_stylo(
+    shadows: &style::properties::longhands::box_shadow::computed_value::T,
+    text_color: &style::color::AbsoluteColor,
+) -> Vec<BoxShadowValue> {
+    shadows
+        .0
+        .iter()
+        .map(|s| {
+            let color = if s.base.color.is_currentcolor() {
+                color_from_absolute(text_color)
+            } else {
+                color_from_stylo(&s.base.color)
+            };
+            BoxShadowValue {
+                offset_x: s.base.horizontal.px(),
+                offset_y: s.base.vertical.px(),
+                blur_radius: s.base.blur.0.px(),
+                spread_radius: s.spread.px(),
+                color,
+                inset: s.inset,
+            }
+        })
+        .collect()
+}
+
 pub(super) fn background_from_stylo(
     bg: &style::properties::style_structs::Background,
     text_color: &style::color::AbsoluteColor,
@@ -237,7 +260,9 @@ pub(super) fn background_from_stylo(
             }
             Image::Url(url_value) => {
                 let url_str = match url_value {
-                    style::values::computed::url::ComputedUrl::Valid(url) => url.as_str().to_string(),
+                    style::values::computed::url::ComputedUrl::Valid(url) => {
+                        url.as_str().to_string()
+                    }
                     style::values::computed::url::ComputedUrl::Invalid(s) => s.to_string(),
                 };
                 if !url_str.is_empty() {
@@ -260,13 +285,9 @@ pub(super) fn background_from_stylo(
     }
 }
 
-fn gradient_direction_to_angle(
-    direction: &style::values::computed::image::LineDirection,
-) -> f32 {
+fn gradient_direction_to_angle(direction: &style::values::computed::image::LineDirection) -> f32 {
     use style::values::computed::image::LineDirection;
-    use style::values::specified::position::{
-        HorizontalPositionKeyword, VerticalPositionKeyword,
-    };
+    use style::values::specified::position::{HorizontalPositionKeyword, VerticalPositionKeyword};
     match direction {
         LineDirection::Angle(angle) => angle.degrees(),
         LineDirection::Horizontal(h) => match *h {

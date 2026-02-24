@@ -355,6 +355,41 @@ fn render_element_to_dom(
     }
 }
 
+/// Renderer that produces a menu bar DOM node.
+///
+/// Used by `MenuBarContext` to pass a menu bar renderer from the shell layer
+/// (which owns `Menu` types) to components (which can't depend on `rinch`).
+pub type MenuBarRenderer = Rc<dyn Fn(&mut crate::dom::RenderScope) -> crate::dom::NodeHandle>;
+
+/// Layout mode for the in-app menu bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MenuBarLayout {
+    /// Menu bar is a separate row below the titlebar (default).
+    #[default]
+    BelowTitlebar,
+    /// Menu items render inline in the titlebar (VS Code style).
+    InlineTitlebar,
+}
+
+/// Context for in-app menu bar rendering (Linux).
+///
+/// Set by the shell layer when a borderless window has menus.
+/// Consumed by `BorderlessWindow` to render the menu bar between the
+/// titlebar and content area.
+#[derive(Clone)]
+pub struct MenuBarContext {
+    pub renderer: MenuBarRenderer,
+    /// Height of the menu bar in pixels, used by BorderlessWindow to add
+    /// padding-top on the content area.
+    pub bar_height: u32,
+    /// Layout mode for the menu bar.
+    pub layout: MenuBarLayout,
+    /// Renderer for just the menu items row (used by InlineTitlebar layout).
+    pub items_renderer: Option<MenuBarRenderer>,
+    /// Renderer for just the click-outside overlay (used by InlineTitlebar layout).
+    pub overlay_renderer: Option<MenuBarRenderer>,
+}
+
 /// Callback invoked when the window close button is pressed.
 ///
 /// Return `true` to proceed with closing (exit), or `false` to cancel
@@ -415,6 +450,9 @@ pub struct WindowProps {
     ///
     /// If `None`, the default behavior is to exit the application.
     pub on_close_requested: Option<CloseRequestCallback>,
+    /// When true, menu items render inline in the titlebar (VS Code style)
+    /// instead of on a separate row below the titlebar.
+    pub menu_in_titlebar: bool,
 }
 
 impl Default for WindowProps {
@@ -434,6 +472,7 @@ impl Default for WindowProps {
             icon: None,
             app_id: None,
             on_close_requested: None,
+            menu_in_titlebar: false,
         }
     }
 }
@@ -446,74 +485,11 @@ impl std::fmt::Debug for WindowProps {
             .field("height", &self.height)
             .field("borderless", &self.borderless)
             .field("transparent", &self.transparent)
-            .field("on_close_requested", &self.on_close_requested.as_ref().map(|_| "Fn() -> bool"))
+            .field(
+                "on_close_requested",
+                &self.on_close_requested.as_ref().map(|_| "Fn() -> bool"),
+            )
             .finish()
-    }
-}
-
-/// Properties for the AppMenu component.
-#[derive(Debug, Clone)]
-pub struct AppMenuProps {
-    /// If true, render as native OS menu. If false, render as HTML.
-    pub native: bool,
-}
-
-impl Default for AppMenuProps {
-    fn default() -> Self {
-        Self { native: true }
-    }
-}
-
-/// Properties for a Menu (dropdown) within AppMenu.
-#[derive(Debug, Clone)]
-pub struct MenuProps {
-    pub label: String,
-}
-
-/// Callback type for menu items.
-///
-/// Uses `Rc` for `Clone` support, allowing callbacks to be stored and invoked.
-#[derive(Clone)]
-pub struct MenuItemCallback(pub Rc<dyn Fn()>);
-
-impl MenuItemCallback {
-    /// Create a new menu item callback from a function.
-    pub fn new<F: Fn() + 'static>(f: F) -> Self {
-        Self(Rc::new(f))
-    }
-
-    /// Invoke the callback.
-    pub fn invoke(&self) {
-        (self.0)()
-    }
-}
-
-impl std::fmt::Debug for MenuItemCallback {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("MenuItemCallback(...)")
-    }
-}
-
-/// Properties for a MenuItem.
-#[derive(Debug, Clone)]
-pub struct MenuItemProps {
-    pub label: String,
-    pub shortcut: Option<String>,
-    pub enabled: bool,
-    pub checked: Option<bool>,
-    /// Callback to invoke when the menu item is activated.
-    pub onclick: Option<MenuItemCallback>,
-}
-
-impl Default for MenuItemProps {
-    fn default() -> Self {
-        Self {
-            label: String::new(),
-            shortcut: None,
-            enabled: true,
-            checked: None,
-            onclick: None,
-        }
     }
 }
 

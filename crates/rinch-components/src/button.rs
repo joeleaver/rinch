@@ -3,7 +3,7 @@
 //! A clickable button with multiple variants and sizes.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Component, Callback};
+use rinch_core::{Callback, Component};
 
 /// Button variant styles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

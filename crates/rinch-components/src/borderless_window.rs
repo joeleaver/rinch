@@ -174,19 +174,30 @@ impl Component for BorderlessWindow {
         };
         container.set_attribute("class", &self.class_string());
 
+        // Check for menu bar context early (needed to decide titlebar layout)
+        let menu_ctx = rinch_core::try_use_context::<rinch_core::MenuBarContext>();
+
+        let is_inline = menu_ctx
+            .as_ref()
+            .map(|ctx| ctx.layout == rinch_core::MenuBarLayout::InlineTitlebar)
+            .unwrap_or(false);
+
         // Create titlebar (draggable for window movement)
         let titlebar = __scope.create_element("div");
         titlebar.set_attribute("class", "rinch-borderlesswindow__titlebar");
         titlebar.set_attribute("data-drag-window", "true");
 
-        // Left section (custom content or empty)
-        let left = __scope.create_element("div");
-        left.set_attribute("class", "rinch-borderlesswindow__left");
-        if let Some(ref render_left) = self.left_section {
-            let content = render_left(__scope);
-            left.append_child(&content);
+        // Left section — only render in titlebar when NOT inline
+        // (inline layout moves it to the menu layer)
+        if !is_inline {
+            let left = __scope.create_element("div");
+            left.set_attribute("class", "rinch-borderlesswindow__left");
+            if let Some(ref render_left) = self.left_section {
+                let content = render_left(__scope);
+                left.append_child(&content);
+            }
+            titlebar.append_child(&left);
         }
-        titlebar.append_child(&left);
 
         // Title
         let title_el = __scope.create_element("div");
@@ -319,10 +330,56 @@ impl Component for BorderlessWindow {
         // Content area
         let content = __scope.create_element("div");
         content.set_attribute("class", "rinch-borderlesswindow__content");
+        if let Some(ref ctx) = menu_ctx {
+            if ctx.bar_height > 0 {
+                // Leave space for the absolutely-positioned menu bar (BelowTitlebar)
+                content.set_attribute("style", &format!("padding-top: {}px;", ctx.bar_height));
+            }
+        }
         for child in children {
             content.append_child(child);
         }
         container.append_child(&content);
+
+        if is_inline {
+            // InlineTitlebar: build a menu-layer as the LAST child of the container.
+            // This layer contains the overlay and an items-row that visually overlaps
+            // the titlebar. The left_section (hamburger) is rendered into the items-row
+            // so it stays aligned with the menu items.
+            let menu_ctx = menu_ctx.unwrap();
+            container.set_attribute("style", "position: relative;");
+
+            let menu_layer = __scope.create_element("div");
+            menu_layer.set_attribute("class", "rinch-app-menu-bar__inline-layer");
+
+            // Overlay first in DOM (hit-tested last within layer)
+            if let Some(ref overlay_renderer) = menu_ctx.overlay_renderer {
+                let overlay = overlay_renderer(__scope);
+                menu_layer.append_child(&overlay);
+            }
+
+            // Items-row last in DOM (hit-tested first within layer)
+            let items_row = __scope.create_element("div");
+            items_row.set_attribute("class", "rinch-app-menu-bar__inline-row");
+            // Render left_section into the items-row (hamburger button)
+            if let Some(ref render_left) = self.left_section {
+                let left_content = render_left(__scope);
+                items_row.append_child(&left_content);
+            }
+            // Render menu items
+            if let Some(ref items_renderer) = menu_ctx.items_renderer {
+                let items = items_renderer(__scope);
+                items_row.append_child(&items);
+            }
+            menu_layer.append_child(&items_row);
+
+            container.append_child(&menu_layer);
+        } else if let Some(ctx) = menu_ctx {
+            // BelowTitlebar: menu bar as LAST child with absolute positioning
+            container.set_attribute("style", "position: relative;");
+            let menu_bar = (ctx.renderer)(__scope);
+            container.append_child(&menu_bar);
+        }
 
         container
     }

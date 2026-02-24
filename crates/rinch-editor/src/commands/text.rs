@@ -31,10 +31,7 @@ impl TextCommands {
         // - Some(marks): insert with exactly these marks (creates new inline if needed)
         // - None: inherit marks from cursor context (insert into existing inline)
         if let Some(ref desired_marks) = editor.stored_marks {
-            let mark_data: Vec<MarkData> = desired_marks
-                .iter()
-                .map(MarkData::new)
-                .collect();
+            let mark_data: Vec<MarkData> = desired_marks.iter().map(MarkData::new).collect();
             editor
                 .doc
                 .insert_text_with_marks(insert_pos, text, &mark_data)?;

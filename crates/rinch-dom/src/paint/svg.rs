@@ -348,4 +348,3 @@ pub(super) fn build_radial_gradient_brush(
     let gradient = Gradient::new_radial(center, radius).with_stops(color_stops.as_slice());
     Brush::Gradient(gradient)
 }
-

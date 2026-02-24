@@ -58,9 +58,7 @@ pub fn active_block_type(editor: &Editor) -> Option<String> {
 }
 
 /// Get block attributes at the current cursor position.
-pub fn active_block_attrs(
-    editor: &Editor,
-) -> Option<std::collections::HashMap<String, String>> {
+pub fn active_block_attrs(editor: &Editor) -> Option<std::collections::HashMap<String, String>> {
     let sel = editor.get_selection();
     let rp = editor.doc.resolve_position(sel.head).ok()?;
     editor.doc.block_attrs(rp.block_index)

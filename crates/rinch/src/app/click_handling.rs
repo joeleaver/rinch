@@ -371,9 +371,15 @@ impl RinchApp {
         click_x: f32,
         click_y: f32,
     ) -> usize {
-        let Some(node) = tree.get(node_id) else { return 0 };
+        let Some(node) = tree.get(node_id) else {
+            return 0;
+        };
 
-        let value = node.attributes.get("value").map(|s| s.as_str()).unwrap_or("");
+        let value = node
+            .attributes
+            .get("value")
+            .map(|s| s.as_str())
+            .unwrap_or("");
         if value.is_empty() {
             return 0;
         }
@@ -460,7 +466,8 @@ impl RinchApp {
         if is_password {
             let bullet_len = bullet.len();
             let char_index = byte_offset / bullet_len;
-            value.char_indices()
+            value
+                .char_indices()
                 .nth(char_index)
                 .map(|(i, _)| i)
                 .unwrap_or(value.len())

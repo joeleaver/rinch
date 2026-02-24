@@ -2,21 +2,23 @@
 //!
 //! On Linux, uses `ksni` (StatusNotifierItem D-Bus protocol) for proper
 //! left-click → show window, right-click → context menu behavior.
-//! On other platforms, uses the `tray-icon` crate.
+//! On other platforms, uses the `tray-icon` crate with push-based event
+//! delivery (no polling thread).
 //!
-//! The tray icon runs on a dedicated background thread, completely
-//! independent of the winit window lifecycle. Menu callbacks are
-//! dispatched to the main thread via [`run_on_main_thread`].
+//! Uses the unified [`Menu`](crate::menu::Menu) / [`MenuItem`](crate::menu::MenuItem)
+//! types shared with native window menus. Menu callbacks are dispatched to the
+//! main thread via the global muda event handler.
 //!
 //! # Example
 //!
 //! ```ignore
-//! use rinch::tray::{TrayIconBuilder, TrayMenu, TrayMenuItem};
+//! use rinch::tray::TrayIconBuilder;
+//! use rinch::menu::{Menu, MenuItem};
 //!
-//! let menu = TrayMenu::new()
-//!     .add_item(TrayMenuItem::new("Show Window").on_click(show_current_window))
-//!     .add_separator()
-//!     .add_item(TrayMenuItem::new("Quit").on_click(close_current_window));
+//! let menu = Menu::new()
+//!     .item(MenuItem::new("Show Window").on_click(show_current_window))
+//!     .separator()
+//!     .item(MenuItem::new("Quit").on_click(close_current_window));
 //!
 //! let _tray = TrayIconBuilder::new()
 //!     .with_tooltip("My App")
@@ -25,8 +27,7 @@
 //!     .build()?;
 //! ```
 
-use std::sync::Arc;
-use std::thread::JoinHandle;
+use crate::menu::Menu;
 
 /// Error type for tray operations.
 #[derive(Debug)]
@@ -56,21 +57,26 @@ pub type TrayResult<T> = Result<T, TrayError>;
 
 /// A system tray icon with optional menu.
 ///
-/// The tray icon lives on a dedicated background thread. Menu events are
-/// automatically dispatched to the main thread. Dropping this struct
-/// detaches the thread (the tray stays alive until the process exits).
+/// On non-Linux: the tray icon is created on the main thread. Menu events
+/// are handled by the global push-based handler — no polling thread.
+///
+/// On Linux: a background thread runs the ksni D-Bus event loop.
+///
+/// Dropping this struct removes the tray icon.
 pub struct TrayIcon {
-    _thread: Option<JoinHandle<()>>,
+    /// On Linux: background thread running ksni.
+    /// On non-Linux: None (tray icon lives on main thread).
+    _thread: Option<std::thread::JoinHandle<()>>,
+    /// On non-Linux: the tray-icon handle (must be kept alive).
+    #[cfg(not(target_os = "linux"))]
+    _tray: Option<tray_icon::TrayIcon>,
 }
-
-/// Callback type for tray menu items.
-pub type TrayCallback = Box<dyn Fn() + Send + Sync>;
 
 /// Builder for creating a system tray icon.
 pub struct TrayIconBuilder {
     tooltip: Option<String>,
     icon_data: Option<(Vec<u8>, u32, u32)>,
-    menu: Option<TrayMenu>,
+    menu: Option<Menu>,
 }
 
 impl TrayIconBuilder {
@@ -97,31 +103,30 @@ impl TrayIconBuilder {
 
     /// Set the tray icon from PNG data (e.g., from `include_bytes!`).
     pub fn with_icon_png(mut self, png_data: &[u8]) -> TrayResult<Self> {
-        let (rgba, width, height) =
-            crate::shell::rinch_runtime::decode_png_to_rgba(png_data)
-                .map_err(|e| TrayError::IconLoadFailed(e.to_string()))?;
+        let (rgba, width, height) = crate::shell::rinch_runtime::decode_png_to_rgba(png_data)
+            .map_err(|e| TrayError::IconLoadFailed(e.to_string()))?;
         self.icon_data = Some((rgba, width, height));
         Ok(self)
     }
 
     /// Set the tray icon from a PNG file path.
     pub fn with_icon_path(self, path: impl AsRef<std::path::Path>) -> TrayResult<Self> {
-        let data = std::fs::read(path.as_ref())
-            .map_err(|e| TrayError::IconLoadFailed(e.to_string()))?;
+        let data =
+            std::fs::read(path.as_ref()).map_err(|e| TrayError::IconLoadFailed(e.to_string()))?;
         self.with_icon_png(&data)
     }
 
-    /// Set the tray menu.
-    pub fn with_menu(mut self, menu: TrayMenu) -> Self {
+    /// Set the tray context menu using the unified [`Menu`] type.
+    pub fn with_menu(mut self, menu: Menu) -> Self {
         self.menu = Some(menu);
         self
     }
 
     /// Build the tray icon.
     ///
-    /// Spawns a dedicated background thread for tray management. On Linux,
-    /// uses the StatusNotifierItem D-Bus protocol (via `ksni`) which
-    /// supports left-click → show window, right-click → context menu.
+    /// On Linux, spawns a background thread for the ksni D-Bus event loop.
+    /// On other platforms, creates the tray icon on the main thread with
+    /// push-based event delivery.
     pub fn build(self) -> TrayResult<TrayIcon> {
         #[cfg(target_os = "linux")]
         return self.build_ksni();
@@ -130,14 +135,68 @@ impl TrayIconBuilder {
         return self.build_tray_icon();
     }
 
-    /// Linux: use ksni (StatusNotifierItem) for proper left/right click.
+    /// Non-Linux: create tray icon on main thread with push-based events.
+    #[cfg(not(target_os = "linux"))]
+    fn build_tray_icon(self) -> TrayResult<TrayIcon> {
+        use tray_icon::{
+            Icon, MouseButton, MouseButtonState, TrayIconBuilder as TrayIconBuilderInner,
+            TrayIconEvent,
+        };
+
+        let mut builder = TrayIconBuilderInner::new();
+
+        if let Some(tip) = self.tooltip {
+            builder = builder.with_tooltip(tip);
+        }
+
+        if let Some((rgba, w, h)) = self.icon_data {
+            let icon = Icon::from_rgba(rgba, w, h)
+                .map_err(|e| TrayError::IconLoadFailed(e.to_string()))?;
+            builder = builder.with_icon(icon);
+        }
+
+        // Convert unified Menu → muda Menu (registers callbacks in thread-local registry)
+        if let Some(menu) = self.menu {
+            let muda_menu = crate::menu::build_muda_menu(menu);
+            builder = builder.with_menu(Box::new(muda_menu));
+        }
+
+        // Left-click shows the window (not the menu)
+        builder = builder.with_menu_on_left_click(false);
+
+        let tray = builder
+            .build()
+            .map_err(|e| TrayError::CreateFailed(e.to_string()))?;
+
+        // Push-based tray icon event handling for left-click → show window.
+        // Menu events are already handled by the global MenuEvent::set_event_handler
+        // installed in the runtime (covers both native and tray menus).
+        TrayIconEvent::set_event_handler(Some(|event: TrayIconEvent| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                crate::shell::rinch_runtime::run_on_main_thread(
+                    crate::windows::show_current_window,
+                );
+            }
+        }));
+
+        Ok(TrayIcon {
+            _thread: None,
+            _tray: Some(tray),
+        })
+    }
+
+    /// Linux: use ksni (StatusNotifierItem) with a background thread.
     #[cfg(target_os = "linux")]
     fn build_ksni(self) -> TrayResult<TrayIcon> {
         use ksni::blocking::TrayMethods;
 
         let tooltip = self.tooltip.unwrap_or_default();
         let icon_data = self.icon_data;
-        let menu = self.menu;
 
         // Convert RGBA → ARGB32 (network byte order) for ksni.
         let icon_pixmap = if let Some((rgba, width, height)) = icon_data {
@@ -157,15 +216,17 @@ impl TrayIconBuilder {
             Vec::new()
         };
 
-        // Convert our TrayMenu to a storable representation.
-        let menu_store = menu
-            .map(|m| convert_menu_entries(m.menu_items))
-            .unwrap_or_default();
+        // Register callbacks on the main thread and collect entries for ksni.
+        let menu_entries = if let Some(menu) = self.menu {
+            convert_menu_to_ksni_entries(menu)
+        } else {
+            Vec::new()
+        };
 
         let tray = RinchKsniTray {
             tooltip,
             icon_pixmap,
-            menu_entries: menu_store,
+            menu_entries,
         };
 
         let (tx, rx) = std::sync::mpsc::sync_channel::<Result<(), TrayError>>(1);
@@ -186,122 +247,7 @@ impl TrayIconBuilder {
                     }
                 }
             })
-            .map_err(|e| {
-                TrayError::CreateFailed(format!("failed to spawn tray thread: {}", e))
-            })?;
-
-        rx.recv()
-            .map_err(|e| TrayError::CreateFailed(format!("tray thread died: {}", e)))??;
-
-        Ok(TrayIcon {
-            _thread: Some(thread),
-        })
-    }
-
-    /// Non-Linux: use tray-icon crate with a background polling thread.
-    #[cfg(not(target_os = "linux"))]
-    fn build_tray_icon(self) -> TrayResult<TrayIcon> {
-        use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
-        use tray_icon::{
-            Icon, MouseButton, MouseButtonState, TrayIconBuilder as TrayIconBuilderInner,
-            TrayIconEvent,
-        };
-
-        let tooltip = self.tooltip;
-        let icon_data = self.icon_data;
-        let menu = self.menu;
-
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Result<(), TrayError>>(1);
-
-        let thread = std::thread::Builder::new()
-            .name("rinch-tray".into())
-            .spawn(move || {
-                let mut builder = TrayIconBuilderInner::new();
-
-                if let Some(tip) = tooltip {
-                    builder = builder.with_tooltip(tip);
-                }
-
-                if let Some((rgba, w, h)) = icon_data {
-                    match Icon::from_rgba(rgba, w, h) {
-                        Ok(icon) => builder = builder.with_icon(icon),
-                        Err(e) => {
-                            let _ = tx.send(Err(TrayError::IconLoadFailed(e.to_string())));
-                            return;
-                        }
-                    }
-                }
-
-                let callbacks = if let Some(tray_menu) = menu {
-                    match build_tray_icon_menu(tray_menu) {
-                        Ok((menu_obj, items)) => {
-                            builder = builder.with_menu(Box::new(menu_obj));
-                            items
-                        }
-                        Err(e) => {
-                            let _ = tx.send(Err(e));
-                            return;
-                        }
-                    }
-                } else {
-                    Vec::new()
-                };
-
-                // Disable menu on left-click so we can handle it ourselves.
-                builder = builder.with_menu_on_left_click(false);
-
-                let _tray = match builder.build() {
-                    Ok(t) => t,
-                    Err(e) => {
-                        let _ = tx.send(Err(TrayError::CreateFailed(e.to_string())));
-                        return;
-                    }
-                };
-
-                let callbacks: Vec<_> = callbacks
-                    .into_iter()
-                    .map(|(id, label, cb)| {
-                        let cb = cb.map(|b| Arc::from(b) as Arc<dyn Fn() + Send + Sync>);
-                        (id, label, cb)
-                    })
-                    .collect();
-
-                let _ = tx.send(Ok(()));
-
-                loop {
-                    while let Ok(event) = MenuEvent::receiver().try_recv() {
-                        for (id, label, cb) in &callbacks {
-                            if event.id() == id {
-                                tracing::info!("Tray menu item activated: {}", label);
-                                if let Some(cb) = cb {
-                                    let cb = Arc::clone(cb);
-                                    crate::shell::rinch_runtime::run_on_main_thread(move || {
-                                        cb()
-                                    });
-                                }
-                            }
-                        }
-                    }
-
-                    while let Ok(event) = TrayIconEvent::receiver().try_recv() {
-                        if let TrayIconEvent::Click {
-                            button: MouseButton::Left,
-                            button_state: MouseButtonState::Up,
-                            ..
-                        } = event
-                        {
-                            crate::shell::rinch_runtime::run_on_main_thread(
-                                crate::windows::show_current_window,
-                            );
-                        }
-                    }
-
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-            })
-            .map_err(|e| {
-                TrayError::CreateFailed(format!("failed to spawn tray thread: {}", e))
-            })?;
+            .map_err(|e| TrayError::CreateFailed(format!("failed to spawn tray thread: {}", e)))?;
 
         rx.recv()
             .map_err(|e| TrayError::CreateFailed(format!("tray thread died: {}", e)))??;
@@ -320,49 +266,73 @@ impl Default for TrayIconBuilder {
 
 // ── ksni implementation (Linux) ─────────────────────────────────────────────
 
-/// Internal tray struct implementing the ksni::Tray trait.
-#[cfg(target_os = "linux")]
-struct RinchKsniTray {
-    tooltip: String,
-    icon_pixmap: Vec<ksni::Icon>,
-    menu_entries: Vec<MenuEntryStore>,
-}
-
-/// Stored menu entry with Arc-wrapped callbacks for repeated invocation.
-enum MenuEntryStore {
+/// Stored menu entry for ksni with string ID for callback dispatch.
+enum KsniMenuEntry {
     Item {
         label: String,
         enabled: bool,
-        callback: Option<Arc<dyn Fn() + Send + Sync>>,
+        /// Menu ID string for dispatching via the thread-local callback registry.
+        menu_id: Option<String>,
     },
     Separator,
     Submenu {
         label: String,
-        entries: Vec<MenuEntryStore>,
+        entries: Vec<KsniMenuEntry>,
     },
 }
 
-/// Convert our public TrayMenuEntry list to the internal storage form.
-fn convert_menu_entries(entries: Vec<TrayMenuEntry>) -> Vec<MenuEntryStore> {
-    entries
+/// Counter for generating unique menu IDs on Linux (ksni doesn't use muda).
+static KSNI_MENU_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Convert a unified Menu into ksni entries, registering callbacks on the main thread.
+fn convert_menu_to_ksni_entries(menu: Menu) -> Vec<KsniMenuEntry> {
+    // We need to consume the Menu's entries. Menu has `entries: Vec<MenuEntryInner>`.
+    // Since MenuEntryInner is private, we use build_muda_menu which handles this,
+    // but for ksni we need a different approach. Let's add a consume method.
+    //
+    // Actually, we'll build the muda menu (which registers callbacks) and then
+    // extract the structure. But that's wasteful. Instead, let's directly convert.
+    convert_menu_entries_inner(menu)
+}
+
+fn convert_menu_entries_inner(menu: Menu) -> Vec<KsniMenuEntry> {
+    menu.take_entries()
         .into_iter()
-        .map(|e| match e {
-            TrayMenuEntry::Item {
+        .map(|entry| match entry {
+            crate::menu::MenuEntryKind::Item {
                 label,
                 enabled,
                 callback,
-            } => MenuEntryStore::Item {
+                ..
+            } => {
+                let menu_id = callback.map(|cb| {
+                    let id = format!(
+                        "ksni-{}",
+                        KSNI_MENU_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    );
+                    crate::menu::register_callback_public(&id, cb);
+                    id
+                });
+                KsniMenuEntry::Item {
+                    label,
+                    enabled,
+                    menu_id,
+                }
+            }
+            crate::menu::MenuEntryKind::Separator => KsniMenuEntry::Separator,
+            crate::menu::MenuEntryKind::Submenu { label, menu } => KsniMenuEntry::Submenu {
                 label,
-                enabled,
-                callback: callback.map(|b| Arc::from(b) as Arc<dyn Fn() + Send + Sync>),
-            },
-            TrayMenuEntry::Separator => MenuEntryStore::Separator,
-            TrayMenuEntry::Submenu { label, menu } => MenuEntryStore::Submenu {
-                label,
-                entries: convert_menu_entries(menu.menu_items),
+                entries: convert_menu_entries_inner(menu),
             },
         })
         .collect()
+}
+
+#[cfg(target_os = "linux")]
+struct RinchKsniTray {
+    tooltip: String,
+    icon_pixmap: Vec<ksni::Icon>,
+    menu_entries: Vec<KsniMenuEntry>,
 }
 
 #[cfg(target_os = "linux")]
@@ -397,32 +367,33 @@ impl ksni::Tray for RinchKsniTray {
     }
 }
 
-/// Recursively convert stored menu entries to ksni MenuItems.
 #[cfg(target_os = "linux")]
-fn build_ksni_menu(entries: &[MenuEntryStore]) -> Vec<ksni::MenuItem<RinchKsniTray>> {
+fn build_ksni_menu(entries: &[KsniMenuEntry]) -> Vec<ksni::MenuItem<RinchKsniTray>> {
     entries
         .iter()
         .map(|entry| match entry {
-            MenuEntryStore::Item {
+            KsniMenuEntry::Item {
                 label,
                 enabled,
-                callback,
+                menu_id,
             } => {
-                let cb = callback.clone();
+                let id = menu_id.clone();
                 ksni::MenuItem::Standard(ksni::menu::StandardItem {
                     label: label.clone(),
                     enabled: *enabled,
                     activate: Box::new(move |_this: &mut RinchKsniTray| {
-                        if let Some(cb) = &cb {
-                            let cb = Arc::clone(cb);
-                            crate::shell::rinch_runtime::run_on_main_thread(move || cb());
+                        if let Some(id) = &id {
+                            let id = id.clone();
+                            crate::shell::rinch_runtime::run_on_main_thread(move || {
+                                crate::menu::dispatch_menu_event(&id);
+                            });
                         }
                     }),
                     ..Default::default()
                 })
             }
-            MenuEntryStore::Separator => ksni::MenuItem::Separator,
-            MenuEntryStore::Submenu { label, entries } => {
+            KsniMenuEntry::Separator => ksni::MenuItem::Separator,
+            KsniMenuEntry::Submenu { label, entries } => {
                 ksni::MenuItem::SubMenu(ksni::menu::SubMenu {
                     label: label.clone(),
                     submenu: build_ksni_menu(entries),
@@ -431,185 +402,4 @@ fn build_ksni_menu(entries: &[MenuEntryStore]) -> Vec<ksni::MenuItem<RinchKsniTr
             }
         })
         .collect()
-}
-
-// ── tray-icon helpers (non-Linux) ───────────────────────────────────────────
-
-/// Build a tray-icon Menu from our TrayMenu type.
-#[cfg(not(target_os = "linux"))]
-fn build_tray_icon_menu(
-    tray_menu: TrayMenu,
-) -> TrayResult<(
-    tray_icon::menu::Menu,
-    Vec<(tray_icon::menu::MenuId, String, Option<TrayCallback>)>,
-)> {
-    use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
-
-    let menu = Menu::new();
-    let mut items = Vec::new();
-
-    for entry in tray_menu.menu_items {
-        match entry {
-            TrayMenuEntry::Item {
-                label,
-                enabled,
-                callback,
-            } => {
-                let item = MenuItem::new(&label, enabled, None);
-                items.push((item.id().clone(), label, callback));
-                menu.append(&item)
-                    .map_err(|e| TrayError::MenuError(e.to_string()))?;
-            }
-            TrayMenuEntry::Separator => {
-                menu.append(&PredefinedMenuItem::separator())
-                    .map_err(|e| TrayError::MenuError(e.to_string()))?;
-            }
-            TrayMenuEntry::Submenu {
-                label,
-                menu: sub,
-            } => {
-                let submenu = Submenu::new(&label, true);
-                let sub_items = build_tray_icon_submenu(sub, &submenu)?;
-                items.extend(sub_items);
-                menu.append(&submenu)
-                    .map_err(|e| TrayError::MenuError(e.to_string()))?;
-            }
-        }
-    }
-
-    Ok((menu, items))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn build_tray_icon_submenu(
-    tray_menu: TrayMenu,
-    submenu: &tray_icon::menu::Submenu,
-) -> TrayResult<Vec<(tray_icon::menu::MenuId, String, Option<TrayCallback>)>> {
-    use tray_icon::menu::{MenuItem, PredefinedMenuItem, Submenu};
-
-    let mut items = Vec::new();
-
-    for entry in tray_menu.menu_items {
-        match entry {
-            TrayMenuEntry::Item {
-                label,
-                enabled,
-                callback,
-            } => {
-                let item = MenuItem::new(&label, enabled, None);
-                items.push((item.id().clone(), label, callback));
-                submenu
-                    .append(&item)
-                    .map_err(|e| TrayError::MenuError(e.to_string()))?;
-            }
-            TrayMenuEntry::Separator => {
-                submenu
-                    .append(&PredefinedMenuItem::separator())
-                    .map_err(|e| TrayError::MenuError(e.to_string()))?;
-            }
-            TrayMenuEntry::Submenu {
-                label,
-                menu: sub,
-            } => {
-                let nested = Submenu::new(&label, true);
-                let sub_items = build_tray_icon_submenu(sub, &nested)?;
-                items.extend(sub_items);
-                submenu
-                    .append(&nested)
-                    .map_err(|e| TrayError::MenuError(e.to_string()))?;
-            }
-        }
-    }
-
-    Ok(items)
-}
-
-// ── Public menu types (platform-agnostic) ───────────────────────────────────
-
-/// A menu for the system tray.
-pub struct TrayMenu {
-    menu_items: Vec<TrayMenuEntry>,
-}
-
-enum TrayMenuEntry {
-    Item {
-        label: String,
-        enabled: bool,
-        callback: Option<TrayCallback>,
-    },
-    Separator,
-    Submenu {
-        label: String,
-        menu: TrayMenu,
-    },
-}
-
-impl TrayMenu {
-    /// Create a new tray menu.
-    pub fn new() -> Self {
-        Self {
-            menu_items: Vec::new(),
-        }
-    }
-
-    /// Add a menu item.
-    pub fn add_item(mut self, item: TrayMenuItem) -> Self {
-        self.menu_items.push(TrayMenuEntry::Item {
-            label: item.label,
-            enabled: item.enabled,
-            callback: item.callback,
-        });
-        self
-    }
-
-    /// Add a separator.
-    pub fn add_separator(mut self) -> Self {
-        self.menu_items.push(TrayMenuEntry::Separator);
-        self
-    }
-
-    /// Add a submenu.
-    pub fn add_submenu(mut self, label: impl Into<String>, submenu: TrayMenu) -> Self {
-        self.menu_items.push(TrayMenuEntry::Submenu {
-            label: label.into(),
-            menu: submenu,
-        });
-        self
-    }
-}
-
-impl Default for TrayMenu {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// A menu item for the system tray menu.
-pub struct TrayMenuItem {
-    label: String,
-    enabled: bool,
-    callback: Option<TrayCallback>,
-}
-
-impl TrayMenuItem {
-    /// Create a new menu item with the given label.
-    pub fn new(label: impl Into<String>) -> Self {
-        Self {
-            label: label.into(),
-            enabled: true,
-            callback: None,
-        }
-    }
-
-    /// Set whether the item is enabled.
-    pub fn enabled(mut self, enabled: bool) -> Self {
-        self.enabled = enabled;
-        self
-    }
-
-    /// Set the callback to invoke when the item is clicked.
-    pub fn on_click<F: Fn() + Send + Sync + 'static>(mut self, callback: F) -> Self {
-        self.callback = Some(Box::new(callback));
-        self
-    }
 }

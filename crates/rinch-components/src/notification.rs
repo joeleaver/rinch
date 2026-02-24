@@ -19,8 +19,8 @@
 //! }
 //! ```
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Component;
+use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use std::rc::Rc;
 
@@ -212,7 +212,10 @@ impl Component for Notification {
             if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
                 Some(format!("--rinch-notification-color: {}", c))
             } else {
-                Some(format!("--rinch-notification-color: var(--rinch-color-{}-6)", c))
+                Some(format!(
+                    "--rinch-notification-color: var(--rinch-color-{}-6)",
+                    c
+                ))
             }
         };
 

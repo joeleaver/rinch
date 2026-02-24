@@ -527,7 +527,8 @@ fn icons_data() -> Vec<TreeNodeData> {
                 TreeNodeData::new("contacts", "Contacts")
                     .with_icon(TablerIcon::Mail)
                     .with_children(vec![
-                        TreeNodeData::new("support", "support@example.com").with_icon(TablerIcon::Mail),
+                        TreeNodeData::new("support", "support@example.com")
+                            .with_icon(TablerIcon::Mail),
                         TreeNodeData::new("phone", "+1-555-0123").with_icon(TablerIcon::Phone),
                     ]),
             ]),

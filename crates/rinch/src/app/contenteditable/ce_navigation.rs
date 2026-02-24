@@ -756,7 +756,11 @@ impl RinchApp {
     // ── DOM traversal helpers ────────────────────────────────────────────
 
     /// Find the previous text node (or `<br>`) in document order within the CE.
-    pub(crate) fn prev_text_node(tree: &rinch_dom::NodeTree, ce_root: usize, node_id: usize) -> Option<usize> {
+    pub(crate) fn prev_text_node(
+        tree: &rinch_dom::NodeTree,
+        ce_root: usize,
+        node_id: usize,
+    ) -> Option<usize> {
         let mut all_text = Vec::new();
         Self::collect_text_node_ids(tree, ce_root, &mut all_text);
         let pos = all_text.iter().position(|&id| id == node_id)?;
@@ -768,7 +772,11 @@ impl RinchApp {
     }
 
     /// Find the next text node (or `<br>`) in document order within the CE.
-    pub(crate) fn next_text_node(tree: &rinch_dom::NodeTree, ce_root: usize, node_id: usize) -> Option<usize> {
+    pub(crate) fn next_text_node(
+        tree: &rinch_dom::NodeTree,
+        ce_root: usize,
+        node_id: usize,
+    ) -> Option<usize> {
         let mut all_text = Vec::new();
         Self::collect_text_node_ids(tree, ce_root, &mut all_text);
         let pos = all_text.iter().position(|&id| id == node_id)?;
@@ -782,7 +790,11 @@ impl RinchApp {
     /// Collect all cursor-target node IDs in document order under `root`.
     /// Cursor targets are: text nodes, `<br>` elements (inline-only CE),
     /// and empty block elements (element cursors for blank lines).
-    pub(crate) fn collect_text_node_ids(tree: &rinch_dom::NodeTree, root: usize, out: &mut Vec<usize>) {
+    pub(crate) fn collect_text_node_ids(
+        tree: &rinch_dom::NodeTree,
+        root: usize,
+        out: &mut Vec<usize>,
+    ) {
         let Some(node) = tree.get(root) else { return };
         if node.text_content().is_some() {
             out.push(root);

@@ -229,8 +229,7 @@ impl Component for PasswordInput {
             let label_text = &self.label;
             let required_mark = if self.required { " *" } else { "" };
             let label = rinch_macros::rsx! { label { class: "rinch-password-input__label" } };
-            let label_text_node =
-                __scope.create_text(&format!("{}{}", label_text, required_mark));
+            let label_text_node = __scope.create_text(&format!("{}{}", label_text, required_mark));
             label.append_child(&label_text_node);
             container.append_child(&label);
         }
@@ -282,10 +281,7 @@ impl Component for PasswordInput {
             let input_clone = input.clone();
             __scope.create_effect(move || {
                 let is_visible = visible_fn();
-                input_clone.set_attribute(
-                    "type",
-                    if is_visible { "text" } else { "password" },
-                );
+                input_clone.set_attribute("type", if is_visible { "text" } else { "password" });
             });
         }
 

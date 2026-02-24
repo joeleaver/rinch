@@ -115,7 +115,10 @@ impl Component for Tooltip {
         let mut styles = Vec::new();
 
         if !self.color.is_empty() {
-            if self.color.starts_with('#') || self.color.starts_with("rgb") || self.color.starts_with("hsl") {
+            if self.color.starts_with('#')
+                || self.color.starts_with("rgb")
+                || self.color.starts_with("hsl")
+            {
                 styles.push(format!("--rinch-tooltip-color: {}", self.color));
             } else {
                 styles.push(format!(

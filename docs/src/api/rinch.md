@@ -77,8 +77,11 @@ This includes:
 - `run`, `run_with_theme`
 
 **Element and prop types** (from `rinch_core::element::*`):
-- `Element`, `Children`, `WindowProps`, `MenuProps`, `MenuItemProps`, `ThemeProviderProps`
-- `Callback`, `MenuItemCallback`, `SectionRenderer`
+- `Element`, `Children`, `WindowProps`, `ThemeProviderProps`
+- `Callback`, `SectionRenderer`
+
+**Menu types** (from `rinch::menu`):
+- `Menu`, `MenuItem` — unified builder API for native menus and tray menus
 
 **Reactive primitives**:
 - `Signal`, `Effect`, `Memo`, `Scope`
@@ -129,11 +132,8 @@ pub use rinch_macros::component;  // #[component] attribute macro
 
 ```rust
 pub use rinch_core::element::{
-    AppMenuProps,
     Children,
     Element,
-    MenuItemProps,
-    MenuProps,
     ThemeProviderProps,
     WindowProps,
 };
@@ -167,14 +167,16 @@ pub use rinch_renderer as renderer;  // desktop feature
 Application runtime and event loop:
 - `run()` - Entry point function
 - `run_with_theme()` - Entry point with theme configuration
+- `run_with_menu()` - Entry point with native menu bar
 - `run_with_window_props()` - Entry point with full window props
-- `run_rinch()`, `run_rinch_with_window_props()` - Lower-level runtime entry points (deprecated in favor of `run()` and `run_with_window_props()`)
+- `run_with_window_props_and_menu()` - Entry point with full window props and menu
+- `run_rinch()`, `run_rinch_with_window_props()` - Lower-level runtime entry points (deprecated)
 
 ### `rinch::menu`
 
-Menu management:
-- `MenuManager` - Builds native menus from `MenuEntry` structs
-- `MenuEntry` - Enum with `Item(MenuItemProps)` and `Separator` variants
+Unified menu builder API for native menus and tray context menus:
+- `Menu` - Builder with `.item()`, `.separator()`, `.submenu()` methods
+- `MenuItem` - Builder with `.shortcut()`, `.enabled()`, `.on_click()` methods
 
 ### `rinch::window`
 

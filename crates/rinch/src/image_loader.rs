@@ -30,9 +30,7 @@ impl ImageLoader for NetworkImageLoader {
             // Fall through to file loading
             match std::fs::read(src) {
                 Ok(bytes) => ImageLoadResult::Loaded(bytes),
-                Err(e) => {
-                    ImageLoadResult::Failed(format!("Failed to read {}: {}", src, e))
-                }
+                Err(e) => ImageLoadResult::Failed(format!("Failed to read {}: {}", src, e)),
             }
         }
     }

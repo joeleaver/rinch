@@ -257,20 +257,21 @@ fn app() -> NodeHandle {
 
 Enable with: `features = ["system-tray"]`
 
-System tray icon with menu support.
+System tray icon with menu support. Uses the same unified `Menu`/`MenuItem` types as native window menus.
 
 ### Basic Tray Icon
 
 ```rust
-use rinch::tray::{TrayIconBuilder, TrayMenu, TrayMenuItem};
+use rinch::tray::TrayIconBuilder;
+use rinch::menu::{Menu, MenuItem};
 
-// Create a tray menu
-let menu = TrayMenu::new()
-    .add_item(TrayMenuItem::new("Show Window"))
-    .add_separator()
-    .add_item(TrayMenuItem::new("Settings"))
-    .add_separator()
-    .add_item(TrayMenuItem::new("Quit"));
+// Create a tray menu using the unified Menu API
+let menu = Menu::new()
+    .item(MenuItem::new("Show Window").on_click(show_current_window))
+    .separator()
+    .item(MenuItem::new("Settings"))
+    .separator()
+    .item(MenuItem::new("Quit").on_click(close_current_window));
 
 // Create the tray icon
 let tray = TrayIconBuilder::new()
@@ -285,10 +286,16 @@ let tray = TrayIconBuilder::new()
 ```rust
 use rinch::tray::TrayIconBuilder;
 
+// From PNG data (e.g., include_bytes!)
+let tray = TrayIconBuilder::new()
+    .with_tooltip("My App")
+    .with_icon_png(include_bytes!("../assets/icon.png"))?
+    .build()?;
+
 // From file path
 let tray = TrayIconBuilder::new()
     .with_tooltip("My App")
-    .with_icon_path("assets/icon.png", None)?
+    .with_icon_path("assets/icon.png")?
     .build()?;
 
 // From RGBA data (32x32 icon)
@@ -301,51 +308,72 @@ let tray = TrayIconBuilder::new()
 
 ### Menu Callbacks
 
+Callbacks are `impl Fn() + 'static` — no `Send`/`Sync` required. They run on the main thread via push-based event delivery (no polling):
+
 ```rust
-use rinch::tray::{TrayIconBuilder, TrayMenu, TrayMenuItem};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use rinch::tray::TrayIconBuilder;
+use rinch::menu::{Menu, MenuItem};
+use rinch::prelude::*;
 
-let should_quit = Arc::new(AtomicBool::new(false));
-let quit_flag = should_quit.clone();
-
-let menu = TrayMenu::new()
-    .add_item(
-        TrayMenuItem::new("Show Window")
-            .on_click(|| println!("Show clicked!"))
-    )
-    .add_separator()
-    .add_item(
-        TrayMenuItem::new("Quit")
-            .on_click(move || {
-                quit_flag.store(true, Ordering::SeqCst);
-            })
-    );
+let menu = Menu::new()
+    .item(MenuItem::new("Show Window").on_click(show_current_window))
+    .separator()
+    .item(MenuItem::new("Quit").on_click(close_current_window));
 
 let tray = TrayIconBuilder::new()
     .with_tooltip("My App")
+    .with_icon_png(include_bytes!("../assets/icon.png"))?
     .with_menu(menu)
     .build()?;
-
-// Poll events in your event loop
-tray.poll_events();
 ```
 
 ### Nested Submenus
 
 ```rust
-use rinch::tray::{TrayMenu, TrayMenuItem};
+use rinch::menu::{Menu, MenuItem};
 
-let submenu = TrayMenu::new()
-    .add_item(TrayMenuItem::new("Option 1"))
-    .add_item(TrayMenuItem::new("Option 2"))
-    .add_item(TrayMenuItem::new("Option 3"));
+let submenu = Menu::new()
+    .item(MenuItem::new("Option 1"))
+    .item(MenuItem::new("Option 2"))
+    .item(MenuItem::new("Option 3"));
 
-let menu = TrayMenu::new()
-    .add_item(TrayMenuItem::new("Main Action"))
-    .add_submenu("More Options", submenu)
-    .add_separator()
-    .add_item(TrayMenuItem::new("Quit"));
+let menu = Menu::new()
+    .item(MenuItem::new("Main Action"))
+    .submenu("More Options", submenu)
+    .separator()
+    .item(MenuItem::new("Quit").on_click(close_current_window));
+```
+
+### Minimize-to-Tray Pattern
+
+Combine system tray with `on_close_requested` to hide instead of quit:
+
+```rust
+use rinch::prelude::*;
+use rinch::tray::TrayIconBuilder;
+use rinch::menu::{Menu, MenuItem};
+use std::sync::Arc;
+
+// Set up tray icon
+let menu = Menu::new()
+    .item(MenuItem::new("Show Window").on_click(show_current_window))
+    .separator()
+    .item(MenuItem::new("Quit").on_click(close_current_window));
+
+let _tray = TrayIconBuilder::new()
+    .with_tooltip("My App")
+    .with_icon_png(include_bytes!("../assets/icon.png"))?
+    .with_menu(menu)
+    .build()?;
+
+// Hide to tray on close instead of quitting
+let window_props = WindowProps {
+    on_close_requested: Some(Arc::new(|| {
+        hide_current_window();
+        false // Don't exit
+    })),
+    ..Default::default()
+};
 ```
 
 ---

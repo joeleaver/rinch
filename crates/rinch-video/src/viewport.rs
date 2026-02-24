@@ -4,8 +4,8 @@
 //! compositor draws the video frame underneath. On WASM, renders as a
 //! real `<video>` element.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Component;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 use crate::VideoPlayer;
 

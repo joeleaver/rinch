@@ -57,4 +57,3 @@ pub fn generate_component_wrapper(body: TokenStream2, has_children: bool) -> Tok
         }
     }
 }
-

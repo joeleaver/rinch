@@ -1,3 +1,9 @@
+#![allow(
+    clippy::collapsible_if,
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    dead_code
+)]
 //! Video playback for rinch applications.
 //!
 //! This crate provides video playback capability for rinch using libmpv
@@ -29,10 +35,10 @@
 //! }
 //! ```
 
-mod player;
-pub(crate) mod viewport;
 mod controls;
 mod hooks;
+mod player;
+pub(crate) mod viewport;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;
@@ -40,10 +46,10 @@ pub mod native;
 #[cfg(target_arch = "wasm32")]
 mod web;
 
-pub use player::{PlaybackState, VideoPlayer, VideoPlayerBackend};
-pub use viewport::VideoViewport;
 pub use controls::VideoControls;
 pub use hooks::{use_video_player, use_video_player_paused};
+pub use player::{PlaybackState, VideoPlayer, VideoPlayerBackend};
+pub use viewport::VideoViewport;
 
 use std::cell::{Cell, RefCell};
 
@@ -102,7 +108,9 @@ pub(crate) fn register_active_player(player: VideoPlayer) {
     ACTIVE_PLAYERS.with(|list| {
         let mut list = list.borrow_mut();
         // Avoid duplicates (compare by Rc pointer identity)
-        let already_registered = list.iter().any(|p| std::rc::Rc::ptr_eq(&p.inner, &player.inner));
+        let already_registered = list
+            .iter()
+            .any(|p| std::rc::Rc::ptr_eq(&p.inner, &player.inner));
         if !already_registered {
             list.push(player);
         }
@@ -175,6 +183,8 @@ pub fn collect_video_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn clear_frame_cache(viewport_id: &str) {
     FRAME_CACHE.with(|cache| {
-        cache.borrow_mut().retain(|(name, _, _, _)| name != viewport_id);
+        cache
+            .borrow_mut()
+            .retain(|(name, _, _, _)| name != viewport_id);
     });
 }

@@ -52,7 +52,6 @@ pub(super) fn paint_inline_layout(
     }
 }
 
-
 /// Render a Parley text layout to a Vello scene.
 pub(super) fn render_text(
     scene: &mut Scene,

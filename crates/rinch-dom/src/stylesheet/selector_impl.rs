@@ -8,9 +8,7 @@ use selectors::attr::{AttrSelectorOperation, CaseSensitivity, NamespaceConstrain
 use selectors::bloom::BloomFilter;
 use selectors::context::MatchingContext;
 use selectors::matching::ElementSelectorFlags;
-use selectors::parser::{
-    self as sel_parser, NonTSPseudoClass, PseudoElement, SelectorImpl,
-};
+use selectors::parser::{self as sel_parser, NonTSPseudoClass, PseudoElement, SelectorImpl};
 use selectors::{Element, OpaqueElement};
 
 use std::collections::HashMap;

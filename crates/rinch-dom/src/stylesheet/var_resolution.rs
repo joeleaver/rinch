@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
-use super::parser::parse_properties;
 use super::Stylesheet;
+use super::parser::parse_properties;
 
 /// Resolve var() references checking local custom properties first, then global stylesheet variables.
 pub(super) fn resolve_var_with_locals(

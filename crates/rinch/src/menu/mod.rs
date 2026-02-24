@@ -1,233 +1,389 @@
-//! Menu module - native menu support via muda.
+//! Unified menu system for native window menus and system tray context menus.
 //!
-//! NOTE: This module provides menu infrastructure but is not yet wired up
-//! to the fine-grained runtime. Menu support will be added via a builder API.
+//! Provides [`Menu`] and [`MenuItem`] builder types that work with both
+//! native menu bars (via `muda`) and tray context menus (via `tray-icon`).
+//! Callbacks are `Rc<dyn Fn()>` — no `Send`/`Sync` burden on users. The
+//! runtime wires push-based event delivery so callbacks always run on the
+//! main thread.
+//!
+//! # Example
+//!
+//! ```ignore
+//! use rinch::menu::{Menu, MenuItem};
+//!
+//! let file_menu = Menu::new()
+//!     .item(MenuItem::new("New").shortcut("Ctrl+N").on_click(|| println!("New!")))
+//!     .separator()
+//!     .item(MenuItem::new("Quit").on_click(|| std::process::exit(0)));
+//!
+//! // For native menu bar:
+//! run_with_menu("My App", 800, 600, app, vec![("File", file_menu)]);
+//!
+//! // For tray context menu:
+//! TrayIconBuilder::new().with_menu(menu).build()?;
+//! ```
 
-use muda::{
-    Menu, MenuEvent, MenuEventReceiver, MenuItem, PredefinedMenuItem, Submenu,
-    accelerator::Accelerator,
-};
-use rinch_core::element::{MenuItemCallback, MenuItemProps, MenuProps};
+#[cfg(target_os = "linux")]
+pub(crate) mod app_menu_bar;
+
+use muda::accelerator::Accelerator;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::str::FromStr;
 use winit::keyboard::KeyCode;
 
-/// Manages native menus for the application.
-pub struct MenuManager {
-    /// The root menu.
-    menu: Option<Menu>,
-    /// Map from menu item IDs to callback indices.
-    item_callbacks: HashMap<muda::MenuId, usize>,
-    /// Stored callbacks (indices into this vec).
-    callbacks: Vec<MenuCallback>,
-    /// Keyboard shortcuts mapped to menu item IDs for manual matching.
-    shortcuts: Vec<(ParsedShortcut, muda::MenuId)>,
+// ── Public API ──────────────────────────────────────────────────────────────
+
+/// A menu containing items, separators, and submenus.
+///
+/// Used for both native window menu bars and tray context menus.
+#[derive(Clone)]
+pub struct Menu {
+    entries: Vec<MenuEntryInner>,
 }
+
+/// A single menu item with optional shortcut and callback.
+#[derive(Clone)]
+pub struct MenuItem {
+    label: String,
+    shortcut: Option<String>,
+    enabled: bool,
+    callback: Option<Rc<dyn Fn()>>,
+}
+
+#[derive(Clone)]
+enum MenuEntryInner {
+    Item(MenuItem),
+    Separator,
+    Submenu { label: String, menu: Menu },
+}
+
+/// Read-only view of a menu entry.
+pub enum MenuEntryRef<'a> {
+    Item {
+        label: &'a str,
+        shortcut: Option<&'a str>,
+        enabled: bool,
+        callback: Option<&'a Rc<dyn Fn()>>,
+    },
+    Separator,
+    Submenu {
+        label: &'a str,
+        menu: &'a Menu,
+    },
+}
+
+impl MenuItem {
+    /// Create a new menu item with the given label.
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            shortcut: None,
+            enabled: true,
+            callback: None,
+        }
+    }
+
+    /// Set the keyboard shortcut (e.g., `"Ctrl+N"`, `"Cmd+Shift+S"`).
+    pub fn shortcut(mut self, s: impl Into<String>) -> Self {
+        self.shortcut = Some(s.into());
+        self
+    }
+
+    /// Set whether this item is enabled.
+    pub fn enabled(mut self, e: bool) -> Self {
+        self.enabled = e;
+        self
+    }
+
+    /// Set the callback invoked when this item is activated.
+    pub fn on_click(mut self, cb: impl Fn() + 'static) -> Self {
+        self.callback = Some(Rc::new(cb));
+        self
+    }
+}
+
+impl Menu {
+    /// Create a new empty menu.
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Add a menu item.
+    pub fn item(mut self, item: MenuItem) -> Self {
+        self.entries.push(MenuEntryInner::Item(item));
+        self
+    }
+
+    /// Add a separator line.
+    pub fn separator(mut self) -> Self {
+        self.entries.push(MenuEntryInner::Separator);
+        self
+    }
+
+    /// Add a submenu.
+    pub fn submenu(mut self, label: impl Into<String>, menu: Menu) -> Self {
+        self.entries.push(MenuEntryInner::Submenu {
+            label: label.into(),
+            menu,
+        });
+        self
+    }
+}
+
+impl Menu {
+    /// Iterate over entries as read-only references.
+    pub fn iter_entries(&self) -> impl Iterator<Item = MenuEntryRef<'_>> {
+        self.entries.iter().map(|entry| match entry {
+            MenuEntryInner::Item(item) => MenuEntryRef::Item {
+                label: &item.label,
+                shortcut: item.shortcut.as_deref(),
+                enabled: item.enabled,
+                callback: item.callback.as_ref(),
+            },
+            MenuEntryInner::Separator => MenuEntryRef::Separator,
+            MenuEntryInner::Submenu { label, menu } => MenuEntryRef::Submenu { label, menu },
+        })
+    }
+}
+
+impl Default for Menu {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Decomposed menu entry for consumption by platform backends (e.g., ksni on Linux).
+#[cfg(feature = "system-tray")]
+pub(crate) enum MenuEntryKind {
+    Item {
+        label: String,
+        enabled: bool,
+        callback: Option<Rc<dyn Fn()>>,
+    },
+    Separator,
+    Submenu {
+        label: String,
+        menu: Menu,
+    },
+}
+
+#[cfg(feature = "system-tray")]
+impl Menu {
+    /// Consume the menu and return its entries for platform-specific conversion.
+    pub(crate) fn take_entries(self) -> Vec<MenuEntryKind> {
+        self.entries
+            .into_iter()
+            .map(|entry| match entry {
+                MenuEntryInner::Item(item) => MenuEntryKind::Item {
+                    label: item.label,
+                    enabled: item.enabled,
+                    callback: item.callback,
+                },
+                MenuEntryInner::Separator => MenuEntryKind::Separator,
+                MenuEntryInner::Submenu { label, menu } => MenuEntryKind::Submenu { label, menu },
+            })
+            .collect()
+    }
+}
+
+/// Register a callback in the thread-local registry with a given ID.
+/// Used by the ksni tray backend on Linux.
+#[cfg(feature = "system-tray")]
+pub(crate) fn register_callback_public(id: &str, cb: Rc<dyn Fn()>) {
+    register_callback(id, cb);
+}
+
+// ── Thread-local callback registry ──────────────────────────────────────────
+
+thread_local! {
+    /// Map from muda MenuId string → callback. Thread-local because callbacks
+    /// capture `Signal` (which is `!Send`) and must run on the main thread.
+    static MENU_CALLBACKS: RefCell<HashMap<String, Rc<dyn Fn()>>> = RefCell::new(HashMap::new());
+
+    /// Registered keyboard shortcuts mapped to their menu ID strings.
+    static MENU_SHORTCUTS: RefCell<Vec<(ParsedShortcut, String)>> = const { RefCell::new(Vec::new()) };
+}
+
+fn register_callback(menu_id: &str, cb: Rc<dyn Fn()>) {
+    MENU_CALLBACKS.with(|map| {
+        map.borrow_mut().insert(menu_id.to_string(), cb);
+    });
+}
+
+fn register_shortcut(shortcut_str: &str, menu_id: &str) {
+    if let Some(parsed) = parse_shortcut_for_matching(shortcut_str) {
+        MENU_SHORTCUTS.with(|shortcuts| {
+            shortcuts.borrow_mut().push((parsed, menu_id.to_string()));
+        });
+    }
+}
+
+/// Dispatch a menu event by looking up and invoking the callback.
+pub(crate) fn dispatch_menu_event(menu_id: &str) {
+    MENU_CALLBACKS.with(|map| {
+        if let Some(cb) = map.borrow().get(menu_id) {
+            cb();
+        }
+    });
+}
+
+/// Check if a keyboard event matches a registered menu shortcut.
+/// If so, dispatch the callback and return `true`.
+pub(crate) fn match_shortcut(ctrl: bool, meta: bool, alt: bool, shift: bool, key: KeyCode) -> bool {
+    let ctrl_or_cmd = ctrl || meta;
+
+    MENU_SHORTCUTS.with(|shortcuts| {
+        let shortcuts = shortcuts.borrow();
+        for (shortcut, menu_id) in shortcuts.iter() {
+            if shortcut.ctrl_or_cmd == ctrl_or_cmd
+                && shortcut.alt == alt
+                && shortcut.shift == shift
+                && shortcut.key == key
+            {
+                dispatch_menu_event(menu_id);
+                return true;
+            }
+        }
+        false
+    })
+}
+
+// ── Build functions (Menu → muda types) ─────────────────────────────────────
+
+/// Build a native menu bar from a list of `(label, Menu)` pairs.
+///
+/// Each pair becomes a top-level submenu in the menu bar. Callbacks are
+/// registered in the thread-local registry.
+pub(crate) fn build_native_menu_bar(menus: Vec<(&str, Menu)>) -> muda::Menu {
+    let menu_bar = muda::Menu::new();
+    for (label, menu) in menus {
+        let submenu = muda::Submenu::new(label, true);
+        build_muda_entries(&submenu, menu);
+        let _ = menu_bar.append(&submenu);
+    }
+    menu_bar
+}
+
+/// Build a muda `Menu` from a unified `Menu` (for tray context menus).
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+pub(crate) fn build_muda_menu(menu: Menu) -> muda::Menu {
+    let muda_menu = muda::Menu::new();
+    for entry in menu.entries {
+        match entry {
+            MenuEntryInner::Item(item) => {
+                let muda_item = build_muda_item(&item);
+                let _ = muda_menu.append(&muda_item);
+            }
+            MenuEntryInner::Separator => {
+                let _ = muda_menu.append(&muda::PredefinedMenuItem::separator());
+            }
+            MenuEntryInner::Submenu { label, menu } => {
+                let submenu = muda::Submenu::new(&label, true);
+                build_muda_entries(&submenu, menu);
+                let _ = muda_menu.append(&submenu);
+            }
+        }
+    }
+    muda_menu
+}
+
+/// Recursively populate a muda Submenu from a unified Menu.
+fn build_muda_entries(submenu: &muda::Submenu, menu: Menu) {
+    for entry in menu.entries {
+        match entry {
+            MenuEntryInner::Item(item) => {
+                let muda_item = build_muda_item(&item);
+                let _ = submenu.append(&muda_item);
+            }
+            MenuEntryInner::Separator => {
+                let _ = submenu.append(&muda::PredefinedMenuItem::separator());
+            }
+            MenuEntryInner::Submenu { label, menu } => {
+                let nested = muda::Submenu::new(&label, true);
+                build_muda_entries(&nested, menu);
+                let _ = submenu.append(&nested);
+            }
+        }
+    }
+}
+
+/// Build a single muda MenuItem, register its callback and shortcut.
+fn build_muda_item(item: &MenuItem) -> muda::MenuItem {
+    let accelerator = item.shortcut.as_ref().and_then(|s| parse_shortcut(s));
+    let muda_item = muda::MenuItem::new(&item.label, item.enabled, accelerator);
+
+    // Register callback
+    if let Some(cb) = &item.callback {
+        register_callback(&muda_item.id().0, cb.clone());
+    }
+
+    // Register shortcut for keyboard matching
+    if let Some(shortcut_str) = &item.shortcut {
+        register_shortcut(shortcut_str, &muda_item.id().0);
+    }
+
+    muda_item
+}
+
+/// Set up the global muda event handler. Call once during app init.
+///
+/// This single handler covers both native menu events and tray context
+/// menu events (same muda static after tray-icon 0.19 + muda 0.15).
+pub(crate) fn install_menu_event_handler() {
+    muda::MenuEvent::set_event_handler(Some(|event: muda::MenuEvent| {
+        let id = event.id().0.clone();
+        crate::shell::rinch_runtime::run_on_main_thread(move || {
+            dispatch_menu_event(&id);
+        });
+    }));
+}
+
+// ── Platform-specific menu attachment ───────────────────────────────────────
+
+/// Attach a native menu bar to a window (Windows).
+#[cfg(target_os = "windows")]
+pub(crate) fn attach_menu_to_window(menu: &muda::Menu, window: &winit::window::Window) {
+    use winit::raw_window_handle::HasWindowHandle;
+    if let Ok(handle) = window.window_handle() {
+        if let winit::raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw() {
+            let hwnd = win32.hwnd.get() as isize;
+            // Safety: hwnd is a valid window handle from winit, and we're on the main thread.
+            unsafe {
+                let _ = menu.init_for_hwnd(hwnd);
+            }
+        }
+    }
+}
+
+/// Attach a native menu bar to the application (macOS).
+#[cfg(target_os = "macos")]
+pub(crate) fn attach_menu_to_window(menu: &muda::Menu, _window: &winit::window::Window) {
+    menu.init_for_nsapp();
+}
+
+/// Attach a native menu bar to a window (Linux — not yet supported).
+#[cfg(target_os = "linux")]
+pub(crate) fn attach_menu_to_window(_menu: &muda::Menu, _window: &winit::window::Window) {
+    // Linux GTK menu integration not yet implemented.
+}
+
+// ── Shortcut parsing ────────────────────────────────────────────────────────
 
 /// A parsed keyboard shortcut for matching against keyboard events.
 #[derive(Debug, Clone)]
-pub struct ParsedShortcut {
+pub(crate) struct ParsedShortcut {
     pub ctrl_or_cmd: bool,
     pub alt: bool,
     pub shift: bool,
     pub key: KeyCode,
 }
 
-/// Stores menu item information and callback.
-pub struct MenuCallback {
-    pub label: String,
-    /// The callback to invoke when this menu item is activated.
-    pub callback: Option<MenuItemCallback>,
-}
-
-/// Specification for a menu item.
-pub enum MenuEntry {
-    /// A clickable menu item.
-    Item(MenuItemProps),
-    /// A separator line.
-    Separator,
-    /// A submenu with nested entries.
-    Submenu(MenuProps, Vec<MenuEntry>),
-}
-
-impl MenuManager {
-    pub fn new() -> Self {
-        Self {
-            menu: None,
-            item_callbacks: HashMap::new(),
-            callbacks: Vec::new(),
-            shortcuts: Vec::new(),
-        }
-    }
-
-    /// Build native menu from a list of top-level submenus.
-    pub fn build(&mut self, submenus: Vec<(MenuProps, Vec<MenuEntry>)>) -> Option<&Menu> {
-        let menu = Menu::new();
-
-        for (props, entries) in submenus {
-            let submenu = self.build_submenu(&props, &entries);
-            let _ = menu.append(&submenu);
-        }
-
-        self.menu = Some(menu);
-        self.menu.as_ref()
-    }
-
-    /// Build a Submenu from props and entries.
-    fn build_submenu(&mut self, props: &MenuProps, entries: &[MenuEntry]) -> Submenu {
-        let submenu = Submenu::new(&props.label, true);
-
-        for entry in entries {
-            match entry {
-                MenuEntry::Item(item_props) => {
-                    let menu_item = self.build_menu_item(item_props);
-                    let _ = submenu.append(&menu_item);
-                }
-                MenuEntry::Separator => {
-                    let _ = submenu.append(&PredefinedMenuItem::separator());
-                }
-                MenuEntry::Submenu(nested_props, nested_entries) => {
-                    let nested = self.build_submenu(nested_props, nested_entries);
-                    let _ = submenu.append(&nested);
-                }
-            }
-        }
-
-        submenu
-    }
-
-    /// Build a MenuItem from MenuItemProps.
-    fn build_menu_item(&mut self, props: &MenuItemProps) -> MenuItem {
-        // Parse accelerator from shortcut string
-        let accelerator = props.shortcut.as_ref().and_then(|s| parse_shortcut(s));
-
-        let item = MenuItem::new(&props.label, props.enabled, accelerator);
-
-        // Store callback mapping
-        let callback_idx = self.callbacks.len();
-        self.callbacks.push(MenuCallback {
-            label: props.label.clone(),
-            callback: props.onclick.clone(),
-        });
-        self.item_callbacks.insert(item.id().clone(), callback_idx);
-
-        // Store keyboard shortcut for manual matching
-        if let Some(shortcut_str) = &props.shortcut
-            && let Some(parsed) = parse_shortcut_for_matching(shortcut_str)
-        {
-            self.shortcuts.push((parsed, item.id().clone()));
-        }
-
-        item
-    }
-
-    /// Get the menu for platform initialization.
-    pub fn menu(&self) -> Option<&Menu> {
-        self.menu.as_ref()
-    }
-
-    /// Initialize menu for a window (Windows/Linux).
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
-    pub fn init_for_window(&self, window: &winit::window::Window) {
-        if let Some(menu) = &self.menu {
-            #[cfg(target_os = "windows")]
-            {
-                use winit::raw_window_handle::HasWindowHandle;
-                if let Ok(handle) = window.window_handle() {
-                    if let winit::raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw()
-                    {
-                        let hwnd = win32.hwnd.get() as isize;
-                        let _ = menu.init_for_hwnd(hwnd);
-                    }
-                }
-            }
-
-            #[cfg(target_os = "linux")]
-            {
-                // Linux requires GTK integration - for now skip
-                // TODO: Implement GTK menu integration
-                let _ = (window, menu); // Silence unused warnings on Linux
-            }
-        }
-    }
-
-    /// Initialize menu for the application (macOS).
-    #[cfg(target_os = "macos")]
-    pub fn init_for_app(&self) {
-        if let Some(menu) = &self.menu {
-            menu.init_for_nsapp();
-        }
-    }
-
-    /// Handle a menu event, invoking the callback if one exists.
-    ///
-    /// Returns `true` if a callback was invoked (indicating state may have changed
-    /// and a re-render may be needed), `false` otherwise.
-    pub fn handle_event(&self, event: &MenuEvent) -> bool {
-        if let Some(&callback_idx) = self.item_callbacks.get(event.id())
-            && let Some(stored) = self.callbacks.get(callback_idx)
-        {
-            tracing::info!("Menu item activated: {}", stored.label);
-            if let Some(cb) = &stored.callback {
-                cb.invoke();
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Get the label of a menu item by event, for logging purposes.
-    pub fn get_label(&self, event: &MenuEvent) -> Option<&str> {
-        if let Some(&callback_idx) = self.item_callbacks.get(event.id())
-            && let Some(stored) = self.callbacks.get(callback_idx)
-        {
-            return Some(&stored.label);
-        }
-        None
-    }
-
-    /// Get the menu event receiver for polling.
-    pub fn event_receiver() -> &'static MenuEventReceiver {
-        MenuEvent::receiver()
-    }
-
-    /// Check if a keyboard event matches any registered menu shortcut.
-    ///
-    /// Returns the menu ID if a match is found, allowing the caller to
-    /// trigger the appropriate menu event.
-    pub fn match_shortcut(
-        &self,
-        ctrl: bool,
-        meta: bool,
-        alt: bool,
-        shift: bool,
-        key: KeyCode,
-    ) -> Option<muda::MenuId> {
-        let ctrl_or_cmd = ctrl || meta;
-
-        for (shortcut, menu_id) in &self.shortcuts {
-            if shortcut.ctrl_or_cmd == ctrl_or_cmd
-                && shortcut.alt == alt
-                && shortcut.shift == shift
-                && shortcut.key == key
-            {
-                return Some(menu_id.clone());
-            }
-        }
-        None
-    }
-}
-
-impl Default for MenuManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Parse a shortcut string like "Cmd+N" or "Ctrl+Shift+S" into an Accelerator.
+/// Parse a shortcut string like "Cmd+N" or "Ctrl+Shift+S" into a muda Accelerator.
 fn parse_shortcut(shortcut: &str) -> Option<Accelerator> {
-    // Convert common shortcuts to muda format
-    // muda uses: "CmdOrCtrl+N", "Shift+CmdOrCtrl+S", etc.
     let normalized = shortcut
         .replace("Cmd+", "CmdOrCtrl+")
         .replace("Ctrl+", "CmdOrCtrl+")

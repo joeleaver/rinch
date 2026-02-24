@@ -36,10 +36,10 @@
 //! Components must accept a `&mut RenderScope` parameter and return a `NodeHandle`.
 
 mod component;
+pub mod component_codegen;
 mod control_flow;
 pub mod helpers;
 pub mod html;
-pub mod component_codegen;
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
@@ -47,7 +47,6 @@ use quote::quote;
 use crate::element::RsxElement;
 use crate::helpers::{get_closure_expr, is_literal_expr};
 use crate::node::RsxNode;
-
 
 /// Context for DOM code generation.
 pub struct DomCodegenContext {
@@ -239,7 +238,7 @@ pub fn node_to_dom(node: &RsxNode, ctx: &mut DomCodegenContext) -> TokenStream2 
 #[cfg(test)]
 mod tests {
     use super::helpers::is_likely_reactive;
-    use syn::{parse_quote, Expr};
+    use syn::{Expr, parse_quote};
 
     #[test]
     fn test_is_likely_reactive_method_call() {

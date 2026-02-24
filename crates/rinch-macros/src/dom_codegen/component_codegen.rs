@@ -10,11 +10,11 @@ use crate::element::RsxElement;
 use crate::helpers::{expand_style_shorthand, get_closure_expr, is_literal_expr};
 use crate::prop::RsxProp;
 
+use super::DomCodegenContext;
 use super::html::{
     generate_class_code, generate_shorthand_code, generate_shorthand_code_reactive,
     generate_style_code,
 };
-use super::DomCodegenContext;
 
 /// Check if an element is a component with reactive (closure) props that needs
 /// statement-based insertion (like control flow) rather than expression-based.
@@ -373,9 +373,9 @@ pub fn generate_component_field_assignments(
                 quote! { #name: Some(std::rc::Rc::new(#value)) }
             } else if crate::helpers::is_literal_bool(value) {
                 quote! { #name: #value }
-            } else if crate::helpers::is_literal_int(value) {
-                quote! { #name: Some(#value) }
-            } else if crate::helpers::is_literal_float(value) {
+            } else if crate::helpers::is_literal_int(value)
+                || crate::helpers::is_literal_float(value)
+            {
                 quote! { #name: Some(#value) }
             } else if crate::helpers::is_literal_string(value) {
                 quote! { #name: String::from(#value) }

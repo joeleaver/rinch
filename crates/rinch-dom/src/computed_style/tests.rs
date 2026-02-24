@@ -1,8 +1,8 @@
 //! Unit tests for ComputedStyle.
 
 use super::*;
-use std::collections::HashMap;
 use crate::layout::Viewport;
+use std::collections::HashMap;
 
 #[test]
 fn test_display_value_parse() {

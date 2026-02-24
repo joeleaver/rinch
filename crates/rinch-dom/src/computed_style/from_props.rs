@@ -2,10 +2,10 @@
 
 use std::collections::HashMap;
 
-use crate::layout::{Viewport, parse_color};
-use super::values::*;
-use super::helpers::*;
 use super::ComputedStyle;
+use super::helpers::*;
+use super::values::*;
+use crate::layout::{Viewport, parse_color};
 
 impl ComputedStyle {
     /// Parse CSS properties from a HashMap into a typed ComputedStyle.
@@ -218,9 +218,7 @@ impl ComputedStyle {
                     }
                 }
                 "background-image" => {
-                    if let Some(url) = value
-                        .strip_prefix("url(")
-                        .and_then(|v| v.strip_suffix(')'))
+                    if let Some(url) = value.strip_prefix("url(").and_then(|v| v.strip_suffix(')'))
                     {
                         let url = url.trim_matches(|c| c == '"' || c == '\'').trim();
                         if !url.is_empty() {

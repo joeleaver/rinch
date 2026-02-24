@@ -75,7 +75,6 @@ impl CeSelection {
 #[derive(Debug, Clone)]
 pub enum CeEvent {
     // ── Text ──────────────────────────────────────────────────────────
-
     /// Text was inserted at a position.
     TextInserted {
         /// The text node that was modified (or created).
@@ -115,7 +114,6 @@ pub enum CeEvent {
     },
 
     // ── Selection ─────────────────────────────────────────────────────
-
     /// The cursor/selection position changed.
     SelectionChanged {
         /// New selection state.
@@ -123,7 +121,6 @@ pub enum CeEvent {
     },
 
     // ── Block Structure ───────────────────────────────────────────────
-
     /// A block was split (Enter key).
     BlockSplit {
         /// The original block's DOM node ID.
@@ -157,7 +154,6 @@ pub enum CeEvent {
     },
 
     // ── Inline Formatting ─────────────────────────────────────────────
-
     /// Selection was wrapped in a formatting element.
     SelectionWrapped {
         /// The wrapping element tag (e.g. "strong", "em").
@@ -177,7 +173,6 @@ pub enum CeEvent {
     },
 
     // ── List Structure ────────────────────────────────────────────────
-
     /// A list item was outdented (converted from li to div, or moved up a level).
     ListItemOutdented {
         /// The old list item node ID (removed).
@@ -197,7 +192,6 @@ pub enum CeEvent {
     },
 
     // ── Table ─────────────────────────────────────────────────────────
-
     /// A table was inserted.
     TableInserted {
         /// The table block's DOM node ID.
@@ -215,7 +209,6 @@ pub enum CeEvent {
     },
 
     // ── Undo/Redo ─────────────────────────────────────────────────────
-
     /// An undo operation was applied.
     UndoApplied,
 
@@ -223,7 +216,6 @@ pub enum CeEvent {
     RedoApplied,
 
     // ── Clipboard ─────────────────────────────────────────────────────
-
     /// HTML content was pasted.
     HtmlPasted {
         /// Nodes created by the paste operation.

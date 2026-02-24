@@ -1,15 +1,12 @@
 //! Border, outline, and box-shadow painting.
 
-use peniko::color::{AlphaColor, Srgb};
-use peniko::kurbo::{Affine, Cap, Rect, RoundedRect, Stroke};
 use peniko::Fill;
+use peniko::color::{AlphaColor, Srgb};
+use peniko::kurbo::{Affine, Cap, Rect, RoundedRectRadii, Stroke};
 use vello::Scene;
 
 use crate::computed_style::BorderStyleValue;
-use crate::layout::parse_color;
 use crate::node::{Node, NodeTree};
-
-use super::contenteditable::parse_px;
 
 /// Paint a CSS box-shadow effect.
 ///
@@ -23,7 +20,7 @@ pub(super) fn paint_borders(
     y: f64,
     w: f64,
     h: f64,
-    radius: f64,
+    radii: RoundedRectRadii,
     transform: Affine,
 ) {
     let cs = &node.computed_style;
@@ -66,9 +63,13 @@ pub(super) fn paint_borders(
             let stroke = make_border_stroke(bw as f64 * scale, style);
             let half = bw as f64 * scale * 0.5;
             let border_rect = Rect::new(x + half, y + half, x + w - half, y + h - half);
+            let has_radius = radii.top_left > 0.0
+                || radii.top_right > 0.0
+                || radii.bottom_right > 0.0
+                || radii.bottom_left > 0.0;
 
-            if radius > 0.0 {
-                let rrect = RoundedRect::from_rect(border_rect, radius);
+            if has_radius {
+                let rrect = border_rect.to_rounded_rect(radii);
                 scene.stroke(&stroke, transform, bc, None, &rrect);
             } else {
                 scene.stroke(&stroke, transform, bc, None, &border_rect);
@@ -166,7 +167,7 @@ pub(super) fn paint_outline(
     y: f64,
     w: f64,
     h: f64,
-    radius: f64,
+    radii: RoundedRectRadii,
     transform: Affine,
 ) {
     let cs = &node.computed_style;
@@ -197,8 +198,20 @@ pub(super) fn paint_outline(
         y + h + offset + half,
     );
 
-    if radius > 0.0 {
-        let rrect = RoundedRect::from_rect(outline_rect, radius + offset + half);
+    let has_radius = radii.top_left > 0.0
+        || radii.top_right > 0.0
+        || radii.bottom_right > 0.0
+        || radii.bottom_left > 0.0;
+
+    if has_radius {
+        let expand = offset + half;
+        let outline_radii = RoundedRectRadii::new(
+            radii.top_left + expand,
+            radii.top_right + expand,
+            radii.bottom_right + expand,
+            radii.bottom_left + expand,
+        );
+        let rrect = outline_rect.to_rounded_rect(outline_radii);
         scene.stroke(&stroke, transform, color, None, &rrect);
     } else {
         scene.stroke(&stroke, transform, color, None, &outline_rect);
@@ -234,12 +247,12 @@ pub(super) fn sorted_paint_order(tree: &NodeTree, children: &[usize]) -> Vec<usi
     result
 }
 
-/// Parses shadow format: `offset-x offset-y blur-radius color`
+/// Paint CSS box-shadow from typed computed values.
 /// Approximates blur by drawing expanded, semi-transparent rounded rects.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_box_shadow(
     scene: &mut Scene,
-    shadow_str: &str,
+    shadows: &[crate::computed_style::BoxShadowValue],
     x: f64,
     y: f64,
     w: f64,
@@ -248,99 +261,87 @@ pub(super) fn paint_box_shadow(
     node: &crate::node::Node,
     transform: Affine,
 ) {
-    // Parse box-shadow: offset-x offset-y blur-radius [spread-radius] color
-    // May also have "none" or multiple shadows separated by commas
-    if shadow_str == "none" {
-        return;
-    }
-
-    // Handle single shadow (multi-shadow not yet supported)
-    let parts: Vec<&str> = shadow_str.split_whitespace().collect();
-    if parts.len() < 3 {
-        return;
-    }
-
-    let offset_x = parse_px(parts[0]).unwrap_or(0.0) as f64 * scale;
-    let offset_y = parse_px(parts[1]).unwrap_or(0.0) as f64 * scale;
-    let blur = parse_px(parts[2]).unwrap_or(0.0) as f64 * scale;
-
-    // Remaining parts form the color (could be "rgba(0, 0, 0, 0.1)" spread across multiple parts)
-    let (spread, color_start) = if parts.len() > 4 {
-        // Check if parts[3] is a number (spread-radius) or start of color
-        if parse_px(parts[3]).is_some()
-            && !parts[3].starts_with('#')
-            && !parts[3].starts_with("rgb")
-        {
-            (parse_px(parts[3]).unwrap_or(0.0) as f64 * scale, 4)
-        } else {
-            (0.0, 3)
-        }
-    } else {
-        (0.0, 3)
-    };
-
-    let color_str = parts[color_start..].join(" ");
-    let color = parse_color(&color_str).unwrap_or_else(|| {
-        AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 40) // default shadow color
-    });
-
-    // Get border-radius from computed style (use average of all 4 corners)
-    // Resolve percentage values against element dimensions
-    let radius = {
+    // Get per-corner border-radius from computed style
+    let radii = {
         let cs = &node.computed_style;
         let resolve_size = node.layout.width.min(node.layout.height);
-        let tl = cs.border_radius_top_left.resolve(resolve_size);
-        let tr = cs.border_radius_top_right.resolve(resolve_size);
-        let br = cs.border_radius_bottom_right.resolve(resolve_size);
-        let bl = cs.border_radius_bottom_left.resolve(resolve_size);
-        let avg = (tl + tr + br + bl) / 4.0;
-        avg as f64 * scale
+        let tl = cs.border_radius_top_left.resolve(resolve_size) as f64 * scale;
+        let tr = cs.border_radius_top_right.resolve(resolve_size) as f64 * scale;
+        let br = cs.border_radius_bottom_right.resolve(resolve_size) as f64 * scale;
+        let bl = cs.border_radius_bottom_left.resolve(resolve_size) as f64 * scale;
+        RoundedRectRadii::new(tl, tr, br, bl)
     };
+    let has_radius = radii.top_left > 0.0
+        || radii.top_right > 0.0
+        || radii.bottom_right > 0.0
+        || radii.bottom_left > 0.0;
 
-    // Draw shadow as expanded rounded rect behind the element
-    // Approximate blur with multiple layers of decreasing opacity
-    let expand = blur * 0.5 + spread;
-    let shadow_rect = Rect::new(
-        x + offset_x - expand,
-        y + offset_y - expand,
-        x + w + offset_x + expand,
-        y + h + offset_y + expand,
-    );
-
-    if blur > 0.0 {
-        // Multi-layer blur approximation: 3 layers with increasing expansion
-        let layers = 3;
-        for i in 0..layers {
-            let t = (i as f64 + 1.0) / layers as f64;
-            let layer_expand = expand * t;
-            let layer_rect = Rect::new(
-                x + offset_x - layer_expand,
-                y + offset_y - layer_expand,
-                x + w + offset_x + layer_expand,
-                y + h + offset_y + layer_expand,
-            );
-            let alpha_scale = (1.0 - t * 0.6) / layers as f64;
-            let layer_color = AlphaColor::<Srgb>::from_rgba8(
-                0,
-                0,
-                0,
-                (color.components[3] * alpha_scale as f32 * 255.0) as u8,
-            );
-            if radius > 0.0 {
-                let rrect = RoundedRect::from_rect(layer_rect, radius + layer_expand);
-                scene.fill(Fill::NonZero, transform, layer_color, None, &rrect);
-            } else {
-                scene.fill(Fill::NonZero, transform, layer_color, None, &layer_rect);
-            }
+    for shadow in shadows {
+        // TODO: inset shadows not yet supported
+        if shadow.inset {
+            continue;
         }
-    } else {
-        // No blur: simple offset shadow
-        if radius > 0.0 {
-            let rrect = RoundedRect::from_rect(shadow_rect, radius);
-            scene.fill(Fill::NonZero, transform, color, None, &rrect);
+
+        let offset_x = shadow.offset_x as f64 * scale;
+        let offset_y = shadow.offset_y as f64 * scale;
+        let blur = shadow.blur_radius as f64 * scale;
+        let spread = shadow.spread_radius as f64 * scale;
+        let color: AlphaColor<Srgb> = shadow
+            .color
+            .map(|c| {
+                let rgba = c.to_rgba8();
+                AlphaColor::<Srgb>::from_rgba8(rgba.r, rgba.g, rgba.b, rgba.a)
+            })
+            .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 40));
+
+        let expand = blur * 0.5 + spread;
+        let shadow_rect = Rect::new(
+            x + offset_x - expand,
+            y + offset_y - expand,
+            x + w + offset_x + expand,
+            y + h + offset_y + expand,
+        );
+
+        if blur > 0.0 {
+            // Multi-layer blur approximation: 3 layers with increasing expansion
+            let layers = 3;
+            for i in 0..layers {
+                let t = (i as f64 + 1.0) / layers as f64;
+                let layer_expand = expand * t;
+                let layer_rect = Rect::new(
+                    x + offset_x - layer_expand,
+                    y + offset_y - layer_expand,
+                    x + w + offset_x + layer_expand,
+                    y + h + offset_y + layer_expand,
+                );
+                let alpha_scale = (1.0 - t * 0.6) / layers as f64;
+                let layer_color = AlphaColor::<Srgb>::from_rgba8(
+                    0,
+                    0,
+                    0,
+                    (color.components[3] * alpha_scale as f32 * 255.0) as u8,
+                );
+                if has_radius {
+                    let expanded_radii = RoundedRectRadii::new(
+                        radii.top_left + layer_expand,
+                        radii.top_right + layer_expand,
+                        radii.bottom_right + layer_expand,
+                        radii.bottom_left + layer_expand,
+                    );
+                    let rrect = layer_rect.to_rounded_rect(expanded_radii);
+                    scene.fill(Fill::NonZero, transform, layer_color, None, &rrect);
+                } else {
+                    scene.fill(Fill::NonZero, transform, layer_color, None, &layer_rect);
+                }
+            }
         } else {
-            scene.fill(Fill::NonZero, transform, color, None, &shadow_rect);
+            // No blur: simple offset shadow
+            if has_radius {
+                let rrect = shadow_rect.to_rounded_rect(radii);
+                scene.fill(Fill::NonZero, transform, color, None, &rrect);
+            } else {
+                scene.fill(Fill::NonZero, transform, color, None, &shadow_rect);
+            }
         }
     }
 }
-

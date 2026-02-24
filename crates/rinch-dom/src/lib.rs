@@ -1,3 +1,4 @@
+#![allow(clippy::collapsible_if)]
 //! rinch-dom: Custom layout engine for Rinch.
 //!
 //! Uses a direct Taffy + Parley + Vello pipeline.
@@ -6,8 +7,8 @@
 pub mod computed_style;
 mod dom_impl;
 pub mod html_parser;
-pub mod image_cache;
 mod ifc;
+pub mod image_cache;
 pub mod layout;
 mod layout_engine;
 pub mod node;

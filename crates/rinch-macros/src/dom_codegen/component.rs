@@ -15,10 +15,7 @@ use super::DomCodegenContext;
 /// For components (PascalCase), generates direct construction and render call.
 /// Shell elements (Window, Menu, etc.) are NOT supported inside rsx! - use run() for windows
 /// and the menu API for menus.
-pub fn element_to_dom_component(
-    element: &RsxElement,
-    ctx: &mut DomCodegenContext,
-) -> TokenStream2 {
+pub fn element_to_dom_component(element: &RsxElement, ctx: &mut DomCodegenContext) -> TokenStream2 {
     let name = element.name.to_string();
 
     // Shell elements should not be used inside rsx! - they're handled at runtime level

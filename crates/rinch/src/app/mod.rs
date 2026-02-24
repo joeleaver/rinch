@@ -6,30 +6,33 @@
 //! [`PlatformEvent`]s, feeds them to `RinchApp`, and processes the returned
 //! [`AppAction`]s.
 
-mod html_parser;
-pub(crate) mod hit_testing;
-mod contenteditable;
-mod event_dispatch;
 mod click_handling;
+mod contenteditable;
 #[cfg(feature = "debug")]
 mod debug_commands;
+mod event_dispatch;
+pub(crate) mod hit_testing;
+mod html_parser;
 
-use html_parser::*;
-pub(crate) use hit_testing::*;
 use contenteditable::*;
+pub(crate) use hit_testing::*;
+use html_parser::*;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::ce_ops::CeOps;
 use rinch_core::ce::{self, ContentEditableApi};
 use rinch_core::dom::{DomDocument, NodeHandle, RenderScope, clear_render_scope, set_render_scope};
 use rinch_core::events;
-use crate::ce_ops::CeOps;
 use rinch_dom::RinchDocument;
 #[cfg(feature = "debug")]
 use rinch_dom::text_query::glyph_bounds_for_offset_layout;
 use rinch_dom::text_query::{byte_offset_from_position, caret_position_for_offset_layout};
-use rinch_editable::{EditCommand, EditableDocument, EditableState, InputHandler, Key as EditKey, Modifiers as EditModifiers, Selection, StringDocument};
+use rinch_editable::{
+    EditCommand, EditableDocument, EditableState, InputHandler, Key as EditKey,
+    Modifiers as EditModifiers, Selection, StringDocument,
+};
 use rinch_platform::{
     AppAction, Instant, KeyCode, Modifiers, MouseButton, PlatformEvent, UserEvent,
 };
@@ -59,7 +62,6 @@ pub(crate) struct ScrollbarDrag {
     /// Container height of the scroll container.
     pub container_height: f64,
 }
-
 
 // ── RinchApp ─────────────────────────────────────────────────────────────────
 
@@ -274,9 +276,8 @@ impl RinchApp {
         // Set up network image loader if feature enabled (replaces default FileImageLoader)
         #[cfg(feature = "image-network")]
         {
-            doc.borrow_mut().tree.image_loader = Some(std::sync::Arc::new(
-                crate::image_loader::NetworkImageLoader,
-            ));
+            doc.borrow_mut().tree.image_loader =
+                Some(std::sync::Arc::new(crate::image_loader::NetworkImageLoader));
         }
 
         // Register any pending fonts on the document's font context (for WASM)
@@ -442,8 +443,12 @@ impl RinchApp {
 
     /// Central dispatch: execute an EditCommand on the focused input's EditableState.
     fn handle_input_edit_command(&mut self, cmd: EditCommand) {
-        let Some(handler_id) = self.focused_input_handler_id else { return };
-        let Some(state) = self.focused_input_state.as_mut() else { return };
+        let Some(handler_id) = self.focused_input_handler_id else {
+            return;
+        };
+        let Some(state) = self.focused_input_state.as_mut() else {
+            return;
+        };
 
         let old_text = state.document.to_text();
         let clipboard_text = state.execute(cmd);
@@ -452,7 +457,9 @@ impl RinchApp {
         // Handle clipboard output (Copy/Cut)
         if let Some(text) = clipboard_text {
             #[cfg(feature = "clipboard")]
-            { let _ = crate::clipboard::copy_text(&text); }
+            {
+                let _ = crate::clipboard::copy_text(&text);
+            }
             let _ = text;
         }
 
@@ -551,11 +558,19 @@ impl RinchApp {
     fn handle_arrow_up(&mut self, _shift: bool) {}
     fn handle_arrow_down(&mut self, _shift: bool) {}
     fn handle_home(&mut self, shift: bool) {
-        let cmd = if shift { EditCommand::SelectToLineStart } else { EditCommand::MoveToLineStart };
+        let cmd = if shift {
+            EditCommand::SelectToLineStart
+        } else {
+            EditCommand::MoveToLineStart
+        };
         self.handle_input_edit_command(cmd);
     }
     fn handle_end(&mut self, shift: bool) {
-        let cmd = if shift { EditCommand::SelectToLineEnd } else { EditCommand::MoveToLineEnd };
+        let cmd = if shift {
+            EditCommand::SelectToLineEnd
+        } else {
+            EditCommand::MoveToLineEnd
+        };
         self.handle_input_edit_command(cmd);
     }
     fn handle_select_all(&mut self) {
@@ -567,9 +582,13 @@ impl RinchApp {
     fn handle_paste(&mut self) {
         let clip_text = {
             #[cfg(feature = "clipboard")]
-            { crate::clipboard::paste_text().unwrap_or_default() }
+            {
+                crate::clipboard::paste_text().unwrap_or_default()
+            }
             #[cfg(not(feature = "clipboard"))]
-            { String::new() }
+            {
+                String::new()
+            }
         };
         if !clip_text.is_empty() {
             self.handle_input_edit_command(EditCommand::Paste(clip_text));
@@ -583,16 +602,28 @@ impl RinchApp {
 
     /// Write cursor/selection attributes to the focused input's DOM node.
     fn sync_input_cursor_to_dom(&self) {
-        let Some(node_id) = self.focused_input_node_id else { return };
-        let Some(state) = &self.focused_input_state else { return };
+        let Some(node_id) = self.focused_input_node_id else {
+            return;
+        };
+        let Some(state) = &self.focused_input_state else {
+            return;
+        };
         let Some(doc) = &self.doc else { return };
 
         let mut d = doc.borrow_mut();
         if let Some(node) = d.tree.nodes.get_mut(node_id) {
-            node.attributes.insert("value".to_string(), state.document.to_text());
-            node.attributes.insert("data-focused".to_string(), "true".to_string());
-            node.attributes.insert("data-cursor-pos".to_string(), state.selection.head.0.to_string());
-            node.attributes.insert("data-selection-start".to_string(), state.selection.anchor.0.to_string());
+            node.attributes
+                .insert("value".to_string(), state.document.to_text());
+            node.attributes
+                .insert("data-focused".to_string(), "true".to_string());
+            node.attributes.insert(
+                "data-cursor-pos".to_string(),
+                state.selection.head.0.to_string(),
+            );
+            node.attributes.insert(
+                "data-selection-start".to_string(),
+                state.selection.anchor.0.to_string(),
+            );
             node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
         }
         d.tree.dirty_nodes.insert(node_id);
@@ -600,7 +631,9 @@ impl RinchApp {
 
     /// Clear focus-related attributes from the previously focused input node.
     fn clear_input_focus_attrs(&self) {
-        let Some(node_id) = self.focused_input_node_id else { return };
+        let Some(node_id) = self.focused_input_node_id else {
+            return;
+        };
         let Some(doc) = &self.doc else { return };
 
         let mut d = doc.borrow_mut();
@@ -616,7 +649,9 @@ impl RinchApp {
     /// Re-read the DOM value and rebuild EditableState after an onsubmit handler
     /// may have changed the signal (e.g., cleared the input).
     fn resync_input_state_from_dom(&mut self) {
-        let Some(node_id) = self.focused_input_node_id else { return };
+        let Some(node_id) = self.focused_input_node_id else {
+            return;
+        };
         if let Some(doc) = &self.doc {
             let d = doc.borrow();
             if let Some(node) = d.tree.nodes.get(node_id) {
@@ -682,7 +717,11 @@ impl RinchApp {
     ///
     /// Called when a contentEditable element gains focus. Registers the
     /// CeOps as the active CE API so the editor bridge can access it.
-    pub(crate) fn register_ce_ops(&mut self, ce_node_id: usize, cursor: contenteditable::DomCursor) {
+    pub(crate) fn register_ce_ops(
+        &mut self,
+        ce_node_id: usize,
+        cursor: contenteditable::DomCursor,
+    ) {
         if let Some(doc) = &self.doc {
             let ce_cursor = rinch_core::ce::DomCursor {
                 node_id: cursor.node_id,
@@ -742,9 +781,4 @@ impl RinchApp {
             }
         }
     }
-
-
 }
-
-
-

@@ -3,7 +3,7 @@
 //! Collapsible content sections.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Component, Callback};
+use rinch_core::{Callback, Component};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
 /// Accordion variant style.
@@ -133,7 +133,11 @@ impl Component for Accordion {
         let container = rinch_macros::rsx! { div { class: "rinch-accordion" } };
         container.set_attribute("class", &self.class_string());
 
-        let active_value = if !self.value.is_empty() { &self.value } else { &self.default_value };
+        let active_value = if !self.value.is_empty() {
+            &self.value
+        } else {
+            &self.default_value
+        };
         if !active_value.is_empty() {
             container.set_attribute("data-active-item", active_value);
         }

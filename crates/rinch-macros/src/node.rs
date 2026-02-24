@@ -450,10 +450,7 @@ mod tests {
 
     #[test]
     fn parse_if_simple() {
-        assert_eq!(
-            parse_variant(r#"if visible { p { "yes" } }"#),
-            "IfBlock"
-        );
+        assert_eq!(parse_variant(r#"if visible { p { "yes" } }"#), "IfBlock");
     }
 
     #[test]
@@ -530,7 +527,9 @@ mod tests {
     #[test]
     fn parse_for_tuple_pattern() {
         assert_eq!(
-            parse_variant(r#"for (i, item) in items.get().into_iter().enumerate() { div { "item" } }"#),
+            parse_variant(
+                r#"for (i, item) in items.get().into_iter().enumerate() { div { "item" } }"#
+            ),
             "ForLoop"
         );
     }
@@ -551,13 +550,15 @@ mod tests {
 
     #[test]
     fn parse_match_simple() {
-        let input = r#"match tab.get() { 0 => div { "Home" }, 1 => div { "About" }, _ => div { "404" } }"#;
+        let input =
+            r#"match tab.get() { 0 => div { "Home" }, 1 => div { "About" }, _ => div { "404" } }"#;
         assert_eq!(parse_variant(input), "MatchBlock");
     }
 
     #[test]
     fn parse_match_arms() {
-        let input = r#"match tab.get() { 0 => div { "Home" }, 1 => div { "About" }, _ => div { "404" } }"#;
+        let input =
+            r#"match tab.get() { 0 => div { "Home" }, 1 => div { "About" }, _ => div { "404" } }"#;
         let node = parse_str::<RsxNode>(input).unwrap();
         match node {
             RsxNode::MatchBlock(match_block) => {

@@ -118,6 +118,7 @@ struct ItemState {
 ///
 /// The comment marker NodeHandle. The caller should NOT append this to
 /// the parent — it is already inserted.
+#[allow(clippy::type_complexity)]
 pub fn for_each_dom<E, V>(
     scope: &mut RenderScope,
     parent: &NodeHandle,
@@ -212,8 +213,7 @@ where
         let mut keys = keys_order_clone.borrow_mut();
 
         // Track which keys were freshly inserted (skip them in data comparison)
-        let mut inserted_keys: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut inserted_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for op in ops {
             match op {
@@ -413,12 +413,14 @@ where
     let kf = key_fn.clone();
 
     // Build PartialEq-based equality function for data comparison
-    let eq_fn: Rc<dyn Fn(&ForItem, &ForItem) -> bool> = Rc::new(|a: &ForItem, b: &ForItem| {
-        match (a.data.downcast_ref::<T>(), b.data.downcast_ref::<T>()) {
-            (Some(a_data), Some(b_data)) => a_data == b_data,
-            _ => false,
-        }
-    });
+    #[allow(clippy::type_complexity)]
+    let eq_fn: Rc<dyn Fn(&ForItem, &ForItem) -> bool> =
+        Rc::new(|a: &ForItem, b: &ForItem| {
+            match (a.data.downcast_ref::<T>(), b.data.downcast_ref::<T>()) {
+                (Some(a_data), Some(b_data)) => a_data == b_data,
+                _ => false,
+            }
+        });
 
     for_each_dom(
         scope,

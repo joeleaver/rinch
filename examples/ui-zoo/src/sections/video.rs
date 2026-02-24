@@ -1,7 +1,9 @@
 //! Video Player section — showcases rinch-video components.
 
 use rinch::prelude::*;
-use rinch_video::{use_video_player, use_video_player_paused, PlaybackState, VideoControls, VideoViewport};
+use rinch_video::{
+    PlaybackState, VideoControls, VideoViewport, use_video_player, use_video_player_paused,
+};
 
 #[component]
 pub fn video_section() -> NodeHandle {

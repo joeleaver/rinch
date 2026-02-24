@@ -351,8 +351,7 @@ impl PlatformRenderer for WgpuRenderer {
                     view_formats: &[],
                 })
             });
-            let composited_view =
-                composited.create_view(&wgpu::TextureViewDescriptor::default());
+            let composited_view = composited.create_view(&wgpu::TextureViewDescriptor::default());
 
             // Phase 1: Upload all video frames to separate GPU textures,
             // then blit each into its viewport region.
@@ -472,15 +471,9 @@ impl PlatformRenderer for WgpuRenderer {
             #[cfg(not(feature = "video"))]
             let tex = &self.render_texture;
 
-            let rgba = super::screenshot::capture_texture_rgba(
-                &self.device,
-                &self.queue,
-                tex,
-                w,
-                h,
-                fmt,
-            )
-            .map_err(RenderError::Internal)?;
+            let rgba =
+                super::screenshot::capture_texture_rgba(&self.device, &self.queue, tex, w, h, fmt)
+                    .map_err(RenderError::Internal)?;
             Ok((w, h, rgba))
         }
         #[cfg(not(feature = "debug"))]

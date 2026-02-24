@@ -133,10 +133,7 @@ fn generate_branch_closure(
 }
 
 /// Generate a render closure from a list of RSX children.
-fn generate_children_closure(
-    children: &[RsxNode],
-    ctx: &mut DomCodegenContext,
-) -> TokenStream2 {
+fn generate_children_closure(children: &[RsxNode], ctx: &mut DomCodegenContext) -> TokenStream2 {
     let body = generate_children_body(children, ctx);
     quote! {
         move |__child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
@@ -151,10 +148,7 @@ fn generate_children_closure(
 /// If there's one child, it's returned directly. Multiple children are wrapped
 /// in a `display:contents` div. Leading `let` statements are emitted before
 /// the RSX content.
-fn generate_children_body(
-    children: &[RsxNode],
-    ctx: &mut DomCodegenContext,
-) -> TokenStream2 {
+fn generate_children_body(children: &[RsxNode], ctx: &mut DomCodegenContext) -> TokenStream2 {
     // Partition into leading statements and trailing RSX nodes
     let mut statements = Vec::new();
     let mut rsx_children = Vec::new();

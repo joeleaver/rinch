@@ -5,9 +5,7 @@ use peniko::Color;
 use style::values::computed::TransitionProperty as StyloTransitionProperty;
 use style::values::generics::easing::TimingKeyword;
 
-use crate::computed_style::{
-    DimensionValue, LengthPercentageAutoValue, LengthPercentageValue,
-};
+use crate::computed_style::{DimensionValue, LengthPercentageAutoValue, LengthPercentageValue};
 
 // =============================================================================
 // TransitionProperty — which CSS properties can be transitioned

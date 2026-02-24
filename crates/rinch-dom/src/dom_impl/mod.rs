@@ -105,9 +105,7 @@ impl RinchDocument {
         };
 
         // Set up default file-based image loader
-        doc.tree.image_loader = Some(std::sync::Arc::new(
-            crate::image_cache::FileImageLoader,
-        ));
+        doc.tree.image_loader = Some(std::sync::Arc::new(crate::image_cache::FileImageLoader));
 
         // Load User-Agent stylesheet with default display values for HTML elements
         doc.load_ua_stylesheet();
@@ -270,24 +268,24 @@ impl RinchDocument {
         // triggers a re-render and creates a new img element, the cache lookup
         // in the "already in cache" path below finds the Decoded entry immediately.
         if src.starts_with("data:") {
-            if !self.tree.image_cache.contains(src) {
-                if let Some(bytes) = crate::image_cache::decode_data_uri(src) {
-                    match image::load_from_memory(&bytes) {
-                        Ok(img) => {
-                            let rgba = img.to_rgba8();
-                            let (w, h) = (rgba.width(), rgba.height());
-                            self.tree.image_cache.insert_decoded(
-                                src.to_string(),
-                                crate::image_cache::DecodedImage {
-                                    data: rgba.into_raw(),
-                                    width: w,
-                                    height: h,
-                                },
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to decode data URI image: {}", e);
-                        }
+            if !self.tree.image_cache.contains(src)
+                && let Some(bytes) = crate::image_cache::decode_data_uri(src)
+            {
+                match image::load_from_memory(&bytes) {
+                    Ok(img) => {
+                        let rgba = img.to_rgba8();
+                        let (w, h) = (rgba.width(), rgba.height());
+                        self.tree.image_cache.insert_decoded(
+                            src.to_string(),
+                            crate::image_cache::DecodedImage {
+                                data: rgba.into_raw(),
+                                width: w,
+                                height: h,
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to decode data URI image: {}", e);
                     }
                 }
             }
@@ -310,10 +308,7 @@ impl RinchDocument {
                 );
                 let _ = self.tree.taffy.mark_dirty(taffy_id);
             }
-            self.push_dirty_flags(
-                node_id,
-                DirtyFlags::LAYOUT | DirtyFlags::PAINT,
-            );
+            self.push_dirty_flags(node_id, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
             return;
         }
 
@@ -418,10 +413,7 @@ impl RinchDocument {
                     );
                     let _ = self.tree.taffy.mark_dirty(taffy_id);
                 }
-                self.push_dirty_flags(
-                    node_id,
-                    DirtyFlags::LAYOUT | DirtyFlags::PAINT,
-                );
+                self.push_dirty_flags(node_id, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
             }
         }
 
@@ -519,10 +511,7 @@ impl RinchDocument {
     pub fn query_selector_all(&self, selector: &str) -> Vec<rinch_core::dom::NodeId> {
         let mut results = Vec::new();
         self.query_all_recursive(self.tree.root_id, selector, &mut results);
-        results
-            .into_iter()
-            .map(rinch_core::dom::NodeId)
-            .collect()
+        results.into_iter().map(rinch_core::dom::NodeId).collect()
     }
 }
 

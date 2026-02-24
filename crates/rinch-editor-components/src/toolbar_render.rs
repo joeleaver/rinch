@@ -153,30 +153,31 @@ fn render_toolbar_button(
 fn current_block_label(editor: &Editor) -> &'static str {
     let sel = editor.get_selection();
     if let Ok(rp) = editor.doc.resolve_position(sel.head)
-        && let Some(bt) = editor.doc.block_type(rp.block_index) {
-            match bt.as_str() {
-                "heading" => {
-                    if let Some(attrs) = editor.doc.block_attrs(rp.block_index) {
-                        match attrs.get("level").map(|s| s.as_str()) {
-                            Some("1") => return "Heading 1",
-                            Some("2") => return "Heading 2",
-                            Some("3") => return "Heading 3",
-                            Some("4") => return "Heading 4",
-                            Some("5") => return "Heading 5",
-                            Some("6") => return "Heading 6",
-                            _ => return "Heading",
-                        }
+        && let Some(bt) = editor.doc.block_type(rp.block_index)
+    {
+        match bt.as_str() {
+            "heading" => {
+                if let Some(attrs) = editor.doc.block_attrs(rp.block_index) {
+                    match attrs.get("level").map(|s| s.as_str()) {
+                        Some("1") => return "Heading 1",
+                        Some("2") => return "Heading 2",
+                        Some("3") => return "Heading 3",
+                        Some("4") => return "Heading 4",
+                        Some("5") => return "Heading 5",
+                        Some("6") => return "Heading 6",
+                        _ => return "Heading",
                     }
-                    return "Heading";
                 }
-                "paragraph" => return "Paragraph",
-                "blockquote" => return "Blockquote",
-                "code_block" => return "Code Block",
-                "bullet_list" => return "Bullet List",
-                "ordered_list" => return "Ordered List",
-                _ => {}
+                return "Heading";
             }
+            "paragraph" => return "Paragraph",
+            "blockquote" => return "Blockquote",
+            "code_block" => return "Code Block",
+            "bullet_list" => return "Bullet List",
+            "ordered_list" => return "Ordered List",
+            _ => {}
         }
+    }
     "Paragraph"
 }
 
@@ -282,9 +283,8 @@ fn render_heading_dropdown(
                     if let Some(lvl) = level {
                         let mut attrs = HashMap::new();
                         attrs.insert("level".to_string(), lvl.to_string());
-                        let _ = StructureCommands::set_block_type_with_attrs(
-                            &mut ed, "heading", attrs,
-                        );
+                        let _ =
+                            StructureCommands::set_block_type_with_attrs(&mut ed, "heading", attrs);
                     } else {
                         let _ = StructureCommands::set_block_type(&mut ed, "paragraph");
                     }
@@ -425,9 +425,7 @@ fn render_color_picker(
 /// Check if a toolbar control's format is currently active at the cursor.
 fn is_control_active(editor: &Editor, control: &ToolbarControl) -> bool {
     let sel = editor.get_selection();
-    let has_mark = |mark_type: &str| -> bool {
-        editor.has_stored_mark(mark_type)
-    };
+    let has_mark = |mark_type: &str| -> bool { editor.has_stored_mark(mark_type) };
 
     match control {
         ToolbarControl::Bold => has_mark("bold"),
@@ -606,11 +604,12 @@ fn control_to_tabler_icon(control: &ToolbarControl) -> Option<TablerIcon> {
 fn find_cursor_table(editor: &Editor) -> Option<(String, usize, usize)> {
     let sel = editor.get_selection();
     if let Ok(rp) = editor.doc.resolve_position(sel.head)
-        && let Some(table_id) = editor.table_id_for_block(rp.block_index) {
-            // For now, default to row 0, col 0 — a proper implementation would
-            // track the cursor cell within the table.
-            return Some((table_id, 0, 0));
-        }
+        && let Some(table_id) = editor.table_id_for_block(rp.block_index)
+    {
+        // For now, default to row 0, col 0 — a proper implementation would
+        // track the cursor cell within the table.
+        return Some((table_id, 0, 0));
+    }
     None
 }
 
@@ -873,66 +872,75 @@ fn execute_toolbar_command(
         ToolbarControl::InsertRowBefore => {
             if let Ok(mut ed) = editor.try_borrow_mut()
                 && let Some((table_id, row, _col)) = find_cursor_table(&ed)
-                    && let Some(table) = ed.get_table_mut(&table_id) {
-                        table.insert_row(row);
-                    }
+                && let Some(table) = ed.get_table_mut(&table_id)
+            {
+                table.insert_row(row);
+            }
         }
         ToolbarControl::InsertRowAfter => {
             if let Ok(mut ed) = editor.try_borrow_mut()
                 && let Some((table_id, row, _col)) = find_cursor_table(&ed)
-                    && let Some(table) = ed.get_table_mut(&table_id) {
-                        table.insert_row(row + 1);
-                    }
+                && let Some(table) = ed.get_table_mut(&table_id)
+            {
+                table.insert_row(row + 1);
+            }
         }
         ToolbarControl::InsertColBefore => {
             if let Ok(mut ed) = editor.try_borrow_mut()
                 && let Some((table_id, _row, col)) = find_cursor_table(&ed)
-                    && let Some(table) = ed.get_table_mut(&table_id) {
-                        table.insert_column(col);
-                    }
+                && let Some(table) = ed.get_table_mut(&table_id)
+            {
+                table.insert_column(col);
+            }
         }
         ToolbarControl::InsertColAfter => {
             if let Ok(mut ed) = editor.try_borrow_mut()
                 && let Some((table_id, _row, col)) = find_cursor_table(&ed)
-                    && let Some(table) = ed.get_table_mut(&table_id) {
-                        table.insert_column(col + 1);
-                    }
+                && let Some(table) = ed.get_table_mut(&table_id)
+            {
+                table.insert_column(col + 1);
+            }
         }
         ToolbarControl::DeleteRow => {
             if let Ok(mut ed) = editor.try_borrow_mut()
                 && let Some((table_id, row, _col)) = find_cursor_table(&ed)
-                    && let Some(table) = ed.get_table_mut(&table_id) {
-                        let _ = table.delete_row(row);
-                    }
+                && let Some(table) = ed.get_table_mut(&table_id)
+            {
+                let _ = table.delete_row(row);
+            }
         }
         ToolbarControl::DeleteCol => {
             if let Ok(mut ed) = editor.try_borrow_mut()
                 && let Some((table_id, _row, col)) = find_cursor_table(&ed)
-                    && let Some(table) = ed.get_table_mut(&table_id) {
-                        let _ = table.delete_column(col);
-                    }
+                && let Some(table) = ed.get_table_mut(&table_id)
+            {
+                let _ = table.delete_column(col);
+            }
         }
         ToolbarControl::ToggleHeaderRow => {
             if let Ok(mut ed) = editor.try_borrow_mut()
                 && let Some((table_id, _row, _col)) = find_cursor_table(&ed)
-                    && let Some(table) = ed.get_table_mut(&table_id) {
-                        table.toggle_header_row();
-                    }
+                && let Some(table) = ed.get_table_mut(&table_id)
+            {
+                table.toggle_header_row();
+            }
         }
         ToolbarControl::MergeCells => {
             if let Ok(mut ed) = editor.try_borrow_mut()
                 && let Some((table_id, row, col)) = find_cursor_table(&ed)
-                    && let Some(table) = ed.get_table_mut(&table_id) {
-                        // Merge the current cell with the one to the right
-                        let _ = table.merge_cells((row, col), (row, col.saturating_add(1)));
-                    }
+                && let Some(table) = ed.get_table_mut(&table_id)
+            {
+                // Merge the current cell with the one to the right
+                let _ = table.merge_cells((row, col), (row, col.saturating_add(1)));
+            }
         }
         ToolbarControl::SplitCell => {
             if let Ok(mut ed) = editor.try_borrow_mut()
                 && let Some((table_id, row, col)) = find_cursor_table(&ed)
-                    && let Some(table) = ed.get_table_mut(&table_id) {
-                        let _ = table.split_cell(row, col);
-                    }
+                && let Some(table) = ed.get_table_mut(&table_id)
+            {
+                let _ = table.split_cell(row, col);
+            }
         }
         ToolbarControl::DeleteTable => {
             if let Ok(mut ed) = editor.try_borrow_mut() {

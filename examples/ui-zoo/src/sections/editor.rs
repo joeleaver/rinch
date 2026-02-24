@@ -205,12 +205,18 @@ fn render_api_row(__scope: &mut RenderScope, method: &str, desc: &str) -> NodeHa
     );
 
     let code = __scope.create_element("span");
-    code.set_attribute("style", "font-family: monospace; font-size: 13px; font-weight: 600;");
+    code.set_attribute(
+        "style",
+        "font-family: monospace; font-size: 13px; font-weight: 600;",
+    );
     code.set_text(method);
     row.append_child(&code);
 
     let label = __scope.create_element("span");
-    label.set_attribute("style", "font-size: 13px; color: var(--rinch-color-dimmed);");
+    label.set_attribute(
+        "style",
+        "font-size: 13px; color: var(--rinch-color-dimmed);",
+    );
     label.set_text(desc);
     row.append_child(&label);
 

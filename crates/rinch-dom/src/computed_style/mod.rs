@@ -3,12 +3,12 @@
 //! Provides a pre-parsed ComputedStyle struct to avoid re-parsing CSS properties
 //! on every layout and paint operation.
 
-pub mod values;
+mod from_props;
 mod from_stylo;
 pub(crate) mod helpers;
-mod from_props;
 mod taffy_conversion;
 mod text_layout;
+pub mod values;
 
 pub use values::*;
 
@@ -110,6 +110,9 @@ pub struct ComputedStyle {
 
     // Text shadow
     pub text_shadow: Vec<TextShadowValue>,
+
+    // Box shadow
+    pub box_shadow: Vec<BoxShadowValue>,
 
     // Outline
     pub outline_width: f32,
@@ -231,6 +234,7 @@ impl Default for ComputedStyle {
             z_index: None,
 
             text_shadow: Vec::new(),
+            box_shadow: Vec::new(),
 
             outline_width: 0.0,
             outline_color: None,

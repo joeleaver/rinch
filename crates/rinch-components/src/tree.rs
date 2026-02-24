@@ -419,7 +419,11 @@ impl Component for Tree {
         container.set_attribute("role", "tree");
 
         // Apply level offset CSS variable
-        let offset = if self.level_offset.is_empty() { "md" } else { &self.level_offset };
+        let offset = if self.level_offset.is_empty() {
+            "md"
+        } else {
+            &self.level_offset
+        };
         let offset_value = match offset {
             "xs" => "var(--rinch-spacing-xs)",
             "sm" => "var(--rinch-spacing-sm)",

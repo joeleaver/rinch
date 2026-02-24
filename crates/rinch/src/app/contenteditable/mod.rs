@@ -19,7 +19,7 @@ pub(in crate::app) struct UndoEntry {
     pub(in crate::app) cursor: DomCursor,
     pub(in crate::app) anchor: DomCursor,
     pub(in crate::app) text_snapshots: Vec<(usize, String)>, // (node_id, old_text_content)
-    pub(in crate::app) created_nodes: Vec<usize>,            // nodes created during the edit (removed on undo)
+    pub(in crate::app) created_nodes: Vec<usize>, // nodes created during the edit (removed on undo)
 }
 
 /// State for a focused contenteditable element.
@@ -604,4 +604,3 @@ impl RinchApp {
         true
     }
 }
-

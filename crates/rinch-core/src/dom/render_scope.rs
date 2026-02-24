@@ -6,7 +6,7 @@ use std::rc::{Rc, Weak};
 use crate::reactive::{Effect, Scope};
 
 use super::traits::DomDocument;
-use super::{next_reactive_id, NodeHandle, NodeId};
+use super::{NodeHandle, NodeId, next_reactive_id};
 
 /// Context for building DOM trees with automatic effect tracking.
 ///

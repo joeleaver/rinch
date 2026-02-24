@@ -28,13 +28,20 @@ pub struct Breadcrumbs {
 
 impl Component for Breadcrumbs {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
-        let separator = if self.separator.is_empty() { "/" } else { &self.separator };
+        let separator = if self.separator.is_empty() {
+            "/"
+        } else {
+            &self.separator
+        };
 
         let nav = rinch_macros::rsx! { nav { class: "rinch-breadcrumbs" } };
         nav.set_attribute("aria-label", "Breadcrumb");
 
         if !self.separator_margin.is_empty() {
-            nav.set_attribute("style", &format!("--rinch-breadcrumbs-margin: {}", self.separator_margin));
+            nav.set_attribute(
+                "style",
+                &format!("--rinch-breadcrumbs-margin: {}", self.separator_margin),
+            );
         }
 
         let ol = rinch_macros::rsx! { ol { class: "rinch-breadcrumbs__list" } };

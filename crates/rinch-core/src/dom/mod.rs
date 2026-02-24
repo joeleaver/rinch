@@ -69,13 +69,13 @@
 //! }
 //! ```
 
-pub mod traits;
-mod render_scope;
 #[cfg(test)]
 mod mock;
+mod render_scope;
+pub mod traits;
 
-pub use traits::*;
 pub use render_scope::*;
+pub use traits::*;
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};

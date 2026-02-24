@@ -3,7 +3,7 @@
 //! A range input slider with fine-grained reactive updates.
 
 use rinch_core::{
-    Signal, ValueCallback, Component,
+    Component, Signal, ValueCallback,
     dom::{NodeHandle, RenderScope},
     get_click_context, start_drag,
 };

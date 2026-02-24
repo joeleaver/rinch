@@ -27,9 +27,9 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
+use rinch_core::clear_context;
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::events;
-use rinch_core::clear_context;
 use rinch_platform::{
     AppAction, KeyCode, Modifiers, MouseButton as PlatformMouseButton, PlatformEvent,
     PlatformRenderer, PlatformWindow, UserEvent,
@@ -83,8 +83,7 @@ pub fn run_on_main_thread(f: impl FnOnce() + Send + 'static) {
 
 /// Drain and execute all pending main-thread callbacks.
 fn drain_main_queue() {
-    let callbacks: Vec<Box<dyn FnOnce() + Send>> =
-        MAIN_QUEUE.lock().unwrap().drain(..).collect();
+    let callbacks: Vec<Box<dyn FnOnce() + Send>> = MAIN_QUEUE.lock().unwrap().drain(..).collect();
     for cb in callbacks {
         cb();
     }
@@ -346,35 +345,43 @@ impl RinchRuntime {
                 let frames = rinch_video::collect_video_frames();
                 if !frames.is_empty() {
                     let s = scale as f32;
-                    let layers: Vec<rinch_platform::VideoLayer> = frames.into_iter().filter_map(|(viewport_name, pixels, vid_w, vid_h)| {
-                        // Query the video viewport rect from the DOM using the player's viewport name
-                        let viewport = self.app.viewport_rect(&viewport_name)?;
-                        // Scale viewport from logical to physical pixels
-                        let viewport = (viewport.0 * s, viewport.1 * s, viewport.2 * s, viewport.3 * s);
+                    let layers: Vec<rinch_platform::VideoLayer> = frames
+                        .into_iter()
+                        .filter_map(|(viewport_name, pixels, vid_w, vid_h)| {
+                            // Query the video viewport rect from the DOM using the player's viewport name
+                            let viewport = self.app.viewport_rect(&viewport_name)?;
+                            // Scale viewport from logical to physical pixels
+                            let viewport = (
+                                viewport.0 * s,
+                                viewport.1 * s,
+                                viewport.2 * s,
+                                viewport.3 * s,
+                            );
 
-                        // Letterbox: fit video within viewport preserving aspect ratio
-                        let viewport = {
-                            let (vx, vy, vw, vh) = viewport;
-                            let video_aspect = vid_w as f32 / vid_h as f32;
-                            let viewport_aspect = vw / vh;
-                            if video_aspect > viewport_aspect {
-                                let fit_h = vw / video_aspect;
-                                let offset_y = (vh - fit_h) / 2.0;
-                                (vx, vy + offset_y, vw, fit_h)
-                            } else {
-                                let fit_w = vh * video_aspect;
-                                let offset_x = (vw - fit_w) / 2.0;
-                                (vx + offset_x, vy, fit_w, vh)
-                            }
-                        };
+                            // Letterbox: fit video within viewport preserving aspect ratio
+                            let viewport = {
+                                let (vx, vy, vw, vh) = viewport;
+                                let video_aspect = vid_w as f32 / vid_h as f32;
+                                let viewport_aspect = vw / vh;
+                                if video_aspect > viewport_aspect {
+                                    let fit_h = vw / video_aspect;
+                                    let offset_y = (vh - fit_h) / 2.0;
+                                    (vx, vy + offset_y, vw, fit_h)
+                                } else {
+                                    let fit_w = vh * video_aspect;
+                                    let offset_x = (vw - fit_w) / 2.0;
+                                    (vx + offset_x, vy, fit_w, vh)
+                                }
+                            };
 
-                        Some(rinch_platform::VideoLayer {
-                            pixels,
-                            width: vid_w,
-                            height: vid_h,
-                            viewport,
+                            Some(rinch_platform::VideoLayer {
+                                pixels,
+                                width: vid_w,
+                                height: vid_h,
+                                viewport,
+                            })
                         })
-                    }).collect();
+                        .collect();
 
                     if !layers.is_empty() {
                         renderer.set_video_layers(layers);
@@ -836,9 +843,8 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
             } => {
                 // Check menu shortcuts first — if matched, consume the event
                 let mods = self.translate_modifiers();
-                if crate::menu::match_shortcut(
-                    mods.ctrl, mods.meta, mods.alt, mods.shift, key_code,
-                ) {
+                if crate::menu::match_shortcut(mods.ctrl, mods.meta, mods.alt, mods.shift, key_code)
+                {
                     // Shortcut matched and callback dispatched; request redraw
                     if let Some(w) = &self.window {
                         w.request_redraw();
@@ -1035,7 +1041,9 @@ pub fn run_rinch_with_window_props_and_menu<F>(
 /// Decode a PNG from raw bytes into RGBA pixel data.
 ///
 /// Returns `(rgba_bytes, width, height)`.
-pub(crate) fn decode_png_to_rgba(png_data: &[u8]) -> Result<(Vec<u8>, u32, u32), Box<dyn std::error::Error>> {
+pub(crate) fn decode_png_to_rgba(
+    png_data: &[u8],
+) -> Result<(Vec<u8>, u32, u32), Box<dyn std::error::Error>> {
     let decoder = png::Decoder::new(png_data);
     let mut reader = decoder.read_info()?;
     let mut buf = vec![0; reader.output_buffer_size()];
@@ -1073,7 +1081,7 @@ fn load_window_icon(png_data: &[u8]) -> Result<winit::window::Icon, Box<dyn std:
 fn install_wayland_icon(app_id: &str, png_data: &[u8]) {
     let Some(data_home) = std::env::var_os("XDG_DATA_HOME")
         .map(std::path::PathBuf::from)
-        .or_else(|| dirs_icon_fallback())
+        .or_else(dirs_icon_fallback)
     else {
         return;
     };

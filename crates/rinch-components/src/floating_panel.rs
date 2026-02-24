@@ -4,7 +4,7 @@
 //! tool panels, property inspectors, floating toolbars.
 
 use rinch_core::{
-    Signal, Component, Callback,
+    Callback, Component, Signal,
     dom::{NodeHandle, RenderScope},
     get_click_context, start_drag_absolute,
 };

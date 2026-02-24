@@ -19,7 +19,7 @@
 //! ```
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Component, Callback};
+use rinch_core::{Callback, Component};
 use std::rc::Rc;
 
 /// Reactive callback type for boolean state.
@@ -202,7 +202,11 @@ impl Component for Radio {
 
         // Hidden native radio input
         // Always generate a name attribute - the DOM crashes without it
-        let name = if self.name.is_empty() { "radio-group" } else { &self.name };
+        let name = if self.name.is_empty() {
+            "radio-group"
+        } else {
+            &self.name
+        };
         let input = scope.create_element("input");
         input.set_attribute("class", "rinch-radio__input");
         input.set_attribute("type", "radio");

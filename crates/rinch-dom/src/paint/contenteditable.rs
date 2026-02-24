@@ -12,9 +12,9 @@ use super::text::render_text_with_shadow;
 
 /// Get a CSS style property value from inline styles.
 ///
-/// NOTE: This function is deprecated. Most properties should be read from
-/// `node.computed_style` directly. This function is only used for properties
-/// not yet in ComputedStyle (like box-shadow).
+/// Parse an inline style property from a node's style attribute.
+/// Most properties should be read from `node.computed_style` directly.
+#[allow(dead_code)]
 pub(super) fn get_style_property(node: &Node, property: &str) -> Option<String> {
     // Check computed_style_str (used during style resolution)
     if !node.computed_style_str.is_empty() {
@@ -44,6 +44,7 @@ pub(super) fn get_style_property(node: &Node, property: &str) -> Option<String> 
 }
 
 /// Parse a pixel value like "10px" or "10" to f32.
+#[allow(dead_code)]
 pub(super) fn parse_px(value: &str) -> Option<f32> {
     let v = value.trim().strip_suffix("px").unwrap_or(value.trim());
     v.parse().ok()
@@ -456,27 +457,24 @@ pub(super) fn paint_input_value(
     };
 
     // Password masking: replace display text with bullets for type="password"
-    let is_password =
-        node.attributes.get("type").map(|s| s.as_str()) == Some("password");
+    let is_password = node.attributes.get("type").map(|s| s.as_str()) == Some("password");
     let password_display;
-    let (text, cursor_pos, selection_start) =
-        if is_password && !is_placeholder && !text.is_empty() {
-            let bullet = "\u{2022}";
-            let bullet_len = bullet.len();
-            let total_chars = value.chars().count();
-            let cursor_chars =
-                value[..cursor_pos.min(value.len())].chars().count();
-            let sel_chars =
-                value[..selection_start.min(value.len())].chars().count();
-            password_display = bullet.repeat(total_chars);
-            (
-                password_display.as_str(),
-                cursor_chars * bullet_len,
-                sel_chars * bullet_len,
-            )
-        } else {
-            (text, cursor_pos, selection_start)
-        };
+    let (text, cursor_pos, selection_start) = if is_password && !is_placeholder && !text.is_empty()
+    {
+        let bullet = "\u{2022}";
+        let bullet_len = bullet.len();
+        let total_chars = value.chars().count();
+        let cursor_chars = value[..cursor_pos.min(value.len())].chars().count();
+        let sel_chars = value[..selection_start.min(value.len())].chars().count();
+        password_display = bullet.repeat(total_chars);
+        (
+            password_display.as_str(),
+            cursor_chars * bullet_len,
+            sel_chars * bullet_len,
+        )
+    } else {
+        (text, cursor_pos, selection_start)
+    };
 
     // Get font properties from computed style
     let font_size = node.computed_style.font_size;

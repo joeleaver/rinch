@@ -144,14 +144,11 @@ impl Fragment {
             match event {
                 Event::Start(tag) => match tag {
                     Tag::Heading { level, .. } => {
-                        container_stack.push((
-                            "heading".to_string(),
-                            {
-                                let mut a = HashMap::new();
-                                a.insert("level".to_string(), (level as usize).to_string());
-                                a
-                            },
-                        ));
+                        container_stack.push(("heading".to_string(), {
+                            let mut a = HashMap::new();
+                            a.insert("level".to_string(), (level as usize).to_string());
+                            a
+                        }));
                         in_block = true;
                     }
                     Tag::Paragraph => {
@@ -159,14 +156,12 @@ impl Fragment {
                         // overrides (blockquote, list item). In those cases,
                         // the container is already on the stack.
                         if container_stack.is_empty() {
-                            container_stack
-                                .push(("paragraph".to_string(), HashMap::new()));
+                            container_stack.push(("paragraph".to_string(), HashMap::new()));
                         }
                         in_block = true;
                     }
                     Tag::BlockQuote(_) => {
-                        container_stack
-                            .push(("blockquote".to_string(), HashMap::new()));
+                        container_stack.push(("blockquote".to_string(), HashMap::new()));
                         // Don't set in_block yet — Paragraph inside will do that
                     }
                     Tag::CodeBlock(kind) => {
@@ -183,8 +178,7 @@ impl Fragment {
                         // List container — items will come as Tag::Item
                     }
                     Tag::Item => {
-                        container_stack
-                            .push(("bullet_list".to_string(), HashMap::new()));
+                        container_stack.push(("bullet_list".to_string(), HashMap::new()));
                         in_block = true;
                     }
                     Tag::Strong => mark_stack.push(MarkData::new("bold")),
@@ -225,8 +219,7 @@ impl Fragment {
                             in_block = false;
                             // Pop only if the outermost container is paragraph
                             // (blockquote/item will be popped by their own End event)
-                            if container_stack.last().map(|(t, _)| t.as_str())
-                                == Some("paragraph")
+                            if container_stack.last().map(|(t, _)| t.as_str()) == Some("paragraph")
                             {
                                 container_stack.pop();
                             }
@@ -264,9 +257,7 @@ impl Fragment {
                             }
                             let (block_type, attrs) = container_stack
                                 .pop()
-                                .unwrap_or_else(|| {
-                                    ("code_block".to_string(), HashMap::new())
-                                });
+                                .unwrap_or_else(|| ("code_block".to_string(), HashMap::new()));
                             blocks.push(FragmentBlock {
                                 block_type,
                                 attrs,
@@ -277,9 +268,7 @@ impl Fragment {
                     }
                     TagEnd::BlockQuote(_) => {
                         // Pop the blockquote container
-                        if container_stack.last().map(|(t, _)| t.as_str())
-                            == Some("blockquote")
-                        {
+                        if container_stack.last().map(|(t, _)| t.as_str()) == Some("blockquote") {
                             container_stack.pop();
                         }
                     }
@@ -291,9 +280,7 @@ impl Fragment {
                             let (block_type, attrs) = container_stack
                                 .first()
                                 .cloned()
-                                .unwrap_or_else(|| {
-                                    ("bullet_list".to_string(), HashMap::new())
-                                });
+                                .unwrap_or_else(|| ("bullet_list".to_string(), HashMap::new()));
                             blocks.push(FragmentBlock {
                                 block_type,
                                 attrs,
@@ -302,9 +289,7 @@ impl Fragment {
                             in_block = false;
                         }
                         // Pop the item container
-                        if container_stack.last().map(|(t, _)| t.as_str())
-                            == Some("bullet_list")
-                        {
+                        if container_stack.last().map(|(t, _)| t.as_str()) == Some("bullet_list") {
                             container_stack.pop();
                         }
                     }
@@ -718,8 +703,7 @@ fn parse_inline_html(html: &str) -> Vec<FragmentInline> {
             let text_end = html[pos..].find('<').unwrap_or(html.len() - pos);
             let text = decode_entities(&html[pos..pos + text_end]);
             if !text.is_empty() {
-                let marks: Vec<MarkData> =
-                    mark_stack.iter().map(MarkData::new).collect();
+                let marks: Vec<MarkData> = mark_stack.iter().map(MarkData::new).collect();
                 result.push(FragmentInline::Text { text, marks });
             }
             pos += text_end;
@@ -927,10 +911,7 @@ mod tests {
         let f = Fragment::from_markdown("```rust\nfn main() {}\n```");
         assert_eq!(f.blocks.len(), 1);
         assert_eq!(f.blocks[0].block_type, "code_block");
-        assert_eq!(
-            f.blocks[0].attrs.get("language"),
-            Some(&"rust".to_string())
-        );
+        assert_eq!(f.blocks[0].attrs.get("language"), Some(&"rust".to_string()));
         assert_eq!(f.text(), "fn main() {}");
     }
 

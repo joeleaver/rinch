@@ -3,7 +3,7 @@
 //! An icon-only button for actions.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Component, Callback};
+use rinch_core::{Callback, Component};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon_with_options};
 
 /// ActionIcon variant styles.

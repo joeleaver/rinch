@@ -2,9 +2,7 @@
 
 use crate::computed_style::values::*;
 
-pub(super) fn font_family_from_stylo(
-    family: &style::values::computed::font::FontFamily,
-) -> String {
+pub(super) fn font_family_from_stylo(family: &style::values::computed::font::FontFamily) -> String {
     use style::values::computed::font::{GenericFontFamily, SingleFontFamily};
     let mut result = String::new();
     for (i, f) in family.families.iter().enumerate() {
@@ -45,9 +43,7 @@ pub(super) fn font_style_from_stylo(
     }
 }
 
-pub(super) fn line_height_from_stylo(
-    lh: &style::values::computed::LineHeight,
-) -> LineHeightValue {
+pub(super) fn line_height_from_stylo(lh: &style::values::computed::LineHeight) -> LineHeightValue {
     use style::values::generics::font::LineHeight;
     match lh {
         LineHeight::Normal => LineHeightValue::Normal,
@@ -59,9 +55,7 @@ pub(super) fn line_height_from_stylo(
     }
 }
 
-pub(super) fn letter_spacing_from_stylo(
-    ls: &style::values::computed::text::LetterSpacing,
-) -> f32 {
+pub(super) fn letter_spacing_from_stylo(ls: &style::values::computed::text::LetterSpacing) -> f32 {
     // LetterSpacing wraps a LengthPercentage
     if let Some(len) = ls.0.to_length() {
         len.px()
@@ -70,16 +64,12 @@ pub(super) fn letter_spacing_from_stylo(
     }
 }
 
-pub(super) fn word_spacing_from_stylo(
-    ws: &style::values::computed::text::WordSpacing,
-) -> f32 {
+pub(super) fn word_spacing_from_stylo(ws: &style::values::computed::text::WordSpacing) -> f32 {
     // WordSpacing wraps a LengthPercentage - use to_length() method
     ws.to_length().map(|l| l.px()).unwrap_or(0.0)
 }
 
-pub(super) fn text_align_from_stylo(
-    align: &style::values::computed::TextAlign,
-) -> TextAlignValue {
+pub(super) fn text_align_from_stylo(align: &style::values::computed::TextAlign) -> TextAlignValue {
     use style::values::computed::TextAlign;
     match *align {
         TextAlign::Start => TextAlignValue::Start,

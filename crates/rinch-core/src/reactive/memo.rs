@@ -8,7 +8,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 
 use super::effect::EffectInner;
-use super::{ObserverId, MEMO_STORE, RUNTIME};
+use super::{MEMO_STORE, ObserverId, RUNTIME};
 
 // Re-use the EFFECTS storage from the effect module
 use super::effect::EFFECTS;

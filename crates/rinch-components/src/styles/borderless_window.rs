@@ -10,29 +10,34 @@ pub fn styles() -> String {
     overflow: hidden;
 }
 
-/* Radius variants */
+/* Radius variants — only top corners (desktop windows have flat bottom edge) */
 .rinch-borderlesswindow--radius-none {
     border-radius: 0;
 }
 
 .rinch-borderlesswindow--radius-xs {
-    border-radius: 4px;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
 }
 
 .rinch-borderlesswindow--radius-sm {
-    border-radius: 6px;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
 }
 
 .rinch-borderlesswindow--radius-md {
-    border-radius: 8px;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
 }
 
 .rinch-borderlesswindow--radius-lg {
-    border-radius: 12px;
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
 }
 
 .rinch-borderlesswindow--radius-xl {
-    border-radius: 16px;
+    border-top-left-radius: 16px;
+    border-top-right-radius: 16px;
 }
 
 /* Titlebar - draggable area */

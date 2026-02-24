@@ -1,15 +1,14 @@
 # Menus
 
-Rinch provides native menu support through the `muda` library. Menus are configured at the runtime level using `MenuEntry` and `MenuProps`.
+Rinch provides native menu support through the `muda` library. Menus use a unified builder API (`Menu` / `MenuItem`) shared between native window menus and system tray context menus.
 
 ## Native Menus
 
-Menus are built using the `MenuEntry` enum and passed to the runtime:
+Use `run_with_menu` to add a native menu bar to your window:
 
 ```rust
 use rinch::prelude::*;
-use rinch::menu::MenuEntry;
-use rinch_core::element::{MenuProps, MenuItemProps, MenuItemCallback};
+use rinch::menu::{Menu, MenuItem};
 
 #[component]
 fn app() -> NodeHandle {
@@ -19,121 +18,88 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    // Menus are configured via the FineGrainedApp builder when you need
-    // native menu bars. For a simple app without menus:
-    run("My App", 800, 600, app);
+    let file_menu = Menu::new()
+        .item(MenuItem::new("New").shortcut("Ctrl+N").on_click(|| println!("New!")))
+        .separator()
+        .item(MenuItem::new("Quit").on_click(|| std::process::exit(0)));
 
-    // To add menus, use the FineGrainedApp builder API which accepts
-    // a Vec<(MenuProps, Vec<MenuEntry>)> for menu configuration.
+    run_with_menu("My App", 800, 600, app, vec![("File", file_menu)]);
 }
 ```
+
+For apps without menus, use `run("My App", 800, 600, app)`.
 
 ## Menu Types
 
-### MenuEntry
+### Menu
 
-The `MenuEntry` enum represents items in a menu:
-
-```rust
-pub enum MenuEntry {
-    /// A clickable menu item
-    Item(MenuItemProps),
-    /// A separator line
-    Separator,
-    /// A submenu with nested entries
-    Submenu(MenuProps, Vec<MenuEntry>),
-}
-```
-
-### MenuProps
-
-Properties for a menu or submenu:
+A container for menu items, separators, and submenus:
 
 ```rust
-pub struct MenuProps {
-    pub label: String,
-}
+use rinch::menu::{Menu, MenuItem};
+
+let menu = Menu::new()
+    .item(MenuItem::new("Open"))
+    .separator()
+    .submenu("Recent", Menu::new()
+        .item(MenuItem::new("file1.txt"))
+        .item(MenuItem::new("file2.txt"))
+    );
 ```
 
-### MenuItemProps
+### MenuItem
 
-Properties for a menu item:
+A clickable menu item with optional shortcut and callback:
 
 ```rust
-pub struct MenuItemProps {
-    pub label: String,
-    pub shortcut: Option<String>,
-    pub enabled: bool,
-    pub checked: Option<bool>,
-    pub onclick: Option<MenuItemCallback>,
-}
+use rinch::menu::MenuItem;
+
+let item = MenuItem::new("Save")
+    .shortcut("Ctrl+S")
+    .enabled(true)
+    .on_click(|| println!("Saving..."));
 ```
 
-| Property | Type | Default | Description |
-|----------|------|---------|-------------|
-| `label` | `String` | Required | The menu item text |
-| `shortcut` | `Option<String>` | `None` | Keyboard shortcut |
-| `enabled` | `bool` | `true` | Whether the item is clickable |
-| `checked` | `Option<bool>` | `None` | Shows a checkmark next to the item |
-| `onclick` | `Option<MenuItemCallback>` | `None` | Callback when clicked or shortcut pressed |
+| Method | Type | Description |
+|--------|------|-------------|
+| `new(label)` | `impl Into<String>` | Create a new item |
+| `shortcut(s)` | `impl Into<String>` | Keyboard shortcut |
+| `enabled(e)` | `bool` | Whether the item is clickable |
+| `on_click(cb)` | `impl Fn() + 'static` | Callback when activated |
 
 ## Menu Callbacks
 
-Use `MenuItemCallback` to handle menu item activation:
+Callbacks are `impl Fn() + 'static` — no `Send`/`Sync` required. They always run on the main thread, so you can safely capture `Signal`s:
 
 ```rust
-use rinch_core::element::{MenuItemProps, MenuItemCallback};
+use rinch::menu::MenuItem;
 
-// Signal created inside a component or with Signal::new() outside render context
 let count = Signal::new(0);
 
-let menu_item = MenuItemProps {
-    label: "Reset Counter".into(),
-    onclick: Some(MenuItemCallback::new(move || {
+let item = MenuItem::new("Reset Counter")
+    .on_click(move || {
         count.set(0);
         println!("Counter reset!");
-    })),
-    ..Default::default()
-};
+    });
 ```
 
-Callbacks are triggered both when:
-- The user clicks the menu item
-- The user presses the keyboard shortcut
+Callbacks fire both when the user clicks the menu item and when the keyboard shortcut is pressed.
 
 ## Submenus
 
-Create nested menus using `MenuEntry::Submenu`:
+Create nested menus using `Menu::submenu`:
 
 ```rust
-let menus = vec![
-    (MenuProps { label: "View".into() }, vec![
-        MenuEntry::Item(MenuItemProps {
-            label: "Zoom In".into(),
-            shortcut: Some("Cmd+=".into()),
-            ..Default::default()
-        }),
-        MenuEntry::Item(MenuItemProps {
-            label: "Zoom Out".into(),
-            shortcut: Some("Cmd+-".into()),
-            ..Default::default()
-        }),
-        MenuEntry::Separator,
-        MenuEntry::Submenu(
-            MenuProps { label: "Appearance".into() },
-            vec![
-                MenuEntry::Item(MenuItemProps {
-                    label: "Light Theme".into(),
-                    ..Default::default()
-                }),
-                MenuEntry::Item(MenuItemProps {
-                    label: "Dark Theme".into(),
-                    ..Default::default()
-                }),
-            ]
-        ),
-    ]),
-];
+use rinch::menu::{Menu, MenuItem};
+
+let view_menu = Menu::new()
+    .item(MenuItem::new("Zoom In").shortcut("Ctrl+="))
+    .item(MenuItem::new("Zoom Out").shortcut("Ctrl+-"))
+    .separator()
+    .submenu("Appearance", Menu::new()
+        .item(MenuItem::new("Light Theme"))
+        .item(MenuItem::new("Dark Theme"))
+    );
 ```
 
 ## Keyboard Shortcuts
@@ -177,14 +143,14 @@ Shortcuts are specified as strings combining modifiers and a key, separated by `
 ### Examples
 
 ```rust
-MenuItemProps { label: "New".into(), shortcut: Some("Cmd+N".into()), ..Default::default() }
-MenuItemProps { label: "Save As".into(), shortcut: Some("Cmd+Shift+S".into()), ..Default::default() }
-MenuItemProps { label: "Exit".into(), shortcut: Some("Alt+F4".into()), ..Default::default() }
-MenuItemProps { label: "Zoom In".into(), shortcut: Some("Cmd+=".into()), ..Default::default() }
-MenuItemProps { label: "Find Next".into(), shortcut: Some("F3".into()), ..Default::default() }
+MenuItem::new("New").shortcut("Ctrl+N")
+MenuItem::new("Save As").shortcut("Ctrl+Shift+S")
+MenuItem::new("Exit").shortcut("Alt+F4")
+MenuItem::new("Zoom In").shortcut("Ctrl+=")
+MenuItem::new("Find Next").shortcut("F3")
 ```
 
-Shortcuts work across platforms - `Cmd` is automatically mapped to `Ctrl` on Windows and Linux.
+Shortcuts work across platforms - `Cmd` and `Ctrl` are automatically mapped to the platform-appropriate modifier.
 
 ## Platform Behavior
 
@@ -204,8 +170,7 @@ On Linux, the menu appears in the window (similar to Windows) unless a global me
 
 ```rust
 use rinch::prelude::*;
-use rinch::menu::MenuEntry;
-use rinch_core::element::{MenuProps, MenuItemProps, MenuItemCallback};
+use rinch::menu::{Menu, MenuItem};
 
 #[component]
 fn app() -> NodeHandle {
@@ -218,8 +183,7 @@ fn app() -> NodeHandle {
                 "Current file: "
                 {|| file_path.get().unwrap_or_else(|| "Untitled".into())}
             }
-            Show {
-                when: {move || show_about.get()},
+            if show_about.get() {
                 div {
                     h2 { "About My App" }
                     p { "Built with Rinch" }
@@ -230,117 +194,42 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    // State signals for menu callbacks (use Signal::new outside render context)
     let file_path = Signal::new(None::<String>);
     let show_about = Signal::new(false);
 
-    let menus = vec![
-        (MenuProps { label: "File".into() }, vec![
-            MenuEntry::Item(MenuItemProps {
-                label: "New".into(),
-                shortcut: Some("Cmd+N".into()),
-                onclick: Some(MenuItemCallback::new(move || {
-                    file_path.set(None);
-                    println!("New file created");
-                })),
-                ..Default::default()
-            }),
-            MenuEntry::Item(MenuItemProps {
-                label: "Open...".into(),
-                shortcut: Some("Cmd+O".into()),
-                onclick: Some(MenuItemCallback::new(move || {
-                    file_path.set(Some("example.txt".into()));
-                    println!("Opening file...");
-                })),
-                ..Default::default()
-            }),
-            MenuEntry::Separator,
-            MenuEntry::Item(MenuItemProps {
-                label: "Save".into(),
-                shortcut: Some("Cmd+S".into()),
-                onclick: Some(MenuItemCallback::new(|| println!("Saving..."))),
-                ..Default::default()
-            }),
-            MenuEntry::Item(MenuItemProps {
-                label: "Save As...".into(),
-                shortcut: Some("Cmd+Shift+S".into()),
-                ..Default::default()
-            }),
-            MenuEntry::Separator,
-            MenuEntry::Item(MenuItemProps {
-                label: "Exit".into(),
-                shortcut: Some("Alt+F4".into()),
-                ..Default::default()
-            }),
-        ]),
-        (MenuProps { label: "Edit".into() }, vec![
-            MenuEntry::Item(MenuItemProps {
-                label: "Undo".into(),
-                shortcut: Some("Cmd+Z".into()),
-                ..Default::default()
-            }),
-            MenuEntry::Item(MenuItemProps {
-                label: "Redo".into(),
-                shortcut: Some("Cmd+Shift+Z".into()),
-                ..Default::default()
-            }),
-            MenuEntry::Separator,
-            MenuEntry::Item(MenuItemProps {
-                label: "Cut".into(),
-                shortcut: Some("Cmd+X".into()),
-                ..Default::default()
-            }),
-            MenuEntry::Item(MenuItemProps {
-                label: "Copy".into(),
-                shortcut: Some("Cmd+C".into()),
-                ..Default::default()
-            }),
-            MenuEntry::Item(MenuItemProps {
-                label: "Paste".into(),
-                shortcut: Some("Cmd+V".into()),
-                ..Default::default()
-            }),
-            MenuEntry::Separator,
-            MenuEntry::Item(MenuItemProps {
-                label: "Select All".into(),
-                shortcut: Some("Cmd+A".into()),
-                ..Default::default()
-            }),
-        ]),
-        (MenuProps { label: "View".into() }, vec![
-            MenuEntry::Item(MenuItemProps {
-                label: "Zoom In".into(),
-                shortcut: Some("Cmd+=".into()),
-                ..Default::default()
-            }),
-            MenuEntry::Item(MenuItemProps {
-                label: "Zoom Out".into(),
-                shortcut: Some("Cmd+-".into()),
-                ..Default::default()
-            }),
-            MenuEntry::Item(MenuItemProps {
-                label: "Reset Zoom".into(),
-                shortcut: Some("Cmd+0".into()),
-                ..Default::default()
-            }),
-        ]),
-        (MenuProps { label: "Help".into() }, vec![
-            MenuEntry::Item(MenuItemProps {
-                label: "Documentation".into(),
-                ..Default::default()
-            }),
-            MenuEntry::Item(MenuItemProps {
-                label: "About".into(),
-                onclick: Some(MenuItemCallback::new(move || {
-                    show_about.update(|v| *v = !*v);
-                })),
-                ..Default::default()
-            }),
-        ]),
-    ];
+    let file_menu = Menu::new()
+        .item(MenuItem::new("New").shortcut("Ctrl+N").on_click(move || {
+            file_path.set(None);
+        }))
+        .item(MenuItem::new("Open...").shortcut("Ctrl+O").on_click(move || {
+            file_path.set(Some("example.txt".into()));
+        }))
+        .separator()
+        .item(MenuItem::new("Save").shortcut("Ctrl+S").on_click(|| println!("Saving...")))
+        .item(MenuItem::new("Save As...").shortcut("Ctrl+Shift+S"))
+        .separator()
+        .item(MenuItem::new("Exit").shortcut("Alt+F4"));
 
-    // Menus are configured via the FineGrainedApp builder.
-    // For a simple app without menus, use: run("My App", 800, 600, app);
-    run("My App", 800, 600, app);
+    let edit_menu = Menu::new()
+        .item(MenuItem::new("Undo").shortcut("Ctrl+Z"))
+        .item(MenuItem::new("Redo").shortcut("Ctrl+Shift+Z"))
+        .separator()
+        .item(MenuItem::new("Cut").shortcut("Ctrl+X"))
+        .item(MenuItem::new("Copy").shortcut("Ctrl+C"))
+        .item(MenuItem::new("Paste").shortcut("Ctrl+V"))
+        .separator()
+        .item(MenuItem::new("Select All").shortcut("Ctrl+A"));
+
+    let help_menu = Menu::new()
+        .item(MenuItem::new("Documentation"))
+        .item(MenuItem::new("About").on_click(move || {
+            show_about.update(|v| *v = !*v);
+        }));
+
+    run_with_menu("My App", 800, 600, app, vec![
+        ("File", file_menu),
+        ("Edit", edit_menu),
+        ("Help", help_menu),
+    ]);
 }
 ```

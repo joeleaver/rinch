@@ -22,15 +22,15 @@
 //! count.set(1); // Prints: "Count is: 1"
 //! ```
 
-mod signal;
 mod effect;
 mod memo;
 mod scope;
+mod signal;
 
-pub use signal::Signal;
 pub use effect::Effect;
 pub use memo::Memo;
 pub use scope::Scope;
+pub use signal::Signal;
 
 use std::any::Any;
 use std::cell::RefCell;

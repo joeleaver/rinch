@@ -20,8 +20,8 @@ use winit::window::{Window, WindowId};
 
 use rinch::prelude::*;
 use rinch_platform::{
-    KeyCode as PlatformKeyCode, Modifiers as PlatformModifiers,
-    MouseButton as PlatformMouseButton, PlatformEvent,
+    KeyCode as PlatformKeyCode, Modifiers as PlatformModifiers, MouseButton as PlatformMouseButton,
+    PlatformEvent,
 };
 
 // ── GPU types ───────────────────────────────────────────────────────────────
@@ -219,10 +219,7 @@ fn game_ui() -> NodeHandle {
     // Root fills the viewport. The viewport div has data-viewport so
     // wants_mouse() returns false for clicks on it (passes to game).
     let root = __scope.create_element("div");
-    root.set_attribute(
-        "style",
-        "width:100%;height:100%;position:relative;",
-    );
+    root.set_attribute("style", "width:100%;height:100%;position:relative;");
 
     let vp = __scope.create_element("div");
     vp.set_attribute("data-viewport", "main");
@@ -521,7 +518,10 @@ impl App {
     }
 
     fn scale_factor(&self) -> f64 {
-        self.window.as_ref().map(|w| w.scale_factor()).unwrap_or(1.0)
+        self.window
+            .as_ref()
+            .map(|w| w.scale_factor())
+            .unwrap_or(1.0)
     }
 
     fn size(&self) -> (u32, u32) {
@@ -575,16 +575,14 @@ impl App {
         }))
         .expect("No suitable GPU adapter");
 
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: None,
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: Default::default(),
-                trace: Default::default(),
-                experimental_features: Default::default(),
-            },
-        ))
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: None,
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: Default::default(),
+            trace: Default::default(),
+            experimental_features: Default::default(),
+        }))
         .expect("Failed to create device");
 
         // Configure surface
@@ -616,20 +614,19 @@ impl App {
             source: wgpu::ShaderSource::Wgsl(CUBE_WGSL.into()),
         });
 
-        let cube_bind_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: None,
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
+        let cube_bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
 
         let cube_pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
@@ -803,8 +800,7 @@ impl App {
         // Attach debug server (game loop is polling, so no-op notify is fine)
         let _ = rinch_ctx.attach_debug("game-embed", || {});
 
-        let overlay =
-            RinchOverlayRenderer::new(&device, w, h, wgpu::TextureFormat::Rgba8Unorm);
+        let overlay = RinchOverlayRenderer::new(&device, w, h, wgpu::TextureFormat::Rgba8Unorm);
 
         // Store everything
         self.surface = Some(surface);
@@ -878,7 +874,11 @@ impl App {
             mvp,
             tint: [tint[0], tint[1], tint[2], 1.0],
         };
-        queue.write_buffer(self.cube_ubuf.as_ref().unwrap(), 0, bytemuck::bytes_of(&uniforms));
+        queue.write_buffer(
+            self.cube_ubuf.as_ref().unwrap(),
+            0,
+            bytemuck::bytes_of(&uniforms),
+        );
 
         // ── Pass 1: Cube ────────────────────────────────────────────────────
 
@@ -973,8 +973,7 @@ impl App {
         if !screenshot_reqs.is_empty() {
             let fmt = self.surface_format;
             for req in screenshot_reqs {
-                match rinch::embed::capture_texture_rgba(device, queue, &frame.texture, w, h, fmt)
-                {
+                match rinch::embed::capture_texture_rgba(device, queue, &frame.texture, w, h, fmt) {
                     Ok(rgba) => req.respond(w, h, rgba),
                     Err(e) => req.fail(e),
                 }
@@ -1023,12 +1022,7 @@ impl ApplicationHandler for App {
         self.last_frame = Instant::now();
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _id: WindowId,
-        event: WindowEvent,
-    ) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
 
@@ -1044,9 +1038,10 @@ impl ApplicationHandler for App {
 
             WindowEvent::ModifiersChanged(mods) => {
                 self.modifiers = mods.state();
-                self.pending_events.push(PlatformEvent::ModifiersChanged(
-                    translate_modifiers(self.modifiers),
-                ));
+                self.pending_events
+                    .push(PlatformEvent::ModifiersChanged(translate_modifiers(
+                        self.modifiers,
+                    )));
             }
 
             WindowEvent::CursorMoved { position, .. } => {

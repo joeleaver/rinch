@@ -204,11 +204,13 @@ impl Component for Progress {
             None
         } else {
             let c = &self.color;
-            Some(if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
-                format!("--rinch-progress-color: {};", c)
-            } else {
-                format!("--rinch-progress-color: var(--rinch-color-{}-6);", c)
-            })
+            Some(
+                if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
+                    format!("--rinch-progress-color: {};", c)
+                } else {
+                    format!("--rinch-progress-color: var(--rinch-color-{}-6);", c)
+                },
+            )
         };
 
         let container = rinch_macros::rsx! { div { class: "rinch-progress", role: "progressbar" } };

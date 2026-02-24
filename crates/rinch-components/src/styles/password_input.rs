@@ -114,5 +114,6 @@ pub fn styles() -> String {
     background-color: var(--rinch-color-filled);
     cursor: not-allowed;
 }
-"#.to_string()
+"#
+    .to_string()
 }

@@ -19,7 +19,7 @@
 //! ```
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Component, Callback};
+use rinch_core::{Callback, Component};
 use std::rc::Rc;
 
 /// Reactive callback type for boolean state.

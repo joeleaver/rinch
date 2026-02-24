@@ -1,3 +1,4 @@
+#![allow(clippy::collapsible_if)]
 //! Rinch Components - A UI component library for Rinch.
 //!
 //! Provides styled, themeable UI components that integrate with the Rinch theme system.

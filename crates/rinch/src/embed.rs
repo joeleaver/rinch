@@ -47,8 +47,8 @@
 //! let scene = ctx.scene();
 //! ```
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use peniko::Color;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer as VelloRenderer, RendererOptions, Scene};
@@ -162,9 +162,9 @@ impl RinchContext {
 
         // Process each event
         for event in events {
-            let actions =
-                self.app
-                    .handle_event(event.clone(), self.size, self.scale_factor);
+            let actions = self
+                .app
+                .handle_event(event.clone(), self.size, self.scale_factor);
             all_actions.extend(actions);
         }
 
@@ -217,14 +217,12 @@ impl RinchContext {
     /// Returns the absolute position and size in logical pixels, or `None`
     /// if no viewport with that name exists.
     pub fn viewport_rect(&self, name: &str) -> Option<LayoutRect> {
-        self.app
-            .viewport_rect(name)
-            .map(|(x, y, w, h)| LayoutRect {
-                x,
-                y,
-                width: w,
-                height: h,
-            })
+        self.app.viewport_rect(name).map(|(x, y, w, h)| LayoutRect {
+            x,
+            y,
+            width: w,
+            height: h,
+        })
     }
 
     /// Returns `true` if the point `(x, y)` (in logical pixels) hits a
@@ -475,12 +473,7 @@ impl RinchOverlayRenderer {
     /// Returns a [`TextureView`] that the game can sample/composite.
     /// The texture has a transparent background so it can be alpha-blended
     /// over the game scene.
-    pub fn render(
-        &mut self,
-        device: &Device,
-        queue: &Queue,
-        scene: &Scene,
-    ) -> TextureView {
+    pub fn render(&mut self, device: &Device, queue: &Queue, scene: &Scene) -> TextureView {
         let view = self
             .render_texture
             .create_view(&TextureViewDescriptor::default());
@@ -530,12 +523,7 @@ impl RinchOverlayRenderer {
         self.height
     }
 
-    fn create_texture(
-        device: &Device,
-        format: TextureFormat,
-        width: u32,
-        height: u32,
-    ) -> Texture {
+    fn create_texture(device: &Device, format: TextureFormat, width: u32, height: u32) -> Texture {
         device.create_texture(&TextureDescriptor {
             label: Some("rinch overlay texture"),
             size: Extent3d {
@@ -588,10 +576,7 @@ pub fn game_viewport(__scope: &mut RenderScope, name: &str) -> NodeHandle {
     let div = __scope.create_element("div");
     div.set_attribute("class", "rinch-game-viewport");
     div.set_attribute("data-viewport", name);
-    div.set_attribute(
-        "style",
-        "pointer-events: none; background: transparent;",
-    );
+    div.set_attribute("style", "pointer-events: none; background: transparent;");
     div
 }
 

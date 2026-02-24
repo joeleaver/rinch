@@ -39,30 +39,6 @@ pub struct WindowProps {
 }
 ```
 
-### `MenuProps`
-
-Configuration for a menu:
-
-```rust
-pub struct MenuProps {
-    pub label: String,
-}
-```
-
-### `MenuItemProps`
-
-Configuration for a menu item:
-
-```rust
-pub struct MenuItemProps {
-    pub label: String,
-    pub shortcut: Option<String>,
-    pub enabled: bool,
-    pub checked: Option<bool>,
-    pub onclick: Option<MenuItemCallback>,
-}
-```
-
 ## DOM Abstraction Layer
 
 The fine-grained reactive rendering system is built on three core types that abstract DOM operations away from any specific backend (desktop via Taffy/Parley/Vello, or browser-native via web_sys).

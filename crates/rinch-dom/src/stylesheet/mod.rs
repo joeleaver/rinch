@@ -7,8 +7,8 @@
 //! Uses Mozilla's `cssparser` for tokenization and rule parsing, and the
 //! `selectors` crate for proper selector parsing and matching.
 
-pub mod selector_impl;
 mod parser;
+pub mod selector_impl;
 mod var_resolution;
 
 pub use selector_impl::*;

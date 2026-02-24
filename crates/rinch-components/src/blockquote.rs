@@ -2,8 +2,8 @@
 //!
 //! A styled quotation block.
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Component;
+use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
 /// A blockquote component.

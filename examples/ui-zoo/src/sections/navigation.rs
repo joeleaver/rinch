@@ -27,14 +27,13 @@ pub fn init_navigation_state() {
 pub fn navigation_section() -> NodeHandle {
     let state = use_context::<NavigationSectionState>();
 
-    let (pagination_page, pagination_with_edges_page, stepper_active, tabs_value, tabs_pills_value) =
-        (
-            state.pagination_page,
-            state.pagination_with_edges_page,
-            state.stepper_active,
-            state.tabs_value,
-            state.tabs_pills_value,
-        );
+    let (pagination_page, pagination_with_edges_page, stepper_active, tabs_value, tabs_pills_value) = (
+        state.pagination_page,
+        state.pagination_with_edges_page,
+        state.stepper_active,
+        state.tabs_value,
+        state.tabs_pills_value,
+    );
 
     rsx! {
         Fragment {

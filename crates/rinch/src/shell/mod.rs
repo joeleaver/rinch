@@ -14,7 +14,7 @@ pub mod types;
 pub use devtools::{DevToolsPanel, DevToolsState};
 pub use devtools_overlay::render_overlay;
 #[allow(deprecated)]
-pub use rinch_runtime::{run_rinch, run_rinch_with_window_props, run_on_main_thread};
+pub use rinch_runtime::{run_on_main_thread, run_rinch, run_rinch_with_window_props};
 pub use types::{ElementLayout, HoveredElementInfo, RinchEvent};
 
 use rinch_core::dom::{NodeHandle, RenderScope};
@@ -129,10 +129,8 @@ pub fn run_with_menu<F>(
         // run_with_menu uses default WindowProps (not borderless), so no title bar offset
         let wrapped = move |scope: &mut RenderScope| {
             let content = component(scope);
-            let menu_refs: Vec<(&str, &crate::menu::Menu)> = menu_data
-                .iter()
-                .map(|(l, m)| (l.as_str(), m))
-                .collect();
+            let menu_refs: Vec<(&str, &crate::menu::Menu)> =
+                menu_data.iter().map(|(l, m)| (l.as_str(), m)).collect();
             crate::menu::app_menu_bar::render_with_menu_bar(scope, &menu_refs, content, 0)
         };
         rinch_runtime::run_rinch_with_window_props_and_menu(wrapped, props, Some(native_menu));
@@ -220,10 +218,7 @@ pub fn run_with_window_props_and_menu<F>(
 
                         let overlay_renderer: rinch_core::MenuBarRenderer = {
                             std::rc::Rc::new(move |scope| {
-                                crate::menu::app_menu_bar::render_inline_overlay(
-                                    scope,
-                                    active_menu,
-                                )
+                                crate::menu::app_menu_bar::render_inline_overlay(scope, active_menu)
                             })
                         };
 
@@ -268,10 +263,8 @@ pub fn run_with_window_props_and_menu<F>(
                 // Non-borderless: existing wrapper approach
                 let wrapped = move |scope: &mut RenderScope| {
                     let content = component(scope);
-                    let menu_refs: Vec<(&str, &crate::menu::Menu)> = menu_data
-                        .iter()
-                        .map(|(l, m)| (l.as_str(), m))
-                        .collect();
+                    let menu_refs: Vec<(&str, &crate::menu::Menu)> =
+                        menu_data.iter().map(|(l, m)| (l.as_str(), m)).collect();
                     crate::menu::app_menu_bar::render_with_menu_bar(scope, &menu_refs, content, 0)
                 };
                 rinch_runtime::run_rinch_with_window_props_and_menu(

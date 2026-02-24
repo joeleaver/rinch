@@ -80,7 +80,10 @@ impl Component for LoadingOverlay {
             style_parts.push(format!("--rinch-loading-overlay-opacity: {}", opacity));
         }
         if !self.overlay_blur.is_empty() {
-            style_parts.push(format!("--rinch-loading-overlay-blur: {}", self.overlay_blur));
+            style_parts.push(format!(
+                "--rinch-loading-overlay-blur: {}",
+                self.overlay_blur
+            ));
         }
         if !self.loader_color.is_empty() {
             let color = &self.loader_color;

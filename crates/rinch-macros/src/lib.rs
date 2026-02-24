@@ -175,37 +175,37 @@ fn generate_component(func: syn::ItemFn) -> TokenStream {
     let mut has_children = false;
 
     for param in &func.sig.inputs {
-        if let syn::FnArg::Typed(pat_type) = param {
-            if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
-                let param_name = pat_ident.ident.to_string();
+        if let syn::FnArg::Typed(pat_type) = param
+            && let syn::Pat::Ident(pat_ident) = &*pat_type.pat
+        {
+            let param_name = pat_ident.ident.to_string();
 
-                // children: &[NodeHandle] is special — wired to Component::render, not a field
-                if param_name == "children" {
-                    has_children = true;
-                    continue;
-                }
-
-                // Reject reference types (Phase 1b) — component params must be owned
-                if let syn::Type::Reference(_) = &*pat_type.ty {
-                    return syn::Error::new_spanned(
-                        &pat_type.ty,
-                        format!(
-                            "Component parameter `{}` uses a reference type. \
-                             Component parameters must be owned types \
-                             (e.g., `String` instead of `&str`) because they are stored in a struct.",
-                            param_name
-                        ),
-                    )
-                    .to_compile_error()
-                    .into();
-                }
-
-                fields.push((
-                    pat_type.attrs.clone(),
-                    pat_ident.ident.clone(),
-                    pat_type.ty.clone(),
-                ));
+            // children: &[NodeHandle] is special — wired to Component::render, not a field
+            if param_name == "children" {
+                has_children = true;
+                continue;
             }
+
+            // Reject reference types (Phase 1b) — component params must be owned
+            if let syn::Type::Reference(_) = &*pat_type.ty {
+                return syn::Error::new_spanned(
+                    &pat_type.ty,
+                    format!(
+                        "Component parameter `{}` uses a reference type. \
+                         Component parameters must be owned types \
+                         (e.g., `String` instead of `&str`) because they are stored in a struct.",
+                        param_name
+                    ),
+                )
+                .to_compile_error()
+                .into();
+            }
+
+            fields.push((
+                pat_type.attrs.clone(),
+                pat_ident.ident.clone(),
+                pat_type.ty.clone(),
+            ));
         }
     }
 
@@ -288,24 +288,22 @@ fn generate_component(func: syn::ItemFn) -> TokenStream {
 fn type_default_expr(ty: &syn::Type) -> proc_macro2::TokenStream {
     use quote::quote;
 
-    if let syn::Type::Path(type_path) = ty {
-        if let Some(segment) = type_path.path.segments.last() {
-            let type_name = segment.ident.to_string();
-            match type_name.as_str() {
-                "String" => return quote! { String::new() },
-                "bool" => return quote! { false },
-                "Option" => return quote! { None },
-                "Vec" => return quote! { Vec::new() },
-                "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
-                | "i8" | "i16" | "i32" | "i64" | "i128" | "isize" => {
-                    return quote! { 0 }
-                }
-                "f32" => return quote! { 0.0f32 },
-                "f64" => return quote! { 0.0f64 },
-                "Callback" => return quote! { Callback::new(|| {}) },
-                "InputCallback" => return quote! { InputCallback::new(|_: String| {}) },
-                _ => {}
-            }
+    if let syn::Type::Path(type_path) = ty
+        && let Some(segment) = type_path.path.segments.last()
+    {
+        let type_name = segment.ident.to_string();
+        match type_name.as_str() {
+            "String" => return quote! { String::new() },
+            "bool" => return quote! { false },
+            "Option" => return quote! { None },
+            "Vec" => return quote! { Vec::new() },
+            "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64"
+            | "i128" | "isize" => return quote! { 0 },
+            "f32" => return quote! { 0.0f32 },
+            "f64" => return quote! { 0.0f64 },
+            "Callback" => return quote! { Callback::new(|| {}) },
+            "InputCallback" => return quote! { InputCallback::new(|_: String| {}) },
+            _ => {}
         }
     }
 

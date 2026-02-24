@@ -518,12 +518,11 @@ fn child_component() -> NodeHandle {
 
 ## Native Menus
 
-Native menus are configured at the runtime level using `FineGrainedApp` and `MenuEntry`:
+Native menus use a unified `Menu`/`MenuItem` builder API shared between window menu bars and tray context menus. Use `run_with_menu` to add a menu bar:
 
 ```rust
 use rinch::prelude::*;
-use rinch::menu::{MenuEntry, MenuManager};
-use rinch_core::element::{MenuProps, MenuItemProps, MenuItemCallback};
+use rinch::menu::{Menu, MenuItem};
 
 #[component]
 fn app() -> NodeHandle {
@@ -533,50 +532,27 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    // Build menu structure
-    let menus = vec![
-        (MenuProps { label: "File".into() }, vec![
-            MenuEntry::Item(MenuItemProps {
-                label: "New".into(),
-                shortcut: Some("Ctrl+N".into()),
-                onclick: Some(MenuItemCallback::new(|| println!("New!"))),
-                ..Default::default()
-            }),
-            MenuEntry::Separator,
-            MenuEntry::Item(MenuItemProps {
-                label: "Exit".into(),
-                onclick: Some(MenuItemCallback::new(|| std::process::exit(0))),
-                ..Default::default()
-            }),
-        ]),
-        (MenuProps { label: "Edit".into() }, vec![
-            MenuEntry::Item(MenuItemProps {
-                label: "Undo".into(),
-                shortcut: Some("Ctrl+Z".into()),
-                ..Default::default()
-            }),
-        ]),
-    ];
+    let file_menu = Menu::new()
+        .item(MenuItem::new("New").shortcut("Ctrl+N").on_click(|| println!("New!")))
+        .separator()
+        .item(MenuItem::new("Exit").on_click(|| std::process::exit(0)));
 
-    // Menus are configured via FineGrainedApp builder at the runtime level.
-    // There is no standalone run_with_menu convenience function yet.
-    // See examples/ui-zoo-desktop for the full FineGrainedApp builder pattern.
-    // For a simple app without menus, use: run("My App", 800, 600, app);
-    run("My App", 800, 600, app);
+    let edit_menu = Menu::new()
+        .item(MenuItem::new("Undo").shortcut("Ctrl+Z"));
+
+    run_with_menu("My App", 800, 600, app, vec![
+        ("File", file_menu),
+        ("Edit", edit_menu),
+    ]);
 }
 ```
 
-Menu callbacks can modify signals (Signal is Copy, so no clone needed):
+Menu callbacks are `impl Fn() + 'static` — no `Send`/`Sync` required. They always run on the main thread, so Signal is safe to capture (Signal is Copy, no clone needed):
 
 ```rust
 let count = Signal::new(0);
 
-// In menu construction:
-MenuEntry::Item(MenuItemProps {
-    label: "Reset Counter".into(),
-    onclick: Some(MenuItemCallback::new(move || count.set(0))),
-    ..Default::default()
-})
+MenuItem::new("Reset Counter").on_click(move || count.set(0))
 ```
 
 ## Keyboard Shortcuts (built-in)
@@ -736,20 +712,21 @@ if has_text() {
 
 ### System Tray (optional)
 
-Enable with `features = ["system-tray"]`:
+Enable with `features = ["system-tray"]`. Uses the same unified `Menu`/`MenuItem` types as native menus:
 
 ```rust
 use rinch::prelude::*;
-use rinch::tray::{TrayIconBuilder, TrayMenu, TrayMenuItem};
+use rinch::tray::TrayIconBuilder;
+use rinch::menu::{Menu, MenuItem};
 
-let menu = TrayMenu::new()
-    .add_item(TrayMenuItem::new("Show").on_click(|| show_current_window()))
-    .add_separator()
-    .add_item(TrayMenuItem::new("Quit").on_click(|| close_current_window()));
+let menu = Menu::new()
+    .item(MenuItem::new("Show").on_click(show_current_window))
+    .separator()
+    .item(MenuItem::new("Quit").on_click(close_current_window));
 
 let tray = TrayIconBuilder::new()
     .with_tooltip("My App")
-    .with_icon_png(include_bytes!("../assets/icon.png"))?  // PNG icon support
+    .with_icon_png(include_bytes!("../assets/icon.png"))?
     .with_menu(menu)
     .build()?;
 ```
@@ -758,7 +735,8 @@ let tray = TrayIconBuilder::new()
 - `with_icon_png(data)` — Load tray icon from PNG bytes (use `include_bytes!`)
 - `with_icon_rgba(rgba, w, h)` — Load from raw RGBA pixel data
 - `with_icon_path(path)` — Load from a PNG file path
-- **Auto-polling** — `TrayIconBuilder::build()` auto-registers callbacks with the runtime. Menu events are polled automatically in the event loop; no manual `poll_events()` needed.
+- **Push-based events** — Menu callbacks fire via `MenuEvent::set_event_handler` on the main thread. No polling thread, no wasted CPU.
+- **Left-click** — Shows the window automatically via `TrayIconEvent::set_event_handler`.
 
 **Minimize-to-tray pattern:** Combine system tray with `on_close_requested` + `hide_current_window()`:
 

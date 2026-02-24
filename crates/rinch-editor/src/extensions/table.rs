@@ -99,9 +99,7 @@ fn find_cursor_table(editor: &Editor) -> Option<(usize, String)> {
     }
 
     // Check adjacent blocks (cursor might be right before/after a table)
-    if block_idx > 0
-        && editor.doc.block_type(block_idx - 1).as_deref() == Some("table")
-    {
+    if block_idx > 0 && editor.doc.block_type(block_idx - 1).as_deref() == Some("table") {
         let table_id = editor.table_id_for_block(block_idx - 1)?;
         return Some((block_idx - 1, table_id));
     }

@@ -150,6 +150,9 @@ impl RinchApp {
                     };
                     let changed = doc.borrow_mut().update_hover(hovered);
                     if changed {
+                        if let Some(hit_id) = hovered {
+                            Self::dispatch_onenter(doc, hit_id);
+                        }
                         actions.push(AppAction::RequestRedraw);
                     }
                 }

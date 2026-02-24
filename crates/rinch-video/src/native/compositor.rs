@@ -15,8 +15,8 @@ use wgpu::{
     BlendOperation, BlendState, ColorTargetState, ColorWrites, CommandEncoder, Device,
     FragmentState, MultisampleState, PipelineLayoutDescriptor, PrimitiveState, Queue,
     RenderPipeline, RenderPipelineDescriptor, Sampler, SamplerBindingType, SamplerDescriptor,
-    ShaderModuleDescriptor, ShaderSource, ShaderStages, Texture, TextureFormat,
-    TextureSampleType, TextureView, TextureViewDescriptor, TextureViewDimension, VertexState,
+    ShaderModuleDescriptor, ShaderSource, ShaderStages, Texture, TextureFormat, TextureSampleType,
+    TextureView, TextureViewDescriptor, TextureViewDimension, VertexState,
 };
 
 /// WGSL shader with two fragment entry points:

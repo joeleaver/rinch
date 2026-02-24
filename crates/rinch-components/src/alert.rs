@@ -3,7 +3,7 @@
 //! Displays a message with contextual feedback (info, success, warning, error).
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Component, Callback};
+use rinch_core::{Callback, Component};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
 /// Alert variant styles.

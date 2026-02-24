@@ -7,8 +7,8 @@ mod layout;
 mod typography;
 mod visual;
 
-use super::values::*;
 use super::ComputedStyle;
+use super::values::*;
 use style::properties::ComputedValues;
 
 use box_model::*;
@@ -113,15 +113,11 @@ impl ComputedStyle {
 
             // Border radius
             border_radius_top_left: border_radius_from_stylo(&border.border_top_left_radius),
-            border_radius_top_right: border_radius_from_stylo(
-                &border.border_top_right_radius,
-            ),
+            border_radius_top_right: border_radius_from_stylo(&border.border_top_right_radius),
             border_radius_bottom_right: border_radius_from_stylo(
                 &border.border_bottom_right_radius,
             ),
-            border_radius_bottom_left: border_radius_from_stylo(
-                &border.border_bottom_left_radius,
-            ),
+            border_radius_bottom_left: border_radius_from_stylo(&border.border_bottom_left_radius),
 
             // Border styles (per-side)
             border_top_style: border_style_from_stylo(&border.border_top_style),
@@ -174,10 +170,13 @@ impl ComputedStyle {
             // Text shadow
             text_shadow: text_shadow_from_stylo(&text.text_shadow, &text.color),
 
+            // Box shadow
+            box_shadow: box_shadow_from_stylo(&effects.box_shadow, &text.color),
+
             // Outline
-            outline_width: if border_style_is_none_val(
-                &border_style_from_stylo_outline(&outline_style.outline_style),
-            ) {
+            outline_width: if border_style_is_none_val(&border_style_from_stylo_outline(
+                &outline_style.outline_style,
+            )) {
                 0.0
             } else {
                 outline_style.outline_width.0.to_f32_px()
@@ -211,20 +210,17 @@ impl ComputedStyle {
             letter_spacing: letter_spacing_from_stylo(&text.letter_spacing),
             word_spacing: word_spacing_from_stylo(&text.word_spacing),
             text_align: text_align_from_stylo(&text.text_align),
-            text_decoration: text_decoration_from_stylo(&cv.get_text().clone_text_decoration_line()),
-            white_space: white_space_from_stylo(
-                &text.white_space_collapse,
-                &text.text_wrap_mode,
+            text_decoration: text_decoration_from_stylo(
+                &cv.get_text().clone_text_decoration_line(),
             ),
+            white_space: white_space_from_stylo(&text.white_space_collapse, &text.text_wrap_mode),
             overflow_wrap: overflow_wrap_from_stylo(&text.overflow_wrap),
 
             // Grid - extract from Stylo
             grid_template_columns: grid_template_tracks_from_stylo(
                 &position_style.grid_template_columns,
             ),
-            grid_template_rows: grid_template_tracks_from_stylo(
-                &position_style.grid_template_rows,
-            ),
+            grid_template_rows: grid_template_tracks_from_stylo(&position_style.grid_template_rows),
             grid_auto_flow: grid_auto_flow_from_stylo(&position_style.grid_auto_flow),
 
             // Display was explicitly set by Stylo

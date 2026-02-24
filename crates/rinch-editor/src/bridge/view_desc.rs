@@ -24,8 +24,7 @@ pub struct ViewDesc {
 }
 
 /// Mapping data for a single document block.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct BlockMapping {
     /// The block element's DOM node ID.
     pub dom_node_id: usize,
@@ -34,7 +33,6 @@ pub struct BlockMapping {
     /// Text nodes within this block and their byte ranges.
     pub text_nodes: Vec<TextNodeMapping>,
 }
-
 
 /// Mapping for a single text node within a block.
 #[derive(Debug, Clone)]
@@ -96,8 +94,7 @@ impl ViewDesc {
     ///
     /// Uses the text node index to find which block and offset the cursor maps to.
     pub fn dom_cursor_to_position(&self, cursor: &DomCursor, editor: &Editor) -> Option<Position> {
-        let &(block_index, byte_start, byte_end) =
-            self.text_node_index.get(&cursor.node_id)?;
+        let &(block_index, byte_start, byte_end) = self.text_node_index.get(&cursor.node_id)?;
 
         // The cursor.offset is within the text node.
         // The text node maps to [byte_start..byte_end] within the block.
@@ -249,7 +246,7 @@ mod tests {
         });
 
         // Cursor offset beyond text node length is clamped
-        let cursor = DomCursor::new(11, 100);
+        let _cursor = DomCursor::new(11, 100);
         // dom_cursor_to_position needs an Editor, skip for unit test
         // Just verify the index lookup works
         assert_eq!(vd.block_index_for_node(11), Some(0));

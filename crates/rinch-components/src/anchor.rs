@@ -45,7 +45,11 @@ impl Component for Anchor {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         let container = rinch_macros::rsx! { a { class: "rinch-anchor" } };
         container.set_attribute("class", &self.class_string());
-        let href = if self.href.is_empty() { "#" } else { &self.href };
+        let href = if self.href.is_empty() {
+            "#"
+        } else {
+            &self.href
+        };
         container.set_attribute("href", href);
 
         if !self.target.is_empty() {

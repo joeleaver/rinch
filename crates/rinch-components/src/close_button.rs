@@ -3,7 +3,7 @@
 //! A button with a close/X icon for dismissing elements.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Component, Callback};
+use rinch_core::{Callback, Component};
 
 /// CloseButton size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

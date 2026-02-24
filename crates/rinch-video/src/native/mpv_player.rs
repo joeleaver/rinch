@@ -540,8 +540,16 @@ fn create_mpv_player_impl(
     // (EndFile event is NOT sent when keep-open is enabled)
     mpv.observe_property("eof-reached", libmpv2::Format::Flag, PROP_EOF_REACHED)?;
     // Observe cache/buffering properties for network streams
-    mpv.observe_property("demuxer-cache-duration", libmpv2::Format::Double, PROP_CACHE_DURATION)?;
-    mpv.observe_property("paused-for-cache", libmpv2::Format::Flag, PROP_PAUSED_FOR_CACHE)?;
+    mpv.observe_property(
+        "demuxer-cache-duration",
+        libmpv2::Format::Double,
+        PROP_CACHE_DURATION,
+    )?;
+    mpv.observe_property(
+        "paused-for-cache",
+        libmpv2::Format::Flag,
+        PROP_PAUSED_FOR_CACHE,
+    )?;
 
     let mpv = Arc::new(Mutex::new(mpv));
     let frame_buffer = Arc::new(Mutex::new(FrameBuffer {
@@ -683,15 +691,11 @@ fn mpv_event_loop(
                                     ("duration", PropertyData::Double(v)) => {
                                         Some(MpvUpdate::Duration(*v))
                                     }
-                                    ("pause", PropertyData::Flag(v)) => {
-                                        Some(MpvUpdate::Paused(*v))
-                                    }
+                                    ("pause", PropertyData::Flag(v)) => Some(MpvUpdate::Paused(*v)),
                                     ("volume", PropertyData::Double(v)) => {
                                         Some(MpvUpdate::Volume((*v as f32) / 100.0))
                                     }
-                                    ("mute", PropertyData::Flag(v)) => {
-                                        Some(MpvUpdate::Muted(*v))
-                                    }
+                                    ("mute", PropertyData::Flag(v)) => Some(MpvUpdate::Muted(*v)),
                                     ("dwidth", PropertyData::Int64(v)) => {
                                         Some(MpvUpdate::VideoWidth(*v))
                                     }

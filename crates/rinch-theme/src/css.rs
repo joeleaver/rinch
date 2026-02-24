@@ -200,7 +200,8 @@ pub fn generate_base_styles(theme: &Theme) -> String {
     css.push_str("  font-family: var(--rinch-font-family);\n");
     css.push_str("  font-size: var(--rinch-font-size-md);\n");
     css.push_str("  line-height: var(--rinch-line-height-md);\n");
-    css.push_str("  background-color: var(--rinch-color-body);\n");
+    // NOTE: No background-color here — transparent windows need body to be transparent.
+    // Components that need an opaque background (e.g., BorderlessWindow) set their own.
     css.push_str("  color: var(--rinch-color-text);\n");
     css.push_str("}\n\n");
 

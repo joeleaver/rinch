@@ -47,7 +47,7 @@ accesskit = "0.16"
 accesskit_winit = "0.22"
 
 # Menus
-muda = "0.14"
+muda = "0.15"
 
 # System tray
 tray-icon = "0.19"

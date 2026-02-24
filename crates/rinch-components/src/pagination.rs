@@ -3,7 +3,7 @@
 //! Page navigation controls.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{ValueCallback, Component};
+use rinch_core::{Component, ValueCallback};
 
 /// Pagination size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

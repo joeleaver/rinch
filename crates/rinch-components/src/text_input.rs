@@ -3,7 +3,7 @@
 //! A single-line text input field with label and error support.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{InputCallback, Component, Callback};
+use rinch_core::{Callback, Component, InputCallback};
 use std::rc::Rc;
 
 /// Reactive callback type for string state.
@@ -144,7 +144,11 @@ impl Component for TextInput {
         }
 
         // Input element
-        let input_type = if self.input_type.is_empty() { "text" } else { &self.input_type };
+        let input_type = if self.input_type.is_empty() {
+            "text"
+        } else {
+            &self.input_type
+        };
         let input = rinch_macros::rsx! { input { class: "rinch-text-input__input" } };
         input.set_attribute("type", input_type);
 

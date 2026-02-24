@@ -6,9 +6,9 @@
 //! The controls are built from plain HTML elements with inline styles,
 //! so they work without rinch-components.
 
+use rinch_core::Component;
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::events::get_click_context;
-use rinch_core::Component;
 
 use crate::VideoPlayer;
 
@@ -223,10 +223,7 @@ fn video_controls_render(
     // Volume: mute button + slider (YouTube-style)
     if show_volume {
         let vol_group = scope.create_element("div");
-        vol_group.set_attribute(
-            "style",
-            "display: flex; align-items: center; gap: 4px;",
-        );
+        vol_group.set_attribute("style", "display: flex; align-items: center; gap: 4px;");
 
         // Mute/unmute button
         let vol_btn = scope.create_element("button");

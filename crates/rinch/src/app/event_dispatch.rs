@@ -43,12 +43,9 @@ impl RinchApp {
                         if let Some(inset) = props.resize_inset {
                             let (w, h) = (window_size.0 as f32, window_size.1 as f32);
                             let inset_physical = inset * scale_factor as f32;
-                            if let Some(dir) =
-                                detect_resize_edge(x, y, w, h, inset_physical)
-                            {
-                                actions.push(AppAction::SetCursor(
-                                    resize_direction_to_cursor(&dir),
-                                ));
+                            if let Some(dir) = detect_resize_edge(x, y, w, h, inset_physical) {
+                                actions
+                                    .push(AppAction::SetCursor(resize_direction_to_cursor(&dir)));
                                 return actions;
                             }
                         }
@@ -139,9 +136,7 @@ impl RinchApp {
                         if let Some(inset) = props.resize_inset {
                             let (w, h) = (window_size.0 as f32, window_size.1 as f32);
                             let inset_physical = inset * scale_factor as f32;
-                            if let Some(dir) =
-                                detect_resize_edge(x, y, w, h, inset_physical)
-                            {
+                            if let Some(dir) = detect_resize_edge(x, y, w, h, inset_physical) {
                                 actions.push(AppAction::DragResizeWindow(dir));
                                 return actions;
                             }
@@ -486,7 +481,9 @@ impl RinchApp {
                         active
                     }
                     #[cfg(not(feature = "video"))]
-                    { false }
+                    {
+                        false
+                    }
                 };
 
                 // Video polling may have dirtied nodes (signal updates) — check again

@@ -75,11 +75,13 @@ fn app() -> NodeHandle {
         let text = input_text.get();
         if !text.trim().is_empty() {
             let id = next_id.get();
-            todos.update(|t| t.push(Todo {
-                id,
-                text: text.trim().to_string(),
-                completed: false,
-            }));
+            todos.update(|t| {
+                t.push(Todo {
+                    id,
+                    text: text.trim().to_string(),
+                    completed: false,
+                })
+            });
             next_id.set(id + 1);
             input_text.set(String::new());
         }

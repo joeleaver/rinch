@@ -783,6 +783,18 @@ pub struct TextShadowValue {
     pub color: Option<peniko::Color>,
 }
 
+/// A single box-shadow value.
+#[derive(Debug, Clone, Serialize)]
+pub struct BoxShadowValue {
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub blur_radius: f32,
+    pub spread_radius: f32,
+    #[serde(serialize_with = "color_serde::serialize")]
+    pub color: Option<peniko::Color>,
+    pub inset: bool,
+}
+
 /// Pre-computed 2D affine transform.
 #[derive(Debug, Clone, Serialize)]
 pub struct TransformValue {

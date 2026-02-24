@@ -3,7 +3,7 @@
 //! Multi-line text input with label and description support.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{InputCallback, Component};
+use rinch_core::{Component, InputCallback};
 use std::rc::Rc;
 
 pub type ReactiveString = Rc<dyn Fn() -> String>;

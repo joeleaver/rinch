@@ -415,8 +415,7 @@ impl RinchDocument {
                 None => continue,
             };
 
-            let new_children =
-                Self::collect_effective_taffy_children(&self.tree.nodes, parent_id);
+            let new_children = Self::collect_effective_taffy_children(&self.tree.nodes, parent_id);
             let _ = self.tree.taffy.set_children(parent_taffy, &new_children);
         }
 

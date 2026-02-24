@@ -99,11 +99,14 @@ pub fn reconcile(
             text_nodes: text_mappings,
         });
 
-        block_cache.insert(i, BlockCacheEntry {
-            node: block_node,
-            structure_hash,
-            content_hash,
-        });
+        block_cache.insert(
+            i,
+            BlockCacheEntry {
+                node: block_node,
+                structure_hash,
+                content_hash,
+            },
+        );
     }
 }
 
@@ -136,11 +139,14 @@ pub fn full_render(
             text_nodes: text_mappings,
         });
 
-        block_cache.insert(i, BlockCacheEntry {
-            node: block_node,
-            structure_hash: compute_structure_hash(doc, i, tables, table_selection),
-            content_hash: compute_content_hash(doc, i),
-        });
+        block_cache.insert(
+            i,
+            BlockCacheEntry {
+                node: block_node,
+                structure_hash: compute_structure_hash(doc, i, tables, table_selection),
+                content_hash: compute_content_hash(doc, i),
+            },
+        );
     }
 }
 
@@ -297,7 +303,10 @@ fn render_block(
 
     // Handle table blocks specially (no text node mappings for tables)
     if block_type == "table" {
-        return (render_table_block(scope, block_index, &attrs, tables, table_selection), Vec::new());
+        return (
+            render_table_block(scope, block_index, &attrs, tables, table_selection),
+            Vec::new(),
+        );
     }
 
     let tag = match block_type.as_str() {
@@ -412,10 +421,7 @@ fn render_table_block(
         };
         tr.set_attribute(
             "style",
-            &format!(
-                "display: flex; flex-direction: row; {}",
-                row_border,
-            ),
+            &format!("display: flex; flex-direction: row; {}", row_border,),
         );
 
         for (col_idx, cell) in row.cells.iter().enumerate() {
@@ -443,9 +449,7 @@ fn render_table_block(
             // Check if this cell is selected
             let selection_style = match table_selection {
                 Some(sel)
-                    if sel.table_id == *table_id
-                        && sel.row == row_idx
-                        && sel.col == col_idx =>
+                    if sel.table_id == *table_id && sel.row == row_idx && sel.col == col_idx =>
                 {
                     "outline: 2px solid #228be6; outline-offset: -2px; background: #e7f5ff; "
                 }
@@ -522,8 +526,7 @@ fn render_inline_run_mapped(
                 let id = text_node.node_id().0;
                 (text_node, Some(id))
             } else {
-                let (wrapper, text_node_id) =
-                    wrap_in_marks_mapped(scope, &run.text, &run.marks);
+                let (wrapper, text_node_id) = wrap_in_marks_mapped(scope, &run.text, &run.marks);
                 (wrapper, Some(text_node_id))
             }
         }

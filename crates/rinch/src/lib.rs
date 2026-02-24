@@ -1,3 +1,4 @@
+#![allow(clippy::collapsible_if)]
 //! Rinch - A lightweight cross-platform GUI library for Rust.
 //!
 //! Rinch provides a reactive GUI framework using HTML/CSS for layout
@@ -120,8 +121,8 @@ pub mod prelude {
     // Window control functions
     #[cfg(feature = "desktop")]
     pub use crate::windows::{
-        close_current_window, hide_current_window, minimize_current_window,
-        show_current_window, toggle_maximize_current_window,
+        close_current_window, hide_current_window, minimize_current_window, show_current_window,
+        toggle_maximize_current_window,
     };
     // Fine-grained rendering types
     pub use rinch_core::dom::{
@@ -136,7 +137,9 @@ pub mod prelude {
 
     // Embed API for game engine integration
     #[cfg(feature = "desktop")]
-    pub use crate::embed::{GameViewport, LayoutRect, RinchContext, RinchContextConfig, RinchOverlayRenderer};
+    pub use crate::embed::{
+        GameViewport, LayoutRect, RinchContext, RinchContextConfig, RinchOverlayRenderer,
+    };
 
     // Re-export theme types when the theme feature is enabled
     #[cfg(feature = "theme")]
@@ -152,21 +155,20 @@ pub mod prelude {
 
     // Video playback
     #[cfg(feature = "video")]
-    pub use rinch_video::{VideoViewport, VideoControls, VideoPlayer, use_video_player};
+    pub use rinch_video::{VideoControls, VideoPlayer, VideoViewport, use_video_player};
 }
 
 // Re-export core types at crate root
 pub use rinch_core::element::{
-    AppMenuProps, Children, CloseRequestCallback, Element, MenuItemProps, MenuProps,
-    ThemeProviderProps, WindowProps,
+    Children, CloseRequestCallback, Element, ThemeProviderProps, WindowProps,
 };
 pub use rinch_core::{Effect, Memo, Scope, Signal, batch, derived, untracked};
 pub use rinch_macros::{component, rsx};
 #[cfg(feature = "desktop")]
 #[allow(deprecated)]
 pub use shell::{
-    run, run_on_main_thread, run_rinch, run_rinch_with_window_props, run_with_theme,
-    run_with_window_props,
+    run, run_on_main_thread, run_rinch, run_rinch_with_window_props, run_with_menu, run_with_theme,
+    run_with_window_props, run_with_window_props_and_menu,
 };
 
 pub use rinch_core as core;

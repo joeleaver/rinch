@@ -573,8 +573,14 @@ fn test_display_contents_nested() {
     doc.resolve_layout(800.0, 600.0);
 
     let lc = doc.tree.get(child.0).unwrap().layout;
-    assert_eq!(lc.width, 80.0, "nested contents child should have correct width");
-    assert_eq!(lc.height, 40.0, "nested contents child should have correct height");
+    assert_eq!(
+        lc.width, 80.0,
+        "nested contents child should have correct width"
+    );
+    assert_eq!(
+        lc.height, 40.0,
+        "nested contents child should have correct height"
+    );
 }
 
 /// display:contents with a mix of normal and contents siblings.

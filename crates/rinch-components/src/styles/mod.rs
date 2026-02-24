@@ -7,6 +7,7 @@ mod accordion;
 mod action_icon;
 mod alert;
 mod anchor;
+mod app_menu_bar;
 mod avatar;
 mod badge;
 mod blockquote;
@@ -126,6 +127,9 @@ pub fn generate_all_component_styles() -> String {
     // Window components
     css.push_str(&borderless_window::styles());
     css.push_str(&floating_panel::styles());
+
+    // App menu bar (in-app menu for Linux)
+    css.push_str(&app_menu_bar::styles());
 
     css
 }

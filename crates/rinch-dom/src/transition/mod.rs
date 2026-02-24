@@ -3,13 +3,13 @@
 //! Handles parsing transition specs from Stylo, detecting property changes,
 //! interpolating values over time, and writing intermediate values into ComputedStyle.
 
-pub mod types;
 mod apply;
 mod diff;
+pub mod types;
 
-pub use types::*;
 pub use apply::apply_value_to_style;
 pub use diff::diff_animatable;
+pub use types::*;
 
 use std::collections::HashMap;
 

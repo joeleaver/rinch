@@ -1,7 +1,7 @@
 //! Mock DOM document for testing.
 
-use super::traits::{DomDocument, GlyphBounds};
 use super::NodeId;
+use super::traits::{DomDocument, GlyphBounds};
 
 /// A mock DOM document for testing.
 pub struct MockDomDocument {

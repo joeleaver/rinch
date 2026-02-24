@@ -3,7 +3,7 @@
 //! A numeric input field with increment/decrement controls.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{InputCallback, Component, Callback};
+use rinch_core::{Callback, Component, InputCallback};
 
 /// NumberInput size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

@@ -1,8 +1,8 @@
 //! Node tree data structures for rinch-dom.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use rinch_core::image::ImageLoader;
 

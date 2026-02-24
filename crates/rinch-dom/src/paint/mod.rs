@@ -15,7 +15,7 @@ use svg::*;
 use text::*;
 
 use peniko::color::{AlphaColor, Srgb};
-use peniko::kurbo::{Affine, Rect, RoundedRect};
+use peniko::kurbo::{Affine, Rect, RoundedRect, RoundedRectRadii};
 use peniko::{Brush, Fill};
 use vello::Scene;
 
@@ -129,13 +129,12 @@ fn paint_node(
                 .attributes
                 .get("style")
                 .and_then(|s| {
-                    s.split(';')
-                        .find_map(|part| {
-                            let part = part.trim();
-                            part.strip_prefix("object-fit:")
-                                .or_else(|| part.strip_prefix("object-fit :"))
-                                .map(|v| v.trim().to_string())
-                        })
+                    s.split(';').find_map(|part| {
+                        let part = part.trim();
+                        part.strip_prefix("object-fit:")
+                            .or_else(|| part.strip_prefix("object-fit :"))
+                            .map(|v| v.trim().to_string())
+                    })
                 })
                 .unwrap_or_default();
             let fit = if object_fit.is_empty() {
@@ -189,8 +188,8 @@ fn paint_node(
                     image::paint_image(scene, decoded, rect, scale, fit, node_transform);
                 }
 
-                // Borders
-                paint_borders(scene, node, scale, x, y, w, h, 0.0, node_transform);
+                // Borders (no border-radius for img elements)
+                paint_borders(scene, node, scale, x, y, w, h, 0.0.into(), node_transform);
             }
 
             if opacity < 1.0 {
@@ -206,15 +205,17 @@ fn paint_node(
 
             // Get border-radius from computed style (use average of all 4 corners)
             // Resolve percentage values against element dimensions
-            let radius = {
+            let (radius, radii) = {
                 let cs = &node.computed_style;
                 let resolve_size = node.layout.width.min(node.layout.height);
-                let tl = cs.border_radius_top_left.resolve(resolve_size);
-                let tr = cs.border_radius_top_right.resolve(resolve_size);
-                let br = cs.border_radius_bottom_right.resolve(resolve_size);
-                let bl = cs.border_radius_bottom_left.resolve(resolve_size);
+                let tl = cs.border_radius_top_left.resolve(resolve_size) as f64 * scale;
+                let tr = cs.border_radius_top_right.resolve(resolve_size) as f64 * scale;
+                let br = cs.border_radius_bottom_right.resolve(resolve_size) as f64 * scale;
+                let bl = cs.border_radius_bottom_left.resolve(resolve_size) as f64 * scale;
+                let radii = RoundedRectRadii::new(tl, tr, br, bl);
+                // Uniform radius for code paths that don't support per-corner yet
                 let avg = (tl + tr + br + bl) / 4.0;
-                avg as f64 * scale
+                (avg, radii)
             };
 
             // Compute composed CSS transform for this node
@@ -270,16 +271,26 @@ fn paint_node(
             // Only paint this element's own visuals if visible
             // (children may override with visibility: visible)
             if visible {
-                // Parse and render box-shadow
-                if let Some(shadow_str) = get_style_property(node, "box-shadow") {
-                    paint_box_shadow(scene, &shadow_str, x, y, w, h, scale, node, node_transform);
+                // Render box-shadow from computed style
+                if !node.computed_style.box_shadow.is_empty() {
+                    paint_box_shadow(
+                        scene,
+                        &node.computed_style.box_shadow,
+                        x,
+                        y,
+                        w,
+                        h,
+                        scale,
+                        node,
+                        node_transform,
+                    );
                 }
 
                 // Get background from computed style (solid color or gradient)
                 match &node.computed_style.background {
                     BackgroundValue::Color(bg_color) => {
                         if radius > 0.0 {
-                            let rrect = RoundedRect::from_rect(rect, radius);
+                            let rrect = rect.to_rounded_rect(radii);
                             scene.fill(Fill::NonZero, node_transform, *bg_color, None, &rrect);
                         } else {
                             scene.fill(Fill::NonZero, node_transform, *bg_color, None, &rect);
@@ -291,7 +302,7 @@ fn paint_node(
                     } => {
                         let brush = build_linear_gradient_brush(*angle_degrees, stops, &rect);
                         if radius > 0.0 {
-                            let rrect = RoundedRect::from_rect(rect, radius);
+                            let rrect = rect.to_rounded_rect(radii);
                             scene.fill(Fill::NonZero, node_transform, &brush, None, &rrect);
                         } else {
                             scene.fill(Fill::NonZero, node_transform, &brush, None, &rect);
@@ -300,7 +311,7 @@ fn paint_node(
                     BackgroundValue::RadialGradient { stops } => {
                         let brush = build_radial_gradient_brush(stops, &rect);
                         if radius > 0.0 {
-                            let rrect = RoundedRect::from_rect(rect, radius);
+                            let rrect = rect.to_rounded_rect(radii);
                             scene.fill(Fill::NonZero, node_transform, &brush, None, &rrect);
                         } else {
                             scene.fill(Fill::NonZero, node_transform, &brush, None, &rect);
@@ -308,19 +319,17 @@ fn paint_node(
                     }
                     BackgroundValue::Image { url } => {
                         if let Some(decoded) = tree.image_cache.get(url) {
-                            image::paint_image(
-                                scene, decoded, rect, scale, "fill", node_transform,
-                            );
+                            image::paint_image(scene, decoded, rect, scale, "fill", node_transform);
                         }
                     }
                     BackgroundValue::None => {}
                 }
 
                 // Render borders per-side with style support
-                paint_borders(scene, node, scale, x, y, w, h, radius, node_transform);
+                paint_borders(scene, node, scale, x, y, w, h, radii, node_transform);
 
                 // Render outline (drawn outside the box model)
-                paint_outline(scene, node, scale, x, y, w, h, radius, node_transform);
+                paint_outline(scene, node, scale, x, y, w, h, radii, node_transform);
 
                 // Render input element value
                 if matches!(node.tag(), Some("input" | "textarea")) {
@@ -349,7 +358,7 @@ fn paint_node(
 
             if clips {
                 if radius > 0.0 {
-                    let clip_rrect = RoundedRect::from_rect(rect, radius);
+                    let clip_rrect = rect.to_rounded_rect(radii);
                     scene.push_clip_layer(Fill::NonZero, node_transform, &clip_rrect);
                 } else {
                     scene.push_clip_layer(Fill::NonZero, node_transform, &rect);
@@ -785,7 +794,7 @@ fn paint_node(
                         let alpha = ((1.0 - brightness).clamp(0.0, 1.0) * 255.0) as u8;
                         let dark = AlphaColor::<Srgb>::from_rgba8(0, 0, 0, alpha);
                         if radius > 0.0 {
-                            let rrect = RoundedRect::from_rect(rect, radius);
+                            let rrect = rect.to_rounded_rect(radii);
                             scene.fill(Fill::NonZero, node_transform, dark, None, &rrect);
                         } else {
                             scene.fill(Fill::NonZero, node_transform, dark, None, &rect);
@@ -796,7 +805,7 @@ fn paint_node(
                         let alpha = ((brightness - 1.0).clamp(0.0, 1.0) * 255.0) as u8;
                         let light = AlphaColor::<Srgb>::from_rgba8(255, 255, 255, alpha);
                         if radius > 0.0 {
-                            let rrect = RoundedRect::from_rect(rect, radius);
+                            let rrect = rect.to_rounded_rect(radii);
                             scene.fill(Fill::NonZero, node_transform, light, None, &rrect);
                         } else {
                             scene.fill(Fill::NonZero, node_transform, light, None, &rect);
@@ -823,7 +832,7 @@ fn paint_node(
                     // Fill with neutral gray
                     let gray = AlphaColor::<Srgb>::from_rgba8(128, 128, 128, 255);
                     if radius > 0.0 {
-                        let rrect = RoundedRect::from_rect(rect, radius);
+                        let rrect = rect.to_rounded_rect(radii);
                         scene.fill(Fill::NonZero, node_transform, gray, None, &rrect);
                     } else {
                         scene.fill(Fill::NonZero, node_transform, gray, None, &rect);
@@ -928,4 +937,3 @@ fn paint_node(
         _ => {} // Document, Comment -- invisible
     }
 }
-

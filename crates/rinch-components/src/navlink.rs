@@ -18,8 +18,8 @@
 //! }
 //! ```
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Component;
+use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use std::rc::Rc;
 
@@ -195,7 +195,10 @@ impl Component for NavLink {
             }
         }
         if !self.children_offset.is_empty() {
-            style_parts.push(format!("--rinch-navlink-children-offset: {}", self.children_offset));
+            style_parts.push(format!(
+                "--rinch-navlink-children-offset: {}",
+                self.children_offset
+            ));
         }
 
         // Create wrapper element

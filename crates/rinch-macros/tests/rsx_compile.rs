@@ -141,8 +141,14 @@ struct TestItem {
 #[component]
 fn test_for_basic() -> NodeHandle {
     let items = Signal::new(vec![
-        TestItem { id: 1, name: "Alice".into() },
-        TestItem { id: 2, name: "Bob".into() },
+        TestItem {
+            id: 1,
+            name: "Alice".into(),
+        },
+        TestItem {
+            id: 2,
+            name: "Bob".into(),
+        },
     ]);
     rsx! {
         div {
@@ -153,11 +159,18 @@ fn test_for_basic() -> NodeHandle {
     }
 }
 
+#[allow(unused_variables)]
 #[component]
 fn test_for_with_closures() -> NodeHandle {
     let items = Signal::new(vec![
-        TestItem { id: 1, name: "Alice".into() },
-        TestItem { id: 2, name: "Bob".into() },
+        TestItem {
+            id: 1,
+            name: "Alice".into(),
+        },
+        TestItem {
+            id: 2,
+            name: "Bob".into(),
+        },
     ]);
     rsx! {
         div {
@@ -263,8 +276,14 @@ mod component_tests {
     #[component]
     fn test_for_inside_component() -> NodeHandle {
         let items = Signal::new(vec![
-            TestItem { id: 1, name: "Alice".into() },
-            TestItem { id: 2, name: "Bob".into() },
+            TestItem {
+                id: 1,
+                name: "Alice".into(),
+            },
+            TestItem {
+                id: 2,
+                name: "Bob".into(),
+            },
         ]);
         rsx! {
             Stack {

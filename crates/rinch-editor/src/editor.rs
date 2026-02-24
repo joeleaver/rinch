@@ -216,9 +216,9 @@ impl Editor {
 
         // Move cursor past the table block
         let table_block_start = self.doc.block_start_position(insert_at);
-        self.set_selection(Selection::cursor(
-            crate::document::Position::new(table_block_start),
-        ));
+        self.set_selection(Selection::cursor(crate::document::Position::new(
+            table_block_start,
+        )));
 
         Ok(table_id)
     }
@@ -263,7 +263,13 @@ impl Editor {
     }
 
     /// Select a specific table cell for interactive editing.
-    pub fn select_table_cell(&mut self, table_id: String, block_index: usize, row: usize, col: usize) {
+    pub fn select_table_cell(
+        &mut self,
+        table_id: String,
+        block_index: usize,
+        row: usize,
+        col: usize,
+    ) {
         self.table_selection = Some(TableCellRef {
             table_id,
             block_index,
@@ -298,10 +304,8 @@ impl Editor {
             let _ = self.doc.delete_block(self.doc.block_count() - 1);
         }
         // Clear the first block's content
-        self.doc.delete_range(crate::document::Range::new(
-            0usize,
-            self.doc.text_length(),
-        ))?;
+        self.doc
+            .delete_range(crate::document::Range::new(0usize, self.doc.text_length()))?;
 
         // Insert fragment blocks
         let mut first = true;
@@ -344,9 +348,8 @@ impl Editor {
             }
 
             if !full_text.is_empty() {
-                let insert_pos = crate::document::Position::new(
-                    self.doc.block_start_position(block_index),
-                );
+                let insert_pos =
+                    crate::document::Position::new(self.doc.block_start_position(block_index));
                 self.doc.insert_text(insert_pos, &full_text)?;
 
                 for (start, end, mark) in &mark_ranges {
@@ -370,8 +373,8 @@ impl Editor {
 
     /// Insert markdown content at the current cursor position.
     pub fn insert_markdown(&mut self, md: &str) -> Result<(), EditorError> {
-        use crate::document::Fragment;
         use crate::commands::{StructureCommands, TextCommands};
+        use crate::document::Fragment;
 
         let fragment = Fragment::from_markdown(md);
 
@@ -425,14 +428,11 @@ impl Editor {
                 self.doc.insert_text(pos, &full_text)?;
 
                 for (start, end, mark) in &mark_ranges {
-                    let mark_range =
-                        crate::document::Range::new(pos + *start, pos + *end);
+                    let mark_range = crate::document::Range::new(pos + *start, pos + *end);
                     let _ = self.doc.add_mark(mark_range, mark.clone());
                 }
 
-                self.set_selection(crate::selection::Selection::cursor(
-                    pos + full_text.len(),
-                ));
+                self.set_selection(crate::selection::Selection::cursor(pos + full_text.len()));
             }
 
             first = false;
