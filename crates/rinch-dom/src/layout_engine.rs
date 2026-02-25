@@ -743,6 +743,11 @@ impl RinchDocument {
             if let Some(root) = self.tree.nodes.get_mut(ifc_root_id) {
                 root.text_layout = None;
             }
+            // Invalidate IFC measure cache so style changes (e.g., font-size) trigger re-measurement
+            self.tree.dirty_ifc_text_roots.insert(ifc_root_id);
+            self.tree
+                .ifc_measure_cache
+                .retain(|&(root_id, _), _| root_id != ifc_root_id);
         } else {
             // Fallback: walk ancestors to find one with text_layout (the IFC root)
             let mut cur = self.tree.nodes.get(node_id).and_then(|n| n.parent);
@@ -755,6 +760,11 @@ impl RinchDocument {
                     .unwrap_or(false)
                 {
                     self.tree.nodes[pid].text_layout = None;
+                    // Invalidate IFC measure cache for this root
+                    self.tree.dirty_ifc_text_roots.insert(pid);
+                    self.tree
+                        .ifc_measure_cache
+                        .retain(|&(root_id, _), _| root_id != pid);
                     break;
                 }
                 cur = self.tree.nodes.get(pid).and_then(|n| n.parent);
@@ -796,6 +806,11 @@ impl RinchDocument {
         if let Some(parent) = self.tree.nodes.get_mut(parent_id) {
             parent.text_layout = None;
         }
+        // Invalidate IFC measure cache so style changes trigger re-measurement
+        self.tree.dirty_ifc_text_roots.insert(parent_id);
+        self.tree
+            .ifc_measure_cache
+            .retain(|&(root_id, _), _| root_id != parent_id);
         if let Some(taffy_id) = self.tree.nodes.get(parent_id).and_then(|n| n.taffy_id) {
             let _ = self.tree.taffy.mark_dirty(taffy_id);
         }

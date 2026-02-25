@@ -136,6 +136,7 @@ fn kanban_section() -> NodeHandle {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 #[component]
 fn kanban_column(
     drag_ctx: DragContext<KanbanDrag>,
