@@ -652,6 +652,12 @@ impl RinchApp {
                 if self.resolve_and_repaint(w, h) {
                     actions.push(AppAction::RequestRedraw);
                 }
+                // Process any pending input focus request (e.g., from an Effect
+                // triggered by run_on_main_thread that called request_focus).
+                if let Some(focus_node_id) = rinch_core::take_pending_focus_request() {
+                    self.try_focus_input(focus_node_id);
+                    actions.push(AppAction::RequestRedraw);
+                }
             }
             PlatformEvent::UserEvent(UserEvent::MinimizeWindow) => {
                 actions.push(AppAction::SetMinimized(true));
@@ -695,6 +701,12 @@ impl RinchApp {
                     if self.resolve_and_repaint(w, h) {
                         actions.push(AppAction::RequestRedraw);
                     }
+                }
+
+                // Process any pending input focus request from effects
+                if let Some(focus_node_id) = rinch_core::take_pending_focus_request() {
+                    self.try_focus_input(focus_node_id);
+                    actions.push(AppAction::RequestRedraw);
                 }
 
                 // Poll active video players for signal updates (position, duration, etc.)

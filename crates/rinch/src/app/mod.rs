@@ -702,6 +702,42 @@ impl RinchApp {
         d.tree.dirty_nodes.insert(node_id);
     }
 
+    /// Programmatically focus an input element by node ID.
+    ///
+    /// Looks up the node in the DOM, checks for `data-oninput`, and sets up
+    /// the full input focus state (handler ID, editable state, cursor).
+    /// This is the programmatic equivalent of clicking on an input element.
+    pub(crate) fn try_focus_input(&mut self, node_id: usize) {
+        let Some(doc) = &self.doc else { return };
+        let d = doc.borrow();
+        let Some(node) = d.tree.get(node_id) else { return };
+
+        let Some(oninput_str) = node.attributes.get("data-oninput") else {
+            return;
+        };
+        let Ok(handler_id) = oninput_str.parse::<usize>() else {
+            return;
+        };
+        let value = node.attributes.get("value").cloned().unwrap_or_default();
+        drop(d);
+
+        // Clear previous input focus if switching to a different node
+        if self.focused_input_node_id.is_some() && self.focused_input_node_id != Some(node_id) {
+            self.clear_input_focus_attrs();
+        }
+
+        self.focused_input_handler_id = Some(handler_id);
+        self.focused_input_value = value.clone();
+        self.focused_input_node_id = Some(node_id);
+
+        // Create EditableState with cursor at end
+        let mut state = EditableState::new(StringDocument::with_text(&value));
+        state.selection = Selection::cursor(value.len());
+        self.focused_input_state = Some(state);
+        self.sync_input_cursor_to_dom();
+        self.scene_dirty = true;
+    }
+
     /// Re-read the DOM value and rebuild EditableState after an onsubmit handler
     /// may have changed the signal (e.g., cleared the input).
     fn resync_input_state_from_dom(&mut self) {
