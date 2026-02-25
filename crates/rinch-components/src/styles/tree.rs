@@ -35,12 +35,12 @@ pub fn styles() -> String {
 }
 
 .rinch-tree__node-content--selected {
-    background-color: var(--rinch-color-primary-1);
+    background-color: var(--rinch-primary-color-1);
     color: var(--rinch-primary-color);
 }
 
 .rinch-tree__node-content--selected:hover {
-    background-color: var(--rinch-color-primary-2);
+    background-color: var(--rinch-primary-color-2);
 }
 
 .rinch-tree__node-content--disabled {
