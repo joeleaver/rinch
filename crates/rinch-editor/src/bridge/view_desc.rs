@@ -150,12 +150,12 @@ impl ViewDesc {
         }
         let block = &mut self.blocks[block_index];
         for tn in &mut block.text_nodes {
-            if tn.block_byte_start >= from_byte && tn.block_byte_start > 0 {
+            if tn.block_byte_start > from_byte {
                 // Text node is entirely after the change point — shift both ends
                 tn.block_byte_start = (tn.block_byte_start as isize + delta).max(0) as usize;
                 tn.block_byte_end = (tn.block_byte_end as isize + delta).max(0) as usize;
-            } else if tn.block_byte_end > from_byte {
-                // Text node spans the change point — only shift the end
+            } else if tn.block_byte_end >= from_byte {
+                // Text node spans or touches the change point — only shift the end
                 tn.block_byte_end =
                     (tn.block_byte_end as isize + delta).max(tn.block_byte_start as isize) as usize;
             }
@@ -165,6 +165,13 @@ impl ViewDesc {
                 (block_index, tn.block_byte_start, tn.block_byte_end),
             );
         }
+    }
+
+    /// Get the block-level byte start for a text node by DOM ID.
+    pub fn text_node_byte_start(&self, node_id: usize) -> Option<usize> {
+        self.text_node_index
+            .get(&node_id)
+            .map(|(_, byte_start, _)| *byte_start)
     }
 
     /// Get the number of tracked blocks.
