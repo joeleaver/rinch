@@ -26,11 +26,7 @@ use crate::node::{NodeKind, NodeTree, RawNodeId};
 
 /// Compute the absolute position of a node in physical pixels by walking
 /// up the parent chain, summing layout offsets and subtracting scroll offsets.
-pub fn compute_absolute_position(
-    tree: &NodeTree,
-    node_id: RawNodeId,
-    scale: f64,
-) -> (f64, f64) {
+pub fn compute_absolute_position(tree: &NodeTree, node_id: RawNodeId, scale: f64) -> (f64, f64) {
     let mut x = 0.0_f64;
     let mut y = 0.0_f64;
     let mut current = Some(node_id);

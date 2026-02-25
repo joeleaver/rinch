@@ -311,14 +311,14 @@ fn spawn_navigator_thread(
                 let pan_x = s.pan_x;
                 let pan_y = s.pan_y;
 
-                let vp_left = ((pan_x - OUTPUT_W as f32 / (2.0 * zoom)) / cw as f32
-                    * NAV_SIZE as f32) as i32;
-                let vp_top = ((pan_y - OUTPUT_H as f32 / (2.0 * zoom)) / ch as f32
-                    * NAV_SIZE as f32) as i32;
-                let vp_right = ((pan_x + OUTPUT_W as f32 / (2.0 * zoom)) / cw as f32
-                    * NAV_SIZE as f32) as i32;
-                let vp_bottom = ((pan_y + OUTPUT_H as f32 / (2.0 * zoom)) / ch as f32
-                    * NAV_SIZE as f32) as i32;
+                let vp_left =
+                    ((pan_x - OUTPUT_W as f32 / (2.0 * zoom)) / cw as f32 * NAV_SIZE as f32) as i32;
+                let vp_top =
+                    ((pan_y - OUTPUT_H as f32 / (2.0 * zoom)) / ch as f32 * NAV_SIZE as f32) as i32;
+                let vp_right =
+                    ((pan_x + OUTPUT_W as f32 / (2.0 * zoom)) / cw as f32 * NAV_SIZE as f32) as i32;
+                let vp_bottom =
+                    ((pan_y + OUTPUT_H as f32 / (2.0 * zoom)) / ch as f32 * NAV_SIZE as f32) as i32;
 
                 let red = [255u8, 60, 60, 255];
                 for t in 0..2i32 {

@@ -68,9 +68,8 @@ pub fn render_toolbar(
 
     // Backdrop overlay: when any dropdown is open, render a transparent full-screen
     // div behind the dropdowns. Clicking it closes all dropdowns.
-    let any_open = *ds.heading_open.borrow()
-        || *ds.color_open.borrow()
-        || *ds.link_input_open.borrow();
+    let any_open =
+        *ds.heading_open.borrow() || *ds.color_open.borrow() || *ds.link_input_open.borrow();
     if any_open {
         let backdrop = scope.create_element("div");
         backdrop.set_attribute(

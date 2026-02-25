@@ -132,12 +132,14 @@ impl UndoOperation {
             },
 
             UndoOperation::CompoundOperation(ops) => {
-                UndoOperation::CompoundOperation(
-                    ops.iter().rev().map(|op| op.inverse()).collect()
-                )
+                UndoOperation::CompoundOperation(ops.iter().rev().map(|op| op.inverse()).collect())
             }
 
-            UndoOperation::TableSnapshot { table_id, before, after } => UndoOperation::TableSnapshot {
+            UndoOperation::TableSnapshot {
+                table_id,
+                before,
+                after,
+            } => UndoOperation::TableSnapshot {
                 table_id: table_id.clone(),
                 before: after.clone(),
                 after: before.clone(),
@@ -168,9 +170,13 @@ impl UndoOperation {
                     && !text2.contains('\n')
             }
             // Compound operations don't merge
-            (UndoOperation::CompoundOperation(_), _) | (_, UndoOperation::CompoundOperation(_)) => false,
+            (UndoOperation::CompoundOperation(_), _) | (_, UndoOperation::CompoundOperation(_)) => {
+                false
+            }
             // Table snapshots don't merge
-            (UndoOperation::TableSnapshot { .. }, _) | (_, UndoOperation::TableSnapshot { .. }) => false,
+            (UndoOperation::TableSnapshot { .. }, _) | (_, UndoOperation::TableSnapshot { .. }) => {
+                false
+            }
             _ => false,
         }
     }

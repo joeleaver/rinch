@@ -3,8 +3,8 @@
 pub(crate) mod compositor;
 pub mod desktop;
 pub mod devtools;
-pub(crate) mod frame_upload;
 pub mod devtools_overlay;
+pub(crate) mod frame_upload;
 pub mod html_parser;
 pub mod memory_profile;
 pub mod rinch_runtime;

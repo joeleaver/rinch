@@ -367,11 +367,7 @@ impl PlatformRenderer for WgpuRenderer {
                     &composited_view,
                     layer.viewport,
                     (self.surface_config.width, self.surface_config.height),
-                    if i == 0 {
-                        Some(wgpu_base_color)
-                    } else {
-                        None
-                    },
+                    if i == 0 { Some(wgpu_base_color) } else { None },
                 );
             }
 

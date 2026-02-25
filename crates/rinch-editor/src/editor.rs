@@ -481,7 +481,9 @@ impl Editor {
                 };
                 self.doc.add_mark(*range, mark)?;
             }
-            UndoOperation::RemoveMark { range, mark_type, .. } => {
+            UndoOperation::RemoveMark {
+                range, mark_type, ..
+            } => {
                 self.doc.remove_mark(*range, mark_type)?;
             }
             UndoOperation::SplitBlock { position, .. } => {
@@ -512,7 +514,11 @@ impl Editor {
                     self.apply_operation(op)?;
                 }
             }
-            UndoOperation::TableSnapshot { table_id, before: _, after } => {
+            UndoOperation::TableSnapshot {
+                table_id,
+                before: _,
+                after,
+            } => {
                 match after {
                     Some(model) => {
                         // Replace or insert the table

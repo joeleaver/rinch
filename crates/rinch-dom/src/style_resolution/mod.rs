@@ -441,7 +441,11 @@ impl RinchDocument {
             }
         }
         if perf {
-            eprintln!("  [PERF] apply_to_taffy: style_dirty_nodes={} taffy_changed={}", style_dirty_count, taffy_style_changed_count.get());
+            eprintln!(
+                "  [PERF] apply_to_taffy: style_dirty_nodes={} taffy_changed={}",
+                style_dirty_count,
+                taffy_style_changed_count.get()
+            );
         }
     }
 

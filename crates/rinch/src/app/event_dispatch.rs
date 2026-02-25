@@ -55,9 +55,7 @@ impl RinchApp {
                             Self::dispatch_drag_attr(doc, node_id, "data-ondragstart");
                         }
 
-                        actions.push(AppAction::SetCursor(
-                            rinch_platform::CursorStyle::Grabbing,
-                        ));
+                        actions.push(AppAction::SetCursor(rinch_platform::CursorStyle::Grabbing));
                         actions.push(AppAction::RequestRedraw);
                         return actions;
                     }
@@ -93,9 +91,7 @@ impl RinchApp {
                     }
 
                     self.scene_dirty = true;
-                    actions.push(AppAction::SetCursor(
-                        rinch_platform::CursorStyle::Grabbing,
-                    ));
+                    actions.push(AppAction::SetCursor(rinch_platform::CursorStyle::Grabbing));
                     actions.push(AppAction::RequestRedraw);
                     return actions;
                 }
@@ -336,7 +332,9 @@ impl RinchApp {
                             crate::render_surface::SurfaceEvent::MouseDown {
                                 x: local_x,
                                 y: local_y,
-                                button: crate::render_surface::SurfaceMouseButton::from_platform(button),
+                                button: crate::render_surface::SurfaceMouseButton::from_platform(
+                                    button,
+                                ),
                             },
                         );
                     }
@@ -385,7 +383,9 @@ impl RinchApp {
                             crate::render_surface::SurfaceEvent::MouseUp {
                                 x: local_x,
                                 y: local_y,
-                                button: crate::render_surface::SurfaceMouseButton::from_platform(button),
+                                button: crate::render_surface::SurfaceMouseButton::from_platform(
+                                    button,
+                                ),
                             },
                         );
                     }
@@ -813,11 +813,7 @@ impl RinchApp {
 
     /// Dispatch a drag event attribute (data-ondragstart, data-ondrop, etc.)
     /// by walking up from `node_id` looking for the specified attribute.
-    pub(crate) fn dispatch_drag_attr(
-        doc: &Rc<RefCell<RinchDocument>>,
-        node_id: usize,
-        attr: &str,
-    ) {
+    pub(crate) fn dispatch_drag_attr(doc: &Rc<RefCell<RinchDocument>>, node_id: usize, attr: &str) {
         let handler_id = {
             let d = doc.borrow();
             let mut current = Some(node_id);

@@ -42,10 +42,20 @@ impl RinchDocument {
         if self.tree.styles_dirty {
             let t = std::time::Instant::now();
             self.resolve_styles();
-            if perf { eprintln!("  [PERF] resolve_styles: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
+            if perf {
+                eprintln!(
+                    "  [PERF] resolve_styles: {:.2}ms",
+                    t.elapsed().as_secs_f64() * 1000.0
+                );
+            }
             let t = std::time::Instant::now();
             self.apply_stylo_styles_to_taffy();
-            if perf { eprintln!("  [PERF] apply_to_taffy: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
+            if perf {
+                eprintln!(
+                    "  [PERF] apply_to_taffy: {:.2}ms",
+                    t.elapsed().as_secs_f64() * 1000.0
+                );
+            }
             self.tree.styles_dirty = false;
         }
 
@@ -57,7 +67,12 @@ impl RinchDocument {
         // styles_dirty but NOT layout_dirty, so we resolve styles above but
         // skip the expensive Taffy compute + IFC rebuild below.
         if !self.tree.layout_dirty {
-            if perf { eprintln!("  [PERF] layout SKIPPED (paint-only) {:.2}ms", t0.elapsed().as_secs_f64() * 1000.0); }
+            if perf {
+                eprintln!(
+                    "  [PERF] layout SKIPPED (paint-only) {:.2}ms",
+                    t0.elapsed().as_secs_f64() * 1000.0
+                );
+            }
             return;
         }
         self.tree.layout_dirty = false;
@@ -78,30 +93,55 @@ impl RinchDocument {
             // Handle display:contents by rebuilding taffy children for affected nodes
             let t = std::time::Instant::now();
             self.sync_display_contents();
-            if perf { eprintln!("  [PERF] sync_display_contents: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
+            if perf {
+                eprintln!(
+                    "  [PERF] sync_display_contents: {:.2}ms",
+                    t.elapsed().as_secs_f64() * 1000.0
+                );
+            }
 
             // Detect and set up inline formatting contexts
             let t = std::time::Instant::now();
             self.setup_inline_formatting_contexts();
-            if perf { eprintln!("  [PERF] setup_ifc: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
+            if perf {
+                eprintln!(
+                    "  [PERF] setup_ifc: {:.2}ms",
+                    t.elapsed().as_secs_f64() * 1000.0
+                );
+            }
 
             // Pre-compute layout for inline-block children that were detached from Taffy.
             // They need their own subtree measured so walk_inline_children can read dimensions.
             let t = std::time::Instant::now();
             self.compute_inline_block_layouts();
-            if perf { eprintln!("  [PERF] inline_block_layouts: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
+            if perf {
+                eprintln!(
+                    "  [PERF] inline_block_layouts: {:.2}ms",
+                    t.elapsed().as_secs_f64() * 1000.0
+                );
+            }
 
             // Sync font-size from parent elements to text node contexts
             let t = std::time::Instant::now();
             self.sync_text_contexts();
-            if perf { eprintln!("  [PERF] sync_text_contexts: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
+            if perf {
+                eprintln!(
+                    "  [PERF] sync_text_contexts: {:.2}ms",
+                    t.elapsed().as_secs_f64() * 1000.0
+                );
+            }
 
             self.tree.ifc_dirty = false;
         } else {
             // IFC structure unchanged — only sync text contexts for dirty nodes
             let t = std::time::Instant::now();
             self.sync_dirty_text_contexts();
-            if perf { eprintln!("  [PERF] sync_dirty_text_contexts: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
+            if perf {
+                eprintln!(
+                    "  [PERF] sync_dirty_text_contexts: {:.2}ms",
+                    t.elapsed().as_secs_f64() * 1000.0
+                );
+            }
         }
 
         let available_space = taffy::Size {
@@ -278,12 +318,22 @@ impl RinchDocument {
         // Restore the persistent IFC measure cache (dirty_ifc_text_roots cleared after build_ifc)
         self.tree.ifc_measure_cache = ifc_measure_cache.into_inner();
 
-        if perf { eprintln!("  [PERF] taffy_compute: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
+        if perf {
+            eprintln!(
+                "  [PERF] taffy_compute: {:.2}ms",
+                t.elapsed().as_secs_f64() * 1000.0
+            );
+        }
 
         // Read layout results back into nodes
         let t = std::time::Instant::now();
         self.read_layout_results(self.tree.root_id);
-        if perf { eprintln!("  [PERF] read_layout: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
+        if perf {
+            eprintln!(
+                "  [PERF] read_layout: {:.2}ms",
+                t.elapsed().as_secs_f64() * 1000.0
+            );
+        }
 
         // Build inline layouts for IFC roots (rebuild with final widths and store)
         // Temporarily take layout_cx out to avoid borrow conflict
@@ -292,14 +342,29 @@ impl RinchDocument {
         self.build_ifc_layouts(&mut temp_layout_cx);
         self.layout_cx = temp_layout_cx;
         self.tree.dirty_ifc_text_roots.clear();
-        if perf { eprintln!("  [PERF] build_ifc: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
+        if perf {
+            eprintln!(
+                "  [PERF] build_ifc: {:.2}ms",
+                t.elapsed().as_secs_f64() * 1000.0
+            );
+        }
 
         // Copy cached text layouts to nodes (use the exact layouts from measurement)
         let t = std::time::Instant::now();
         self.copy_cached_text_layouts(text_layout_cache.into_inner());
-        if perf { eprintln!("  [PERF] copy_text_layouts: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
+        if perf {
+            eprintln!(
+                "  [PERF] copy_text_layouts: {:.2}ms",
+                t.elapsed().as_secs_f64() * 1000.0
+            );
+        }
 
-        if perf { eprintln!("  [PERF] resolve_layout TOTAL: {:.2}ms", t0.elapsed().as_secs_f64() * 1000.0); }
+        if perf {
+            eprintln!(
+                "  [PERF] resolve_layout TOTAL: {:.2}ms",
+                t0.elapsed().as_secs_f64() * 1000.0
+            );
+        }
 
         // Enable transitions after first layout completes (prevents transitions on page load)
         if !self.tree.transitions_enabled {

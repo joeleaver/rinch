@@ -181,7 +181,11 @@ pub(crate) fn wrap_mark(content: &str, mark: &MarkData) -> String {
             if color.is_empty() {
                 content.to_string()
             } else {
-                format!("<span style=\"color:{}\">{}</span>", html_escape(color), content)
+                format!(
+                    "<span style=\"color:{}\">{}</span>",
+                    html_escape(color),
+                    content
+                )
             }
         }
         _ => content.to_string(),

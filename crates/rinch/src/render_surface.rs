@@ -39,13 +39,12 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::Component;
+use rinch_core::dom::{NodeHandle, RenderScope};
 
 // ── Surface ID counter ───────────────────────────────────────────────────────
 
-static NEXT_SURFACE_ID: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(1);
+static NEXT_SURFACE_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
 
 fn next_surface_id() -> usize {
     NEXT_SURFACE_ID.fetch_add(1, Ordering::Relaxed)
@@ -192,6 +191,7 @@ pub struct RenderSurfaceHandle {
     /// Dirty flag (set by writer, cleared by frame collector).
     pub(crate) needs_redraw: Arc<AtomicBool>,
     /// Event handler (main-thread only).
+    #[allow(clippy::type_complexity)]
     pub(crate) event_handler: std::rc::Rc<RefCell<Option<Box<dyn Fn(SurfaceEvent)>>>>,
     /// Viewport name for hole-punch compositing.
     pub(crate) viewport_name: String,

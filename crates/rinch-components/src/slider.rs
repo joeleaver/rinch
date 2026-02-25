@@ -216,10 +216,7 @@ impl Component for Slider {
         // handled by the thumb's own negative margin.
         let thumb_wrapper = scope.create_element("div");
         thumb_wrapper.set_attribute("class", "rinch-slider__thumb-wrapper");
-        thumb_wrapper.set_style(
-            "transform",
-            &format!("translateX({}%)", percentage),
-        );
+        thumb_wrapper.set_style("transform", &format!("translateX({}%)", percentage));
 
         // Create a zero-width anchor that centers content on the wrapper's left edge
         let thumb_anchor = scope.create_element("div");

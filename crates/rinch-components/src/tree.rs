@@ -30,11 +30,11 @@ use std::any::Any;
 use std::collections::HashSet;
 use std::rc::Rc;
 
+use rinch_core::Component;
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::element::ValueCallback;
 use rinch_core::for_each_dom_typed;
 use rinch_core::reactive::Signal;
-use rinch_core::Component;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
 // =============================================================================

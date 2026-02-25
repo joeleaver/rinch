@@ -67,10 +67,7 @@ impl RinchDocument {
     }
 
     /// Walk up to find the nearest ancestor with a valid computed style.
-    fn find_parent_computed_style(
-        &self,
-        node_id: usize,
-    ) -> Option<ServoArc<ComputedValues>> {
+    fn find_parent_computed_style(&self, node_id: usize) -> Option<ServoArc<ComputedValues>> {
         let mut current = self.tree.nodes.get(node_id)?.parent;
         while let Some(pid) = current {
             let node = self.tree.nodes.get(pid)?;

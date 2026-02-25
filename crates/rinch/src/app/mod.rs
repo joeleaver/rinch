@@ -710,7 +710,9 @@ impl RinchApp {
     pub(crate) fn try_focus_input(&mut self, node_id: usize) {
         let Some(doc) = &self.doc else { return };
         let d = doc.borrow();
-        let Some(node) = d.tree.get(node_id) else { return };
+        let Some(node) = d.tree.get(node_id) else {
+            return;
+        };
 
         let Some(oninput_str) = node.attributes.get("data-oninput") else {
             return;

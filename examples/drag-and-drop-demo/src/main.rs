@@ -67,17 +67,39 @@ fn kanban_section() -> NodeHandle {
     // Three columns: To Do, In Progress, Done
     let columns: Signal<Vec<Vec<Card>>> = Signal::new(vec![
         vec![
-            Card { id: 1, title: "Design mockups".into(), color: "blue" },
-            Card { id: 2, title: "Write documentation".into(), color: "teal" },
-            Card { id: 3, title: "Set up CI/CD".into(), color: "violet" },
+            Card {
+                id: 1,
+                title: "Design mockups".into(),
+                color: "blue",
+            },
+            Card {
+                id: 2,
+                title: "Write documentation".into(),
+                color: "teal",
+            },
+            Card {
+                id: 3,
+                title: "Set up CI/CD".into(),
+                color: "violet",
+            },
         ],
         vec![
-            Card { id: 4, title: "Implement DnD".into(), color: "orange" },
-            Card { id: 5, title: "Code review".into(), color: "cyan" },
+            Card {
+                id: 4,
+                title: "Implement DnD".into(),
+                color: "orange",
+            },
+            Card {
+                id: 5,
+                title: "Code review".into(),
+                color: "cyan",
+            },
         ],
-        vec![
-            Card { id: 6, title: "Deploy v1.0".into(), color: "green" },
-        ],
+        vec![Card {
+            id: 6,
+            title: "Deploy v1.0".into(),
+            color: "green",
+        }],
     ]);
 
     let column_names = ["To Do", "In Progress", "Done"];
@@ -87,7 +109,8 @@ fn kanban_section() -> NodeHandle {
     let kanban_drop_target = Signal::new(Option::<(usize, Option<u32>)>::None);
 
     // Pre-render icons
-    let icon_clipboard = render_tabler_icon(__scope, TablerIcon::ClipboardList, TablerIconStyle::Outline);
+    let icon_clipboard =
+        render_tabler_icon(__scope, TablerIcon::ClipboardList, TablerIconStyle::Outline);
     let icon_progress = render_tabler_icon(__scope, TablerIcon::Progress, TablerIconStyle::Outline);
     let icon_check = render_tabler_icon(__scope, TablerIcon::CircleCheck, TablerIconStyle::Outline);
     let col_icons = [icon_clipboard, icon_progress, icon_check];
@@ -193,7 +216,10 @@ fn kanban_placeholder(
     col_idx: usize,
     before_card_id: Option<u32>,
 ) -> NodeHandle {
-    let title = drag_ctx.get().map(|d| d.card.title.clone()).unwrap_or_default();
+    let title = drag_ctx
+        .get()
+        .map(|d| d.card.title.clone())
+        .unwrap_or_default();
     let color = drag_ctx.get().map(|d| d.card.color).unwrap_or("gray");
 
     rsx! {
@@ -315,11 +341,31 @@ fn reorderable_list_section() -> NodeHandle {
     let drag_ctx = DragContext::<ListDrag>::new();
 
     let items = Signal::new(vec![
-        ListItem { id: 1, label: "Rust".into(), icon: TablerIcon::Code },
-        ListItem { id: 2, label: "TypeScript".into(), icon: TablerIcon::BrandTypescript },
-        ListItem { id: 3, label: "Python".into(), icon: TablerIcon::BrandPython },
-        ListItem { id: 4, label: "Go".into(), icon: TablerIcon::BrandGolang },
-        ListItem { id: 5, label: "Zig".into(), icon: TablerIcon::ZoomCode },
+        ListItem {
+            id: 1,
+            label: "Rust".into(),
+            icon: TablerIcon::Code,
+        },
+        ListItem {
+            id: 2,
+            label: "TypeScript".into(),
+            icon: TablerIcon::BrandTypescript,
+        },
+        ListItem {
+            id: 3,
+            label: "Python".into(),
+            icon: TablerIcon::BrandPython,
+        },
+        ListItem {
+            id: 4,
+            label: "Go".into(),
+            icon: TablerIcon::BrandGolang,
+        },
+        ListItem {
+            id: 5,
+            label: "Zig".into(),
+            icon: TablerIcon::ZoomCode,
+        },
     ]);
 
     // Track which item is being hovered as a drop target

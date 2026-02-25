@@ -308,10 +308,8 @@ impl ContentEditableApi for CeOps {
                             .unwrap_or(0);
                         Some(DomCursor::new(prev_id, len))
                     }
-                } else if let Some(next_id) = next {
-                    Some(DomCursor::new(next_id, 0))
                 } else {
-                    None
+                    next.map(|next_id| DomCursor::new(next_id, 0))
                 };
                 (nc, br_parent)
             };
@@ -1230,8 +1228,7 @@ impl ContentEditableApi for CeOps {
                 } else {
                     String::new()
                 };
-                start_block =
-                    RinchApp::find_block_and_parent(&d.tree, start.node_id, ce_node_id);
+                start_block = RinchApp::find_block_and_parent(&d.tree, start.node_id, ce_node_id);
                 end_block = RinchApp::find_block_and_parent(&d.tree, end.node_id, ce_node_id);
             }
             let start_pos = all_text
@@ -1414,8 +1411,7 @@ impl ContentEditableApi for CeOps {
                             .unwrap_or(ce_node_id);
 
                         let siblings = d.tree.nodes[list_id].children.clone();
-                        let li_pos =
-                            siblings.iter().position(|&c| c == block_id).unwrap_or(0);
+                        let li_pos = siblings.iter().position(|&c| c == block_id).unwrap_or(0);
                         let after_siblings: Vec<usize> = siblings[li_pos + 1..].to_vec();
 
                         let new_div = d.create_element("div");
@@ -1449,8 +1445,7 @@ impl ContentEditableApi for CeOps {
                             }
                             let div_next = {
                                 let gp_children = &d.tree.nodes[grandparent_id].children;
-                                let dpos =
-                                    gp_children.iter().position(|&c| c == new_div.0);
+                                let dpos = gp_children.iter().position(|&c| c == new_div.0);
                                 dpos.and_then(|p| gp_children.get(p + 1).copied())
                             };
                             if let Some(next) = div_next {
@@ -1460,10 +1455,7 @@ impl ContentEditableApi for CeOps {
                                     rinch_core::dom::NodeId(next),
                                 );
                             } else {
-                                d.append_child(
-                                    rinch_core::dom::NodeId(grandparent_id),
-                                    new_list,
-                                );
+                                d.append_child(rinch_core::dom::NodeId(grandparent_id), new_list);
                             }
                         }
 
@@ -1494,11 +1486,7 @@ impl ContentEditableApi for CeOps {
                         let new_block_id = d.create_element("li");
                         if after.is_empty() {
                             let line_h = RinchApp::line_height_px(&d.tree, block_id);
-                            d.set_style(
-                                new_block_id,
-                                "min-height",
-                                &format!("{:.1}px", line_h),
-                            );
+                            d.set_style(new_block_id, "min-height", &format!("{:.1}px", line_h));
                         } else {
                             let new_text_id = d.create_text(after);
                             d.append_child(new_block_id, new_text_id);
@@ -1534,10 +1522,7 @@ impl ContentEditableApi for CeOps {
                                 rinch_core::dom::NodeId(next),
                             );
                         } else {
-                            d.append_child(
-                                rinch_core::dom::NodeId(block_parent_id),
-                                new_block_id,
-                            );
+                            d.append_child(rinch_core::dom::NodeId(block_parent_id), new_block_id);
                         }
 
                         self.cursor = RinchApp::first_text_cursor(&d.tree, new_block_id.0)
@@ -1711,8 +1696,7 @@ impl ContentEditableApi for CeOps {
                         // Move siblings after `child` from parent into clone
                         let siblings_after: Vec<usize> = {
                             let children = &d.tree.nodes[parent_id].children;
-                            let pos =
-                                children.iter().position(|&c| c == child).unwrap_or(0);
+                            let pos = children.iter().position(|&c| c == child).unwrap_or(0);
                             children[pos + 1..].to_vec()
                         };
                         d.append_child(clone_id, current_after);
@@ -1732,20 +1716,14 @@ impl ContentEditableApi for CeOps {
                         .children
                         .iter()
                         .position(|&c| c == child)
-                        .and_then(|pos| {
-                            d.tree.nodes[ce_node_id].children.get(pos + 1).copied()
-                        });
+                        .and_then(|pos| d.tree.nodes[ce_node_id].children.get(pos + 1).copied());
                     if let Some(next) = next_sib {
                         d.insert_before(
                             rinch_core::dom::NodeId(ce_node_id),
                             current_after,
                             rinch_core::dom::NodeId(next),
                         );
-                        d.insert_before(
-                            rinch_core::dom::NodeId(ce_node_id),
-                            br_id,
-                            current_after,
-                        );
+                        d.insert_before(rinch_core::dom::NodeId(ce_node_id), br_id, current_after);
                     } else {
                         d.append_child(rinch_core::dom::NodeId(ce_node_id), br_id);
                         d.append_child(rinch_core::dom::NodeId(ce_node_id), current_after);

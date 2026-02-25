@@ -277,7 +277,9 @@ impl RinchApp {
         if is_mutating && let Some(doc) = &self.doc {
             let d = doc.borrow();
             let snapshots = Self::snapshot_text_nodes(&d.tree, ce_node_id);
-            pre_edit_ids = Self::collect_subtree_ids(&d.tree, ce_node_id).into_iter().collect();
+            pre_edit_ids = Self::collect_subtree_ids(&d.tree, ce_node_id)
+                .into_iter()
+                .collect();
             let ce = self.focused_contenteditable.as_mut().unwrap();
             ce.undo_stack.push_back(UndoEntry {
                 cursor,

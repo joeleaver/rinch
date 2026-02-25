@@ -86,8 +86,10 @@ fn app() -> NodeHandle {
     let renaming_node = Signal::new(Option::<String>::None);
 
     // Pre-render icons (avoids __scope capture issues inside RSX closures)
-    let icon_file_plus = render_tabler_icon(__scope, TablerIcon::FilePlus, TablerIconStyle::Outline);
-    let icon_folder_plus = render_tabler_icon(__scope, TablerIcon::FolderPlus, TablerIconStyle::Outline);
+    let icon_file_plus =
+        render_tabler_icon(__scope, TablerIcon::FilePlus, TablerIconStyle::Outline);
+    let icon_folder_plus =
+        render_tabler_icon(__scope, TablerIcon::FolderPlus, TablerIconStyle::Outline);
     let icon_trash = render_tabler_icon(__scope, TablerIcon::Trash, TablerIconStyle::Outline);
 
     rsx! {
@@ -362,8 +364,7 @@ fn state_preservation_tree(
         wrapper
     });
 
-    let data_source_closure: Rc<dyn Fn() -> Vec<TreeNodeData>> =
-        Rc::new(move || tree_data.get());
+    let data_source_closure: Rc<dyn Fn() -> Vec<TreeNodeData>> = Rc::new(move || tree_data.get());
 
     rsx! {
         Tree {
@@ -406,8 +407,7 @@ fn custom_render_tree(
                 "style",
                 "color: var(--rinch-color-dimmed); font-size: var(--rinch-font-size-xs);",
             );
-            let meta_text =
-                scope.create_text(&format!("{} — {}", info.size, info.modified));
+            let meta_text = scope.create_text(&format!("{} — {}", info.size, info.modified));
             meta.append_child(&meta_text);
             wrapper.append_child(&meta);
         }
@@ -415,8 +415,7 @@ fn custom_render_tree(
         wrapper
     });
 
-    let data_source_closure: Rc<dyn Fn() -> Vec<TreeNodeData>> =
-        Rc::new(move || tree_data.get());
+    let data_source_closure: Rc<dyn Fn() -> Vec<TreeNodeData>> = Rc::new(move || tree_data.get());
 
     rsx! {
         Tree {
@@ -652,7 +651,9 @@ fn dnd_tree_node(
     {
         let nid = node_id.clone();
         let handler_id = rinch::core::register_handler(std::rc::Rc::new(move || {
-            drag_ctx.set(TreeDragData { node_id: nid.clone() });
+            drag_ctx.set(TreeDragData {
+                node_id: nid.clone(),
+            });
         }));
         row.set_attribute("data-ondragstart", &handler_id.0.to_string());
     }
@@ -725,8 +726,8 @@ fn dnd_tree_node(
         let nid = node_id.clone();
         __scope.create_effect(move || {
             let is_target = drop_target.get().as_deref() == Some(nid.as_str());
-            let is_dragged = drag_ctx.is_active()
-                && drag_ctx.get().map(|d| d.node_id) == Some(nid.clone());
+            let is_dragged =
+                drag_ctx.is_active() && drag_ctx.get().map(|d| d.node_id) == Some(nid.clone());
             let pad_left = level as u32 * 20;
             let bg = if is_target && is_folder {
                 "var(--rinch-color-blue-1)"
@@ -754,7 +755,8 @@ fn dnd_tree_node(
     // Chevron or spacer
     if is_folder {
         let chevron_span = __scope.create_element("span");
-        let chevron_icon = render_tabler_icon(__scope, TablerIcon::ChevronRight, TablerIconStyle::Outline);
+        let chevron_icon =
+            render_tabler_icon(__scope, TablerIcon::ChevronRight, TablerIconStyle::Outline);
         chevron_span.append_child(&chevron_icon);
 
         // Reactive chevron rotation
@@ -807,10 +809,7 @@ fn dnd_tree_node(
 
     // Label
     let label_span = __scope.create_element("span");
-    label_span.set_attribute(
-        "style",
-        "font-size: var(--rinch-font-size-sm);",
-    );
+    label_span.set_attribute("style", "font-size: var(--rinch-font-size-sm);");
     let label_text = __scope.create_text(&node.label);
     label_span.append_child(&label_text);
     row.append_child(&label_span);
@@ -858,7 +857,16 @@ fn dnd_tree_node(
             move || children_data.get(),
             |child: &DndNode| child.id.clone(),
             move |child: DndNode, scope: &mut RenderScope| {
-                dnd_tree_node(scope, tree, drag_ctx, drop_target, expanded, status, child, level + 1)
+                dnd_tree_node(
+                    scope,
+                    tree,
+                    drag_ctx,
+                    drop_target,
+                    expanded,
+                    status,
+                    child,
+                    level + 1,
+                )
             },
         );
 
