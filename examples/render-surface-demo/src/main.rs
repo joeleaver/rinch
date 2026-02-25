@@ -426,18 +426,17 @@ fn app() -> NodeHandle {
                     s.last_draw_pos = Some((cx, cy));
                     s.canvas_dirty = true;
                     s.nav_dirty = true;
-                } else if s.panning {
-                    if let (Some(anchor_screen), Some(anchor_canvas)) =
+                } else if s.panning
+                    && let (Some(anchor_screen), Some(anchor_canvas)) =
                         (s.pan_anchor_screen, s.pan_anchor_canvas)
-                    {
-                        let dx = (x - anchor_screen.0) / s.zoom;
-                        let dy = (y - anchor_screen.1) / s.zoom;
-                        s.pan_x = anchor_canvas.0 - dx;
-                        s.pan_y = anchor_canvas.1 - dy;
-                        s.canvas_dirty = true;
-                        s.nav_dirty = true;
-                        zoom_signal.set(s.zoom);
-                    }
+                {
+                    let dx = (x - anchor_screen.0) / s.zoom;
+                    let dy = (y - anchor_screen.1) / s.zoom;
+                    s.pan_x = anchor_canvas.0 - dx;
+                    s.pan_y = anchor_canvas.1 - dy;
+                    s.canvas_dirty = true;
+                    s.nav_dirty = true;
+                    zoom_signal.set(s.zoom);
                 }
                 let (cx, cy) = s.screen_to_canvas(x, y);
                 status_signal.set(format!(

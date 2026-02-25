@@ -518,7 +518,7 @@ fn insert_before(nodes: &mut Vec<DndNode>, before_id: &str, to_insert: DndNode) 
 }
 
 /// Insert a node as a child of `parent_id` (appended at end).
-fn insert_into_folder(nodes: &mut Vec<DndNode>, parent_id: &str, to_insert: DndNode) -> bool {
+fn insert_into_folder(nodes: &mut [DndNode], parent_id: &str, to_insert: DndNode) -> bool {
     for node in nodes.iter_mut() {
         if node.id == parent_id && node.is_folder {
             node.children.push(to_insert);
@@ -626,6 +626,7 @@ fn dnd_tree_nodes(
 /// Render a single DnD tree node with drag source + drop target.
 /// Uses imperative DOM construction to avoid issues with reactive `if` closures
 /// capturing non-Copy types like String and NodeHandle.
+#[allow(clippy::too_many_arguments)]
 #[component]
 fn dnd_tree_node(
     tree: Signal<Vec<DndNode>>,
