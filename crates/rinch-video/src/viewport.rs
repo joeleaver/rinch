@@ -68,7 +68,7 @@ fn video_viewport_render(scope: &mut RenderScope, viewport_name: &str) -> NodeHa
 
 /// WASM: create a real <video> element (browser handles rendering).
 #[cfg(target_arch = "wasm32")]
-fn video_viewport_render(scope: &mut RenderScope) -> NodeHandle {
+fn video_viewport_render(scope: &mut RenderScope, _viewport_name: &str) -> NodeHandle {
     let video = scope.create_element("video");
     video.set_attribute("class", "rinch-video-viewport");
     video.set_attribute(
