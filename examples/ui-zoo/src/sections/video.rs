@@ -7,7 +7,9 @@ use rinch_video::{
 
 #[component]
 pub fn video_section() -> NodeHandle {
-    let player = use_video_player("example_video.mp4");
+    let player = use_video_player(
+        "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+    );
 
     rsx! {
         Fragment {
