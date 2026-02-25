@@ -102,6 +102,31 @@ fn next_sibling(tree: &rinch_dom::NodeTree, parent_id: usize, child_id: usize) -
     parent.children.get(pos + 1).copied()
 }
 
+/// Walk up from `node_id` to find its ancestor that is a direct child of `ce_root`.
+fn find_ce_root_child(tree: &rinch_dom::NodeTree, node_id: usize, ce_root: usize) -> Option<usize> {
+    let mut current = node_id;
+    loop {
+        let parent = tree.get(current)?.parent?;
+        if parent == ce_root {
+            return Some(current);
+        }
+        current = parent;
+    }
+}
+
+/// Find `descendant` (or its nearest ancestor) that is a direct child of `container`.
+/// Used to locate which `<li>` in a list corresponds to a selection endpoint.
+fn find_child_in(tree: &rinch_dom::NodeTree, descendant: usize, container: usize) -> Option<usize> {
+    let mut current = descendant;
+    loop {
+        let parent = tree.get(current)?.parent?;
+        if parent == container {
+            return Some(current);
+        }
+        current = parent;
+    }
+}
+
 /// Move all children of `element_id` to its parent (before the element), then remove it.
 fn unwrap_element(d: &mut RinchDocument, element_id: usize) {
     let parent_id = match d.tree.get(element_id).and_then(|n| n.parent) {
@@ -122,6 +147,70 @@ fn unwrap_element(d: &mut RinchDocument, element_id: usize) {
         );
     }
     d.remove_node(rinch_core::dom::NodeId(element_id));
+}
+
+/// Merge a list element with adjacent lists of the same type.
+/// Checks the previous and next siblings — if they are the same list tag,
+/// moves all items into one list and removes the others.
+fn merge_adjacent_lists(
+    d: &mut RinchDocument,
+    list_id: usize,
+    list_tag: &str,
+    parent_id: usize,
+) {
+    // Merge with previous sibling list
+    let prev_list = {
+        let siblings = &d.tree.nodes[parent_id].children;
+        let pos = siblings.iter().position(|&c| c == list_id);
+        pos.and_then(|p| if p > 0 { Some(siblings[p - 1]) } else { None })
+            .filter(|&prev_id| {
+                d.tree
+                    .get(prev_id)
+                    .and_then(|n| n.tag())
+                    .unwrap_or("")
+                    == list_tag
+            })
+    };
+
+    let target_list = if let Some(prev_id) = prev_list {
+        // Move all items from our list into the previous list
+        let our_items: Vec<usize> = d.tree.nodes[list_id].children.clone();
+        for &item_id in &our_items {
+            d.remove_node(rinch_core::dom::NodeId(item_id));
+            d.append_child(rinch_core::dom::NodeId(prev_id), rinch_core::dom::NodeId(item_id));
+        }
+        d.remove_node(rinch_core::dom::NodeId(list_id));
+        prev_id
+    } else {
+        list_id
+    };
+
+    // Merge with next sibling list
+    let next_list = {
+        let siblings = &d.tree.nodes[parent_id].children;
+        let pos = siblings.iter().position(|&c| c == target_list);
+        pos.and_then(|p| siblings.get(p + 1).copied())
+            .filter(|&next_id| {
+                d.tree
+                    .get(next_id)
+                    .and_then(|n| n.tag())
+                    .unwrap_or("")
+                    == list_tag
+            })
+    };
+
+    if let Some(next_id) = next_list {
+        // Move all items from next list into our target list
+        let next_items: Vec<usize> = d.tree.nodes[next_id].children.clone();
+        for &item_id in &next_items {
+            d.remove_node(rinch_core::dom::NodeId(item_id));
+            d.append_child(
+                rinch_core::dom::NodeId(target_list),
+                rinch_core::dom::NodeId(item_id),
+            );
+        }
+        d.remove_node(rinch_core::dom::NodeId(next_id));
+    }
 }
 
 // ============================================================================
@@ -170,6 +259,521 @@ impl CeOps {
     pub fn sync_cursor(&mut self, cursor: DomCursor, anchor: DomCursor) {
         self.cursor = cursor;
         self.anchor = anchor;
+    }
+
+    /// Handle `set_block_type` when the selection spans blocks with different parents.
+    ///
+    /// Lifts the view to the CE root level, collects leaf blocks (with partial
+    /// extraction for lists/blockquotes at selection boundaries), applies the
+    /// target block type, and cleans up empty containers.
+    fn set_block_type_cross_parent(
+        &mut self,
+        anchor_block: usize,
+        cursor_block: usize,
+        tag: &str,
+    ) {
+        let ce_root = self.ce_node_id;
+
+        // 1. Find the CE root children that contain anchor/cursor blocks
+        let (top_start, top_end, start_block, end_block) = {
+            let d = self.doc.borrow();
+            let ts = find_ce_root_child(&d.tree, anchor_block, ce_root);
+            let te = find_ce_root_child(&d.tree, cursor_block, ce_root);
+            let (ts, te) = match (ts, te) {
+                (Some(a), Some(b)) => (a, b),
+                _ => return,
+            };
+            // Order by document position
+            let children = &d.tree.nodes[ce_root].children;
+            let a_pos = children.iter().position(|&c| c == ts).unwrap_or(0);
+            let b_pos = children.iter().position(|&c| c == te).unwrap_or(0);
+            if a_pos <= b_pos {
+                (ts, te, anchor_block, cursor_block)
+            } else {
+                (te, ts, cursor_block, anchor_block)
+            }
+        };
+
+        // 2. Collect the range of CE root children between top_start..=top_end
+        let root_children_in_range: Vec<usize> = {
+            let d = self.doc.borrow();
+            let children = &d.tree.nodes[ce_root].children;
+            let s = children.iter().position(|&c| c == top_start).unwrap_or(0);
+            let e = children
+                .iter()
+                .position(|&c| c == top_end)
+                .unwrap_or(children.len().saturating_sub(1));
+            children[s..=e].to_vec()
+        };
+
+        // 3. Collect leaf blocks with partial extraction for first/last containers
+        //    Each entry: (node_id, needs_extraction_from_container)
+        //    We gather IDs now and do mutations in a single pass.
+        struct LeafBlock {
+            id: usize,
+            /// If this block is inside a container (list/bq), track the container
+            /// so we can clean it up if empty later.
+            source_container: Option<usize>,
+        }
+
+        let mut leaf_blocks: Vec<LeafBlock> = Vec::new();
+        // Track containers we partially/fully extract from, so we can remove if empty
+        let mut affected_containers: Vec<usize> = Vec::new();
+
+        {
+            let d = self.doc.borrow();
+            for (i, &root_child) in root_children_in_range.iter().enumerate() {
+                let child_tag = d
+                    .tree
+                    .get(root_child)
+                    .and_then(|n| n.tag())
+                    .unwrap_or("");
+                let is_first = i == 0;
+                let is_last = i == root_children_in_range.len() - 1;
+
+                if RinchApp::is_list_tag(child_tag) || child_tag == "blockquote" {
+                    // Container: extract relevant children
+                    let container_children = d.tree.nodes[root_child].children.clone();
+                    if container_children.is_empty() {
+                        continue;
+                    }
+
+                    affected_containers.push(root_child);
+
+                    // Determine start/end indices within this container
+                    let extract_start = if is_first {
+                        // Partial: from the child containing start_block to end
+                        find_child_in(&d.tree, start_block, root_child)
+                            .and_then(|child_id| {
+                                container_children.iter().position(|&c| c == child_id)
+                            })
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    };
+
+                    let extract_end = if is_last {
+                        // Partial: from start to the child containing end_block
+                        find_child_in(&d.tree, end_block, root_child)
+                            .and_then(|child_id| {
+                                container_children.iter().position(|&c| c == child_id)
+                            })
+                            .unwrap_or(container_children.len().saturating_sub(1))
+                    } else {
+                        container_children.len() - 1
+                    };
+
+                    for &child_id in &container_children[extract_start..=extract_end] {
+                        leaf_blocks.push(LeafBlock {
+                            id: child_id,
+                            source_container: Some(root_child),
+                        });
+                    }
+                } else {
+                    // Plain block (p, h*, div, etc.) — include directly
+                    leaf_blocks.push(LeafBlock {
+                        id: root_child,
+                        source_container: None,
+                    });
+                }
+            }
+        }
+
+        if leaf_blocks.is_empty() {
+            return;
+        }
+
+        // 4. Apply the target block type
+        // First, extract all leaf blocks from their containers and place at CE root level.
+        // Then apply the target type transformation.
+
+        // Find insertion reference: the next sibling of top_end in CE root
+        let insert_before_ref = {
+            let d = self.doc.borrow();
+            next_sibling(&d.tree, ce_root, top_end)
+        };
+
+        // Extract leaf blocks from containers → place at CE root before insert_before_ref
+        let leaf_ids: Vec<usize> = leaf_blocks.iter().map(|lb| lb.id).collect();
+
+        {
+            let mut d = self.doc.borrow_mut();
+
+            // Remove leaf blocks from their current parents
+            for lb in &leaf_blocks {
+                if lb.source_container.is_some() {
+                    d.remove_node(rinch_core::dom::NodeId(lb.id));
+                }
+            }
+
+            // Place them at CE root level (before insert_before_ref)
+            // We place blocks that were inside containers; blocks already at CE root stay
+            for lb in &leaf_blocks {
+                if lb.source_container.is_some() {
+                    if let Some(ref_id) = insert_before_ref {
+                        d.insert_before(
+                            rinch_core::dom::NodeId(ce_root),
+                            rinch_core::dom::NodeId(lb.id),
+                            rinch_core::dom::NodeId(ref_id),
+                        );
+                    } else {
+                        d.append_child(
+                            rinch_core::dom::NodeId(ce_root),
+                            rinch_core::dom::NodeId(lb.id),
+                        );
+                    }
+                }
+            }
+
+            // Clean up empty containers
+            for &container_id in &affected_containers {
+                if d.tree.nodes[container_id].children.is_empty() {
+                    d.remove_node(rinch_core::dom::NodeId(container_id));
+                }
+            }
+        }
+
+        // Now all leaf blocks are direct children of CE root.
+        // Apply the target block type.
+        if RinchApp::is_list_tag(tag) {
+            // Convert non-li blocks to li, then wrap all in a single list
+            let mut d = self.doc.borrow_mut();
+
+            // Find the first leaf block's position to know where to insert the new list
+            let first_id = leaf_ids[0];
+            let list_insert_before = next_sibling(&d.tree, ce_root, first_id);
+
+            let list = d.create_element(tag);
+
+            for &block_id in &leaf_ids {
+                let block_tag = d
+                    .tree
+                    .get(block_id)
+                    .and_then(|n| n.tag())
+                    .unwrap_or("")
+                    .to_string();
+
+                let li_id = if block_tag == "li" {
+                    rinch_core::dom::NodeId(block_id)
+                } else {
+                    RinchApp::convert_block_tag(&mut d, block_id, "li")
+                };
+                d.remove_node(li_id);
+                d.append_child(list, li_id);
+            }
+
+            if let Some(ref_id) = list_insert_before {
+                d.insert_before(
+                    rinch_core::dom::NodeId(ce_root),
+                    list,
+                    rinch_core::dom::NodeId(ref_id),
+                );
+            } else {
+                d.append_child(rinch_core::dom::NodeId(ce_root), list);
+            }
+        } else if tag == "blockquote" {
+            // Convert li blocks to p, then wrap all in a single blockquote
+            let mut d = self.doc.borrow_mut();
+
+            let first_id = leaf_ids[0];
+            let bq_insert_before = next_sibling(&d.tree, ce_root, first_id);
+
+            let bq = d.create_element("blockquote");
+
+            for &block_id in &leaf_ids {
+                let block_tag = d
+                    .tree
+                    .get(block_id)
+                    .and_then(|n| n.tag())
+                    .unwrap_or("")
+                    .to_string();
+
+                let inner_id = if block_tag == "li" {
+                    RinchApp::convert_block_tag(&mut d, block_id, "p")
+                } else {
+                    rinch_core::dom::NodeId(block_id)
+                };
+                d.remove_node(inner_id);
+                d.append_child(bq, inner_id);
+            }
+
+            if let Some(ref_id) = bq_insert_before {
+                d.insert_before(
+                    rinch_core::dom::NodeId(ce_root),
+                    bq,
+                    rinch_core::dom::NodeId(ref_id),
+                );
+            } else {
+                d.append_child(rinch_core::dom::NodeId(ce_root), bq);
+            }
+        } else {
+            // Simple tag (h1-h6, p, div): convert each block independently
+            let mut d = self.doc.borrow_mut();
+            for &block_id in &leaf_ids {
+                let block_tag = d
+                    .tree
+                    .get(block_id)
+                    .and_then(|n| n.tag())
+                    .unwrap_or("")
+                    .to_string();
+
+                if block_tag != tag || block_tag == "li" {
+                    RinchApp::convert_block_tag(&mut d, block_id, tag);
+                }
+            }
+        }
+
+        dispatch_ce_event(&CeEvent::BlockTypeChanged {
+            old_node_id: leaf_ids[0],
+            new_node_id: 0,
+            old_tag: String::new(),
+            new_tag: tag.to_string(),
+        });
+    }
+
+    /// Handle `set_block_type` when multiple blocks are selected.
+    ///
+    /// `block_ids` are sibling node IDs under `common_parent`, in document order.
+    fn set_block_type_multi(&mut self, block_ids: &[usize], common_parent: usize, tag: &str) {
+        if RinchApp::is_list_tag(tag) {
+            // Check if all blocks are <li> inside a list container
+            let (all_li, parent_tag) = {
+                let d = self.doc.borrow();
+                let parent_tag = d
+                    .tree
+                    .get(common_parent)
+                    .and_then(|n| n.tag())
+                    .unwrap_or("")
+                    .to_string();
+                let all_li = RinchApp::is_list_tag(&parent_tag)
+                    && block_ids.iter().all(|&bid| {
+                        d.tree.get(bid).and_then(|n| n.tag()).unwrap_or("") == "li"
+                    });
+                (all_li, parent_tag)
+            };
+
+            if all_li && parent_tag == tag {
+                // ── Toggle off: extract <li> items as <p> from the list ──
+                let mut d = self.doc.borrow_mut();
+                let list_id = common_parent;
+                let list_parent = d
+                    .tree
+                    .get(list_id)
+                    .and_then(|n| n.parent)
+                    .unwrap_or(self.ce_node_id);
+
+                // Collect items after the selection that need a new list
+                let all_children = d.tree.nodes[list_id].children.clone();
+                let first_selected = block_ids[0];
+                let last_selected = *block_ids.last().unwrap();
+                let first_pos = all_children
+                    .iter()
+                    .position(|&c| c == first_selected)
+                    .unwrap_or(0);
+                let last_pos = all_children
+                    .iter()
+                    .position(|&c| c == last_selected)
+                    .unwrap_or(0);
+                let after_items: Vec<usize> = all_children[last_pos + 1..].to_vec();
+                let has_before = first_pos > 0;
+
+                // Reference point: insert after the list in the list's parent
+                let list_next_sib = next_sibling(&d.tree, list_parent, list_id);
+
+                // Convert each selected <li> to <p> in-place, then move out of list
+                let mut converted = Vec::new();
+                for &block_id in block_ids {
+                    let p = RinchApp::convert_block_tag(&mut d, block_id, "p");
+                    d.remove_node(p);
+                    converted.push(p);
+                }
+
+                // Insert converted <p> elements after the list
+                for &p in &converted {
+                    if let Some(next) = list_next_sib {
+                        d.insert_before(
+                            rinch_core::dom::NodeId(list_parent),
+                            p,
+                            rinch_core::dom::NodeId(next),
+                        );
+                    } else {
+                        d.append_child(rinch_core::dom::NodeId(list_parent), p);
+                    }
+                }
+
+                // If there are items after the selection, create a new list for them
+                if !after_items.is_empty() {
+                    let new_list = d.create_element(tag);
+                    for &item_id in &after_items {
+                        d.remove_node(rinch_core::dom::NodeId(item_id));
+                        d.append_child(new_list, rinch_core::dom::NodeId(item_id));
+                    }
+                    if let Some(next) = list_next_sib {
+                        d.insert_before(
+                            rinch_core::dom::NodeId(list_parent),
+                            new_list,
+                            rinch_core::dom::NodeId(next),
+                        );
+                    } else {
+                        d.append_child(rinch_core::dom::NodeId(list_parent), new_list);
+                    }
+                }
+
+                // Remove the original list if empty (all items selected)
+                if !has_before && after_items.is_empty() {
+                    d.remove_node(rinch_core::dom::NodeId(list_id));
+                }
+            } else if all_li && parent_tag != tag {
+                // ── Different list type: change the container tag ──
+                let mut d = self.doc.borrow_mut();
+                RinchApp::convert_block_tag(&mut d, common_parent, tag);
+            } else {
+                // ── Not in a list: convert all blocks to <li> in a new list ──
+                let mut d = self.doc.borrow_mut();
+                let last_block = *block_ids.last().unwrap();
+                let after_sib = next_sibling(&d.tree, common_parent, last_block);
+
+                let list = d.create_element(tag);
+                for &block_id in block_ids {
+                    let li = RinchApp::convert_block_tag(&mut d, block_id, "li");
+                    d.remove_node(li);
+                    d.append_child(list, li);
+                }
+
+                if let Some(after) = after_sib {
+                    d.insert_before(
+                        rinch_core::dom::NodeId(common_parent),
+                        list,
+                        rinch_core::dom::NodeId(after),
+                    );
+                } else {
+                    d.append_child(rinch_core::dom::NodeId(common_parent), list);
+                }
+
+                // Merge with adjacent lists of the same type
+                merge_adjacent_lists(&mut d, list.0, tag, common_parent);
+            }
+        } else if tag == "blockquote" {
+            // Check if all blocks are inside a blockquote (toggle off)
+            let parent_is_bq = {
+                let d = self.doc.borrow();
+                d.tree
+                    .get(common_parent)
+                    .and_then(|n| n.tag())
+                    .unwrap_or("")
+                    == "blockquote"
+            };
+
+            if parent_is_bq {
+                // ── Toggle off: extract blocks from blockquote, splitting if needed ──
+                let mut d = self.doc.borrow_mut();
+                let bq_id = common_parent;
+                let bq_parent = d
+                    .tree
+                    .get(bq_id)
+                    .and_then(|n| n.parent)
+                    .unwrap_or(self.ce_node_id);
+
+                // Determine which children are before/after the selection
+                let bq_children = d.tree.nodes[bq_id].children.clone();
+                let first_selected = block_ids[0];
+                let last_selected = *block_ids.last().unwrap();
+                let first_pos = bq_children
+                    .iter()
+                    .position(|&c| c == first_selected)
+                    .unwrap_or(0);
+                let last_pos = bq_children
+                    .iter()
+                    .position(|&c| c == last_selected)
+                    .unwrap_or(0);
+                let after_items: Vec<usize> = bq_children[last_pos + 1..].to_vec();
+                let has_before = first_pos > 0;
+
+                let bq_next_sib = next_sibling(&d.tree, bq_parent, bq_id);
+
+                // Extract selected blocks (insert after original BQ)
+                for &block_id in block_ids {
+                    d.remove_node(rinch_core::dom::NodeId(block_id));
+                    if let Some(next) = bq_next_sib {
+                        d.insert_before(
+                            rinch_core::dom::NodeId(bq_parent),
+                            rinch_core::dom::NodeId(block_id),
+                            rinch_core::dom::NodeId(next),
+                        );
+                    } else {
+                        d.append_child(
+                            rinch_core::dom::NodeId(bq_parent),
+                            rinch_core::dom::NodeId(block_id),
+                        );
+                    }
+                }
+
+                // If there are items after selection, move them to a new blockquote
+                if !after_items.is_empty() {
+                    let new_bq = d.create_element("blockquote");
+                    for &item_id in &after_items {
+                        d.remove_node(rinch_core::dom::NodeId(item_id));
+                        d.append_child(new_bq, rinch_core::dom::NodeId(item_id));
+                    }
+                    if let Some(next) = bq_next_sib {
+                        d.insert_before(
+                            rinch_core::dom::NodeId(bq_parent),
+                            new_bq,
+                            rinch_core::dom::NodeId(next),
+                        );
+                    } else {
+                        d.append_child(rinch_core::dom::NodeId(bq_parent), new_bq);
+                    }
+                }
+
+                // Remove original blockquote if empty
+                if !has_before && after_items.is_empty() {
+                    d.remove_node(rinch_core::dom::NodeId(bq_id));
+                }
+            } else {
+                // ── Wrap all blocks in a single <blockquote> ──
+                let mut d = self.doc.borrow_mut();
+                let last_block = *block_ids.last().unwrap();
+                let after_sib = next_sibling(&d.tree, common_parent, last_block);
+
+                let bq = d.create_element("blockquote");
+                for &block_id in block_ids {
+                    d.remove_node(rinch_core::dom::NodeId(block_id));
+                    d.append_child(bq, rinch_core::dom::NodeId(block_id));
+                }
+
+                if let Some(after) = after_sib {
+                    d.insert_before(
+                        rinch_core::dom::NodeId(common_parent),
+                        bq,
+                        rinch_core::dom::NodeId(after),
+                    );
+                } else {
+                    d.append_child(rinch_core::dom::NodeId(common_parent), bq);
+                }
+            }
+        } else {
+            // ── Simple tag: convert each block independently ──
+            // If ALL blocks are already the target tag, toggle to <p>.
+            let all_same = {
+                let d = self.doc.borrow();
+                block_ids.iter().all(|&bid| {
+                    d.tree.get(bid).and_then(|n| n.tag()).unwrap_or("") == tag
+                })
+            };
+            let target = if all_same { "p" } else { tag };
+            let mut d = self.doc.borrow_mut();
+            for &block_id in block_ids {
+                RinchApp::convert_block_tag(&mut d, block_id, target);
+            }
+        }
+
+        dispatch_ce_event(&CeEvent::BlockTypeChanged {
+            old_node_id: block_ids[0],
+            new_node_id: 0,
+            old_tag: String::new(),
+            new_tag: tag.to_string(),
+        });
     }
 }
 
@@ -389,7 +993,7 @@ impl ContentEditableApi for CeOps {
                 } else if RinchApp::is_heading(&cur_tag) || cur_tag == "blockquote" {
                     let new_el = {
                         let mut d = self.doc.borrow_mut();
-                        RinchApp::convert_block_tag(&mut d, cur_block_id, "div")
+                        RinchApp::convert_block_tag(&mut d, cur_block_id, "p")
                     };
                     self.cursor = DomCursor::new(new_el.0, 0);
                     self.anchor = self.cursor;
@@ -397,7 +1001,7 @@ impl ContentEditableApi for CeOps {
                         old_node_id: cur_block_id,
                         new_node_id: new_el.0,
                         old_tag: cur_tag.clone(),
-                        new_tag: "div".to_string(),
+                        new_tag: "p".to_string(),
                     });
                 } else {
                     // Default: remove the empty block, cursor to end of previous block
@@ -543,22 +1147,115 @@ impl ContentEditableApi for CeOps {
                     (ct, pt)
                 };
 
-                // Backspace at start of <li>: always outdent
+                // Backspace at start of <li>
                 if cur_tag == "li" && RinchApp::is_list_tag(&parent_tag) {
-                    let new_el = {
-                        let mut d = self.doc.borrow_mut();
-                        RinchApp::outdent_li(&mut d, cur_block_id, cur_block_parent, ce_node_id)
-                    };
-                    self.cursor = {
+                    let is_first = {
                         let d = self.doc.borrow();
-                        RinchApp::first_text_cursor(&d.tree, new_el.0)
-                            .unwrap_or(DomCursor::new(new_el.0, 0))
+                        d.tree.nodes[cur_block_parent]
+                            .children
+                            .first()
+                            == Some(&cur_block_id)
                     };
-                    self.anchor = self.cursor;
-                    dispatch_ce_event(&CeEvent::ListItemOutdented {
-                        old_li_id: cur_block_id,
-                        new_block_id: new_el.0,
-                    });
+
+                    if is_first {
+                        // First LI: outdent (exit list)
+                        let new_el = {
+                            let mut d = self.doc.borrow_mut();
+                            RinchApp::outdent_li(
+                                &mut d,
+                                cur_block_id,
+                                cur_block_parent,
+                                ce_node_id,
+                            )
+                        };
+                        self.cursor = {
+                            let d = self.doc.borrow();
+                            RinchApp::first_text_cursor(&d.tree, new_el.0)
+                                .unwrap_or(DomCursor::new(new_el.0, 0))
+                        };
+                        self.anchor = self.cursor;
+                        dispatch_ce_event(&CeEvent::ListItemOutdented {
+                            old_li_id: cur_block_id,
+                            new_block_id: new_el.0,
+                        });
+                    } else {
+                        // Non-first LI: merge content into previous LI
+                        let prev_li_id;
+                        let merge_offset;
+                        {
+                            let mut d = self.doc.borrow_mut();
+                            let siblings =
+                                d.tree.nodes[cur_block_parent].children.clone();
+                            let pos = siblings
+                                .iter()
+                                .position(|&c| c == cur_block_id)
+                                .unwrap_or(0);
+                            prev_li_id = siblings[pos - 1];
+
+                            let merge_cursor =
+                                RinchApp::last_text_cursor(&d.tree, prev_li_id)
+                                    .unwrap_or(DomCursor::new(prev_li_id, 0));
+                            merge_offset = merge_cursor.offset;
+
+                            let cur_children: Vec<usize> =
+                                d.tree.nodes[cur_block_id].children.clone();
+                            let mut first = true;
+                            for &child_id in &cur_children {
+                                if first {
+                                    first = false;
+                                    let child_is_text = d
+                                        .tree
+                                        .get(child_id)
+                                        .and_then(|n| n.text_content())
+                                        .is_some();
+                                    let merge_is_text = d
+                                        .tree
+                                        .get(merge_cursor.node_id)
+                                        .and_then(|n| n.text_content())
+                                        .is_some();
+                                    if child_is_text && merge_is_text {
+                                        let child_text = d
+                                            .tree
+                                            .get(child_id)
+                                            .and_then(|n| n.text_content())
+                                            .map(|s| s.to_string())
+                                            .unwrap_or_default();
+                                        let merge_text = d
+                                            .tree
+                                            .get(merge_cursor.node_id)
+                                            .and_then(|n| n.text_content())
+                                            .map(|s| s.to_string())
+                                            .unwrap_or_default();
+                                        let merged =
+                                            format!("{}{}", merge_text, child_text);
+                                        d.set_text_content(
+                                            rinch_core::dom::NodeId(
+                                                merge_cursor.node_id,
+                                            ),
+                                            &merged,
+                                        );
+                                        d.remove_node(rinch_core::dom::NodeId(
+                                            child_id,
+                                        ));
+                                        continue;
+                                    }
+                                }
+                                d.remove_node(rinch_core::dom::NodeId(child_id));
+                                d.append_child(
+                                    rinch_core::dom::NodeId(prev_li_id),
+                                    rinch_core::dom::NodeId(child_id),
+                                );
+                            }
+                            d.remove_node(rinch_core::dom::NodeId(cur_block_id));
+                            self.cursor = merge_cursor;
+                            self.anchor = self.cursor;
+                        }
+                        dispatch_ce_event(&CeEvent::BlockJoined {
+                            surviving_block_id: prev_li_id,
+                            removed_block_id: cur_block_id,
+                            merge_offset,
+                        });
+                    }
                 } else if let Some((li_id, list_id)) = {
                     let d = self.doc.borrow();
                     RinchApp::find_li_ancestor_for_outdent(&d.tree, cur_block_id, ce_node_id)
@@ -580,7 +1277,7 @@ impl ContentEditableApi for CeOps {
                 } else if RinchApp::is_heading(&cur_tag) || cur_tag == "blockquote" {
                     let new_el = {
                         let mut d = self.doc.borrow_mut();
-                        RinchApp::convert_block_tag(&mut d, cur_block_id, "div")
+                        RinchApp::convert_block_tag(&mut d, cur_block_id, "p")
                     };
                     self.cursor = {
                         let d = self.doc.borrow();
@@ -592,7 +1289,7 @@ impl ContentEditableApi for CeOps {
                         old_node_id: cur_block_id,
                         new_node_id: new_el.0,
                         old_tag: cur_tag.clone(),
-                        new_tag: "div".to_string(),
+                        new_tag: "p".to_string(),
                     });
                 } else {
                     // Normal cross-block merge or same-block merge
@@ -858,7 +1555,7 @@ impl ContentEditableApi for CeOps {
                 } else if RinchApp::is_heading(&cur_tag) || cur_tag == "blockquote" {
                     let new_el = {
                         let mut d = self.doc.borrow_mut();
-                        RinchApp::convert_block_tag(&mut d, cur_block_id, "div")
+                        RinchApp::convert_block_tag(&mut d, cur_block_id, "p")
                     };
                     self.cursor = {
                         let d = self.doc.borrow();
@@ -870,7 +1567,7 @@ impl ContentEditableApi for CeOps {
                         old_node_id: cur_block_id,
                         new_node_id: new_el.0,
                         old_tag: cur_tag.clone(),
-                        new_tag: "div".to_string(),
+                        new_tag: "p".to_string(),
                     });
                 }
             }
@@ -1287,6 +1984,44 @@ impl ContentEditableApi for CeOps {
             self.cursor = new_cursor;
             self.anchor = new_cursor;
 
+            // Cross-block: merge blocks by moving remaining end-block children
+            // into the start block, then removing the end block and any middle blocks.
+            if cross_block {
+                let (start_block_id, start_parent) = start_block.unwrap();
+                let (end_block_id, _) = end_block.unwrap();
+
+                if start_block_id != end_block_id {
+                    let mut d = self.doc.borrow_mut();
+
+                    // Move remaining children from end block to start block
+                    let end_children: Vec<usize> =
+                        d.tree.nodes[end_block_id].children.clone();
+                    for &child_id in &end_children {
+                        d.remove_node(rinch_core::dom::NodeId(child_id));
+                        d.append_child(
+                            rinch_core::dom::NodeId(start_block_id),
+                            rinch_core::dom::NodeId(child_id),
+                        );
+                    }
+
+                    // Remove end block and any blocks between start and end
+                    let parent_children =
+                        d.tree.nodes[start_parent].children.clone();
+                    let sp = parent_children
+                        .iter()
+                        .position(|&c| c == start_block_id);
+                    let ep =
+                        parent_children.iter().position(|&c| c == end_block_id);
+                    if let (Some(sp), Some(ep)) = (sp, ep) {
+                        for &block_id in
+                            parent_children[sp + 1..=ep].iter().rev()
+                        {
+                            d.remove_node(rinch_core::dom::NodeId(block_id));
+                        }
+                    }
+                }
+            }
+
             // Dispatch appropriate event for the cross-node deletion
             if cross_block {
                 let (surviving_block_id, _) = start_block.unwrap();
@@ -1535,9 +2270,22 @@ impl ContentEditableApi for CeOps {
                         };
                     }
                 } else {
-                    // Non-li block: heading → div, else preserve tag
-                    let new_tag = if RinchApp::is_heading(&block_tag) {
-                        "div"
+                    // Non-li block: heading at end → p, else preserve tag (including heading mid-split)
+                    let at_end = {
+                        let text_len = if RinchApp::is_element_cursor(&d.tree, &cur) {
+                            0
+                        } else {
+                            d.tree
+                                .get(cur.node_id)
+                                .and_then(|n| n.text_content())
+                                .map(|s| s.len())
+                                .unwrap_or(0)
+                        };
+                        let off = cur.offset.min(text_len);
+                        off >= text_len
+                    };
+                    let new_tag = if RinchApp::is_heading(&block_tag) && at_end {
+                        "p"
                     } else {
                         &block_tag
                     };
@@ -1899,14 +2647,266 @@ impl ContentEditableApi for CeOps {
     }
 
     fn set_block_type(&mut self, tag: &str) {
-        // Handled by editor bridge's command system.
+        let ce_node_id = self.ce_node_id;
+
+        // ── Check for multi-block selection ──
+        // First check same-parent multi-block, then cross-parent.
+        enum MultiBlockKind {
+            SameParent(Vec<usize>, usize),
+            CrossParent(usize, usize),
+        }
+
+        let multi_kind: Option<MultiBlockKind> = {
+            let d = self.doc.borrow();
+            let anchor_block =
+                RinchApp::find_block_and_parent(&d.tree, self.anchor.node_id, ce_node_id);
+            let cursor_block =
+                RinchApp::find_block_and_parent(&d.tree, self.cursor.node_id, ce_node_id);
+            match (anchor_block, cursor_block) {
+                (Some((ab, ap)), Some((cb, cp))) if ab != cb && ap == cp => {
+                    // Same parent — existing path
+                    let children = &d.tree.nodes[ap].children;
+                    let a_pos = children.iter().position(|&c| c == ab);
+                    let c_pos = children.iter().position(|&c| c == cb);
+                    if let (Some(a), Some(c)) = (a_pos, c_pos) {
+                        let (start, end) = if a <= c { (a, c) } else { (c, a) };
+                        let ids: Vec<usize> = children[start..=end].to_vec();
+                        if ids.len() > 1 {
+                            Some(MultiBlockKind::SameParent(ids, ap))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+                (Some((ab, ap)), Some((cb, cp))) if ab != cb && ap != cp => {
+                    // Different parents — cross-parent path
+                    Some(MultiBlockKind::CrossParent(ab, cb))
+                }
+                _ => None,
+            }
+        };
+
+        match multi_kind {
+            Some(MultiBlockKind::SameParent(block_ids, common_parent)) => {
+                self.set_block_type_multi(&block_ids, common_parent, tag);
+                return;
+            }
+            Some(MultiBlockKind::CrossParent(ab, cb)) => {
+                self.set_block_type_cross_parent(ab, cb, tag);
+                return;
+            }
+            None => {}
+        }
+
+        // ── Single-block path ──
+        let cur = self.cursor;
+        let block_info = {
+            let d = self.doc.borrow();
+            RinchApp::find_block_and_parent(&d.tree, cur.node_id, ce_node_id)
+        };
+        let Some((block_id, block_parent_id)) = block_info else {
+            return;
+        };
+
+        let (old_tag, parent_tag) = {
+            let d = self.doc.borrow();
+            let old_tag = d
+                .tree
+                .get(block_id)
+                .and_then(|n| n.tag())
+                .unwrap_or("")
+                .to_string();
+            let parent_tag = d
+                .tree
+                .get(block_parent_id)
+                .and_then(|n| n.tag())
+                .unwrap_or("")
+                .to_string();
+            (old_tag, parent_tag)
+        };
+
+        let new_node_id;
+
+        if RinchApp::is_list_tag(tag) {
+            // ── Target is a list (ul/ol) ──
+            if old_tag == "li" && RinchApp::is_list_tag(&parent_tag) {
+                if parent_tag == tag {
+                    // Already in same list type → toggle off: extract from list as <p>
+                    let extracted = {
+                        let mut d = self.doc.borrow_mut();
+                        RinchApp::outdent_li(&mut d, block_id, block_parent_id, ce_node_id)
+                    };
+                    // outdent_li converts to <div> at top level; convert to <p>
+                    new_node_id = {
+                        let mut d = self.doc.borrow_mut();
+                        RinchApp::convert_block_tag(&mut d, extracted.0, "p")
+                    };
+                } else {
+                    // Different list type → change the list container tag
+                    new_node_id = {
+                        let mut d = self.doc.borrow_mut();
+                        RinchApp::convert_block_tag(&mut d, block_parent_id, tag)
+                    };
+                }
+            } else {
+                // Not in a list → convert block to <li>, wrap in new list
+                let mut d = self.doc.borrow_mut();
+                let li = RinchApp::convert_block_tag(&mut d, block_id, "li");
+                let list = d.create_element(tag);
+                let li_parent = d
+                    .tree
+                    .get(li.0)
+                    .and_then(|n| n.parent)
+                    .unwrap_or(ce_node_id);
+                let next_sib = {
+                    let siblings = &d.tree.nodes[li_parent].children;
+                    let pos = siblings.iter().position(|&c| c == li.0);
+                    pos.and_then(|p| siblings.get(p + 1).copied())
+                };
+                if let Some(next) = next_sib {
+                    d.insert_before(
+                        rinch_core::dom::NodeId(li_parent),
+                        list,
+                        rinch_core::dom::NodeId(next),
+                    );
+                } else {
+                    d.append_child(rinch_core::dom::NodeId(li_parent), list);
+                }
+                d.remove_node(li);
+                d.append_child(list, li);
+
+                // Merge with adjacent lists of the same type
+                merge_adjacent_lists(&mut d, list.0, tag, li_parent);
+
+                new_node_id = li;
+            }
+        } else if tag == "blockquote" {
+            // ── Target is blockquote ──
+            if parent_tag == "blockquote" {
+                // Already inside a blockquote → unwrap, splitting BQ if needed
+                let mut d = self.doc.borrow_mut();
+                let bq_id = block_parent_id;
+                let bq_parent = d
+                    .tree
+                    .get(bq_id)
+                    .and_then(|n| n.parent)
+                    .unwrap_or(ce_node_id);
+
+                // Find position in blockquote's children
+                let bq_children = d.tree.nodes[bq_id].children.clone();
+                let pos = bq_children
+                    .iter()
+                    .position(|&c| c == block_id)
+                    .unwrap_or(0);
+                let after_items: Vec<usize> = bq_children[pos + 1..].to_vec();
+                let has_before = pos > 0;
+
+                let bq_next_sib = next_sibling(&d.tree, bq_parent, bq_id);
+
+                // Extract the block (insert after BQ)
+                d.remove_node(rinch_core::dom::NodeId(block_id));
+                if let Some(next) = bq_next_sib {
+                    d.insert_before(
+                        rinch_core::dom::NodeId(bq_parent),
+                        rinch_core::dom::NodeId(block_id),
+                        rinch_core::dom::NodeId(next),
+                    );
+                } else {
+                    d.append_child(
+                        rinch_core::dom::NodeId(bq_parent),
+                        rinch_core::dom::NodeId(block_id),
+                    );
+                }
+
+                // Move items after selection to a new blockquote
+                if !after_items.is_empty() {
+                    let new_bq = d.create_element("blockquote");
+                    for &item_id in &after_items {
+                        d.remove_node(rinch_core::dom::NodeId(item_id));
+                        d.append_child(new_bq, rinch_core::dom::NodeId(item_id));
+                    }
+                    if let Some(next) = bq_next_sib {
+                        d.insert_before(
+                            rinch_core::dom::NodeId(bq_parent),
+                            new_bq,
+                            rinch_core::dom::NodeId(next),
+                        );
+                    } else {
+                        d.append_child(rinch_core::dom::NodeId(bq_parent), new_bq);
+                    }
+                }
+
+                // Remove original blockquote if empty
+                if !has_before && after_items.is_empty() {
+                    d.remove_node(rinch_core::dom::NodeId(bq_id));
+                }
+                new_node_id = rinch_core::dom::NodeId(block_id);
+            } else if old_tag == "blockquote" {
+                // Block IS a blockquote → convert to <p>
+                new_node_id = {
+                    let mut d = self.doc.borrow_mut();
+                    RinchApp::convert_block_tag(&mut d, block_id, "p")
+                };
+            } else {
+                // Not in blockquote → wrap current block in <blockquote>
+                let mut d = self.doc.borrow_mut();
+                let bq = d.create_element("blockquote");
+                let next_sib = {
+                    let siblings = &d.tree.nodes[block_parent_id].children;
+                    let pos = siblings.iter().position(|&c| c == block_id);
+                    pos.and_then(|p| siblings.get(p + 1).copied())
+                };
+                if let Some(next) = next_sib {
+                    d.insert_before(
+                        rinch_core::dom::NodeId(block_parent_id),
+                        bq,
+                        rinch_core::dom::NodeId(next),
+                    );
+                } else {
+                    d.append_child(rinch_core::dom::NodeId(block_parent_id), bq);
+                }
+                d.remove_node(rinch_core::dom::NodeId(block_id));
+                d.append_child(bq, rinch_core::dom::NodeId(block_id));
+                new_node_id = rinch_core::dom::NodeId(block_id);
+            }
+        } else {
+            // ── Simple tag change (h1, h2, h3, p, div, etc.) ──
+            if old_tag == "li" && RinchApp::is_list_tag(&parent_tag) {
+                // Currently in a list → extract from list, convert to target
+                let extracted = {
+                    let mut d = self.doc.borrow_mut();
+                    RinchApp::outdent_li(&mut d, block_id, block_parent_id, ce_node_id)
+                };
+                // outdent_li converts to <div>; convert to target tag
+                new_node_id = {
+                    let mut d = self.doc.borrow_mut();
+                    RinchApp::convert_block_tag(&mut d, extracted.0, tag)
+                };
+            } else if old_tag == tag {
+                // Already the target type → toggle back to <p>
+                new_node_id = {
+                    let mut d = self.doc.borrow_mut();
+                    RinchApp::convert_block_tag(&mut d, block_id, "p")
+                };
+            } else {
+                // Convert to target tag
+                new_node_id = {
+                    let mut d = self.doc.borrow_mut();
+                    RinchApp::convert_block_tag(&mut d, block_id, tag)
+                };
+            }
+        }
+
         dispatch_ce_event(&CeEvent::BlockTypeChanged {
-            old_node_id: 0,
-            new_node_id: 0,
-            old_tag: String::new(),
+            old_node_id: block_id,
+            new_node_id: new_node_id.0,
+            old_tag,
             new_tag: tag.to_string(),
         });
     }
+
 
     // ── Inline Formatting ────────────────────────────────────────────
 
@@ -1921,7 +2921,65 @@ impl ContentEditableApi for CeOps {
             self.cursor,
         );
         let mut d = self.doc.borrow_mut();
-        let selected_ids = text_nodes_in_range(&d.tree, self.ce_node_id, start, end);
+
+        // ── Split boundary text nodes so only the selected portion is wrapped ──
+        // We may need to split the start and/or end text nodes at their offsets.
+        // After splitting, `real_start` and `real_end` point to the text nodes
+        // that should be fully wrapped.
+
+        let mut real_start_nid = start.node_id;
+        let mut real_end_nid = end.node_id;
+
+        // Split start text node if selection starts mid-text
+        if start.offset > 0 {
+            if let Some(text) = d.tree.get(start.node_id).and_then(|n| n.text_content()).map(|s| s.to_string()) {
+                let off = start.offset.min(text.len());
+                if off < text.len() {
+                    // Split: keep [0..off] in original, create new node for [off..]
+                    let parent_id = d.tree.get(start.node_id).and_then(|n| n.parent).unwrap_or(self.ce_node_id);
+                    d.set_text_content(rinch_core::dom::NodeId(start.node_id), &text[..off]);
+                    let selected_part = d.create_text(&text[off..]);
+                    let next = next_sibling(&d.tree, parent_id, start.node_id);
+                    if let Some(next_id) = next {
+                        d.insert_before(rinch_core::dom::NodeId(parent_id), selected_part, rinch_core::dom::NodeId(next_id));
+                    } else {
+                        d.append_child(rinch_core::dom::NodeId(parent_id), selected_part);
+                    }
+                    real_start_nid = selected_part.0;
+                    // If start and end are the same node, update end to point to new node
+                    if start.node_id == end.node_id {
+                        real_end_nid = selected_part.0;
+                    }
+                }
+            }
+        }
+
+        // Split end text node if selection ends mid-text
+        if let Some(text) = d.tree.get(real_end_nid).and_then(|n| n.text_content()).map(|s| s.to_string()) {
+            // Compute effective end offset within this (possibly split) node
+            let eff_end_off = if start.node_id == end.node_id && start.offset > 0 {
+                // The node was split above at start.offset, so adjust end offset
+                end.offset.saturating_sub(start.offset)
+            } else {
+                end.offset
+            };
+            let off = eff_end_off.min(text.len());
+            if off > 0 && off < text.len() {
+                // Split: keep [0..off] to wrap, create new node for [off..] after
+                let parent_id = d.tree.get(real_end_nid).and_then(|n| n.parent).unwrap_or(self.ce_node_id);
+                d.set_text_content(rinch_core::dom::NodeId(real_end_nid), &text[..off]);
+                let after_part = d.create_text(&text[off..]);
+                let next = next_sibling(&d.tree, parent_id, real_end_nid);
+                if let Some(next_id) = next {
+                    d.insert_before(rinch_core::dom::NodeId(parent_id), after_part, rinch_core::dom::NodeId(next_id));
+                } else {
+                    d.append_child(rinch_core::dom::NodeId(parent_id), after_part);
+                }
+            }
+        }
+
+        // Now collect text nodes in the (possibly adjusted) range and wrap them
+        let selected_ids = text_nodes_in_range(&d.tree, self.ce_node_id, DomCursor::new(real_start_nid, 0), DomCursor::new(real_end_nid, 0));
         let mut wrapped_ids = Vec::new();
         let mut last_wrapper = 0;
 
@@ -1946,6 +3004,16 @@ impl ContentEditableApi for CeOps {
                 wrapped_ids.push(nid);
             }
         }
+
+        // Update selection to cover the wrapped text
+        if !wrapped_ids.is_empty() {
+            let first_wrapped = wrapped_ids[0];
+            let last_wrapped = *wrapped_ids.last().unwrap();
+            let end_len = d.tree.get(last_wrapped).and_then(|n| n.text_content()).map(|s| s.len()).unwrap_or(0);
+            self.anchor = DomCursor::new(first_wrapped, 0);
+            self.cursor = DomCursor::new(last_wrapped, end_len);
+        }
+
         drop(d);
         if !wrapped_ids.is_empty() {
             dispatch_ce_event(&CeEvent::SelectionWrapped {
@@ -2251,7 +3319,24 @@ impl ContentEditableApi for CeOps {
                 .and_then(|n| n.tag())
                 .unwrap_or("");
             if parent_li_tag != "li" {
-                return; // Already top-level
+                // Top-level list — exit the list via outdent_li
+                drop(d);
+                let new_el = {
+                    let mut d = self.doc.borrow_mut();
+                    RinchApp::outdent_li(
+                        &mut d,
+                        real_li_id,
+                        real_nested_list_id,
+                        ce_node_id,
+                    )
+                };
+                self.cursor = {
+                    let d = self.doc.borrow();
+                    RinchApp::first_text_cursor(&d.tree, new_el.0)
+                        .unwrap_or(DomCursor::new(new_el.0, 0))
+                };
+                self.anchor = self.cursor;
+                return;
             }
             let parent_li_id = parent_li.unwrap();
             let outer_list_id = d
