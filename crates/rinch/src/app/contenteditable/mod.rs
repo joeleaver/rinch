@@ -197,7 +197,13 @@ impl RinchApp {
             KeyCode::Tab => Some(EditKey::Tab),
             KeyCode::Escape => Some(EditKey::Escape),
             KeyCode::KeyA if ctrl => Some(EditKey::A),
+            KeyCode::KeyB if ctrl => Some(EditKey::B),
             KeyCode::KeyC if ctrl => Some(EditKey::C),
+            KeyCode::KeyE if ctrl => Some(EditKey::E),
+            KeyCode::KeyI if ctrl => Some(EditKey::I),
+            KeyCode::KeyS if ctrl => Some(EditKey::S),
+            KeyCode::KeyU if ctrl => Some(EditKey::U),
+            KeyCode::KeyV if ctrl => Some(EditKey::V),
             KeyCode::KeyX if ctrl => Some(EditKey::X),
             KeyCode::KeyZ if ctrl => Some(EditKey::Z),
             KeyCode::KeyY if ctrl => Some(EditKey::Y),
@@ -393,6 +399,8 @@ impl RinchApp {
                         ce.anchor = new_cursor;
                     }
                 }
+                // Keep CeOps in sync so toolbar buttons see the latest selection.
+                self.sync_ce_ops_cursor();
             }
 
             // ── Select All ───────────────────────────────────────────

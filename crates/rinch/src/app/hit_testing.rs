@@ -39,12 +39,27 @@ fn hit_test_node(
     // our bounds. We check all children unconditionally so that deeply nested
     // absolute-positioned elements (e.g., dropdown menus) remain clickable.
     // Each child does its own bounds check, so the overhead is minimal.
+    //
+    // However, nodes with overflow clipping (auto/scroll/hidden/clip) must restrict
+    // child hit testing to within the node's bounds — otherwise scrolled-out content
+    // can steal clicks from sibling elements above the scroll container.
+    let clips_overflow = !matches!(
+        node.computed_style.overflow_x,
+        rinch_dom::computed_style::OverflowValue::Visible
+    ) || !matches!(
+        node.computed_style.overflow_y,
+        rinch_dom::computed_style::OverflowValue::Visible
+    );
+    let check_children = !clips_overflow || point_in_bounds;
+
     let sx = node.scroll_offset.0 as f32;
     let sy = node.scroll_offset.1 as f32;
     let children: Vec<_> = node.children.clone();
-    for &child_id in children.iter().rev() {
-        if let Some(hit) = hit_test_node(tree, child_id, nx - sx, ny - sy, x, y) {
-            return Some(hit);
+    if check_children {
+        for &child_id in children.iter().rev() {
+            if let Some(hit) = hit_test_node(tree, child_id, nx - sx, ny - sy, x, y) {
+                return Some(hit);
+            }
         }
     }
 
@@ -325,7 +340,8 @@ fn find_scrollbar_hit_node(
     let nw = node.layout.width;
     let nh = node.layout.height;
 
-    if x < nx || x > nx + nw || y < ny || y > ny + nh {
+    let point_in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
+    if !point_in_bounds {
         return None;
     }
 

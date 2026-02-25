@@ -72,33 +72,6 @@ pub(super) fn render_text(
             let font = run.font();
             let font_size = run.font_size();
             let synthesis = run.synthesis();
-
-            // DEBUG: Print font info for first run only (to avoid spam)
-            {
-                use std::sync::atomic::{AtomicBool, Ordering};
-                static PRINTED: AtomicBool = AtomicBool::new(false);
-                if !PRINTED.swap(true, Ordering::SeqCst) {
-                    use read_fonts::TableProvider;
-                    if let Ok(font_ref) =
-                        read_fonts::FontRef::from_index(font.data.as_ref(), font.index)
-                        && let Ok(name_table) = font_ref.name()
-                    {
-                        // Try to get font family name (nameID 1) or full name (nameID 4)
-                        for record in name_table.name_record().iter() {
-                            if (record.name_id().to_u16() == 1 || record.name_id().to_u16() == 4)
-                                && let Ok(name) = record.string(name_table.string_data())
-                            {
-                                eprintln!(
-                                    "[DEBUG] Font selected: {:?} (nameID={})",
-                                    name.to_string(),
-                                    record.name_id().to_u16()
-                                );
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
             let glyph_xform = synthesis
                 .skew()
                 .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));

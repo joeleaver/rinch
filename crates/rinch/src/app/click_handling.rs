@@ -121,6 +121,8 @@ impl RinchApp {
             },
             /// We did NOT hit contenteditable — clear previous if any.
             Clear { prev_node_id: Option<usize> },
+            /// Hit a data-rid handler outside CE — preserve CE focus, continue to Phase 3.
+            PreserveCe,
             /// No hit at all.
             NoHit,
         }
@@ -157,7 +159,29 @@ impl RinchApp {
                         prev_node_id,
                     }
                 } else {
-                    CeAction::Clear { prev_node_id }
+                    // Check if the click target has a data-rid handler — if so,
+                    // preserve CE focus so toolbar buttons can use the CE API.
+                    let has_rid = {
+                        let mut walk = Some(hit_id);
+                        let mut found = false;
+                        while let Some(nid) = walk {
+                            if let Some(node) = d.tree.get(nid) {
+                                if node.attributes.contains_key("data-rid") {
+                                    found = true;
+                                    break;
+                                }
+                                walk = node.parent;
+                            } else {
+                                break;
+                            }
+                        }
+                        found
+                    };
+                    if has_rid {
+                        CeAction::PreserveCe // Preserve CE focus, let Phase 3 handle the click
+                    } else {
+                        CeAction::Clear { prev_node_id }
+                    }
                 }
             } else {
                 CeAction::NoHit
@@ -253,6 +277,9 @@ impl RinchApp {
                     self.set_contenteditable_attributes(prev_id, false, 0, 0);
                     self.scene_dirty = true;
                 }
+            }
+            CeAction::PreserveCe => {
+                // CE focus preserved — fall through to Phase 3 for data-rid dispatch
             }
             CeAction::NoHit => {
                 return actions;
@@ -364,7 +391,19 @@ impl RinchApp {
                     });
 
                     drop(d);
+                    // Sync CE cursor before handler so toolbar buttons see current selection
+                    self.sync_ce_ops_cursor();
                     events::dispatch_event(events::EventHandlerId(handler_id));
+                    // Sync selection back from CE API after handler (e.g., toggle_wrap changes it)
+                    if let Some(ops) = &self.ce_ops
+                        && let Ok(ops) = ops.try_borrow()
+                    {
+                        let sel = ops.get_selection();
+                        if let Some(ce) = self.focused_contenteditable.as_mut() {
+                            ce.cursor = sel.head;
+                            ce.anchor = sel.anchor;
+                        }
+                    }
                     // Process any pending focus request from the event handler
                     // (e.g., a handler may call request_focus on an input element).
                     if let Some(focus_node_id) = rinch_core::take_pending_focus_request() {

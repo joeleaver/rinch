@@ -700,7 +700,18 @@ impl RinchDocument {
         // Parley from collapsing trailing whitespace, which would cause cursor
         // position mismatches (the DOM text has the space but the layout doesn't).
         use crate::computed_style::WhiteSpaceValue;
-        let is_contenteditable = nodes[root_id].attributes.contains_key("contenteditable");
+        let is_contenteditable = {
+            let mut nid = Some(root_id);
+            let mut found = false;
+            while let Some(id) = nid {
+                if nodes[id].attributes.contains_key("contenteditable") {
+                    found = true;
+                    break;
+                }
+                nid = nodes[id].parent;
+            }
+            found
+        };
         let collapse = if is_contenteditable {
             parley::style::WhiteSpaceCollapse::Preserve
         } else {

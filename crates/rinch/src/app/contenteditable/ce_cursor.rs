@@ -235,10 +235,12 @@ impl RinchApp {
         // Recurse into children by y-range
         let (_, node_abs_y) = Self::compute_absolute_position(tree, node_id);
         let scroll_y = node.scroll_offset.1 as f32;
+        let mut nearest_child: Option<(usize, f32)> = None; // (child_id, distance)
         for &child_id in &node.children {
             if let Some(child) = tree.get(child_id) {
                 let child_abs_y = node_abs_y + child.layout.y - scroll_y;
                 let child_bottom = child_abs_y + child.layout.height;
+                // Exact hit — click is within child bounds
                 if click_y >= child_abs_y
                     && click_y < child_bottom
                     && let Some(cursor) =
@@ -246,6 +248,26 @@ impl RinchApp {
                 {
                     return Some(cursor);
                 }
+                // Track nearest child by vertical distance (for gap clicks)
+                let dist = if click_y < child_abs_y {
+                    child_abs_y - click_y
+                } else if click_y >= child_bottom {
+                    click_y - child_bottom
+                } else {
+                    0.0 // inside bounds but recursion returned None
+                };
+                if nearest_child.map_or(true, |(_, d)| dist < d) {
+                    nearest_child = Some((child_id, dist));
+                }
+            }
+        }
+
+        // Click was in the gap between children — use the nearest child
+        if let Some((nearest_id, _)) = nearest_child {
+            if let Some(cursor) =
+                Self::find_cursor_in_block(tree, nearest_id, click_x, click_y)
+            {
+                return Some(cursor);
             }
         }
 
