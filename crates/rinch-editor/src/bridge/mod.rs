@@ -331,6 +331,11 @@ fn handle_ce_event(
                 let cursor = DomCursor::new(*node_id, *offset);
                 if let Some(pos) = vd.dom_cursor_to_position(&cursor, &ed) {
                     let block_index = vd.block_index_for_node(*node_id);
+                    // Convert text-node-local offset to block-level byte offset
+                    let block_from_byte = vd
+                        .text_node_byte_start(*node_id)
+                        .map(|start| start + *offset)
+                        .unwrap_or(*offset);
                     drop(vd);
                     if let Err(e) = ed.doc.insert_text(pos, text) {
                         eprintln!("[bridge] TextInserted: model insert failed: {e:?}");
@@ -344,7 +349,7 @@ fn handle_ce_event(
                     if let Some(bi) = block_index {
                         view_desc
                             .borrow_mut()
-                            .shift_block_ranges(bi, *offset, text.len() as isize);
+                            .shift_block_ranges(bi, block_from_byte, text.len() as isize);
                     }
                     on_change();
                 }
@@ -366,6 +371,11 @@ fn handle_ce_event(
                     vd.dom_cursor_to_position(&end_cursor, &ed),
                 ) {
                     let block_index = vd.block_index_for_node(*node_id);
+                    // Convert text-node-local offset to block-level byte offset
+                    let block_from_byte = vd
+                        .text_node_byte_start(*node_id)
+                        .map(|start| start + *offset)
+                        .unwrap_or(*offset);
                     drop(vd);
                     let range = Range::new(start_pos, end_pos);
                     if let Err(e) = ed.doc.delete_range(range) {
@@ -379,7 +389,7 @@ fn handle_ce_event(
                     if let Some(bi) = block_index {
                         view_desc
                             .borrow_mut()
-                            .shift_block_ranges(bi, *offset, -(*length as isize));
+                            .shift_block_ranges(bi, block_from_byte, -(*length as isize));
                     }
                     on_change();
                 }
