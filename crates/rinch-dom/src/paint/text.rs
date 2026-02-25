@@ -136,11 +136,9 @@ pub(super) fn render_text(
                 let offset = underline.offset.unwrap_or(run_metrics.underline_offset);
                 let size = underline.size.unwrap_or(run_metrics.underline_size);
                 let dec_brush = &underline.brush;
-                // Clamp underline closer to baseline — many fonts place it too low.
-                // Use at most 1/6 of font_size below baseline.
-                let max_offset = font_size / 6.0;
-                let clamped_offset = offset.min(max_offset);
-                let line_y = (gy + clamped_offset) as f64;
+                // underline_offset from font metrics is negative (below baseline),
+                // so subtract it to move the line below the baseline.
+                let line_y = (gy - offset) as f64;
                 let run_width = (gx - run_x) as f64;
                 let line = peniko::kurbo::Line::new(
                     (run_x as f64, line_y),

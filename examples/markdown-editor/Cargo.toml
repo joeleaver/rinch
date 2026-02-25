@@ -1,0 +1,11 @@
+[package]
+name = "markdown-editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Markdown editor example — standalone rich-text editor for debugging and iteration"
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop", "components", "theme", "debug", "clipboard"] }
+rinch-core = { workspace = true }
+rinch-tabler-icons.workspace = true

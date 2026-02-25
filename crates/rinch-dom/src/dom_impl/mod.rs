@@ -144,6 +144,14 @@ impl RinchDocument {
                 display: inline;
             }
 
+            u, ins {
+                text-decoration-line: underline;
+            }
+
+            s, strike, del {
+                text-decoration-line: line-through;
+            }
+
             img, input, button, select, textarea {
                 display: inline-block;
             }

@@ -814,16 +814,11 @@ impl RinchDocument {
         if let Some(taffy_id) = self.tree.nodes.get(parent_id).and_then(|n| n.taffy_id) {
             let _ = self.tree.taffy.mark_dirty(taffy_id);
         }
-        let children: Vec<usize> = self
-            .tree
-            .nodes
-            .get(parent_id)
-            .map(|n| n.children.clone())
-            .unwrap_or_default();
-        for child_id in children {
-            if let Some(child) = self.tree.nodes.get_mut(child_id) {
-                child.ifc_root = None;
-            }
-        }
+        // NOTE: Do NOT clear ifc_root on children here. This function handles
+        // text/style invalidation where the IFC structure is unchanged. Clearing
+        // ifc_root would prevent build_ifc_layouts() from finding this IFC root
+        // (it discovers roots by checking child.ifc_root == Some(parent_id)),
+        // and setup_inline_formatting_contexts() won't re-assign them because
+        // ifc_dirty is not set for text-only changes.
     }
 }

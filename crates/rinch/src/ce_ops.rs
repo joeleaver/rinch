@@ -1552,29 +1552,162 @@ impl ContentEditableApi for CeOps {
                             .unwrap_or_default()
                     };
                     let off = cur.offset.min(cur_text.len());
-                    let after = &cur_text[off..];
+                    let after = cur_text[off..].to_string();
 
                     let new_block_id = d.create_element(new_tag);
-                    if after.is_empty() {
+
+                    if RinchApp::is_element_cursor(&d.tree, &cur) {
+                        // Element cursor — create empty new block
                         let line_h = RinchApp::line_height_px(&d.tree, block_id);
-                        d.set_style(new_block_id, "min-height", &format!("{:.1}px", line_h));
+                        d.set_style(
+                            new_block_id,
+                            "min-height",
+                            &format!("{:.1}px", line_h),
+                        );
                     } else {
-                        let new_text_id = d.create_text(after);
-                        d.append_child(new_block_id, new_text_id);
-                        if off == 0 {
-                            d.remove_node(rinch_core::dom::NodeId(cur.node_id));
-                            if d.tree.nodes[block_id].children.is_empty() {
-                                let line_h = RinchApp::line_height_px(&d.tree, block_id);
-                                d.set_style(
-                                    rinch_core::dom::NodeId(block_id),
-                                    "min-height",
-                                    &format!("{:.1}px", line_h),
+                        // Text cursor — split with inline-ancestor awareness.
+                        // Truncate original text to portion before cursor.
+                        d.set_text_content(
+                            rinch_core::dom::NodeId(cur.node_id),
+                            &cur_text[..off],
+                        );
+                        let after_text_id = if !after.is_empty() {
+                            Some(d.create_text(&after))
+                        } else {
+                            None
+                        };
+
+                        // Walk up from cursor text node to block element,
+                        // cloning inline ancestors and moving post-cursor
+                        // siblings into the clones.
+                        let mut current_after = after_text_id;
+                        let mut child = cur.node_id;
+                        loop {
+                            let parent_id = d
+                                .tree
+                                .get(child)
+                                .and_then(|n| n.parent)
+                                .unwrap_or(block_id);
+                            if parent_id == block_id {
+                                break;
+                            }
+
+                            // Parent is an inline element — clone it
+                            let parent_tag = d
+                                .tree
+                                .get(parent_id)
+                                .and_then(|n| n.tag())
+                                .unwrap_or("span")
+                                .to_string();
+                            let clone_id = d.create_element(&parent_tag);
+
+                            // Copy style and class attributes
+                            if let Some(style) = d
+                                .tree
+                                .get(parent_id)
+                                .and_then(|n| n.attributes.get("style"))
+                                .map(|s| s.to_string())
+                            {
+                                d.set_attribute(clone_id, "style", &style);
+                            }
+                            if let Some(class) = d
+                                .tree
+                                .get(parent_id)
+                                .and_then(|n| n.attributes.get("class"))
+                                .map(|s| s.to_string())
+                            {
+                                d.set_attribute(clone_id, "class", &class);
+                            }
+
+                            // Move siblings after `child` from parent into clone
+                            let siblings_after: Vec<usize> = {
+                                let children = &d.tree.nodes[parent_id].children;
+                                let pos = children
+                                    .iter()
+                                    .position(|&c| c == child)
+                                    .unwrap_or(0);
+                                children[pos + 1..].to_vec()
+                            };
+                            if let Some(after_node) = current_after {
+                                d.append_child(clone_id, after_node);
+                            }
+                            for &sib_id in &siblings_after {
+                                d.remove_node(rinch_core::dom::NodeId(sib_id));
+                                d.append_child(
+                                    clone_id,
+                                    rinch_core::dom::NodeId(sib_id),
                                 );
                             }
-                        } else {
-                            d.set_text_content(
-                                rinch_core::dom::NodeId(cur.node_id),
-                                &cur_text[..off],
+
+                            current_after =
+                                if d.tree.nodes[clone_id.0].children.is_empty() {
+                                    None
+                                } else {
+                                    Some(clone_id)
+                                };
+                            child = parent_id;
+                        }
+
+                        // `child` is now a direct child of block_id.
+                        // Add cloned inline content to new block.
+                        if let Some(after_node) = current_after {
+                            d.append_child(new_block_id, after_node);
+                        }
+
+                        // Move block-level siblings after `child` to new block
+                        let block_siblings_after: Vec<usize> = {
+                            let children = &d.tree.nodes[block_id].children;
+                            let pos = children
+                                .iter()
+                                .position(|&c| c == child)
+                                .unwrap_or(0);
+                            children[pos + 1..].to_vec()
+                        };
+                        for &sib_id in &block_siblings_after {
+                            d.remove_node(rinch_core::dom::NodeId(sib_id));
+                            d.append_child(
+                                new_block_id,
+                                rinch_core::dom::NodeId(sib_id),
+                            );
+                        }
+
+                        // Clean up: if off == 0, the original text node is now
+                        // empty. Remove it and any empty inline ancestors.
+                        if off == 0 {
+                            let mut cleanup = cur.node_id;
+                            loop {
+                                let parent_id = d
+                                    .tree
+                                    .get(cleanup)
+                                    .and_then(|n| n.parent)
+                                    .unwrap_or(block_id);
+                                d.remove_node(rinch_core::dom::NodeId(cleanup));
+                                if parent_id == block_id {
+                                    break;
+                                }
+                                if d.tree.nodes[parent_id].children.is_empty() {
+                                    cleanup = parent_id;
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Set min-height on empty blocks
+                        if d.tree.nodes[block_id].children.is_empty() {
+                            let line_h = RinchApp::line_height_px(&d.tree, block_id);
+                            d.set_style(
+                                rinch_core::dom::NodeId(block_id),
+                                "min-height",
+                                &format!("{:.1}px", line_h),
+                            );
+                        }
+                        if d.tree.nodes[new_block_id.0].children.is_empty() {
+                            let line_h = RinchApp::line_height_px(&d.tree, block_id);
+                            d.set_style(
+                                new_block_id,
+                                "min-height",
+                                &format!("{:.1}px", line_h),
                             );
                         }
                     }

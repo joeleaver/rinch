@@ -2573,6 +2573,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "markdown-editor"
+version = "0.1.0"
+dependencies = [
+ "rinch",
+ "rinch-core",
+ "rinch-tabler-icons",
+]
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

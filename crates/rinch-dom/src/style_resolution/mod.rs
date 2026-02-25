@@ -337,7 +337,19 @@ impl RinchDocument {
             drop(stylo_data);
 
             // Convert Stylo ComputedValues to our ComputedStyle
-            let new_style = ComputedStyle::from_stylo(&computed_values);
+            let mut new_style = ComputedStyle::from_stylo(&computed_values);
+
+            // Apply HTML presentational defaults that Stylo doesn't handle.
+            // Stylo (servo build) doesn't apply text-decoration-line defaults
+            // for elements like <u>, <s>, <ins>, <del>, <strike> from the UA
+            // stylesheet. Apply them based on tag name as browsers do.
+            match node.tag() {
+                Some("u" | "ins") => new_style.text_decoration.underline = true,
+                Some("s" | "strike" | "del") => {
+                    new_style.text_decoration.strikethrough = true
+                }
+                _ => {}
+            }
 
             // Extract transition specs from Stylo
             let transition_specs = TransitionSpec::extract_from_stylo(&computed_values);

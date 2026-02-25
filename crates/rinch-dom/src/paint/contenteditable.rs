@@ -10,6 +10,29 @@ use crate::node::{Node, NodeTree};
 
 use super::text::render_text_with_shadow;
 
+/// Find the line height from a Parley layout for the line containing the given y position.
+///
+/// `y` should be in layout-relative coordinates (e.g., from cursor.geometry().y0).
+/// Returns the line's height as reported by Parley, which already reflects the actual
+/// font metrics and line-height of the text that was laid out.
+fn line_height_at_y(layout: &parley::layout::Layout<Brush>, y: f32) -> Option<f64> {
+    for line in layout.lines() {
+        let m = line.metrics();
+        let glyph_top = m.baseline - m.ascent;
+        let half_leading = (m.line_height - m.ascent - m.descent) / 2.0;
+        let line_box_top = glyph_top - half_leading;
+        let line_box_bottom = line_box_top + m.line_height;
+        if y >= line_box_top - 0.5 && y < line_box_bottom + 0.5 {
+            return Some(m.line_height as f64);
+        }
+    }
+    // If y doesn't match any line (e.g. empty layout), try first line
+    layout
+        .lines()
+        .next()
+        .map(|line| line.metrics().line_height as f64)
+}
+
 /// Get a CSS style property value from inline styles.
 ///
 /// Parse an inline style property from a node's style attribute.
@@ -301,14 +324,21 @@ pub(super) fn paint_contenteditable_cursor(
     content_width: f64,
     transform: Affine,
 ) {
-    let font_size = node.computed_style.font_size;
-    let scaled_font_size = font_size * scale as f32;
-    let line_height_multiplier = match node.computed_style.line_height {
-        LineHeightValue::Relative(r) => r as f64,
-        LineHeightValue::Absolute(abs) => (abs / font_size) as f64,
-        LineHeightValue::Normal => 1.2, // Default fallback
+    // Use Parley's actual line metrics from the layout rather than computing
+    // from node.computed_style. The node passed here is the CE root, but
+    // the layout belongs to a child block (h1, h2, p, etc.) which may have
+    // a different font size and line height. Parley's metrics are authoritative
+    // since they reflect the actual text that was laid out.
+    let fallback_line_height = {
+        let font_size = node.computed_style.font_size;
+        let scaled = font_size * scale as f32;
+        let mult = match node.computed_style.line_height {
+            LineHeightValue::Relative(r) => r as f64,
+            LineHeightValue::Absolute(abs) => (abs / font_size) as f64,
+            LineHeightValue::Normal => 1.2,
+        };
+        scaled as f64 * mult
     };
-    let line_height = scaled_font_size as f64 * line_height_multiplier;
 
     // Draw selection highlight if there's a selection range
     if sel_start != sel_end {
@@ -323,23 +353,23 @@ pub(super) fn paint_contenteditable_cursor(
         let sel_color = AlphaColor::<Srgb>::from_rgba8(51, 154, 240, 100);
 
         if (start_y - end_y).abs() < 0.1 {
-            // Same line
+            // Same line — find the matching line's actual height from Parley
+            let actual_line_height = line_height_at_y(layout, start_y)
+                .unwrap_or(fallback_line_height);
             let sel_rect = Rect::new(
                 text_x + start_x as f64,
                 text_y + start_y as f64,
                 text_x + end_x as f64,
-                text_y + start_y as f64 + line_height,
+                text_y + start_y as f64 + actual_line_height,
             );
             scene.fill(Fill::NonZero, transform, sel_color, None, &sel_rect);
         } else {
             // Multi-line selection: cursor.geometry().y0 returns the line BOX
             // top (including half-leading), not baseline - ascent (glyph top).
-            // Compute line box bounds to match cursor geometry coordinates.
+            // Use line_box_top for rect positioning to match cursor geometry.
             for line in layout.lines() {
                 let line_metrics = line.metrics();
                 let glyph_top = line_metrics.baseline - line_metrics.ascent;
-                // Line box top accounts for half-leading (space distributed
-                // above and below glyphs when line-height > natural height)
                 let half_leading =
                     (line_metrics.line_height - line_metrics.ascent - line_metrics.descent) / 2.0;
                 let line_box_top = glyph_top - half_leading;
@@ -354,23 +384,21 @@ pub(super) fn paint_contenteditable_cursor(
                 let is_start_line = start_y >= line_box_top - 0.5 && start_y < line_box_bottom;
                 let is_end_line = end_y >= line_box_top - 0.5 && end_y < line_box_bottom;
 
-                let rect_y = text_y + glyph_top as f64;
+                let rect_y = text_y + line_box_top as f64;
                 let (rect_start_x, rect_end_x) = if is_start_line && is_end_line {
-                    // Both on same line (fallback for edge cases)
                     (start_x as f64, end_x as f64)
                 } else if is_start_line {
                     (start_x as f64, content_width)
                 } else if is_end_line {
                     (0.0, end_x as f64)
                 } else {
-                    // Middle line: full width
                     (0.0, content_width)
                 };
                 let sel_rect = Rect::new(
                     text_x + rect_start_x,
                     rect_y,
                     text_x + rect_end_x,
-                    rect_y + line_height,
+                    rect_y + line_metrics.line_height as f64,
                 );
                 scene.fill(Fill::NonZero, transform, sel_color, None, &sel_rect);
             }
@@ -387,7 +415,8 @@ pub(super) fn paint_contenteditable_cursor(
         };
         let caret_x = text_x + caret_offset_x as f64;
         let caret_y = text_y + caret_offset_y as f64;
-        let caret_height = line_height;
+        let caret_height = line_height_at_y(layout, caret_offset_y)
+            .unwrap_or(fallback_line_height);
 
         let caret_color = node
             .computed_style
