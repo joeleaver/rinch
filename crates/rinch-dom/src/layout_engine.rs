@@ -16,6 +16,9 @@ impl RinchDocument {
     /// then reads layout results back into each node's `layout` field.
     /// Text nodes are measured using Parley for accurate text layout.
     pub fn resolve_layout(&mut self, width: f32, height: f32) {
+        let perf = std::env::var("RINCH_PERF").is_ok();
+        let t0 = std::time::Instant::now();
+
         let old_viewport = self.tree.viewport;
         self.tree.viewport = crate::layout::Viewport { width, height };
 
@@ -28,6 +31,7 @@ impl RinchDocument {
             for (node_id, _) in self.tree.nodes.iter() {
                 *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
             }
+            self.tree.style_roots.clear(); // Force full tree walk
             self.tree.styles_dirty = true;
         }
 
@@ -36,31 +40,69 @@ impl RinchDocument {
 
         // Resolve Stylo styles and apply to Taffy nodes (only if dirty)
         if self.tree.styles_dirty {
+            let t = std::time::Instant::now();
             self.resolve_styles();
+            if perf { eprintln!("  [PERF] resolve_styles: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
+            let t = std::time::Instant::now();
             self.apply_stylo_styles_to_taffy();
+            if perf { eprintln!("  [PERF] apply_to_taffy: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
             self.tree.styles_dirty = false;
         }
 
         // Trigger loads for any background-image URLs not yet in the cache
         self.request_background_image_loads();
 
+        // Skip full layout recompute when no layout-affecting properties changed.
+        // Paint-only changes (background-color, opacity, cursor on hover) set
+        // styles_dirty but NOT layout_dirty, so we resolve styles above but
+        // skip the expensive Taffy compute + IFC rebuild below.
+        if !self.tree.layout_dirty {
+            if perf { eprintln!("  [PERF] layout SKIPPED (paint-only) {:.2}ms", t0.elapsed().as_secs_f64() * 1000.0); }
+            return;
+        }
+        self.tree.layout_dirty = false;
+
         let root_taffy = match self.tree.nodes[self.tree.root_id].taffy_id {
             Some(id) => id,
             None => return,
         };
 
-        // Handle display:contents by rebuilding taffy children for affected nodes
-        self.sync_display_contents();
+        // IFC setup passes only need to run when tree structure or display modes
+        // changed. Text-only changes (e.g. slider label "50%" → "19%") preserve the
+        // existing IFC structure and Taffy's internal cache — only the dirty text
+        // node gets re-measured, avoiding the 80ms full-tree Parley rebuild.
+        if self.tree.ifc_dirty {
+            // Structural change — invalidate all cached IFC measures
+            self.tree.ifc_measure_cache.clear();
 
-        // Detect and set up inline formatting contexts
-        self.setup_inline_formatting_contexts();
+            // Handle display:contents by rebuilding taffy children for affected nodes
+            let t = std::time::Instant::now();
+            self.sync_display_contents();
+            if perf { eprintln!("  [PERF] sync_display_contents: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
 
-        // Pre-compute layout for inline-block children that were detached from Taffy.
-        // They need their own subtree measured so walk_inline_children can read dimensions.
-        self.compute_inline_block_layouts();
+            // Detect and set up inline formatting contexts
+            let t = std::time::Instant::now();
+            self.setup_inline_formatting_contexts();
+            if perf { eprintln!("  [PERF] setup_ifc: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
 
-        // Sync font-size from parent elements to text node contexts
-        self.sync_text_contexts();
+            // Pre-compute layout for inline-block children that were detached from Taffy.
+            // They need their own subtree measured so walk_inline_children can read dimensions.
+            let t = std::time::Instant::now();
+            self.compute_inline_block_layouts();
+            if perf { eprintln!("  [PERF] inline_block_layouts: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
+
+            // Sync font-size from parent elements to text node contexts
+            let t = std::time::Instant::now();
+            self.sync_text_contexts();
+            if perf { eprintln!("  [PERF] sync_text_contexts: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
+
+            self.tree.ifc_dirty = false;
+        } else {
+            // IFC structure unchanged — only sync text contexts for dirty nodes
+            let t = std::time::Instant::now();
+            self.sync_dirty_text_contexts();
+            if perf { eprintln!("  [PERF] sync_dirty_text_contexts: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
+        }
 
         let available_space = taffy::Size {
             width: taffy::AvailableSpace::Definite(width),
@@ -70,6 +112,7 @@ impl RinchDocument {
         let font_cx = &mut self.font_cx;
         let layout_cx = &mut self.layout_cx;
         let nodes = &self.tree.nodes;
+        let dirty_ifc_text_roots = &self.tree.dirty_ifc_text_roots;
 
         // Cache for text layouts built during measurement.
         // Key: (node_id, wrap_width as bits) - wrap width is part of key since layout depends on it
@@ -77,7 +120,11 @@ impl RinchDocument {
         use std::cell::RefCell;
         let text_layout_cache: RefCell<HashMap<(usize, u32), parley::layout::Layout<Brush>>> =
             RefCell::new(HashMap::new());
+        // Persistent IFC measure cache — survives across frames.
+        // Only invalidated when an IFC root's text content changes.
+        let ifc_measure_cache = RefCell::new(std::mem::take(&mut self.tree.ifc_measure_cache));
 
+        let t = std::time::Instant::now();
         self.tree
             .taffy
             .compute_layout_with_measure(
@@ -186,13 +233,35 @@ impl RinchDocument {
                             }
                         }
                         Some(NodeContext::InlineRoot(root_id)) => {
-                            // Build Parley inline layout for this IFC root
                             let root_id = *root_id;
+
+                            // Use wrap_width bits as cache key
+                            let wrap_bits = max_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
+
+                            // Check persistent IFC measure cache — skip expensive
+                            // Parley rebuild if this root's text hasn't changed.
+                            if !dirty_ifc_text_roots.contains(&root_id) {
+                                if let Some(&(cached_w, cached_h)) =
+                                    ifc_measure_cache.borrow().get(&(root_id, wrap_bits))
+                                {
+                                    return taffy::Size {
+                                        width: known_dims.width.unwrap_or(cached_w),
+                                        height: known_dims.height.unwrap_or(cached_h),
+                                    };
+                                }
+                            }
+
+                            // Full Parley rebuild (text changed or cache miss)
                             let inline_layout = Self::build_inline_layout(
                                 nodes, root_id, max_width, 1.0, font_cx, layout_cx,
                             );
                             let w = inline_layout.layout.width();
                             let h = inline_layout.layout.height();
+
+                            // Store in persistent cache
+                            ifc_measure_cache
+                                .borrow_mut()
+                                .insert((root_id, wrap_bits), (w, h));
 
                             // Measure callback for IFC root
                             taffy::Size {
@@ -206,21 +275,161 @@ impl RinchDocument {
             )
             .unwrap();
 
+        // Restore the persistent IFC measure cache (dirty_ifc_text_roots cleared after build_ifc)
+        self.tree.ifc_measure_cache = ifc_measure_cache.into_inner();
+
+        if perf { eprintln!("  [PERF] taffy_compute: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
+
         // Read layout results back into nodes
+        let t = std::time::Instant::now();
         self.read_layout_results(self.tree.root_id);
+        if perf { eprintln!("  [PERF] read_layout: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
 
         // Build inline layouts for IFC roots (rebuild with final widths and store)
         // Temporarily take layout_cx out to avoid borrow conflict
+        let t = std::time::Instant::now();
         let mut temp_layout_cx = std::mem::take(&mut self.layout_cx);
         self.build_ifc_layouts(&mut temp_layout_cx);
         self.layout_cx = temp_layout_cx;
+        self.tree.dirty_ifc_text_roots.clear();
+        if perf { eprintln!("  [PERF] build_ifc: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
 
         // Copy cached text layouts to nodes (use the exact layouts from measurement)
+        let t = std::time::Instant::now();
         self.copy_cached_text_layouts(text_layout_cache.into_inner());
+        if perf { eprintln!("  [PERF] copy_text_layouts: {:.2}ms", t.elapsed().as_secs_f64() * 1000.0); }
+
+        if perf { eprintln!("  [PERF] resolve_layout TOTAL: {:.2}ms", t0.elapsed().as_secs_f64() * 1000.0); }
 
         // Enable transitions after first layout completes (prevents transitions on page load)
         if !self.tree.transitions_enabled {
             self.tree.transitions_enabled = true;
+        }
+    }
+
+    /// Incremental version of `sync_text_contexts` — only processes text nodes
+    /// that are in `dirty_nodes`. Used when IFC structure is unchanged (ifc_dirty=false)
+    /// to avoid walking all text nodes.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn sync_dirty_text_contexts(&mut self) {
+        use crate::computed_style::WhiteSpaceValue;
+        let mut updates: Vec<(
+            taffy::NodeId,
+            usize,
+            f32,
+            f32,
+            String,
+            String,
+            AlphaColor<Srgb>,
+            bool,
+            crate::computed_style::OverflowWrapValue,
+        )> = Vec::new();
+
+        for &id in &self.tree.dirty_nodes {
+            let node = match self.tree.nodes.get(id) {
+                Some(n) => n,
+                None => continue,
+            };
+            if !matches!(&node.kind, NodeKind::Text(_)) {
+                continue;
+            }
+            let taffy_id = match node.taffy_id {
+                Some(t) => t,
+                None => continue,
+            };
+
+            let (
+                font_size,
+                font_weight,
+                font_family,
+                line_height_css,
+                color,
+                no_wrap,
+                overflow_wrap,
+            ) = node
+                .parent
+                .and_then(|p| self.tree.nodes.get(p))
+                .map(|parent| {
+                    let font_size = parent.computed_style.font_size;
+                    let font_weight = parent.computed_style.font_weight;
+                    let font_family = if parent.computed_style.font_family.is_empty() {
+                        "sans-serif".to_string()
+                    } else {
+                        parent.computed_style.font_family.clone()
+                    };
+                    let line_height_css = match &parent.computed_style.line_height {
+                        crate::computed_style::LineHeightValue::Normal => String::new(),
+                        crate::computed_style::LineHeightValue::Absolute(v) => {
+                            format!("{}px", v)
+                        }
+                        crate::computed_style::LineHeightValue::Relative(v) => v.to_string(),
+                    };
+                    let color = parent
+                        .computed_style
+                        .color
+                        .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255));
+                    let no_wrap = matches!(
+                        parent.computed_style.white_space,
+                        WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
+                    );
+                    let overflow_wrap = parent.computed_style.overflow_wrap;
+                    (
+                        font_size,
+                        font_weight,
+                        font_family,
+                        line_height_css,
+                        color,
+                        no_wrap,
+                        overflow_wrap,
+                    )
+                })
+                .unwrap_or((
+                    16.0,
+                    400.0,
+                    "sans-serif".to_string(),
+                    String::new(),
+                    AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255),
+                    false,
+                    crate::computed_style::OverflowWrapValue::default(),
+                ));
+
+            updates.push((
+                taffy_id,
+                id,
+                font_size,
+                font_weight,
+                font_family,
+                line_height_css,
+                color,
+                no_wrap,
+                overflow_wrap,
+            ));
+        }
+
+        for (
+            taffy_id,
+            node_id,
+            font_size,
+            font_weight,
+            font_family,
+            line_height_css,
+            color,
+            no_wrap,
+            overflow_wrap,
+        ) in updates
+        {
+            if let Some(ctx) = self.tree.taffy.get_node_context_mut(taffy_id)
+                && let NodeContext::Text(tm) = ctx
+            {
+                tm.font_size = font_size;
+                tm.font_weight = font_weight;
+                tm.font_family = font_family;
+                tm.line_height_css = line_height_css;
+                tm.node_id = node_id;
+                tm.color = color;
+                tm.no_wrap = no_wrap;
+                tm.overflow_wrap = overflow_wrap;
+            }
         }
     }
 

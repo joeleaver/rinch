@@ -63,6 +63,18 @@ impl RinchDocument {
                 }
             };
 
+            // Skip Parley rebuild if text hasn't changed and the layout already
+            // exists with the same max_width. The existing text_layout is still valid.
+            if !self.tree.dirty_ifc_text_roots.contains(&root_id) {
+                if let Some(existing) = &node.text_layout {
+                    let old_max_width = existing.max_width;
+                    let new_max_width = max_width.unwrap_or(f32::INFINITY);
+                    if (old_max_width - new_max_width).abs() < 0.01 {
+                        continue; // Skip — text_layout is still valid
+                    }
+                }
+            }
+
             let inline_layout = Self::build_inline_layout(
                 &self.tree.nodes,
                 root_id,
@@ -730,6 +742,7 @@ impl RinchDocument {
             text_content,
             child_positions,
             text_ranges,
+            max_width: max_width.unwrap_or(f32::INFINITY),
         }
     }
 

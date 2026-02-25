@@ -300,7 +300,13 @@ fn paint_node(
 
             // Compute composed CSS transform for this node
             let node_transform = if !node.computed_style.transform.is_identity {
-                let m = &node.computed_style.transform.matrix;
+                let tf = &node.computed_style.transform;
+                let mut m = tf.matrix;
+                // Resolve percentage-based translate against element dimensions
+                if tf.translate_x_pct.abs() > 1e-9 || tf.translate_y_pct.abs() > 1e-9 {
+                    m[4] += tf.translate_x_pct * node.layout.width as f64;
+                    m[5] += tf.translate_y_pct * node.layout.height as f64;
+                }
                 let cs = &node.computed_style;
                 let ox = cs.transform_origin_x.resolve(node.layout.width);
                 let oy = cs.transform_origin_y.resolve(node.layout.height);
@@ -308,7 +314,7 @@ fn paint_node(
                 let cy = y + oy as f64 * scale;
                 parent_transform
                     * Affine::translate((cx, cy))
-                    * Affine::new(*m)
+                    * Affine::new(m)
                     * Affine::translate((-cx, -cy))
             } else {
                 parent_transform

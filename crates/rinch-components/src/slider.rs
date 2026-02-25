@@ -203,15 +203,27 @@ impl Component for Slider {
         track.set_attribute("class", "rinch-slider__track");
 
         // Create bar (the filled portion)
+        // Uses transform: scaleX() instead of width for paint-only updates (no Taffy relayout)
         let bar = scope.create_element("div");
         bar.set_attribute("class", "rinch-slider__bar");
-        bar.set_style("width", &format!("{}%", percentage));
+        bar.set_style("transform", &format!("scaleX({})", percentage / 100.0));
         track.append_child(&bar);
 
         // Create thumb wrapper
+        // The wrapper is width: 100% and acts as a reference for the thumb position.
+        // The thumb itself is positioned via transform on the wrapper:
+        // translateX(X%) moves by X% of wrapper width (= track width), centering is
+        // handled by the thumb's own negative margin.
         let thumb_wrapper = scope.create_element("div");
         thumb_wrapper.set_attribute("class", "rinch-slider__thumb-wrapper");
-        thumb_wrapper.set_style("left", &format!("{}%", percentage));
+        thumb_wrapper.set_style(
+            "transform",
+            &format!("translateX({}%)", percentage),
+        );
+
+        // Create a zero-width anchor that centers content on the wrapper's left edge
+        let thumb_anchor = scope.create_element("div");
+        thumb_anchor.set_attribute("class", "rinch-slider__thumb-anchor");
 
         // Add label if needed
         if !self.label.is_empty() || self.show_label_on_hover || self.label_always_on {
@@ -225,13 +237,14 @@ impl Component for Slider {
             label.set_attribute("class", "rinch-slider__label");
             let label_text_node = scope.create_text(&label_text);
             label.append_child(&label_text_node);
-            thumb_wrapper.append_child(&label);
+            thumb_anchor.append_child(&label);
         }
 
         // Create thumb
         let thumb = scope.create_element("div");
         thumb.set_attribute("class", "rinch-slider__thumb");
-        thumb_wrapper.append_child(&thumb);
+        thumb_anchor.append_child(&thumb);
+        thumb_wrapper.append_child(&thumb_anchor);
 
         // Create click overlay
         let overlay = scope.create_element("div");
@@ -295,8 +308,9 @@ impl Component for Slider {
                 } else {
                     0.0
                 };
-                bar_clone.set_style("width", &format!("{}%", pct));
-                thumb_wrapper_clone.set_style("left", &format!("{}%", pct));
+                // Use transform instead of width/left — paint-only, no Taffy relayout
+                bar_clone.set_style("transform", &format!("scaleX({})", pct / 100.0));
+                thumb_wrapper_clone.set_style("transform", &format!("translateX({}%)", pct));
             });
         }
 

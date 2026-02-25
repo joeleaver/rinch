@@ -93,6 +93,8 @@ pub fn apply_value_to_style(
             style.transform = TransformValue {
                 matrix: *m,
                 is_identity: false,
+                translate_x_pct: 0.0,
+                translate_y_pct: 0.0,
             };
         }
         _ => {}

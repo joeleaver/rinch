@@ -69,10 +69,8 @@ impl RinchDocument {
             self.invalidate_style_subtree(id);
         }
 
-        // Recompute styles using Stylo for affected nodes
+        // Defer style resolution to resolve_layout()
         self.tree.styles_dirty = true;
-        self.resolve_styles();
-        self.apply_stylo_styles_to_taffy();
 
         // Mark dirty nodes for repaint
         for id in dirty_nodes {
@@ -83,7 +81,7 @@ impl RinchDocument {
     }
 
     /// Update focus state: set the focused node, clear previous focus,
-    /// and recompute styles for affected nodes.
+    /// and invalidate styles for affected nodes (resolved at next layout).
     /// Returns true if the focused node changed (caller should repaint).
     pub fn update_focus(&mut self, new_focused: Option<usize>) -> bool {
         let old_focused = self.tree.focused_node;
@@ -115,10 +113,8 @@ impl RinchDocument {
             self.invalidate_style_subtree(id);
         }
 
-        // Recompute styles
+        // Defer style resolution to resolve_layout()
         self.tree.styles_dirty = true;
-        self.resolve_styles();
-        self.apply_stylo_styles_to_taffy();
 
         // Mark dirty nodes for repaint
         if let Some(id) = old_focused {
@@ -132,7 +128,7 @@ impl RinchDocument {
     }
 
     /// Update active (mouse-pressed) state: set the active node and its
-    /// ancestors, clear previous active, and recompute styles.
+    /// ancestors, clear previous active, and invalidate styles (resolved at next layout).
     /// Returns true if the active node changed (caller should repaint).
     pub fn update_active(&mut self, new_active: Option<usize>) -> bool {
         let old_active = self.tree.active_node;
@@ -194,10 +190,8 @@ impl RinchDocument {
             self.invalidate_style_subtree(id);
         }
 
-        // Recompute styles
+        // Defer style resolution to resolve_layout()
         self.tree.styles_dirty = true;
-        self.resolve_styles();
-        self.apply_stylo_styles_to_taffy();
 
         // Mark dirty nodes for repaint
         for id in dirty_nodes {

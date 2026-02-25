@@ -379,16 +379,17 @@ impl RinchApp {
     /// Re-resolve layout after signal changes. Returns `true` if a redraw
     /// is needed.
     pub fn resolve_and_repaint(&mut self, viewport_width: f32, viewport_height: f32) -> bool {
-        let frame_start = Instant::now();
         let Some(doc) = &self.doc else {
             return false;
         };
 
         // Check if theme CSS has changed (e.g. primary color or dark mode toggled)
+        #[allow(unused_assignments)]
+        let mut theme_changed = false;
         #[cfg(feature = "theme")]
         {
             let current_theme = rinch_core::get_current_theme_css().unwrap_or_default();
-            let theme_changed = self.last_theme_css.as_deref() != Some(current_theme.as_str());
+            theme_changed = self.last_theme_css.as_deref() != Some(current_theme.as_str());
 
             if theme_changed {
                 self.last_theme_css = Some(current_theme.clone());
@@ -399,6 +400,17 @@ impl RinchApp {
                 }
             }
         }
+
+        // Short-circuit when nothing needs resolving — avoids redundant tree walks
+        // when a ReRender event arrives after the drag handler already resolved.
+        {
+            let d = doc.borrow();
+            if d.tree.dirty_nodes.is_empty() && !d.tree.styles_dirty && !theme_changed {
+                return false;
+            }
+        }
+
+        let frame_start = Instant::now();
 
         // Resolve layout
         {

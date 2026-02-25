@@ -7,14 +7,13 @@ use style::properties::ComputedValues;
 use crate::RinchDocument;
 
 impl RinchDocument {
-    /// Resolve styles for all elements using Stylo's CSS cascade.
+    /// Resolve styles for elements that need it.
     ///
-    /// This walks the DOM tree and computes styles for each element using:
-    /// 1. Selector matching via `push_applicable_declarations()`
-    /// 2. Rule tree construction via `compute_rule_node()`
-    /// 3. Cascade via `cascade_style_and_visited()`
-    ///
-    /// The computed styles are stored in each node's `stylo_element_data` field.
+    /// When `style_roots` is populated (the common case for incremental
+    /// updates), only those subtrees are visited — O(changed_subtree)
+    /// instead of O(tree).  Falls back to a full tree walk when no
+    /// roots are tracked (initial render, stylesheet reload, viewport
+    /// resize).
     pub fn resolve_styles(&mut self) {
         use crate::stylo_impl::RinchNode;
         use style::shared_lock::StylesheetGuards;
@@ -26,9 +25,85 @@ impl RinchDocument {
             self.stylist.flush::<RinchNode>(&guards, None, None);
         }
 
-        // Start from the html element and traverse down
-        let html_id = self.tree.html_id;
-        self.resolve_styles_recursive(html_id, None);
+        let roots = std::mem::take(&mut self.tree.style_roots);
+
+        // Full tree walk when:
+        // - No specific roots tracked (stylesheet reload, viewport resize)
+        // - First layout hasn't completed yet (DOM still being constructed,
+        //   parent classes may not be resolved when children are appended)
+        if roots.is_empty() || !self.tree.transitions_enabled {
+            let html_id = self.tree.html_id;
+            self.resolve_styles_recursive(html_id, None);
+            return;
+        }
+
+        // Targeted resolution: only visit the invalidated subtrees.
+        //
+        // Sort by depth (shallowest first) so that if both a parent and
+        // child appear, the parent is resolved first and the child can
+        // be skipped (it will be covered by the parent's subtree walk).
+        let mut sorted: Vec<(usize, usize)> = roots
+            .into_iter()
+            .map(|id| (id, self.node_depth(id)))
+            .collect();
+        sorted.sort_unstable_by_key(|&(_, depth)| depth);
+        sorted.dedup_by_key(|entry| entry.0);
+
+        // Track which roots have been resolved so we can skip
+        // descendants that are already covered.
+        let mut resolved_roots: Vec<usize> = Vec::with_capacity(sorted.len());
+
+        for (root_id, _depth) in sorted {
+            // If this root is a descendant of an already-resolved root,
+            // it was already handled by that root's subtree walk.
+            if self.is_ancestor_in(&resolved_roots, root_id) {
+                continue;
+            }
+
+            let parent_style = self.find_parent_computed_style(root_id);
+            self.resolve_styles_recursive(root_id, parent_style);
+            resolved_roots.push(root_id);
+        }
+    }
+
+    /// Walk up to find the nearest ancestor with a valid computed style.
+    fn find_parent_computed_style(
+        &self,
+        node_id: usize,
+    ) -> Option<ServoArc<ComputedValues>> {
+        let mut current = self.tree.nodes.get(node_id)?.parent;
+        while let Some(pid) = current {
+            let node = self.tree.nodes.get(pid)?;
+            let data = node.stylo_element_data.borrow();
+            if let Some(style) = data.as_ref().and_then(|d| d.styles.primary.clone()) {
+                return Some(style);
+            }
+            current = node.parent;
+        }
+        None
+    }
+
+    /// Check whether `node_id` is a descendant of any node in `ancestors`.
+    fn is_ancestor_in(&self, ancestors: &[usize], node_id: usize) -> bool {
+        let mut current = self.tree.nodes.get(node_id).and_then(|n| n.parent);
+        while let Some(pid) = current {
+            if ancestors.contains(&pid) {
+                return true;
+            }
+            current = self.tree.nodes.get(pid).and_then(|n| n.parent);
+        }
+        false
+    }
+
+    /// Return the depth of a node in the tree (0 = root).
+    fn node_depth(&self, node_id: usize) -> usize {
+        let mut depth = 0;
+        let mut current = self.tree.nodes.get(node_id).and_then(|n| n.parent);
+        while let Some(pid) = current {
+            depth += 1;
+            current = self.tree.nodes.get(pid).and_then(|n| n.parent);
+        }
+        depth
     }
 
     /// Recursively resolve styles for a node and its descendants.
@@ -224,12 +299,21 @@ impl RinchDocument {
     /// This is needed when pseudo-class state changes (hover, focus, active)
     /// because the cache optimization in `resolve_styles_recursive()` would
     /// otherwise skip nodes that already have computed styles.
+    ///
+    /// Only the root `node_id` is recorded in `style_roots` — descendants
+    /// are covered by the recursive walk in `resolve_styles_recursive()`.
     pub(crate) fn invalidate_style_subtree(&mut self, node_id: usize) {
+        // Track the root of this invalidation for targeted resolution
+        self.tree.style_roots.push(node_id);
+        self.invalidate_style_subtree_inner(node_id);
+    }
+
+    fn invalidate_style_subtree_inner(&mut self, node_id: usize) {
         if let Some(node) = self.tree.nodes.get_mut(node_id) {
             *node.stylo_element_data.borrow_mut() = None;
             let children: Vec<usize> = node.children.clone();
             for child_id in children {
-                self.invalidate_style_subtree(child_id);
+                self.invalidate_style_subtree_inner(child_id);
             }
         }
     }

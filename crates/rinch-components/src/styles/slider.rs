@@ -24,26 +24,30 @@ pub fn styles() -> String {
     pointer-events: none;
 }
 
-/* Slider bar (filled portion) - pointer-events: none so clicks pass through */
+/* Slider bar (filled portion) - pointer-events: none so clicks pass through.
+   Uses transform: scaleX() instead of width for paint-only updates (no Taffy relayout). */
 .rinch-slider__bar {
     position: absolute;
     top: 0;
     left: 0;
     height: 100%;
-    width: var(--rinch-slider-value, 0%);
+    width: 100%;
     background-color: var(--rinch-slider-color, var(--rinch-primary-color));
     border-radius: inherit;
     pointer-events: none;
+    transform-origin: left;
+    transform: scaleX(var(--rinch-slider-value, 0));
 }
 
-/* Slider thumb wrapper - positioned via CSS variable */
+/* Slider thumb wrapper - full-width container for transform-based positioning.
+   Uses translateX() instead of left for paint-only updates (no Taffy relayout). */
 .rinch-slider__thumb-wrapper {
     position: absolute;
-    left: var(--rinch-slider-value, 0%);
-    transform: translateX(-50%);
+    left: 0;
+    width: 100%;
     display: flex;
     flex-direction: column;
-    align-items: center;
+    align-items: flex-start;
     pointer-events: none;
     z-index: 1;
 }
@@ -57,6 +61,14 @@ pub fn styles() -> String {
     height: 100%;
     z-index: 10;
     cursor: pointer;
+}
+
+/* Zero-width anchor that centers thumb + label on the wrapper's translated position */
+.rinch-slider__thumb-anchor {
+    width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
 }
 
 /* Slider thumb */

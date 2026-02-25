@@ -802,6 +802,12 @@ pub struct TransformValue {
     pub matrix: [f64; 6],
     /// Whether this is the identity transform (no-op).
     pub is_identity: bool,
+    /// Unresolved percentage-based translateX (fraction, e.g. 0.5 = 50%).
+    /// Resolved at paint time against element width.
+    pub translate_x_pct: f64,
+    /// Unresolved percentage-based translateY (fraction, e.g. 0.5 = 50%).
+    /// Resolved at paint time against element height.
+    pub translate_y_pct: f64,
 }
 
 impl Default for TransformValue {
@@ -809,6 +815,8 @@ impl Default for TransformValue {
         Self {
             matrix: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
             is_identity: true,
+            translate_x_pct: 0.0,
+            translate_y_pct: 0.0,
         }
     }
 }

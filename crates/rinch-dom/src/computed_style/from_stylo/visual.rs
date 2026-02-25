@@ -80,6 +80,12 @@ pub(super) fn transform_from_stylo(
     // Compose all operations into a single 2D affine matrix [a, b, c, d, e, f]
     let mut m = [1.0_f64, 0.0, 0.0, 1.0, 0.0, 0.0]; // identity
 
+    // Accumulate percentage-based translate values (resolved at paint time).
+    // These are stored separately and added to the matrix after resolving
+    // against element dimensions.
+    let mut translate_x_pct = 0.0_f64;
+    let mut translate_y_pct = 0.0_f64;
+
     for op in &*transform.0 {
         let op_matrix = match op {
             GenericTransformOperation::Matrix(mat) => [
@@ -102,16 +108,20 @@ pub(super) fn transform_from_stylo(
             GenericTransformOperation::ScaleX(sx) => [*sx as f64, 0.0, 0.0, 1.0, 0.0, 0.0],
             GenericTransformOperation::ScaleY(sy) => [1.0, 0.0, 0.0, *sy as f64, 0.0, 0.0],
             GenericTransformOperation::TranslateX(tx) => {
-                let tx_px = length_or_pct_to_px(tx);
-                [1.0, 0.0, 0.0, 1.0, tx_px, 0.0]
+                let (px, pct) = length_or_pct_split(tx);
+                translate_x_pct += pct;
+                [1.0, 0.0, 0.0, 1.0, px, 0.0]
             }
             GenericTransformOperation::TranslateY(ty) => {
-                let ty_px = length_or_pct_to_px(ty);
-                [1.0, 0.0, 0.0, 1.0, 0.0, ty_px]
+                let (px, pct) = length_or_pct_split(ty);
+                translate_y_pct += pct;
+                [1.0, 0.0, 0.0, 1.0, 0.0, px]
             }
             GenericTransformOperation::Translate(tx, ty) => {
-                let tx_px = length_or_pct_to_px(tx);
-                let ty_px = length_or_pct_to_px(ty);
+                let (tx_px, tx_pct) = length_or_pct_split(tx);
+                let (ty_px, ty_pct) = length_or_pct_split(ty);
+                translate_x_pct += tx_pct;
+                translate_y_pct += ty_pct;
                 [1.0, 0.0, 0.0, 1.0, tx_px, ty_px]
             }
             GenericTransformOperation::SkewX(angle) => {
@@ -141,7 +151,10 @@ pub(super) fn transform_from_stylo(
         m = [a, b, c, d, e, f];
     }
 
-    let is_identity = (m[0] - 1.0).abs() < 1e-6
+    let has_pct = translate_x_pct.abs() > 1e-9 || translate_y_pct.abs() > 1e-9;
+
+    let is_identity = !has_pct
+        && (m[0] - 1.0).abs() < 1e-6
         && m[1].abs() < 1e-6
         && m[2].abs() < 1e-6
         && (m[3] - 1.0).abs() < 1e-6
@@ -151,17 +164,18 @@ pub(super) fn transform_from_stylo(
     TransformValue {
         matrix: m,
         is_identity,
+        translate_x_pct,
+        translate_y_pct,
     }
 }
 
-fn length_or_pct_to_px(lp: &style::values::computed::LengthPercentage) -> f64 {
-    if let Some(len) = lp.to_length() {
-        len.px() as f64
-    } else {
-        // Percentage transforms need element size -- store 0 for now
-        // (will be resolved at paint time for percentage-based translates)
-        0.0
-    }
+/// Split a LengthPercentage into (px_value, percentage_fraction).
+/// Returns (px, 0.0) for lengths, (0.0, fraction) for percentages,
+/// (px, fraction) for calc() combinations.
+fn length_or_pct_split(lp: &style::values::computed::LengthPercentage) -> (f64, f64) {
+    let px = lp.to_length().map_or(0.0, |l| l.px() as f64);
+    let pct = lp.to_percentage().map_or(0.0, |p| p.0 as f64);
+    (px, pct)
 }
 
 pub(super) fn transform_origin_component_from_stylo(

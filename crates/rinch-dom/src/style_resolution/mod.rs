@@ -87,7 +87,12 @@ impl RinchDocument {
         }
         if !css.is_empty() {
             self.load_stylo_css(&css);
-            // Recompute all styles since new CSS rules may affect existing nodes
+            // New CSS rules may affect any existing node — invalidate all caches
+            // and clear style_roots to force a full tree walk.
+            for (nid, _) in self.tree.nodes.iter() {
+                *self.tree.nodes[nid].stylo_element_data.borrow_mut() = None;
+            }
+            self.tree.style_roots.clear();
             self.tree.styles_dirty = true;
             self.resolve_styles();
             self.apply_stylo_styles_to_taffy();
@@ -205,6 +210,8 @@ impl RinchDocument {
         for &nid in &node_ids {
             *self.tree.nodes[nid].stylo_element_data.borrow_mut() = None;
         }
+        // Clear roots to force full tree walk
+        self.tree.style_roots.clear();
         // Resolve styles using Stylo
         self.tree.styles_dirty = true;
         self.resolve_styles();
@@ -238,6 +245,7 @@ impl RinchDocument {
                 invalidate_recursive(tree, child_id);
             }
         }
+        self.tree.style_roots.push(node_id);
         invalidate_recursive(&mut self.tree, node_id);
 
         // Resolve styles using Stylo
@@ -284,6 +292,9 @@ impl RinchDocument {
         if dirty_node_ids.is_empty() {
             return;
         }
+        let perf = std::env::var("RINCH_PERF").is_ok();
+        let style_dirty_count = dirty_node_ids.len();
+        let taffy_style_changed_count = std::cell::Cell::new(0u32);
 
         // Get current time for transition start timestamps
         let current_time_ms = self.current_time_ms();
@@ -407,8 +418,30 @@ impl RinchDocument {
                 }
             }
 
-            // Apply to Taffy node
-            let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
+            // Only call set_style if the Taffy style actually changed.
+            // This avoids marking the Taffy tree dirty for paint-only changes
+            // (e.g. background-color on hover) which don't affect layout.
+            if let Ok(old_taffy_style) = self.tree.taffy.style(taffy_id) {
+                if old_taffy_style != &taffy_style {
+                    // Only set ifc_dirty when display changes — that's what affects
+                    // IFC structure (inline/block mixing, display:contents, display:none).
+                    // Other layout changes (width, padding, margin) don't need IFC rebuild.
+                    if old_taffy_style.display != taffy_style.display {
+                        self.tree.ifc_dirty = true;
+                    }
+                    let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
+                    self.tree.layout_dirty = true;
+                    taffy_style_changed_count.set(taffy_style_changed_count.get() + 1);
+                }
+            } else {
+                let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
+                self.tree.layout_dirty = true;
+                self.tree.ifc_dirty = true;
+                taffy_style_changed_count.set(taffy_style_changed_count.get() + 1);
+            }
+        }
+        if perf {
+            eprintln!("  [PERF] apply_to_taffy: style_dirty_nodes={} taffy_changed={}", style_dirty_count, taffy_style_changed_count.get());
         }
     }
 

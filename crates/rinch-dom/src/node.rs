@@ -166,6 +166,8 @@ pub struct InlineLayout {
     pub child_positions: Vec<(RawNodeId, LayoutResult)>,
     /// Map from IFC flat byte ranges to DOM text nodes / `<br>` elements.
     pub text_ranges: Vec<IfcTextRange>,
+    /// The max_width used to build this layout (for cache invalidation).
+    pub max_width: f32,
 }
 
 impl std::fmt::Debug for InlineLayout {
@@ -480,8 +482,19 @@ pub struct NodeTree {
     pub dirty_nodes: HashSet<RawNodeId>,
     /// IDs of nodes whose styles were recomputed and need Taffy sync.
     pub style_dirty_nodes: Vec<RawNodeId>,
+    /// Roots of subtrees needing style resolution. When non-empty,
+    /// `resolve_styles()` resolves only these subtrees instead of the
+    /// full tree — turning O(tree) into O(changed_subtree).
+    pub style_roots: Vec<RawNodeId>,
     /// True if any style-affecting change occurred since last resolve.
     pub styles_dirty: bool,
+    /// True if any layout-affecting Taffy style changed since last compute.
+    /// When false, `resolve_layout()` can skip Taffy compute + IFC rebuild.
+    pub layout_dirty: bool,
+    /// True if the tree structure changed (node insert/remove) or display mode
+    /// changed since last IFC setup. When false, IFC rebuild is skipped and
+    /// Taffy's internal cache is preserved — only dirty nodes get re-measured.
+    pub ifc_dirty: bool,
     /// Taffy layout tree.
     pub taffy: taffy::TaffyTree<NodeContext>,
     /// Reverse map from Taffy node ID to slab node ID.
@@ -507,6 +520,13 @@ pub struct NodeTree {
     pub image_cache: ImageCache,
     /// Image loader for fetching image data (file, network, etc.).
     pub image_loader: Option<Arc<dyn ImageLoader>>,
+    /// IFC roots whose text content changed since last layout.
+    /// Used to skip expensive Parley rebuilds for unchanged IFC roots.
+    pub dirty_ifc_text_roots: HashSet<RawNodeId>,
+    /// Cached IFC measure results from previous frames.
+    /// Key: (ifc_root_node_id, wrap_width_bits) → (width, height).
+    /// Invalidated per-root when text content changes.
+    pub ifc_measure_cache: HashMap<(RawNodeId, u32), (f32, f32)>,
 }
 
 impl Default for NodeTree {
@@ -593,7 +613,10 @@ impl NodeTree {
             body_id,
             dirty_nodes: HashSet::new(),
             style_dirty_nodes: Vec::new(),
+            style_roots: Vec::new(),
             styles_dirty: true, // Initial render needs styles
+            layout_dirty: true, // Initial render needs layout
+            ifc_dirty: true,    // Initial render needs IFC setup
             taffy,
             taffy_map,
             viewport: crate::layout::Viewport::default(),
@@ -606,6 +629,8 @@ impl NodeTree {
             transitions_enabled: false,
             image_cache: ImageCache::new(),
             image_loader: None,
+            dirty_ifc_text_roots: HashSet::new(),
+            ifc_measure_cache: HashMap::new(),
         }
     }
 

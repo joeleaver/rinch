@@ -207,6 +207,10 @@ impl RinchDocument {
             self.tree.nodes[node_id].dirty.insert(flags);
             self.tree.push_dirty(node_id);
             if flags.contains(DirtyFlags::LAYOUT) {
+                // Don't set layout_dirty here — it's set by:
+                // 1. apply_stylo_styles_to_taffy() when Taffy style actually changes
+                // 2. Structural changes (append_child, remove_child, etc.)
+                // This avoids full Taffy recompute for paint-only changes like transform.
                 self.mark_dirty_up(node_id, DirtyFlags::LAYOUT);
             }
         }
@@ -266,7 +270,18 @@ impl RinchDocument {
                     }
                 }
 
-                let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
+                // Only call set_style if the Taffy style actually changed.
+                // set_style() internally calls mark_dirty() which propagates up
+                // the entire ancestor chain — unconditional calls here were causing
+                // 70%+ of Taffy nodes to lose their cache on every frame with
+                // active transitions, even when only paint-only properties changed.
+                if let Ok(old_taffy_style) = self.tree.taffy.style(taffy_id) {
+                    if old_taffy_style != &taffy_style {
+                        let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
+                    }
+                } else {
+                    let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
+                }
             }
         }
 

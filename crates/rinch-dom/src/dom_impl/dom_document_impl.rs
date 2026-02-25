@@ -125,6 +125,8 @@ impl DomDocument for RinchDocument {
         }
         // Invalidate parent's IFC (structure changed)
         self.invalidate_parent_ifc(p);
+        self.tree.layout_dirty = true; // Structural change needs full layout
+        self.tree.ifc_dirty = true; // Tree structure changed
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
 
         // Recompute styles for the inserted subtree to pick up ancestor-based selectors
@@ -149,6 +151,8 @@ impl DomDocument for RinchDocument {
         }
         // Invalidate parent's IFC
         self.invalidate_parent_ifc(p);
+        self.tree.layout_dirty = true; // Structural change needs full layout
+        self.tree.ifc_dirty = true; // Tree structure changed
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
     }
 
@@ -194,6 +198,8 @@ impl DomDocument for RinchDocument {
             }
         }
         self.invalidate_parent_ifc(p);
+        self.tree.layout_dirty = true; // Structural change needs full layout
+        self.tree.ifc_dirty = true; // Tree structure changed
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
     }
 
@@ -238,6 +244,8 @@ impl DomDocument for RinchDocument {
             self.tree.nodes[new.0].parent = Some(parent_id);
             self.tree.nodes[old.0].parent = None;
             self.invalidate_parent_ifc(parent_id);
+            self.tree.layout_dirty = true; // Structural change needs full layout
+            self.tree.ifc_dirty = true; // Tree structure changed
             self.push_dirty_flags(parent_id, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
         }
     }
@@ -254,6 +262,8 @@ impl DomDocument for RinchDocument {
                 self.taffy_remove_child_safe(parent_taffy, node_taffy);
             }
             self.invalidate_parent_ifc(parent_id);
+            self.tree.layout_dirty = true; // Structural change needs full layout
+            self.tree.ifc_dirty = true; // Tree structure changed
             self.push_dirty_flags(parent_id, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
         }
         self.tree.nodes[node.0].parent = None;
@@ -267,6 +277,20 @@ impl DomDocument for RinchDocument {
         // Also invalidate parent's IFC
         if let Some(parent_id) = self.tree.nodes[n].parent {
             self.invalidate_parent_ifc(parent_id);
+        }
+        // Track which IFC root has dirty text content so the measure callback
+        // can skip expensive Parley rebuilds for unchanged roots.
+        {
+            let ifc_root = self.tree.nodes[n]
+                .ifc_root
+                .or_else(|| self.tree.nodes[n].parent);
+            if let Some(root_id) = ifc_root {
+                self.tree.dirty_ifc_text_roots.insert(root_id);
+                // Invalidate cached measure results for this root
+                self.tree
+                    .ifc_measure_cache
+                    .retain(|&(rid, _), _| rid != root_id);
+            }
         }
         match &mut self.tree.nodes[n].kind {
             NodeKind::Text(t) => {
@@ -326,8 +350,10 @@ impl DomDocument for RinchDocument {
                 if let Some(parent_taffy) = self.tree.nodes[n].taffy_id {
                     let _ = self.tree.taffy.add_child(parent_taffy, taffy_id);
                 }
+                self.tree.ifc_dirty = true; // Structural change (children replaced)
             }
         }
+        self.tree.layout_dirty = true; // Text content change affects layout
         self.push_dirty(n);
 
         // If this node is a <style> element, reload its CSS
@@ -361,8 +387,14 @@ impl DomDocument for RinchDocument {
             self.tree.nodes[node.0].style_attribute_cache =
                 Some(ServoArc::new(self.tree.guard.wrap(pdb)));
         }
-        // Invalidate IFC if this node belongs to one (style/class changes affect inline layout)
-        if name == "style" || name == "class" {
+        // Invalidate IFC if this node belongs to one (style/class changes affect inline layout).
+        // Only for nodes that actually participate in inline formatting — block elements
+        // don't need IFC invalidation and the mark_dirty propagation would defeat Taffy's cache.
+        if (name == "style" || name == "class")
+            && (self.tree.nodes[node.0].ifc_root.is_some()
+                || self.tree.nodes[node.0].is_inline()
+                || self.tree.nodes[node.0].text_layout.is_some())
+        {
             self.invalidate_ifc_for_node(node.0);
             // Also invalidate parent's IFC in case this is an inline child
             if let Some(parent_id) = self.tree.nodes[node.0].parent {
@@ -381,11 +413,10 @@ impl DomDocument for RinchDocument {
                 && self.tree.nodes[node.0].tag() == Some("svg"));
 
         if needs_style_recompute {
-            // Invalidate cached Stylo data and resolve styles for this subtree
+            // Invalidate cached Stylo data — deferred to resolve_layout()
             *self.tree.nodes[node.0].stylo_element_data.borrow_mut() = None;
+            self.tree.style_roots.push(node.0);
             self.tree.styles_dirty = true;
-            self.resolve_styles();
-            self.apply_stylo_styles_to_taffy();
             self.push_dirty_flags(
                 node.0,
                 DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT,
@@ -405,6 +436,7 @@ impl DomDocument for RinchDocument {
             // Invalidate Stylo element data so styles are recomputed
             *self.tree.nodes[node.0].stylo_element_data.borrow_mut() = None;
             self.tree.nodes[node.0].style_attribute_cache = None;
+            self.tree.style_roots.push(node.0);
             self.tree.styles_dirty = true;
         } else {
             self.push_dirty(node.0);
@@ -448,11 +480,23 @@ impl DomDocument for RinchDocument {
         self.tree.nodes[node.0].style_attribute_cache =
             Some(ServoArc::new(self.tree.guard.wrap(pdb)));
 
-        // Invalidate cached Stylo data and resolve styles
+        // Invalidate cached Stylo data — deferred to resolve_layout()
         *self.tree.nodes[node.0].stylo_element_data.borrow_mut() = None;
+        self.tree.style_roots.push(node.0);
         self.tree.styles_dirty = true;
-        self.resolve_styles();
-        self.apply_stylo_styles_to_taffy();
+        // Only invalidate IFC state for nodes that participate in inline formatting.
+        // Block elements (like slider track) don't affect IFC layout, and the
+        // mark_dirty() in invalidate_parent_ifc would propagate to root, defeating
+        // Taffy's cache for ALL InlineRoot measure callbacks.
+        if self.tree.nodes[node.0].ifc_root.is_some()
+            || self.tree.nodes[node.0].is_inline()
+            || self.tree.nodes[node.0].text_layout.is_some()
+        {
+            self.invalidate_ifc_for_node(node.0);
+            if let Some(parent_id) = self.tree.nodes[node.0].parent {
+                self.invalidate_parent_ifc(parent_id);
+            }
+        }
         self.push_dirty_flags(
             node.0,
             DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT,
@@ -535,6 +579,8 @@ impl DomDocument for RinchDocument {
                 .insert_child_at_index(parent_taffy, taffy_idx, child_taffy);
         }
         self.invalidate_parent_ifc(p);
+        self.tree.layout_dirty = true; // Structural change needs full layout
+        self.tree.ifc_dirty = true; // Tree structure changed
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
 
         // Recompute styles for the inserted subtree to pick up ancestor-based selectors
