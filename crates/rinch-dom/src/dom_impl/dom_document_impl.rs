@@ -201,6 +201,9 @@ impl DomDocument for RinchDocument {
         self.tree.layout_dirty = true; // Structural change needs full layout
         self.tree.ifc_dirty = true; // Tree structure changed
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
+
+        // Recompute styles for the inserted subtree to pick up ancestor-based selectors
+        self.recompute_node_styles_recursive(c);
     }
 
     fn replace_node(&mut self, old: NodeId, new: NodeId) {
@@ -247,6 +250,9 @@ impl DomDocument for RinchDocument {
             self.tree.layout_dirty = true; // Structural change needs full layout
             self.tree.ifc_dirty = true; // Tree structure changed
             self.push_dirty_flags(parent_id, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
+
+            // Recompute styles for the new subtree to pick up ancestor-based selectors
+            self.recompute_node_styles_recursive(new.0);
         }
     }
 
