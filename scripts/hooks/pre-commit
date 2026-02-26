@@ -1,38 +1,47 @@
 #!/bin/sh
 #
-# Pre-commit hook: Validates that documentation builds successfully.
-# This ensures doc comments are valid before committing.
+# Pre-commit hook: Runs the same checks as CI (fmt, clippy, test).
+# Catches issues before they reach GitHub Actions.
+#
+# Install: ./scripts/setup-hooks.sh
 
 set -e
 
-echo "Checking API documentation builds..."
+echo "=== Pre-commit checks ==="
 
-# Build cargo docs
-if ! cargo doc --no-deps --workspace 2>&1; then
+# 1. Formatting
+echo "[1/3] Checking formatting..."
+if ! cargo fmt --all -- --check 2>&1; then
     echo ""
-    echo "ERROR: API documentation build failed!"
-    echo "Please fix documentation errors before committing."
+    echo "ERROR: Formatting check failed!"
+    echo "Run 'cargo fmt --all' to fix."
     echo ""
     exit 1
 fi
+echo "  OK"
 
-echo "API documentation builds successfully."
-
-# Check if mdbook is installed and docs directory exists
-if [ -d "docs" ] && command -v mdbook >/dev/null 2>&1; then
-    echo "Checking mdbook builds..."
-    if ! (cd docs && mdbook build 2>&1); then
-        echo ""
-        echo "ERROR: mdbook build failed!"
-        echo "Please fix documentation errors before committing."
-        echo ""
-        exit 1
-    fi
-    echo "mdbook builds successfully."
-elif [ -d "docs" ]; then
-    echo "Note: mdbook not installed, skipping book build check."
-    echo "Install with: cargo install mdbook"
+# 2. Clippy (warnings as errors, matching CI)
+echo "[2/3] Running clippy..."
+if ! cargo clippy --workspace --all-targets -- -D warnings 2>&1; then
+    echo ""
+    echo "ERROR: Clippy found warnings/errors!"
+    echo "Fix the issues above before committing."
+    echo ""
+    exit 1
 fi
+echo "  OK"
 
-echo "All documentation checks passed."
+# 3. Tests
+echo "[3/3] Running tests..."
+if ! cargo test --workspace 2>&1; then
+    echo ""
+    echo "ERROR: Tests failed!"
+    echo "Fix failing tests before committing."
+    echo ""
+    exit 1
+fi
+echo "  OK"
+
+echo ""
+echo "All pre-commit checks passed."
 exit 0
