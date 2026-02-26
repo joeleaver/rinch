@@ -28,6 +28,11 @@ pub(super) fn paint_inline_layout(
     text_shadows: &[TextShadowValue],
     transform: Affine,
 ) {
+    // Paint inline element backgrounds BEFORE text so text renders on top
+    if !inline_layout.background_spans.is_empty() {
+        paint_inline_backgrounds(scene, parent_x, parent_y, inline_layout, transform);
+    }
+
     // Render the Parley layout at the IFC root's position
     // Scale is already applied to font sizes during layout building
     render_text_with_shadow(
@@ -47,6 +52,96 @@ pub(super) fn paint_inline_layout(
                 paint_node(
                     tree, child_id, scene, scale, parent_x, parent_y, font_cx, layout_cx, transform,
                 );
+            }
+        }
+    }
+}
+
+/// Paint background rectangles for inline elements (code, mark, etc.).
+///
+/// Uses Parley's cluster-based byte-to-position mapping to determine the
+/// exact visual bounds of each inline background span. Handles multi-line
+/// spans by iterating lines and computing per-line background rectangles.
+fn paint_inline_backgrounds(
+    scene: &mut Scene,
+    parent_x: f64,
+    parent_y: f64,
+    inline_layout: &crate::node::InlineLayout,
+    css_transform: Affine,
+) {
+    use parley::layout::Cluster;
+    use peniko::kurbo::{Rect, RoundedRect};
+
+    let layout = &inline_layout.layout;
+    let transform = css_transform * Affine::translate((parent_x, parent_y));
+
+    for bg_span in &inline_layout.background_spans {
+        let brush = Brush::Solid(bg_span.color);
+
+        // Iterate lines to find those overlapping this background span
+        for line in layout.lines() {
+            let line_range = line.text_range();
+
+            // Skip lines that don't overlap the background span
+            if line_range.end <= bg_span.start || line_range.start >= bg_span.end {
+                continue;
+            }
+
+            let line_metrics = line.metrics();
+            let baseline = line_metrics.baseline as f64;
+            let ascent = line_metrics.ascent as f64;
+            let descent = line_metrics.descent as f64;
+
+            // Clamp background span to this line's text range
+            let overlap_start = bg_span.start.max(line_range.start);
+            let overlap_end = bg_span.end.min(line_range.end);
+
+            // Use Parley's cluster API for exact byte-to-position mapping
+            let Some(sc) = Cluster::from_byte_index(layout, overlap_start) else {
+                continue;
+            };
+            let end_byte = overlap_end.saturating_sub(1).max(overlap_start);
+            let Some(ec) = Cluster::from_byte_index(layout, end_byte) else {
+                continue;
+            };
+
+            let Some(x_start) = sc.visual_offset() else {
+                continue;
+            };
+            let Some(ec_offset) = ec.visual_offset() else {
+                continue;
+            };
+            let x_end = ec_offset + ec.advance();
+
+            // Determine if this line segment gets padding
+            let is_first_line = overlap_start == bg_span.start;
+            let is_last_line = overlap_end == bg_span.end;
+            let pl = if is_first_line {
+                bg_span.padding_left as f64
+            } else {
+                0.0
+            };
+            let pr = if is_last_line {
+                bg_span.padding_right as f64
+            } else {
+                0.0
+            };
+            let pt = bg_span.padding_top as f64;
+            let pb = bg_span.padding_bottom as f64;
+
+            let rect = Rect::new(
+                x_start as f64 - pl,
+                baseline - ascent - pt,
+                x_end as f64 + pr,
+                baseline + descent + pb,
+            );
+
+            if bg_span.border_radius > 0.0 {
+                let r = bg_span.border_radius as f64;
+                let rrect = RoundedRect::from_rect(rect, r);
+                scene.fill(Fill::NonZero, transform, &brush, None, &rrect);
+            } else {
+                scene.fill(Fill::NonZero, transform, &brush, None, &rect);
             }
         }
     }

@@ -143,6 +143,8 @@ pub struct ComputedStyle {
     pub word_spacing: f32,   // in pixels, 0.0 means normal
     pub text_align: TextAlignValue,
     pub text_decoration: TextDecorationValue,
+    pub text_transform: TextTransformValue,
+    pub text_underline_offset: Option<f32>,
     pub white_space: WhiteSpaceValue,
     pub overflow_wrap: OverflowWrapValue,
 
@@ -258,6 +260,8 @@ impl Default for ComputedStyle {
             word_spacing: 0.0,
             text_align: TextAlignValue::default(),
             text_decoration: TextDecorationValue::default(),
+            text_transform: TextTransformValue::default(),
+            text_underline_offset: None,
             white_space: WhiteSpaceValue::default(),
             overflow_wrap: OverflowWrapValue::default(),
 

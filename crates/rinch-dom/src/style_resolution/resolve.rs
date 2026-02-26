@@ -281,6 +281,9 @@ impl RinchDocument {
         self.resolve_pseudo_element(node_id, &computed, PseudoElement::Before);
         self.resolve_pseudo_element(node_id, &computed, PseudoElement::After);
 
+        // Generate list markers for <li> elements (if no CSS ::before exists)
+        self.resolve_list_marker(node_id);
+
         // Re-read children list since pseudo-element resolution may have added nodes
         let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
 

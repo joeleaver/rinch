@@ -340,14 +340,24 @@ impl RinchDocument {
             let mut new_style = ComputedStyle::from_stylo(&computed_values);
 
             // Apply HTML presentational defaults that Stylo doesn't handle.
-            // Stylo (servo build) doesn't apply text-decoration-line defaults
-            // for elements like <u>, <s>, <ins>, <del>, <strike> from the UA
-            // stylesheet. Apply them based on tag name as browsers do.
+            // Stylo (servo build) doesn't always apply UA stylesheet defaults
+            // for font-weight, font-style, and text-decoration on semantic HTML
+            // elements. Apply them based on tag name as browsers do.
             match node.tag() {
-                Some("u" | "ins") => new_style.text_decoration.underline = true,
-                Some("s" | "strike" | "del") => {
-                    new_style.text_decoration.strikethrough = true
+                Some("strong" | "b") => {
+                    if new_style.font_weight == 400.0 {
+                        new_style.font_weight = 700.0;
+                    }
                 }
+                Some("em" | "i") => {
+                    if new_style.font_style == crate::computed_style::values::FontStyleValue::Normal
+                    {
+                        new_style.font_style =
+                            crate::computed_style::values::FontStyleValue::Italic;
+                    }
+                }
+                Some("u" | "ins") => new_style.text_decoration.underline = true,
+                Some("s" | "strike" | "del") => new_style.text_decoration.strikethrough = true,
                 _ => {}
             }
 

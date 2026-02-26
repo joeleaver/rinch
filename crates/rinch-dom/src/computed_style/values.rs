@@ -658,6 +658,45 @@ impl TextDecorationValue {
     }
 }
 
+/// CSS text-transform property values.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub enum TextTransformValue {
+    #[default]
+    None,
+    Uppercase,
+    Lowercase,
+    Capitalize,
+}
+
+impl TextTransformValue {
+    /// Apply the text transform to a string.
+    pub fn apply(&self, text: &str) -> Option<String> {
+        match self {
+            Self::None => None,
+            Self::Uppercase => Some(text.to_uppercase()),
+            Self::Lowercase => Some(text.to_lowercase()),
+            Self::Capitalize => {
+                let mut result = String::with_capacity(text.len());
+                let mut capitalize_next = true;
+                for ch in text.chars() {
+                    if capitalize_next && ch.is_alphabetic() {
+                        for upper in ch.to_uppercase() {
+                            result.push(upper);
+                        }
+                        capitalize_next = false;
+                    } else {
+                        result.push(ch);
+                        if ch.is_whitespace() {
+                            capitalize_next = true;
+                        }
+                    }
+                }
+                Some(result)
+            }
+        }
+    }
+}
+
 /// CSS white-space property values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub enum WhiteSpaceValue {

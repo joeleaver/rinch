@@ -798,6 +798,25 @@ impl<'a> TElement for RinchNode<'a> {
         static BLOCKQUOTE: OnceLock<BorrowedLocalName> = OnceLock::new();
         static HR: OnceLock<BorrowedLocalName> = OnceLock::new();
         static BR: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static MARK: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static B: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static I: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static U: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static S: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static SUB: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static SUP: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static SMALL: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static ABBR: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static CITE: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static KBD: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static SAMP: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static VAR: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static Q: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static DFN: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static TIME: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static WBR: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static DEL: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static INS: OnceLock<BorrowedLocalName> = OnceLock::new();
 
         match self.node().tag() {
             Some("div") => DIV.get_or_init(|| web_atoms::local_name!("div")),
@@ -845,6 +864,25 @@ impl<'a> TElement for RinchNode<'a> {
             Some("blockquote") => BLOCKQUOTE.get_or_init(|| web_atoms::local_name!("blockquote")),
             Some("hr") => HR.get_or_init(|| web_atoms::local_name!("hr")),
             Some("br") => BR.get_or_init(|| web_atoms::local_name!("br")),
+            Some("mark") => MARK.get_or_init(|| web_atoms::local_name!("mark")),
+            Some("b") => B.get_or_init(|| web_atoms::local_name!("b")),
+            Some("i") => I.get_or_init(|| web_atoms::local_name!("i")),
+            Some("u") => U.get_or_init(|| web_atoms::local_name!("u")),
+            Some("s") => S.get_or_init(|| web_atoms::local_name!("s")),
+            Some("sub") => SUB.get_or_init(|| web_atoms::local_name!("sub")),
+            Some("sup") => SUP.get_or_init(|| web_atoms::local_name!("sup")),
+            Some("small") => SMALL.get_or_init(|| web_atoms::local_name!("small")),
+            Some("abbr") => ABBR.get_or_init(|| web_atoms::local_name!("abbr")),
+            Some("cite") => CITE.get_or_init(|| web_atoms::local_name!("cite")),
+            Some("kbd") => KBD.get_or_init(|| web_atoms::local_name!("kbd")),
+            Some("samp") => SAMP.get_or_init(|| web_atoms::local_name!("samp")),
+            Some("var") => VAR.get_or_init(|| web_atoms::local_name!("var")),
+            Some("q") => Q.get_or_init(|| web_atoms::local_name!("q")),
+            Some("dfn") => DFN.get_or_init(|| web_atoms::local_name!("dfn")),
+            Some("time") => TIME.get_or_init(|| web_atoms::local_name!("time")),
+            Some("wbr") => WBR.get_or_init(|| web_atoms::local_name!("wbr")),
+            Some("del") => DEL.get_or_init(|| web_atoms::local_name!("del")),
+            Some("ins") => INS.get_or_init(|| web_atoms::local_name!("ins")),
             _ => EMPTY.get_or_init(|| web_atoms::local_name!("")),
         }
     }

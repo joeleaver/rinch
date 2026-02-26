@@ -690,6 +690,11 @@ impl RinchDocument {
         root_text_style.has_underline = root_computed.text_decoration.underline;
         root_text_style.has_strikethrough = root_computed.text_decoration.strikethrough;
 
+        // Apply text-underline-offset from computed style
+        if let Some(offset) = root_computed.text_underline_offset {
+            root_text_style.underline_offset = Some(offset);
+        }
+
         // Apply overflow-wrap from computed style
         root_text_style.overflow_wrap = root_computed.overflow_wrap.to_parley();
 
@@ -726,6 +731,7 @@ impl RinchDocument {
 
         let mut child_positions = Vec::new();
         let mut text_ranges = Vec::new();
+        let mut background_spans = Vec::new();
         let mut flat_pos = 0usize;
 
         // Walk children and build the Parley tree
@@ -735,6 +741,7 @@ impl RinchDocument {
             &mut builder,
             &mut child_positions,
             &mut text_ranges,
+            &mut background_spans,
             &mut flat_pos,
             scale,
             collapse,
@@ -753,6 +760,7 @@ impl RinchDocument {
             text_content,
             child_positions,
             text_ranges,
+            background_spans,
             max_width: max_width.unwrap_or(f32::INFINITY),
         }
     }
@@ -765,6 +773,7 @@ impl RinchDocument {
         builder: &mut parley::TreeBuilder<'_, Brush>,
         child_positions: &mut Vec<(usize, LayoutResult)>,
         text_ranges: &mut Vec<crate::node::IfcTextRange>,
+        background_spans: &mut Vec<crate::node::InlineBackgroundSpan>,
         flat_pos: &mut usize,
         scale: f32,
         collapse: parley::style::WhiteSpaceCollapse,
@@ -779,8 +788,15 @@ impl RinchDocument {
                 NodeKind::Text(text_data) => {
                     if !text_data.content.is_empty() {
                         let start = *flat_pos;
-                        builder.push_text(&text_data.content);
-                        *flat_pos += text_data.content.len();
+                        // Apply text-transform from parent's computed style
+                        let parent_transform = &nodes[parent_id].computed_style.text_transform;
+                        if let Some(transformed) = parent_transform.apply(&text_data.content) {
+                            builder.push_text(&transformed);
+                            *flat_pos += transformed.len();
+                        } else {
+                            builder.push_text(&text_data.content);
+                            *flat_pos += text_data.content.len();
+                        }
                         text_ranges.push(crate::node::IfcTextRange {
                             flat_start: start,
                             flat_end: *flat_pos,
@@ -845,6 +861,10 @@ impl RinchDocument {
                     if child_computed.text_decoration.strikethrough {
                         props.push(parley::style::StyleProperty::Strikethrough(true));
                     }
+                    // Underline offset
+                    if let Some(offset) = child_computed.text_underline_offset {
+                        props.push(parley::style::StyleProperty::UnderlineOffset(Some(offset)));
+                    }
 
                     // Line height
                     if let Some(lh) = child_computed.line_height.to_parley() {
@@ -858,6 +878,10 @@ impl RinchDocument {
                         props.push(parley::style::StyleProperty::LineHeight(scaled_lh));
                     }
 
+                    // Record background span start position
+                    let bg_start = *flat_pos;
+                    let has_bg = child_computed.background_color().is_some();
+
                     builder.push_style_modification_span(props.iter());
                     child_positions.push((child_id, LayoutResult::default()));
 
@@ -868,12 +892,31 @@ impl RinchDocument {
                         builder,
                         child_positions,
                         text_ranges,
+                        background_spans,
                         flat_pos,
                         scale,
                         collapse,
                     );
 
                     builder.pop_style_span();
+
+                    // Record background span if the inline element has a visible background
+                    if has_bg && *flat_pos > bg_start {
+                        let bg_color = child_computed.background_color().unwrap();
+                        // Skip transparent backgrounds (alpha == 0)
+                        if bg_color.components[3] > 0.0 {
+                            background_spans.push(crate::node::InlineBackgroundSpan {
+                                start: bg_start,
+                                end: *flat_pos,
+                                color: bg_color,
+                                padding_left: child_computed.padding_left.to_px(),
+                                padding_right: child_computed.padding_right.to_px(),
+                                padding_top: child_computed.padding_top.to_px(),
+                                padding_bottom: child_computed.padding_bottom.to_px(),
+                                border_radius: child_computed.border_radius_top_left.to_px(),
+                            });
+                        }
+                    }
                 }
                 NodeKind::Element(_) if child.display_mode == DisplayMode::InlineBlock => {
                     // Inline-block: measure via Taffy first, then embed as InlineBox

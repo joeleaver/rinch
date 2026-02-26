@@ -154,6 +154,29 @@ pub struct IfcTextRange {
     pub is_br: bool,
 }
 
+/// A background span for inline elements within an IFC.
+///
+/// Records the byte range in the flat IFC text that has a background color,
+/// along with padding values for visual extension of the background rect.
+pub struct InlineBackgroundSpan {
+    /// Byte range start in the IFC `text_content`.
+    pub start: usize,
+    /// Byte range end (exclusive) in the IFC `text_content`.
+    pub end: usize,
+    /// Background color.
+    pub color: peniko::Color,
+    /// Padding left in pixels.
+    pub padding_left: f32,
+    /// Padding right in pixels.
+    pub padding_right: f32,
+    /// Padding top in pixels.
+    pub padding_top: f32,
+    /// Padding bottom in pixels.
+    pub padding_bottom: f32,
+    /// Border radius (top-left) in pixels.
+    pub border_radius: f32,
+}
+
 /// Cached Parley inline layout for an IFC (Inline Formatting Context) root.
 ///
 /// Stored on the IFC root element. Rebuilt when any inline child mutates.
@@ -166,6 +189,8 @@ pub struct InlineLayout {
     pub child_positions: Vec<(RawNodeId, LayoutResult)>,
     /// Map from IFC flat byte ranges to DOM text nodes / `<br>` elements.
     pub text_ranges: Vec<IfcTextRange>,
+    /// Background spans for inline elements (code, mark, etc.).
+    pub background_spans: Vec<InlineBackgroundSpan>,
     /// The max_width used to build this layout (for cache invalidation).
     pub max_width: f32,
 }

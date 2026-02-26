@@ -213,6 +213,9 @@ impl ComputedStyle {
             text_decoration: text_decoration_from_stylo(
                 &cv.get_text().clone_text_decoration_line(),
             ),
+            text_transform: text_transform_from_stylo(&text.text_transform),
+            // text-underline-offset is gecko-only in Stylo; parsed from inline styles
+            text_underline_offset: None,
             white_space: white_space_from_stylo(&text.white_space_collapse, &text.text_wrap_mode),
             overflow_wrap: overflow_wrap_from_stylo(&text.overflow_wrap),
 

@@ -110,8 +110,11 @@ impl RinchDocument {
             return;
         }
 
+        // Compute counter values for this element (needed for content: counter(...))
+        let counter_values = self.compute_list_item_counters(parent_id);
+
         // Extract text content from the content property
-        let text = Self::extract_content_text(&pseudo_computed);
+        let text = Self::extract_content_text_with_counters(&pseudo_computed, &counter_values);
         if text.is_empty() {
             return;
         }
@@ -179,8 +182,12 @@ impl RinchDocument {
     }
 
     /// Extract text content from a Stylo ComputedValues `content` property.
-    /// Only handles string content items; skips counter(), attr(), url(), etc.
-    pub(crate) fn extract_content_text(computed: &ComputedValues) -> String {
+    /// Handles string content items and counter() references.
+    /// For counter() values, uses the provided counter_values map.
+    pub(crate) fn extract_content_text_with_counters(
+        computed: &ComputedValues,
+        counter_values: &std::collections::HashMap<String, i32>,
+    ) -> String {
         use style::values::generics::counters::{Content, ContentItem};
 
         let content = &computed.get_counters().content;
@@ -189,11 +196,204 @@ impl RinchDocument {
             Content::Items(items) => {
                 let mut result = String::new();
                 for item in items.items.iter() {
-                    if let ContentItem::String(s) = item {
-                        result.push_str(s);
+                    match item {
+                        ContentItem::String(s) => {
+                            result.push_str(s);
+                        }
+                        ContentItem::Counter(name, _style) => {
+                            let name_str = name.0.to_string();
+                            if let Some(&value) = counter_values.get(&name_str) {
+                                result.push_str(&value.to_string());
+                            } else {
+                                result.push('0');
+                            }
+                        }
+                        ContentItem::Counters(name, separator, _style) => {
+                            let name_str = name.0.to_string();
+                            if let Some(&value) = counter_values.get(&name_str) {
+                                result.push_str(&value.to_string());
+                            } else {
+                                result.push('0');
+                            }
+                            let _ = separator; // TODO: nested counter separator support
+                        }
+                        _ => {
+                            // Skip other content items (attr, image, quotes, etc.)
+                        }
                     }
                 }
                 result
+            }
+        }
+    }
+
+    /// Compute the CSS counter value for `list-item` on an `<li>` element.
+    ///
+    /// Walks siblings to determine the ordinal position of this `<li>`
+    /// within its parent `<ol>` or `<ul>`. Returns a map with the
+    /// `list-item` counter set to the appropriate value.
+    pub(crate) fn compute_list_item_counters(
+        &self,
+        node_id: usize,
+    ) -> std::collections::HashMap<String, i32> {
+        let mut counters = std::collections::HashMap::new();
+
+        let node = match self.tree.nodes.get(node_id) {
+            Some(n) => n,
+            None => return counters,
+        };
+
+        // Only compute for <li> elements
+        if node.tag() != Some("li") {
+            return counters;
+        }
+
+        let parent_id = match node.parent {
+            Some(p) => p,
+            None => return counters,
+        };
+
+        let parent = match self.tree.nodes.get(parent_id) {
+            Some(n) => n,
+            None => return counters,
+        };
+
+        // Check start attribute on parent <ol>
+        let start = if parent.tag() == Some("ol") {
+            parent
+                .attributes
+                .get("start")
+                .and_then(|s| s.parse::<i32>().ok())
+                .unwrap_or(1)
+        } else {
+            1
+        };
+
+        // Count this <li>'s position among <li> siblings
+        let mut count = start;
+        for &sibling_id in &parent.children {
+            if sibling_id == node_id {
+                break;
+            }
+            if let Some(sibling) = self.tree.nodes.get(sibling_id) {
+                if sibling.tag() == Some("li") {
+                    // Check for value attribute override
+                    if let Some(val) = sibling.attributes.get("value") {
+                        if let Ok(v) = val.parse::<i32>() {
+                            count = v + 1;
+                            continue;
+                        }
+                    }
+                    count += 1;
+                }
+            }
+        }
+
+        // Check if this <li> has a value attribute
+        if let Some(val) = node.attributes.get("value") {
+            if let Ok(v) = val.parse::<i32>() {
+                count = v;
+            }
+        }
+
+        counters.insert("list-item".to_string(), count);
+        counters
+    }
+
+    /// Generate a list marker pseudo-element for `<li>` elements.
+    ///
+    /// If the `<li>` doesn't already have a `::before` pseudo-element from CSS,
+    /// this creates a marker span with the appropriate text:
+    /// - Ordered lists (`<ol>`): "1. ", "2. ", etc.
+    /// - Unordered lists (`<ul>`): bullet character
+    pub(crate) fn resolve_list_marker(&mut self, node_id: usize) {
+        let node = match self.tree.nodes.get(node_id) {
+            Some(n) => n,
+            None => return,
+        };
+
+        // Only process <li> elements
+        if node.tag() != Some("li") {
+            return;
+        }
+
+        // Skip if already has a pseudo-element child (from CSS ::before)
+        let has_pseudo = node.children.iter().any(|&cid| {
+            self.tree
+                .nodes
+                .get(cid)
+                .is_some_and(|n| n.is_pseudo_element)
+        });
+        if has_pseudo {
+            return;
+        }
+
+        let parent_id = match node.parent {
+            Some(p) => p,
+            None => return,
+        };
+
+        let parent_tag = self
+            .tree
+            .nodes
+            .get(parent_id)
+            .and_then(|n| n.tag())
+            .unwrap_or("");
+
+        // Determine marker text based on parent list type.
+        // Use en-space (\u{2002}) after the marker — wider than a normal space
+        // and not subject to whitespace collapsing in the IFC.
+        let marker_text = if parent_tag == "ol" {
+            let counters = self.compute_list_item_counters(node_id);
+            let num = counters.get("list-item").copied().unwrap_or(1);
+            format!("{}.\u{2002}", num)
+        } else if parent_tag == "ul" {
+            "\u{2022}\u{2002}".to_string() // bullet + en-space
+        } else {
+            return; // Not inside a list
+        };
+
+        // Create the marker pseudo-element (span + text node)
+        use rinch_core::dom::DomDocument;
+        let span_id = self.create_element("span");
+        let text_node_id = self.create_text(&marker_text);
+
+        // Append text node to span
+        {
+            let span_raw = span_id.0;
+            let text_raw = text_node_id.0;
+            self.tree.nodes[text_raw].parent = Some(span_raw);
+            self.tree.nodes[span_raw].children.push(text_raw);
+            if let (Some(parent_taffy), Some(child_taffy)) = (
+                self.tree.nodes[span_raw].taffy_id,
+                self.tree.nodes[text_raw].taffy_id,
+            ) {
+                let _ = self.tree.taffy.add_child(parent_taffy, child_taffy);
+            }
+        }
+
+        // Mark as pseudo-element, inherit parent's computed style
+        {
+            let span_raw = span_id.0;
+            self.tree.nodes[span_raw].computed_style =
+                self.tree.nodes[node_id].computed_style.clone();
+            self.tree.nodes[span_raw].is_pseudo_element = true;
+            self.tree.style_dirty_nodes.push(span_raw);
+        }
+
+        // Insert as first child of the <li>
+        {
+            let span_raw = span_id.0;
+            self.tree.nodes[span_raw].parent = Some(node_id);
+            self.tree.nodes[node_id].children.insert(0, span_raw);
+            if let (Some(parent_taffy), Some(child_taffy)) = (
+                self.tree.nodes[node_id].taffy_id,
+                self.tree.nodes[span_raw].taffy_id,
+            ) {
+                let _ = self
+                    .tree
+                    .taffy
+                    .insert_child_at_index(parent_taffy, 0, child_taffy);
             }
         }
     }

@@ -107,6 +107,21 @@ pub(super) fn text_decoration_from_stylo(
     }
 }
 
+pub(super) fn text_transform_from_stylo(
+    tt: &style::values::computed::TextTransform,
+) -> TextTransformValue {
+    use style::values::specified::text::TextTransform;
+    if tt.contains(TextTransform::UPPERCASE) {
+        TextTransformValue::Uppercase
+    } else if tt.contains(TextTransform::LOWERCASE) {
+        TextTransformValue::Lowercase
+    } else if tt.contains(TextTransform::CAPITALIZE) {
+        TextTransformValue::Capitalize
+    } else {
+        TextTransformValue::None
+    }
+}
+
 pub(super) fn overflow_wrap_from_stylo(
     ow: &style::properties::longhands::overflow_wrap::computed_value::T,
 ) -> OverflowWrapValue {
