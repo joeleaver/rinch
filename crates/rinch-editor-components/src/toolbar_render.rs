@@ -1,22 +1,17 @@
 //! Toolbar DOM rendering with Tabler Icons.
 //!
 //! Renders ToolbarConfig groups and controls as interactive buttons
-//! that dispatch editor commands when clicked.
+//! that dispatch editor commands when clicked. All commands go through
+//! the CE API (`with_active_ce_api`) — same code path as keyboard shortcuts.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
+use rinch_core::ce::with_active_ce_api;
 use rinch_core::dom::{NodeHandle, RenderScope};
 
 use crate::{ControlButton, ToolbarConfig, ToolbarControl, ToolbarGroup};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
-
-use rinch_editor::Editor;
-use rinch_editor::commands::{FormattingCommands, StructureCommands, TextCommands};
-use rinch_editor::document::Position;
-use rinch_editor::history::UndoOperation;
-use rinch_editor::selection::Selection;
 
 /// Shared dropdown open/close state threaded through toolbar rendering functions.
 #[derive(Clone)]
@@ -28,9 +23,11 @@ struct DropdownState {
 }
 
 /// Render the full toolbar from a ToolbarConfig.
+///
+/// The toolbar uses the active CE API (thread-local) for all commands and
+/// state queries. No Editor dependency needed.
 pub fn render_toolbar(
     scope: &mut RenderScope,
-    editor: Rc<RefCell<Editor>>,
     config: &ToolbarConfig,
     on_change: Rc<dyn Fn()>,
 ) -> NodeHandle {
@@ -61,8 +58,7 @@ pub fn render_toolbar(
             toolbar.append_child(&divider);
         }
 
-        let group_node =
-            render_toolbar_group(scope, editor.clone(), group, on_change.clone(), ds.clone());
+        let group_node = render_toolbar_group(scope, group, on_change.clone(), ds.clone());
         toolbar.append_child(&group_node);
     }
 
@@ -98,7 +94,6 @@ pub fn render_toolbar(
 /// Render a single toolbar group.
 fn render_toolbar_group(
     scope: &mut RenderScope,
-    editor: Rc<RefCell<Editor>>,
     group: &ToolbarGroup,
     on_change: Rc<dyn Fn()>,
     ds: DropdownState,
@@ -107,13 +102,7 @@ fn render_toolbar_group(
     group_div.set_attribute("style", "display: flex; gap: 2px; align-items: center;");
 
     for control in &group.controls {
-        let btn_node = render_toolbar_button(
-            scope,
-            editor.clone(),
-            control,
-            on_change.clone(),
-            ds.clone(),
-        );
+        let btn_node = render_toolbar_button(scope, control, on_change.clone(), ds.clone());
         group_div.append_child(&btn_node);
     }
 
@@ -123,7 +112,6 @@ fn render_toolbar_group(
 /// Render a single toolbar button with icon and click handler.
 fn render_toolbar_button(
     scope: &mut RenderScope,
-    editor: Rc<RefCell<Editor>>,
     control: &ToolbarControl,
     on_change: Rc<dyn Fn()>,
     ds: DropdownState,
@@ -131,13 +119,13 @@ fn render_toolbar_button(
     // Dispatch to specialized renderers for dropdown controls.
     match control {
         ToolbarControl::HeadingDropdown => {
-            return render_heading_dropdown(scope, editor, on_change, ds);
+            return render_heading_dropdown(scope, on_change, ds);
         }
         ToolbarControl::TextColorPicker => {
-            return render_color_picker(scope, editor, on_change, ds);
+            return render_color_picker(scope, on_change, ds);
         }
         ToolbarControl::Link => {
-            return render_link_popover(scope, editor, on_change, ds);
+            return render_link_popover(scope, on_change, ds);
         }
         _ => {}
     }
@@ -146,12 +134,8 @@ fn render_toolbar_button(
 
     let btn = scope.create_element("div");
 
-    // Check active state
-    let is_active = if let Ok(ed) = editor.try_borrow() {
-        is_control_active(&ed, control)
-    } else {
-        false
-    };
+    // Check active state via CE API
+    let is_active = is_control_active(control);
 
     let style = if is_active {
         "display: inline-flex; align-items: center; justify-content: center; \
@@ -189,52 +173,36 @@ fn render_toolbar_button(
 
     // Register click handler
     let control_clone = control.clone();
-    let editor_clone = editor.clone();
     let on_change_clone = on_change.clone();
     let handler_id = scope.register_handler(move || {
-        execute_toolbar_command(&editor_clone, &control_clone, &*on_change_clone);
+        execute_toolbar_command(&control_clone, &*on_change_clone);
     });
     btn.set_attribute("data-rid", &handler_id.to_string());
 
     btn
 }
 
-/// Get the current block type label for the heading dropdown.
-fn current_block_label(editor: &Editor) -> &'static str {
-    let sel = editor.get_selection();
-    if let Ok(rp) = editor.doc.resolve_position(sel.head)
-        && let Some(bt) = editor.doc.block_type(rp.block_index)
-    {
-        match bt.as_str() {
-            "heading" => {
-                if let Some(attrs) = editor.doc.block_attrs(rp.block_index) {
-                    match attrs.get("level").map(|s| s.as_str()) {
-                        Some("1") => return "Heading 1",
-                        Some("2") => return "Heading 2",
-                        Some("3") => return "Heading 3",
-                        Some("4") => return "Heading 4",
-                        Some("5") => return "Heading 5",
-                        Some("6") => return "Heading 6",
-                        _ => return "Heading",
-                    }
-                }
-                return "Heading";
-            }
-            "paragraph" => return "Paragraph",
-            "blockquote" => return "Blockquote",
-            "code_block" => return "Code Block",
-            "bullet_list" => return "Bullet List",
-            "ordered_list" => return "Ordered List",
-            _ => {}
-        }
+/// Get the current block type label for the heading dropdown via CE API.
+fn current_block_label_from_ce() -> &'static str {
+    let tag = with_active_ce_api(|api| api.borrow().cursor_block_tag()).flatten();
+    match tag.as_deref() {
+        Some("h1") => "Heading 1",
+        Some("h2") => "Heading 2",
+        Some("h3") => "Heading 3",
+        Some("h4") => "Heading 4",
+        Some("h5") => "Heading 5",
+        Some("h6") => "Heading 6",
+        Some("blockquote") => "Blockquote",
+        Some("pre") => "Code Block",
+        Some("ul") => "Bullet List",
+        Some("ol") => "Ordered List",
+        _ => "Paragraph",
     }
-    "Paragraph"
 }
 
 /// Render the heading dropdown (replaces separate H1-H6 + Paragraph buttons).
 fn render_heading_dropdown(
     scope: &mut RenderScope,
-    editor: Rc<RefCell<Editor>>,
     on_change: Rc<dyn Fn()>,
     ds: DropdownState,
 ) -> NodeHandle {
@@ -257,11 +225,7 @@ fn render_heading_dropdown(
     );
     btn.set_attribute("title", "Block type");
 
-    let label = if let Ok(ed) = editor.try_borrow() {
-        current_block_label(&ed)
-    } else {
-        "Paragraph"
-    };
+    let label = current_block_label_from_ce();
     let label_span = scope.create_element("span");
     label_span.set_text(label);
     btn.append_child(&label_span);
@@ -296,26 +260,30 @@ fn render_heading_dropdown(
              padding: 4px 0; min-width: 150px;",
         );
 
-        let items: &[(&str, Option<u8>)] = &[
-            ("Paragraph", None),
-            ("Heading 1", Some(1)),
-            ("Heading 2", Some(2)),
-            ("Heading 3", Some(3)),
-            ("Heading 4", Some(4)),
-            ("Heading 5", Some(5)),
-            ("Heading 6", Some(6)),
+        let items: &[(&str, Option<&str>)] = &[
+            ("Paragraph", Some("p")),
+            ("Heading 1", Some("h1")),
+            ("Heading 2", Some("h2")),
+            ("Heading 3", Some("h3")),
+            ("Heading 4", Some("h4")),
+            ("Heading 5", Some("h5")),
+            ("Heading 6", Some("h6")),
         ];
 
-        for &(item_label, level) in items {
+        for &(item_label, target_tag) in items {
             let item = scope.create_element("div");
 
-            let font_size = match level {
-                Some(1) => "18px",
-                Some(2) => "16px",
-                Some(3) => "15px",
+            let font_size = match target_tag {
+                Some("h1") => "18px",
+                Some("h2") => "16px",
+                Some("h3") => "15px",
                 _ => "13px",
             };
-            let font_weight = if level.is_some() { "600" } else { "400" };
+            let font_weight = if target_tag != Some("p") {
+                "600"
+            } else {
+                "400"
+            };
 
             let item_style = format!(
                 "padding: 6px 12px; cursor: pointer; font-size: {}; font-weight: {}; \
@@ -325,23 +293,16 @@ fn render_heading_dropdown(
             item.set_attribute("style", &item_style);
             item.set_text(item_label);
 
-            let editor_clone = editor.clone();
             let on_change_clone = on_change.clone();
             let ho_clone = ds.heading_open.clone();
+            let tag = target_tag.unwrap_or("p").to_string();
             let item_handler = scope.register_handler(move || {
                 // Close dropdown
                 *ho_clone.borrow_mut() = false;
 
-                if let Ok(mut ed) = editor_clone.try_borrow_mut() {
-                    if let Some(lvl) = level {
-                        let mut attrs = HashMap::new();
-                        attrs.insert("level".to_string(), lvl.to_string());
-                        let _ =
-                            StructureCommands::set_block_type_with_attrs(&mut ed, "heading", attrs);
-                    } else {
-                        let _ = StructureCommands::set_block_type(&mut ed, "paragraph");
-                    }
-                }
+                with_active_ce_api(|api| {
+                    api.borrow_mut().set_block_type(&tag);
+                });
                 on_change_clone();
             });
             item.set_attribute("data-rid", &item_handler.to_string());
@@ -369,10 +330,12 @@ const COLOR_PALETTE: &[(&str, &str)] = &[
     ("Pink", "#c2255c"),
 ];
 
-/// Render the color picker dropdown (replaces separate TextColor buttons).
+/// Render the color picker dropdown.
+///
+/// Note: Text color requires `wrap_selection_with_attrs()` which isn't in the CE API yet.
+/// For now, color swatches are rendered but clicking them is a no-op.
 fn render_color_picker(
     scope: &mut RenderScope,
-    editor: Rc<RefCell<Editor>>,
     on_change: Rc<dyn Fn()>,
     ds: DropdownState,
 ) -> NodeHandle {
@@ -445,29 +408,12 @@ fn render_color_picker(
             swatch.set_attribute("style", &swatch_style);
             swatch.set_attribute("title", color_name);
 
-            let editor_clone = editor.clone();
             let on_change_clone = on_change.clone();
             let co_clone = ds.color_open.clone();
-            let color_value = color_hex.to_string();
             let swatch_handler = scope.register_handler(move || {
                 // Close dropdown
                 *co_clone.borrow_mut() = false;
-
-                if let Ok(mut ed) = editor_clone.try_borrow_mut() {
-                    let sel = ed.get_selection().clone();
-                    if sel.is_cursor() {
-                        // Set stored mark so next typed text gets this color
-                        ed.toggle_stored_mark("textColor");
-                    } else {
-                        let range = sel.range();
-                        let mut attrs = HashMap::new();
-                        attrs.insert("color".to_string(), color_value.clone());
-                        let _ = ed.doc.add_mark(
-                            range,
-                            rinch_editor::document::MarkData::with_attrs("textColor", attrs),
-                        );
-                    }
-                }
+                // TODO: Text color needs wrap_selection_with_attrs() — deferred
                 on_change_clone();
             });
             swatch.set_attribute("data-rid", &swatch_handler.to_string());
@@ -482,9 +428,11 @@ fn render_color_picker(
 }
 
 /// Render the link button with a URL input popover.
+///
+/// Note: Link insertion requires `wrap_selection_with_attrs()` which isn't in
+/// the CE API yet. For now, the popover renders but Apply is a no-op.
 fn render_link_popover(
     scope: &mut RenderScope,
-    editor: Rc<RefCell<Editor>>,
     on_change: Rc<dyn Fn()>,
     ds: DropdownState,
 ) -> NodeHandle {
@@ -497,12 +445,8 @@ fn render_link_popover(
         "position: relative; display: inline-flex; align-items: center;",
     );
 
-    // Check active state (link mark present)
-    let is_active = if let Ok(ed) = editor.try_borrow() {
-        ed.has_stored_mark("link")
-    } else {
-        false
-    };
+    // Check active state — link is a formatting ancestor in the DOM
+    let is_active = with_active_ce_api(|api| api.borrow().has_active_mark("a")).unwrap_or(false);
 
     // Link button
     let btn = scope.create_element("div");
@@ -582,29 +526,10 @@ fn render_link_popover(
         apply_btn.set_text("Apply");
 
         let link_open_clone = ds.link_input_open.clone();
-        let link_url_clone = link_url.clone();
-        let editor_clone = editor.clone();
         let on_change_clone = on_change.clone();
         let apply_handler = scope.register_handler(move || {
             *link_open_clone.borrow_mut() = false;
-            let url = link_url_clone.borrow().clone();
-            if let Ok(mut ed) = editor_clone.try_borrow_mut() {
-                let sel = ed.get_selection().clone();
-                let mut attrs = HashMap::new();
-                attrs.insert("href".to_string(), url);
-                if sel.is_cursor() {
-                    // No selection: insert placeholder link text, then select it
-                    let _ = TextCommands::insert_text(&mut ed, "link text");
-                    let end_pos = ed.get_selection().head;
-                    let start = Position::new(end_pos.0 - "link text".len());
-                    ed.set_selection(Selection::new(start, end_pos));
-                }
-                let range = ed.get_selection().range();
-                let _ = ed.doc.add_mark(
-                    range,
-                    rinch_editor::document::MarkData::with_attrs("link", attrs),
-                );
-            }
+            // TODO: Link insertion needs wrap_selection_with_attrs() — deferred
             on_change_clone();
         });
         apply_btn.set_attribute("data-rid", &apply_handler.to_string());
@@ -617,128 +542,62 @@ fn render_link_popover(
 }
 
 /// Check if a toolbar control's format is currently active at the cursor.
-fn is_control_active(editor: &Editor, control: &ToolbarControl) -> bool {
-    let sel = editor.get_selection();
-    let has_mark = |mark_type: &str| -> bool { editor.has_stored_mark(mark_type) };
-
+///
+/// Queries the CE API's DOM to check formatting ancestors and block type.
+fn is_control_active(control: &ToolbarControl) -> bool {
     match control {
-        ToolbarControl::Bold => has_mark("bold"),
-        ToolbarControl::Italic => has_mark("italic"),
-        ToolbarControl::Underline => has_mark("underline"),
-        ToolbarControl::Strike => has_mark("strike"),
-        ToolbarControl::Code => has_mark("code"),
-        ToolbarControl::Highlight => has_mark("highlight"),
-        ToolbarControl::Subscript => has_mark("subscript"),
-        ToolbarControl::Superscript => has_mark("superscript"),
+        ToolbarControl::Bold => {
+            with_active_ce_api(|api| api.borrow().has_active_mark("strong")).unwrap_or(false)
+        }
+        ToolbarControl::Italic => {
+            with_active_ce_api(|api| api.borrow().has_active_mark("em")).unwrap_or(false)
+        }
+        ToolbarControl::Underline => {
+            with_active_ce_api(|api| api.borrow().has_active_mark("u")).unwrap_or(false)
+        }
+        ToolbarControl::Strike => {
+            with_active_ce_api(|api| api.borrow().has_active_mark("s")).unwrap_or(false)
+        }
+        ToolbarControl::Code => {
+            with_active_ce_api(|api| api.borrow().has_active_mark("code")).unwrap_or(false)
+        }
+        ToolbarControl::Highlight => {
+            with_active_ce_api(|api| api.borrow().has_active_mark("mark")).unwrap_or(false)
+        }
+        ToolbarControl::Subscript => {
+            with_active_ce_api(|api| api.borrow().has_active_mark("sub")).unwrap_or(false)
+        }
+        ToolbarControl::Superscript => {
+            with_active_ce_api(|api| api.borrow().has_active_mark("sup")).unwrap_or(false)
+        }
         ToolbarControl::Heading(level) => {
-            if let Ok(rp) = editor.doc.resolve_position(sel.head)
-                && let Some(bt) = editor.doc.block_type(rp.block_index)
-                && bt == "heading"
-            {
-                // Check if level matches
-                if let Some(attrs) = editor.doc.block_attrs(rp.block_index) {
-                    return attrs
-                        .get("level")
-                        .map(|l| l == &level.to_string())
-                        .unwrap_or(false);
-                }
-            }
-            false
+            let tag = with_active_ce_api(|api| api.borrow().cursor_block_tag()).flatten();
+            tag.as_deref() == Some(&format!("h{}", level))
         }
         ToolbarControl::Paragraph => {
-            if let Ok(rp) = editor.doc.resolve_position(sel.head) {
-                editor.doc.block_type(rp.block_index) == Some("paragraph".to_string())
-            } else {
-                false
-            }
+            let tag = with_active_ce_api(|api| api.borrow().cursor_block_tag()).flatten();
+            tag.as_deref() == Some("p") || tag.as_deref() == Some("div")
         }
         ToolbarControl::BulletList => {
-            if let Ok(rp) = editor.doc.resolve_position(sel.head) {
-                editor.doc.block_type(rp.block_index) == Some("bullet_list".to_string())
-            } else {
-                false
-            }
+            let tag = with_active_ce_api(|api| api.borrow().cursor_block_tag()).flatten();
+            tag.as_deref() == Some("ul")
         }
         ToolbarControl::OrderedList => {
-            if let Ok(rp) = editor.doc.resolve_position(sel.head) {
-                editor.doc.block_type(rp.block_index) == Some("ordered_list".to_string())
-            } else {
-                false
-            }
+            let tag = with_active_ce_api(|api| api.borrow().cursor_block_tag()).flatten();
+            tag.as_deref() == Some("ol")
         }
         ToolbarControl::Blockquote => {
-            if let Ok(rp) = editor.doc.resolve_position(sel.head) {
-                editor.doc.block_type(rp.block_index) == Some("blockquote".to_string())
-            } else {
-                false
-            }
+            let tag = with_active_ce_api(|api| api.borrow().cursor_block_tag()).flatten();
+            tag.as_deref() == Some("blockquote")
         }
         ToolbarControl::CodeBlock => {
-            if let Ok(rp) = editor.doc.resolve_position(sel.head) {
-                editor.doc.block_type(rp.block_index) == Some("code_block".to_string())
-            } else {
-                false
-            }
+            let tag = with_active_ce_api(|api| api.borrow().cursor_block_tag()).flatten();
+            tag.as_deref() == Some("pre")
         }
-        ToolbarControl::AlignLeft => {
-            if let Ok(rp) = editor.doc.resolve_position(sel.head) {
-                let attrs = editor.doc.block_attrs(rp.block_index).unwrap_or_default();
-                !attrs.contains_key("align")
-                    || attrs.get("align").map(|a| a == "left").unwrap_or(false)
-            } else {
-                false
-            }
+        ToolbarControl::Link => {
+            with_active_ce_api(|api| api.borrow().has_active_mark("a")).unwrap_or(false)
         }
-        ToolbarControl::AlignCenter => {
-            if let Ok(rp) = editor.doc.resolve_position(sel.head) {
-                editor
-                    .doc
-                    .block_attrs(rp.block_index)
-                    .unwrap_or_default()
-                    .get("align")
-                    == Some(&"center".to_string())
-            } else {
-                false
-            }
-        }
-        ToolbarControl::AlignRight => {
-            if let Ok(rp) = editor.doc.resolve_position(sel.head) {
-                editor
-                    .doc
-                    .block_attrs(rp.block_index)
-                    .unwrap_or_default()
-                    .get("align")
-                    == Some(&"right".to_string())
-            } else {
-                false
-            }
-        }
-        ToolbarControl::AlignJustify => {
-            if let Ok(rp) = editor.doc.resolve_position(sel.head) {
-                editor
-                    .doc
-                    .block_attrs(rp.block_index)
-                    .unwrap_or_default()
-                    .get("align")
-                    == Some(&"justify".to_string())
-            } else {
-                false
-            }
-        }
-        ToolbarControl::Link => has_mark("link"),
-        // Dropdown and table controls do not have a simple active state
-        ToolbarControl::HeadingDropdown
-        | ToolbarControl::TextColorPicker
-        | ToolbarControl::InsertRowBefore
-        | ToolbarControl::InsertRowAfter
-        | ToolbarControl::InsertColBefore
-        | ToolbarControl::InsertColAfter
-        | ToolbarControl::DeleteRow
-        | ToolbarControl::DeleteCol
-        | ToolbarControl::ToggleHeaderRow
-        | ToolbarControl::MergeCells
-        | ToolbarControl::SplitCell
-        | ToolbarControl::DeleteTable => false,
+        // Alignment, dropdowns, and table controls don't have simple active state
         _ => false,
     }
 }
@@ -794,378 +653,74 @@ fn control_to_tabler_icon(control: &ToolbarControl) -> Option<TablerIcon> {
     }
 }
 
-/// Helper: find the table at the cursor and return (table_id, row, col).
-fn find_cursor_table(editor: &Editor) -> Option<(String, usize, usize)> {
-    // Use table_selection if available (tracks actual cursor cell)
-    if let Some(cell_ref) = editor.selected_table_cell() {
-        return Some((cell_ref.table_id.clone(), cell_ref.row, cell_ref.col));
-    }
-    // Fallback: resolve from cursor position
-    let sel = editor.get_selection();
-    if let Ok(rp) = editor.doc.resolve_position(sel.head)
-        && let Some(table_id) = editor.table_id_for_block(rp.block_index)
-    {
-        return Some((table_id, 0, 0));
-    }
-    None
-}
-
-/// Set text alignment for the current block.
-fn set_alignment(editor: &Rc<RefCell<Editor>>, alignment: Option<&str>) {
-    if let Ok(mut ed) = editor.try_borrow_mut() {
-        let sel = ed.get_selection().clone();
-        if let Ok(rp) = ed.doc.resolve_position(sel.head) {
-            let mut attrs = ed.doc.block_attrs(rp.block_index).unwrap_or_default();
-            if let Some(align) = alignment {
-                attrs.insert("align".to_string(), align.to_string());
-            } else {
-                attrs.remove("align");
-            }
-            let block_type = ed
-                .doc
-                .block_type(rp.block_index)
-                .unwrap_or_else(|| "paragraph".to_string());
-            let _ = StructureCommands::set_block_type_with_attrs(&mut ed, &block_type, attrs);
-        }
-    }
-}
-
 /// Execute the editor command associated with a toolbar control.
-fn execute_toolbar_command(
-    editor: &Rc<RefCell<Editor>>,
-    control: &ToolbarControl,
-    on_change: &dyn Fn(),
-) {
-    // Sync editor's internal selection from the DOM's visual selection.
-    // query_selection_ranges returns (block_index, start_byte, end_byte) tuples.
+///
+/// All commands go through the CE API — same code path as keyboard shortcuts.
+fn execute_toolbar_command(control: &ToolbarControl, on_change: &dyn Fn()) {
+    let had_api = with_active_ce_api(|api| {
+        let mut api = api.borrow_mut();
+        match control {
+            ToolbarControl::Bold => api.toggle_wrap("strong"),
+            ToolbarControl::Italic => api.toggle_wrap("em"),
+            ToolbarControl::Underline => api.toggle_wrap("u"),
+            ToolbarControl::Strike => api.toggle_wrap("s"),
+            ToolbarControl::Code => api.toggle_wrap("code"),
+            ToolbarControl::Highlight => api.toggle_wrap("mark"),
+            ToolbarControl::Subscript => api.toggle_wrap("sub"),
+            ToolbarControl::Superscript => api.toggle_wrap("sup"),
+            ToolbarControl::Heading(level) => api.set_block_type(&format!("h{}", level)),
+            ToolbarControl::Paragraph => api.set_block_type("p"),
+            ToolbarControl::BulletList => api.set_block_type("ul"),
+            ToolbarControl::OrderedList => api.set_block_type("ol"),
+            ToolbarControl::Blockquote => api.set_block_type("blockquote"),
+            ToolbarControl::CodeBlock => api.set_block_type("pre"),
+            ToolbarControl::HorizontalRule => {
+                api.split_block();
+                api.set_block_type("hr");
+            }
+            ToolbarControl::HardBreak => api.split_block(),
+            ToolbarControl::Undo => api.undo(),
+            ToolbarControl::Redo => api.redo(),
+            ToolbarControl::ClearFormatting => api.clear_formatting(),
+            // Link, TextColor, Table operations — deferred (need additional CE API)
+            ToolbarControl::Link
+            | ToolbarControl::TextColor(_)
+            | ToolbarControl::TextColorPicker
+            | ToolbarControl::InsertTable
+            | ToolbarControl::AlignLeft
+            | ToolbarControl::AlignCenter
+            | ToolbarControl::AlignRight
+            | ToolbarControl::AlignJustify
+            | ToolbarControl::InsertRowBefore
+            | ToolbarControl::InsertRowAfter
+            | ToolbarControl::InsertColBefore
+            | ToolbarControl::InsertColAfter
+            | ToolbarControl::DeleteRow
+            | ToolbarControl::DeleteCol
+            | ToolbarControl::ToggleHeaderRow
+            | ToolbarControl::MergeCells
+            | ToolbarControl::SplitCell
+            | ToolbarControl::DeleteTable => {}
+            // HeadingDropdown and TextColorPicker handled by their own renderers
+            ToolbarControl::HeadingDropdown => {}
+            ToolbarControl::Custom { .. } => {}
+        }
+    })
+    .is_some();
+
+    #[cfg(debug_assertions)]
     {
-        let ranges = rinch_core::events::query_selection_ranges();
-        if !ranges.is_empty()
-            && let Ok(mut ed) = editor.try_borrow_mut()
-        {
-            let block_count = ed.doc.block_count();
-            let doc_len = ed.doc.text_length();
-
-            // Compute absolute position for the first range's start
-            let (first_bi, first_start, _) = ranges[0];
-            let first_bi = first_bi.min(block_count.saturating_sub(1));
-            let mut abs_start = 0usize;
-            for i in 0..first_bi {
-                abs_start += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
-            }
-            let first_block_len = ed.doc.block_text(first_bi).map(|t| t.len()).unwrap_or(0);
-            abs_start += first_start.min(first_block_len);
-
-            // Compute absolute position for the last range's end
-            let (last_bi, _, last_end) = *ranges.last().unwrap();
-            let last_bi = last_bi.min(block_count.saturating_sub(1));
-            let mut abs_end = 0usize;
-            for i in 0..last_bi {
-                abs_end += ed.doc.block_text(i).map(|t| t.len()).unwrap_or(0) + 1;
-            }
-            let last_block_len = ed.doc.block_text(last_bi).map(|t| t.len()).unwrap_or(0);
-            abs_end += last_end.min(last_block_len);
-
-            ed.set_selection(Selection::new(
-                Position::new(abs_start.min(doc_len)),
-                Position::new(abs_end.min(doc_len)),
-            ));
+        if had_api {
+            eprintln!(
+                "[toolbar] execute_toolbar_command: {:?} — CE API active, command dispatched",
+                control
+            );
+        } else {
+            eprintln!(
+                "[toolbar] execute_toolbar_command: {:?} — CE API NOT active (click into editor first)",
+                control
+            );
         }
-    }
-
-    match control {
-        ToolbarControl::Bold => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let _ = FormattingCommands::toggle_mark(&mut ed, "bold");
-            }
-        }
-        ToolbarControl::Italic => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let _ = FormattingCommands::toggle_mark(&mut ed, "italic");
-            }
-        }
-        ToolbarControl::Underline => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let _ = FormattingCommands::toggle_mark(&mut ed, "underline");
-            }
-        }
-        ToolbarControl::Strike => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let _ = FormattingCommands::toggle_mark(&mut ed, "strike");
-            }
-        }
-        ToolbarControl::Code => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let _ = FormattingCommands::toggle_mark(&mut ed, "code");
-            }
-        }
-        ToolbarControl::Highlight => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let _ = FormattingCommands::toggle_mark(&mut ed, "highlight");
-            }
-        }
-        ToolbarControl::Subscript => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let _ = FormattingCommands::toggle_mark(&mut ed, "subscript");
-            }
-        }
-        ToolbarControl::Superscript => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let _ = FormattingCommands::toggle_mark(&mut ed, "superscript");
-            }
-        }
-        // Link is now handled by render_link_popover; no-op here.
-        ToolbarControl::Link => {}
-        ToolbarControl::TextColor(color) => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let sel = ed.get_selection().clone();
-                if sel.is_cursor() {
-                    ed.toggle_stored_mark("textColor");
-                } else {
-                    let range = sel.range();
-                    let mut attrs = HashMap::new();
-                    attrs.insert("color".to_string(), color.clone());
-                    let _ = ed.doc.add_mark(
-                        range,
-                        rinch_editor::document::MarkData::with_attrs("textColor", attrs),
-                    );
-                }
-            }
-        }
-        ToolbarControl::Heading(level) => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let mut attrs = HashMap::new();
-                attrs.insert("level".to_string(), level.to_string());
-                let _ = StructureCommands::set_block_type_with_attrs(&mut ed, "heading", attrs);
-            }
-        }
-        ToolbarControl::Paragraph => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let _ = StructureCommands::set_block_type(&mut ed, "paragraph");
-            }
-        }
-        ToolbarControl::BulletList => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let _ = StructureCommands::set_block_type(&mut ed, "bullet_list");
-            }
-        }
-        ToolbarControl::OrderedList => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let _ = StructureCommands::set_block_type(&mut ed, "ordered_list");
-            }
-        }
-        ToolbarControl::Blockquote => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let _ = StructureCommands::set_block_type(&mut ed, "blockquote");
-            }
-        }
-        ToolbarControl::CodeBlock => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let _ = StructureCommands::set_block_type(&mut ed, "code_block");
-            }
-        }
-        ToolbarControl::HorizontalRule => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let _ = StructureCommands::split_block(&mut ed);
-                let _ = StructureCommands::set_block_type(&mut ed, "horizontal_rule");
-            }
-        }
-        ToolbarControl::HardBreak => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let _ = StructureCommands::split_block(&mut ed);
-            }
-        }
-        ToolbarControl::Undo => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let _ = ed.undo();
-            }
-        }
-        ToolbarControl::Redo => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let _ = ed.redo();
-            }
-        }
-        ToolbarControl::ClearFormatting => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let _ = FormattingCommands::clear_formatting(&mut ed);
-            }
-        }
-        ToolbarControl::InsertTable => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                // Insert a 3x3 table with header row
-                let _ = ed.insert_table(3, 3);
-            }
-        }
-        ToolbarControl::AlignLeft => set_alignment(editor, None),
-        ToolbarControl::AlignCenter => set_alignment(editor, Some("center")),
-        ToolbarControl::AlignRight => set_alignment(editor, Some("right")),
-        ToolbarControl::AlignJustify => set_alignment(editor, Some("justify")),
-        // HeadingDropdown and TextColorPicker are handled by their own renderers
-        ToolbarControl::HeadingDropdown | ToolbarControl::TextColorPicker => {}
-        // Table manipulation commands with snapshot-based undo
-        ToolbarControl::InsertRowBefore => {
-            if let Ok(mut ed) = editor.try_borrow_mut()
-                && let Some((table_id, row, _col)) = find_cursor_table(&ed)
-            {
-                let before = ed.get_table_cloned(&table_id);
-                if let Some(table) = ed.get_table_mut(&table_id) {
-                    table.insert_row(row);
-                }
-                let after = ed.get_table_cloned(&table_id);
-                ed.record_undo(UndoOperation::TableSnapshot {
-                    table_id,
-                    before,
-                    after,
-                });
-            }
-        }
-        ToolbarControl::InsertRowAfter => {
-            if let Ok(mut ed) = editor.try_borrow_mut()
-                && let Some((table_id, row, _col)) = find_cursor_table(&ed)
-            {
-                let before = ed.get_table_cloned(&table_id);
-                if let Some(table) = ed.get_table_mut(&table_id) {
-                    table.insert_row(row + 1);
-                }
-                let after = ed.get_table_cloned(&table_id);
-                ed.record_undo(UndoOperation::TableSnapshot {
-                    table_id,
-                    before,
-                    after,
-                });
-            }
-        }
-        ToolbarControl::InsertColBefore => {
-            if let Ok(mut ed) = editor.try_borrow_mut()
-                && let Some((table_id, _row, col)) = find_cursor_table(&ed)
-            {
-                let before = ed.get_table_cloned(&table_id);
-                if let Some(table) = ed.get_table_mut(&table_id) {
-                    table.insert_column(col);
-                }
-                let after = ed.get_table_cloned(&table_id);
-                ed.record_undo(UndoOperation::TableSnapshot {
-                    table_id,
-                    before,
-                    after,
-                });
-            }
-        }
-        ToolbarControl::InsertColAfter => {
-            if let Ok(mut ed) = editor.try_borrow_mut()
-                && let Some((table_id, _row, col)) = find_cursor_table(&ed)
-            {
-                let before = ed.get_table_cloned(&table_id);
-                if let Some(table) = ed.get_table_mut(&table_id) {
-                    table.insert_column(col + 1);
-                }
-                let after = ed.get_table_cloned(&table_id);
-                ed.record_undo(UndoOperation::TableSnapshot {
-                    table_id,
-                    before,
-                    after,
-                });
-            }
-        }
-        ToolbarControl::DeleteRow => {
-            if let Ok(mut ed) = editor.try_borrow_mut()
-                && let Some((table_id, row, _col)) = find_cursor_table(&ed)
-            {
-                let before = ed.get_table_cloned(&table_id);
-                if let Some(table) = ed.get_table_mut(&table_id) {
-                    let _ = table.delete_row(row);
-                }
-                let after = ed.get_table_cloned(&table_id);
-                ed.record_undo(UndoOperation::TableSnapshot {
-                    table_id,
-                    before,
-                    after,
-                });
-            }
-        }
-        ToolbarControl::DeleteCol => {
-            if let Ok(mut ed) = editor.try_borrow_mut()
-                && let Some((table_id, _row, col)) = find_cursor_table(&ed)
-            {
-                let before = ed.get_table_cloned(&table_id);
-                if let Some(table) = ed.get_table_mut(&table_id) {
-                    let _ = table.delete_column(col);
-                }
-                let after = ed.get_table_cloned(&table_id);
-                ed.record_undo(UndoOperation::TableSnapshot {
-                    table_id,
-                    before,
-                    after,
-                });
-            }
-        }
-        ToolbarControl::ToggleHeaderRow => {
-            if let Ok(mut ed) = editor.try_borrow_mut()
-                && let Some((table_id, _row, _col)) = find_cursor_table(&ed)
-            {
-                let before = ed.get_table_cloned(&table_id);
-                if let Some(table) = ed.get_table_mut(&table_id) {
-                    table.toggle_header_row();
-                }
-                let after = ed.get_table_cloned(&table_id);
-                ed.record_undo(UndoOperation::TableSnapshot {
-                    table_id,
-                    before,
-                    after,
-                });
-            }
-        }
-        ToolbarControl::MergeCells => {
-            if let Ok(mut ed) = editor.try_borrow_mut()
-                && let Some((table_id, row, col)) = find_cursor_table(&ed)
-            {
-                let before = ed.get_table_cloned(&table_id);
-                if let Some(table) = ed.get_table_mut(&table_id) {
-                    // Merge the current cell with the one to the right
-                    let _ = table.merge_cells((row, col), (row, col.saturating_add(1)));
-                }
-                let after = ed.get_table_cloned(&table_id);
-                ed.record_undo(UndoOperation::TableSnapshot {
-                    table_id,
-                    before,
-                    after,
-                });
-            }
-        }
-        ToolbarControl::SplitCell => {
-            if let Ok(mut ed) = editor.try_borrow_mut()
-                && let Some((table_id, row, col)) = find_cursor_table(&ed)
-            {
-                let before = ed.get_table_cloned(&table_id);
-                if let Some(table) = ed.get_table_mut(&table_id) {
-                    let _ = table.split_cell(row, col);
-                }
-                let after = ed.get_table_cloned(&table_id);
-                ed.record_undo(UndoOperation::TableSnapshot {
-                    table_id,
-                    before,
-                    after,
-                });
-            }
-        }
-        ToolbarControl::DeleteTable => {
-            if let Ok(mut ed) = editor.try_borrow_mut() {
-                let sel = ed.get_selection().clone();
-                if let Ok(rp) = ed.doc.resolve_position(sel.head)
-                    && let Some(table_id) = ed.table_id_for_block(rp.block_index)
-                {
-                    let before = ed.get_table_cloned(&table_id);
-                    let _ = ed.delete_table(rp.block_index);
-                    let after = ed.get_table_cloned(&table_id); // Should be None after deletion
-                    ed.record_undo(UndoOperation::TableSnapshot {
-                        table_id,
-                        before,
-                        after,
-                    });
-                }
-            }
-        }
-        ToolbarControl::Custom { .. } => {}
     }
 
     on_change();

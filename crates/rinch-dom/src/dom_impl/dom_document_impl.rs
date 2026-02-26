@@ -687,4 +687,35 @@ impl DomDocument for RinchDocument {
             node.layout.height,
         ))
     }
+
+    fn tag_name(&self, node: NodeId) -> Option<String> {
+        let n = self.tree.nodes.get(node.0)?;
+        match &n.kind {
+            NodeKind::Element(data) => Some(data.tag.clone()),
+            _ => None,
+        }
+    }
+
+    fn node_type(&self, node: NodeId) -> Option<u16> {
+        let n = self.tree.nodes.get(node.0)?;
+        Some(match &n.kind {
+            NodeKind::Element(_) => 1,
+            NodeKind::Text(_) => 3,
+            NodeKind::Comment(_) => 8,
+            NodeKind::Document => 9,
+        })
+    }
+
+    fn text_content(&self, node: NodeId) -> Option<String> {
+        let n = self.tree.nodes.get(node.0)?;
+        match &n.kind {
+            NodeKind::Text(data) => Some(data.content.clone()),
+            NodeKind::Element(_) => {
+                let mut result = String::new();
+                self.collect_text_content(node.0, &mut result);
+                Some(result)
+            }
+            _ => None,
+        }
+    }
 }

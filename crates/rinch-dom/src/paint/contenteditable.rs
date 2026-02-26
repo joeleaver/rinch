@@ -354,8 +354,8 @@ pub(super) fn paint_contenteditable_cursor(
 
         if (start_y - end_y).abs() < 0.1 {
             // Same line — find the matching line's actual height from Parley
-            let actual_line_height = line_height_at_y(layout, start_y)
-                .unwrap_or(fallback_line_height);
+            let actual_line_height =
+                line_height_at_y(layout, start_y).unwrap_or(fallback_line_height);
             let sel_rect = Rect::new(
                 text_x + start_x as f64,
                 text_y + start_y as f64,
@@ -415,8 +415,7 @@ pub(super) fn paint_contenteditable_cursor(
         };
         let caret_x = text_x + caret_offset_x as f64;
         let caret_y = text_y + caret_offset_y as f64;
-        let caret_height = line_height_at_y(layout, caret_offset_y)
-            .unwrap_or(fallback_line_height);
+        let caret_height = line_height_at_y(layout, caret_offset_y).unwrap_or(fallback_line_height);
 
         let caret_color = node
             .computed_style

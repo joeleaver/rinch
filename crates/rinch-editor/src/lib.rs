@@ -7,20 +7,16 @@
 //!
 //! The editor uses a **ContentEditable** approach:
 //! - A contentEditable div handles cursor rendering, selection display, and hit testing
-//! - The document model (backed by Automerge CRDT) is the source of truth
-//! - The bridge layer reconciles the document model into DOM nodes
-//! - Keyboard events are intercepted and routed through editor commands
+//! - The CE API (in `rinch-core`) is the single mutation path for all operations
+//! - The document model (backed by Automerge CRDT) is used for serialization
+//! - Keyboard events and toolbar commands both go through the CE API
 //!
 //! # Core Components
 //!
-//! - [`Editor`] - The main editor instance
-//! - [`EditorDocument`] - Automerge-backed document model
-//! - [`EditorBridge`] - Connects the editor to contentEditable rendering
+//! - [`EditorDocument`] - Automerge-backed document model (serialization)
 //! - [`Schema`] - Document structure validation
 //! - [`Extension`] - Plugin system for nodes, marks, and functionality
-//! - [`Commands`] - All document mutations go through commands
 
-pub mod bridge;
 pub mod commands;
 pub mod document;
 pub mod editor;
@@ -35,7 +31,6 @@ pub mod selection;
 #[cfg(test)]
 pub mod testing;
 
-pub use bridge::EditorBridge;
 pub use document::{EditorDocument, MarkData, Position, Range};
 pub use editor::Editor;
 pub use error::EditorError;
@@ -44,7 +39,6 @@ pub use schema::Schema;
 
 /// Prelude module for convenient imports
 pub mod prelude {
-    pub use crate::bridge::EditorBridge;
     pub use crate::document::{EditorDocument, MarkData, Position, Range};
     pub use crate::editor::{AutoFocus, Editor, EditorConfig};
     pub use crate::error::EditorError;

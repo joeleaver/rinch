@@ -280,6 +280,7 @@ impl RinchApp {
             }
             CeAction::PreserveCe => {
                 // CE focus preserved — fall through to Phase 3 for data-rid dispatch
+                tracing::debug!("click: PreserveCe — CE focus preserved, dispatching data-rid");
             }
             CeAction::NoHit => {
                 return actions;

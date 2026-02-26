@@ -513,6 +513,26 @@ impl NodeHandle {
         let doc = self.doc.upgrade()?;
         doc.borrow().query_node_layout(self.node_id.0 as u64)
     }
+
+    /// Get the tag name of this node (if it's an element).
+    pub fn tag_name(&self) -> Option<String> {
+        let doc = self.doc.upgrade()?;
+        doc.borrow().tag_name(self.node_id)
+    }
+
+    /// Get the node type (1 = element, 3 = text, 8 = comment).
+    pub fn node_type(&self) -> Option<u16> {
+        let doc = self.doc.upgrade()?;
+        doc.borrow().node_type(self.node_id)
+    }
+
+    /// Get the text content of this node.
+    ///
+    /// For text nodes: returns the text. For elements: returns concatenated descendant text.
+    pub fn text_content(&self) -> Option<String> {
+        let doc = self.doc.upgrade()?;
+        doc.borrow().text_content(self.node_id)
+    }
 }
 
 impl std::fmt::Debug for NodeHandle {

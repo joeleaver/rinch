@@ -256,7 +256,7 @@ impl RinchApp {
                 } else {
                     0.0 // inside bounds but recursion returned None
                 };
-                if nearest_child.map_or(true, |(_, d)| dist < d) {
+                if nearest_child.is_none_or(|(_, d)| dist < d) {
                     nearest_child = Some((child_id, dist));
                 }
             }
@@ -264,9 +264,7 @@ impl RinchApp {
 
         // Click was in the gap between children — use the nearest child
         if let Some((nearest_id, _)) = nearest_child {
-            if let Some(cursor) =
-                Self::find_cursor_in_block(tree, nearest_id, click_x, click_y)
-            {
+            if let Some(cursor) = Self::find_cursor_in_block(tree, nearest_id, click_x, click_y) {
                 return Some(cursor);
             }
         }

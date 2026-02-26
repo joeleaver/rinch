@@ -3996,10 +3996,7 @@ dependencies = [
 name = "rinch-editor-components"
 version = "0.1.0"
 dependencies = [
- "rinch-components",
  "rinch-core",
- "rinch-editor",
- "rinch-macros",
  "rinch-tabler-icons",
 ]
 

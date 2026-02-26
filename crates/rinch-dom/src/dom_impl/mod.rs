@@ -144,6 +144,14 @@ impl RinchDocument {
                 display: inline;
             }
 
+            strong, b {
+                font-weight: bold;
+            }
+
+            em, i {
+                font-style: italic;
+            }
+
             u, ins {
                 text-decoration-line: underline;
             }
@@ -554,6 +562,22 @@ impl RinchDocument {
         let mut results = Vec::new();
         self.query_all_recursive(self.tree.root_id, selector, &mut results);
         results.into_iter().map(rinch_core::dom::NodeId).collect()
+    }
+
+    /// Recursively collect text content from a node and its descendants.
+    pub(crate) fn collect_text_content(&self, node_id: usize, result: &mut String) {
+        let Some(node) = self.tree.nodes.get(node_id) else {
+            return;
+        };
+        match &node.kind {
+            crate::node::NodeKind::Text(data) => result.push_str(&data.content),
+            crate::node::NodeKind::Element(_) => {
+                for &child_id in &node.children {
+                    self.collect_text_content(child_id, result);
+                }
+            }
+            _ => {}
+        }
     }
 }
 

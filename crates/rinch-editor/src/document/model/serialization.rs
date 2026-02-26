@@ -2,6 +2,8 @@
 
 use automerge::{AutoCommit, ObjType, ReadDoc};
 
+use rinch_core::ce::{BlockData, InlineMarkData, InlineRunData};
+
 use super::{EditorDocument, MarkData};
 use crate::error::EditorError;
 
@@ -114,6 +116,82 @@ impl EditorDocument {
             html.push_str(&format!("</{}>", tag));
         }
         html
+    }
+
+    /// Convert document content to block data interchange format.
+    ///
+    /// Used for save: extract_content (CE API) → BlockData → from_block_data → to_bytes.
+    pub fn to_block_data(&self) -> Vec<BlockData> {
+        let count = self.block_count();
+        let mut blocks = Vec::with_capacity(count);
+        for i in 0..count {
+            let block_type = self
+                .block_type(i)
+                .unwrap_or_else(|| "paragraph".to_string());
+            let attrs = self.block_attrs(i).unwrap_or_default();
+            let runs = self.block_inline_runs(i);
+            let content: Vec<InlineRunData> = runs
+                .into_iter()
+                .map(|run| InlineRunData {
+                    text: run.text,
+                    marks: run
+                        .marks
+                        .into_iter()
+                        .map(|m| InlineMarkData {
+                            mark_type: m.mark_type,
+                            attrs: m.attrs,
+                        })
+                        .collect(),
+                })
+                .collect();
+            blocks.push(BlockData {
+                block_type,
+                attrs,
+                content,
+            });
+        }
+        blocks
+    }
+
+    /// Create a document from block data interchange format.
+    ///
+    /// Used for load: from_bytes → to_block_data → load_content (CE API).
+    pub fn from_block_data(blocks: &[BlockData]) -> Self {
+        let mut doc = Self::new();
+        // Remove the default empty paragraph
+        if doc.block_count() > 0 {
+            doc.delete_block(0).ok();
+        }
+        for (i, block) in blocks.iter().enumerate() {
+            let attrs = if block.attrs.is_empty() {
+                None
+            } else {
+                Some(block.attrs.clone())
+            };
+            doc.insert_block_at(i, &block.block_type, attrs).ok();
+
+            // Insert inline content
+            let mut offset = 0;
+            let base_pos = doc.block_start_position(i);
+            for run in &block.content {
+                if run.text.is_empty() {
+                    continue;
+                }
+                let marks: Vec<MarkData> = run
+                    .marks
+                    .iter()
+                    .map(|m| MarkData::with_attrs(m.mark_type.clone(), m.attrs.clone()))
+                    .collect();
+                let pos = crate::document::position::Position::new(base_pos + offset);
+                if marks.is_empty() {
+                    doc.insert_text(pos, &run.text).ok();
+                } else {
+                    doc.insert_text_with_marks(pos, &run.text, &marks).ok();
+                }
+                offset += run.text.len();
+            }
+        }
+        doc
     }
 
     /// Get HTML for inline content of a block.

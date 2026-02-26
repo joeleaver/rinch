@@ -231,4 +231,25 @@ pub trait DomDocument {
     ///
     /// Returns the (x, y, width, height) of the node's layout box.
     fn query_node_layout(&self, node_id: u64) -> Option<(f32, f32, f32, f32)>;
+
+    /// Get the tag name of an element node.
+    ///
+    /// Returns `Some("div")`, `Some("p")`, etc. for elements, `None` for text/comment nodes.
+    fn tag_name(&self, _node: NodeId) -> Option<String> {
+        None
+    }
+
+    /// Get the node type (W3C-style).
+    ///
+    /// Returns 1 for elements, 3 for text nodes, 8 for comments. Returns `None` if unknown.
+    fn node_type(&self, _node: NodeId) -> Option<u16> {
+        None
+    }
+
+    /// Get the text content of a node.
+    ///
+    /// For text nodes, returns the text. For elements, returns concatenated descendant text.
+    fn text_content(&self, _node: NodeId) -> Option<String> {
+        None
+    }
 }

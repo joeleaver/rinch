@@ -6,6 +6,7 @@
 //! component owns the DOM, performs all mutations, and broadcasts events.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 // ============================================================================
@@ -277,6 +278,40 @@ impl std::fmt::Debug for CeEventDispatcher {
 }
 
 // ============================================================================
+// Block Data Interchange Types
+// ============================================================================
+
+/// A block of content (paragraph, heading, list item, etc.) for save/load.
+#[derive(Debug, Clone)]
+pub struct BlockData {
+    /// Block type: "paragraph", "heading", "bullet_list", "ordered_list",
+    /// "blockquote", "code_block", "horizontal_rule", etc.
+    pub block_type: String,
+    /// Block-level attributes, e.g. `{"level": "2"}` for headings.
+    pub attrs: HashMap<String, String>,
+    /// Inline content within the block.
+    pub content: Vec<InlineRunData>,
+}
+
+/// A run of text with inline marks (bold, italic, etc.).
+#[derive(Debug, Clone)]
+pub struct InlineRunData {
+    /// The text content of this run.
+    pub text: String,
+    /// Marks (formatting) applied to this run.
+    pub marks: Vec<InlineMarkData>,
+}
+
+/// An inline mark (bold, italic, code, etc.).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineMarkData {
+    /// Mark type: "bold", "italic", "code", "underline", "strike", etc.
+    pub mark_type: String,
+    /// Mark attributes, e.g. `{"color": "#ff0000"}` for text color.
+    pub attrs: HashMap<String, String>,
+}
+
+// ============================================================================
 // ContentEditable API Trait
 // ============================================================================
 
@@ -352,6 +387,39 @@ pub trait ContentEditableApi {
 
     /// Get a mutable reference to the event dispatcher.
     fn event_dispatcher_mut(&mut self) -> &mut CeEventDispatcher;
+
+    // ── Query Methods ─────────────────────────────────────────────────
+
+    /// Check if the cursor is inside a formatting ancestor with the given tag.
+    ///
+    /// For example, `has_active_mark("strong")` returns true if the cursor
+    /// is inside a `<strong>` element.
+    fn has_active_mark(&self, _tag: &str) -> bool {
+        false
+    }
+
+    /// Get the tag name of the block element containing the cursor.
+    ///
+    /// Returns the tag of the direct child of the CE root that contains
+    /// the cursor (e.g. "p", "h1", "ul", "blockquote").
+    fn cursor_block_tag(&self) -> Option<String> {
+        None
+    }
+
+    // ── Content Interchange ───────────────────────────────────────────
+
+    /// Extract current CE content as structured blocks.
+    fn extract_content(&self) -> Vec<BlockData> {
+        vec![]
+    }
+
+    /// Replace CE content with structured blocks.
+    fn load_content(&mut self, _blocks: &[BlockData]) {}
+
+    // ── Formatting ────────────────────────────────────────────────────
+
+    /// Remove all inline formatting from the current selection.
+    fn clear_formatting(&mut self) {}
 }
 
 // ============================================================================
