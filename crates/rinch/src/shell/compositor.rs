@@ -380,7 +380,10 @@ impl LayerCompositor {
                 },
                 BindGroupEntry {
                     binding: 1,
-                    resource: BindingResource::TextureView(layer_view), // unused by fs_layer
+                    // Placeholder: binding 1 is the UI texture slot (used by the
+                    // overlay pipeline, not the layer blit pipeline). Must be
+                    // provided to satisfy the shared bind group layout.
+                    resource: BindingResource::TextureView(layer_view),
                 },
                 BindGroupEntry {
                     binding: 2,

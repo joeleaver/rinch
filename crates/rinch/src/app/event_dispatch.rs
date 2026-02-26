@@ -204,10 +204,7 @@ impl RinchApp {
                         if let Some((sid, lx, ly)) = &new_surface {
                             crate::render_surface::dispatch_surface_event(
                                 *sid,
-                                crate::render_surface::SurfaceEvent::MouseEnter {
-                                    x: *lx,
-                                    y: *ly,
-                                },
+                                crate::render_surface::SurfaceEvent::MouseEnter { x: *lx, y: *ly },
                             );
                         }
                         self.hovered_surface = new_surface_id;

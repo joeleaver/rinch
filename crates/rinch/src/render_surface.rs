@@ -316,16 +316,16 @@ pub struct GpuTextureRegistrar {
     layout_size: Arc<Mutex<(u32, u32)>>,
 }
 
-// SAFETY: Both fields are Arc<Mutex<>> and Arc<AtomicBool>, which are Send + Sync.
-unsafe impl Send for GpuTextureRegistrar {}
-unsafe impl Sync for GpuTextureRegistrar {}
-
 impl GpuTextureRegistrar {
     /// Register a GPU texture as the frame source for zero-copy compositing.
     ///
     /// Safe to call from any thread. Wakes the event loop via `run_on_main_thread`.
     pub fn set_texture_source(&self, view: wgpu::TextureView, width: u32, height: u32) {
-        *self.texture_source.lock().unwrap() = Some(TextureSource { view, width, height });
+        *self.texture_source.lock().unwrap() = Some(TextureSource {
+            view,
+            width,
+            height,
+        });
         self.needs_redraw.store(true, Ordering::Release);
         // Wake the event loop so it picks up the new texture.
         crate::shell::rinch_runtime::run_on_main_thread(|| {});
@@ -341,9 +341,7 @@ impl GpuTextureRegistrar {
         // Send SurfaceRedraw — goes directly to window.request_redraw()
         // without going through resolve_and_repaint().
         if let Some(proxy) = crate::shell::rinch_runtime::GLOBAL_PROXY.get() {
-            let _ = proxy.send_event(
-                crate::shell::rinch_runtime::RinchNativeEvent::SurfaceRedraw,
-            );
+            let _ = proxy.send_event(crate::shell::rinch_runtime::RinchNativeEvent::SurfaceRedraw);
         }
     }
 

@@ -191,19 +191,11 @@ impl WgpuRenderer {
             caps.formats[0]
         };
 
-        // Request features/limits that both rinch and external renderers need.
-        // FLOAT32_FILTERABLE is required by the engine's Rgba16Float GI textures.
-        // Higher bind group / buffer limits are needed for the engine's compute passes.
         let (raw_device, raw_queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("rinch-dom device"),
-                required_features: wgpu::Features::FLOAT32_FILTERABLE,
-                required_limits: Limits {
-                    max_bind_groups: 8,
-                    max_storage_buffer_binding_size: 1 << 30, // 1 GB
-                    max_buffer_size: 1 << 31,                 // 2 GB
-                    ..Limits::default()
-                },
+                required_features: wgpu::Features::default(),
+                required_limits: Limits::default(),
                 memory_hints: MemoryHints::MemoryUsage,
                 trace: wgpu::Trace::default(),
                 experimental_features: wgpu::ExperimentalFeatures::default(),
@@ -364,8 +356,7 @@ impl PlatformRenderer for WgpuRenderer {
                 label: Some("rinch-dom copy encoder"),
             });
 
-        let has_any_layers =
-            !self.composite_layers.is_empty() || !self.gpu_layers.is_empty();
+        let has_any_layers = !self.composite_layers.is_empty() || !self.gpu_layers.is_empty();
 
         if has_any_layers {
             // Composite layers + UI using the compositor pipeline.

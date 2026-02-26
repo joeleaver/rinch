@@ -34,10 +34,7 @@ pub enum PlatformEvent {
         modifiers: Modifiers,
     },
     /// Key released.
-    KeyUp {
-        key: KeyCode,
-        modifiers: Modifiers,
-    },
+    KeyUp { key: KeyCode, modifiers: Modifiers },
     /// Modifier keys changed.
     ModifiersChanged(Modifiers),
     /// Display scale factor changed.

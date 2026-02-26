@@ -421,11 +421,7 @@ impl RinchRuntime {
 
                     // Update layout size so the engine thread can match its
                     // offscreen texture to the actual viewport dimensions.
-                    crate::render_surface::update_layout_size(
-                        &viewport_name,
-                        phys_w,
-                        phys_h,
-                    );
+                    crate::render_surface::update_layout_size(&viewport_name, phys_w, phys_h);
 
                     let viewport = (
                         viewport.0 * s,
