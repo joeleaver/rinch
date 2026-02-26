@@ -147,9 +147,13 @@ pub mod prelude {
     // Render surface API for embedding external renderers
     #[cfg(feature = "desktop")]
     pub use crate::render_surface::{
-        RenderSurface, RenderSurfaceHandle, SurfaceEvent, SurfaceKeyData, SurfaceMouseButton,
-        SurfaceWriter, create_render_surface,
+        GpuTextureRegistrar, RenderSurface, RenderSurfaceHandle, SurfaceEvent, SurfaceKeyData,
+        SurfaceMouseButton, SurfaceWriter, TextureSource, create_render_surface,
     };
+
+    // Shared GPU handle for zero-copy compositing
+    #[cfg(feature = "desktop")]
+    pub use crate::shell::desktop::{GpuHandle, gpu_handle};
 
     // Re-export theme types when the theme feature is enabled
     #[cfg(feature = "theme")]

@@ -52,7 +52,8 @@ thread_local! {
 // ── Global proxy + main-thread callback queue ────────────────────────────────
 
 // Global (Send+Sync) proxy for waking the event loop from any thread.
-static GLOBAL_PROXY: OnceLock<EventLoopProxy<RinchNativeEvent>> = OnceLock::new();
+// Public within the crate so render_surface.rs can send SurfaceRedraw directly.
+pub(crate) static GLOBAL_PROXY: OnceLock<EventLoopProxy<RinchNativeEvent>> = OnceLock::new();
 
 // Queue of closures to execute on the main thread during the next ReRender.
 static MAIN_QUEUE: Mutex<Vec<Box<dyn FnOnce() + Send>>> = Mutex::new(Vec::new());
@@ -94,6 +95,9 @@ fn drain_main_queue() {
 pub enum RinchNativeEvent {
     /// A signal changed -- re-resolve layout and repaint.
     ReRender,
+    /// A RenderSurface has new GPU texture content — repaint the compositor
+    /// without re-resolving DOM layout.
+    SurfaceRedraw,
     /// A debug command is waiting on the channel (debug feature).
     #[cfg(feature = "debug")]
     DebugCommand,
@@ -384,7 +388,7 @@ impl RinchRuntime {
             }
         }
 
-        // Extract render surface frames for compositing
+        // Extract render surface frames for compositing (CPU pixel path)
         {
             let surface_frames = crate::render_surface::collect_surface_frames();
             for (viewport_name, pixels, surf_w, surf_h) in surface_frames {
@@ -406,9 +410,44 @@ impl RinchRuntime {
             }
         }
 
+        // Extract GPU texture sources for zero-copy compositing
+        let mut gpu_layers = Vec::new();
+        {
+            let texture_sources = crate::render_surface::collect_texture_sources();
+            for (viewport_name, tex_source_arc) in texture_sources {
+                if let Some(viewport) = self.app.viewport_rect(&viewport_name) {
+                    let phys_w = (viewport.2 * s) as u32;
+                    let phys_h = (viewport.3 * s) as u32;
+
+                    // Update layout size so the engine thread can match its
+                    // offscreen texture to the actual viewport dimensions.
+                    crate::render_surface::update_layout_size(
+                        &viewport_name,
+                        phys_w,
+                        phys_h,
+                    );
+
+                    let viewport = (
+                        viewport.0 * s,
+                        viewport.1 * s,
+                        viewport.2 * s,
+                        viewport.3 * s,
+                    );
+                    // Lock the texture source to get the view
+                    if let Some(ref ts) = *tex_source_arc.lock().unwrap() {
+                        gpu_layers.push(super::desktop::GpuTextureLayer {
+                            view: ts.view.clone(),
+                            viewport,
+                        });
+                    }
+                }
+            }
+        }
+
         // Set or clear composite layers on the renderer
-        if !all_layers.is_empty() {
+        if !all_layers.is_empty() || !gpu_layers.is_empty() {
             renderer.set_composite_layers(all_layers);
+            renderer.set_gpu_layers(gpu_layers);
         } else if renderer.has_composite_layers() {
             // Clear layers only when nothing is active (no video, no surfaces)
             #[cfg(feature = "video")]
@@ -418,6 +457,7 @@ impl RinchRuntime {
 
             if !video_loaded && !crate::render_surface::any_surfaces_registered() {
                 renderer.set_composite_layers(vec![]);
+                renderer.set_gpu_layers(vec![]);
             }
         }
 
@@ -613,6 +653,12 @@ impl RinchRuntime {
             WK::F12 => KeyCode::F12,
             WK::Equal => KeyCode::Equal,
             WK::Minus => KeyCode::Minus,
+            WK::ShiftLeft => KeyCode::ShiftLeft,
+            WK::ShiftRight => KeyCode::ShiftRight,
+            WK::ControlLeft => KeyCode::ControlLeft,
+            WK::ControlRight => KeyCode::ControlRight,
+            WK::AltLeft => KeyCode::AltLeft,
+            WK::AltRight => KeyCode::AltRight,
             _ => KeyCode::Other,
         }
     }
@@ -731,6 +777,15 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
 
         let platform_event = match event {
             RinchNativeEvent::ReRender => PlatformEvent::UserEvent(UserEvent::ReRender),
+            RinchNativeEvent::SurfaceRedraw => {
+                // Direct repaint — skip DOM resolution entirely.
+                // The engine thread rendered new content to its GPU texture;
+                // we just need the compositor to re-composite.
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                return;
+            }
             #[cfg(feature = "debug")]
             RinchNativeEvent::DebugCommand => {
                 // Debug commands may need the renderer (screenshots), so
@@ -881,6 +936,22 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                 PlatformEvent::KeyDown {
                     key: platform_key,
                     text: text.as_ref().map(|t| t.to_string()),
+                    modifiers: mods,
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    winit::event::KeyEvent {
+                        physical_key: winit::keyboard::PhysicalKey::Code(key_code),
+                        state: ElementState::Released,
+                        ..
+                    },
+                ..
+            } => {
+                let mods = self.translate_modifiers();
+                let platform_key = Self::translate_key(key_code);
+                PlatformEvent::KeyUp {
+                    key: platform_key,
                     modifiers: mods,
                 }
             }

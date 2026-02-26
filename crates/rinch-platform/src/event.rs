@@ -33,6 +33,11 @@ pub enum PlatformEvent {
         text: Option<String>,
         modifiers: Modifiers,
     },
+    /// Key released.
+    KeyUp {
+        key: KeyCode,
+        modifiers: Modifiers,
+    },
     /// Modifier keys changed.
     ModifiersChanged(Modifiers),
     /// Display scale factor changed.
@@ -250,6 +255,14 @@ pub enum KeyCode {
     // Symbols
     Equal,
     Minus,
+
+    // Modifier keys (as physical keys, not just modifier state)
+    ShiftLeft,
+    ShiftRight,
+    ControlLeft,
+    ControlRight,
+    AltLeft,
+    AltRight,
 
     /// A key code not covered by the common set.
     /// The platform backend may include additional info in the event's `text` field.

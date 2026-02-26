@@ -160,6 +160,8 @@ pub struct RinchApp {
     /// Set when cursor changes; applied after the next layout resolve.
     /// Uses `Cell` for interior mutability (set from `&self` methods).
     pub(crate) ce_scroll_pending: Cell<bool>,
+    /// The render surface ID currently under the mouse cursor (for enter/leave events).
+    pub(crate) hovered_surface: Option<usize>,
     /// Font data to register on the document when it is created (for WASM).
     pub(crate) pending_fonts: Vec<&'static [u8]>,
     /// Debug command receiver.
@@ -201,6 +203,7 @@ impl RinchApp {
             ce_ops: None,
             ce_selecting: false,
             ce_scroll_pending: Cell::new(false),
+            hovered_surface: None,
             pending_fonts: Vec::new(),
             #[cfg(feature = "debug")]
             debug_cmd_rx: None,

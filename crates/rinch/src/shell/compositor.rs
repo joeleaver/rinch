@@ -332,6 +332,94 @@ impl LayerCompositor {
         pass.draw(0..3, 0..1);
     }
 
+    /// Blit a GPU texture view directly into its viewport region on the target texture.
+    ///
+    /// Same as [`blit_layer`] but takes a `TextureView` directly instead of a
+    /// `Texture` reference — used for zero-copy compositing when the source
+    /// already lives on the GPU (e.g., a game engine's offscreen render target).
+    #[allow(clippy::too_many_arguments)]
+    pub fn blit_layer_view(
+        &self,
+        device: &Device,
+        queue: &Queue,
+        encoder: &mut CommandEncoder,
+        layer_view: &TextureView,
+        target: &TextureView,
+        viewport: (f32, f32, f32, f32),
+        surface_size: (u32, u32),
+        clear_color: Option<wgpu::Color>,
+    ) {
+        let sw = surface_size.0 as f32;
+        let sh = surface_size.1 as f32;
+        let uniforms = Uniforms {
+            layer_rect: [
+                viewport.0 / sw,
+                viewport.1 / sh,
+                viewport.2 / sw,
+                viewport.3 / sh,
+            ],
+            surface_size: [sw, sh],
+            _pad: [0.0, 0.0],
+        };
+
+        let pass_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("layer blit uniforms (gpu)"),
+            size: std::mem::size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&pass_uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+
+        let bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("layer blit bind group (gpu)"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(layer_view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::TextureView(layer_view), // unused by fs_layer
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::Sampler(&self.sampler),
+                },
+                BindGroupEntry {
+                    binding: 3,
+                    resource: pass_uniform_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let load_op = if let Some(color) = clear_color {
+            wgpu::LoadOp::Clear(color)
+        } else {
+            wgpu::LoadOp::Load
+        };
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("layer blit pass (gpu)"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: load_op,
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        pass.set_pipeline(&self.layer_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
     /// Alpha-blend the Vello UI texture on top of the composited layers.
     ///
     /// Uses premultiplied alpha blending (Vello outputs premultiplied alpha).
