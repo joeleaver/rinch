@@ -41,16 +41,18 @@ rfd = { workspace = true, optional = true }
 rinch-clipboard = { workspace = true, optional = true }
 tray-icon = { workspace = true, optional = true }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-gtk = { version = "0.18", optional = true }
-ksni = { workspace = true, optional = true }
-memory-stats = { version = "1.2", optional = true }
+# Platform-independent optional deps
 rinch-theme = { workspace = true, optional = true }
 rinch-components = { workspace = true, optional = true }
 rinch-debug = { path = "../rinch-debug", optional = true }
 rinch-web = { workspace = true, optional = true }
 rinch-video = { workspace = true, optional = true }
 ureq = { version = "3", optional = true }
+memory-stats = { version = "1.2", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18", optional = true }
+ksni = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Graphics_Gdi", "Win32_Foundation"] }
