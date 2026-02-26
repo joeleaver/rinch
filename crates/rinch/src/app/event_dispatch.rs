@@ -183,21 +183,41 @@ impl RinchApp {
                     }
                     actions.push(AppAction::SetCursor(cursor_style));
 
-                    // Dispatch MouseMove to render surface under cursor
-                    if let Some(hit_id) = hovered {
-                        let surface_hit = {
-                            let d = doc.borrow();
-                            Self::find_render_surface_at(&d.tree, hit_id, x, y)
-                        };
-                        if let Some((surface_id, local_x, local_y)) = surface_hit {
+                    // Dispatch MouseMove + MouseEnter/MouseLeave to render surfaces
+                    let new_surface = if let Some(hit_id) = hovered {
+                        let d = doc.borrow();
+                        Self::find_render_surface_at(&d.tree, hit_id, x, y)
+                    } else {
+                        None
+                    };
+
+                    let new_surface_id = new_surface.as_ref().map(|(id, _, _)| *id);
+                    if new_surface_id != self.hovered_surface {
+                        // Dispatch MouseLeave to old surface
+                        if let Some(old_id) = self.hovered_surface {
                             crate::render_surface::dispatch_surface_event(
-                                surface_id,
-                                crate::render_surface::SurfaceEvent::MouseMove {
-                                    x: local_x,
-                                    y: local_y,
-                                },
+                                old_id,
+                                crate::render_surface::SurfaceEvent::MouseLeave,
                             );
                         }
+                        // Dispatch MouseEnter to new surface
+                        if let Some((sid, lx, ly)) = &new_surface {
+                            crate::render_surface::dispatch_surface_event(
+                                *sid,
+                                crate::render_surface::SurfaceEvent::MouseEnter { x: *lx, y: *ly },
+                            );
+                        }
+                        self.hovered_surface = new_surface_id;
+                    }
+
+                    if let Some((surface_id, local_x, local_y)) = new_surface {
+                        crate::render_surface::dispatch_surface_event(
+                            surface_id,
+                            crate::render_surface::SurfaceEvent::MouseMove {
+                                x: local_x,
+                                y: local_y,
+                            },
+                        );
                     }
                 }
             }
@@ -316,29 +336,10 @@ impl RinchApp {
                 }
             }
             PlatformEvent::MouseDown { x, y, button } => {
-                // Non-left button clicks: dispatch to render surfaces if applicable
-                if let Some(doc) = &self.doc {
-                    let surface_hit = {
-                        let d = doc.borrow();
-                        if let Some(hit_id) = hit_test(&d.tree, x, y) {
-                            Self::find_render_surface_at(&d.tree, hit_id, x, y)
-                        } else {
-                            None
-                        }
-                    };
-                    if let Some((surface_id, local_x, local_y)) = surface_hit {
-                        crate::render_surface::dispatch_surface_event(
-                            surface_id,
-                            crate::render_surface::SurfaceEvent::MouseDown {
-                                x: local_x,
-                                y: local_y,
-                                button: crate::render_surface::SurfaceMouseButton::from_platform(
-                                    button,
-                                ),
-                            },
-                        );
-                    }
-                }
+                // Non-left button clicks: use handle_click_with_button so the
+                // surface gets focus (needed for MouseUp to reach it later).
+                let click_actions = self.handle_click_with_button(x, y, scale_factor, button);
+                actions.extend(click_actions);
             }
             PlatformEvent::MouseUp { x, y, button } => {
                 // ── Drag-and-drop: complete or cancel ─────────────────────
@@ -538,6 +539,13 @@ impl RinchApp {
                     KeyCode::PageUp => Some("PageUp".into()),
                     KeyCode::PageDown => Some("PageDown".into()),
                     KeyCode::Space => Some("Space".into()),
+                    // Modifier keys (as physical key presses)
+                    KeyCode::ShiftLeft => Some("Shift".into()),
+                    KeyCode::ShiftRight => Some("Shift".into()),
+                    KeyCode::ControlLeft => Some("Control".into()),
+                    KeyCode::ControlRight => Some("Control".into()),
+                    KeyCode::AltLeft => Some("Alt".into()),
+                    KeyCode::AltRight => Some("Alt".into()),
                     // Ctrl+key combos: derive key letter from KeyCode
                     KeyCode::KeyA if ctrl => Some("a".into()),
                     KeyCode::KeyB if ctrl => Some("b".into()),
@@ -579,8 +587,21 @@ impl RinchApp {
                 };
 
                 if handled_by_interceptor {
-                    // If a render surface is focused, also forward text input
+                    // If a render surface is focused, forward KeyDown + text input
                     if let Some(surface_id) = crate::render_surface::focused_surface_id() {
+                        crate::render_surface::dispatch_surface_event(
+                            surface_id,
+                            crate::render_surface::SurfaceEvent::KeyDown(
+                                crate::render_surface::SurfaceKeyData {
+                                    key: key_str.clone().unwrap_or_default(),
+                                    code: format!("{:?}", key),
+                                    ctrl,
+                                    shift,
+                                    alt,
+                                    meta: false,
+                                },
+                            ),
+                        );
                         if let Some(ref t) = text {
                             if !t.is_empty() && t.chars().all(|c| !c.is_control()) {
                                 crate::render_surface::dispatch_surface_event(
@@ -641,6 +662,25 @@ impl RinchApp {
                             }
                         }
                     }
+                }
+            }
+            PlatformEvent::KeyUp { key, modifiers } => {
+                // Forward key release to focused render surface.
+                if let Some(surface_id) = crate::render_surface::focused_surface_id() {
+                    let key_str = format!("{:?}", key);
+                    crate::render_surface::dispatch_surface_event(
+                        surface_id,
+                        crate::render_surface::SurfaceEvent::KeyUp(
+                            crate::render_surface::SurfaceKeyData {
+                                key: key_str.clone(),
+                                code: key_str,
+                                ctrl: modifiers.primary(),
+                                shift: modifiers.shift,
+                                alt: modifiers.alt,
+                                meta: modifiers.meta,
+                            },
+                        ),
+                    );
                 }
             }
             PlatformEvent::ScaleFactorChanged(_) => {

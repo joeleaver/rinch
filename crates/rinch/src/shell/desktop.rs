@@ -4,7 +4,7 @@
 //! traits from `rinch-platform` for the native desktop target using
 //! winit for windowing and wgpu/vello for GPU rendering.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use peniko::Color;
 use rinch_platform::{CompositeLayer, PlatformRenderer, PlatformWindow, RenderError};
@@ -12,9 +12,44 @@ use vello::{AaConfig, AaSupport, RenderParams, Renderer as VelloRenderer, Render
 use wgpu::{
     Backends, CommandEncoderDescriptor, Device, Extent3d, Instance, InstanceDescriptor, Limits,
     MemoryHints, PresentMode, Queue, Surface, SurfaceConfiguration, Texture, TextureDescriptor,
-    TextureDimension, TextureFormat, TextureUsages,
+    TextureDimension, TextureFormat, TextureUsages, TextureView,
 };
 use winit::window::Window;
+
+// ── GpuHandle ────────────────────────────────────────────────────────────────
+
+/// Shared GPU device and queue handle.
+///
+/// Exposed after rinch creates the wgpu renderer so external code (e.g., a game
+/// engine running on a background thread) can share the same GPU device for
+/// zero-copy texture compositing.
+#[derive(Clone)]
+pub struct GpuHandle {
+    pub device: Arc<Device>,
+    pub queue: Arc<Queue>,
+}
+
+static GPU_HANDLE: OnceLock<GpuHandle> = OnceLock::new();
+
+/// Get the shared GPU handle, if the renderer has been initialized.
+///
+/// Returns `None` before `rinch::shell::run()` creates the wgpu device.
+/// After that, returns the `Arc<Device>` and `Arc<Queue>` that rinch uses
+/// internally, allowing external renderers to share the same GPU device.
+pub fn gpu_handle() -> Option<&'static GpuHandle> {
+    GPU_HANDLE.get()
+}
+
+/// A GPU texture layer for zero-copy compositing.
+///
+/// Unlike [`CompositeLayer`] which carries CPU pixel data, this provides
+/// a wgpu `TextureView` that the compositor reads directly — no upload needed.
+pub struct GpuTextureLayer {
+    /// The texture view to composite.
+    pub view: TextureView,
+    /// Viewport rectangle in physical pixels: (x, y, w, h).
+    pub viewport: (f32, f32, f32, f32),
+}
 
 // ── WinitWindow ──────────────────────────────────────────────────────────────
 
@@ -106,14 +141,16 @@ pub struct WgpuRenderer {
     pub(crate) render_texture: Texture,
     pub(crate) surface: Surface<'static>,
     pub(crate) surface_config: SurfaceConfiguration,
-    pub(crate) device: Device,
-    pub(crate) queue: Queue,
+    pub(crate) device: Arc<Device>,
+    pub(crate) queue: Arc<Queue>,
     /// Layer compositor (created lazily when composite layers are first set).
     pub(crate) layer_compositor: Option<super::compositor::LayerCompositor>,
     /// Frame uploader (reusable texture for decoded frames).
     pub(crate) layer_uploader: Option<super::frame_upload::FrameUploader>,
     /// Active composite layers to render underneath the UI.
     pub(crate) composite_layers: Vec<CompositeLayer>,
+    /// Active GPU texture layers for zero-copy compositing.
+    pub(crate) gpu_layers: Vec<GpuTextureLayer>,
     /// Composited output texture (layers + UI) for screenshot capture.
     /// Created lazily, invalidated on resize.
     pub(crate) composited_texture: Option<Texture>,
@@ -154,15 +191,25 @@ impl WgpuRenderer {
             caps.formats[0]
         };
 
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("rinch-dom device"),
-            required_features: wgpu::Features::default(),
-            required_limits: Limits::default(),
-            memory_hints: MemoryHints::MemoryUsage,
-            trace: wgpu::Trace::default(),
-            experimental_features: wgpu::ExperimentalFeatures::default(),
-        }))
-        .expect("Failed to create device");
+        let (raw_device, raw_queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("rinch-dom device"),
+                required_features: wgpu::Features::default(),
+                required_limits: Limits::default(),
+                memory_hints: MemoryHints::MemoryUsage,
+                trace: wgpu::Trace::default(),
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+            }))
+            .expect("Failed to create device");
+
+        let device = Arc::new(raw_device);
+        let queue = Arc::new(raw_queue);
+
+        // Publish the shared GPU handle for external renderers
+        let _ = GPU_HANDLE.set(GpuHandle {
+            device: device.clone(),
+            queue: queue.clone(),
+        });
 
         let surface_config = SurfaceConfiguration {
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_DST,
@@ -206,6 +253,7 @@ impl WgpuRenderer {
             layer_compositor: None,
             layer_uploader: None,
             composite_layers: Vec::new(),
+            gpu_layers: Vec::new(),
             composited_texture: None,
         }
     }
@@ -308,7 +356,9 @@ impl PlatformRenderer for WgpuRenderer {
                 label: Some("rinch-dom copy encoder"),
             });
 
-        if !self.composite_layers.is_empty() {
+        let has_any_layers = !self.composite_layers.is_empty() || !self.gpu_layers.is_empty();
+
+        if has_any_layers {
             // Composite layers + UI using the compositor pipeline.
             // We render to a composited_texture (not directly to swapchain)
             // so that screenshot capture can read the final composited result.
@@ -340,8 +390,7 @@ impl PlatformRenderer for WgpuRenderer {
             });
             let composited_view = composited.create_view(&wgpu::TextureViewDescriptor::default());
 
-            // Phase 1: Upload all layer frames to separate GPU textures,
-            // then blit each into its viewport region.
+            // Phase 1a: Upload CPU pixel layer frames and blit into viewport regions.
             // First layer clears to base_color, subsequent layers load (preserve prior).
             let wgpu_base_color = wgpu::Color {
                 r: base_color.components[0] as f64,
@@ -349,9 +398,10 @@ impl PlatformRenderer for WgpuRenderer {
                 b: base_color.components[2] as f64,
                 a: base_color.components[3] as f64,
             };
-            for (i, layer) in self.composite_layers.iter().enumerate() {
+            let mut layer_idx = 0usize;
+            for layer in self.composite_layers.iter() {
                 let layer_texture = uploader.upload(
-                    i,
+                    layer_idx,
                     &self.device,
                     &self.queue,
                     &layer.pixels,
@@ -367,8 +417,32 @@ impl PlatformRenderer for WgpuRenderer {
                     &composited_view,
                     layer.viewport,
                     (self.surface_config.width, self.surface_config.height),
-                    if i == 0 { Some(wgpu_base_color) } else { None },
+                    if layer_idx == 0 {
+                        Some(wgpu_base_color)
+                    } else {
+                        None
+                    },
                 );
+                layer_idx += 1;
+            }
+
+            // Phase 1b: Blit GPU texture layers directly (zero-copy, no upload).
+            for gpu_layer in &self.gpu_layers {
+                compositor.blit_layer_view(
+                    &self.device,
+                    &self.queue,
+                    &mut encoder,
+                    &gpu_layer.view,
+                    &composited_view,
+                    gpu_layer.viewport,
+                    (self.surface_config.width, self.surface_config.height),
+                    if layer_idx == 0 {
+                        Some(wgpu_base_color)
+                    } else {
+                        None
+                    },
+                );
+                layer_idx += 1;
             }
 
             // Phase 2: Alpha-blend Vello UI on top of all layers.
@@ -444,7 +518,7 @@ impl PlatformRenderer for WgpuRenderer {
     }
 
     fn has_composite_layers(&self) -> bool {
-        !self.composite_layers.is_empty()
+        !self.composite_layers.is_empty() || !self.gpu_layers.is_empty()
     }
 
     fn capture_screenshot(&self) -> Result<(u32, u32, Vec<u8>), RenderError> {
@@ -472,5 +546,15 @@ impl PlatformRenderer for WgpuRenderer {
                 "Screenshot requires the 'debug' feature".into(),
             ))
         }
+    }
+}
+
+impl WgpuRenderer {
+    /// Set GPU texture layers for zero-copy compositing.
+    ///
+    /// These layers are composited alongside CPU pixel layers but skip
+    /// the upload step — the compositor reads the TextureView directly.
+    pub fn set_gpu_layers(&mut self, layers: Vec<GpuTextureLayer>) {
+        self.gpu_layers = layers;
     }
 }

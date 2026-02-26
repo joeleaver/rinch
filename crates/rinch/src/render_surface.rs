@@ -42,6 +42,22 @@ use std::sync::{Arc, Mutex};
 use rinch_core::Component;
 use rinch_core::dom::{NodeHandle, RenderScope};
 
+// ── TextureSource ────────────────────────────────────────────────────────────
+
+/// A GPU texture source for zero-copy compositing.
+///
+/// When set on a [`RenderSurfaceHandle`], the compositor reads this texture
+/// directly instead of uploading CPU pixel data. The texture must be created
+/// on the same wgpu Device (available via [`super::shell::desktop::gpu_handle`]).
+pub struct TextureSource {
+    /// The texture view to composite.
+    pub view: wgpu::TextureView,
+    /// Texture width in pixels.
+    pub width: u32,
+    /// Texture height in pixels.
+    pub height: u32,
+}
+
 // ── Surface ID counter ───────────────────────────────────────────────────────
 
 static NEXT_SURFACE_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
@@ -80,8 +96,14 @@ pub enum SurfaceEvent {
     },
     /// Key pressed while the surface is focused.
     KeyDown(SurfaceKeyData),
+    /// Key released while the surface is focused.
+    KeyUp(SurfaceKeyData),
     /// Text input while the surface is focused.
     TextInput(String),
+    /// Mouse cursor entered the surface bounds.
+    MouseEnter { x: f32, y: f32 },
+    /// Mouse cursor left the surface bounds.
+    MouseLeave,
     /// The surface gained keyboard focus.
     FocusGained,
     /// The surface lost keyboard focus.
@@ -186,8 +208,10 @@ impl SurfaceWriter {
 pub struct RenderSurfaceHandle {
     /// Unique surface ID.
     pub(crate) id: usize,
-    /// Shared pixel buffer.
+    /// Shared pixel buffer (CPU path).
     pub(crate) buffer: Arc<Mutex<SurfaceBuffer>>,
+    /// GPU texture source for zero-copy compositing (replaces pixel path when set).
+    pub(crate) texture_source: Arc<Mutex<Option<TextureSource>>>,
     /// Dirty flag (set by writer, cleared by frame collector).
     pub(crate) needs_redraw: Arc<AtomicBool>,
     /// Event handler (main-thread only).
@@ -195,6 +219,8 @@ pub struct RenderSurfaceHandle {
     pub(crate) event_handler: std::rc::Rc<RefCell<Option<Box<dyn Fn(SurfaceEvent)>>>>,
     /// Viewport name for hole-punch compositing.
     pub(crate) viewport_name: String,
+    /// Layout size in physical pixels, updated by the compositor each frame.
+    pub(crate) layout_size: Arc<Mutex<(u32, u32)>>,
 }
 
 impl RenderSurfaceHandle {
@@ -221,6 +247,110 @@ impl RenderSurfaceHandle {
     /// Get the viewport name used for compositing.
     pub fn viewport_name(&self) -> &str {
         &self.viewport_name
+    }
+
+    /// Set a GPU texture as the frame source for zero-copy compositing.
+    ///
+    /// When set, the compositor reads this texture directly instead of uploading
+    /// CPU pixel data. The texture must be created on the shared wgpu Device
+    /// (available via [`super::shell::desktop::gpu_handle`]).
+    ///
+    /// Call this once at init and again whenever the texture is recreated
+    /// (e.g., on viewport resize). The texture content is read each frame
+    /// by the compositor — only the view reference needs to be set, not
+    /// the pixel data.
+    pub fn set_texture_source(&self, view: wgpu::TextureView, width: u32, height: u32) {
+        *self.texture_source.lock().unwrap() = Some(TextureSource {
+            view,
+            width,
+            height,
+        });
+        self.needs_redraw.store(true, Ordering::Release);
+
+        // Wake the event loop so it picks up the new texture
+        crate::shell::rinch_runtime::run_on_main_thread(|| {});
+    }
+
+    /// Check if this surface has a GPU texture source set.
+    pub fn has_texture_source(&self) -> bool {
+        self.texture_source.lock().unwrap().is_some()
+    }
+
+    /// Get the current layout size in physical pixels.
+    ///
+    /// Updated by the compositor each frame based on the actual DOM layout
+    /// dimensions of this surface's element. Returns `(0, 0)` before the
+    /// first paint.
+    pub fn layout_size(&self) -> (u32, u32) {
+        *self.layout_size.lock().unwrap()
+    }
+
+    /// Get a `Send + Sync` handle for registering GPU textures from background threads.
+    ///
+    /// This extracts the `Send`-able parts of `RenderSurfaceHandle` so a background
+    /// renderer (e.g., a game engine on a worker thread) can call `set_texture_source`
+    /// without holding the main-thread `Rc<RefCell<...>>` event handler field.
+    pub fn gpu_registrar(&self) -> GpuTextureRegistrar {
+        GpuTextureRegistrar {
+            texture_source: self.texture_source.clone(),
+            needs_redraw: self.needs_redraw.clone(),
+            layout_size: self.layout_size.clone(),
+        }
+    }
+}
+
+// ── GpuTextureRegistrar ──────────────────────────────────────────────────────
+
+/// A `Send + Sync` handle for registering GPU textures on a render surface from
+/// a background thread.
+///
+/// Obtained via [`RenderSurfaceHandle::gpu_registrar`]. Wraps only the thread-safe
+/// `Arc<Mutex<>>` fields — the main-thread `Rc` event handler is excluded.
+#[derive(Clone)]
+pub struct GpuTextureRegistrar {
+    /// GPU texture source for zero-copy compositing.
+    texture_source: Arc<Mutex<Option<TextureSource>>>,
+    /// Dirty flag — set to wake the compositor.
+    needs_redraw: Arc<AtomicBool>,
+    /// Layout size in physical pixels, updated by compositor.
+    layout_size: Arc<Mutex<(u32, u32)>>,
+}
+
+impl GpuTextureRegistrar {
+    /// Register a GPU texture as the frame source for zero-copy compositing.
+    ///
+    /// Safe to call from any thread. Wakes the event loop via `run_on_main_thread`.
+    pub fn set_texture_source(&self, view: wgpu::TextureView, width: u32, height: u32) {
+        *self.texture_source.lock().unwrap() = Some(TextureSource {
+            view,
+            width,
+            height,
+        });
+        self.needs_redraw.store(true, Ordering::Release);
+        // Wake the event loop so it picks up the new texture.
+        crate::shell::rinch_runtime::run_on_main_thread(|| {});
+    }
+
+    /// Signal the compositor that the texture content has been updated.
+    ///
+    /// Call this after each frame render. The engine writes new content to the
+    /// same `TextureView` every frame — this wakes the event loop and triggers
+    /// a direct window repaint (bypasses DOM resolution entirely).
+    pub fn notify_frame_ready(&self) {
+        self.needs_redraw.store(true, Ordering::Release);
+        // Send SurfaceRedraw — goes directly to window.request_redraw()
+        // without going through resolve_and_repaint().
+        if let Some(proxy) = crate::shell::rinch_runtime::GLOBAL_PROXY.get() {
+            let _ = proxy.send_event(crate::shell::rinch_runtime::RinchNativeEvent::SurfaceRedraw);
+        }
+    }
+
+    /// Get the current layout size in physical pixels.
+    ///
+    /// Updated by the compositor each frame. Returns `(0, 0)` before
+    /// the first paint.
+    pub fn layout_size(&self) -> (u32, u32) {
+        *self.layout_size.lock().unwrap()
     }
 }
 
@@ -254,9 +384,11 @@ pub fn create_render_surface() -> RenderSurfaceHandle {
             width: 0,
             height: 0,
         })),
+        texture_source: Arc::new(Mutex::new(None)),
         needs_redraw: Arc::new(AtomicBool::new(false)),
         event_handler: std::rc::Rc::new(RefCell::new(None)),
         viewport_name: format!("__render_surface_{id}"),
+        layout_size: Arc::new(Mutex::new((0, 0))),
     };
 
     SURFACE_REGISTRY.with(|reg| {
@@ -289,17 +421,22 @@ pub fn any_surface_dirty() -> bool {
     })
 }
 
-/// Collect frames from ALL registered surfaces that have pixel data.
+/// Collect frames from registered surfaces that use CPU pixel data.
 ///
 /// Returns `(viewport_name, pixels, width, height)` for every surface with
-/// a non-empty buffer, regardless of whether new data was submitted since the
-/// last collection. This ensures the compositor always has all active layers.
+/// a non-empty buffer that does NOT have a GPU texture source set.
+/// Surfaces with a texture source are handled separately via
+/// [`collect_texture_sources`].
 /// Clears dirty flags as a side effect.
 pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
     SURFACE_REGISTRY.with(|reg| {
         let reg = reg.borrow();
         let mut frames = Vec::new();
         for surface in reg.iter() {
+            // Skip surfaces that use GPU texture source
+            if surface.texture_source.lock().unwrap().is_some() {
+                continue;
+            }
             // Clear dirty flag (only used for triggering redraws)
             surface.needs_redraw.store(false, Ordering::Release);
             let buf = surface.buffer.lock().unwrap();
@@ -314,6 +451,45 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
         }
         frames
     })
+}
+
+/// Collect viewport names for surfaces that have a GPU texture source.
+///
+/// Returns `(viewport_name, texture_source_arc)` for each surface with a
+/// texture source set. The compositor reads the `TextureView` directly from
+/// the `Arc<Mutex<Option<TextureSource>>>` — no pixel upload needed.
+/// Clears dirty flags as a side effect.
+pub fn collect_texture_sources() -> Vec<(String, Arc<Mutex<Option<TextureSource>>>)> {
+    SURFACE_REGISTRY.with(|reg| {
+        let reg = reg.borrow();
+        let mut sources = Vec::new();
+        for surface in reg.iter() {
+            if surface.texture_source.lock().unwrap().is_some() {
+                surface.needs_redraw.store(false, Ordering::Release);
+                sources.push((
+                    surface.viewport_name.clone(),
+                    surface.texture_source.clone(),
+                ));
+            }
+        }
+        sources
+    })
+}
+
+/// Update the layout size for a render surface by viewport name.
+///
+/// Called by the compositor each frame after resolving layout. The size is in
+/// physical pixels (logical × scale_factor).
+pub fn update_layout_size(viewport_name: &str, width: u32, height: u32) {
+    SURFACE_REGISTRY.with(|reg| {
+        let reg = reg.borrow();
+        for surface in reg.iter() {
+            if surface.viewport_name == viewport_name {
+                *surface.layout_size.lock().unwrap() = (width, height);
+                return;
+            }
+        }
+    });
 }
 
 /// Check if any render surfaces are registered (even if they haven't submitted frames yet).
