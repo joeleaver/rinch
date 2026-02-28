@@ -109,6 +109,127 @@ pub fn paint_document(
     );
 }
 
+/// Paint children with proper CSS stacking context support.
+///
+/// When the current node is a stacking context (or the root/body), children
+/// are painted in three phases per the CSS spec:
+/// 1. Descendant SCs with negative z-index (sorted ascending)
+/// 2. In-flow non-SC children in DOM order
+/// 3. Descendant SCs with non-negative z-index (sorted by z-index, stable DOM order)
+///
+/// When the current node is NOT a stacking context, only non-SC children are
+/// painted in DOM order — SC children are skipped because they will be
+/// collected and painted by an ancestor stacking context.
+#[allow(clippy::too_many_arguments)]
+fn paint_children_with_stacking(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scene: &mut Scene,
+    scale: f64,
+    offset_x: f64,
+    offset_y: f64,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<Brush>,
+    node_transform: Affine,
+    skip_ifc_children: bool,
+) {
+    let Some(node) = tree.get(node_id) else {
+        return;
+    };
+
+    let is_sc_root = node_id == tree.body_id || creates_stacking_context(node);
+
+    if is_sc_root {
+        // Collect all descendant SCs that should be painted at this level
+        let entries = collect_stacking_contexts(tree, &node.children, scale, offset_x, offset_y);
+
+        // Phase 1: Negative z-index stacking contexts (sorted ascending)
+        let mut negative: Vec<&StackingContextEntry> =
+            entries.iter().filter(|e| e.z_index < 0).collect();
+        negative.sort_by_key(|e| (e.z_index, e.dom_order));
+        for entry in &negative {
+            paint_node(
+                tree,
+                entry.node_id,
+                scene,
+                scale,
+                entry.offset_x,
+                entry.offset_y,
+                font_cx,
+                layout_cx,
+                node_transform,
+            );
+        }
+
+        // Phase 2: In-flow non-SC children in DOM order
+        for &child_id in &node.children {
+            let Some(child) = tree.get(child_id) else {
+                continue;
+            };
+            if creates_stacking_context(child) {
+                continue;
+            }
+            if skip_ifc_children && child.ifc_root.is_some() {
+                continue;
+            }
+            paint_node(
+                tree,
+                child_id,
+                scene,
+                scale,
+                offset_x,
+                offset_y,
+                font_cx,
+                layout_cx,
+                node_transform,
+            );
+        }
+
+        // Phase 3: Non-negative z-index stacking contexts (sorted by z-index, stable DOM order)
+        let mut non_negative: Vec<&StackingContextEntry> =
+            entries.iter().filter(|e| e.z_index >= 0).collect();
+        non_negative.sort_by_key(|e| (e.z_index, e.dom_order));
+        for entry in &non_negative {
+            paint_node(
+                tree,
+                entry.node_id,
+                scene,
+                scale,
+                entry.offset_x,
+                entry.offset_y,
+                font_cx,
+                layout_cx,
+                node_transform,
+            );
+        }
+    } else {
+        // Not a stacking context — paint only non-SC children in DOM order.
+        // SC children are skipped; they'll be collected by an ancestor SC.
+        for &child_id in &node.children {
+            let Some(child) = tree.get(child_id) else {
+                continue;
+            };
+            if creates_stacking_context(child) {
+                continue;
+            }
+            if skip_ifc_children && child.ifc_root.is_some() {
+                continue;
+            }
+            paint_node(
+                tree,
+                child_id,
+                scene,
+                scale,
+                offset_x,
+                offset_y,
+                font_cx,
+                layout_cx,
+                node_transform,
+            );
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn paint_node(
     tree: &NodeTree,
@@ -141,7 +262,14 @@ fn paint_node(
     // still need to be painted — recurse into children then return.
     if layout.width == 0.0 && layout.height == 0.0 {
         if node.computed_style.display == DisplayValue::Contents {
+            // display:contents has no box, so it never forms a SC itself.
+            // Skip SC children — they'll be collected by an ancestor SC.
             for &child_id in &node.children {
+                let dominated_by_ancestor_sc =
+                    tree.get(child_id).is_some_and(creates_stacking_context);
+                if dominated_by_ancestor_sc {
+                    continue;
+                }
                 paint_node(
                     tree,
                     child_id,
@@ -760,46 +888,34 @@ fn paint_node(
                 );
 
                 // Still paint non-inline (block) children normally
-                let child_ids = sorted_paint_order(tree, &node.children);
-                for child_id in child_ids {
-                    let child = match tree.get(child_id) {
-                        Some(c) => c,
-                        None => continue,
-                    };
-                    // Skip inline children — they're painted via the Parley layout
-                    if child.ifc_root.is_some() {
-                        continue;
-                    }
-                    paint_node(
-                        tree,
-                        child_id,
-                        scene,
-                        scale,
-                        x - scroll_x,
-                        y - scroll_y,
-                        font_cx,
-                        layout_cx,
-                        node_transform,
-                    );
-                }
+                paint_children_with_stacking(
+                    tree,
+                    node_id,
+                    scene,
+                    scale,
+                    x - scroll_x,
+                    y - scroll_y,
+                    font_cx,
+                    layout_cx,
+                    node_transform,
+                    true, // skip IFC children
+                );
             } else {
                 // Normal paint path: recurse into all children
                 let scroll_x = node.scroll_offset.0 * scale;
                 let scroll_y = node.scroll_offset.1 * scale;
-                let child_ids = sorted_paint_order(tree, &node.children);
-                for child_id in child_ids {
-                    paint_node(
-                        tree,
-                        child_id,
-                        scene,
-                        scale,
-                        x - scroll_x,
-                        y - scroll_y,
-                        font_cx,
-                        layout_cx,
-                        node_transform,
-                    );
-                }
+                paint_children_with_stacking(
+                    tree,
+                    node_id,
+                    scene,
+                    scale,
+                    x - scroll_x,
+                    y - scroll_y,
+                    font_cx,
+                    layout_cx,
+                    node_transform,
+                    false,
+                );
             }
 
             if clips {

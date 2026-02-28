@@ -176,12 +176,13 @@ impl RinchDocument {
                 .copied()
                 .collect();
             for cid in children_to_remove {
-                // Remove from taffy parent
+                // Remove from taffy parent (use safe version — the child may
+                // have already been detached by setup_inline_formatting_contexts)
                 if let (Some(parent_taffy), Some(child_taffy)) = (
                     self.tree.nodes[node_id].taffy_id,
                     self.tree.nodes[cid].taffy_id,
                 ) {
-                    let _ = self.tree.taffy.remove_child(parent_taffy, child_taffy);
+                    self.taffy_remove_child_safe(parent_taffy, child_taffy);
                 }
                 // Remove the pseudo-element's subtree from the slab
                 self.tree.remove_subtree(cid);

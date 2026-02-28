@@ -1,8 +1,63 @@
 // ── Free functions (platform-agnostic hit testing) ───────────────────────────
 
 /// Simple hit testing: find the deepest node whose layout rect contains (x, y).
+/// Respects CSS stacking contexts so that elements with higher z-index
+/// are tested before visually-behind siblings.
 pub(crate) fn hit_test(tree: &rinch_dom::NodeTree, x: f32, y: f32) -> Option<usize> {
-    hit_test_node(tree, tree.body_id, 0.0, 0.0, x, y)
+    hit_test_node(tree, tree.body_id, 0.0, 0.0, x, y, true)
+}
+
+/// A stacking context entry for hit testing, with accumulated offset.
+struct HitTestScEntry {
+    z_index: i32,
+    node_id: usize,
+    offset_x: f32,
+    offset_y: f32,
+    dom_order: usize,
+}
+
+/// Collect descendant stacking contexts for hit testing, mirroring the paint
+/// pipeline's `collect_stacking_contexts`. Walks children, stops at SC boundaries,
+/// accumulates offsets through intermediate non-SC nodes.
+fn collect_sc_for_hit_test(
+    tree: &rinch_dom::NodeTree,
+    children: &[usize],
+    offset_x: f32,
+    offset_y: f32,
+    result: &mut Vec<HitTestScEntry>,
+    order_counter: &mut usize,
+) {
+    for &child_id in children {
+        let Some(child) = tree.get(child_id) else {
+            continue;
+        };
+
+        if child.creates_stacking_context() {
+            let z = child.computed_style.z_index.unwrap_or(0);
+            result.push(HitTestScEntry {
+                z_index: z,
+                node_id: child_id,
+                offset_x,
+                offset_y,
+                dom_order: *order_counter,
+            });
+            *order_counter += 1;
+        } else {
+            let child_x = offset_x + child.layout.x;
+            let child_y = offset_y + child.layout.y;
+            let sx = child.scroll_offset.0 as f32;
+            let sy = child.scroll_offset.1 as f32;
+            *order_counter += 1;
+            collect_sc_for_hit_test(
+                tree,
+                &child.children,
+                child_x - sx,
+                child_y - sy,
+                result,
+                order_counter,
+            );
+        }
+    }
 }
 
 fn hit_test_node(
@@ -12,6 +67,7 @@ fn hit_test_node(
     offset_y: f32,
     x: f32,
     y: f32,
+    is_sc_root: bool,
 ) -> Option<usize> {
     let node = tree.get(node_id)?;
 
@@ -33,16 +89,7 @@ fn hit_test_node(
 
     let point_in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
 
-    // Check children in reverse order (topmost first).
-    // Children with position: absolute/fixed can extend beyond parent bounds,
-    // and their containing blocks (position: relative parents) may also be outside
-    // our bounds. We check all children unconditionally so that deeply nested
-    // absolute-positioned elements (e.g., dropdown menus) remain clickable.
-    // Each child does its own bounds check, so the overhead is minimal.
-    //
-    // However, nodes with overflow clipping (auto/scroll/hidden/clip) must restrict
-    // child hit testing to within the node's bounds — otherwise scrolled-out content
-    // can steal clicks from sibling elements above the scroll container.
+    // Nodes with overflow clipping must restrict child hit testing to within bounds
     let clips_overflow = !matches!(
         node.computed_style.overflow_x,
         rinch_dom::computed_style::OverflowValue::Visible
@@ -54,11 +101,115 @@ fn hit_test_node(
 
     let sx = node.scroll_offset.0 as f32;
     let sy = node.scroll_offset.1 as f32;
-    let children: Vec<_> = node.children.clone();
+
     if check_children {
-        for &child_id in children.iter().rev() {
-            if let Some(hit) = hit_test_node(tree, child_id, nx - sx, ny - sy, x, y) {
-                return Some(hit);
+        let is_sc = is_sc_root || node.creates_stacking_context();
+
+        if is_sc {
+            // Stacking context root: test children in reverse paint order.
+            // Phase 3 (topmost): positive z-index SCs, highest first
+            // Phase 2: non-SC children in reverse DOM order
+            // Phase 1: negative z-index SCs, closest to 0 first
+            let children: Vec<_> = node.children.clone();
+            let mut entries = Vec::new();
+            let mut order_counter = 0usize;
+            collect_sc_for_hit_test(
+                tree,
+                &children,
+                nx - sx,
+                ny - sy,
+                &mut entries,
+                &mut order_counter,
+            );
+
+            // Phase 3 reversed: positive z-index SCs (highest z first, later DOM order first)
+            let mut positive: Vec<&HitTestScEntry> =
+                entries.iter().filter(|e| e.z_index > 0).collect();
+            positive.sort_by(|a, b| {
+                b.z_index
+                    .cmp(&a.z_index)
+                    .then(b.dom_order.cmp(&a.dom_order))
+            });
+            for entry in &positive {
+                if let Some(hit) = hit_test_node(
+                    tree,
+                    entry.node_id,
+                    entry.offset_x,
+                    entry.offset_y,
+                    x,
+                    y,
+                    true,
+                ) {
+                    return Some(hit);
+                }
+            }
+
+            // z-index 0 SCs (reverse DOM order)
+            let mut zero: Vec<&HitTestScEntry> =
+                entries.iter().filter(|e| e.z_index == 0).collect();
+            zero.sort_by(|a, b| b.dom_order.cmp(&a.dom_order));
+            for entry in &zero {
+                if let Some(hit) = hit_test_node(
+                    tree,
+                    entry.node_id,
+                    entry.offset_x,
+                    entry.offset_y,
+                    x,
+                    y,
+                    true,
+                ) {
+                    return Some(hit);
+                }
+            }
+
+            // Phase 2 reversed: non-SC children in reverse DOM order
+            for &child_id in children.iter().rev() {
+                let Some(child) = tree.get(child_id) else {
+                    continue;
+                };
+                if child.creates_stacking_context() {
+                    continue;
+                }
+                if let Some(hit) = hit_test_node(tree, child_id, nx - sx, ny - sy, x, y, false) {
+                    return Some(hit);
+                }
+            }
+
+            // Phase 1 reversed: negative z-index SCs (closest to 0 first)
+            let mut negative: Vec<&HitTestScEntry> =
+                entries.iter().filter(|e| e.z_index < 0).collect();
+            negative.sort_by(|a, b| {
+                b.z_index
+                    .cmp(&a.z_index)
+                    .then(b.dom_order.cmp(&a.dom_order))
+            });
+            for entry in &negative {
+                if let Some(hit) = hit_test_node(
+                    tree,
+                    entry.node_id,
+                    entry.offset_x,
+                    entry.offset_y,
+                    x,
+                    y,
+                    true,
+                ) {
+                    return Some(hit);
+                }
+            }
+        } else {
+            // Not a stacking context — only test non-SC children.
+            // SC children are skipped; they'll be tested at the ancestor SC level.
+            let children: Vec<_> = node.children.clone();
+            for &child_id in children.iter().rev() {
+                let Some(child) = tree.get(child_id) else {
+                    continue;
+                };
+                if child.creates_stacking_context() {
+                    continue;
+                }
+                if let Some(hit) = hit_test_node(tree, child_id, nx - sx, ny - sy, x, y, false) {
+                    return Some(hit);
+                }
             }
         }
     }

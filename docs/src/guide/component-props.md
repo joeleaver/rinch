@@ -320,6 +320,61 @@ Options are passed as children: `option { value: "us", "United States" }`
 
 ---
 
+## Color
+
+### ColorSwatch
+
+A colored square with checkerboard transparency indication.
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `color` | `String` | `""` | CSS color value |
+| `size` | `String` | `"28px"` | Width and height |
+| `radius` | `String` | `"sm"` | Border radius (xs, sm, md, lg, xl or CSS value) |
+| `with_shadow` | `bool` | `false` | Show box shadow |
+| `onclick` | `Option<Callback>` | `None` | Click handler |
+
+### ColorPicker
+
+Interactive color picker with saturation panel, hue/alpha sliders, hex input, and swatches.
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `format` | `String` | `"hex"` | Output format: hex, hexa, rgb, rgba, hsl, hsla |
+| `value` | `String` | `""` | Initial color (any parseable CSS color) |
+| `value_fn` | `Option<ReactiveString>` | `None` | Reactive external value binding |
+| `onchange` | `Option<InputCallback>` | `None` | Fires formatted color string on change |
+| `alpha` | `bool` | `false` | Show alpha slider |
+| `swatches` | `Vec<String>` | `[]` | Preset swatch colors |
+| `swatches_per_row` | `Option<usize>` | `7` | Swatches per row |
+| `size` | `String` | `"md"` | Size: sm, md, lg, xl |
+| `with_input` | `bool` | `false` | Show hex text input |
+
+### ColorInput
+
+Text input with inline color preview and dropdown ColorPicker.
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `label` | `String` | `""` | Input label |
+| `description` | `String` | `""` | Description text below the input |
+| `error` | `String` | `""` | Error message (shows error styling) |
+| `placeholder` | `String` | `""` | Placeholder text |
+| `size` | `String` | `""` | Input size |
+| `radius` | `String` | `""` | Border radius |
+| `disabled` | `bool` | `false` | Disable the input |
+| `value` | `String` | `""` | Current color value |
+| `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding |
+| `onchange` | `Option<InputCallback>` | `None` | Fires formatted color string on change |
+| `format` | `String` | `"hex"` | Output format |
+| `alpha` | `bool` | `false` | Show alpha slider in picker |
+| `swatches` | `Vec<String>` | `[]` | Preset swatch colors |
+| `swatches_per_row` | `Option<usize>` | `7` | Swatches per row |
+| `close_on_click_outside` | `bool` | `false` | Close dropdown on outside click |
+| `disallow_input` | `bool` | `false` | Disallow typing (picker only) |
+
+---
+
 ## Typography
 
 ### Text

@@ -119,7 +119,8 @@ pub struct FileImageLoader;
 
 impl ImageLoader for FileImageLoader {
     fn load(&self, src: &str) -> ImageLoadResult {
-        match std::fs::read(src) {
+        let path = src.strip_prefix("file://").unwrap_or(src);
+        match std::fs::read(path) {
             Ok(bytes) => ImageLoadResult::Loaded(bytes),
             Err(e) => ImageLoadResult::Failed(format!("Failed to read {}: {}", src, e)),
         }

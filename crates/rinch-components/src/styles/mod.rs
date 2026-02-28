@@ -19,6 +19,7 @@ mod center;
 mod checkbox;
 mod close_button;
 mod code;
+mod color_picker;
 mod container;
 mod divider;
 mod drawer;
@@ -102,6 +103,7 @@ pub fn generate_all_component_styles() -> String {
     css.push_str(&image::styles());
     css.push_str(&list::styles());
     css.push_str(&slider::styles());
+    css.push_str(&color_picker::styles());
     css.push_str(&blockquote::styles());
     css.push_str(&mark::styles());
     css.push_str(&highlight::styles());

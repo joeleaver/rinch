@@ -218,33 +218,102 @@ pub(super) fn paint_outline(
     }
 }
 
-/// Sort child nodes by z-index for correct paint order.
-///
-/// Returns children sorted in CSS stacking order:
-/// 1. Negative z-index children (sorted ascending by z-index)
-/// 2. Auto/0 z-index children (DOM order preserved)
-/// 3. Positive z-index children (sorted ascending by z-index)
-pub(super) fn sorted_paint_order(tree: &NodeTree, children: &[usize]) -> Vec<usize> {
-    let mut negative_z: Vec<(i32, usize)> = Vec::new();
-    let mut normal: Vec<usize> = Vec::new();
-    let mut positive_z: Vec<(i32, usize)> = Vec::new();
+/// Check whether a node creates a CSS stacking context.
+/// Delegates to `Node::creates_stacking_context()`.
+pub(super) fn creates_stacking_context(node: &Node) -> bool {
+    node.creates_stacking_context()
+}
 
+/// A descendant stacking context entry collected for painting at an ancestor SC level.
+pub(super) struct StackingContextEntry {
+    /// The z-index of the SC node (0 if `z_index` is `None`).
+    pub z_index: i32,
+    /// The node ID of the SC.
+    pub node_id: usize,
+    /// Accumulated offset X (physical pixels) from the collecting ancestor to this node's parent.
+    pub offset_x: f64,
+    /// Accumulated offset Y (physical pixels) from the collecting ancestor to this node's parent.
+    pub offset_y: f64,
+    /// DOM order index for stable sorting within the same z-index.
+    pub dom_order: usize,
+}
+
+/// Collect descendant stacking contexts that should be painted at this SC level.
+///
+/// Walks descendants starting from `children`, collecting nodes that form SCs.
+/// Stops recursion at each SC boundary (those belong to the deeper SC).
+/// Accumulates layout offsets through intermediate (non-SC) nodes so each
+/// collected entry has the correct offset for `paint_node`.
+///
+/// `offset_x`/`offset_y` should be the scroll-adjusted parent position
+/// (i.e., what would be passed to `paint_node` as offset for direct children).
+pub(super) fn collect_stacking_contexts(
+    tree: &NodeTree,
+    children: &[usize],
+    scale: f64,
+    offset_x: f64,
+    offset_y: f64,
+) -> Vec<StackingContextEntry> {
+    let mut result = Vec::new();
+    let mut order_counter = 0usize;
+    collect_sc_recursive(
+        tree,
+        children,
+        scale,
+        offset_x,
+        offset_y,
+        &mut result,
+        &mut order_counter,
+    );
+    result
+}
+
+fn collect_sc_recursive(
+    tree: &NodeTree,
+    children: &[usize],
+    scale: f64,
+    parent_offset_x: f64,
+    parent_offset_y: f64,
+    result: &mut Vec<StackingContextEntry>,
+    order_counter: &mut usize,
+) {
     for &child_id in children {
-        match tree.get(child_id).and_then(|c| c.computed_style.z_index) {
-            Some(z) if z < 0 => negative_z.push((z, child_id)),
-            Some(z) if z > 0 => positive_z.push((z, child_id)),
-            _ => normal.push(child_id),
+        let Some(child) = tree.get(child_id) else {
+            continue;
+        };
+
+        if creates_stacking_context(child) {
+            // This child is a SC — collect it with the current accumulated offset.
+            // paint_node will add child.layout.x/y itself, so we pass parent_offset.
+            let z = child.computed_style.z_index.unwrap_or(0);
+            result.push(StackingContextEntry {
+                z_index: z,
+                node_id: child_id,
+                offset_x: parent_offset_x,
+                offset_y: parent_offset_y,
+                dom_order: *order_counter,
+            });
+            *order_counter += 1;
+            // Don't recurse — deeper SCs belong to this child's SC level.
+        } else {
+            // Not a SC — recurse through its children to find deeper SCs.
+            // Accumulate this node's layout offset.
+            let child_x = parent_offset_x + child.layout.x as f64 * scale;
+            let child_y = parent_offset_y + child.layout.y as f64 * scale;
+            let sx = child.scroll_offset.0 * scale;
+            let sy = child.scroll_offset.1 * scale;
+            *order_counter += 1;
+            collect_sc_recursive(
+                tree,
+                &child.children,
+                scale,
+                child_x - sx,
+                child_y - sy,
+                result,
+                order_counter,
+            );
         }
     }
-
-    negative_z.sort_by_key(|(z, _)| *z);
-    positive_z.sort_by_key(|(z, _)| *z);
-
-    let mut result = Vec::with_capacity(children.len());
-    result.extend(negative_z.into_iter().map(|(_, id)| id));
-    result.extend(normal);
-    result.extend(positive_z.into_iter().map(|(_, id)| id));
-    result
 }
 
 /// Paint CSS box-shadow from typed computed values.

@@ -397,6 +397,70 @@ pub fn inputs_section() -> NodeHandle {
                     }
                 }
             }
+
+            // ============================================
+            // COLOR PICKER
+            // ============================================
+            Space { h: "xl" }
+            Title { order: 3, "Color Picker" }
+            Space { h: "sm" }
+            Text { color: "dimmed", size: "sm", "Pick colors interactively with saturation panel, hue/alpha sliders, and preset swatches." }
+            Space { h: "md" }
+
+            SimpleGrid { cols: Some(2), spacing: "lg",
+                // Basic ColorPicker
+                Paper { p: "xl", radius: "md", with_border: true,
+                    Stack { gap: "md",
+                        Text { weight: "600", "Color Picker" }
+                        Divider {}
+                        ColorPicker {
+                            value: "#339af0",
+                            alpha: true,
+                            with_input: true,
+                            swatches: vec![
+                                "#fa5252".into(), "#e64980".into(), "#be4bdb".into(),
+                                "#7950f2".into(), "#4c6ef5".into(), "#228be6".into(),
+                                "#15aabf".into(), "#12b886".into(), "#40c057".into(),
+                                "#82c91e".into(), "#fab005".into(), "#fd7e14".into(),
+                                "#868e96".into(), "#000000".into(),
+                            ]
+                        }
+                    }
+                }
+
+                // ColorInput
+                Paper { p: "xl", radius: "md", with_border: true,
+                    Stack { gap: "md",
+                        Text { weight: "600", "Color Input" }
+                        Divider {}
+                        ColorInput {
+                            label: "Pick a color",
+                            placeholder: "#000000",
+                            value: "#228be6",
+                            alpha: true,
+                            swatches: vec![
+                                "#fa5252".into(), "#e64980".into(), "#be4bdb".into(),
+                                "#7950f2".into(), "#4c6ef5".into(), "#228be6".into(),
+                                "#15aabf".into(),
+                            ]
+                        }
+
+                        Space { h: "sm" }
+
+                        // Color swatches row
+                        Text { size: "sm", weight: "600", "Color Swatches" }
+                        Group { gap: "xs",
+                            ColorSwatch { color: "#fa5252", size: "32px" }
+                            ColorSwatch { color: "#e64980", size: "32px" }
+                            ColorSwatch { color: "#be4bdb", size: "32px" }
+                            ColorSwatch { color: "#7950f2", size: "32px" }
+                            ColorSwatch { color: "#4c6ef5", size: "32px" }
+                            ColorSwatch { color: "#228be6", size: "32px" }
+                            ColorSwatch { color: "rgba(34, 139, 230, 0.5)", size: "32px" }
+                        }
+                    }
+                }
+            }
         }
     }
 }

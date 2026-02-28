@@ -460,6 +460,29 @@ impl Node {
         }
     }
 
+    /// Check whether this node creates a CSS stacking context.
+    ///
+    /// A stacking context is formed when any of:
+    /// - `position` is not `static` AND `z-index` is explicitly set (not `auto`)
+    /// - `opacity < 1.0`
+    /// - `transform` is non-identity
+    pub fn creates_stacking_context(&self) -> bool {
+        use crate::computed_style::PositionValue;
+
+        if !matches!(self.computed_style.position, PositionValue::Static)
+            && self.computed_style.z_index.is_some()
+        {
+            return true;
+        }
+        if self.computed_style.opacity < 1.0 {
+            return true;
+        }
+        if !self.computed_style.transform.is_identity {
+            return true;
+        }
+        false
+    }
+
     /// Get the text content if this is a text node.
     pub fn text_content(&self) -> Option<&str> {
         match &self.kind {
