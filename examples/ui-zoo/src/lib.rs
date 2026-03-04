@@ -104,6 +104,11 @@ pub fn nav_links<F: Fn() + 'static>(
                 active_fn: move || current_section.get() == 13,
                 onclick: nav(13)
             }
+            NavLink {
+                label: "RenderSurface",
+                active_fn: move || current_section.get() == 14,
+                onclick: nav(14)
+            }
         }
     }
 }
@@ -166,6 +171,7 @@ pub fn section_content(__scope: &mut RenderScope, current_section: Signal<usize>
                 11 => { editor_section(__scope) },
                 12 => { css_features_section(__scope) },
                 13 => { video_section(__scope) },
+                14 => { render_surface_section(__scope) },
                 _ => div { },
             }
         }
