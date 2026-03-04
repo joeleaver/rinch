@@ -223,6 +223,13 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
     let click_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
         if let Some(target) = event.target()
             && let Ok(el) = target.dyn_into::<web_sys::Element>() {
+                // Clear render surface focus if click is outside any surface
+                if rinch::render_surface::focused_surface_id().is_some() {
+                    if el.closest("[data-render-surface]").ok().flatten().is_none() {
+                        rinch::render_surface::set_focused_surface(None);
+                    }
+                }
+
                 // Walk up from target to find nearest [data-rid]
                 if let Ok(Some(rid_el)) = el.closest("[data-rid]")
                     && let Some(rid_str) = rid_el.get_attribute("data-rid")
@@ -259,8 +266,35 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
         .unwrap();
     click_closure.forget();
 
-    // Keyboard delegation: dispatch all key presses to the keyboard interceptor.
+    // Keyboard delegation: route to focused render surface or keyboard interceptor.
     let keydown_closure = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+        // If a render surface is focused, route keyboard events to it
+        if let Some(surface_id) = rinch::render_surface::focused_surface_id() {
+            let key_data = rinch::render_surface::SurfaceKeyData {
+                key: event.key(),
+                code: event.code(),
+                ctrl: event.ctrl_key() || event.meta_key(),
+                shift: event.shift_key(),
+                alt: event.alt_key(),
+                meta: event.meta_key(),
+            };
+            rinch::render_surface::dispatch_surface_event(
+                surface_id,
+                rinch::render_surface::SurfaceEvent::KeyDown(key_data),
+            );
+            // Also dispatch TextInput for printable characters
+            let key = event.key();
+            if key.len() == 1 && !event.ctrl_key() && !event.meta_key() && !event.alt_key() {
+                rinch::render_surface::dispatch_surface_event(
+                    surface_id,
+                    rinch::render_surface::SurfaceEvent::TextInput(key),
+                );
+            }
+            event.prevent_default();
+            event.stop_propagation();
+            return;
+        }
+
         let key_data = events::KeyEventData {
             key: event.key(),
             code: event.code(),

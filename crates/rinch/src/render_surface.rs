@@ -2,8 +2,8 @@
 //!
 //! `RenderSurface` lets you feed raw RGBA pixels from any source (game engine,
 //! terminal emulator, video decoder, custom GPU renderer) into a rinch layout.
-//! Rinch positions the surface via CSS/Taffy and composites the pixels into
-//! the final frame.
+//! On desktop, rinch composites the pixels via a hole-punch + WGSL compositor.
+//! On web, a native `<canvas>` element is used and the browser handles compositing.
 //!
 //! # Usage
 //!
@@ -42,13 +42,14 @@ use std::sync::{Arc, Mutex};
 use rinch_core::Component;
 use rinch_core::dom::{NodeHandle, RenderScope};
 
-// ── TextureSource ────────────────────────────────────────────────────────────
+// ── TextureSource (desktop only) ────────────────────────────────────────────
 
 /// A GPU texture source for zero-copy compositing.
 ///
 /// When set on a [`RenderSurfaceHandle`], the compositor reads this texture
 /// directly instead of uploading CPU pixel data. The texture must be created
 /// on the same wgpu Device (available via [`super::shell::desktop::gpu_handle`]).
+#[cfg(feature = "desktop")]
 pub struct TextureSource {
     /// The texture view to composite.
     pub view: wgpu::TextureView,
@@ -118,6 +119,7 @@ pub enum SurfaceMouseButton {
     Middle,
 }
 
+#[cfg(feature = "desktop")]
 impl SurfaceMouseButton {
     /// Convert from platform MouseButton.
     pub fn from_platform(button: rinch_platform::MouseButton) -> Self {
@@ -165,6 +167,8 @@ pub(crate) struct SurfaceBuffer {
 pub struct SurfaceWriter {
     buffer: Arc<Mutex<SurfaceBuffer>>,
     needs_redraw: Arc<AtomicBool>,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    surface_id: usize,
 }
 
 impl SurfaceWriter {
@@ -193,8 +197,16 @@ impl SurfaceWriter {
 
         self.needs_redraw.store(true, Ordering::Release);
 
-        // Wake the event loop so it picks up the new frame
-        crate::shell::rinch_runtime::run_on_main_thread(|| {});
+        #[cfg(feature = "desktop")]
+        {
+            // Wake the event loop so it picks up the new frame
+            crate::shell::rinch_runtime::run_on_main_thread(|| {});
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            web_blit_surface(self.surface_id, &self.buffer);
+        }
     }
 }
 
@@ -211,6 +223,7 @@ pub struct RenderSurfaceHandle {
     /// Shared pixel buffer (CPU path).
     pub(crate) buffer: Arc<Mutex<SurfaceBuffer>>,
     /// GPU texture source for zero-copy compositing (replaces pixel path when set).
+    #[cfg(feature = "desktop")]
     pub(crate) texture_source: Arc<Mutex<Option<TextureSource>>>,
     /// Dirty flag (set by writer, cleared by frame collector).
     pub(crate) needs_redraw: Arc<AtomicBool>,
@@ -221,6 +234,16 @@ pub struct RenderSurfaceHandle {
     pub(crate) viewport_name: String,
     /// Layout size in physical pixels, updated by the compositor each frame.
     pub(crate) layout_size: Arc<Mutex<(u32, u32)>>,
+    /// The underlying canvas element (web only).
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) canvas: std::rc::Rc<RefCell<Option<web_sys::HtmlCanvasElement>>>,
+    /// The 2D rendering context for the canvas (web only).
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) canvas_ctx: std::rc::Rc<RefCell<Option<web_sys::CanvasRenderingContext2d>>>,
+    /// Per-frame render callback invoked each animation frame.
+    #[allow(clippy::type_complexity)]
+    pub(crate) render_callback:
+        std::rc::Rc<RefCell<Option<Box<dyn FnMut(&SurfaceWriter, u32, u32)>>>>,
 }
 
 impl RenderSurfaceHandle {
@@ -229,6 +252,7 @@ impl RenderSurfaceHandle {
         SurfaceWriter {
             buffer: self.buffer.clone(),
             needs_redraw: self.needs_redraw.clone(),
+            surface_id: self.id,
         }
     }
 
@@ -259,6 +283,7 @@ impl RenderSurfaceHandle {
     /// (e.g., on viewport resize). The texture content is read each frame
     /// by the compositor — only the view reference needs to be set, not
     /// the pixel data.
+    #[cfg(feature = "desktop")]
     pub fn set_texture_source(&self, view: wgpu::TextureView, width: u32, height: u32) {
         *self.texture_source.lock().unwrap() = Some(TextureSource {
             view,
@@ -272,6 +297,7 @@ impl RenderSurfaceHandle {
     }
 
     /// Check if this surface has a GPU texture source set.
+    #[cfg(feature = "desktop")]
     pub fn has_texture_source(&self) -> bool {
         self.texture_source.lock().unwrap().is_some()
     }
@@ -290,6 +316,7 @@ impl RenderSurfaceHandle {
     /// This extracts the `Send`-able parts of `RenderSurfaceHandle` so a background
     /// renderer (e.g., a game engine on a worker thread) can call `set_texture_source`
     /// without holding the main-thread `Rc<RefCell<...>>` event handler field.
+    #[cfg(feature = "desktop")]
     pub fn gpu_registrar(&self) -> GpuTextureRegistrar {
         GpuTextureRegistrar {
             texture_source: self.texture_source.clone(),
@@ -297,15 +324,39 @@ impl RenderSurfaceHandle {
             layout_size: self.layout_size.clone(),
         }
     }
+
+    /// Get the underlying canvas element (web only).
+    ///
+    /// Users can create a WebGPU or WebGL context on this canvas
+    /// and render directly — the browser composites it in DOM order.
+    #[cfg(target_arch = "wasm32")]
+    pub fn canvas_element(&self) -> Option<web_sys::HtmlCanvasElement> {
+        self.canvas.borrow().clone()
+    }
+
+    /// Set a per-frame render callback.
+    ///
+    /// The callback receives `(&SurfaceWriter, width, height)` and is invoked
+    /// each animation frame. On desktop this happens in the paint cycle before
+    /// frames are collected; on web it drives a `requestAnimationFrame` loop.
+    ///
+    /// Use this instead of spawning a thread — it works on both desktop and WASM.
+    pub fn set_render_callback(&self, callback: impl FnMut(&SurfaceWriter, u32, u32) + 'static) {
+        *self.render_callback.borrow_mut() = Some(Box::new(callback));
+
+        #[cfg(target_arch = "wasm32")]
+        start_raf_loop(self.id);
+    }
 }
 
-// ── GpuTextureRegistrar ──────────────────────────────────────────────────────
+// ── GpuTextureRegistrar (desktop only) ──────────────────────────────────────
 
 /// A `Send + Sync` handle for registering GPU textures on a render surface from
 /// a background thread.
 ///
 /// Obtained via [`RenderSurfaceHandle::gpu_registrar`]. Wraps only the thread-safe
 /// `Arc<Mutex<>>` fields — the main-thread `Rc` event handler is excluded.
+#[cfg(feature = "desktop")]
 #[derive(Clone)]
 pub struct GpuTextureRegistrar {
     /// GPU texture source for zero-copy compositing.
@@ -316,6 +367,7 @@ pub struct GpuTextureRegistrar {
     layout_size: Arc<Mutex<(u32, u32)>>,
 }
 
+#[cfg(feature = "desktop")]
 impl GpuTextureRegistrar {
     /// Register a GPU texture as the frame source for zero-copy compositing.
     ///
@@ -384,11 +436,17 @@ pub fn create_render_surface() -> RenderSurfaceHandle {
             width: 0,
             height: 0,
         })),
+        #[cfg(feature = "desktop")]
         texture_source: Arc::new(Mutex::new(None)),
         needs_redraw: Arc::new(AtomicBool::new(false)),
         event_handler: std::rc::Rc::new(RefCell::new(None)),
         viewport_name: format!("__render_surface_{id}"),
         layout_size: Arc::new(Mutex::new((0, 0))),
+        #[cfg(target_arch = "wasm32")]
+        canvas: std::rc::Rc::new(RefCell::new(None)),
+        #[cfg(target_arch = "wasm32")]
+        canvas_ctx: std::rc::Rc::new(RefCell::new(None)),
+        render_callback: std::rc::Rc::new(RefCell::new(None)),
     };
 
     SURFACE_REGISTRY.with(|reg| {
@@ -428,6 +486,7 @@ pub fn any_surface_dirty() -> bool {
 /// Surfaces with a texture source are handled separately via
 /// [`collect_texture_sources`].
 /// Clears dirty flags as a side effect.
+#[cfg(feature = "desktop")]
 pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
     SURFACE_REGISTRY.with(|reg| {
         let reg = reg.borrow();
@@ -459,6 +518,7 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
 /// texture source set. The compositor reads the `TextureView` directly from
 /// the `Arc<Mutex<Option<TextureSource>>>` — no pixel upload needed.
 /// Clears dirty flags as a side effect.
+#[cfg(feature = "desktop")]
 pub fn collect_texture_sources() -> Vec<(String, Arc<Mutex<Option<TextureSource>>>)> {
     SURFACE_REGISTRY.with(|reg| {
         let reg = reg.borrow();
@@ -497,6 +557,31 @@ pub fn any_surfaces_registered() -> bool {
     SURFACE_REGISTRY.with(|reg| !reg.borrow().is_empty())
 }
 
+/// Invoke render callbacks on all registered surfaces that have one set.
+///
+/// Called once per frame on desktop (before `collect_surface_frames`).
+/// On web, each surface with a callback drives its own `requestAnimationFrame` loop instead.
+pub fn invoke_render_callbacks() {
+    SURFACE_REGISTRY.with(|reg| {
+        let reg = reg.borrow();
+        for surface in reg.iter() {
+            let mut cb = surface.render_callback.borrow_mut();
+            if let Some(ref mut callback) = *cb {
+                let (w, h) = *surface.layout_size.lock().unwrap();
+                if w == 0 || h == 0 {
+                    continue; // not yet measured
+                }
+                let writer = SurfaceWriter {
+                    buffer: surface.buffer.clone(),
+                    needs_redraw: surface.needs_redraw.clone(),
+                    surface_id: surface.id,
+                };
+                callback(&writer, w, h);
+            }
+        }
+    });
+}
+
 /// Dispatch a surface event to the handler of the surface with the given ID.
 pub fn dispatch_surface_event(id: usize, event: SurfaceEvent) {
     SURFACE_REGISTRY.with(|reg| {
@@ -511,9 +596,19 @@ pub fn dispatch_surface_event(id: usize, event: SurfaceEvent) {
 
 /// Set the currently focused render surface.
 pub fn set_focused_surface(id: Option<usize>) {
+    let old = focused_surface_id();
     FOCUSED_SURFACE.with(|f| {
         *f.borrow_mut() = id;
     });
+    // Dispatch focus events
+    if old != id {
+        if let Some(old_id) = old {
+            dispatch_surface_event(old_id, SurfaceEvent::FocusLost);
+        }
+        if let Some(new_id) = id {
+            dispatch_surface_event(new_id, SurfaceEvent::FocusGained);
+        }
+    }
 }
 
 /// Get the currently focused render surface ID.
@@ -546,17 +641,295 @@ pub struct RenderSurface {
 
 impl Component for RenderSurface {
     fn render(&self, scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
-        let div = scope.create_element("div");
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let div = scope.create_element("div");
 
-        if let Some(ref surface) = self.surface {
-            div.set_attribute("data-viewport", &surface.viewport_name);
-            div.set_attribute("data-render-surface", &surface.id.to_string());
+            if let Some(ref surface) = self.surface {
+                div.set_attribute("data-viewport", &surface.viewport_name);
+                div.set_attribute("data-render-surface", &surface.id.to_string());
+            }
+
+            // Transparent background so the composited layer pixels show through
+            // (hole-punch pattern: Vello UI is alpha-blended over the layer content).
+            div.set_attribute("style", "width: 100%; height: 100%;");
+
+            div
         }
 
-        // Transparent background so the composited layer pixels show through
-        // (hole-punch pattern: Vello UI is alpha-blended over the layer content).
-        div.set_attribute("style", "width: 100%; height: 100%;");
+        #[cfg(target_arch = "wasm32")]
+        {
+            let canvas = scope.create_element("canvas");
+            canvas.set_attribute("style", "width: 100%; height: 100%; display: block;");
 
-        div
+            if let Some(ref surface) = self.surface {
+                let canvas_id = format!("rinch-surface-{}", surface.id);
+                canvas.set_attribute("id", &canvas_id);
+                canvas.set_attribute("data-render-surface", &surface.id.to_string());
+                // Defer canvas context acquisition to after DOM mount
+                schedule_canvas_init(surface.clone());
+            }
+
+            canvas
+        }
     }
+}
+
+// ── Web-specific support ─────────────────────────────────────────────────────
+
+/// Start a `requestAnimationFrame` loop that invokes the render callback for
+/// the given surface each frame. The loop self-terminates when the surface is
+/// unregistered or its callback is removed.
+#[cfg(target_arch = "wasm32")]
+fn start_raf_loop(surface_id: usize) {
+    use std::rc::Rc;
+    use wasm_bindgen::prelude::*;
+
+    let closure: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
+    let closure_clone = closure.clone();
+
+    *closure.borrow_mut() = Some(Closure::wrap(Box::new(move || {
+        let should_continue = SURFACE_REGISTRY.with(|reg| {
+            let reg = reg.borrow();
+            if let Some(surface) = reg.iter().find(|s| s.id == surface_id) {
+                let mut cb = surface.render_callback.borrow_mut();
+                if let Some(ref mut callback) = *cb {
+                    let (w, h) = *surface.layout_size.lock().unwrap();
+                    if w > 0 && h > 0 {
+                        let writer = SurfaceWriter {
+                            buffer: surface.buffer.clone(),
+                            needs_redraw: surface.needs_redraw.clone(),
+                            surface_id: surface.id,
+                        };
+                        callback(&writer, w, h);
+                    }
+                    true // callback exists, keep looping
+                } else {
+                    false // callback removed, stop
+                }
+            } else {
+                false // surface unregistered, stop
+            }
+        });
+
+        if should_continue {
+            let window = web_sys::window().unwrap();
+            let cb_ref = closure_clone.borrow();
+            if let Some(ref cb) = *cb_ref {
+                let _ = window.request_animation_frame(cb.as_ref().unchecked_ref());
+            }
+        }
+    }) as Box<dyn FnMut()>));
+
+    // Kick off the first frame
+    {
+        let window = web_sys::window().unwrap();
+        let cb_ref = closure.borrow();
+        if let Some(ref cb) = *cb_ref {
+            let _ = window.request_animation_frame(cb.as_ref().unchecked_ref());
+        }
+    }
+
+    // Keep the closure alive — it self-references via Rc and stops when done
+    std::mem::forget(closure);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_blit_surface(surface_id: usize, buffer: &Arc<Mutex<SurfaceBuffer>>) {
+    SURFACE_REGISTRY.with(|reg| {
+        let reg = reg.borrow();
+        if let Some(surface) = reg.iter().find(|s| s.id == surface_id) {
+            let canvas = surface.canvas.borrow();
+            let ctx = surface.canvas_ctx.borrow();
+            if let (Some(canvas), Some(ctx)) = (canvas.as_ref(), ctx.as_ref()) {
+                let buf = buffer.lock().unwrap();
+                if buf.pixels.is_empty() {
+                    return;
+                }
+                // Resize canvas bitmap if dimensions changed
+                if canvas.width() != buf.width || canvas.height() != buf.height {
+                    canvas.set_width(buf.width);
+                    canvas.set_height(buf.height);
+                }
+                let clamped = wasm_bindgen::Clamped(&buf.pixels[..]);
+                if let Ok(img) = web_sys::ImageData::new_with_u8_clamped_array_and_sh(
+                    clamped, buf.width, buf.height,
+                ) {
+                    let _ = ctx.put_image_data(&img, 0.0, 0.0);
+                }
+            }
+        }
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+fn schedule_canvas_init(surface: RenderSurfaceHandle) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::prelude::*;
+
+    let closure = Closure::once(move || {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let canvas_id = format!("rinch-surface-{}", surface.id);
+        if let Some(el) = document.get_element_by_id(&canvas_id) {
+            let canvas_el: web_sys::HtmlCanvasElement = el.dyn_into().unwrap();
+            let ctx = canvas_el
+                .get_context("2d")
+                .unwrap()
+                .unwrap()
+                .dyn_into::<web_sys::CanvasRenderingContext2d>()
+                .unwrap();
+            // Set up event listeners before storing refs
+            setup_canvas_events(&canvas_el, surface.id);
+            setup_resize_observer(&canvas_el, surface.id);
+            // Store canvas refs for blitting
+            *surface.canvas.borrow_mut() = Some(canvas_el);
+            *surface.canvas_ctx.borrow_mut() = Some(ctx);
+        }
+    });
+    let window = web_sys::window().unwrap();
+    window.queue_microtask(closure.as_ref().unchecked_ref());
+    closure.forget();
+}
+
+#[cfg(target_arch = "wasm32")]
+fn mouse_button_from_i16(button: i16) -> SurfaceMouseButton {
+    match button {
+        0 => SurfaceMouseButton::Left,
+        1 => SurfaceMouseButton::Middle,
+        2 => SurfaceMouseButton::Right,
+        _ => SurfaceMouseButton::Left,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn setup_canvas_events(canvas: &web_sys::HtmlCanvasElement, surface_id: usize) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::prelude::*;
+
+    let target: &web_sys::EventTarget = canvas.as_ref();
+
+    // mousedown
+    {
+        let closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+            event.stop_propagation();
+            let x = event.offset_x() as f32;
+            let y = event.offset_y() as f32;
+            let button = mouse_button_from_i16(event.button());
+            set_focused_surface(Some(surface_id));
+            dispatch_surface_event(surface_id, SurfaceEvent::MouseDown { x, y, button });
+        }) as Box<dyn FnMut(_)>);
+        target
+            .add_event_listener_with_callback("mousedown", closure.as_ref().unchecked_ref())
+            .unwrap();
+        closure.forget();
+    }
+
+    // mouseup
+    {
+        let closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+            let x = event.offset_x() as f32;
+            let y = event.offset_y() as f32;
+            let button = mouse_button_from_i16(event.button());
+            dispatch_surface_event(surface_id, SurfaceEvent::MouseUp { x, y, button });
+        }) as Box<dyn FnMut(_)>);
+        target
+            .add_event_listener_with_callback("mouseup", closure.as_ref().unchecked_ref())
+            .unwrap();
+        closure.forget();
+    }
+
+    // mousemove
+    {
+        let closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+            let x = event.offset_x() as f32;
+            let y = event.offset_y() as f32;
+            dispatch_surface_event(surface_id, SurfaceEvent::MouseMove { x, y });
+        }) as Box<dyn FnMut(_)>);
+        target
+            .add_event_listener_with_callback("mousemove", closure.as_ref().unchecked_ref())
+            .unwrap();
+        closure.forget();
+    }
+
+    // mouseenter
+    {
+        let closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+            let x = event.offset_x() as f32;
+            let y = event.offset_y() as f32;
+            dispatch_surface_event(surface_id, SurfaceEvent::MouseEnter { x, y });
+        }) as Box<dyn FnMut(_)>);
+        target
+            .add_event_listener_with_callback("mouseenter", closure.as_ref().unchecked_ref())
+            .unwrap();
+        closure.forget();
+    }
+
+    // mouseleave
+    {
+        let closure = Closure::wrap(Box::new(move |_event: web_sys::MouseEvent| {
+            dispatch_surface_event(surface_id, SurfaceEvent::MouseLeave);
+        }) as Box<dyn FnMut(_)>);
+        target
+            .add_event_listener_with_callback("mouseleave", closure.as_ref().unchecked_ref())
+            .unwrap();
+        closure.forget();
+    }
+
+    // wheel
+    {
+        let closure = Closure::wrap(Box::new(move |event: web_sys::WheelEvent| {
+            event.prevent_default();
+            event.stop_propagation();
+            let mouse: &web_sys::MouseEvent = event.as_ref();
+            let x = mouse.offset_x() as f32;
+            let y = mouse.offset_y() as f32;
+            let delta_x = event.delta_x() as f32;
+            let delta_y = event.delta_y() as f32;
+            dispatch_surface_event(
+                surface_id,
+                SurfaceEvent::MouseWheel {
+                    x,
+                    y,
+                    delta_x,
+                    delta_y,
+                },
+            );
+        }) as Box<dyn FnMut(_)>);
+        // Use non-passive listener so we can preventDefault on wheel
+        let opts = web_sys::AddEventListenerOptions::new();
+        opts.set_passive(false);
+        target
+            .add_event_listener_with_callback_and_add_event_listener_options(
+                "wheel",
+                closure.as_ref().unchecked_ref(),
+                &opts,
+            )
+            .unwrap();
+        closure.forget();
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn setup_resize_observer(canvas: &web_sys::HtmlCanvasElement, surface_id: usize) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::prelude::*;
+
+    let callback = Closure::wrap(Box::new(move |entries: js_sys::Array, _observer: JsValue| {
+        if let Some(entry) = entries.get(0).dyn_ref::<web_sys::ResizeObserverEntry>() {
+            let rect = entry.content_rect();
+            let width = rect.width() as u32;
+            let height = rect.height() as u32;
+            if width > 0 && height > 0 {
+                // Update layout_size via viewport name lookup
+                let viewport_name = format!("__render_surface_{surface_id}");
+                update_layout_size(&viewport_name, width, height);
+            }
+        }
+    }) as Box<dyn FnMut(js_sys::Array, JsValue)>);
+
+    let observer = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()).unwrap();
+    observer.observe(canvas);
+    callback.forget();
+    // Keep observer alive by leaking it — canvas lifetime = app lifetime
+    std::mem::forget(observer);
 }

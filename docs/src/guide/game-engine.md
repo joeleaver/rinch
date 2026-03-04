@@ -1,10 +1,165 @@
 # Game Engine Integration
 
-Rinch can be embedded into an existing game engine or custom render loop. Instead of rinch owning the window and GPU resources, your game creates them, and rinch provides UI as a Vello scene that you composite on top of your game content.
+Rinch supports two complementary integration patterns for game engines and custom renderers:
 
-Enable with: `features = ["desktop"]` (included by default)
+1. **Embed API** — Your game owns the window and GPU. Rinch provides UI as a Vello scene you composite on top.
+2. **RenderSurface** — Rinch owns the window. Your game/renderer submits frames (CPU pixels or GPU textures) into a DOM component.
 
-## Quick Start
+## RenderSurface (Recommended)
+
+`RenderSurface` is a component that embeds external pixel content into rinch's layout. Your renderer submits frames via a thread-safe `SurfaceWriter` (CPU pixels) or `GpuTextureRegistrar` (GPU textures), and rinch composites them during paint. Input events (mouse, keyboard) are routed back to your event handler.
+
+This is the simpler pattern — rinch handles windowing, layout, and event dispatch. You just provide pixels and handle surface-local events.
+
+### Quick Start
+
+```rust
+use rinch::prelude::*;
+
+#[component]
+fn app() -> NodeHandle {
+    let surface = create_render_surface();
+
+    // Handle input events from the surface
+    surface.set_event_handler(|event| {
+        match event {
+            SurfaceEvent::MouseDown { x, y, button } => { /* handle click */ },
+            SurfaceEvent::MouseMove { x, y } => { /* handle hover */ },
+            SurfaceEvent::MouseWheel { delta_y, .. } => { /* handle zoom */ },
+            SurfaceEvent::KeyDown(key) => { /* handle keyboard */ },
+            _ => {}
+        }
+    });
+
+    // Submit frames from a worker thread
+    let writer = surface.writer();
+    std::thread::spawn(move || {
+        loop {
+            let pixels = render_frame(); // your renderer
+            writer.submit_frame(&pixels, width, height);
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+    });
+
+    rsx! {
+        div { style: "display: flex; height: 100%;",
+            div { style: "width: 200px;",
+                // Sidebar with rinch UI controls
+                Button { onclick: || do_something(), "Tool" }
+            }
+            RenderSurface { surface: Some(surface), style: "flex: 1;" }
+        }
+    }
+}
+
+fn main() {
+    run("My App", 1280, 720, app);
+}
+```
+
+### CPU Pixel Submission
+
+`SurfaceWriter` is `Send + Sync + Clone` — safe to use from any thread:
+
+```rust
+let surface = create_render_surface();
+let writer = surface.writer();
+
+// From any thread:
+let pixels: Vec<u8> = render_rgba(width, height);
+writer.submit_frame(&pixels, width, height);
+```
+
+Pixels are RGBA8, row-major. The surface redraws automatically after `submit_frame()`.
+
+### GPU Texture Compositing
+
+For zero-copy compositing, use `GpuTextureRegistrar` to provide a `wgpu::TextureView` directly:
+
+```rust
+let surface = create_render_surface();
+let registrar = surface.gpu_registrar();
+
+// Get the shared wgpu Device via gpu_handle()
+let gpu = gpu_handle().unwrap();
+let device = &gpu.device;
+let queue = &gpu.queue;
+
+// Create your texture and render to it
+let texture = device.create_texture(&wgpu::TextureDescriptor { /* ... */ });
+// ... render into texture ...
+
+// Register the texture view for compositing
+let view = texture.create_view(&Default::default());
+registrar.set_texture_source(view, width, height);
+registrar.notify_frame_ready();
+```
+
+`GpuTextureRegistrar` is also `Send + Sync + Clone`. The texture must be created on the same `wgpu::Device` (available via `gpu_handle()`).
+
+### Layout Size
+
+Query the surface's current layout dimensions (set by CSS/Taffy) to match your render resolution:
+
+```rust
+let (w, h) = surface.layout_size();
+// or from the registrar:
+let (w, h) = registrar.layout_size();
+```
+
+### Surface Events
+
+Events are dispatched to the handler set via `set_event_handler()`. Coordinates are in logical pixels relative to the surface's top-left corner.
+
+| Event | Fields | Description |
+|-------|--------|-------------|
+| `MouseDown` | `x, y, button` | Mouse button pressed |
+| `MouseUp` | `x, y, button` | Mouse button released |
+| `MouseMove` | `x, y` | Mouse moved over surface |
+| `MouseWheel` | `x, y, delta_x, delta_y` | Scroll wheel |
+| `MouseEnter` | `x, y` | Cursor entered surface |
+| `MouseLeave` | — | Cursor left surface |
+| `KeyDown` | `SurfaceKeyData` | Key pressed (when focused) |
+| `KeyUp` | `SurfaceKeyData` | Key released (when focused) |
+| `TextInput` | `String` | Text input (when focused) |
+| `FocusGained` | — | Surface received keyboard focus |
+| `FocusLost` | — | Surface lost keyboard focus |
+
+`SurfaceKeyData` contains `key`, `code`, `ctrl`, `shift`, `alt`, `meta`.
+
+### API Reference: RenderSurface
+
+| Function / Type | Description |
+|----------------|-------------|
+| `create_render_surface()` | Create a new surface handle |
+| `RenderSurfaceHandle` | Main handle — set event handler, get writer/registrar |
+| `SurfaceWriter` | Thread-safe CPU pixel submission (`Send + Sync + Clone`) |
+| `GpuTextureRegistrar` | Thread-safe GPU texture registration (`Send + Sync + Clone`) |
+| `RenderSurface` | Component — use in RSX with `surface: Some(handle)` |
+| `SurfaceEvent` | Input event enum dispatched to handler |
+
+**RenderSurfaceHandle methods:**
+
+| Method | Description |
+|--------|-------------|
+| `writer()` | Get a `SurfaceWriter` for CPU pixel submission |
+| `gpu_registrar()` | Get a `GpuTextureRegistrar` for GPU texture compositing |
+| `set_event_handler(handler)` | Set input event callback (main thread closure) |
+| `layout_size()` | Get current `(width, height)` from CSS layout |
+| `set_texture_source(view, w, h)` | Set GPU texture directly (main thread only) |
+| `has_texture_source()` | Check if a GPU texture is registered |
+| `id()` | Surface ID |
+| `viewport_name()` | Internal viewport name |
+
+---
+
+## Embed API
+
+The embed API is for when **your game owns the window and wgpu device**. Rinch runs headless — you feed it platform events, it produces a Vello scene, and you render/composite it yourself.
+
+Enable with: `features = ["desktop"]`
+
+### Quick Start
 
 ```rust
 use rinch::prelude::*;
@@ -30,7 +185,7 @@ fn main() {
             width: 1280,
             height: 720,
             scale_factor: window.scale_factor(),
-            theme: None, // uses default theme
+            theme: None,
         },
         game_hud,
     );
@@ -45,7 +200,6 @@ fn main() {
         let events = collect_platform_events(&window);
         let actions = ctx.update(&events);
 
-        // Handle actions
         for action in &actions {
             match action {
                 AppAction::SetCursor(cursor) => { /* set cursor */ },
@@ -54,7 +208,6 @@ fn main() {
             }
         }
 
-        // Render game, then UI overlay
         game.render(&device, &queue);
         let ui_texture = overlay.render(&device, &queue, ctx.scene());
         composite(&device, &queue, &surface, game_texture, ui_texture);
@@ -62,79 +215,31 @@ fn main() {
 }
 ```
 
-## Core Concepts
-
 ### RinchContext
 
-`RinchContext` is the main handle to an embedded rinch UI. You create it once during initialization and interact with it each frame.
+`RinchContext` is the main handle. Create it once, call `update()` each frame.
+
+### Input Routing
+
+For HUD overlays, use `wants_mouse` and `wants_keyboard` to decide whether input goes to the UI or the game:
 
 ```rust
-use rinch::embed::{RinchContext, RinchContextConfig};
-
-let mut ctx = RinchContext::new(
-    RinchContextConfig {
-        width: 1280,
-        height: 720,
-        scale_factor: 1.0,
-        theme: Some(ThemeProviderProps {
-            primary_color: Some("cyan".into()),
-            dark_mode: true,
-            ..Default::default()
-        }),
-    },
-    my_ui_component,
-);
-```
-
-### Per-Frame Update
-
-Call `update()` once per frame with the platform events that occurred since the last frame:
-
-```rust
-let actions = ctx.update(&platform_events);
-```
-
-This processes input (mouse, keyboard), updates reactive state, resolves layout, and returns `AppAction`s your game should handle (cursor changes, exit requests, etc.).
-
-### Reading the Scene
-
-After `update()`, call `scene()` to get the Vello scene:
-
-```rust
-let scene: &vello::Scene = ctx.scene();
-```
-
-The scene is lazily rebuilt only when something changed. You can render it with `RinchOverlayRenderer` or your own Vello pipeline.
-
-## Two Integration Patterns
-
-### Full Overlay (HUD)
-
-Rinch covers the entire window as a transparent overlay. Use input routing to decide what goes to the game vs the UI:
-
-```rust
-// Check where mouse input should go
 if ctx.wants_mouse(mouse_x, mouse_y) {
-    // Mouse is over a UI element -- route to rinch
-    ctx.update(&[mouse_event]);
+    ctx.update(&[mouse_event]); // UI element under cursor
 } else {
-    // Mouse is over game content -- route to game
-    game.handle_mouse(mouse_x, mouse_y);
+    game.handle_mouse(mouse_x, mouse_y); // game content
 }
 
-// Check keyboard routing
 if ctx.wants_keyboard() {
-    // A text input is focused -- route keyboard to rinch
-    ctx.update(&[key_event]);
+    ctx.update(&[key_event]); // text input focused
 } else {
-    // No text input focused -- route to game
-    game.handle_key(key);
+    game.handle_key(key); // game shortcuts
 }
 ```
 
 ### Split Layout (Viewport Hole)
 
-Rinch renders toolbars and panels around a `GameViewport` component that marks where the game should render:
+Use `GameViewport` to mark a transparent region where the game renders:
 
 ```rust
 use rinch::embed::GameViewport;
@@ -145,144 +250,54 @@ fn editor_ui() -> NodeHandle {
         div { style: "display: flex; flex-direction: column; height: 100%;",
             div { class: "toolbar",
                 Button { onclick: || save(), "Save" }
-                Button { onclick: || undo(), "Undo" }
             }
             div { style: "display: flex; flex: 1;",
-                div { style: "width: 200px;",
-                    // Side panel with tools
-                }
+                div { style: "width: 200px;", /* side panel */ }
                 GameViewport { name: "main", style: "flex: 1;" }
             }
-            div { class: "status-bar", "Ready" }
         }
     }
 }
 ```
 
-Then query the viewport's computed rect to know where to render your game:
+Query the viewport rect to set your game's render region:
 
 ```rust
 if let Some(rect) = ctx.viewport_rect("main") {
-    // rect.x, rect.y, rect.width, rect.height in logical pixels
     game.set_viewport(rect.x, rect.y, rect.width, rect.height);
 }
 ```
 
-## Input Routing
-
-### wants_mouse
-
-`wants_mouse(x, y)` hit-tests the rinch DOM at the given point. It returns `true` if the point hits a UI element, and `false` if it hits a `GameViewport` hole or empty space.
+### Resize and Scale Factor
 
 ```rust
-if ctx.wants_mouse(x, y) {
-    // Route click/hover to rinch
-} else {
-    // Route to game (camera, selection, etc.)
-}
-```
-
-### wants_keyboard
-
-`wants_keyboard()` returns `true` when a text input or contenteditable element is focused. Use this to prevent game shortcuts from firing while the user is typing in a UI field.
-
-```rust
-if ctx.wants_keyboard() {
-    // Let rinch handle keyboard (user is typing)
-} else {
-    // Handle game shortcuts (WASD, etc.)
-}
-```
-
-## RinchOverlayRenderer
-
-A convenience helper that renders a Vello scene to a GPU texture. If you already have your own Vello setup, you can skip this and render `ctx.scene()` directly.
-
-```rust
-use rinch::embed::RinchOverlayRenderer;
-
-// Create from your game's device
-let mut overlay = RinchOverlayRenderer::new(
-    &device, width, height, TextureFormat::Rgba8Unorm,
-);
-
-// Each frame: render UI to texture
-let ui_view = overlay.render(&device, &queue, ctx.scene());
-
-// Composite the TextureView over your game scene
-// (your compositor shader samples this with alpha blending)
-
-// On resize:
-overlay.resize(&device, new_width, new_height);
-```
-
-The overlay renders with a transparent background, so you can alpha-blend it on top of your game.
-
-## Resize and Scale Factor
-
-Notify rinch when the window size or DPI changes:
-
-```rust
-// Physical pixel dimensions
 ctx.resize(new_width, new_height);
 overlay.resize(&device, new_width, new_height);
-
-// DPI scale factor
 ctx.set_scale_factor(window.scale_factor());
 ```
 
-## Fonts
+### Platform Events
 
-In environments without system fonts (WASM, embedded), register fonts explicitly:
-
-```rust
-static FONT_DATA: &[u8] = include_bytes!("../assets/Inter-Regular.ttf");
-ctx.register_font(FONT_DATA);
-```
-
-## Dirty Checking
-
-For games that want to skip UI rendering on unchanged frames:
-
-```rust
-if ctx.needs_update() {
-    let actions = ctx.update(&events);
-    let scene = ctx.scene();
-    overlay.render(&device, &queue, scene);
-}
-```
-
-## Platform Events
-
-Rinch uses `rinch_platform::PlatformEvent` for input. You need to translate your engine's native events to these:
+Translate your engine's events to `rinch_platform::PlatformEvent`:
 
 ```rust
 use rinch_platform::{PlatformEvent, MouseButton, KeyCode, Modifiers};
 
-// Mouse move
 PlatformEvent::MouseMove { x: 100.0, y: 200.0 }
-
-// Mouse click
 PlatformEvent::MouseDown { x: 100.0, y: 200.0, button: MouseButton::Left }
 PlatformEvent::MouseUp { x: 100.0, y: 200.0, button: MouseButton::Left }
-
-// Mouse wheel
 PlatformEvent::MouseWheel { x: 100.0, y: 200.0, delta_x: 0.0, delta_y: -30.0 }
-
-// Key press
 PlatformEvent::KeyDown {
     key: KeyCode::KeyA,
     text: Some("a".into()),
     modifiers: Modifiers::default(),
 }
-
-// Window resize
 PlatformEvent::Resized { width: 1920, height: 1080 }
 ```
 
-## API Reference
+### API Reference: Embed
 
-### RinchContext
+**RinchContext:**
 
 | Method | Description |
 |--------|-------------|
@@ -298,7 +313,7 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 | `register_font(data)` | Register font data for text rendering |
 | `app() / app_mut()` | Access the underlying RinchApp |
 
-### RinchOverlayRenderer
+**RinchOverlayRenderer:**
 
 | Method | Description |
 |--------|-------------|
@@ -307,7 +322,7 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 | `resize(device, w, h)` | Resize render target |
 | `texture()` | Get the underlying wgpu Texture |
 
-### RinchContextConfig
+**RinchContextConfig:**
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -316,7 +331,7 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 | `scale_factor` | `f64` | Display scale factor |
 | `theme` | `Option<ThemeProviderProps>` | Theme configuration |
 
-### LayoutRect
+**LayoutRect:**
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -324,3 +339,17 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 | `y` | `f32` | Absolute Y position (logical pixels) |
 | `width` | `f32` | Width (logical pixels) |
 | `height` | `f32` | Height (logical pixels) |
+
+## Which Pattern to Use?
+
+| Scenario | Use |
+|----------|-----|
+| Adding UI overlay to an existing game engine | **Embed API** — game keeps its window/GPU ownership |
+| Building a tool with embedded viewports (e.g., level editor, paint app) | **RenderSurface** — rinch handles the window, you embed content |
+| Terminal emulator, video player, or custom canvas inside a rinch app | **RenderSurface** — component-level integration |
+| WASM game with HTML-based UI | Neither — use the browser-native DOM backend |
+
+## Examples
+
+- `examples/game-embed/` — Spinning cube with rinch HUD overlay (embed API)
+- `examples/render-surface-demo/` — Painting app with canvas and navigator (RenderSurface)

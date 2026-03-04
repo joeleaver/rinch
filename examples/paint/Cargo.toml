@@ -1,9 +1,12 @@
 [package]
-name = "render-surface-demo"
+name = "paint"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+path = "src/lib.rs"
+
 [dependencies]
-rinch = { workspace = true, features = ["desktop", "debug", "components", "theme"] }
+rinch = { workspace = true, features = ["components", "theme"] }
 rinch-tabler-icons = { workspace = true }
 fastrand = "2"

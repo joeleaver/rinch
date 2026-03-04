@@ -388,6 +388,9 @@ impl RinchRuntime {
             }
         }
 
+        // Invoke per-frame render callbacks before collecting frames
+        crate::render_surface::invoke_render_callbacks();
+
         // Extract render surface frames for compositing (CPU pixel path)
         {
             let surface_frames = crate::render_surface::collect_surface_frames();

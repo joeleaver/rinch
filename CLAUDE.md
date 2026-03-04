@@ -941,9 +941,49 @@ The patches:
 
 **Downstream projects** must copy the `[patch.crates-io]` section from the workspace `Cargo.toml` into their own `Cargo.toml` for transparent windows to work on Windows. This is required because Cargo patches are not transitive — they only apply to the workspace that declares them.
 
-## Game Engine Integration (Embed API)
+## Game Engine Integration
 
-Rinch can be embedded into an existing game engine or custom render loop via the `embed` module. The game owns the wgpu `Device`/`Queue`/`Surface` and frame loop; rinch provides UI as a Vello scene.
+Two complementary patterns for integrating with game engines and custom renderers:
+
+### RenderSurface (Recommended)
+
+Rinch owns the window. Your renderer submits frames into a `RenderSurface` component. Rinch handles layout, compositing, and event routing.
+
+**Key types** (all re-exported in prelude):
+
+| Type | Purpose |
+|------|---------|
+| `RenderSurfaceHandle` | Main handle — `writer()`, `gpu_registrar()`, `set_event_handler()` |
+| `RenderSurface` | Component — `RenderSurface { surface: Some(handle) }` |
+| `SurfaceWriter` | Thread-safe CPU pixel submission (`Send + Sync + Clone`) |
+| `GpuTextureRegistrar` | Thread-safe GPU texture registration (`Send + Sync + Clone`) |
+| `SurfaceEvent` | Input events dispatched to surface handler |
+| `create_render_surface()` | Factory function |
+
+**Usage:**
+```rust
+let surface = create_render_surface();
+surface.set_event_handler(|event| { /* handle mouse/keyboard */ });
+
+let writer = surface.writer();
+std::thread::spawn(move || {
+    writer.submit_frame(&pixels, w, h); // CPU pixels
+});
+
+// Or for GPU textures:
+let registrar = surface.gpu_registrar();
+registrar.set_texture_source(wgpu_view, w, h);
+registrar.notify_frame_ready();
+
+rsx! { RenderSurface { surface: Some(surface), style: "flex: 1;" } }
+```
+
+**Source files:**
+- `crates/rinch/src/render_surface.rs` — All RenderSurface types and registry
+
+### Embed API
+
+Your game owns the window and wgpu device. Rinch runs headless — you feed it events, it produces a Vello scene.
 
 **Key types** (all in `rinch::embed`, re-exported in prelude):
 
@@ -955,14 +995,8 @@ Rinch can be embedded into an existing game engine or custom render loop via the
 | `GameViewport` | Component marking a transparent hole for game rendering |
 | `LayoutRect` | `{x, y, width, height}` in logical pixels |
 
-**Two patterns:**
-1. **Full overlay (HUD)**: Rinch covers entire window, use `wants_mouse()`/`wants_keyboard()` for input routing
-2. **Split layout**: `GameViewport { name: "main" }` marks game region, query with `viewport_rect("main")`
-
 **Typical game loop:**
 ```rust
-use rinch::embed::{RinchContext, RinchContextConfig, RinchOverlayRenderer};
-
 let mut ctx = RinchContext::new(config, my_ui);
 let mut overlay = RinchOverlayRenderer::new(&device, w, h, format);
 

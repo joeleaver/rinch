@@ -50,7 +50,6 @@ pub mod ce_ops;
 pub mod embed;
 #[cfg(feature = "desktop")]
 pub mod menu;
-#[cfg(feature = "desktop")]
 pub mod render_surface;
 #[cfg(feature = "desktop")]
 pub mod shell;
@@ -145,11 +144,14 @@ pub mod prelude {
     };
 
     // Render surface API for embedding external renderers
-    #[cfg(feature = "desktop")]
     pub use crate::render_surface::{
-        GpuTextureRegistrar, RenderSurface, RenderSurfaceHandle, SurfaceEvent, SurfaceKeyData,
-        SurfaceMouseButton, SurfaceWriter, TextureSource, create_render_surface,
+        RenderSurface, RenderSurfaceHandle, SurfaceEvent, SurfaceKeyData, SurfaceMouseButton,
+        SurfaceWriter, create_render_surface, invoke_render_callbacks,
     };
+
+    // Desktop-only GPU types for render surfaces
+    #[cfg(feature = "desktop")]
+    pub use crate::render_surface::{GpuTextureRegistrar, TextureSource};
 
     // Shared GPU handle for zero-copy compositing
     #[cfg(feature = "desktop")]
