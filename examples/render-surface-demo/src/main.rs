@@ -12,7 +12,7 @@ use rinch::prelude::*;
 use rinch::render_surface::{
     RenderSurface, SurfaceEvent, SurfaceMouseButton, create_render_surface,
 };
-use rinch_tabler_icons::TablerIcon;
+use rinch_tabler_icons::{TablerIcon, render_tabler_icon};
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -373,6 +373,23 @@ const COLORS: &[[u8; 3]] = &[
     [200, 191, 231],
 ];
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn rgba_to_hex(c: [u8; 4]) -> String {
+    format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
+}
+
+fn hex_to_rgba(hex: &str) -> Option<[u8; 4]> {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() < 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some([r, g, b, 255])
+}
+
 // ── App ──────────────────────────────────────────────────────────────────────
 
 #[component]
@@ -386,6 +403,7 @@ fn app() -> NodeHandle {
     let status_signal = Signal::new(String::from("Ready"));
     let can_undo = Signal::new(false);
     let can_redo = Signal::new(false);
+    let show_color_picker = Signal::new(false);
 
     let canvas_surface = create_render_surface();
     let nav_surface = create_render_surface();
@@ -764,9 +782,98 @@ fn app() -> NodeHandle {
             div {
                 style: "display: flex; flex-direction: row; flex: 1; overflow: hidden;",
 
-                // Main canvas
-                div { style: "flex: 1; overflow: hidden; display: flex;",
+                // Main canvas — overlays rendered on top of the RenderSurface
+                // via CSS stacking contexts (position + z-index).
+                div { style: "flex: 1; overflow: hidden; display: flex; position: relative;",
                     RenderSurface { surface: Some(canvas_surface) }
+
+                    // ── Overlay: bottom status bar ──
+                    div {
+                        style: "position: absolute; bottom: 0; left: 0; right: 0; z-index: 1; \
+                                display: flex; flex-wrap: nowrap; align-items: center; justify-content: space-between; \
+                                padding: 6px 12px; \
+                                background: rgba(0, 0, 0, 0.55); color: white; font-size: 12px; \
+                                pointer-events: none;",
+
+                        // Left: cursor position + tool + brush size
+                        div { style: "display: flex; align-items: center; gap: 6px;",
+                            {render_tabler_icon(__scope, TablerIcon::CursorText, rinch_tabler_icons::TablerIconStyle::Outline)}
+                            span { {|| status_signal.get()} }
+                            span { style: "opacity: 0.6;", "\u{2022}" }
+                            span {
+                                {|| match tool_signal.get() {
+                                    BrushType::Round => "Round",
+                                    BrushType::Square => "Square",
+                                    BrushType::Spray => "Spray",
+                                    BrushType::Eraser => "Eraser",
+                                }}
+                            }
+                            span { style: "opacity: 0.6;", "\u{2022}" }
+                            span { {|| format!("{}px", brush_size_signal.get() as u32)} }
+                        }
+
+                        // Right: zoom
+                        div { style: "display: flex; align-items: center; gap: 4px;",
+                            {render_tabler_icon(__scope, TablerIcon::ZoomIn, rinch_tabler_icons::TablerIconStyle::Outline)}
+                            span { {|| format!("{:.0}%", zoom_signal.get() * 100.0)} }
+                        }
+                    }
+
+                    // ── Overlay: clickable color picker (top-left) ──
+                    div {
+                        style: "position: absolute; top: 12px; left: 12px; z-index: 2;",
+
+                        // Swatch button — always visible
+                        div {
+                            style: "display: flex; align-items: center; gap: 8px; \
+                                    background: rgba(0, 0, 0, 0.55); border-radius: 6px; \
+                                    padding: 6px 10px; cursor: pointer;",
+                            onclick: move || show_color_picker.update(|v| *v = !*v),
+                            div {
+                                style: {|| {
+                                    let c = color_signal.get();
+                                    format!(
+                                        "width: 20px; height: 20px; border-radius: 4px; \
+                                         background: rgb({},{},{}); border: 1px solid rgba(255,255,255,0.4);",
+                                        c[0], c[1], c[2]
+                                    )
+                                }},
+                            }
+                            span { style: "color: white; font-size: 12px;",
+                                {|| {
+                                    let c = color_signal.get();
+                                    format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2])
+                                }}
+                            }
+                        }
+
+                        // Color picker dropdown — toggled via CSS display
+                        div {
+                            style: {|| {
+                                let vis = if show_color_picker.get() {
+                                    "display: flex"
+                                } else {
+                                    "display: none"
+                                };
+                                format!("position: absolute; top: 40px; left: 0; \
+                                        background: var(--rinch-color-body); \
+                                        border: 1px solid var(--rinch-color-default-border); \
+                                        border-radius: var(--rinch-radius-default); \
+                                        box-shadow: var(--rinch-shadow-md); \
+                                        padding: 8px; z-index: 10; {vis}")
+                            }},
+                            ColorPicker {
+                                value: {rgba_to_hex(color_signal.get())},
+                                swatches: {COLORS.iter().map(|rgb| format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])).collect::<Vec<_>>()},
+                                swatches_per_row: 10,
+                                onchange: move |hex: String| {
+                                    if let Some(rgba) = hex_to_rgba(&hex) {
+                                        color_signal.set(rgba);
+                                    }
+                                },
+                            }
+                        }
+                    }
                 }
 
                 // Right sidebar
