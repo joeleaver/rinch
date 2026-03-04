@@ -5,7 +5,7 @@
 //! On desktop, rinch composites the pixels via a hole-punch + WGSL compositor.
 //! On web, a native `<canvas>` element is used and the browser handles compositing.
 //!
-//! # Usage
+//! # CPU Pixel Rendering
 //!
 //! ```ignore
 //! use rinch::prelude::*;
@@ -34,6 +34,17 @@
 //!     }
 //! }
 //! ```
+//!
+//! # GPU Rendering
+//!
+//! On **desktop**, use [`RenderSurfaceHandle::set_texture_source`] or
+//! [`GpuTextureRegistrar`] to register a wgpu texture for zero-copy compositing.
+//!
+//! On **web**, call [`RenderSurfaceHandle::canvas_element`] to get the underlying
+//! `<canvas>` and create a WebGPU or WebGL context on it. The 2D context for CPU
+//! blitting is created lazily on the first [`SurfaceWriter::submit_frame`] call,
+//! so creating a GPU context first prevents it from being claimed. Events, layout
+//! size, and resize observation work regardless of context type.
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -327,8 +338,17 @@ impl RenderSurfaceHandle {
 
     /// Get the underlying canvas element (web only).
     ///
-    /// Users can create a WebGPU or WebGL context on this canvas
-    /// and render directly — the browser composites it in DOM order.
+    /// Returns `None` before the component is mounted in the DOM.
+    ///
+    /// For GPU rendering, create a WebGPU or WebGL context on this canvas
+    /// **before** calling [`SurfaceWriter::submit_frame`]. The first
+    /// `submit_frame` call lazily creates a 2D context for CPU blitting;
+    /// if a GPU context already exists, CPU blitting is skipped and the
+    /// user's GPU rendering takes over. The browser composites the canvas
+    /// in DOM order — no rinch compositor involvement needed.
+    ///
+    /// Events, layout size, and the resize observer work regardless of
+    /// which context type is used.
     #[cfg(target_arch = "wasm32")]
     pub fn canvas_element(&self) -> Option<web_sys::HtmlCanvasElement> {
         self.canvas.borrow().clone()
@@ -740,23 +760,43 @@ fn web_blit_surface(surface_id: usize, buffer: &Arc<Mutex<SurfaceBuffer>>) {
         let reg = reg.borrow();
         if let Some(surface) = reg.iter().find(|s| s.id == surface_id) {
             let canvas = surface.canvas.borrow();
-            let ctx = surface.canvas_ctx.borrow();
-            if let (Some(canvas), Some(ctx)) = (canvas.as_ref(), ctx.as_ref()) {
-                let buf = buffer.lock().unwrap();
-                if buf.pixels.is_empty() {
-                    return;
+            let Some(canvas) = canvas.as_ref() else {
+                return;
+            };
+
+            // Lazily create the 2D context on first CPU blit.
+            // If the user has already created a WebGPU/WebGL context on this
+            // canvas (via `canvas_element()`), `getContext("2d")` returns None
+            // and we skip CPU blitting — the user is rendering via GPU instead.
+            let mut ctx_ref = surface.canvas_ctx.borrow_mut();
+            if ctx_ref.is_none() {
+                use wasm_bindgen::JsCast;
+                match canvas.get_context("2d") {
+                    Ok(Some(ctx)) => {
+                        *ctx_ref =
+                            Some(ctx.dyn_into::<web_sys::CanvasRenderingContext2d>().unwrap());
+                    }
+                    _ => return, // Canvas has a GPU context — skip CPU blit
                 }
-                // Resize canvas bitmap if dimensions changed
-                if canvas.width() != buf.width || canvas.height() != buf.height {
-                    canvas.set_width(buf.width);
-                    canvas.set_height(buf.height);
-                }
-                let clamped = wasm_bindgen::Clamped(&buf.pixels[..]);
-                if let Ok(img) = web_sys::ImageData::new_with_u8_clamped_array_and_sh(
-                    clamped, buf.width, buf.height,
-                ) {
-                    let _ = ctx.put_image_data(&img, 0.0, 0.0);
-                }
+            }
+
+            let Some(ctx) = ctx_ref.as_ref() else {
+                return;
+            };
+            let buf = buffer.lock().unwrap();
+            if buf.pixels.is_empty() {
+                return;
+            }
+            // Resize canvas bitmap if dimensions changed
+            if canvas.width() != buf.width || canvas.height() != buf.height {
+                canvas.set_width(buf.width);
+                canvas.set_height(buf.height);
+            }
+            let clamped = wasm_bindgen::Clamped(&buf.pixels[..]);
+            if let Ok(img) =
+                web_sys::ImageData::new_with_u8_clamped_array_and_sh(clamped, buf.width, buf.height)
+            {
+                let _ = ctx.put_image_data(&img, 0.0, 0.0);
             }
         }
     });
@@ -772,18 +812,13 @@ fn schedule_canvas_init(surface: RenderSurfaceHandle) {
         let canvas_id = format!("rinch-surface-{}", surface.id);
         if let Some(el) = document.get_element_by_id(&canvas_id) {
             let canvas_el: web_sys::HtmlCanvasElement = el.dyn_into().unwrap();
-            let ctx = canvas_el
-                .get_context("2d")
-                .unwrap()
-                .unwrap()
-                .dyn_into::<web_sys::CanvasRenderingContext2d>()
-                .unwrap();
             // Set up event listeners before storing refs
             setup_canvas_events(&canvas_el, surface.id);
             setup_resize_observer(&canvas_el, surface.id);
-            // Store canvas refs for blitting
+            // Store canvas ref. The 2D context is created lazily on the first
+            // submit_frame() call. This allows users to call canvas_element()
+            // and create a WebGPU or WebGL context first for GPU rendering.
             *surface.canvas.borrow_mut() = Some(canvas_el);
-            *surface.canvas_ctx.borrow_mut() = Some(ctx);
         }
     });
     let window = web_sys::window().unwrap();

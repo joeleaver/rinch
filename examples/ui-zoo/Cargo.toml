@@ -16,3 +16,8 @@ rinch-macros = { workspace = true }
 rinch-platform = { workspace = true }
 rinch-tabler-icons.workspace = true
 rinch-video = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { workspace = true, features = ["webgl"] }
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"

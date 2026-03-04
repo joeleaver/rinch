@@ -219,8 +219,10 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
     let browser_doc = doc.browser_document().clone();
     let browser_doc_for_click = browser_doc.clone();
 
-    // Click delegation: find nearest [data-rid] ancestor and dispatch.
-    let click_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+    // Mousedown delegation: find nearest [data-rid] ancestor and dispatch.
+    // We use mousedown instead of click so that drag operations (sliders, etc.)
+    // can begin tracking mouse movement immediately.
+    let mousedown_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
         if let Some(target) = event.target()
             && let Ok(el) = target.dyn_into::<web_sys::Element>() {
                 // Clear render surface focus if click is outside any surface
@@ -253,18 +255,37 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
                                 text_hit,
                             });
 
-                            // Prevent browser default behavior (e.g. <label>
-                            // synthesizing a second click on its <input>, which
-                            // would double-toggle the handler).
+                            // Prevent browser default behavior (e.g. text selection
+                            // during slider drag, <label> synthesizing extra events).
                             event.prevent_default();
                             events::dispatch_event(events::EventHandlerId(rid));
                         }
             }
     }) as Box<dyn FnMut(_)>);
     browser_doc
-        .add_event_listener_with_callback("click", click_closure.as_ref().unchecked_ref())
+        .add_event_listener_with_callback("mousedown", mousedown_closure.as_ref().unchecked_ref())
         .unwrap();
-    click_closure.forget();
+    mousedown_closure.forget();
+
+    // Mousemove delegation: feed active drag operations.
+    let mousemove_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+        if rinch_core::update_drag(event.client_x() as f32, event.client_y() as f32) {
+            event.prevent_default();
+        }
+    }) as Box<dyn FnMut(_)>);
+    browser_doc
+        .add_event_listener_with_callback("mousemove", mousemove_closure.as_ref().unchecked_ref())
+        .unwrap();
+    mousemove_closure.forget();
+
+    // Mouseup delegation: stop active drag operations.
+    let mouseup_closure = Closure::wrap(Box::new(move |_event: web_sys::MouseEvent| {
+        rinch_core::stop_drag();
+    }) as Box<dyn FnMut(_)>);
+    browser_doc
+        .add_event_listener_with_callback("mouseup", mouseup_closure.as_ref().unchecked_ref())
+        .unwrap();
+    mouseup_closure.forget();
 
     // Keyboard delegation: route to focused render surface or keyboard interceptor.
     let keydown_closure = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {

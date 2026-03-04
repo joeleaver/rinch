@@ -5306,12 +5306,15 @@ dependencies = [
 name = "ui-zoo"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "rinch",
  "rinch-core",
  "rinch-macros",
  "rinch-platform",
  "rinch-tabler-icons",
  "rinch-video",
+ "wasm-bindgen-futures",
+ "wgpu",
 ]
 
 [[package]]
@@ -5821,6 +5824,7 @@ dependencies = [
  "thiserror 2.0.18",
  "wgpu-core-deps-apple",
  "wgpu-core-deps-emscripten",
+ "wgpu-core-deps-wasm",
  "wgpu-core-deps-windows-linux-android",
  "wgpu-hal",
  "wgpu-types",
@@ -5836,6 +5840,14 @@ dependencies = [
 
 [[package]]
 name = "wgpu-core-deps-emscripten"
+version = "27.0.1"
+source = "git+https://github.com/joeleaver/wgpu-fork?branch=rinch-patch#54b7ce083ac9575b27884054ae74eb652cb541b3"
+dependencies = [
+ "wgpu-hal",
+]
+
+[[package]]
+name = "wgpu-core-deps-wasm"
 version = "27.0.1"
 source = "git+https://github.com/joeleaver/wgpu-fork?branch=rinch-patch#54b7ce083ac9575b27884054ae74eb652cb541b3"
 dependencies = [
