@@ -317,6 +317,21 @@ impl RinchDocument {
             return;
         }
 
+        // Check Stylo computed list-style-type — skip if "none"
+        // (list-style-type is inherited, so checking the <li> covers both
+        // inline `list-style: none` and inherited from parent <ul>/<ol>)
+        {
+            use style::properties::longhands::list_style_type::computed_value::T as ListStyleType;
+            let stylo_data = node.stylo_element_data.borrow();
+            if let Some(ref data) = *stylo_data {
+                if let Some(ref primary) = data.styles.primary {
+                    if primary.get_list().list_style_type == ListStyleType::None {
+                        return;
+                    }
+                }
+            }
+        }
+
         // Skip if already has a pseudo-element child (from CSS ::before)
         let has_pseudo = node.children.iter().any(|&cid| {
             self.tree

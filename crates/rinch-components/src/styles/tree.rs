@@ -26,7 +26,6 @@ pub fn styles() -> String {
     padding-left: 0;
     cursor: pointer;
     border-radius: var(--rinch-radius-sm);
-    transition: background-color 150ms ease;
     user-select: none;
 }
 
