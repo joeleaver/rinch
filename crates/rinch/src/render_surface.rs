@@ -214,10 +214,9 @@ impl SurfaceWriter {
             // (resolve_and_repaint) and goes straight to window.request_redraw().
             // Using ReRender here would rebuild the entire Vello scene from the
             // DOM every frame, killing performance for animated surfaces.
-            if let Some(proxy) = crate::shell::rinch_runtime::GLOBAL_PROXY.get() {
-                let _ =
-                    proxy.send_event(crate::shell::rinch_runtime::RinchNativeEvent::SurfaceRedraw);
-            }
+            crate::shell::rinch_runtime::send_native_event(
+                crate::shell::rinch_runtime::RinchNativeEvent::SurfaceRedraw,
+            );
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -418,9 +417,9 @@ impl GpuTextureRegistrar {
         self.needs_redraw.store(true, Ordering::Release);
         // Send SurfaceRedraw — goes directly to window.request_redraw()
         // without going through resolve_and_repaint().
-        if let Some(proxy) = crate::shell::rinch_runtime::GLOBAL_PROXY.get() {
-            let _ = proxy.send_event(crate::shell::rinch_runtime::RinchNativeEvent::SurfaceRedraw);
-        }
+        crate::shell::rinch_runtime::send_native_event(
+            crate::shell::rinch_runtime::RinchNativeEvent::SurfaceRedraw,
+        );
     }
 
     /// Get the current layout size in physical pixels.
@@ -467,6 +466,40 @@ pub fn create_render_surface() -> RenderSurfaceHandle {
         needs_redraw: Arc::new(AtomicBool::new(false)),
         event_handler: std::rc::Rc::new(RefCell::new(None)),
         viewport_name: format!("__render_surface_{id}"),
+        layout_size: Arc::new(Mutex::new((0, 0))),
+        #[cfg(target_arch = "wasm32")]
+        canvas: std::rc::Rc::new(RefCell::new(None)),
+        #[cfg(target_arch = "wasm32")]
+        canvas_ctx: std::rc::Rc::new(RefCell::new(None)),
+        render_callback: std::rc::Rc::new(RefCell::new(None)),
+    };
+
+    SURFACE_REGISTRY.with(|reg| {
+        reg.borrow_mut().push(handle.clone());
+    });
+
+    handle
+}
+
+/// Create a render surface with a specific viewport name.
+///
+/// Used internally to bridge video players to the RenderSurface compositing
+/// pipeline. The viewport name must match the `data-viewport` attribute on
+/// the corresponding DOM element (e.g., `VideoViewport`).
+pub fn create_render_surface_with_name(viewport_name: &str) -> RenderSurfaceHandle {
+    let id = next_surface_id();
+    let handle = RenderSurfaceHandle {
+        id,
+        buffer: Arc::new(Mutex::new(SurfaceBuffer {
+            pixels: Vec::new(),
+            width: 0,
+            height: 0,
+        })),
+        #[cfg(feature = "desktop")]
+        texture_source: Arc::new(Mutex::new(None)),
+        needs_redraw: Arc::new(AtomicBool::new(false)),
+        event_handler: std::rc::Rc::new(RefCell::new(None)),
+        viewport_name: viewport_name.to_string(),
         layout_size: Arc::new(Mutex::new((0, 0))),
         #[cfg(target_arch = "wasm32")]
         canvas: std::rc::Rc::new(RefCell::new(None)),

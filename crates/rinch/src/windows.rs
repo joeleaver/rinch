@@ -48,8 +48,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use winit::event_loop::EventLoopProxy;
 use winit::window::WindowId;
 
-use crate::shell::rinch_runtime::{NATIVE_PROXY, RinchNativeEvent};
-use crate::shell::types::RinchEvent;
+use crate::shell::rinch_runtime::{RinchNativeEvent, send_native_event};
 
 /// A handle to an open window.
 ///
@@ -123,7 +122,7 @@ thread_local! {
     /// Pending window requests to be processed by the runtime.
     static WINDOW_REQUESTS: RefCell<Vec<WindowRequest>> = const { RefCell::new(Vec::new()) };
     /// Event loop proxy for triggering re-renders after window operations.
-    static EVENT_PROXY: RefCell<Option<EventLoopProxy<RinchEvent>>> = const { RefCell::new(None) };
+    static EVENT_PROXY: RefCell<Option<EventLoopProxy>> = const { RefCell::new(None) };
     /// Current state of all windows, updated by the runtime.
     static WINDOW_STATES: RefCell<HashMap<WindowHandle, WindowState>> = RefCell::new(HashMap::new());
     /// The window ID that is currently handling an event (set by runtime during event dispatch).
@@ -138,7 +137,7 @@ pub enum WindowRequest {
 }
 
 /// Set the event loop proxy (called by runtime during initialization).
-pub(crate) fn set_event_proxy(proxy: EventLoopProxy<RinchEvent>) {
+pub(crate) fn set_event_proxy(proxy: EventLoopProxy) {
     EVENT_PROXY.with(|p| {
         *p.borrow_mut() = Some(proxy);
     });
@@ -237,7 +236,7 @@ pub fn open_window(props: WindowProps, html_content: String) -> WindowHandle {
     // Trigger processing of window requests
     EVENT_PROXY.with(|p| {
         if let Some(proxy) = p.borrow().as_ref() {
-            let _ = proxy.send_event(RinchEvent::ProcessWindowRequests);
+            proxy.wake_up();
         }
     });
 
@@ -264,7 +263,7 @@ pub fn close_window(handle: WindowHandle) {
     // Trigger processing of window requests
     EVENT_PROXY.with(|p| {
         if let Some(proxy) = p.borrow().as_ref() {
-            let _ = proxy.send_event(RinchEvent::ProcessWindowRequests);
+            proxy.wake_up();
         }
     });
 }
@@ -375,26 +374,7 @@ impl Default for WindowBuilder {
 /// button { onclick: || minimize_current_window(), "Minimize" }
 /// ```
 pub fn minimize_current_window() {
-    // Try native runtime proxy first (rinch-dom runtime)
-    let sent = NATIVE_PROXY.with(|p| {
-        if let Some(proxy) = p.borrow().as_ref() {
-            let _ = proxy.send_event(RinchNativeEvent::MinimizeWindow);
-            return true;
-        }
-        false
-    });
-    if sent {
-        return;
-    }
-
-    // Fallback to RinchEvent proxy (legacy runtime)
-    if let Some(window_id) = get_current_window_id() {
-        EVENT_PROXY.with(|p| {
-            if let Some(proxy) = p.borrow().as_ref() {
-                let _ = proxy.send_event(RinchEvent::MinimizeWindow { window_id });
-            }
-        });
-    }
+    send_native_event(RinchNativeEvent::MinimizeWindow);
 }
 
 /// Toggle maximize state of the current window.
@@ -408,26 +388,7 @@ pub fn minimize_current_window() {
 /// button { onclick: || toggle_maximize_current_window(), "Maximize" }
 /// ```
 pub fn toggle_maximize_current_window() {
-    // Try native runtime proxy first (rinch-dom runtime)
-    let sent = NATIVE_PROXY.with(|p| {
-        if let Some(proxy) = p.borrow().as_ref() {
-            let _ = proxy.send_event(RinchNativeEvent::ToggleMaximizeWindow);
-            return true;
-        }
-        false
-    });
-    if sent {
-        return;
-    }
-
-    // Fallback to RinchEvent proxy (legacy runtime)
-    if let Some(window_id) = get_current_window_id() {
-        EVENT_PROXY.with(|p| {
-            if let Some(proxy) = p.borrow().as_ref() {
-                let _ = proxy.send_event(RinchEvent::ToggleMaximizeWindow { window_id });
-            }
-        });
-    }
+    send_native_event(RinchNativeEvent::ToggleMaximizeWindow);
 }
 
 /// Hide the current window (minimize to tray pattern).
@@ -441,24 +402,7 @@ pub fn toggle_maximize_current_window() {
 /// button { onclick: || hide_current_window(), "Hide to Tray" }
 /// ```
 pub fn hide_current_window() {
-    let sent = NATIVE_PROXY.with(|p| {
-        if let Some(proxy) = p.borrow().as_ref() {
-            let _ = proxy.send_event(RinchNativeEvent::HideWindow);
-            return true;
-        }
-        false
-    });
-    if sent {
-        return;
-    }
-
-    if let Some(window_id) = get_current_window_id() {
-        EVENT_PROXY.with(|p| {
-            if let Some(proxy) = p.borrow().as_ref() {
-                let _ = proxy.send_event(RinchEvent::HideWindow { window_id });
-            }
-        });
-    }
+    send_native_event(RinchNativeEvent::HideWindow);
 }
 
 /// Show the current window (restore from tray).
@@ -472,24 +416,7 @@ pub fn hide_current_window() {
 /// TrayMenuItem::new("Show").on_click(|| show_current_window())
 /// ```
 pub fn show_current_window() {
-    let sent = NATIVE_PROXY.with(|p| {
-        if let Some(proxy) = p.borrow().as_ref() {
-            let _ = proxy.send_event(RinchNativeEvent::ShowWindow);
-            return true;
-        }
-        false
-    });
-    if sent {
-        return;
-    }
-
-    if let Some(window_id) = get_current_window_id() {
-        EVENT_PROXY.with(|p| {
-            if let Some(proxy) = p.borrow().as_ref() {
-                let _ = proxy.send_event(RinchEvent::ShowWindow { window_id });
-            }
-        });
-    }
+    send_native_event(RinchNativeEvent::ShowWindow);
 }
 
 /// Close the current window.
@@ -503,24 +430,5 @@ pub fn show_current_window() {
 /// button { onclick: || close_current_window(), "Close" }
 /// ```
 pub fn close_current_window() {
-    // Try native runtime proxy first (rinch-dom runtime)
-    let sent = NATIVE_PROXY.with(|p| {
-        if let Some(proxy) = p.borrow().as_ref() {
-            let _ = proxy.send_event(RinchNativeEvent::CloseWindowControl);
-            return true;
-        }
-        false
-    });
-    if sent {
-        return;
-    }
-
-    // Fallback to RinchEvent proxy (legacy runtime)
-    if let Some(window_id) = get_current_window_id() {
-        EVENT_PROXY.with(|p| {
-            if let Some(proxy) = p.borrow().as_ref() {
-                let _ = proxy.send_event(RinchEvent::CloseWindowControl { window_id });
-            }
-        });
-    }
+    send_native_event(RinchNativeEvent::CloseWindowControl);
 }

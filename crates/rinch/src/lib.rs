@@ -114,9 +114,9 @@ pub mod prelude {
     pub use rinch_core::{Effect, Memo, Scope, Signal, batch, derived, untracked};
     // Context for sharing state across components
     pub use rinch_core::{create_context, try_use_context, use_context};
-    // Event handling - click context, drag support, and input callbacks
+    // Event handling - click context, drag support, input callbacks, file-drop callbacks
     pub use rinch_core::{
-        ClickContext, DragContext, InputCallback, get_click_context, start_drag,
+        ClickContext, DragContext, FileDropCallback, InputCallback, get_click_context, start_drag,
         start_drag_absolute,
     };
     pub use rinch_macros::{component, rsx};

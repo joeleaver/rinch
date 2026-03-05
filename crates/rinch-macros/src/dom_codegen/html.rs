@@ -92,6 +92,14 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                         #elem_var.set_attribute("data-oninput", &__handler_id.0.to_string());
                     }
                 }
+            } else if event_name == "onfiledrop" {
+                // OS file-drop events use register_file_drop_handler with Fn(Vec<PathBuf>)
+                quote! {
+                    {
+                        let __handler_id = __scope.register_file_drop_handler(#handler);
+                        #elem_var.set_attribute("data-onfiledrop", &__handler_id.0.to_string());
+                    }
+                }
             } else {
                 // Drag-and-drop and context menu events get their own data-
                 // attributes so the runtime can distinguish them during
@@ -102,6 +110,8 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                     "ondrop" => "data-ondrop",
                     "ondragenter" => "data-ondragenter",
                     "ondragleave" => "data-ondragleave",
+                    "onfiledragenter" => "data-onfiledragenter",
+                    "onfiledragleave" => "data-onfiledragleave",
                     "oncontextmenu" => "data-oncontextmenu",
                     _ => "data-rid", // onclick and all other events
                 };

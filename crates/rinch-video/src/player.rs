@@ -5,9 +5,14 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use rinch_core::Signal;
+
+/// A thread-safe callback for receiving decoded video frames.
+/// Called with (rgba_pixels, width, height).
+pub type FrameSink = Arc<dyn Fn(&[u8], u32, u32) + Send + Sync>;
 
 /// Global counter for unique player IDs.
 pub(crate) static NEXT_PLAYER_ID: AtomicU32 = AtomicU32::new(0);
@@ -46,6 +51,14 @@ pub trait VideoPlayerBackend {
     /// Called from the main thread event loop to drain pending updates
     /// and apply them to signals. Default is a no-op.
     fn poll_updates(&self) {}
+
+    /// Set a frame sink callback that receives decoded RGBA frames.
+    ///
+    /// When set, `render_sw_frame()` delivers frames through this sink
+    /// instead of (or in addition to) storing in the internal frame buffer.
+    /// The sink is `Send + Sync` and can be called from any thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn set_frame_sink(&self, _sink: FrameSink) {}
 
     /// Desktop only: check if a new frame is available since last call.
     #[cfg(not(target_arch = "wasm32"))]
@@ -184,6 +197,16 @@ impl VideoPlayer {
         self.inner.borrow().cleanup();
         crate::unregister_active_player(self);
         crate::decrement_video_loaded();
+    }
+
+    /// Set a frame sink that receives decoded RGBA frames.
+    ///
+    /// When set, frames are delivered through this callback instead of
+    /// being stored internally. Used by rinch to route video frames
+    /// through the RenderSurface compositing pipeline.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_frame_sink(&self, sink: FrameSink) {
+        self.inner.borrow().set_frame_sink(sink);
     }
 
     /// Check if a new decoded frame is available (desktop only).

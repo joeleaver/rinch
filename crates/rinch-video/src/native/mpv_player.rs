@@ -89,6 +89,8 @@ pub struct MpvPlayer {
     /// Set to true on EndFile — short-circuits all mpv interaction in poll_updates.
     /// Cleared when play() restarts playback.
     finished: Cell<bool>,
+    /// Optional frame sink for delivering frames to the RenderSurface pipeline.
+    frame_sink: RefCell<Option<crate::player::FrameSink>>,
 }
 
 // Safety: MpvPlayer is only used from the main thread (behind Rc<RefCell<...>>).
@@ -297,6 +299,10 @@ impl VideoPlayerBackend for MpvPlayer {
         // Note: render context is freed in Drop
     }
 
+    fn set_frame_sink(&self, sink: crate::player::FrameSink) {
+        *self.frame_sink.borrow_mut() = Some(sink);
+    }
+
     fn has_new_frame(&self) -> bool {
         self.frame_buffer
             .lock()
@@ -356,7 +362,13 @@ impl MpvPlayer {
             pixel[3] = 255;
         }
 
-        fb.new_frame = true;
+        // Deliver frame through the sink if one is set (RenderSurface pipeline).
+        // Otherwise, mark the frame buffer for the legacy collect_video_frames path.
+        if let Some(sink) = self.frame_sink.borrow().as_ref() {
+            sink(&fb.pixels, w, h);
+        } else {
+            fb.new_frame = true;
+        }
     }
 
     /// Render into a small scratch buffer when dimensions aren't known yet.
@@ -608,6 +620,7 @@ fn create_mpv_player_impl(
         _needs_render: needs_render,
         last_render: Cell::new(Instant::now()),
         finished: Cell::new(false),
+        frame_sink: RefCell::new(None),
     };
 
     // Load source if provided

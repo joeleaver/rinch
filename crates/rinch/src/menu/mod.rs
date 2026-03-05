@@ -347,7 +347,7 @@ pub(crate) fn install_menu_event_handler() {
 
 /// Attach a native menu bar to a window (Windows).
 #[cfg(target_os = "windows")]
-pub(crate) fn attach_menu_to_window(menu: &muda::Menu, window: &winit::window::Window) {
+pub(crate) fn attach_menu_to_window(menu: &muda::Menu, window: &dyn winit::window::Window) {
     use winit::raw_window_handle::HasWindowHandle;
     if let Ok(handle) = window.window_handle() {
         if let winit::raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw() {
@@ -368,7 +368,7 @@ pub(crate) fn attach_menu_to_window(menu: &muda::Menu, _window: &winit::window::
 
 /// Attach a native menu bar to a window (Linux — not yet supported).
 #[cfg(target_os = "linux")]
-pub(crate) fn attach_menu_to_window(_menu: &muda::Menu, _window: &winit::window::Window) {
+pub(crate) fn attach_menu_to_window(_menu: &muda::Menu, _window: &dyn winit::window::Window) {
     // Linux GTK menu integration not yet implemented.
 }
 

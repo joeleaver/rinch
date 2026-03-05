@@ -57,23 +57,23 @@ pub struct GpuTextureLayer {
 
 /// Desktop window backed by winit.
 pub struct WinitWindow {
-    pub(crate) window: Arc<Window>,
+    pub(crate) window: Box<dyn Window>,
 }
 
 impl WinitWindow {
-    pub fn new(window: Arc<Window>) -> Self {
+    pub fn new(window: Box<dyn Window>) -> Self {
         Self { window }
     }
 
     /// Get the raw winit window reference.
-    pub fn raw(&self) -> &Arc<Window> {
-        &self.window
+    pub fn raw(&self) -> &dyn Window {
+        &*self.window
     }
 }
 
 impl PlatformWindow for WinitWindow {
     fn inner_size(&self) -> (u32, u32) {
-        let s = self.window.inner_size();
+        let s = self.window.surface_size();
         (s.width, s.height)
     }
 
@@ -160,7 +160,7 @@ pub struct WgpuRenderer {
 
 impl WgpuRenderer {
     /// Create a new GPU renderer for the given window.
-    pub fn new(window: &Arc<Window>, width: u32, height: u32) -> Self {
+    pub fn new(window: &dyn Window, width: u32, height: u32) -> Self {
         let width = width.max(1);
         let height = height.max(1);
 
@@ -172,9 +172,18 @@ impl WgpuRenderer {
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
         });
 
-        let surface = instance
-            .create_surface(window.clone())
-            .expect("Failed to create surface");
+        // SAFETY: The window outlives the surface — drop order in WgpuRenderer
+        // ensures surface is dropped before the window.
+        let surface = unsafe {
+            use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+            let target = wgpu::SurfaceTargetUnsafe::RawHandle {
+                raw_display_handle: window.display_handle().unwrap().as_raw(),
+                raw_window_handle: window.window_handle().unwrap().as_raw(),
+            };
+            instance
+                .create_surface_unsafe(target)
+                .expect("Failed to create surface")
+        };
 
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,

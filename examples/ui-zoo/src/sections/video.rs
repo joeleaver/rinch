@@ -27,7 +27,7 @@ pub fn video_section() -> NodeHandle {
 
                 div { style: "display: flex; flex-direction: column;",
                     // Viewport
-                    div { style: "width: 100%; height: 400px; background: black;",
+                    div { style: "width: 100%; height: 400px; background: transparent;",
                         VideoViewport { player: player.clone() }
                     }
 
@@ -150,7 +150,7 @@ fn network_video_player() -> NodeHandle {
                 style: "overflow: hidden;",
 
                 div { style: "display: flex; flex-direction: column;",
-                    div { style: "width: 100%; height: 400px; background: black;",
+                    div { style: "width: 100%; height: 400px; background: transparent;",
                         VideoViewport { player: net_player.clone() }
                     }
                     VideoControls { player: net_player.clone() }

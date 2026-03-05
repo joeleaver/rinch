@@ -20,12 +20,13 @@
 //! ```
 
 use std::cell::RefCell;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::collections::VecDeque;
+use std::sync::{Mutex, OnceLock};
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::window::{Window, WindowId};
+use winit::window::{WindowAttributes, WindowId};
 
 use rinch_core::clear_context;
 use rinch_core::dom::{NodeHandle, RenderScope};
@@ -46,14 +47,26 @@ use {super::screenshot, base64::Engine, rinch_debug::DebugResult};
 
 // Thread-local proxy for the native event loop, used by window control functions.
 thread_local! {
-    pub(crate) static NATIVE_PROXY: RefCell<Option<EventLoopProxy<RinchNativeEvent>>> = const { RefCell::new(None) };
+    pub(crate) static NATIVE_PROXY: RefCell<Option<EventLoopProxy>> = const { RefCell::new(None) };
 }
 
-// ── Global proxy + main-thread callback queue ────────────────────────────────
+// ── Global proxy + native event queue ────────────────────────────────────────
 
 // Global (Send+Sync) proxy for waking the event loop from any thread.
 // Public within the crate so render_surface.rs can send SurfaceRedraw directly.
-pub(crate) static GLOBAL_PROXY: OnceLock<EventLoopProxy<RinchNativeEvent>> = OnceLock::new();
+pub(crate) static GLOBAL_PROXY: OnceLock<EventLoopProxy> = OnceLock::new();
+
+// Queue of native events to process on the next proxy_wake_up.
+// winit 0.31 removes send_event(T); we queue events and call proxy.wake_up().
+static NATIVE_EVENT_QUEUE: Mutex<VecDeque<RinchNativeEvent>> = Mutex::new(VecDeque::new());
+
+/// Queue a native event and wake the event loop.
+pub(crate) fn send_native_event(event: RinchNativeEvent) {
+    NATIVE_EVENT_QUEUE.lock().unwrap().push_back(event);
+    if let Some(proxy) = GLOBAL_PROXY.get() {
+        proxy.wake_up();
+    }
+}
 
 // Queue of closures to execute on the main thread during the next ReRender.
 static MAIN_QUEUE: Mutex<Vec<Box<dyn FnOnce() + Send>>> = Mutex::new(Vec::new());
@@ -77,9 +90,7 @@ static MAIN_QUEUE: Mutex<Vec<Box<dyn FnOnce() + Send>>> = Mutex::new(Vec::new())
 /// ```
 pub fn run_on_main_thread(f: impl FnOnce() + Send + 'static) {
     MAIN_QUEUE.lock().unwrap().push(Box::new(f));
-    if let Some(proxy) = GLOBAL_PROXY.get() {
-        let _ = proxy.send_event(RinchNativeEvent::ReRender);
-    }
+    send_native_event(RinchNativeEvent::ReRender);
 }
 
 /// Drain and execute all pending main-thread callbacks.
@@ -126,7 +137,7 @@ pub struct RinchRuntime {
     /// GPU renderer.
     renderer: Option<WgpuRenderer>,
     /// Event loop proxy for sending events.
-    proxy: Option<EventLoopProxy<RinchNativeEvent>>,
+    proxy: Option<EventLoopProxy>,
     /// Window title.
     title: String,
     width: u32,
@@ -179,10 +190,10 @@ impl RinchRuntime {
         drop(self.window.take());
     }
 
-    fn create_window(&mut self, event_loop: &ActiveEventLoop) {
-        let mut window_attrs = Window::default_attributes()
+    fn create_window(&mut self, event_loop: &dyn ActiveEventLoop) {
+        let mut window_attrs = WindowAttributes::default()
             .with_title(&self.title)
-            .with_inner_size(winit::dpi::LogicalSize::new(self.width, self.height));
+            .with_surface_size(winit::dpi::LogicalSize::new(self.width, self.height));
 
         // Apply window props if set
         if let Some(props) = &self.app.window_props {
@@ -224,29 +235,29 @@ impl RinchRuntime {
             #[cfg(target_os = "linux")]
             {
                 let app_id = props.app_id.as_deref().unwrap_or("rinch-app");
-                use winit::platform::wayland::WindowAttributesExtWayland;
-                window_attrs = window_attrs.with_name(app_id, app_id);
+                use winit::platform::wayland::WindowAttributesWayland;
+                let wayland_attrs = WindowAttributesWayland::default().with_name(app_id, app_id);
+                window_attrs = window_attrs.with_platform_attributes(Box::new(wayland_attrs));
             }
         }
 
         let window = event_loop
             .create_window(window_attrs)
             .expect("Failed to create window");
-        let window = Arc::new(window);
 
-        let size = window.inner_size();
+        let size = window.surface_size();
 
         // Create GPU renderer
-        let gpu = WgpuRenderer::new(&window, size.width.max(1), size.height.max(1));
+        let gpu = WgpuRenderer::new(&*window, size.width.max(1), size.height.max(1));
         self.renderer = Some(gpu);
 
         // Attach native menu bar to the window if configured
         if let Some(menu) = &self.native_menu {
-            crate::menu::attach_menu_to_window(menu, &window);
+            crate::menu::attach_menu_to_window(menu, &*window);
         }
 
         // Wrap the winit window
-        let winit_window = WinitWindow::new(window.clone());
+        let winit_window = WinitWindow::new(window);
         self.window = Some(winit_window);
 
         // Mount the component
@@ -254,7 +265,7 @@ impl RinchRuntime {
             .mount_component(size.width as f32, size.height as f32);
 
         // Request initial draw
-        window.request_redraw();
+        self.window.as_ref().unwrap().request_redraw();
     }
 
     /// Hide the window by destroying the OS window and GPU surface.
@@ -272,14 +283,14 @@ impl RinchRuntime {
     ///
     /// Rebuilds the winit Window and wgpu renderer, then triggers a repaint
     /// of the existing DOM.
-    fn show_window(&mut self, event_loop: &ActiveEventLoop) {
+    fn show_window(&mut self, event_loop: &dyn ActiveEventLoop) {
         if self.window.is_some() {
             return; // Already visible
         }
 
-        let mut window_attrs = Window::default_attributes()
+        let mut window_attrs = WindowAttributes::default()
             .with_title(&self.title)
-            .with_inner_size(winit::dpi::LogicalSize::new(self.width, self.height));
+            .with_surface_size(winit::dpi::LogicalSize::new(self.width, self.height));
 
         if let Some(props) = &self.app.window_props {
             if props.borderless {
@@ -303,26 +314,26 @@ impl RinchRuntime {
             #[cfg(target_os = "linux")]
             {
                 let app_id = props.app_id.as_deref().unwrap_or("rinch-app");
-                use winit::platform::wayland::WindowAttributesExtWayland;
-                window_attrs = window_attrs.with_name(app_id, app_id);
+                use winit::platform::wayland::WindowAttributesWayland;
+                let wayland_attrs = WindowAttributesWayland::default().with_name(app_id, app_id);
+                window_attrs = window_attrs.with_platform_attributes(Box::new(wayland_attrs));
             }
         }
 
         let window = event_loop
             .create_window(window_attrs)
             .expect("Failed to recreate window");
-        let window = Arc::new(window);
 
-        let size = window.inner_size();
-        let gpu = WgpuRenderer::new(&window, size.width.max(1), size.height.max(1));
+        let size = window.surface_size();
+        let gpu = WgpuRenderer::new(&*window, size.width.max(1), size.height.max(1));
         self.renderer = Some(gpu);
 
-        let winit_window = WinitWindow::new(window.clone());
+        let winit_window = WinitWindow::new(window);
         self.window = Some(winit_window);
 
         // Trigger a full repaint of the existing DOM
         self.app.scene_dirty = true;
-        window.request_redraw();
+        self.window.as_ref().unwrap().request_redraw();
     }
 
     /// Paint the current scene to the window.
@@ -511,7 +522,7 @@ impl RinchRuntime {
     }
 
     /// Process the actions returned by RinchApp.
-    fn process_actions(&mut self, actions: Vec<AppAction>, event_loop: &ActiveEventLoop) {
+    fn process_actions(&mut self, actions: Vec<AppAction>, event_loop: &dyn ActiveEventLoop) {
         for action in actions {
             match action {
                 AppAction::RequestRedraw => {
@@ -554,7 +565,9 @@ impl RinchRuntime {
                 }
                 AppAction::SetCursor(style) => {
                     if let Some(w) = &self.window {
-                        w.window.set_cursor(Self::cursor_style_to_winit(style));
+                        w.window.set_cursor(winit::cursor::Cursor::from(
+                            Self::cursor_style_to_winit(style),
+                        ));
                     }
                 }
             }
@@ -562,9 +575,9 @@ impl RinchRuntime {
     }
 
     /// Convert a platform CursorStyle to a winit CursorIcon.
-    fn cursor_style_to_winit(style: rinch_platform::CursorStyle) -> winit::window::CursorIcon {
+    fn cursor_style_to_winit(style: rinch_platform::CursorStyle) -> winit::cursor::CursorIcon {
         use rinch_platform::CursorStyle as CS;
-        use winit::window::CursorIcon;
+        use winit::cursor::CursorIcon;
         match style {
             CS::Auto | CS::Default => CursorIcon::Default,
             CS::Pointer => CursorIcon::Pointer,
@@ -687,7 +700,7 @@ impl RinchRuntime {
             shift: self.modifiers.shift_key(),
             ctrl: self.modifiers.control_key(),
             alt: self.modifiers.alt_key(),
-            meta: self.modifiers.super_key(),
+            meta: self.modifiers.meta_key(),
         }
     }
 
@@ -782,62 +795,34 @@ impl Drop for RinchRuntime {
 
 // ── ApplicationHandler impl ──────────────────────────────────────────────────
 
-impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+impl ApplicationHandler for RinchRuntime {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
+        event_loop.set_control_flow(ControlFlow::Wait);
         if self.window.is_none() {
             self.create_window(event_loop);
         }
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: RinchNativeEvent) {
-        // Drain main-thread callback queue on every user event (primarily ReRender).
+    fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
+        // Drain main-thread callback queue.
         drain_main_queue();
 
-        let platform_event = match event {
-            RinchNativeEvent::ReRender => PlatformEvent::UserEvent(UserEvent::ReRender),
-            RinchNativeEvent::SurfaceRedraw => {
-                // Direct repaint — skip DOM resolution entirely.
-                // The engine thread rendered new content to its GPU texture;
-                // we just need the compositor to re-composite.
-                if let Some(w) = &self.window {
-                    w.request_redraw();
-                }
-                return;
-            }
-            #[cfg(feature = "debug")]
-            RinchNativeEvent::DebugCommand => {
-                // Debug commands may need the renderer (screenshots), so
-                // we handle them here in the shell instead of delegating.
-                if self.handle_debug_commands_with_renderer() {
-                    event_loop.exit();
-                }
-                return;
-            }
-            RinchNativeEvent::MinimizeWindow => PlatformEvent::UserEvent(UserEvent::MinimizeWindow),
-            RinchNativeEvent::ToggleMaximizeWindow => {
-                PlatformEvent::UserEvent(UserEvent::ToggleMaximizeWindow)
-            }
-            RinchNativeEvent::CloseWindowControl => {
-                PlatformEvent::UserEvent(UserEvent::CloseWindow)
-            }
-            RinchNativeEvent::ShowWindow => PlatformEvent::UserEvent(UserEvent::ShowWindow),
-            RinchNativeEvent::HideWindow => PlatformEvent::UserEvent(UserEvent::HideWindow),
-        };
-        let size = self.window_size();
-        let scale = self.scale_factor();
-        let actions = self.app.handle_event(platform_event, size, scale);
-        self.process_actions(actions, event_loop);
+        // Drain queued native events.
+        let events: Vec<_> = NATIVE_EVENT_QUEUE.lock().unwrap().drain(..).collect();
+        for event in events {
+            self.handle_native_event(event, event_loop);
+        }
     }
 
     fn window_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         _window_id: WindowId,
         event: WindowEvent,
     ) {
         let platform_event = match event {
             WindowEvent::CloseRequested => PlatformEvent::CloseRequested,
-            WindowEvent::Resized(size) => {
+            WindowEvent::SurfaceResized(size) => {
                 // Also resize the renderer
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(size.width.max(1), size.height.max(1));
@@ -854,19 +839,25 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                 }
                 return;
             }
-            WindowEvent::CursorMoved { position, .. } => PlatformEvent::MouseMove {
+            WindowEvent::PointerMoved { position, .. } => PlatformEvent::MouseMove {
                 x: position.x as f32,
                 y: position.y as f32,
             },
-            WindowEvent::MouseInput {
+            WindowEvent::PointerButton {
                 state: ElementState::Pressed,
                 button,
                 ..
             } => {
                 let platform_button = match button {
-                    MouseButton::Left => PlatformMouseButton::Left,
-                    MouseButton::Right => PlatformMouseButton::Right,
-                    MouseButton::Middle => PlatformMouseButton::Middle,
+                    winit::event::ButtonSource::Mouse(MouseButton::Left) => {
+                        PlatformMouseButton::Left
+                    }
+                    winit::event::ButtonSource::Mouse(MouseButton::Right) => {
+                        PlatformMouseButton::Right
+                    }
+                    winit::event::ButtonSource::Mouse(MouseButton::Middle) => {
+                        PlatformMouseButton::Middle
+                    }
                     _ => return,
                 };
                 // For click handling, we need the cursor position
@@ -891,15 +882,21 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                 self.process_actions(actions, event_loop);
                 return;
             }
-            WindowEvent::MouseInput {
+            WindowEvent::PointerButton {
                 state: ElementState::Released,
                 button,
                 ..
             } => {
                 let platform_button = match button {
-                    MouseButton::Left => PlatformMouseButton::Left,
-                    MouseButton::Right => PlatformMouseButton::Right,
-                    MouseButton::Middle => PlatformMouseButton::Middle,
+                    winit::event::ButtonSource::Mouse(MouseButton::Left) => {
+                        PlatformMouseButton::Left
+                    }
+                    winit::event::ButtonSource::Mouse(MouseButton::Right) => {
+                        PlatformMouseButton::Right
+                    }
+                    winit::event::ButtonSource::Mouse(MouseButton::Middle) => {
+                        PlatformMouseButton::Middle
+                    }
                     _ => return,
                 };
                 let (x, y) = self.app.cursor_pos.unwrap_or((0.0, 0.0));
@@ -973,6 +970,44 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
                     modifiers: mods,
                 }
             }
+            WindowEvent::DragEntered { paths, position } => {
+                let size = self.window_size();
+                let scale = self.scale_factor();
+                if paths.is_empty() {
+                    // Wayland: paths arrive on drop, not on enter.
+                    // Fire a FileDragMoved to trigger hover tracking.
+                    let actions = self.app.handle_event(
+                        PlatformEvent::FileDragMoved {
+                            position: (position.x, position.y),
+                        },
+                        size,
+                        scale,
+                    );
+                    self.process_actions(actions, event_loop);
+                } else {
+                    // X11/Windows: paths are known on enter.
+                    for path in paths {
+                        let actions = self.app.handle_event(
+                            PlatformEvent::FileHoverEnter {
+                                path,
+                                position: (position.x, position.y),
+                            },
+                            size,
+                            scale,
+                        );
+                        self.process_actions(actions, event_loop);
+                    }
+                }
+                return;
+            }
+            WindowEvent::DragMoved { position } => PlatformEvent::FileDragMoved {
+                position: (position.x, position.y),
+            },
+            WindowEvent::DragDropped { paths, position } => PlatformEvent::FileDropped {
+                paths,
+                position: (position.x, position.y),
+            },
+            WindowEvent::DragLeft { .. } => PlatformEvent::FileHoverCancelled,
             _ => return,
         };
 
@@ -982,12 +1017,52 @@ impl ApplicationHandler<RinchNativeEvent> for RinchRuntime {
         self.process_actions(actions, event_loop);
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         let size = self.window_size();
         let scale = self.scale_factor();
         let actions = self
             .app
             .handle_event(PlatformEvent::AboutToWait, size, scale);
+        self.process_actions(actions, event_loop);
+    }
+}
+
+impl RinchRuntime {
+    /// Handle a single native event from the queue.
+    fn handle_native_event(&mut self, event: RinchNativeEvent, event_loop: &dyn ActiveEventLoop) {
+        let platform_event = match event {
+            RinchNativeEvent::ReRender => PlatformEvent::UserEvent(UserEvent::ReRender),
+            RinchNativeEvent::SurfaceRedraw => {
+                // Direct repaint — skip DOM resolution entirely.
+                // The engine thread rendered new content to its GPU texture;
+                // we just need the compositor to re-composite.
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                return;
+            }
+            #[cfg(feature = "debug")]
+            RinchNativeEvent::DebugCommand => {
+                // Debug commands may need the renderer (screenshots), so
+                // we handle them here in the shell instead of delegating.
+                if self.handle_debug_commands_with_renderer() {
+                    event_loop.exit();
+                }
+                return;
+            }
+            RinchNativeEvent::MinimizeWindow => PlatformEvent::UserEvent(UserEvent::MinimizeWindow),
+            RinchNativeEvent::ToggleMaximizeWindow => {
+                PlatformEvent::UserEvent(UserEvent::ToggleMaximizeWindow)
+            }
+            RinchNativeEvent::CloseWindowControl => {
+                PlatformEvent::UserEvent(UserEvent::CloseWindow)
+            }
+            RinchNativeEvent::ShowWindow => PlatformEvent::UserEvent(UserEvent::ShowWindow),
+            RinchNativeEvent::HideWindow => PlatformEvent::UserEvent(UserEvent::HideWindow),
+        };
+        let size = self.window_size();
+        let scale = self.scale_factor();
+        let actions = self.app.handle_event(platform_event, size, scale);
         self.process_actions(actions, event_loop);
     }
 }
@@ -1034,16 +1109,13 @@ where
     events::clear_handlers();
     clear_context();
 
-    let event_loop = EventLoop::<RinchNativeEvent>::with_user_event()
-        .build()
-        .expect("Failed to create event loop");
+    let event_loop = EventLoop::new().expect("Failed to create event loop");
 
     let proxy = event_loop.create_proxy();
 
     // Set up signal change notification
-    let render_proxy = proxy.clone();
     rinch_core::set_on_signal_change(move || {
-        let _ = render_proxy.send_event(RinchNativeEvent::ReRender);
+        send_native_event(RinchNativeEvent::ReRender);
     });
 
     let mut runtime = RinchRuntime::new(title, width, height, component);
@@ -1058,13 +1130,28 @@ where
     // Set global proxy so run_on_main_thread() works from any thread
     let _ = GLOBAL_PROXY.set(proxy.clone());
 
+    // Register video frame sink factory so video players deliver frames
+    // through the RenderSurface compositing pipeline.
+    #[cfg(feature = "video")]
+    {
+        rinch_video::set_frame_sink_factory(|viewport_id: &str| {
+            let handle = crate::render_surface::create_render_surface_with_name(viewport_id);
+            let writer = handle.writer();
+            // Keep the handle alive by leaking it — the surface lives for
+            // the lifetime of the video player.
+            std::mem::forget(handle);
+            std::sync::Arc::new(move |pixels: &[u8], w: u32, h: u32| {
+                writer.submit_frame(pixels, w, h);
+            })
+        });
+    }
+
     // Start debug IPC server if feature is enabled (disable with RINCH_DEBUG=0)
     #[cfg(feature = "debug")]
     {
         if std::env::var("RINCH_DEBUG").map_or(true, |v| v != "0") {
-            let debug_proxy = proxy.clone();
             match rinch_debug::attach(title, move || {
-                let _ = debug_proxy.send_event(RinchNativeEvent::DebugCommand);
+                send_native_event(RinchNativeEvent::DebugCommand);
             }) {
                 Ok((debug_server, cmd_rx)) => {
                     tracing::info!("rinch-debug listening on port {}", debug_server.port());
@@ -1078,8 +1165,7 @@ where
         }
     }
 
-    event_loop.set_control_flow(ControlFlow::Wait);
-    event_loop.run_app(&mut runtime).expect("Event loop error");
+    event_loop.run_app(runtime).expect("Event loop error");
 }
 
 /// Run a rinch-dom application with full window configuration.
@@ -1104,15 +1190,12 @@ pub fn run_rinch_with_window_props_and_menu<F>(
     events::clear_handlers();
     clear_context();
 
-    let event_loop = EventLoop::<RinchNativeEvent>::with_user_event()
-        .build()
-        .expect("Failed to create event loop");
+    let event_loop = EventLoop::new().expect("Failed to create event loop");
 
     let proxy = event_loop.create_proxy();
 
-    let render_proxy = proxy.clone();
     rinch_core::set_on_signal_change(move || {
-        let _ = render_proxy.send_event(RinchNativeEvent::ReRender);
+        send_native_event(RinchNativeEvent::ReRender);
     });
 
     let mut runtime = RinchRuntime::new(&props.title, props.width, props.height, component);
@@ -1129,12 +1212,25 @@ pub fn run_rinch_with_window_props_and_menu<F>(
     // Set global proxy so run_on_main_thread() works from any thread
     let _ = GLOBAL_PROXY.set(proxy.clone());
 
+    // Register video frame sink factory so video players deliver frames
+    // through the RenderSurface compositing pipeline.
+    #[cfg(feature = "video")]
+    {
+        rinch_video::set_frame_sink_factory(|viewport_id: &str| {
+            let handle = crate::render_surface::create_render_surface_with_name(viewport_id);
+            let writer = handle.writer();
+            std::mem::forget(handle);
+            std::sync::Arc::new(move |pixels: &[u8], w: u32, h: u32| {
+                writer.submit_frame(pixels, w, h);
+            })
+        });
+    }
+
     #[cfg(feature = "debug")]
     {
         if std::env::var("RINCH_DEBUG").map_or(true, |v| v != "0") {
-            let debug_proxy = proxy.clone();
             match rinch_debug::attach(&props.title, move || {
-                let _ = debug_proxy.send_event(RinchNativeEvent::DebugCommand);
+                send_native_event(RinchNativeEvent::DebugCommand);
             }) {
                 Ok((debug_server, cmd_rx)) => {
                     tracing::info!("rinch-debug listening on port {}", debug_server.port());
@@ -1148,8 +1244,7 @@ pub fn run_rinch_with_window_props_and_menu<F>(
         }
     }
 
-    event_loop.set_control_flow(ControlFlow::Wait);
-    event_loop.run_app(&mut runtime).expect("Event loop error");
+    event_loop.run_app(runtime).expect("Event loop error");
 }
 
 /// Decode a PNG from raw bytes into RGBA pixel data.
@@ -1184,9 +1279,10 @@ pub(crate) fn decode_png_to_rgba(
 }
 
 /// Decode a PNG icon from raw bytes into a winit Icon.
-fn load_window_icon(png_data: &[u8]) -> Result<winit::window::Icon, Box<dyn std::error::Error>> {
+fn load_window_icon(png_data: &[u8]) -> Result<winit::icon::Icon, Box<dyn std::error::Error>> {
     let (rgba, width, height) = decode_png_to_rgba(png_data)?;
-    Ok(winit::window::Icon::from_rgba(rgba, width, height)?)
+    let rgba_icon = winit::icon::RgbaIcon::new(rgba, width, height)?;
+    Ok(rgba_icon.into())
 }
 
 /// Write the icon PNG to a data directory and create a `.desktop` file so Wayland

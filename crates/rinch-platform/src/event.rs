@@ -1,5 +1,7 @@
 //! Platform-agnostic event types.
 
+use std::path::PathBuf;
+
 /// A platform-agnostic input event.
 ///
 /// Platform backends translate their native events into these variants.
@@ -43,6 +45,18 @@ pub enum PlatformEvent {
     UserEvent(UserEvent),
     /// The event loop is about to wait for new events.
     AboutToWait,
+    /// A file drag entered the window from the OS.
+    /// In winit 0.31, all paths arrive in a single DragEntered event.
+    FileHoverEnter { path: PathBuf, position: (f64, f64) },
+    /// A file drag is moving over the window.
+    FileDragMoved { position: (f64, f64) },
+    /// The OS file drag left the window without dropping.
+    FileHoverCancelled,
+    /// Files were dropped onto the window from the OS.
+    FileDropped {
+        paths: Vec<PathBuf>,
+        position: (f64, f64),
+    },
 }
 
 /// Application-level events sent to the event loop.

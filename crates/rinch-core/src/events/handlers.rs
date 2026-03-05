@@ -1,7 +1,8 @@
-//! Event handler registry for click and input events.
+//! Event handler registry for click, input, and file-drop events.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -64,6 +65,54 @@ impl<F: Fn(String) + 'static> crate::element::IntoEventHandler<InputCallback> fo
     }
 }
 
+/// Cloneable callback for OS file-drop events.
+///
+/// Receives the list of file paths dropped onto the element.
+#[derive(Clone)]
+pub struct FileDropCallback(pub Rc<dyn Fn(Vec<PathBuf>)>);
+
+impl FileDropCallback {
+    /// Create a new file-drop callback from a function.
+    pub fn new<F: Fn(Vec<PathBuf>) + 'static>(f: F) -> Self {
+        Self(Rc::new(f))
+    }
+
+    /// Invoke the callback with the dropped file paths.
+    pub fn invoke(&self, paths: Vec<PathBuf>) {
+        (self.0)(paths)
+    }
+}
+
+impl<F: Fn(Vec<PathBuf>) + 'static> From<F> for FileDropCallback {
+    fn from(f: F) -> Self {
+        Self::new(f)
+    }
+}
+
+impl std::fmt::Debug for FileDropCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FileDropCallback(...)")
+    }
+}
+
+impl Default for FileDropCallback {
+    fn default() -> Self {
+        Self(Rc::new(|_| {}))
+    }
+}
+
+impl crate::element::IntoEventHandler<FileDropCallback> for FileDropCallback {
+    fn into_event_handler(self) -> FileDropCallback {
+        self
+    }
+}
+
+impl<F: Fn(Vec<PathBuf>) + 'static> crate::element::IntoEventHandler<FileDropCallback> for F {
+    fn into_event_handler(self) -> FileDropCallback {
+        FileDropCallback::from(self)
+    }
+}
+
 /// Global counter for generating unique event handler IDs.
 static NEXT_HANDLER_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -81,6 +130,7 @@ pub fn reset_handler_ids() {
 thread_local! {
     static EVENT_REGISTRY: RefCell<EventRegistry> = RefCell::new(EventRegistry::new());
     static INPUT_REGISTRY: RefCell<InputRegistry> = RefCell::new(InputRegistry::new());
+    static FILE_DROP_REGISTRY: RefCell<FileDropRegistry> = RefCell::new(FileDropRegistry::new());
     static INPUT_CONTEXT: RefCell<InputContext> = RefCell::new(InputContext::default());
     /// Flag to signal that an input event was handled and a re-render may be needed.
     static INPUT_EVENT_HANDLED: RefCell<bool> = const { RefCell::new(false) };
@@ -114,6 +164,19 @@ pub struct InputRegistry {
 }
 
 impl InputRegistry {
+    fn new() -> Self {
+        Self {
+            handlers: HashMap::new(),
+        }
+    }
+}
+
+/// Registry that maps event handler IDs to file-drop callbacks.
+pub struct FileDropRegistry {
+    handlers: HashMap<EventHandlerId, FileDropCallback>,
+}
+
+impl FileDropRegistry {
     fn new() -> Self {
         Self {
             handlers: HashMap::new(),
@@ -247,6 +310,32 @@ pub fn dispatch_input_event(id: EventHandlerId, value: String) -> bool {
     })
 }
 
+/// Register a file-drop event handler and return its ID.
+///
+/// The handler will be called when files are dropped from the OS onto an
+/// element with the corresponding `data-onfiledrop` attribute.
+pub fn register_file_drop_handler(callback: FileDropCallback) -> EventHandlerId {
+    let id = next_handler_id();
+    FILE_DROP_REGISTRY.with(|registry| {
+        registry.borrow_mut().handlers.insert(id, callback);
+    });
+    id
+}
+
+/// Dispatch a file-drop event to the handler with the given ID.
+///
+/// Returns `true` if a handler was found and called.
+pub fn dispatch_file_drop_event(id: EventHandlerId, paths: Vec<PathBuf>) -> bool {
+    let handler: Option<FileDropCallback> =
+        FILE_DROP_REGISTRY.with(|registry| registry.borrow().handlers.get(&id).cloned());
+    if let Some(h) = handler {
+        h.invoke(paths);
+        true
+    } else {
+        false
+    }
+}
+
 /// Check if an input event was handled since last check, and clear the flag.
 ///
 /// This allows the shell to know if a re-render is needed after processing
@@ -267,6 +356,9 @@ pub fn clear_handlers() {
         registry.borrow_mut().handlers.clear();
     });
     INPUT_REGISTRY.with(|registry| {
+        registry.borrow_mut().handlers.clear();
+    });
+    FILE_DROP_REGISTRY.with(|registry| {
         registry.borrow_mut().handlers.clear();
     });
     reset_handler_ids();

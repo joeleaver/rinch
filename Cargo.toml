@@ -42,10 +42,8 @@ anyrender_vello = "0.7"
 vello = "0.7"
 wgpu = "27"
 
-# Windowing and input
-winit = "0.30"
-accesskit = "0.16"
-accesskit_winit = "0.22"
+# Windowing and input (using fork with Wayland DnD support)
+winit = "0.31.0-beta.2"
 
 # Menus
 muda = "0.15"
@@ -94,3 +92,11 @@ wgpu-core = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-pa
 wgpu-hal = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
 wgpu-types = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
 naga = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
+# Patch winit to use our fork with Wayland DnD support
+# Upstream winit 0.31-beta.2 has no Wayland drag-and-drop implementation
+winit = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
+winit-core = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
+winit-common = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
+winit-wayland = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
+winit-x11 = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
+dpi = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }

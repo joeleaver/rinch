@@ -15,7 +15,6 @@
 use anyrender_vello::VelloScenePainter;
 use peniko::Color;
 use std::num::NonZero;
-use std::sync::Arc;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer as VelloRenderer, RendererOptions, Scene};
 use wgpu::{
     Backends, CommandEncoderDescriptor, CompositeAlphaMode, Device, Extent3d, Features, Instance,
@@ -68,7 +67,6 @@ impl Default for TransparentRendererOptions {
 /// A Vello-based window renderer with proper transparency support.
 pub struct TransparentWindowRenderer {
     render_state: RenderState,
-    window_handle: Option<Arc<Window>>,
     scene: Scene,
     config: TransparentRendererOptions,
 }
@@ -82,7 +80,6 @@ impl TransparentWindowRenderer {
         Self {
             config,
             render_state: RenderState::Suspended,
-            window_handle: None,
             scene: Scene::new(),
         }
     }
@@ -91,7 +88,7 @@ impl TransparentWindowRenderer {
         matches!(self.render_state, RenderState::Active(_))
     }
 
-    pub fn resume(&mut self, window: Arc<Window>, width: u32, height: u32) {
+    pub fn resume(&mut self, window: &dyn Window, width: u32, height: u32) {
         // For transparency on Windows, use DX12 with DirectComposition
         let backends = if self.config.transparent && cfg!(target_os = "windows") {
             // Enable DirectComposition for true window transparency
@@ -105,8 +102,7 @@ impl TransparentWindowRenderer {
             Backends::from_env().unwrap_or_default()
         };
 
-        let state = self.create_render_state(&window, width, height, backends);
-        self.window_handle = Some(window);
+        let state = self.create_render_state(window, width, height, backends);
         self.render_state = RenderState::Active(Box::new(state));
     }
 
@@ -137,7 +133,7 @@ impl TransparentWindowRenderer {
 
     fn create_render_state(
         &self,
-        window: &Arc<Window>,
+        window: &dyn Window,
         width: u32,
         height: u32,
         backends: Backends,
@@ -155,9 +151,18 @@ impl TransparentWindowRenderer {
 
         #[cfg(feature = "memory-profile")]
         let before = super::memory_profile::MemorySnapshot::now();
-        let surface = instance
-            .create_surface(window.clone())
-            .expect("Failed to create surface");
+        // SAFETY: The window outlives the surface — drop order in ActiveRenderState
+        // ensures surface is dropped before other GPU resources.
+        let surface = unsafe {
+            use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+            let target = wgpu::SurfaceTargetUnsafe::RawHandle {
+                raw_display_handle: window.display_handle().unwrap().as_raw(),
+                raw_window_handle: window.window_handle().unwrap().as_raw(),
+            };
+            instance
+                .create_surface_unsafe(target)
+                .expect("Failed to create surface")
+        };
         #[cfg(feature = "memory-profile")]
         super::memory_profile::checkpoint_delta("  GPU: Surface creation", before);
 

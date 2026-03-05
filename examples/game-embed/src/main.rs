@@ -16,7 +16,7 @@ use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
-use winit::window::{Window, WindowId};
+use winit::window::{Window, WindowAttributes, WindowId};
 
 use rinch::prelude::*;
 use rinch_platform::{
@@ -439,7 +439,7 @@ fn translate_modifiers(m: winit::keyboard::ModifiersState) -> PlatformModifiers 
         shift: m.shift_key(),
         ctrl: m.control_key(),
         alt: m.alt_key(),
-        meta: m.super_key(),
+        meta: m.meta_key(),
     }
 }
 
@@ -447,7 +447,7 @@ fn translate_modifiers(m: winit::keyboard::ModifiersState) -> PlatformModifiers 
 
 struct App {
     // winit
-    window: Option<Arc<Window>>,
+    window: Option<Arc<dyn Window>>,
 
     // wgpu core
     device: Option<wgpu::Device>,
@@ -520,15 +520,15 @@ impl App {
     fn scale_factor(&self) -> f64 {
         self.window
             .as_ref()
-            .map(|w| w.scale_factor())
+            .map(|w: &Arc<dyn Window>| w.scale_factor())
             .unwrap_or(1.0)
     }
 
     fn size(&self) -> (u32, u32) {
         self.window
             .as_ref()
-            .map(|w| {
-                let s = w.inner_size();
+            .map(|w: &Arc<dyn Window>| {
+                let s = w.surface_size();
                 (s.width.max(1), s.height.max(1))
             })
             .unwrap_or((800, 600))
@@ -1008,25 +1008,30 @@ impl App {
 // ── ApplicationHandler ──────────────────────────────────────────────────────
 
 impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
         if self.window.is_some() {
             return; // already initialized
         }
-        let attrs = Window::default_attributes()
+        let attrs = WindowAttributes::default()
             .with_title("Game Embed Demo")
-            .with_inner_size(winit::dpi::LogicalSize::new(1024u32, 720));
-        let window = Arc::new(event_loop.create_window(attrs).unwrap());
+            .with_surface_size(winit::dpi::LogicalSize::new(1024u32, 720));
+        let window: Arc<dyn Window> = Arc::from(event_loop.create_window(attrs).unwrap());
         self.window = Some(window);
 
         self.init_gpu();
         self.last_frame = Instant::now();
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        _id: WindowId,
+        event: WindowEvent,
+    ) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
 
-            WindowEvent::Resized(size) => {
+            WindowEvent::SurfaceResized(size) => {
                 self.handle_resize(size.width, size.height);
             }
 
@@ -1044,7 +1049,7 @@ impl ApplicationHandler for App {
                     )));
             }
 
-            WindowEvent::CursorMoved { position, .. } => {
+            WindowEvent::PointerMoved { position, .. } => {
                 let px = position.x as f32;
                 let py = position.y as f32;
 
@@ -1064,11 +1069,17 @@ impl ApplicationHandler for App {
                     .push(PlatformEvent::MouseMove { x: px, y: py });
             }
 
-            WindowEvent::MouseInput { state, button, .. } => {
+            WindowEvent::PointerButton { state, button, .. } => {
                 let platform_btn = match button {
-                    winit::event::MouseButton::Left => PlatformMouseButton::Left,
-                    winit::event::MouseButton::Right => PlatformMouseButton::Right,
-                    winit::event::MouseButton::Middle => PlatformMouseButton::Middle,
+                    winit::event::ButtonSource::Mouse(winit::event::MouseButton::Left) => {
+                        PlatformMouseButton::Left
+                    }
+                    winit::event::ButtonSource::Mouse(winit::event::MouseButton::Right) => {
+                        PlatformMouseButton::Right
+                    }
+                    winit::event::ButtonSource::Mouse(winit::event::MouseButton::Middle) => {
+                        PlatformMouseButton::Middle
+                    }
                     _ => return,
                 };
                 let (px, py) = self.mouse_phys;
@@ -1178,7 +1189,7 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, _event_loop: &dyn ActiveEventLoop) {
         if let Some(window) = &self.window {
             window.request_redraw();
         }
@@ -1190,6 +1201,6 @@ impl ApplicationHandler for App {
 fn main() {
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = App::new();
-    event_loop.run_app(&mut app).unwrap();
+    let app = App::new();
+    event_loop.run_app(app).unwrap();
 }

@@ -223,6 +223,25 @@ impl RenderScope {
         crate::events::register_input_handler(crate::events::InputCallback::new(callback))
     }
 
+    /// Register a file-drop event handler and return its ID.
+    ///
+    /// The handler receives the list of file paths dropped from the OS.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let handler_id = scope.register_file_drop_handler(|paths| {
+    ///     println!("Dropped files: {:?}", paths);
+    /// });
+    /// element.set_attribute("data-onfiledrop", &handler_id.to_string());
+    /// ```
+    pub fn register_file_drop_handler<F: Fn(Vec<std::path::PathBuf>) + 'static>(
+        &mut self,
+        callback: F,
+    ) -> crate::events::EventHandlerId {
+        crate::events::register_file_drop_handler(crate::events::FileDropCallback::new(callback))
+    }
+
     /// Dispose of this scope and all child scopes.
     pub fn dispose(mut self) {
         // Dispose child scopes first

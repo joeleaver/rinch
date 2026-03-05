@@ -114,6 +114,11 @@ pub fn nav_links<F: Fn() + 'static>(
                 active_fn: move || current_section.get() == 15,
                 onclick: nav(15)
             }
+            NavLink {
+                label: "File Drop",
+                active_fn: move || current_section.get() == 16,
+                onclick: nav(16)
+            }
         }
     }
 }
@@ -178,6 +183,7 @@ pub fn section_content(__scope: &mut RenderScope, current_section: Signal<usize>
                 13 => { video_section(__scope) },
                 14 => { render_surface_section(__scope) },
                 15 => { context_menus_section(__scope) },
+                16 => { file_drop_section(__scope) },
                 _ => div { },
             }
         }

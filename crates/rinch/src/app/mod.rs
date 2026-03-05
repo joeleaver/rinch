@@ -165,6 +165,8 @@ pub struct RinchApp {
     pub(crate) ce_scroll_pending: Cell<bool>,
     /// The render surface ID currently under the mouse cursor (for enter/leave events).
     pub(crate) hovered_surface: Option<usize>,
+    /// Node ID of the current file-drop hover target (for enter/leave during OS drag).
+    pub(crate) file_hover_target: Option<usize>,
     /// Font data to register on the document when it is created (for WASM).
     pub(crate) pending_fonts: Vec<&'static [u8]>,
     /// Debug command receiver.
@@ -207,6 +209,7 @@ impl RinchApp {
             ce_selecting: false,
             ce_scroll_pending: Cell::new(false),
             hovered_surface: None,
+            file_hover_target: None,
             pending_fonts: Vec::new(),
             #[cfg(feature = "debug")]
             debug_cmd_rx: None,
@@ -390,7 +393,7 @@ impl RinchApp {
         };
 
         // Check if theme CSS has changed (e.g. primary color or dark mode toggled)
-        #[allow(unused_assignments)]
+        #[allow(unused_assignments, unused_mut)]
         let mut theme_changed = false;
         #[cfg(feature = "theme")]
         {

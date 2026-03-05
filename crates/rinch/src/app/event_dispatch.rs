@@ -741,6 +741,63 @@ impl RinchApp {
                 #[cfg(feature = "debug")]
                 self.handle_debug_commands(&mut actions, scale_factor, window_size);
             }
+            PlatformEvent::FileHoverEnter { position, .. }
+            | PlatformEvent::FileDragMoved { position } => {
+                // OS file drag entered or is moving over the window.
+                // Hit-test the drag position and fire data-onfiledragenter
+                // on the first ancestor with that attribute (like ondragenter for
+                // internal DnD).
+                let (x, y) = (position.0 as f32, position.1 as f32);
+                if let Some(doc) = &self.doc {
+                    let hit_id = {
+                        let d = doc.borrow();
+                        hit_test(&d.tree, x, y)
+                    };
+                    if let Some(hit_id) = hit_id {
+                        let target = Self::find_file_drop_target(&doc.borrow().tree, hit_id);
+                        let old_target = self.file_hover_target;
+                        if target != old_target {
+                            // Fire leave on old target, enter on new target
+                            if let Some(old_id) = old_target {
+                                Self::dispatch_drag_attr(doc, old_id, "data-onfiledragleave");
+                            }
+                            if let Some(new_id) = target {
+                                Self::dispatch_drag_attr(doc, new_id, "data-onfiledragenter");
+                            }
+                            self.file_hover_target = target;
+                            actions.push(AppAction::RequestRedraw);
+                        }
+                    }
+                }
+            }
+            PlatformEvent::FileHoverCancelled => {
+                // OS file drag left the window without dropping.
+                if let Some(target_id) = self.file_hover_target.take() {
+                    if let Some(doc) = &self.doc {
+                        Self::dispatch_drag_attr(doc, target_id, "data-onfiledragleave");
+                        actions.push(AppAction::RequestRedraw);
+                    }
+                }
+            }
+            PlatformEvent::FileDropped { paths, position } => {
+                // Files were dropped from the OS. Hit-test and dispatch to the
+                // nearest ancestor with data-onfiledrop.
+                let (x, y) = (position.0 as f32, position.1 as f32);
+                if let Some(doc) = &self.doc {
+                    let hit_id = {
+                        let d = doc.borrow();
+                        hit_test(&d.tree, x, y)
+                    };
+                    if let Some(hit_id) = hit_id {
+                        Self::dispatch_file_drop(doc, hit_id, paths);
+                    }
+                    // Clean up hover state
+                    if let Some(target_id) = self.file_hover_target.take() {
+                        Self::dispatch_drag_attr(doc, target_id, "data-onfiledragleave");
+                    }
+                    actions.push(AppAction::RequestRedraw);
+                }
+            }
             PlatformEvent::AboutToWait => {
                 // Tick active CSS transitions — this updates interpolated values
                 // in computed_style and marks affected nodes dirty.
@@ -962,6 +1019,57 @@ impl RinchApp {
         };
         if let Some(id) = handler_id {
             events::dispatch_event(events::EventHandlerId(id));
+        }
+    }
+
+    /// Walk up from `hit_id` looking for a `data-onfiledrop` attribute.
+    /// Returns the node ID of the first file-drop target ancestor (or self).
+    pub(crate) fn find_file_drop_target(
+        tree: &rinch_dom::NodeTree,
+        hit_id: usize,
+    ) -> Option<usize> {
+        let mut current = Some(hit_id);
+        while let Some(nid) = current {
+            if let Some(node) = tree.get(nid) {
+                if node.attributes.contains_key("data-onfiledrop") {
+                    return Some(nid);
+                }
+                current = node.parent;
+            } else {
+                break;
+            }
+        }
+        None
+    }
+
+    /// Dispatch an OS file-drop event by walking up from `hit_id` looking for
+    /// `data-onfiledrop` and invoking the registered `FileDropCallback`.
+    pub(crate) fn dispatch_file_drop(
+        doc: &Rc<RefCell<RinchDocument>>,
+        hit_id: usize,
+        paths: Vec<std::path::PathBuf>,
+    ) {
+        let handler_id = {
+            let d = doc.borrow();
+            let mut current = Some(hit_id);
+            let mut found = None;
+            while let Some(nid) = current {
+                if let Some(node) = d.tree.get(nid) {
+                    if let Some(val) = node.attributes.get("data-onfiledrop") {
+                        if let Ok(id) = val.parse::<usize>() {
+                            found = Some(id);
+                        }
+                        break;
+                    }
+                    current = node.parent;
+                } else {
+                    break;
+                }
+            }
+            found
+        };
+        if let Some(id) = handler_id {
+            events::dispatch_file_drop_event(events::EventHandlerId(id), paths);
         }
     }
 
