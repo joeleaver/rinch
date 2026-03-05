@@ -7,138 +7,10 @@ use std::sync::{Arc, Mutex};
 use rinch::prelude::*;
 use rinch::render_surface::{SurfaceEvent, SurfaceMouseButton, create_render_surface};
 
-// ── CPU 3D Math Helpers (desktop only) ─────────────────────────────────────
+// ── wgpu Instanced Cube Wave (cross-platform) ──────────────────────────────
 
-#[cfg(not(target_arch = "wasm32"))]
-mod cpu_cube {
-    pub const CUBE_VERTS: [[f32; 3]; 8] = [
-        [-1.0, -1.0, -1.0],
-        [1.0, -1.0, -1.0],
-        [1.0, 1.0, -1.0],
-        [-1.0, 1.0, -1.0],
-        [-1.0, -1.0, 1.0],
-        [1.0, -1.0, 1.0],
-        [1.0, 1.0, 1.0],
-        [-1.0, 1.0, 1.0],
-    ];
-
-    pub const CUBE_FACES: [([usize; 4], [u8; 4]); 6] = [
-        ([4, 5, 6, 7], [66, 133, 244, 255]),
-        ([1, 0, 3, 2], [234, 67, 53, 255]),
-        ([0, 4, 7, 3], [52, 168, 83, 255]),
-        ([5, 1, 2, 6], [251, 188, 4, 255]),
-        ([7, 6, 2, 3], [255, 255, 255, 255]),
-        ([0, 1, 5, 4], [255, 109, 0, 255]),
-    ];
-
-    pub fn rotate_y(v: [f32; 3], angle: f32) -> [f32; 3] {
-        let (s, c) = angle.sin_cos();
-        [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c]
-    }
-
-    pub fn rotate_x(v: [f32; 3], angle: f32) -> [f32; 3] {
-        let (s, c) = angle.sin_cos();
-        [v[0], v[1] * c - v[2] * s, v[1] * s + v[2] * c]
-    }
-
-    #[derive(Copy, Clone)]
-    pub struct Vertex {
-        pub x: f32,
-        pub y: f32,
-        pub z: f32,
-    }
-
-    pub fn project(v: [f32; 3], w: f32, h: f32, zoom: f32) -> Vertex {
-        let fov = 4.0;
-        let d = v[2] + fov;
-        let scale = (fov * zoom) / d;
-        let base = w.min(h) * 0.5;
-        Vertex {
-            x: w * 0.5 + v[0] * scale * base,
-            y: h * 0.5 - v[1] * scale * base,
-            z: v[2],
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn fill_triangle_zbuf(
-        buf: &mut [u8],
-        zbuf: &mut [f32],
-        w: i32,
-        h: i32,
-        v0: Vertex,
-        v1: Vertex,
-        v2: Vertex,
-        color: [u8; 4],
-    ) {
-        let min_x = v0.x.min(v1.x).min(v2.x).max(0.0) as i32;
-        let max_x = v0.x.max(v1.x).max(v2.x).min((w - 1) as f32) as i32;
-        let min_y = v0.y.min(v1.y).min(v2.y).max(0.0) as i32;
-        let max_y = v0.y.max(v1.y).max(v2.y).min((h - 1) as f32) as i32;
-
-        let edge = |ax: f32, ay: f32, bx: f32, by: f32, px: f32, py: f32| -> f32 {
-            (bx - ax) * (py - ay) - (by - ay) * (px - ax)
-        };
-
-        let area = edge(v0.x, v0.y, v1.x, v1.y, v2.x, v2.y);
-        if area.abs() < 0.001 {
-            return;
-        }
-        let inv_area = 1.0 / area;
-
-        for y in min_y..=max_y {
-            for x in min_x..=max_x {
-                let px = x as f32 + 0.5;
-                let py = y as f32 + 0.5;
-                let w0 = edge(v1.x, v1.y, v2.x, v2.y, px, py);
-                let w1 = edge(v2.x, v2.y, v0.x, v0.y, px, py);
-                let w2 = edge(v0.x, v0.y, v1.x, v1.y, px, py);
-
-                let inside = if area > 0.0 {
-                    w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0
-                } else {
-                    w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0
-                };
-
-                if inside {
-                    let b0 = (w0 * inv_area).abs();
-                    let b1 = (w1 * inv_area).abs();
-                    let b2 = (w2 * inv_area).abs();
-                    let z = b0 * v0.z + b1 * v1.z + b2 * v2.z;
-
-                    let pi = (y * w + x) as usize;
-                    if z < zbuf[pi] {
-                        zbuf[pi] = z;
-                        let idx = pi * 4;
-                        buf[idx] = color[0];
-                        buf[idx + 1] = color[1];
-                        buf[idx + 2] = color[2];
-                        buf[idx + 3] = color[3];
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn fill_quad_zbuf(
-        buf: &mut [u8],
-        zbuf: &mut [f32],
-        w: i32,
-        h: i32,
-        v: [Vertex; 4],
-        color: [u8; 4],
-    ) {
-        fill_triangle_zbuf(buf, zbuf, w, h, v[0], v[1], v[2], color);
-        fill_triangle_zbuf(buf, zbuf, w, h, v[0], v[2], v[3], color);
-    }
-}
-
-// ── wgpu Instanced Cube Wave (wasm32 only) ─────────────────────────────────
-
-#[cfg(target_arch = "wasm32")]
 mod gpu_cube {
     use wgpu::util::DeviceExt;
-    use wgpu::web_sys;
 
     // Column-major 4×4 matrix
     type Mat4 = [f32; 16];
@@ -353,6 +225,117 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         buf
     }
 
+    fn build_vertex_data() -> Vec<u8> {
+        let mut data: Vec<f32> = Vec::with_capacity(36 * 6);
+        for (indices, normal) in &FACE_DEFS {
+            for &tri in &[[0, 1, 2], [0, 2, 3]] {
+                for &vi in &tri {
+                    let pos = CUBE_VERTS[indices[vi]];
+                    data.extend_from_slice(&pos);
+                    data.extend_from_slice(normal);
+                }
+            }
+        }
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                data.as_ptr() as *const u8,
+                data.len() * std::mem::size_of::<f32>(),
+            )
+        };
+        bytes.to_vec()
+    }
+
+    fn create_depth_view(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
+        device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("depth"),
+                size: wgpu::Extent3d {
+                    width: w.max(1),
+                    height: h.max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Depth24Plus,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            })
+            .create_view(&Default::default())
+    }
+
+    fn create_pipeline(
+        device: &wgpu::Device,
+        bind_group_layout: &wgpu::BindGroupLayout,
+        color_format: wgpu::TextureFormat,
+    ) -> wgpu::RenderPipeline {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("cube wave shader"),
+            source: wgpu::ShaderSource::Wgsl(SHADER_SRC.into()),
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("cube wave pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: 6 * 4,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 12,
+                            shader_location: 1,
+                        },
+                    ],
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: Some(wgpu::Face::Back),
+                front_face: wgpu::FrontFace::Ccw,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth24Plus,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        })
+    }
+
+    // ── Web backend ─────────────────────────────────────────────────────────
+
+    #[cfg(target_arch = "wasm32")]
     pub struct GpuCube {
         device: wgpu::Device,
         queue: wgpu::Queue,
@@ -366,8 +349,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         current_size: (u32, u32),
     }
 
+    #[cfg(target_arch = "wasm32")]
     impl GpuCube {
-        pub async fn new(canvas: web_sys::HtmlCanvasElement) -> Self {
+        pub async fn new(canvas: wgpu::web_sys::HtmlCanvasElement) -> Self {
             let instance = wgpu::util::new_instance_with_webgpu_detection(
                 &wgpu::InstanceDescriptor::default(),
             )
@@ -386,7 +370,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 .expect("No WebGPU or WebGL2 adapter found");
 
             let info = adapter.get_info();
-            web_sys::console::log_1(
+            wgpu::web_sys::console::log_1(
                 &format!(
                     "RenderSurface: wgpu backend = {:?}, adapter = {}",
                     info.backend, info.name
@@ -405,28 +389,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let caps = surface.get_capabilities(&adapter);
             let surface_format = caps.formats[0];
 
-            // Vertex data: position(3) + normal(3) per vertex, 36 vertices
-            let mut data: Vec<f32> = Vec::with_capacity(36 * 6);
-            for (indices, normal) in &FACE_DEFS {
-                for &tri in &[[0, 1, 2], [0, 2, 3]] {
-                    for &vi in &tri {
-                        let pos = CUBE_VERTS[indices[vi]];
-                        data.extend_from_slice(&pos);
-                        data.extend_from_slice(normal);
-                    }
-                }
-            }
-
-            let data_bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(
-                    data.as_ptr() as *const u8,
-                    data.len() * std::mem::size_of::<f32>(),
-                )
-            };
-
+            let vertex_data = build_vertex_data();
             let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("cube vertices"),
-                contents: data_bytes,
+                contents: &vertex_data,
                 usage: wgpu::BufferUsages::VERTEX,
             });
 
@@ -461,69 +427,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 }],
             });
 
-            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("cube wave shader"),
-                source: wgpu::ShaderSource::Wgsl(SHADER_SRC.into()),
-            });
-
-            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
-            });
-
-            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("cube wave pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[wgpu::VertexBufferLayout {
-                        array_stride: 6 * 4, // position(3) + normal(3)
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &[
-                            wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Float32x3,
-                                offset: 0,
-                                shader_location: 0,
-                            },
-                            wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Float32x3,
-                                offset: 12,
-                                shader_location: 1,
-                            },
-                        ],
-                    }],
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: surface_format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    cull_mode: Some(wgpu::Face::Back),
-                    front_face: wgpu::FrontFace::Ccw,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth24Plus,
-                    depth_write_enabled: true,
-                    depth_compare: wgpu::CompareFunction::Less,
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: Default::default(),
-                multiview: None,
-                cache: None,
-            });
-
+            let pipeline = create_pipeline(&device, &bind_group_layout, surface_format);
             let depth_view = create_depth_view(&device, 1, 1);
 
             Self {
@@ -572,16 +476,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 self.current_size = (w, h);
             }
 
-            let aspect = w as f32 / h.max(1) as f32;
-            let proj = perspective(std::f32::consts::FRAC_PI_4, aspect, 0.1, 200.0);
-
-            let mut model = identity();
-            model = translate(&model, 0.0, 0.0, -25.0 / zoom);
-            model = mat4_rotate_x(&model, angle_x);
-            model = mat4_rotate_y(&model, angle_y);
-
-            let mvp = multiply(&proj, &model);
-
+            let (mvp, model) = compute_matrices(angle_x, angle_y, zoom, w, h);
             let uniform_bytes = uniforms_to_bytes(&mvp, &model, time, grid_size, 0.5, 2.0);
             self.queue
                 .write_buffer(&self.uniform_buffer, 0, &uniform_bytes);
@@ -598,63 +493,243 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
 
-            {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: None,
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: 24.0 / 255.0,
-                                g: 24.0 / 255.0,
-                                b: 32.0 / 255.0,
-                                a: 1.0,
-                            }),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &self.depth_view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(1.0),
-                            store: wgpu::StoreOp::Discard,
-                        }),
-                        stencil_ops: None,
-                    }),
-                    ..Default::default()
-                });
-
-                let num_instances = grid_size * grid_size;
-                pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, &self.bind_group, &[]);
-                pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                pass.draw(0..36, 0..num_instances);
-            }
+            encode_render_pass(
+                &mut encoder,
+                &view,
+                &self.depth_view,
+                &self.pipeline,
+                &self.bind_group,
+                &self.vertex_buffer,
+                grid_size,
+            );
 
             self.queue.submit([encoder.finish()]);
             frame.present();
         }
     }
 
-    fn create_depth_view(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
-        device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some("depth"),
-                size: wgpu::Extent3d {
-                    width: w.max(1),
-                    height: h.max(1),
-                    depth_or_array_layers: 1,
+    // ── Desktop backend (zero-copy via shared device) ─────────────────────
+
+    #[cfg(feature = "desktop")]
+    pub struct GpuCube {
+        device: std::sync::Arc<wgpu::Device>,
+        queue: std::sync::Arc<wgpu::Queue>,
+        pipeline: wgpu::RenderPipeline,
+        vertex_buffer: wgpu::Buffer,
+        uniform_buffer: wgpu::Buffer,
+        bind_group: wgpu::BindGroup,
+        depth_view: wgpu::TextureView,
+        current_size: (u32, u32),
+        offscreen_texture: wgpu::Texture,
+        offscreen_view: wgpu::TextureView,
+    }
+
+    #[cfg(feature = "desktop")]
+    impl GpuCube {
+        /// Create using rinch's shared GPU device for zero-copy compositing.
+        pub fn new(gpu: &rinch::shell::desktop::GpuHandle) -> Self {
+            let device = gpu.device.clone();
+            let queue = gpu.queue.clone();
+
+            // Use Rgba8UnormSrgb to match rinch's compositor expectations
+            let color_format = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+            let vertex_data = build_vertex_data();
+            let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("cube vertices"),
+                contents: &vertex_data,
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+
+            let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("cube uniforms"),
+                size: UNIFORM_SIZE as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+
+            let bind_group_layout =
+                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: None,
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    }],
+                });
+
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                }],
+            });
+
+            let pipeline = create_pipeline(&device, &bind_group_layout, color_format);
+            let depth_view = create_depth_view(&device, 1, 1);
+            let (offscreen_texture, offscreen_view) =
+                create_offscreen_texture(&device, 1, 1, color_format);
+
+            Self {
+                device,
+                queue,
+                pipeline,
+                vertex_buffer,
+                uniform_buffer,
+                bind_group,
+                depth_view,
+                current_size: (0, 0),
+                offscreen_texture,
+                offscreen_view,
+            }
+        }
+
+        /// Render to offscreen texture and return the view for compositing.
+        #[allow(clippy::too_many_arguments)]
+        pub fn render(
+            &mut self,
+            angle_x: f32,
+            angle_y: f32,
+            zoom: f32,
+            time: f32,
+            grid_size: u32,
+            w: u32,
+            h: u32,
+        ) -> Option<(&wgpu::TextureView, u32, u32)> {
+            if w == 0 || h == 0 {
+                return None;
+            }
+
+            if (w, h) != self.current_size {
+                self.depth_view = create_depth_view(&self.device, w, h);
+                let (tex, view) = create_offscreen_texture(
+                    &self.device,
+                    w,
+                    h,
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                );
+                self.offscreen_texture = tex;
+                self.offscreen_view = view;
+                self.current_size = (w, h);
+            }
+
+            let (mvp, model) = compute_matrices(angle_x, angle_y, zoom, w, h);
+            let uniform_bytes = uniforms_to_bytes(&mvp, &model, time, grid_size, 0.5, 2.0);
+            self.queue
+                .write_buffer(&self.uniform_buffer, 0, &uniform_bytes);
+
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+
+            encode_render_pass(
+                &mut encoder,
+                &self.offscreen_view,
+                &self.depth_view,
+                &self.pipeline,
+                &self.bind_group,
+                &self.vertex_buffer,
+                grid_size,
+            );
+
+            self.queue.submit([encoder.finish()]);
+
+            Some((&self.offscreen_view, w, h))
+        }
+
+        pub fn offscreen_view(&self) -> &wgpu::TextureView {
+            &self.offscreen_view
+        }
+    }
+
+    #[cfg(feature = "desktop")]
+    fn create_offscreen_texture(
+        device: &wgpu::Device,
+        w: u32,
+        h: u32,
+        format: wgpu::TextureFormat,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("cube offscreen"),
+            size: wgpu::Extent3d {
+                width: w.max(1),
+                height: h.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        (texture, view)
+    }
+
+    // ── Shared helpers ──────────────────────────────────────────────────────
+
+    fn compute_matrices(angle_x: f32, angle_y: f32, zoom: f32, w: u32, h: u32) -> (Mat4, Mat4) {
+        let aspect = w as f32 / h.max(1) as f32;
+        let proj = perspective(std::f32::consts::FRAC_PI_4, aspect, 0.1, 200.0);
+
+        let mut model = identity();
+        model = translate(&model, 0.0, 0.0, -25.0 / zoom);
+        model = mat4_rotate_x(&model, angle_x);
+        model = mat4_rotate_y(&model, angle_y);
+
+        let mvp = multiply(&proj, &model);
+        (mvp, model)
+    }
+
+    fn encode_render_pass(
+        encoder: &mut wgpu::CommandEncoder,
+        color_view: &wgpu::TextureView,
+        depth_view: &wgpu::TextureView,
+        pipeline: &wgpu::RenderPipeline,
+        bind_group: &wgpu::BindGroup,
+        vertex_buffer: &wgpu::Buffer,
+        grid_size: u32,
+    ) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 24.0 / 255.0,
+                        g: 24.0 / 255.0,
+                        b: 32.0 / 255.0,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
                 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Depth24Plus,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            })
-            .create_view(&Default::default())
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Discard,
+                }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+
+        let num_instances = grid_size * grid_size;
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bind_group, &[]);
+        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+        pass.draw(0..36, 0..num_instances);
     }
 }
 
@@ -666,20 +741,26 @@ struct CubeState {
     zoom: f32,
     dragging: bool,
     last_mouse: (f32, f32),
+    // Animation params (written by UI signals, read by render thread)
+    spinning: bool,
+    speed: f32,
+    grid_size: u32,
+    // FPS counter (written by render thread, read by UI)
+    fps: u32,
 }
 
 impl Default for CubeState {
     fn default() -> Self {
         Self {
-            // On web: looking down at the wave; on desktop: slight tilt at single cube
-            #[cfg(target_arch = "wasm32")]
             angle_x: 0.8,
-            #[cfg(not(target_arch = "wasm32"))]
-            angle_x: 0.4,
             angle_y: 0.0,
             zoom: 1.0,
             dragging: false,
             last_mouse: (0.0, 0.0),
+            spinning: true,
+            speed: 1.0,
+            grid_size: 50,
+            fps: 0,
         }
     }
 }
@@ -796,72 +877,109 @@ pub fn render_surface_section() -> NodeHandle {
             });
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(feature = "desktop")]
         {
-            use cpu_cube::*;
-            use std::time::Instant;
+            // Spawn a render thread — the game engine drives its own loop,
+            // completely independent of the UI event loop.
+            let registrar = cube_surface.gpu_registrar();
+            let state = state.clone();
 
-            let last_fps_instant = Rc::new(Cell::new(Instant::now()));
-            let frame_count = Rc::new(Cell::new(0_u32));
+            // Sync signal values into CubeState so the thread can read them.
+            // Effects run on the main thread and write to Arc<Mutex<CubeState>>.
+            {
+                let state = state.clone();
+                Effect::new(move || {
+                    let mut s = state.lock().unwrap();
+                    s.spinning = spinning.get();
+                    s.speed = speed.get() as f32;
+                    s.grid_size = grid_size.get();
+                });
+            }
 
-            cube_surface.set_render_callback(move |writer, w, h| {
-                // FPS tracking
-                let fc = frame_count.get() + 1;
-                frame_count.set(fc);
-                let elapsed = last_fps_instant.get().elapsed().as_secs_f64();
-                if elapsed >= 1.0 {
-                    fps.set((fc as f64 / elapsed) as u32);
-                    frame_count.set(0);
-                    last_fps_instant.set(Instant::now());
+            // Read FPS from CubeState back into signal (polled by UI).
+            // The render callback on the gradient surface fires every frame anyway,
+            // so we piggyback on that to avoid needing a separate timer.
+            {
+                let state = state.clone();
+                let last_fps = Rc::new(Cell::new(0u32));
+                cube_surface.set_render_callback(move |_writer, _w, _h| {
+                    let current = state.lock().unwrap().fps;
+                    if current != last_fps.get() {
+                        last_fps.set(current);
+                        fps.set(current);
+                    }
+                });
+            }
+
+            std::thread::spawn(move || {
+                // Wait for the GPU handle to be available
+                let gpu = loop {
+                    if let Some(gpu) = rinch::shell::desktop::gpu_handle() {
+                        break gpu;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                };
+
+                let mut cube = gpu_cube::GpuCube::new(gpu);
+                let mut time = 0.0_f32;
+                let mut registered_size = (0u32, 0u32);
+                let mut frame_count = 0u32;
+                let mut last_fps_time = std::time::Instant::now();
+
+                loop {
+                    let frame_start = std::time::Instant::now();
+
+                    let (w, h) = registrar.layout_size();
+                    if w == 0 || h == 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(16));
+                        continue;
+                    }
+
+                    let (angle_x, angle_y, zoom, _is_spinning, spd, gs) = {
+                        let mut s = state.lock().unwrap();
+                        if s.spinning {
+                            s.angle_y += 0.005 * s.speed;
+                        }
+                        (
+                            s.angle_x,
+                            s.angle_y,
+                            s.zoom,
+                            s.spinning,
+                            s.speed,
+                            s.grid_size,
+                        )
+                    };
+
+                    time += 0.016 * spd;
+
+                    if cube
+                        .render(angle_x, angle_y, zoom, time, gs, w, h)
+                        .is_some()
+                    {
+                        if (w, h) != registered_size {
+                            registered_size = (w, h);
+                            registrar.set_texture_source(cube.offscreen_view().clone(), w, h);
+                        } else {
+                            registrar.notify_frame_ready();
+                        }
+                    }
+
+                    // FPS tracking
+                    frame_count += 1;
+                    let elapsed = last_fps_time.elapsed().as_secs_f64();
+                    if elapsed >= 1.0 {
+                        state.lock().unwrap().fps = (frame_count as f64 / elapsed) as u32;
+                        frame_count = 0;
+                        last_fps_time = std::time::Instant::now();
+                    }
+
+                    // Frame pacing — target ~60fps, subtract time spent rendering
+                    let frame_time = frame_start.elapsed();
+                    let target = std::time::Duration::from_micros(16_000);
+                    if frame_time < target {
+                        std::thread::sleep(target - frame_time);
+                    }
                 }
-
-                let is_spinning = spinning.get();
-                let spd = speed.get() as f32;
-
-                let mut s = state.lock().unwrap();
-                if is_spinning {
-                    s.angle_y += 0.02 * spd;
-                }
-                let angle_x = s.angle_x;
-                let angle_y = s.angle_y;
-                let zoom = s.zoom;
-                drop(s);
-
-                let wf = w as f32;
-                let hf = h as f32;
-                let w_i = w as i32;
-                let h_i = h as i32;
-                let npixels = (w * h) as usize;
-                let mut buf = vec![0u8; npixels * 4];
-                let mut zbuf = vec![f32::INFINITY; npixels];
-
-                for pixel in buf.chunks_exact_mut(4) {
-                    pixel[0] = 24;
-                    pixel[1] = 24;
-                    pixel[2] = 32;
-                    pixel[3] = 255;
-                }
-
-                let verts: Vec<Vertex> = CUBE_VERTS
-                    .iter()
-                    .map(|&v| {
-                        let v = rotate_x(v, angle_x);
-                        let v = rotate_y(v, angle_y);
-                        project(v, wf, hf, zoom)
-                    })
-                    .collect();
-
-                for &(ref indices, color) in &CUBE_FACES {
-                    let quad = [
-                        verts[indices[0]],
-                        verts[indices[1]],
-                        verts[indices[2]],
-                        verts[indices[3]],
-                    ];
-                    fill_quad_zbuf(&mut buf, &mut zbuf, w_i, h_i, quad, color);
-                }
-
-                writer.submit_frame(&buf, w, h);
             });
         }
     }
@@ -900,16 +1018,6 @@ pub fn render_surface_section() -> NodeHandle {
 
     // ── Layout ───────────────────────────────────────────────────────────
 
-    #[cfg(target_arch = "wasm32")]
-    let cube_description = "Thousands of cubes animated by layered sine waves, rendered in a single GPU draw call via wgpu instancing. Each cube rotates independently and is colored by wave height. Drag to orbit, scroll to zoom.";
-    #[cfg(not(target_arch = "wasm32"))]
-    let cube_description = "A solid 3D cube with a different color per face, rendered via software rasterization. Drag to rotate, scroll to zoom. The overlay panel uses rinch components positioned over the surface.";
-
-    #[cfg(target_arch = "wasm32")]
-    let cube_title = "GPU Cube Wave";
-    #[cfg(not(target_arch = "wasm32"))]
-    let cube_title = "Spinning Cube";
-
     rsx! {
         Fragment {
             Stack { gap: "xs",
@@ -921,9 +1029,9 @@ pub fn render_surface_section() -> NodeHandle {
             Space { h: "xl" }
 
             // ── Cube Demo ─────────────────────────────────────────────
-            Title { order: 2, {cube_title} }
+            Title { order: 2, "GPU Cube Wave" }
             Text { size: "sm", color: "dimmed",
-                {cube_description}
+                "Thousands of cubes animated by layered sine waves, rendered in a single GPU draw call via wgpu instancing. Each cube rotates independently and is colored by wave height. Drag to orbit, scroll to zoom."
             }
             Space { h: "sm" }
 
@@ -992,10 +1100,7 @@ pub fn render_surface_section() -> NodeHandle {
                                     onclick: move || {
                                         let mut s = cube_state.lock().unwrap();
                                         s.zoom = 1.0;
-                                        #[cfg(target_arch = "wasm32")]
-                                        { s.angle_x = 0.8; }
-                                        #[cfg(not(target_arch = "wasm32"))]
-                                        { s.angle_x = 0.4; }
+                                        s.angle_x = 0.8;
                                         s.angle_y = 0.0;
                                         grid_size.set(50);
                                         grid_size_f64.set(50.0);

@@ -210,8 +210,14 @@ impl SurfaceWriter {
 
         #[cfg(feature = "desktop")]
         {
-            // Wake the event loop so it picks up the new frame
-            crate::shell::rinch_runtime::run_on_main_thread(|| {});
+            // Request a repaint via SurfaceRedraw — this skips DOM resolution
+            // (resolve_and_repaint) and goes straight to window.request_redraw().
+            // Using ReRender here would rebuild the entire Vello scene from the
+            // DOM every frame, killing performance for animated surfaces.
+            if let Some(proxy) = crate::shell::rinch_runtime::GLOBAL_PROXY.get() {
+                let _ =
+                    proxy.send_event(crate::shell::rinch_runtime::RinchNativeEvent::SurfaceRedraw);
+            }
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -575,6 +581,19 @@ pub fn update_layout_size(viewport_name: &str, width: u32, height: u32) {
 /// Check if any render surfaces are registered (even if they haven't submitted frames yet).
 pub fn any_surfaces_registered() -> bool {
     SURFACE_REGISTRY.with(|reg| !reg.borrow().is_empty())
+}
+
+/// Return the viewport names of all registered render surfaces.
+///
+/// Used by the desktop compositor to look up layout rects and update
+/// `layout_size` before invoking render callbacks.
+pub fn registered_viewport_names() -> Vec<String> {
+    SURFACE_REGISTRY.with(|reg| {
+        reg.borrow()
+            .iter()
+            .map(|s| s.viewport_name.clone())
+            .collect()
+    })
 }
 
 /// Invoke render callbacks on all registered surfaces that have one set.

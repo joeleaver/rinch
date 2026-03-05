@@ -9,6 +9,9 @@ description = "UI Zoo - A comprehensive showcase of rinch's theme system and com
 name = "ui_zoo"
 path = "src/lib.rs"
 
+[features]
+desktop = ["rinch/desktop"]
+
 [dependencies]
 rinch = { workspace = true, default-features = false, features = ["components", "theme"] }
 rinch-core = { workspace = true }
@@ -16,8 +19,8 @@ rinch-macros = { workspace = true }
 rinch-platform = { workspace = true }
 rinch-tabler-icons.workspace = true
 rinch-video = { workspace = true }
+wgpu = { workspace = true, features = ["webgl"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wgpu = { workspace = true, features = ["webgl"] }
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"

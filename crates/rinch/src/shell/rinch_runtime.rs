@@ -388,6 +388,18 @@ impl RinchRuntime {
             }
         }
 
+        // Update layout sizes for all render surfaces so render callbacks
+        // receive correct dimensions.  Previously this was only done for GPU
+        // texture-source surfaces; CPU callback-only surfaces never got their
+        // layout_size set, so their callbacks were skipped (w==0, h==0).
+        for viewport_name in crate::render_surface::registered_viewport_names() {
+            if let Some(viewport) = self.app.viewport_rect(&viewport_name) {
+                let phys_w = (viewport.2 * s) as u32;
+                let phys_h = (viewport.3 * s) as u32;
+                crate::render_surface::update_layout_size(&viewport_name, phys_w, phys_h);
+            }
+        }
+
         // Invoke per-frame render callbacks before collecting frames
         crate::render_surface::invoke_render_callbacks();
 

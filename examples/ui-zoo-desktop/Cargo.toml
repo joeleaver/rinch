@@ -6,7 +6,7 @@ license.workspace = true
 description = "UI Zoo desktop app - comprehensive showcase of rinch components"
 
 [dependencies]
-ui-zoo = { path = "../ui-zoo" }
+ui-zoo = { path = "../ui-zoo", features = ["desktop"] }
 rinch = { workspace = true, features = ["desktop", "components", "debug", "clipboard", "system-tray", "video"] }
 rinch-core = { workspace = true }
 rinch-tabler-icons.workspace = true
