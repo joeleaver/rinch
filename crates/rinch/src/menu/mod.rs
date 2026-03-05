@@ -206,6 +206,7 @@ thread_local! {
 
     /// Registered keyboard shortcuts mapped to their menu ID strings.
     static MENU_SHORTCUTS: RefCell<Vec<(ParsedShortcut, String)>> = const { RefCell::new(Vec::new()) };
+
 }
 
 fn register_callback(menu_id: &str, cb: Rc<dyn Fn()>) {

@@ -57,6 +57,10 @@ pub struct ClickContext {
     pub element_height: f32,
     /// Text hit info from the layout engine (resolved via find_text_position).
     pub text_hit: TextHitInfo,
+    /// Viewport width in logical pixels.
+    pub viewport_width: f32,
+    /// Viewport height in logical pixels.
+    pub viewport_height: f32,
 }
 
 impl ClickContext {

@@ -691,6 +691,14 @@ Custom Default: `close_on_click_outside` and `close_on_escape` default to `true`
 
 Sub-components: **PopoverTarget** (no props), **PopoverDropdown** (no props).
 
+### ContextMenu
+
+A right-click context menu. No props on the wrapper — state is managed internally.
+
+Sub-components: **ContextMenuTarget** (no props), **ContextMenuDropdown** (no props).
+
+Use `DropdownMenuItem` and `DropdownMenuDivider` as children of `ContextMenuDropdown`.
+
 ### DropdownMenu
 
 Custom Default: `close_on_click_outside` and `close_on_item_click` default to `true`.

@@ -66,8 +66,25 @@ impl RinchDocument {
         // Paint-only changes (background-color, opacity, cursor on hover) set
         // styles_dirty but NOT layout_dirty, so we resolve styles above but
         // skip the expensive Taffy compute + IFC rebuild below.
+        //
+        // However, text-affecting style changes (font-size, font-weight, font-style,
+        // text-decoration) don't change Taffy styles so layout_dirty won't be set.
+        // For these, skip Taffy but still rebuild the affected IFC text layouts.
         if !self.tree.layout_dirty {
-            if perf {
+            if !self.tree.dirty_ifc_text_roots.is_empty() {
+                let t = std::time::Instant::now();
+                self.sync_dirty_text_contexts();
+                let mut temp_layout_cx = std::mem::take(&mut self.layout_cx);
+                self.build_ifc_layouts(&mut temp_layout_cx);
+                self.layout_cx = temp_layout_cx;
+                self.tree.dirty_ifc_text_roots.clear();
+                if perf {
+                    eprintln!(
+                        "  [PERF] layout SKIPPED (text-only IFC rebuild) {:.2}ms",
+                        t.elapsed().as_secs_f64() * 1000.0
+                    );
+                }
+            } else if perf {
                 eprintln!(
                     "  [PERF] layout SKIPPED (paint-only) {:.2}ms",
                     t0.elapsed().as_secs_f64() * 1000.0
@@ -748,6 +765,23 @@ impl RinchDocument {
             self.tree
                 .ifc_measure_cache
                 .retain(|&(root_id, _), _| root_id != ifc_root_id);
+        } else if self
+            .tree
+            .nodes
+            .get(node_id)
+            .map(|n| n.text_layout.is_some())
+            .unwrap_or(false)
+        {
+            // The node itself IS the IFC root (block element containing inline text)
+            self.tree.nodes[node_id].text_layout = None;
+            self.tree.dirty_ifc_text_roots.insert(node_id);
+            self.tree
+                .ifc_measure_cache
+                .retain(|&(root_id, _), _| root_id != node_id);
+            // Mark Taffy dirty so it re-measures this node (triggering IFC rebuild)
+            if let Some(taffy_id) = self.tree.nodes.get(node_id).and_then(|n| n.taffy_id) {
+                let _ = self.tree.taffy.mark_dirty(taffy_id);
+            }
         } else {
             // Fallback: walk ancestors to find one with text_layout (the IFC root)
             let mut cur = self.tree.nodes.get(node_id).and_then(|n| n.parent);

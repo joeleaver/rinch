@@ -27,10 +27,13 @@ fn serialize_node(tree: &NodeTree, id: RawNodeId, offset_x: f32, offset_y: f32) 
         NodeKind::Comment(c) => ("comment", None, Some(c.as_str())),
     };
 
+    let sx = node.scroll_offset.0 as f32;
+    let sy = node.scroll_offset.1 as f32;
+
     let children: Vec<Value> = node
         .children
         .iter()
-        .map(|&child_id| serialize_node(tree, child_id, abs_x, abs_y))
+        .map(|&child_id| serialize_node(tree, child_id, abs_x - sx, abs_y - sy))
         .collect();
 
     let mut obj = json!({
@@ -43,6 +46,13 @@ fn serialize_node(tree: &NodeTree, id: RawNodeId, offset_x: f32, offset_y: f32) 
             "height": node.layout.height,
         },
     });
+
+    if node.scroll_offset != (0.0, 0.0) {
+        obj["scroll_offset"] = json!({
+            "x": node.scroll_offset.0,
+            "y": node.scroll_offset.1,
+        });
+    }
 
     if let Some(tag) = tag {
         obj["tag"] = Value::String(tag.to_string());
@@ -179,6 +189,13 @@ pub fn get_node_detail(tree: &NodeTree, id: RawNodeId) -> Option<Value> {
         "text_content": get_text_content(tree, id),
     });
 
+    if node.scroll_offset != (0.0, 0.0) {
+        obj["scroll_offset"] = json!({
+            "x": node.scroll_offset.0,
+            "y": node.scroll_offset.1,
+        });
+    }
+
     if let Some(tag) = tag {
         obj["tag"] = Value::String(tag.to_string());
     }
@@ -203,6 +220,13 @@ fn compute_absolute_position(tree: &NodeTree, id: RawNodeId) -> (f32, f32) {
         if let Some(node) = tree.get(nid) {
             x += node.layout.x;
             y += node.layout.y;
+            // Subtract parent's scroll offset (same as hit_test)
+            if let Some(parent_id) = node.parent {
+                if let Some(parent) = tree.get(parent_id) {
+                    x -= parent.scroll_offset.0 as f32;
+                    y -= parent.scroll_offset.1 as f32;
+                }
+            }
             current = node.parent;
         } else {
             break;

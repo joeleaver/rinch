@@ -19,7 +19,12 @@ pub enum DebugCommandKind {
     #[serde(rename = "get_text_content")]
     GetTextContent { id: usize },
     #[serde(rename = "click")]
-    Click { x: f32, y: f32 },
+    Click {
+        x: f32,
+        y: f32,
+        #[serde(default)]
+        button: Option<String>,
+    },
     #[serde(rename = "type_text")]
     TypeText { text: String },
     #[serde(rename = "wait_frame")]
@@ -31,9 +36,19 @@ pub enum DebugCommandKind {
     #[serde(rename = "mouse_move")]
     MouseMove { x: f32, y: f32 },
     #[serde(rename = "mouse_down")]
-    MouseDown { x: f32, y: f32 },
+    MouseDown {
+        x: f32,
+        y: f32,
+        #[serde(default)]
+        button: Option<String>,
+    },
     #[serde(rename = "mouse_up")]
-    MouseUp { x: f32, y: f32 },
+    MouseUp {
+        x: f32,
+        y: f32,
+        #[serde(default)]
+        button: Option<String>,
+    },
     #[serde(rename = "scroll")]
     Scroll {
         x: f32,

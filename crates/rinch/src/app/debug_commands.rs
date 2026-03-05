@@ -1,5 +1,13 @@
 use super::*;
 
+fn parse_button(s: &Option<String>) -> MouseButton {
+    match s.as_deref() {
+        Some("right") => MouseButton::Right,
+        Some("middle") => MouseButton::Middle,
+        _ => MouseButton::Left,
+    }
+}
+
 #[cfg(feature = "debug")]
 impl RinchApp {
     // ── Debug commands ───────────────────────────────────────────────────
@@ -88,56 +96,108 @@ impl RinchApp {
                     data: json!(rinch_dom::testing::get_text_content(&d.tree, id)),
                 }
             }
-            DebugCommandKind::Click { x, y } => {
-                // Simulate a full click (press + release)
-                let click_actions = self.handle_click(x, y, scale_factor);
-                actions.extend(click_actions);
-                // Clear selection drag — Click is a complete press+release, not a drag start
+            DebugCommandKind::Click { x, y, ref button } => {
+                let mouse_button = parse_button(button);
+                if mouse_button == MouseButton::Right {
+                    // Right-click: try oncontextmenu dispatch first, then fallback
+                    let mut handled = false;
+                    if let Some(doc) = &self.doc {
+                        let hit_id = {
+                            let d = doc.borrow();
+                            hit_test(&d.tree, x, y)
+                        };
+                        if let Some(hit_id) = hit_id {
+                            let vw = window_size.0 as f32 / scale_factor as f32;
+                            let vh = window_size.1 as f32 / scale_factor as f32;
+                            if Self::dispatch_oncontextmenu(doc, hit_id, x, y, vw, vh) {
+                                actions.push(AppAction::RequestRedraw);
+                                handled = true;
+                            }
+                        }
+                    }
+                    if !handled {
+                        let click_actions =
+                            self.handle_click_with_button(x, y, scale_factor, mouse_button);
+                        actions.extend(click_actions);
+                    }
+                } else {
+                    let click_actions =
+                        self.handle_click_with_button(x, y, scale_factor, mouse_button);
+                    actions.extend(click_actions);
+                }
                 self.ce_selecting = false;
                 actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
             }
-            DebugCommandKind::MouseDown { x, y } => {
+            DebugCommandKind::MouseDown { x, y, ref button } => {
+                let mouse_button = parse_button(button);
                 self.cursor_pos = Some((x, y));
 
-                // Update :active and :focus
-                if let Some(doc) = &self.doc {
-                    let hit = {
-                        let d = doc.borrow();
-                        hit_test(&d.tree, x, y)
-                    };
-                    let active_changed = doc.borrow_mut().update_active(hit);
-                    let focus_changed = doc.borrow_mut().update_focus(hit);
-                    if active_changed || focus_changed {
-                        actions.push(AppAction::RequestRedraw);
+                if mouse_button == MouseButton::Right {
+                    // Right-click: try oncontextmenu dispatch first
+                    let mut handled = false;
+                    if let Some(doc) = &self.doc {
+                        let hit_id = {
+                            let d = doc.borrow();
+                            hit_test(&d.tree, x, y)
+                        };
+                        if let Some(hit_id) = hit_id {
+                            let vw = window_size.0 as f32 / scale_factor as f32;
+                            let vh = window_size.1 as f32 / scale_factor as f32;
+                            if Self::dispatch_oncontextmenu(doc, hit_id, x, y, vw, vh) {
+                                actions.push(AppAction::RequestRedraw);
+                                handled = true;
+                            }
+                        }
                     }
-                }
+                    if !handled {
+                        let click_actions =
+                            self.handle_click_with_button(x, y, scale_factor, mouse_button);
+                        actions.extend(click_actions);
+                    }
+                } else {
+                    // Update :active and :focus
+                    if let Some(doc) = &self.doc {
+                        let hit = {
+                            let d = doc.borrow();
+                            hit_test(&d.tree, x, y)
+                        };
+                        let active_changed = doc.borrow_mut().update_active(hit);
+                        let focus_changed = doc.borrow_mut().update_focus(hit);
+                        if active_changed || focus_changed {
+                            actions.push(AppAction::RequestRedraw);
+                        }
+                    }
 
-                // Check for draggable element — enter pending drag
-                let draggable_node = if let Some(doc) = &self.doc {
-                    let d = doc.borrow();
-                    if let Some(hit_id) = hit_test(&d.tree, x, y) {
-                        Self::find_draggable(&d.tree, hit_id)
+                    // Check for draggable element — enter pending drag
+                    let draggable_node = if let Some(doc) = &self.doc {
+                        let d = doc.borrow();
+                        if let Some(hit_id) = hit_test(&d.tree, x, y) {
+                            Self::find_draggable(&d.tree, hit_id)
+                        } else {
+                            None
+                        }
                     } else {
                         None
-                    }
-                } else {
-                    None
-                };
+                    };
 
-                if let Some(drag_node_id) = draggable_node {
-                    self.pending_drag = Some(PendingDrag {
-                        node_id: drag_node_id,
-                        mousedown_pos: (x, y),
-                    });
-                } else {
-                    let click_actions = self.handle_click(x, y, scale_factor);
-                    actions.extend(click_actions);
+                    if let Some(drag_node_id) = draggable_node {
+                        self.pending_drag = Some(PendingDrag {
+                            node_id: drag_node_id,
+                            mousedown_pos: (x, y),
+                        });
+                    } else {
+                        let click_actions =
+                            self.handle_click_with_button(x, y, scale_factor, mouse_button);
+                        actions.extend(click_actions);
+                    }
                 }
                 actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
             }
-            DebugCommandKind::MouseUp { x, y } => {
+            DebugCommandKind::MouseUp { x, y, ref button } => {
+                let mouse_button = parse_button(button);
+
                 // Dispatch MouseUp to focused render surface
                 if let Some(surface_id) = crate::render_surface::focused_surface_id() {
                     if let Some(doc) = &self.doc {
@@ -158,7 +218,9 @@ impl RinchApp {
                             crate::render_surface::SurfaceEvent::MouseUp {
                                 x: local_x,
                                 y: local_y,
-                                button: crate::render_surface::SurfaceMouseButton::Left,
+                                button: crate::render_surface::SurfaceMouseButton::from_platform(
+                                    mouse_button,
+                                ),
                             },
                         );
                     }

@@ -336,10 +336,30 @@ impl RinchApp {
                 }
             }
             PlatformEvent::MouseDown { x, y, button } => {
-                // Non-left button clicks: use handle_click_with_button so the
-                // surface gets focus (needed for MouseUp to reach it later).
-                let click_actions = self.handle_click_with_button(x, y, scale_factor, button);
-                actions.extend(click_actions);
+                let mut handled = false;
+                if button == MouseButton::Right {
+                    // Right-click: try oncontextmenu dispatch first
+                    if let Some(doc) = &self.doc {
+                        let hit_id = {
+                            let d = doc.borrow();
+                            hit_test(&d.tree, x, y)
+                        };
+                        if let Some(hit_id) = hit_id {
+                            let vw = window_size.0 as f32 / scale_factor as f32;
+                            let vh = window_size.1 as f32 / scale_factor as f32;
+                            if Self::dispatch_oncontextmenu(doc, hit_id, x, y, vw, vh) {
+                                actions.push(AppAction::RequestRedraw);
+                                handled = true;
+                            }
+                        }
+                    }
+                }
+                if !handled {
+                    // Non-left button clicks (or right-click with no contextmenu handler):
+                    // use handle_click_with_button so the surface gets focus.
+                    let click_actions = self.handle_click_with_button(x, y, scale_factor, button);
+                    actions.extend(click_actions);
+                }
             }
             PlatformEvent::MouseUp { x, y, button } => {
                 // ── Drag-and-drop: complete or cancel ─────────────────────
@@ -812,6 +832,73 @@ impl RinchApp {
         };
         if let Some(id) = handler_id {
             events::dispatch_event(events::EventHandlerId(id));
+        }
+    }
+
+    /// Dispatch `data-oncontextmenu` handler for the right-clicked node or its ancestors.
+    ///
+    /// Walks up from `hit_id` looking for a `data-oncontextmenu` attribute.
+    /// If found, sets the [`ClickContext`] with mouse position and element bounds,
+    /// then dispatches the registered event handler. Returns `true` if a handler
+    /// was found and dispatched.
+    pub(super) fn dispatch_oncontextmenu(
+        doc: &Rc<RefCell<RinchDocument>>,
+        hit_id: usize,
+        x: f32,
+        y: f32,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> bool {
+        let handler_info = {
+            let d = doc.borrow();
+            let mut current = Some(hit_id);
+            let mut found = None;
+            while let Some(nid) = current {
+                if let Some(node) = d.tree.get(nid) {
+                    if let Some(val) = node.attributes.get("data-oncontextmenu") {
+                        if let Ok(id) = val.parse::<usize>() {
+                            // Compute element absolute position
+                            let mut ax = node.layout.x;
+                            let mut ay = node.layout.y;
+                            let mut pid = node.parent;
+                            while let Some(p) = pid {
+                                if let Some(pn) = d.tree.get(p) {
+                                    ax += pn.layout.x;
+                                    ay += pn.layout.y;
+                                    ax -= pn.scroll_offset.0 as f32;
+                                    ay -= pn.scroll_offset.1 as f32;
+                                    pid = pn.parent;
+                                } else {
+                                    break;
+                                }
+                            }
+                            found = Some((id, ax, ay, node.layout.width, node.layout.height));
+                        }
+                        break;
+                    }
+                    current = node.parent;
+                } else {
+                    break;
+                }
+            }
+            found
+        };
+        if let Some((id, elem_x, elem_y, elem_w, elem_h)) = handler_info {
+            events::set_click_context(events::ClickContext {
+                mouse_x: x,
+                mouse_y: y,
+                element_x: elem_x,
+                element_y: elem_y,
+                element_width: elem_w,
+                element_height: elem_h,
+                text_hit: events::TextHitInfo::default(),
+                viewport_width,
+                viewport_height,
+            });
+            events::dispatch_event(events::EventHandlerId(id));
+            true
+        } else {
+            false
         }
     }
 

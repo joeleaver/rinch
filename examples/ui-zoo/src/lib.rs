@@ -33,7 +33,7 @@ pub fn nav_links<F: Fn() + 'static>(
     nav: impl Fn(usize) -> F,
 ) -> NodeHandle {
     rsx! {
-        Stack { gap: "0",
+        Stack { gap: "0", style: "overflow-y: auto; flex: 1;",
             NavLink {
                 label: "Overview",
                 active_fn: move || current_section.get() == 0,
@@ -109,6 +109,11 @@ pub fn nav_links<F: Fn() + 'static>(
                 active_fn: move || current_section.get() == 14,
                 onclick: nav(14)
             }
+            NavLink {
+                label: "Context Menu",
+                active_fn: move || current_section.get() == 15,
+                onclick: nav(15)
+            }
         }
     }
 }
@@ -172,6 +177,7 @@ pub fn section_content(__scope: &mut RenderScope, current_section: Signal<usize>
                 12 => { css_features_section(__scope) },
                 13 => { video_section(__scope) },
                 14 => { render_surface_section(__scope) },
+                15 => { context_menus_section(__scope) },
                 _ => div { },
             }
         }

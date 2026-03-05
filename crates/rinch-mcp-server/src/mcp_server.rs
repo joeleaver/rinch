@@ -42,6 +42,9 @@ pub struct ClickParams {
     pub x: f64,
     /// Y coordinate in pixels
     pub y: f64,
+    /// Mouse button: "left" (default), "right", or "middle"
+    #[serde(default)]
+    pub button: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -58,6 +61,9 @@ pub struct MouseDownParams {
     pub x: f64,
     /// Y coordinate in pixels
     pub y: f64,
+    /// Mouse button: "left" (default), "right", or "middle"
+    #[serde(default)]
+    pub button: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -66,6 +72,9 @@ pub struct MouseUpParams {
     pub x: f64,
     /// Y coordinate in pixels
     pub y: f64,
+    /// Mouse button: "left" (default), "right", or "middle"
+    #[serde(default)]
+    pub button: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -294,6 +303,22 @@ impl RinchMcpServer {
         self.forward_json_command(DebugCommandKind::Click {
             x: params.0.x as f32,
             y: params.0.y as f32,
+            button: params.0.button,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Simulate a right-click (context menu click) at the given coordinates. Equivalent to click with button='right'."
+    )]
+    async fn right_click(
+        &self,
+        params: Parameters<ClickParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.forward_json_command(DebugCommandKind::Click {
+            x: params.0.x as f32,
+            y: params.0.y as f32,
+            button: Some("right".to_string()),
         })
         .await
     }
@@ -322,6 +347,7 @@ impl RinchMcpServer {
         self.forward_json_command(DebugCommandKind::MouseDown {
             x: params.0.x as f32,
             y: params.0.y as f32,
+            button: params.0.button,
         })
         .await
     }
@@ -336,6 +362,7 @@ impl RinchMcpServer {
         self.forward_json_command(DebugCommandKind::MouseUp {
             x: params.0.x as f32,
             y: params.0.y as f32,
+            button: params.0.button,
         })
         .await
     }

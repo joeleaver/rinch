@@ -1,6 +1,7 @@
 //! UI Zoo sections - each section showcases a category of components.
 
 mod buttons;
+mod context_menus;
 mod css_features;
 mod data_display;
 mod editor;
@@ -17,6 +18,7 @@ mod typography;
 mod video;
 
 pub use buttons::{buttons_section, init_buttons_state};
+pub use context_menus::context_menus_section;
 pub use css_features::css_features_section;
 pub use data_display::data_display_section;
 pub use editor::editor_section;

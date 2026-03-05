@@ -253,6 +253,8 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
                                 element_width: rect.width() as f32,
                                 element_height: rect.height() as f32,
                                 text_hit,
+                                viewport_width: 0.0,
+                                viewport_height: 0.0,
                             });
 
                             // Prevent browser default behavior (e.g. text selection

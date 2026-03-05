@@ -127,6 +127,7 @@ pub mod color_picker;
 pub mod color_swatch;
 pub mod color_utils;
 pub mod container;
+pub mod context_menu;
 pub mod divider;
 pub mod drawer;
 pub mod dropdown_menu;
@@ -226,6 +227,7 @@ pub use tree::{
 };
 
 // Tier 4: Overlays
+pub use context_menu::{ContextMenu, ContextMenuDropdown, ContextMenuTarget};
 pub use drawer::Drawer;
 pub use dropdown_menu::{
     DropdownMenu, DropdownMenuDivider, DropdownMenuDropdown, DropdownMenuItem, DropdownMenuLabel,

@@ -75,6 +75,8 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
                                 element_width: rect.width() as f32,
                                 element_height: rect.height() as f32,
                                 text_hit: Default::default(),
+                                viewport_width: 0.0,
+                                viewport_height: 0.0,
                             });
 
                             event.prevent_default();

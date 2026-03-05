@@ -189,7 +189,7 @@ fn main() {
                 .shortcut("Alt+Right")
                 .on_click(move || {
                     current_section.update(|s| {
-                        if *s < 13 {
+                        if *s < 15 {
                             *s += 1
                         }
                     });

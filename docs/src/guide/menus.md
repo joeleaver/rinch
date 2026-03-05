@@ -166,6 +166,48 @@ On Windows, the menu appears attached to the window's title bar.
 
 On Linux, the menu appears in the window (similar to Windows) unless a global menu system is available.
 
+## Context Menus
+
+### Rendered Context Menu
+
+Use the `ContextMenu` component for a styled, theme-aware context menu:
+
+```rust
+use rinch::prelude::*;
+
+ContextMenu {
+    ContextMenuTarget {
+        div { "Right-click me" }
+    }
+    ContextMenuDropdown {
+        DropdownMenuItem { onclick: || edit(), "Edit" }
+        DropdownMenuItem { onclick: || duplicate(), "Duplicate" }
+        DropdownMenuDivider {}
+        DropdownMenuItem { color: "red", onclick: || delete(), "Delete" }
+    }
+}
+```
+
+The `ContextMenu` component automatically:
+- Wires up the `oncontextmenu` handler on the target
+- Positions the dropdown at the click coordinates using `position: fixed`
+- Shows an invisible overlay for click-outside-to-close
+- Reuses `DropdownMenuItem` and `DropdownMenuDivider` for consistent styling
+
+### oncontextmenu Event
+
+The `oncontextmenu` prop is available on all HTML elements. It fires on right-click and provides mouse coordinates via `get_click_context()`:
+
+```rust
+div {
+    oncontextmenu: move || {
+        let ctx = get_click_context();
+        println!("Right-clicked at ({}, {})", ctx.mouse_x, ctx.mouse_y);
+    },
+    "Right-click target"
+}
+```
+
 ## Complete Example
 
 ```rust

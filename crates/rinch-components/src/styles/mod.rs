@@ -21,6 +21,7 @@ mod close_button;
 mod code;
 mod color_picker;
 mod container;
+mod context_menu;
 mod divider;
 mod drawer;
 mod dropdown_menu;
@@ -123,6 +124,7 @@ pub fn generate_all_component_styles() -> String {
     css.push_str(&notification::styles());
     css.push_str(&popover::styles());
     css.push_str(&dropdown_menu::styles());
+    css.push_str(&context_menu::styles());
     css.push_str(&hover_card::styles());
     css.push_str(&loading_overlay::styles());
 

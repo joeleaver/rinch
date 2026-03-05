@@ -389,6 +389,8 @@ impl RinchApp {
                         element_width: elem_w,
                         element_height: elem_h,
                         text_hit,
+                        viewport_width: 0.0,
+                        viewport_height: 0.0,
                     });
 
                     drop(d);
