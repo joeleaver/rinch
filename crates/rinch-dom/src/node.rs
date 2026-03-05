@@ -110,6 +110,10 @@ pub struct TextMeasure {
     pub no_wrap: bool,
     /// Overflow wrap mode (controls emergency line-breaking).
     pub overflow_wrap: crate::computed_style::OverflowWrapValue,
+    /// Text overflow mode (clip or ellipsis).
+    pub text_overflow: crate::computed_style::TextOverflowValue,
+    /// Whether parent has overflow: hidden (needed for text-overflow to apply).
+    pub parent_overflow_hidden: bool,
 }
 
 /// Layout result for a node after Taffy computation.

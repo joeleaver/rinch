@@ -227,6 +227,62 @@ pub fn css_features_section() -> NodeHandle {
                 }
             }
 
+            // Group 8: Text Overflow
+            Space { h: "xl" }
+            Title { order: 3, "Text Overflow" }
+            Text { size: "sm", color: "dimmed", "text-overflow: ellipsis with overflow: hidden and white-space: nowrap" }
+            Space { h: "md" }
+
+            Stack { gap: "md",
+                // Fixed width container — text should truncate with ellipsis
+                div { style: "width: 200px; border: 1px solid var(--rinch-color-gray-5); border-radius: 4px; padding: 8px;",
+                    div { style: "overflow: hidden; white-space: nowrap; text-overflow: ellipsis;",
+                        "This is a long sentence that should be truncated with an ellipsis character"
+                    }
+                }
+
+                // Wider container — same text should show more before truncating
+                div { style: "width: 350px; border: 1px solid var(--rinch-color-gray-5); border-radius: 4px; padding: 8px;",
+                    div { style: "overflow: hidden; white-space: nowrap; text-overflow: ellipsis;",
+                        "This is a long sentence that should be truncated with an ellipsis character"
+                    }
+                }
+
+                // Full width — text fits so no ellipsis should appear
+                div { style: "border: 1px solid var(--rinch-color-gray-5); border-radius: 4px; padding: 8px;",
+                    div { style: "overflow: hidden; white-space: nowrap; text-overflow: ellipsis;",
+                        "Short text — no truncation needed"
+                    }
+                }
+
+                // Flex layout test: flex: 1 child should truncate
+                Text { size: "sm", weight: "bold", "Flex layout:" }
+                div { style: "display: flex; gap: 8px; border: 1px solid var(--rinch-color-gray-5); border-radius: 4px; padding: 8px;",
+                    div { style: "width: 80px; flex-shrink: 0; color: var(--rinch-color-blue-6); font-weight: bold;",
+                        "Label"
+                    }
+                    div { style: "flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;",
+                        "This is the value text in a flex child that should truncate with ellipsis when it overflows the available space in the flex container"
+                    }
+                }
+
+                // Without text-overflow (just clip) — for comparison
+                Text { size: "sm", weight: "bold", "Without ellipsis (just clip):" }
+                div { style: "width: 200px; border: 1px solid var(--rinch-color-gray-5); border-radius: 4px; padding: 8px;",
+                    div { style: "overflow: hidden; white-space: nowrap;",
+                        "This text is clipped without any ellipsis indicator at the end"
+                    }
+                }
+
+                // Without overflow hidden — should not truncate (just overflow)
+                Text { size: "sm", weight: "bold", "Without overflow: hidden (wraps normally):" }
+                div { style: "width: 200px; border: 1px solid var(--rinch-color-gray-5); border-radius: 4px; padding: 8px;",
+                    div { style: "text-overflow: ellipsis;",
+                        "This text has text-overflow: ellipsis but no overflow: hidden so it wraps normally"
+                    }
+                }
+            }
+
             Space { h: "xl" }
             Title { order: 2, "Click Transitions" }
             Text { size: "sm", color: "dimmed", "Click the elements below to toggle CSS transitions" }

@@ -394,7 +394,7 @@ impl RinchDocument {
     /// to avoid walking all text nodes.
     #[allow(clippy::type_complexity)]
     pub(crate) fn sync_dirty_text_contexts(&mut self) {
-        use crate::computed_style::WhiteSpaceValue;
+        use crate::computed_style::{OverflowValue, WhiteSpaceValue};
         let mut updates: Vec<(
             taffy::NodeId,
             usize,
@@ -405,6 +405,8 @@ impl RinchDocument {
             AlphaColor<Srgb>,
             bool,
             crate::computed_style::OverflowWrapValue,
+            crate::computed_style::TextOverflowValue,
+            bool,
         )> = Vec::new();
 
         for &id in &self.tree.dirty_nodes {
@@ -428,6 +430,8 @@ impl RinchDocument {
                 color,
                 no_wrap,
                 overflow_wrap,
+                text_overflow,
+                parent_overflow_hidden,
             ) = node
                 .parent
                 .and_then(|p| self.tree.nodes.get(p))
@@ -455,6 +459,11 @@ impl RinchDocument {
                         WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
                     );
                     let overflow_wrap = parent.computed_style.overflow_wrap;
+                    let text_overflow = parent.computed_style.text_overflow;
+                    let parent_overflow_hidden = matches!(
+                        parent.computed_style.overflow_x,
+                        OverflowValue::Hidden | OverflowValue::Clip
+                    );
                     (
                         font_size,
                         font_weight,
@@ -463,6 +472,8 @@ impl RinchDocument {
                         color,
                         no_wrap,
                         overflow_wrap,
+                        text_overflow,
+                        parent_overflow_hidden,
                     )
                 })
                 .unwrap_or((
@@ -473,6 +484,8 @@ impl RinchDocument {
                     AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255),
                     false,
                     crate::computed_style::OverflowWrapValue::default(),
+                    crate::computed_style::TextOverflowValue::default(),
+                    false,
                 ));
 
             updates.push((
@@ -485,6 +498,8 @@ impl RinchDocument {
                 color,
                 no_wrap,
                 overflow_wrap,
+                text_overflow,
+                parent_overflow_hidden,
             ));
         }
 
@@ -498,6 +513,8 @@ impl RinchDocument {
             color,
             no_wrap,
             overflow_wrap,
+            text_overflow,
+            parent_overflow_hidden,
         ) in updates
         {
             if let Some(ctx) = self.tree.taffy.get_node_context_mut(taffy_id)
@@ -511,6 +528,8 @@ impl RinchDocument {
                 tm.color = color;
                 tm.no_wrap = no_wrap;
                 tm.overflow_wrap = overflow_wrap;
+                tm.text_overflow = text_overflow;
+                tm.parent_overflow_hidden = parent_overflow_hidden;
             }
         }
     }
@@ -521,7 +540,7 @@ impl RinchDocument {
     /// from the parent element's computed style.
     #[allow(clippy::type_complexity)]
     pub(crate) fn sync_text_contexts(&mut self) {
-        use crate::computed_style::WhiteSpaceValue;
+        use crate::computed_style::{OverflowValue, WhiteSpaceValue};
         let mut updates: Vec<(
             taffy::NodeId,
             usize,
@@ -532,6 +551,8 @@ impl RinchDocument {
             AlphaColor<Srgb>,
             bool,
             crate::computed_style::OverflowWrapValue,
+            crate::computed_style::TextOverflowValue,
+            bool,
         )> = Vec::new();
 
         for (id, node) in &self.tree.nodes {
@@ -550,6 +571,8 @@ impl RinchDocument {
                     color,
                     no_wrap,
                     overflow_wrap,
+                    text_overflow,
+                    parent_overflow_hidden,
                 ) = node
                     .parent
                     .and_then(|p| self.tree.nodes.get(p))
@@ -578,6 +601,11 @@ impl RinchDocument {
                             WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
                         );
                         let overflow_wrap = parent.computed_style.overflow_wrap;
+                        let text_overflow = parent.computed_style.text_overflow;
+                        let parent_overflow_hidden = matches!(
+                            parent.computed_style.overflow_x,
+                            OverflowValue::Hidden | OverflowValue::Clip
+                        );
                         (
                             font_size,
                             font_weight,
@@ -586,6 +614,8 @@ impl RinchDocument {
                             color,
                             no_wrap,
                             overflow_wrap,
+                            text_overflow,
+                            parent_overflow_hidden,
                         )
                     })
                     .unwrap_or((
@@ -596,6 +626,8 @@ impl RinchDocument {
                         AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255),
                         false,
                         crate::computed_style::OverflowWrapValue::default(),
+                        crate::computed_style::TextOverflowValue::default(),
+                        false,
                     ));
 
                 updates.push((
@@ -608,6 +640,8 @@ impl RinchDocument {
                     color,
                     no_wrap,
                     overflow_wrap,
+                    text_overflow,
+                    parent_overflow_hidden,
                 ));
             }
         }
@@ -622,6 +656,8 @@ impl RinchDocument {
             color,
             no_wrap,
             overflow_wrap,
+            text_overflow,
+            parent_overflow_hidden,
         ) in updates
         {
             if let Some(ctx) = self.tree.taffy.get_node_context_mut(taffy_id)
@@ -635,6 +671,8 @@ impl RinchDocument {
                 tm.color = color;
                 tm.no_wrap = no_wrap;
                 tm.overflow_wrap = overflow_wrap;
+                tm.text_overflow = text_overflow;
+                tm.parent_overflow_hidden = parent_overflow_hidden;
             }
         }
     }

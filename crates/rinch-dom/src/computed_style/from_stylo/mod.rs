@@ -218,6 +218,7 @@ impl ComputedStyle {
             text_underline_offset: None,
             white_space: white_space_from_stylo(&text.white_space_collapse, &text.text_wrap_mode),
             overflow_wrap: overflow_wrap_from_stylo(&text.overflow_wrap),
+            text_overflow: text_overflow_from_stylo(&cv.clone_text_overflow()),
 
             // Grid - extract from Stylo
             grid_template_columns: grid_template_tracks_from_stylo(

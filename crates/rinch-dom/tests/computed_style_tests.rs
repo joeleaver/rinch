@@ -2,7 +2,7 @@ use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::{
     BackgroundValue, BorderStyleValue, CursorValue, PointerEventsValue, PositionValue,
-    VisibilityValue,
+    TextOverflowValue, VisibilityValue, WhiteSpaceValue, OverflowValue,
 };
 
 // Helper to check approximate float equality
@@ -734,5 +734,57 @@ fn test_filter_grayscale() {
         approx_eq(node.computed_style.filter_grayscale, 1.0, 0.01),
         "filter_grayscale should be approximately 1.0, got {}",
         node.computed_style.filter_grayscale
+    );
+}
+
+// ===== Text Overflow Tests =====
+
+#[test]
+fn test_text_overflow_ellipsis() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "overflow: hidden; white-space: nowrap; text-overflow: ellipsis; width: 200px",
+    );
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+
+    let node = doc.tree.get(div.0).unwrap();
+    assert_eq!(
+        node.computed_style.text_overflow,
+        TextOverflowValue::Ellipsis,
+        "text_overflow should be Ellipsis, got {:?}",
+        node.computed_style.text_overflow
+    );
+    assert_eq!(
+        node.computed_style.white_space,
+        WhiteSpaceValue::NoWrap,
+        "white_space should be NoWrap, got {:?}",
+        node.computed_style.white_space
+    );
+    assert!(
+        matches!(node.computed_style.overflow_x, OverflowValue::Hidden),
+        "overflow_x should be Hidden, got {:?}",
+        node.computed_style.overflow_x
+    );
+}
+
+#[test]
+fn test_text_overflow_default_is_clip() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "style", "width: 200px");
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+
+    let node = doc.tree.get(div.0).unwrap();
+    assert_eq!(
+        node.computed_style.text_overflow,
+        TextOverflowValue::Clip,
+        "default text_overflow should be Clip"
     );
 }

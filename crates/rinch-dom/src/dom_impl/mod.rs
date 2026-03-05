@@ -73,9 +73,10 @@ impl Default for RinchDocument {
 impl RinchDocument {
     /// Create a new document with root and body nodes.
     pub fn new() -> Self {
-        // Enable CSS Grid support in Stylo
+        // Enable CSS Grid and text-overflow support in Stylo
         // This must be called before any CSS parsing happens
         style_config::set_bool("layout.grid.enabled", true);
+        style_config::set_bool("layout.unimplemented", true);
 
         // Create the Stylo Device with default viewport and settings
         let viewport_size = euclid::Size2D::new(800.0, 600.0);

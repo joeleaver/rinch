@@ -147,6 +147,7 @@ pub struct ComputedStyle {
     pub text_underline_offset: Option<f32>,
     pub white_space: WhiteSpaceValue,
     pub overflow_wrap: OverflowWrapValue,
+    pub text_overflow: TextOverflowValue,
 
     // Grid properties - skip serialization (taffy types don't impl Serialize)
     #[serde(skip)]
@@ -264,6 +265,7 @@ impl Default for ComputedStyle {
             text_underline_offset: None,
             white_space: WhiteSpaceValue::default(),
             overflow_wrap: OverflowWrapValue::default(),
+            text_overflow: TextOverflowValue::default(),
 
             grid_template_columns: Vec::new(),
             grid_template_rows: Vec::new(),

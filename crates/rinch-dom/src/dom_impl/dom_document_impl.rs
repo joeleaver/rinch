@@ -76,6 +76,8 @@ impl DomDocument for RinchDocument {
             color: AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255), // default black, updated from parent
             no_wrap: false,                                      // default, updated from parent
             overflow_wrap: crate::computed_style::OverflowWrapValue::default(),
+            text_overflow: crate::computed_style::TextOverflowValue::default(),
+            parent_overflow_hidden: false,
         });
         let taffy_id = self
             .tree
@@ -342,6 +344,8 @@ impl DomDocument for RinchDocument {
                     color: AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255),
                     no_wrap: false,
                     overflow_wrap: crate::computed_style::OverflowWrapValue::default(),
+                    text_overflow: crate::computed_style::TextOverflowValue::default(),
+                    parent_overflow_hidden: false,
                 });
                 let taffy_id = self
                     .tree
