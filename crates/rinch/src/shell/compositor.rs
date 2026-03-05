@@ -43,12 +43,34 @@ struct Uniforms {
     layer_rect: vec4<f32>,
     surface_size: vec2<f32>,
     _pad: vec2<f32>,
+    // Border radii in pixels: (top-left, top-right, bottom-right, bottom-left)
+    border_radius: vec4<f32>,
 };
 
 @group(0) @binding(0) var layer_tex: texture_2d<f32>;
 @group(0) @binding(1) var ui_tex: texture_2d<f32>;
 @group(0) @binding(2) var tex_sampler: sampler;
 @group(0) @binding(3) var<uniform> uniforms: Uniforms;
+
+// SDF for a rounded rectangle centered at origin with half-size `b` and
+// per-corner radii `r` = (tl, tr, br, bl).
+fn sd_rounded_rect(p: vec2<f32>, b: vec2<f32>, r: vec4<f32>) -> f32 {
+    // Select radius based on quadrant
+    var rx: vec2<f32>;
+    if p.x > 0.0 {
+        rx = vec2<f32>(r.y, r.z); // right side: tr, br
+    } else {
+        rx = vec2<f32>(r.x, r.w); // left side: tl, bl
+    }
+    var radius: f32;
+    if p.y > 0.0 {
+        radius = rx.y; // bottom
+    } else {
+        radius = rx.x; // top
+    }
+    let q = abs(p) - b + vec2<f32>(radius, radius);
+    return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0, 0.0))) - radius;
+}
 
 // Blit layer into viewport rect, discard pixels outside.
 // Multiple layers can be composited by running this pass
@@ -60,12 +82,31 @@ fn fs_layer(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Only write inside the layer viewport rect
     if uv.x >= vr.x && uv.x <= vr.x + vr.z && uv.y >= vr.y && uv.y <= vr.y + vr.w {
+        // Rounded corner clipping
+        let r = uniforms.border_radius;
+        if r.x > 0.0 || r.y > 0.0 || r.z > 0.0 || r.w > 0.0 {
+            // Convert UV to pixel coordinates relative to viewport center
+            let pixel = uv * uniforms.surface_size;
+            let center = vec2<f32>(
+                (vr.x + vr.z * 0.5) * uniforms.surface_size.x,
+                (vr.y + vr.w * 0.5) * uniforms.surface_size.y,
+            );
+            let half_size = vec2<f32>(
+                vr.z * 0.5 * uniforms.surface_size.x,
+                vr.w * 0.5 * uniforms.surface_size.y,
+            );
+            let d = sd_rounded_rect(pixel - center, half_size, r);
+            if d > 0.0 {
+                discard;
+            }
+        }
+
         let layer_uv = vec2<f32>(
             (uv.x - vr.x) / vr.z,
             (uv.y - vr.y) / vr.w,
         );
         let layer_color = textureSample(layer_tex, tex_sampler, layer_uv);
-        return vec4<f32>(layer_color.rgb, 1.0);
+        return layer_color;
     }
     discard;
 }
@@ -86,6 +127,8 @@ struct Uniforms {
     layer_rect: [f32; 4],
     surface_size: [f32; 2],
     _pad: [f32; 2],
+    /// Border radii in physical pixels: [top-left, top-right, bottom-right, bottom-left].
+    border_radius: [f32; 4],
 }
 
 /// GPU pipeline for compositing RGBA layers with the Vello UI.
@@ -257,6 +300,7 @@ impl LayerCompositor {
         viewport: (f32, f32, f32, f32),
         surface_size: (u32, u32),
         clear_color: Option<wgpu::Color>,
+        border_radius: [f32; 4],
     ) {
         let layer_view = layer_texture.create_view(&TextureViewDescriptor::default());
 
@@ -272,6 +316,7 @@ impl LayerCompositor {
             ],
             surface_size: [sw, sh],
             _pad: [0.0, 0.0],
+            border_radius,
         };
 
         let pass_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -348,6 +393,7 @@ impl LayerCompositor {
         viewport: (f32, f32, f32, f32),
         surface_size: (u32, u32),
         clear_color: Option<wgpu::Color>,
+        border_radius: [f32; 4],
     ) {
         let sw = surface_size.0 as f32;
         let sh = surface_size.1 as f32;
@@ -360,6 +406,7 @@ impl LayerCompositor {
             ],
             surface_size: [sw, sh],
             _pad: [0.0, 0.0],
+            border_radius,
         };
 
         let pass_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {

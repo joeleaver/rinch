@@ -15,7 +15,7 @@ use svg::*;
 use text::*;
 
 use peniko::color::{AlphaColor, Srgb};
-use peniko::kurbo::{Affine, Rect, RoundedRect, RoundedRectRadii};
+use peniko::kurbo::{Affine, BezPath, Rect, RoundedRect, RoundedRectRadii, Shape};
 use peniko::{Brush, Fill};
 use vello::Scene;
 
@@ -46,6 +46,68 @@ pub fn compute_absolute_position(tree: &NodeTree, node_id: RawNodeId, scale: f64
         }
     }
     (x, y)
+}
+
+/// Find viewport descendant rects (absolute pixel positions) for hole-punching.
+/// Returns a list of viewport rects in physical pixel coordinates.
+fn find_viewport_rects(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    offset_x: f64,
+    offset_y: f64,
+    result: &mut Vec<Rect>,
+) {
+    let Some(node) = tree.get(node_id) else {
+        return;
+    };
+    let nx = offset_x + node.layout.x as f64 * scale;
+    let ny = offset_y + node.layout.y as f64 * scale;
+
+    if node.attributes.contains_key("data-viewport") {
+        let vw = node.layout.width as f64 * scale;
+        let vh = node.layout.height as f64 * scale;
+        result.push(Rect::new(nx, ny, nx + vw, ny + vh));
+        return;
+    }
+
+    // Account for scroll offset when recursing into children
+    let sx = node.scroll_offset.0 * scale;
+    let sy = node.scroll_offset.1 * scale;
+    for &child_id in &node.children {
+        find_viewport_rects(tree, child_id, scale, nx - sx, ny - sy, result);
+    }
+}
+
+/// Build a BezPath for the background shape with viewport holes cut out.
+/// Uses EvenOdd fill rule: outer shape wound clockwise, holes wound counter-clockwise.
+fn build_background_with_holes(
+    rect: Rect,
+    radii: RoundedRectRadii,
+    radius: f64,
+    holes: &[Rect],
+) -> BezPath {
+    let mut path = BezPath::new();
+
+    // Outer contour: the background shape (clockwise)
+    if radius > 0.0 {
+        let rrect = rect.to_rounded_rect(radii);
+        path.extend(rrect.path_elements(0.1));
+    } else {
+        path.extend(rect.path_elements(0.1));
+    }
+
+    // Inner contours: viewport holes (counter-clockwise = reversed winding)
+    for hole in holes {
+        // Rect path_elements goes clockwise, so we reverse for counter-clockwise
+        path.move_to((hole.x0, hole.y0));
+        path.line_to((hole.x0, hole.y1));
+        path.line_to((hole.x1, hole.y1));
+        path.line_to((hole.x1, hole.y0));
+        path.close_path();
+    }
+
+    path
 }
 
 /// Paint a subtree rooted at `root_node_id` into `scene`, positioned at (0, 0).
@@ -457,25 +519,26 @@ fn paint_node(
                 );
             }
 
-            // Game viewport hole: punch through all ancestor backgrounds
-            // so the game engine's render shows through this region.
-            let is_viewport = node.attributes.contains_key("data-viewport");
-            if is_viewport {
-                scene.push_layer(
-                    Fill::NonZero,
-                    peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::Clear),
-                    1.0,
-                    node_transform,
-                    &rect,
+            // Handle overflow clipping — detect early so we can cut holes
+            // in the background for viewport descendants.
+            let overflow_y = node.computed_style.overflow_y;
+            let clips = matches!(
+                overflow_y,
+                OverflowValue::Hidden | OverflowValue::Scroll | OverflowValue::Auto
+            );
+
+            // Find viewport descendants — their rects will be cut out of
+            // the background fill so the compositor layer shows through.
+            let mut viewport_holes = Vec::new();
+            if clips {
+                find_viewport_rects(
+                    tree,
+                    node_id,
+                    scale,
+                    offset_x,
+                    offset_y,
+                    &mut viewport_holes,
                 );
-                scene.fill(
-                    Fill::NonZero,
-                    node_transform,
-                    peniko::Color::BLACK,
-                    None,
-                    &rect,
-                );
-                scene.pop_layer();
             }
 
             // Only paint this element's own visuals if visible
@@ -496,43 +559,86 @@ fn paint_node(
                     );
                 }
 
-                // Get background from computed style (solid color or gradient)
-                match &node.computed_style.background {
-                    BackgroundValue::Color(bg_color) => {
-                        if radius > 0.0 {
-                            let rrect = rect.to_rounded_rect(radii);
-                            scene.fill(Fill::NonZero, node_transform, *bg_color, None, &rrect);
-                        } else {
-                            scene.fill(Fill::NonZero, node_transform, *bg_color, None, &rect);
+                // Get background from computed style (solid color or gradient).
+                // When viewport_holes is non-empty, we paint the background with
+                // holes cut out (EvenOdd fill) so compositor layers show through.
+                if !viewport_holes.is_empty() {
+                    // Build a compound path: outer shape + inner holes (wound opposite)
+                    let bg_path = build_background_with_holes(rect, radii, radius, &viewport_holes);
+                    match &node.computed_style.background {
+                        BackgroundValue::Color(bg_color) => {
+                            scene.fill(Fill::EvenOdd, node_transform, *bg_color, None, &bg_path);
                         }
-                    }
-                    BackgroundValue::LinearGradient {
-                        angle_degrees,
-                        stops,
-                    } => {
-                        let brush = build_linear_gradient_brush(*angle_degrees, stops, &rect);
-                        if radius > 0.0 {
-                            let rrect = rect.to_rounded_rect(radii);
-                            scene.fill(Fill::NonZero, node_transform, &brush, None, &rrect);
-                        } else {
-                            scene.fill(Fill::NonZero, node_transform, &brush, None, &rect);
+                        BackgroundValue::LinearGradient {
+                            angle_degrees,
+                            stops,
+                        } => {
+                            let brush = build_linear_gradient_brush(*angle_degrees, stops, &rect);
+                            scene.fill(Fill::EvenOdd, node_transform, &brush, None, &bg_path);
                         }
-                    }
-                    BackgroundValue::RadialGradient { stops } => {
-                        let brush = build_radial_gradient_brush(stops, &rect);
-                        if radius > 0.0 {
-                            let rrect = rect.to_rounded_rect(radii);
-                            scene.fill(Fill::NonZero, node_transform, &brush, None, &rrect);
-                        } else {
-                            scene.fill(Fill::NonZero, node_transform, &brush, None, &rect);
+                        BackgroundValue::RadialGradient { stops } => {
+                            let brush = build_radial_gradient_brush(stops, &rect);
+                            scene.fill(Fill::EvenOdd, node_transform, &brush, None, &bg_path);
                         }
-                    }
-                    BackgroundValue::Image { url } => {
-                        if let Some(decoded) = tree.image_cache.get(url) {
-                            image::paint_image(scene, decoded, rect, scale, "fill", node_transform);
+                        BackgroundValue::Image { url } => {
+                            if let Some(decoded) = tree.image_cache.get(url) {
+                                image::paint_image(
+                                    scene,
+                                    decoded,
+                                    rect,
+                                    scale,
+                                    "fill",
+                                    node_transform,
+                                );
+                            }
                         }
+                        BackgroundValue::None => {}
                     }
-                    BackgroundValue::None => {}
+                } else {
+                    match &node.computed_style.background {
+                        BackgroundValue::Color(bg_color) => {
+                            if radius > 0.0 {
+                                let rrect = rect.to_rounded_rect(radii);
+                                scene.fill(Fill::NonZero, node_transform, *bg_color, None, &rrect);
+                            } else {
+                                scene.fill(Fill::NonZero, node_transform, *bg_color, None, &rect);
+                            }
+                        }
+                        BackgroundValue::LinearGradient {
+                            angle_degrees,
+                            stops,
+                        } => {
+                            let brush = build_linear_gradient_brush(*angle_degrees, stops, &rect);
+                            if radius > 0.0 {
+                                let rrect = rect.to_rounded_rect(radii);
+                                scene.fill(Fill::NonZero, node_transform, &brush, None, &rrect);
+                            } else {
+                                scene.fill(Fill::NonZero, node_transform, &brush, None, &rect);
+                            }
+                        }
+                        BackgroundValue::RadialGradient { stops } => {
+                            let brush = build_radial_gradient_brush(stops, &rect);
+                            if radius > 0.0 {
+                                let rrect = rect.to_rounded_rect(radii);
+                                scene.fill(Fill::NonZero, node_transform, &brush, None, &rrect);
+                            } else {
+                                scene.fill(Fill::NonZero, node_transform, &brush, None, &rect);
+                            }
+                        }
+                        BackgroundValue::Image { url } => {
+                            if let Some(decoded) = tree.image_cache.get(url) {
+                                image::paint_image(
+                                    scene,
+                                    decoded,
+                                    rect,
+                                    scale,
+                                    "fill",
+                                    node_transform,
+                                );
+                            }
+                        }
+                        BackgroundValue::None => {}
+                    }
                 }
 
                 // Render borders per-side with style support
@@ -557,14 +663,6 @@ fn paint_node(
                     );
                 }
             }
-
-            // Handle overflow clipping from computed style
-            // Pushed early so CE overlay and children are both clipped
-            let overflow_y = node.computed_style.overflow_y;
-            let clips = matches!(
-                overflow_y,
-                OverflowValue::Hidden | OverflowValue::Scroll | OverflowValue::Auto
-            );
 
             if clips {
                 if radius > 0.0 {

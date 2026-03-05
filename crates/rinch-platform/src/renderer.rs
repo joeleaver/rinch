@@ -72,6 +72,8 @@ pub struct CompositeLayer {
     pub height: u32,
     /// Viewport rectangle in physical pixels: (x, y, w, h).
     pub viewport: (f32, f32, f32, f32),
+    /// Border radii in physical pixels: [tl, tr, br, bl].
+    pub border_radius: [f32; 4],
 }
 
 /// Backward-compatible alias.

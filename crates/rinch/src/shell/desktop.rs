@@ -49,6 +49,8 @@ pub struct GpuTextureLayer {
     pub view: TextureView,
     /// Viewport rectangle in physical pixels: (x, y, w, h).
     pub viewport: (f32, f32, f32, f32),
+    /// Border radii in physical pixels: [tl, tr, br, bl].
+    pub border_radius: [f32; 4],
 }
 
 // ── WinitWindow ──────────────────────────────────────────────────────────────
@@ -422,6 +424,7 @@ impl PlatformRenderer for WgpuRenderer {
                     } else {
                         None
                     },
+                    layer.border_radius,
                 );
                 layer_idx += 1;
             }
@@ -441,6 +444,7 @@ impl PlatformRenderer for WgpuRenderer {
                     } else {
                         None
                     },
+                    gpu_layer.border_radius,
                 );
                 layer_idx += 1;
             }

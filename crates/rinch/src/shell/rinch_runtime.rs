@@ -382,6 +382,7 @@ impl RinchRuntime {
                             width: vid_w,
                             height: vid_h,
                             viewport,
+                            border_radius: [0.0; 4],
                         });
                     }
                 }
@@ -407,19 +408,22 @@ impl RinchRuntime {
         {
             let surface_frames = crate::render_surface::collect_surface_frames();
             for (viewport_name, pixels, surf_w, surf_h) in surface_frames {
-                if let Some(viewport) = self.app.viewport_rect(&viewport_name) {
-                    // Scale viewport from logical to physical pixels
+                if let Some((viewport, radii)) = self.app.viewport_rect_with_radius(&viewport_name)
+                {
+                    // Scale viewport and radii from logical to physical pixels
                     let viewport = (
                         viewport.0 * s,
                         viewport.1 * s,
                         viewport.2 * s,
                         viewport.3 * s,
                     );
+                    let border_radius = [radii[0] * s, radii[1] * s, radii[2] * s, radii[3] * s];
                     all_layers.push(rinch_platform::CompositeLayer {
                         pixels,
                         width: surf_w,
                         height: surf_h,
                         viewport,
+                        border_radius,
                     });
                 }
             }
@@ -430,7 +434,8 @@ impl RinchRuntime {
         {
             let texture_sources = crate::render_surface::collect_texture_sources();
             for (viewport_name, tex_source_arc) in texture_sources {
-                if let Some(viewport) = self.app.viewport_rect(&viewport_name) {
+                if let Some((viewport, radii)) = self.app.viewport_rect_with_radius(&viewport_name)
+                {
                     let phys_w = (viewport.2 * s) as u32;
                     let phys_h = (viewport.3 * s) as u32;
 
@@ -444,11 +449,13 @@ impl RinchRuntime {
                         viewport.2 * s,
                         viewport.3 * s,
                     );
+                    let border_radius = [radii[0] * s, radii[1] * s, radii[2] * s, radii[3] * s];
                     // Lock the texture source to get the view
                     if let Some(ref ts) = *tex_source_arc.lock().unwrap() {
                         gpu_layers.push(super::desktop::GpuTextureLayer {
                             view: ts.view.clone(),
                             viewport,
+                            border_radius,
                         });
                     }
                 }

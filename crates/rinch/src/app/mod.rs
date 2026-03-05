@@ -38,6 +38,9 @@ use rinch_platform::{
 };
 use vello::Scene;
 
+/// Viewport rectangle as (x, y, width, height) in logical pixels.
+pub type ViewportRect = (f32, f32, f32, f32);
+
 #[cfg(feature = "desktop")]
 use crate::shell::devtools::DevToolsState;
 
@@ -780,7 +783,16 @@ impl RinchApp {
     /// Walks the DOM tree looking for a node with attribute
     /// `data-viewport={name}` and returns its absolute layout rect in logical
     /// pixels.  Returns `None` if no matching viewport is found.
-    pub fn viewport_rect(&self, name: &str) -> Option<(f32, f32, f32, f32)> {
+    pub fn viewport_rect(&self, name: &str) -> Option<ViewportRect> {
+        self.viewport_rect_with_radius(name).map(|(r, _)| r)
+    }
+
+    /// Like `viewport_rect`, but also returns the effective border-radius
+    /// from the nearest ancestor with overflow clipping + border-radius.
+    /// Returns `(rect, [tl, tr, br, bl])` where radii are in logical pixels.
+    pub fn viewport_rect_with_radius(&self, name: &str) -> Option<(ViewportRect, [f32; 4])> {
+        use rinch_dom::computed_style::values::OverflowValue;
+
         let doc = self.doc.as_ref()?;
         let d = doc.borrow();
         for (node_id, node) in &d.tree.nodes {
@@ -788,6 +800,7 @@ impl RinchApp {
                 // Compute absolute position by walking up the parent chain
                 let mut abs_x = 0.0_f32;
                 let mut abs_y = 0.0_f32;
+                let mut clip_radii = [0.0_f32; 4];
                 let mut current = Some(node_id);
                 while let Some(id) = current {
                     if let Some(n) = d.tree.get(id) {
@@ -799,12 +812,38 @@ impl RinchApp {
                             abs_x -= parent.scroll_offset.0 as f32;
                             abs_y -= parent.scroll_offset.1 as f32;
                         }
+
+                        // Check for overflow clipping ancestor with border-radius
+                        if clip_radii == [0.0; 4] {
+                            let cs = &n.computed_style;
+                            let clips = matches!(
+                                cs.overflow_y,
+                                OverflowValue::Hidden
+                                    | OverflowValue::Scroll
+                                    | OverflowValue::Auto
+                                    | OverflowValue::Clip
+                            );
+                            if clips {
+                                let resolve_size = n.layout.width.min(n.layout.height);
+                                let tl = cs.border_radius_top_left.resolve(resolve_size);
+                                let tr = cs.border_radius_top_right.resolve(resolve_size);
+                                let br = cs.border_radius_bottom_right.resolve(resolve_size);
+                                let bl = cs.border_radius_bottom_left.resolve(resolve_size);
+                                if tl > 0.0 || tr > 0.0 || br > 0.0 || bl > 0.0 {
+                                    clip_radii = [tl, tr, br, bl];
+                                }
+                            }
+                        }
+
                         current = n.parent;
                     } else {
                         break;
                     }
                 }
-                return Some((abs_x, abs_y, node.layout.width, node.layout.height));
+                return Some((
+                    (abs_x, abs_y, node.layout.width, node.layout.height),
+                    clip_radii,
+                ));
             }
         }
         None
