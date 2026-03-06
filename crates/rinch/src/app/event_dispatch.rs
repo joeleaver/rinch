@@ -90,6 +90,20 @@ impl RinchApp {
                         }
                     }
 
+                    // Fire ondragover on current drop target so it can track cursor position.
+                    if let Some(target_id) = drag.over_target {
+                        if let Some(doc) = &self.doc {
+                            let (cx, cy) = drag.cursor;
+                            Self::dispatch_drag_attr_with_context(
+                                doc,
+                                target_id,
+                                "data-ondragover",
+                                cx,
+                                cy,
+                            );
+                        }
+                    }
+
                     // Fire ondragmove on source so editor can track cursor position.
                     if let Some(doc) = &self.doc {
                         let (cx, cy) = drag.cursor;
@@ -1022,6 +1036,66 @@ impl RinchApp {
             }
         }
         None
+    }
+
+    /// Dispatch a drag event attribute with ClickContext set to cursor position
+    /// and target element bounds. Used for `data-ondragover` where handlers need
+    /// to know the cursor position relative to the target.
+    pub(crate) fn dispatch_drag_attr_with_context(
+        doc: &Rc<RefCell<RinchDocument>>,
+        node_id: usize,
+        attr: &str,
+        cursor_x: f32,
+        cursor_y: f32,
+    ) {
+        let handler_info = {
+            let d = doc.borrow();
+            let mut current = Some(node_id);
+            let mut found = None;
+            while let Some(nid) = current {
+                if let Some(node) = d.tree.get(nid) {
+                    if let Some(val) = node.attributes.get(attr) {
+                        if let Ok(id) = val.parse::<usize>() {
+                            // Compute element absolute position
+                            let mut ax = node.layout.x;
+                            let mut ay = node.layout.y;
+                            let mut pid = node.parent;
+                            while let Some(p) = pid {
+                                if let Some(pn) = d.tree.get(p) {
+                                    ax += pn.layout.x;
+                                    ay += pn.layout.y;
+                                    ax -= pn.scroll_offset.0 as f32;
+                                    ay -= pn.scroll_offset.1 as f32;
+                                    pid = pn.parent;
+                                } else {
+                                    break;
+                                }
+                            }
+                            found = Some((id, ax, ay, node.layout.width, node.layout.height));
+                        }
+                        break;
+                    }
+                    current = node.parent;
+                } else {
+                    break;
+                }
+            }
+            found
+        };
+        if let Some((id, elem_x, elem_y, elem_w, elem_h)) = handler_info {
+            events::set_click_context(events::ClickContext {
+                mouse_x: cursor_x,
+                mouse_y: cursor_y,
+                element_x: elem_x,
+                element_y: elem_y,
+                element_width: elem_w,
+                element_height: elem_h,
+                text_hit: events::TextHitInfo::default(),
+                viewport_width: 0.0,
+                viewport_height: 0.0,
+            });
+            events::dispatch_event(events::EventHandlerId(id));
+        }
     }
 
     /// Dispatch a drag event attribute (data-ondragstart, data-ondrop, etc.)

@@ -3,9 +3,9 @@
 //! A range input slider with fine-grained reactive updates.
 
 use rinch_core::{
-    Component, Signal, ValueCallback,
+    Component, Drag, Signal, ValueCallback,
     dom::{NodeHandle, RenderScope},
-    get_click_context, start_drag,
+    get_click_context,
 };
 
 /// Slider size.
@@ -272,16 +272,12 @@ impl Component for Slider {
                 // Start drag - the drag callback will continue updating
                 let drag_cb = value_cb_drag.clone();
                 let calc = calc_value_drag;
-                start_drag(
-                    ctx.element_x,
-                    ctx.element_y,
-                    ctx.element_width,
-                    ctx.element_height,
-                    move |px, _py| {
+                Drag::percent()
+                    .on_move(move |px, _py| {
                         let new_value = calc(px as f64);
                         drag_cb.invoke(new_value);
-                    },
-                );
+                    })
+                    .start();
             });
 
             overlay.set_attribute("data-rid", &handler_id.to_string());

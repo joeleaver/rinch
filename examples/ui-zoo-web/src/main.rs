@@ -282,7 +282,7 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
 
     // Mouseup delegation: stop active drag operations.
     let mouseup_closure = Closure::wrap(Box::new(move |_event: web_sys::MouseEvent| {
-        rinch_core::stop_drag();
+        rinch_core::Drag::cancel();
     }) as Box<dyn FnMut(_)>);
     browser_doc
         .add_event_listener_with_callback("mouseup", mouseup_closure.as_ref().unchecked_ref())

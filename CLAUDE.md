@@ -555,6 +555,67 @@ let count = Signal::new(0);
 MenuItem::new("Reset Counter").on_click(move || count.set(0))
 ```
 
+## Drag and Drop
+
+Rinch has two drag systems: **DOM drag attributes** for element-to-element DnD, and the **`Drag` builder** for pointer capture (sliders, panel dragging, resize handles).
+
+### DOM Drag Attributes
+
+Set these attributes on elements to participate in element-to-element drag-and-drop:
+
+| Attribute | Fires on | When |
+|-----------|----------|------|
+| `data-ondragstart` | Source | Drag begins |
+| `data-ondragmove` | Source | Mouse moves during drag |
+| `data-ondragenter` | Target | Drag enters a drop target |
+| `data-ondragover` | Target | Mouse moves over drop target (every motion event) |
+| `data-ondragleave` | Target | Drag leaves a drop target |
+| `data-ondrop` | Target | Drop on target |
+| `data-ondragend` | Source | Drag finishes |
+
+Handlers can read `get_click_context()` for cursor position and element bounds. Use `DragContext<T>` to pass typed data between source and target:
+
+```rust
+let drag = DragContext::<MyItem>::new();
+
+// In source's ondragstart:
+drag.set(item.clone());
+
+// In target's ondrop:
+if let Some(item) = drag.take() {
+    target_list.update(|list| list.push(item));
+}
+```
+
+### Pointer Capture Drag (Drag Builder)
+
+For tracking mouse movement from a click handler until mouseup (sliders, panels, resize):
+
+```rust
+// Absolute pixel coordinates (panel dragging)
+let ctx = get_click_context();
+let offset_x = ctx.mouse_x - panel_x.get();
+Drag::absolute()
+    .on_move(move |x, y| panel_x.set(x - offset_x))
+    .on_end(move |x, y| save_position(x, y))
+    .start();
+
+// Percentage 0.0–1.0 (sliders) — reads element bounds from ClickContext automatically
+Drag::percent()
+    .on_move(move |px, _| slider_value.set(px * 100.0))
+    .start();
+
+// Cancel without firing on_end
+Drag::cancel();
+
+// Check if active
+Drag::is_active();
+```
+
+### File Drop (OS → App)
+
+File drops from the OS use `data-onfiledragenter`, `data-onfiledragleave` attributes, and `register_file_drop_handler` for the actual drop. See the File Drop section of UI Zoo for an example.
+
 ## Keyboard Shortcuts (built-in)
 
 - `Ctrl/Cmd + +/-/0` - Zoom in/out/reset

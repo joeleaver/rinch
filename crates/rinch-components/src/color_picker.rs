@@ -6,7 +6,7 @@
 use std::rc::Rc;
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Component, InputCallback, Signal, get_click_context, start_drag};
+use rinch_core::{Component, Drag, InputCallback, Signal, get_click_context};
 
 use crate::color_swatch::ColorSwatch;
 use crate::color_utils::{
@@ -134,16 +134,12 @@ impl Component for ColorPicker {
                 sat.set(px);
                 val.set(1.0 - py);
 
-                start_drag(
-                    ctx.element_x,
-                    ctx.element_y,
-                    ctx.element_width,
-                    ctx.element_height,
-                    move |px, py| {
+                Drag::percent()
+                    .on_move(move |px, py| {
                         sat.set(px as f64);
                         val.set(1.0 - py as f64);
-                    },
-                );
+                    })
+                    .start();
             });
             sat_overlay.set_attribute("data-rid", &handler_id.to_string());
         }
@@ -188,15 +184,11 @@ impl Component for ColorPicker {
                 let px = ctx.percent_x() as f64;
                 hue.set(px * 360.0);
 
-                start_drag(
-                    ctx.element_x,
-                    ctx.element_y,
-                    ctx.element_width,
-                    ctx.element_height,
-                    move |px, _py| {
+                Drag::percent()
+                    .on_move(move |px, _py| {
                         hue.set(px as f64 * 360.0);
-                    },
-                );
+                    })
+                    .start();
             });
             hue_overlay.set_attribute("data-rid", &handler_id.to_string());
         }
@@ -238,15 +230,11 @@ impl Component for ColorPicker {
                     let px = ctx.percent_x() as f64;
                     alpha.set(px);
 
-                    start_drag(
-                        ctx.element_x,
-                        ctx.element_y,
-                        ctx.element_width,
-                        ctx.element_height,
-                        move |px, _py| {
+                    Drag::percent()
+                        .on_move(move |px, _py| {
                             alpha.set(px as f64);
-                        },
-                    );
+                        })
+                        .start();
                 });
                 alpha_overlay.set_attribute("data-rid", &handler_id.to_string());
             }

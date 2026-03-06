@@ -4,9 +4,9 @@
 //! tool panels, property inspectors, floating toolbars.
 
 use rinch_core::{
-    Callback, Component, Signal,
+    Callback, Component, Drag, Signal,
     dom::{NodeHandle, RenderScope},
-    get_click_context, start_drag_absolute,
+    get_click_context,
 };
 
 /// A draggable, resizable floating panel.
@@ -144,10 +144,12 @@ impl Component for FloatingPanel {
                 let ctx = get_click_context();
                 let offset_x = ctx.mouse_x - x_sig.get();
                 let offset_y = ctx.mouse_y - y_sig.get();
-                start_drag_absolute(move |mx, my| {
-                    x_sig.set(mx - offset_x);
-                    y_sig.set(my - offset_y);
-                });
+                Drag::absolute()
+                    .on_move(move |mx, my| {
+                        x_sig.set(mx - offset_x);
+                        y_sig.set(my - offset_y);
+                    })
+                    .start();
             });
             header.set_attribute("data-rid", &handler_id.to_string());
         }
@@ -178,10 +180,12 @@ impl Component for FloatingPanel {
                 let start_h = h_sig.get();
                 let start_mx = ctx.mouse_x;
                 let start_my = ctx.mouse_y;
-                start_drag_absolute(move |mx, my| {
-                    w_sig.set((start_w + mx - start_mx).max(min_w));
-                    h_sig.set((start_h + my - start_my).max(min_h));
-                });
+                Drag::absolute()
+                    .on_move(move |mx, my| {
+                        w_sig.set((start_w + mx - start_mx).max(min_w));
+                        h_sig.set((start_h + my - start_my).max(min_h));
+                    })
+                    .start();
             });
             resize_handle.set_attribute("data-rid", &handler_id.to_string());
             root.append_child(&resize_handle);

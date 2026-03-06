@@ -116,8 +116,7 @@ pub mod prelude {
     pub use rinch_core::{create_context, try_use_context, use_context};
     // Event handling - click context, drag support, input callbacks, file-drop callbacks
     pub use rinch_core::{
-        ClickContext, DragContext, FileDropCallback, InputCallback, get_click_context, start_drag,
-        start_drag_absolute, start_drag_absolute_with_end,
+        ClickContext, Drag, DragContext, FileDropCallback, InputCallback, get_click_context,
     };
     pub use rinch_macros::{component, rsx};
     // Window control functions

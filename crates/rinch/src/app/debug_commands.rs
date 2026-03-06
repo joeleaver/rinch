@@ -247,7 +247,7 @@ impl RinchApp {
                     self.resolve_and_repaint(w, h);
                 }
 
-                rinch_core::stop_drag();
+                rinch_core::Drag::cancel();
                 self.scrollbar_drag = None;
                 self.ce_selecting = false;
                 actions.push(AppAction::RequestRedraw);
@@ -301,6 +301,20 @@ impl RinchApp {
                             if let Some(new_id) = new_target {
                                 Self::dispatch_drag_attr(doc, new_id, "data-ondragenter");
                             }
+                        }
+                    }
+
+                    // Fire ondragover on current drop target
+                    let current_target = drag.over_target;
+                    if let Some(target_id) = current_target {
+                        if let Some(doc) = &self.doc {
+                            Self::dispatch_drag_attr_with_context(
+                                doc,
+                                target_id,
+                                "data-ondragover",
+                                x,
+                                y,
+                            );
                         }
                     }
 
@@ -521,7 +535,7 @@ impl RinchApp {
                             }
                             Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragend");
                         }
-                        rinch_core::stop_drag();
+                        rinch_core::Drag::cancel();
                         self.scene_dirty = true;
                         let (w, h) = (window_size.0 as f32, window_size.1 as f32);
                         self.resolve_and_repaint(w, h);
