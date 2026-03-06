@@ -132,3 +132,14 @@ pub(super) fn overflow_wrap_from_stylo(
         StyloOW::Anywhere => OverflowWrapValue::Anywhere,
     }
 }
+
+pub(super) fn text_overflow_from_stylo(
+    to: &style::values::computed::TextOverflow,
+) -> TextOverflowValue {
+    use style::values::specified::text::TextOverflowSide;
+    // CSS text-overflow: ellipsis sets the "second" (end) side
+    match to.second {
+        TextOverflowSide::Ellipsis => TextOverflowValue::Ellipsis,
+        _ => TextOverflowValue::Clip,
+    }
+}

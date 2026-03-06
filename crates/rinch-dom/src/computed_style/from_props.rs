@@ -264,6 +264,7 @@ impl ComputedStyle {
                 "overflow-wrap" | "word-wrap" => {
                     style.overflow_wrap = OverflowWrapValue::parse(value)
                 }
+                "text-overflow" => style.text_overflow = TextOverflowValue::parse(value),
 
                 // Grid properties
                 "grid-template-columns" => {

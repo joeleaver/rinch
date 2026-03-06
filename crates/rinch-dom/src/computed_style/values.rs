@@ -539,6 +539,24 @@ impl OverflowValue {
     }
 }
 
+/// CSS text-overflow property values.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub enum TextOverflowValue {
+    #[default]
+    Clip,
+    Ellipsis,
+}
+
+impl TextOverflowValue {
+    /// Parse from CSS string value.
+    pub fn parse(value: &str) -> Self {
+        match value.trim() {
+            "ellipsis" => Self::Ellipsis,
+            _ => Self::Clip,
+        }
+    }
+}
+
 /// CSS font-style property values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub enum FontStyleValue {
