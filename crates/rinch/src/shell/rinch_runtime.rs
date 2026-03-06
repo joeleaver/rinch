@@ -21,7 +21,7 @@
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -53,7 +53,6 @@ thread_local! {
 // ── Global proxy + native event queue ────────────────────────────────────────
 
 // Global (Send+Sync) proxy for waking the event loop from any thread.
-// Public within the crate so render_surface.rs can send SurfaceRedraw directly.
 pub(crate) static GLOBAL_PROXY: OnceLock<EventLoopProxy> = OnceLock::new();
 
 // Queue of native events to process on the next proxy_wake_up.
@@ -106,9 +105,6 @@ fn drain_main_queue() {
 pub enum RinchNativeEvent {
     /// A signal changed -- re-resolve layout and repaint.
     ReRender,
-    /// A RenderSurface has new GPU texture content — repaint the compositor
-    /// without re-resolving DOM layout.
-    SurfaceRedraw,
     /// A debug command is waiting on the channel (debug feature).
     #[cfg(feature = "debug")]
     DebugCommand,
@@ -260,6 +256,13 @@ impl RinchRuntime {
         let winit_window = WinitWindow::new(window);
         self.window = Some(winit_window);
 
+        // Register direct redraw callback so render surfaces can request
+        // repaints without routing through the event loop queue.
+        let window_arc = self.window.as_ref().unwrap().window.clone();
+        crate::render_surface::set_redraw_callback(Arc::new(move || {
+            window_arc.request_redraw();
+        }));
+
         // Mount the component
         self.app
             .mount_component(size.width as f32, size.height as f32);
@@ -274,6 +277,8 @@ impl RinchRuntime {
     /// actual winit Window (which destroys the xdg_toplevel) to make it
     /// disappear. The app state and DOM are preserved.
     fn hide_window(&mut self) {
+        // Clear the direct redraw callback before dropping the window.
+        crate::render_surface::clear_redraw_callback();
         // Drop renderer first — it holds a reference to the window surface.
         drop(self.renderer.take());
         drop(self.window.take());
@@ -330,6 +335,12 @@ impl RinchRuntime {
 
         let winit_window = WinitWindow::new(window);
         self.window = Some(winit_window);
+
+        // Update direct redraw callback for the new window.
+        let window_arc = self.window.as_ref().unwrap().window.clone();
+        crate::render_surface::set_redraw_callback(Arc::new(move || {
+            window_arc.request_redraw();
+        }));
 
         // Trigger a full repaint of the existing DOM
         self.app.scene_dirty = true;
@@ -1033,15 +1044,6 @@ impl RinchRuntime {
     fn handle_native_event(&mut self, event: RinchNativeEvent, event_loop: &dyn ActiveEventLoop) {
         let platform_event = match event {
             RinchNativeEvent::ReRender => PlatformEvent::UserEvent(UserEvent::ReRender),
-            RinchNativeEvent::SurfaceRedraw => {
-                // Direct repaint — skip DOM resolution entirely.
-                // The engine thread rendered new content to its GPU texture;
-                // we just need the compositor to re-composite.
-                if let Some(w) = &self.window {
-                    w.request_redraw();
-                }
-                return;
-            }
             #[cfg(feature = "debug")]
             RinchNativeEvent::DebugCommand => {
                 // Debug commands may need the renderer (screenshots), so

@@ -53,6 +53,36 @@ use std::sync::{Arc, Mutex};
 use rinch_core::Component;
 use rinch_core::dom::{NodeHandle, RenderScope};
 
+// ── Direct redraw callback ──────────────────────────────────────────────────
+
+/// Global callback that calls `window.request_redraw()` directly.
+///
+/// Updated by the runtime whenever the window is (re)created. This lets render
+/// surfaces trigger a repaint from any thread without routing through the
+/// event loop queue, eliminating the extra event-loop iteration of latency.
+#[cfg(feature = "desktop")]
+static REDRAW_CALLBACK: Mutex<Option<Arc<dyn Fn() + Send + Sync>>> = Mutex::new(None);
+
+/// Register the direct redraw callback. Called by the runtime on window create.
+#[cfg(feature = "desktop")]
+pub(crate) fn set_redraw_callback(cb: Arc<dyn Fn() + Send + Sync>) {
+    *REDRAW_CALLBACK.lock().unwrap() = Some(cb);
+}
+
+/// Clear the redraw callback (e.g., when the window is hidden/destroyed).
+#[cfg(feature = "desktop")]
+pub(crate) fn clear_redraw_callback() {
+    *REDRAW_CALLBACK.lock().unwrap() = None;
+}
+
+/// Request a window repaint directly, bypassing the event loop queue.
+#[cfg(feature = "desktop")]
+fn request_repaint() {
+    if let Some(cb) = REDRAW_CALLBACK.lock().unwrap().as_ref() {
+        cb();
+    }
+}
+
 // ── TextureSource (desktop only) ────────────────────────────────────────────
 
 /// A GPU texture source for zero-copy compositing.
@@ -210,13 +240,10 @@ impl SurfaceWriter {
 
         #[cfg(feature = "desktop")]
         {
-            // Request a repaint via SurfaceRedraw — this skips DOM resolution
-            // (resolve_and_repaint) and goes straight to window.request_redraw().
-            // Using ReRender here would rebuild the entire Vello scene from the
-            // DOM every frame, killing performance for animated surfaces.
-            crate::shell::rinch_runtime::send_native_event(
-                crate::shell::rinch_runtime::RinchNativeEvent::SurfaceRedraw,
-            );
+            // Request a repaint directly — calls window.request_redraw() without
+            // routing through the event loop queue. This eliminates a full
+            // event-loop round-trip of latency for high-performance surfaces.
+            request_repaint();
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -308,8 +335,8 @@ impl RenderSurfaceHandle {
         });
         self.needs_redraw.store(true, Ordering::Release);
 
-        // Wake the event loop so it picks up the new texture
-        crate::shell::rinch_runtime::run_on_main_thread(|| {});
+        // Request repaint so the compositor picks up the new texture
+        request_repaint();
     }
 
     /// Check if this surface has a GPU texture source set.
@@ -396,7 +423,7 @@ pub struct GpuTextureRegistrar {
 impl GpuTextureRegistrar {
     /// Register a GPU texture as the frame source for zero-copy compositing.
     ///
-    /// Safe to call from any thread. Wakes the event loop via `run_on_main_thread`.
+    /// Safe to call from any thread. Requests a repaint directly.
     pub fn set_texture_source(&self, view: wgpu::TextureView, width: u32, height: u32) {
         *self.texture_source.lock().unwrap() = Some(TextureSource {
             view,
@@ -404,22 +431,17 @@ impl GpuTextureRegistrar {
             height,
         });
         self.needs_redraw.store(true, Ordering::Release);
-        // Wake the event loop so it picks up the new texture.
-        crate::shell::rinch_runtime::run_on_main_thread(|| {});
+        request_repaint();
     }
 
     /// Signal the compositor that the texture content has been updated.
     ///
     /// Call this after each frame render. The engine writes new content to the
-    /// same `TextureView` every frame — this wakes the event loop and triggers
-    /// a direct window repaint (bypasses DOM resolution entirely).
+    /// same `TextureView` every frame — this calls `window.request_redraw()`
+    /// directly without routing through the event loop queue.
     pub fn notify_frame_ready(&self) {
         self.needs_redraw.store(true, Ordering::Release);
-        // Send SurfaceRedraw — goes directly to window.request_redraw()
-        // without going through resolve_and_repaint().
-        crate::shell::rinch_runtime::send_native_event(
-            crate::shell::rinch_runtime::RinchNativeEvent::SurfaceRedraw,
-        );
+        request_repaint();
     }
 
     /// Get the current layout size in physical pixels.

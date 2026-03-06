@@ -57,12 +57,14 @@ pub struct GpuTextureLayer {
 
 /// Desktop window backed by winit.
 pub struct WinitWindow {
-    pub(crate) window: Box<dyn Window>,
+    pub(crate) window: Arc<dyn Window>,
 }
 
 impl WinitWindow {
     pub fn new(window: Box<dyn Window>) -> Self {
-        Self { window }
+        Self {
+            window: Arc::from(window),
+        }
     }
 
     /// Get the raw winit window reference.
