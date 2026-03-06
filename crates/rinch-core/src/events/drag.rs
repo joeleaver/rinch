@@ -139,9 +139,7 @@ where
 /// Called by the runtime on mouseup with the final cursor position.
 pub fn finish_drag(mouse_x: f32, mouse_y: f32) {
     // Take the on_end callback from absolute drag before clearing.
-    let on_end = ACTIVE_DRAG_ABSOLUTE.with(|drag| {
-        drag.borrow_mut().take().and_then(|s| s.on_end)
-    });
+    let on_end = ACTIVE_DRAG_ABSOLUTE.with(|drag| drag.borrow_mut().take().and_then(|s| s.on_end));
     // Clear percentage-based drag too.
     ACTIVE_DRAG.with(|drag| {
         *drag.borrow_mut() = None;

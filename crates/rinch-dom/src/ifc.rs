@@ -90,7 +90,10 @@ impl RinchDocument {
                 let cs = &self.tree.nodes[root_id].computed_style;
                 let container_width = max_width.unwrap_or(f32::INFINITY);
                 if matches!(cs.text_overflow, TextOverflowValue::Ellipsis)
-                    && matches!(cs.white_space, WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre)
+                    && matches!(
+                        cs.white_space,
+                        WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
+                    )
                     && matches!(cs.overflow_x, OverflowValue::Hidden | OverflowValue::Clip)
                     && inline_layout.layout.width() > container_width
                     && container_width > 0.0
@@ -188,19 +191,21 @@ impl RinchDocument {
                 .unwrap_or(parley::layout::Alignment::Start);
 
             // Check if text-overflow: ellipsis applies
-            let needs_ellipsis = parent_id
-                .and_then(|p| self.tree.nodes.get(p))
-                .is_some_and(|parent| {
-                    matches!(parent.computed_style.text_overflow, TextOverflowValue::Ellipsis)
-                        && matches!(
+            let needs_ellipsis =
+                parent_id
+                    .and_then(|p| self.tree.nodes.get(p))
+                    .is_some_and(|parent| {
+                        matches!(
+                            parent.computed_style.text_overflow,
+                            TextOverflowValue::Ellipsis
+                        ) && matches!(
                             parent.computed_style.white_space,
                             WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
-                        )
-                        && matches!(
+                        ) && matches!(
                             parent.computed_style.overflow_x,
                             OverflowValue::Hidden | OverflowValue::Clip
                         )
-                });
+                    });
 
             if needs_ellipsis {
                 let parent_width = parent_id
@@ -228,7 +233,9 @@ impl RinchDocument {
             let parent_id = self.tree.nodes[id].parent;
             let parent = parent_id.and_then(|p| self.tree.nodes.get(p));
             let font_size = parent.map(|p| p.computed_style.font_size).unwrap_or(16.0);
-            let font_weight = parent.map(|p| p.computed_style.font_weight).unwrap_or(400.0);
+            let font_weight = parent
+                .map(|p| p.computed_style.font_weight)
+                .unwrap_or(400.0);
             let font_family = parent
                 .map(|p| {
                     if p.computed_style.font_family.is_empty() {
@@ -240,7 +247,9 @@ impl RinchDocument {
                 .unwrap_or_else(|| "sans-serif".to_string());
             let color = parent
                 .and_then(|p| p.computed_style.color)
-                .unwrap_or_else(|| peniko::color::AlphaColor::<peniko::color::Srgb>::from_rgba8(0, 0, 0, 255));
+                .unwrap_or_else(|| {
+                    peniko::color::AlphaColor::<peniko::color::Srgb>::from_rgba8(0, 0, 0, 255)
+                });
             let line_height = parent.and_then(|p| p.computed_style.line_height.to_parley());
             let alignment = parent
                 .map(|p| p.computed_style.text_align.to_parley())
@@ -249,7 +258,9 @@ impl RinchDocument {
             // Measure the ellipsis "…" width first
             let ellipsis = "…";
             let ellipsis_width = {
-                let mut builder = self.layout_cx.ranged_builder(&mut self.font_cx, ellipsis, 1.0, true);
+                let mut builder =
+                    self.layout_cx
+                        .ranged_builder(&mut self.font_cx, ellipsis, 1.0, true);
                 builder.push_default(parley::style::StyleProperty::FontSize(font_size));
                 if (font_weight - 400.0).abs() > 1.0 {
                     builder.push_default(parley::style::StyleProperty::FontWeight(
@@ -267,7 +278,9 @@ impl RinchDocument {
             let target_width = available_width - ellipsis_width;
             if target_width <= 0.0 {
                 // Not even room for the ellipsis — just show ellipsis
-                let mut builder = self.layout_cx.ranged_builder(&mut self.font_cx, ellipsis, 1.0, true);
+                let mut builder =
+                    self.layout_cx
+                        .ranged_builder(&mut self.font_cx, ellipsis, 1.0, true);
                 builder.push_default(parley::style::StyleProperty::FontSize(font_size));
                 builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
                 builder.push_default(parley::style::StyleProperty::FontStack(
@@ -301,7 +314,9 @@ impl RinchDocument {
                     continue;
                 }
                 let prefix: String = chars[..mid].iter().collect();
-                let mut builder = self.layout_cx.ranged_builder(&mut self.font_cx, &prefix, 1.0, true);
+                let mut builder =
+                    self.layout_cx
+                        .ranged_builder(&mut self.font_cx, &prefix, 1.0, true);
                 builder.push_default(parley::style::StyleProperty::FontSize(font_size));
                 if (font_weight - 400.0).abs() > 1.0 {
                     builder.push_default(parley::style::StyleProperty::FontWeight(
@@ -326,8 +341,15 @@ impl RinchDocument {
             }
 
             // Build final layout with truncated text + ellipsis
-            let truncated: String = chars[..best_len].iter().collect::<String>().trim_end().to_string() + ellipsis;
-            let mut builder = self.layout_cx.ranged_builder(&mut self.font_cx, &truncated, 1.0, true);
+            let truncated: String = chars[..best_len]
+                .iter()
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+                + ellipsis;
+            let mut builder =
+                self.layout_cx
+                    .ranged_builder(&mut self.font_cx, &truncated, 1.0, true);
             builder.push_default(parley::style::StyleProperty::FontSize(font_size));
             builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
             builder.push_default(parley::style::StyleProperty::FontStack(
@@ -980,9 +1002,9 @@ impl RinchDocument {
             root_computed.font_family.clone().into()
         };
         let font_weight = parley::style::FontWeight::new(root_computed.font_weight);
-        let color = root_computed
-            .color
-            .unwrap_or_else(|| peniko::color::AlphaColor::<peniko::color::Srgb>::from_rgba8(0, 0, 0, 255));
+        let color = root_computed.color.unwrap_or_else(|| {
+            peniko::color::AlphaColor::<peniko::color::Srgb>::from_rgba8(0, 0, 0, 255)
+        });
         let line_height = root_computed.line_height.to_parley();
         let alignment = root_computed.text_align.to_parley();
 

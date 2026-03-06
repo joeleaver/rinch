@@ -48,15 +48,14 @@ pub use events::{
     clear_ce_drag_interceptor, clear_handlers, clear_keyboard_interceptor,
     clear_selection_callback, clear_selection_snapshot, clear_selection_sync_callback,
     dispatch_ce_click, dispatch_ce_drag, dispatch_event, dispatch_file_drop_event,
-    dispatch_input_event, dispatch_keyboard_event, dispatch_selection, fire_selection_sync,
-    get_click_context, get_input_context, get_modifier_state, get_saved_selection, is_dragging,
-    query_selection_ranges, register_file_drop_handler, register_handler, register_input_handler,
-    request_focus, request_selection_clear, save_selection_snapshot, set_ce_click_interceptor,
-    set_ce_drag_interceptor, set_click_context, set_input_context, set_keyboard_interceptor,
-    set_modifier_state, set_selection_callback, set_selection_sync_callback, start_drag,
-    finish_drag, start_drag_absolute, start_drag_absolute_with_end, stop_drag,
-    take_pending_focus_request, take_pending_selection_clear,
-    update_drag,
+    dispatch_input_event, dispatch_keyboard_event, dispatch_selection, finish_drag,
+    fire_selection_sync, get_click_context, get_input_context, get_modifier_state,
+    get_saved_selection, is_dragging, query_selection_ranges, register_file_drop_handler,
+    register_handler, register_input_handler, request_focus, request_selection_clear,
+    save_selection_snapshot, set_ce_click_interceptor, set_ce_drag_interceptor, set_click_context,
+    set_input_context, set_keyboard_interceptor, set_modifier_state, set_selection_callback,
+    set_selection_sync_callback, start_drag, start_drag_absolute, start_drag_absolute_with_end,
+    stop_drag, take_pending_focus_request, take_pending_selection_clear, update_drag,
 };
 
 // Re-export DOM types for fine-grained rendering

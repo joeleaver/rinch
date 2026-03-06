@@ -101,6 +101,8 @@ impl RinchApp {
                             element_width: 0.0,
                             element_height: 0.0,
                             text_hit: Default::default(),
+                            viewport_width: 0.0,
+                            viewport_height: 0.0,
                         });
                         Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragmove");
                     }
@@ -402,6 +404,8 @@ impl RinchApp {
                             element_width: 0.0,
                             element_height: 0.0,
                             text_hit: Default::default(),
+                            viewport_width: 0.0,
+                            viewport_height: 0.0,
                         });
                         Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragend");
                     }

@@ -1,8 +1,8 @@
 use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::{
-    BackgroundValue, BorderStyleValue, CursorValue, PointerEventsValue, PositionValue,
-    TextOverflowValue, VisibilityValue, WhiteSpaceValue, OverflowValue,
+    BackgroundValue, BorderStyleValue, CursorValue, OverflowValue, PointerEventsValue,
+    PositionValue, TextOverflowValue, VisibilityValue, WhiteSpaceValue,
 };
 
 // Helper to check approximate float equality
