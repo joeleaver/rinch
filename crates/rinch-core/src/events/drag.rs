@@ -77,6 +77,7 @@ pub fn start_drag<F>(
 /// viewport pixel coordinates to the callback.
 pub struct DragStateAbsolute {
     pub on_drag: Box<dyn Fn(f32, f32) + 'static>,
+    pub on_end: Option<Box<dyn FnOnce(f32, f32) + 'static>>,
 }
 
 thread_local! {
@@ -109,11 +110,50 @@ where
     ACTIVE_DRAG_ABSOLUTE.with(|drag| {
         *drag.borrow_mut() = Some(DragStateAbsolute {
             on_drag: Box::new(on_drag),
+            on_end: None,
         });
     });
 }
 
+/// Start an absolute-coordinate drag with an end callback.
+///
+/// Same as `start_drag_absolute`, but `on_end` is called once when the
+/// drag finishes (mouseup) with the final `(mouse_x, mouse_y)`.
+pub fn start_drag_absolute_with_end<F, E>(on_drag: F, on_end: E)
+where
+    F: Fn(f32, f32) + 'static,
+    E: FnOnce(f32, f32) + 'static,
+{
+    // Clear percentage-based drag if any
+    stop_drag();
+    ACTIVE_DRAG_ABSOLUTE.with(|drag| {
+        *drag.borrow_mut() = Some(DragStateAbsolute {
+            on_drag: Box::new(on_drag),
+            on_end: Some(Box::new(on_end)),
+        });
+    });
+}
+
+/// Finish and stop the absolute drag, calling `on_end` if set.
+///
+/// Called by the runtime on mouseup with the final cursor position.
+pub fn finish_drag(mouse_x: f32, mouse_y: f32) {
+    // Take the on_end callback from absolute drag before clearing.
+    let on_end = ACTIVE_DRAG_ABSOLUTE.with(|drag| {
+        drag.borrow_mut().take().and_then(|s| s.on_end)
+    });
+    // Clear percentage-based drag too.
+    ACTIVE_DRAG.with(|drag| {
+        *drag.borrow_mut() = None;
+    });
+    // Fire the end callback after clearing state.
+    if let Some(cb) = on_end {
+        cb(mouse_x, mouse_y);
+    }
+}
+
 /// Stop the current drag operation (both percentage and absolute).
+/// Does NOT call `on_end` — use `finish_drag` for that.
 pub fn stop_drag() {
     ACTIVE_DRAG.with(|drag| {
         *drag.borrow_mut() = None;

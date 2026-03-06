@@ -54,7 +54,8 @@ pub use events::{
     request_focus, request_selection_clear, save_selection_snapshot, set_ce_click_interceptor,
     set_ce_drag_interceptor, set_click_context, set_input_context, set_keyboard_interceptor,
     set_modifier_state, set_selection_callback, set_selection_sync_callback, start_drag,
-    start_drag_absolute, stop_drag, take_pending_focus_request, take_pending_selection_clear,
+    finish_drag, start_drag_absolute, start_drag_absolute_with_end, stop_drag,
+    take_pending_focus_request, take_pending_selection_clear,
     update_drag,
 };
 
