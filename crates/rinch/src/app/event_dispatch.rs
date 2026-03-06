@@ -90,6 +90,21 @@ impl RinchApp {
                         }
                     }
 
+                    // Fire ondragmove on source so editor can track cursor position.
+                    if let Some(doc) = &self.doc {
+                        let (cx, cy) = drag.cursor;
+                        events::set_click_context(events::ClickContext {
+                            mouse_x: cx,
+                            mouse_y: cy,
+                            element_x: 0.0,
+                            element_y: 0.0,
+                            element_width: 0.0,
+                            element_height: 0.0,
+                            text_hit: Default::default(),
+                        });
+                        Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragmove");
+                    }
+
                     self.scene_dirty = true;
                     actions.push(AppAction::SetCursor(rinch_platform::CursorStyle::Grabbing));
                     actions.push(AppAction::RequestRedraw);
@@ -376,8 +391,18 @@ impl RinchApp {
                             Self::dispatch_drag_attr(doc, target_id, "data-ondragleave");
                         }
                     }
-                    // Fire ondragend on source
+                    // Fire ondragend on source — set click context so handler can read cursor pos.
                     if let Some(doc) = &self.doc {
+                        let (cx, cy) = drag.cursor;
+                        events::set_click_context(events::ClickContext {
+                            mouse_x: cx,
+                            mouse_y: cy,
+                            element_x: 0.0,
+                            element_y: 0.0,
+                            element_width: 0.0,
+                            element_height: 0.0,
+                            text_hit: Default::default(),
+                        });
                         Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragend");
                     }
                     self.scene_dirty = true;
@@ -412,7 +437,7 @@ impl RinchApp {
                     }
                 }
 
-                rinch_core::stop_drag();
+                rinch_core::finish_drag(x, y);
                 self.scrollbar_drag = None;
                 self.ce_selecting = false;
 
