@@ -276,6 +276,19 @@ impl RinchDocument {
                 let dd = self.default_display_for_node(node_id);
                 let mut taffy_style = node.computed_style.to_taffy_style(dd);
 
+                // HTML element must fill the viewport and clip horizontal overflow
+                if node_id == self.tree.html_id {
+                    if taffy_style.size.width == taffy::Dimension::auto() {
+                        taffy_style.size.width = taffy::Dimension::percent(1.0);
+                    }
+                    if taffy_style.size.height == taffy::Dimension::auto() {
+                        taffy_style.size.height = taffy::Dimension::percent(1.0);
+                    }
+                    if taffy_style.overflow.x == taffy::Overflow::Visible {
+                        taffy_style.overflow.x = taffy::Overflow::Clip;
+                    }
+                }
+
                 // Body node needs the same overrides as apply_stylo_styles_to_taffy
                 if node_id == self.tree.body_id {
                     if taffy_style.flex_grow == 0.0 {
