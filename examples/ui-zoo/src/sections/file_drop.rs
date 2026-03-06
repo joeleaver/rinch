@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use rinch::prelude::*;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
-use rinch_video::{VideoControls, VideoViewport, use_video_player_paused};
+use rinch_video::{VideoControls, VideoViewport, use_video_player};
 
 /// What kind of file was dropped.
 #[derive(Clone, Debug, PartialEq)]
@@ -88,11 +88,17 @@ pub fn file_drop_section() -> NodeHandle {
                 onfiledragenter: move || hovering.set(true),
                 onfiledragleave: move || hovering.set(false),
                 style: {|| {
+                    let is_video = matches!(media.get(), DroppedMedia::Video(_));
                     let base = "min-height: 300px; border-radius: var(--rinch-radius-md); \
                                 display: flex; flex-direction: column; align-items: center; \
                                 justify-content: center; gap: 12px; padding: 32px; \
+                                overflow: hidden; \
                                 transition: border-color 150ms, background 150ms;";
-                    if hovering.get() {
+                    if is_video {
+                        // Transparent background so compositor video layer shows through
+                        format!("{base} border: 2px dashed var(--rinch-color-gray-4); \
+                                 background: transparent;")
+                    } else if hovering.get() {
                         format!("{base} border: 2px dashed var(--rinch-color-blue-5); \
                                  background: var(--rinch-color-blue-0);")
                     } else {
@@ -181,24 +187,14 @@ fn image_preview(path: String, media: Signal<DroppedMedia>) -> NodeHandle {
 
 #[component]
 fn video_preview(path: String, media: Signal<DroppedMedia>) -> NodeHandle {
-    let player = use_video_player_paused(&path);
-    // Auto-play once the video has loaded (duration becomes known).
-    // Wrap play() in untracked() to prevent re-entrant effect execution:
-    // play() internally reads state.get() and sets signals, which would
-    // re-trigger this effect while its closure RefCell is still borrowed.
-    let p = player.clone();
-    Effect::new(move || {
-        if p.duration.get() > 0.0 {
-            untracked(|| p.play());
-        }
-    });
+    let player = use_video_player(&path);
 
     rsx! {
         Stack { gap: "md", style: "width: 100%;",
             Paper { p: "0", radius: "md", with_border: true,
                 style: "overflow: hidden; width: 100%;",
                 div { style: "display: flex; flex-direction: column;",
-                    div { style: "width: 100%; height: 400px; background: black;",
+                    div { style: "width: 100%; height: 400px; background: transparent;",
                         VideoViewport { player: player.clone() }
                     }
                     VideoControls { player: player.clone() }

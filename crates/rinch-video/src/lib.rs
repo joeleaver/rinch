@@ -166,15 +166,15 @@ pub(crate) fn unregister_active_player(player: &VideoPlayer) {
 /// mpv property-change events into reactive Signals.
 /// Also unregisters players that have ended (EOF).
 pub fn poll_active_players() {
+    // Clone the list so we don't hold a borrow during poll().
+    // poll() updates signals (e.g. duration) which can trigger Effects
+    // that call play() → register_active_player() → borrow_mut().
+    let players: Vec<_> = ACTIVE_PLAYERS.with(|list| list.borrow().clone());
+    for player in &players {
+        player.poll();
+    }
+    // Remove players that have ended (EOF)
     ACTIVE_PLAYERS.with(|list| {
-        // Poll all players first
-        {
-            let list = list.borrow();
-            for player in list.iter() {
-                player.poll();
-            }
-        }
-        // Remove players that have ended (EOF)
         let mut list = list.borrow_mut();
         list.retain(|p| p.state.get() != PlaybackState::Ended);
     });
