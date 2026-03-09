@@ -3,8 +3,8 @@
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, Stroke};
 use peniko::{Brush, Fill};
-use vello::Scene;
 
+use super::painter::{PaintGlyph, Painter};
 use crate::computed_style::TextShadowValue;
 use crate::node::NodeTree;
 
@@ -18,7 +18,7 @@ use super::paint_node;
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_inline_layout(
     tree: &NodeTree,
-    scene: &mut Scene,
+    painter: &mut dyn Painter,
     scale: f64,
     parent_x: f64,
     parent_y: f64,
@@ -30,13 +30,13 @@ pub(super) fn paint_inline_layout(
 ) {
     // Paint inline element backgrounds BEFORE text so text renders on top
     if !inline_layout.background_spans.is_empty() {
-        paint_inline_backgrounds(scene, parent_x, parent_y, inline_layout, transform);
+        paint_inline_backgrounds(painter, parent_x, parent_y, inline_layout, transform);
     }
 
     // Render the Parley layout at the IFC root's position
     // Scale is already applied to font sizes during layout building
     render_text_with_shadow(
-        scene,
+        painter,
         &inline_layout.layout,
         parent_x,
         parent_y,
@@ -50,7 +50,8 @@ pub(super) fn paint_inline_layout(
             if let parley::layout::PositionedLayoutItem::InlineBox(positioned_box) = item {
                 let child_id = positioned_box.id as usize;
                 paint_node(
-                    tree, child_id, scene, scale, parent_x, parent_y, font_cx, layout_cx, transform,
+                    tree, child_id, painter, scale, parent_x, parent_y, font_cx, layout_cx,
+                    transform,
                 );
             }
         }
@@ -63,7 +64,7 @@ pub(super) fn paint_inline_layout(
 /// exact visual bounds of each inline background span. Handles multi-line
 /// spans by iterating lines and computing per-line background rectangles.
 fn paint_inline_backgrounds(
-    scene: &mut Scene,
+    painter: &mut dyn Painter,
     parent_x: f64,
     parent_y: f64,
     inline_layout: &crate::node::InlineLayout,
@@ -139,17 +140,17 @@ fn paint_inline_backgrounds(
             if bg_span.border_radius > 0.0 {
                 let r = bg_span.border_radius as f64;
                 let rrect = RoundedRect::from_rect(rect, r);
-                scene.fill(Fill::NonZero, transform, &brush, None, &rrect);
+                painter.fill(Fill::NonZero, transform, &brush, &rrect.into());
             } else {
-                scene.fill(Fill::NonZero, transform, &brush, None, &rect);
+                painter.fill(Fill::NonZero, transform, &brush, &rect.into());
             }
         }
     }
 }
 
-/// Render a Parley text layout to a Vello scene.
+/// Render a Parley text layout using a Painter.
 pub(super) fn render_text(
-    scene: &mut Scene,
+    painter: &mut dyn Painter,
     layout: &parley::layout::Layout<Brush>,
     x: f64,
     y: f64,
@@ -176,27 +177,29 @@ pub(super) fn render_text(
             // Track run width for decorations
             let run_x = glyph_run.offset();
 
-            scene
-                .draw_glyphs(font)
-                .font_size(font_size)
-                .transform(transform)
-                .glyph_transform(glyph_xform)
-                .brush(&brush)
-                .hint(true)
-                .normalized_coords(run.normalized_coords())
-                .draw(
-                    Fill::NonZero,
-                    glyph_run.glyphs().map(|glyph| {
-                        let px = gx + glyph.x;
-                        let py = gy - glyph.y;
-                        gx += glyph.advance;
-                        vello::Glyph {
-                            id: glyph.id,
-                            x: px,
-                            y: py,
-                        }
-                    }),
-                );
+            let glyphs: Vec<PaintGlyph> = glyph_run
+                .glyphs()
+                .map(|glyph| {
+                    let px = gx + glyph.x;
+                    let py = gy - glyph.y;
+                    gx += glyph.advance;
+                    PaintGlyph {
+                        id: glyph.id,
+                        x: px,
+                        y: py,
+                    }
+                })
+                .collect();
+            painter.draw_glyphs(
+                font,
+                font_size,
+                transform,
+                glyph_xform,
+                &brush,
+                true,
+                run.normalized_coords(),
+                &glyphs,
+            );
 
             // Draw underline decoration
             if let Some(underline) = &style.underline {
@@ -213,7 +216,7 @@ pub(super) fn render_text(
                     (run_x as f64 + run_width, line_y),
                 );
                 let stroke = Stroke::new(size.max(1.0) as f64);
-                scene.stroke(&stroke, transform, dec_brush, None, &line);
+                painter.stroke(&stroke, transform, dec_brush, &line.into());
             }
 
             // Draw strikethrough decoration
@@ -231,7 +234,7 @@ pub(super) fn render_text(
                     (run_x as f64 + run_width, line_y),
                 );
                 let stroke = Stroke::new(size.max(1.0) as f64);
-                scene.stroke(&stroke, transform, dec_brush, None, &line);
+                painter.stroke(&stroke, transform, dec_brush, &line.into());
             }
         }
     }
@@ -242,7 +245,7 @@ pub(super) fn render_text(
 /// Draws all glyph runs at the given offset with the specified shadow color,
 /// ignoring the original brush from the layout styles.
 pub(super) fn render_text_shadow_pass(
-    scene: &mut Scene,
+    painter: &mut dyn Painter,
     layout: &parley::layout::Layout<Brush>,
     x: f64,
     y: f64,
@@ -266,27 +269,29 @@ pub(super) fn render_text_shadow_pass(
                 .skew()
                 .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
 
-            scene
-                .draw_glyphs(font)
-                .font_size(font_size)
-                .transform(transform)
-                .glyph_transform(glyph_xform)
-                .brush(&shadow_brush)
-                .hint(true)
-                .normalized_coords(run.normalized_coords())
-                .draw(
-                    Fill::NonZero,
-                    glyph_run.glyphs().map(|glyph| {
-                        let px = gx + glyph.x;
-                        let py = gy - glyph.y;
-                        gx += glyph.advance;
-                        vello::Glyph {
-                            id: glyph.id,
-                            x: px,
-                            y: py,
-                        }
-                    }),
-                );
+            let glyphs: Vec<PaintGlyph> = glyph_run
+                .glyphs()
+                .map(|glyph| {
+                    let px = gx + glyph.x;
+                    let py = gy - glyph.y;
+                    gx += glyph.advance;
+                    PaintGlyph {
+                        id: glyph.id,
+                        x: px,
+                        y: py,
+                    }
+                })
+                .collect();
+            painter.draw_glyphs(
+                font,
+                font_size,
+                transform,
+                glyph_xform,
+                &shadow_brush,
+                true,
+                run.normalized_coords(),
+                &glyphs,
+            );
         }
     }
 }
@@ -296,7 +301,7 @@ pub(super) fn render_text_shadow_pass(
 /// Draws shadow passes (in reverse order so first shadow renders on top of later ones)
 /// at the specified offsets, then draws the normal text on top.
 pub(super) fn render_text_with_shadow(
-    scene: &mut Scene,
+    painter: &mut dyn Painter,
     layout: &parley::layout::Layout<Brush>,
     x: f64,
     y: f64,
@@ -304,7 +309,7 @@ pub(super) fn render_text_with_shadow(
     css_transform: Affine,
 ) {
     if text_shadows.is_empty() {
-        render_text(scene, layout, x, y, css_transform);
+        render_text(painter, layout, x, y, css_transform);
         return;
     }
 
@@ -316,9 +321,9 @@ pub(super) fn render_text_with_shadow(
         let sx = x + shadow.offset_x as f64;
         let sy = y + shadow.offset_y as f64;
         // Note: blur_radius is ignored for now (Vello lacks a blur API)
-        render_text_shadow_pass(scene, layout, sx, sy, shadow_color, css_transform);
+        render_text_shadow_pass(painter, layout, sx, sy, shadow_color, css_transform);
     }
 
     // Render the main text on top
-    render_text(scene, layout, x, y, css_transform);
+    render_text(painter, layout, x, y, css_transform);
 }

@@ -3,8 +3,8 @@
 use peniko::Fill;
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, Cap, Rect, RoundedRectRadii, Stroke};
-use vello::Scene;
 
+use super::painter::Painter;
 use crate::computed_style::BorderStyleValue;
 use crate::node::{Node, NodeTree};
 
@@ -13,7 +13,7 @@ use crate::node::{Node, NodeTree};
 /// Paint per-side borders with style support (solid, dashed, dotted, double).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_borders(
-    scene: &mut Scene,
+    painter: &mut dyn Painter,
     node: &Node,
     scale: f64,
     x: f64,
@@ -26,7 +26,7 @@ pub(super) fn paint_borders(
     let cs = &node.computed_style;
 
     let sides = [
-        // (width, color, style, start, end) for each side
+        // (width, color, style) for each side
         (
             cs.border_top_width.to_px(),
             cs.border_top_color,
@@ -70,9 +70,9 @@ pub(super) fn paint_borders(
 
             if has_radius {
                 let rrect = border_rect.to_rounded_rect(radii);
-                scene.stroke(&stroke, transform, bc, None, &rrect);
+                painter.stroke_color(&stroke, transform, bc, &rrect.into());
             } else {
-                scene.stroke(&stroke, transform, bc, None, &border_rect);
+                painter.stroke_color(&stroke, transform, bc, &border_rect.into());
             }
         }
         return;
@@ -95,7 +95,7 @@ pub(super) fn paint_borders(
         let stroke = make_border_stroke(top_w, sides[0].2);
         let half = top_w * 0.5;
         let path = peniko::kurbo::Line::new((x, y + half), (x + w, y + half));
-        scene.stroke(&stroke, transform, bc, None, &path);
+        painter.stroke_color(&stroke, transform, bc, &path.into());
     }
 
     // Right border
@@ -109,7 +109,7 @@ pub(super) fn paint_borders(
         let stroke = make_border_stroke(right_w, sides[1].2);
         let half = right_w * 0.5;
         let path = peniko::kurbo::Line::new((x + w - half, y), (x + w - half, y + h));
-        scene.stroke(&stroke, transform, bc, None, &path);
+        painter.stroke_color(&stroke, transform, bc, &path.into());
     }
 
     // Bottom border
@@ -123,7 +123,7 @@ pub(super) fn paint_borders(
         let stroke = make_border_stroke(bottom_w, sides[2].2);
         let half = bottom_w * 0.5;
         let path = peniko::kurbo::Line::new((x, y + h - half), (x + w, y + h - half));
-        scene.stroke(&stroke, transform, bc, None, &path);
+        painter.stroke_color(&stroke, transform, bc, &path.into());
     }
 
     // Left border
@@ -137,7 +137,7 @@ pub(super) fn paint_borders(
         let stroke = make_border_stroke(left_w, sides[3].2);
         let half = left_w * 0.5;
         let path = peniko::kurbo::Line::new((x + half, y), (x + half, y + h));
-        scene.stroke(&stroke, transform, bc, None, &path);
+        painter.stroke_color(&stroke, transform, bc, &path.into());
     }
 }
 
@@ -160,7 +160,7 @@ pub(super) fn make_border_stroke(width: f64, style: BorderStyleValue) -> Stroke 
 /// Paint outline outside the box model.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_outline(
-    scene: &mut Scene,
+    painter: &mut dyn Painter,
     node: &Node,
     scale: f64,
     x: f64,
@@ -212,9 +212,9 @@ pub(super) fn paint_outline(
             radii.bottom_left + expand,
         );
         let rrect = outline_rect.to_rounded_rect(outline_radii);
-        scene.stroke(&stroke, transform, color, None, &rrect);
+        painter.stroke_color(&stroke, transform, color, &rrect.into());
     } else {
-        scene.stroke(&stroke, transform, color, None, &outline_rect);
+        painter.stroke_color(&stroke, transform, color, &outline_rect.into());
     }
 }
 
@@ -320,7 +320,7 @@ fn collect_sc_recursive(
 /// Approximates blur by drawing expanded, semi-transparent rounded rects.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_box_shadow(
-    scene: &mut Scene,
+    painter: &mut dyn Painter,
     shadows: &[crate::computed_style::BoxShadowValue],
     x: f64,
     y: f64,
@@ -398,18 +398,18 @@ pub(super) fn paint_box_shadow(
                         radii.bottom_left + layer_expand,
                     );
                     let rrect = layer_rect.to_rounded_rect(expanded_radii);
-                    scene.fill(Fill::NonZero, transform, layer_color, None, &rrect);
+                    painter.fill_color(Fill::NonZero, transform, layer_color, &rrect.into());
                 } else {
-                    scene.fill(Fill::NonZero, transform, layer_color, None, &layer_rect);
+                    painter.fill_color(Fill::NonZero, transform, layer_color, &layer_rect.into());
                 }
             }
         } else {
             // No blur: simple offset shadow
             if has_radius {
                 let rrect = shadow_rect.to_rounded_rect(radii);
-                scene.fill(Fill::NonZero, transform, color, None, &rrect);
+                painter.fill_color(Fill::NonZero, transform, color, &rrect.into());
             } else {
-                scene.fill(Fill::NonZero, transform, color, None, &shadow_rect);
+                painter.fill_color(Fill::NonZero, transform, color, &shadow_rect.into());
             }
         }
     }

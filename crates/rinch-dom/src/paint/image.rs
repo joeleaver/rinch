@@ -1,9 +1,9 @@
 //! Image painting for `<img>` elements and `background-image` CSS.
 
+use peniko::Fill;
 use peniko::kurbo::{Affine, Rect};
-use peniko::{Blob, Fill, ImageAlphaType, ImageData, ImageFormat};
-use vello::Scene;
 
+use super::painter::{PaintImage, Painter};
 use crate::image_cache::DecodedImage;
 
 /// Paint a decoded image into the given rectangle.
@@ -13,7 +13,7 @@ use crate::image_cache::DecodedImage;
 /// - `"contain"`: uniform scale to fit inside rect
 /// - `"cover"`: uniform scale to cover rect (clips overflow)
 pub fn paint_image(
-    scene: &mut Scene,
+    painter: &mut dyn Painter,
     decoded: &DecodedImage,
     rect: Rect,
     scale: f64,
@@ -32,16 +32,6 @@ pub fn paint_image(
     if rw <= 0.0 || rh <= 0.0 {
         return;
     }
-
-    // Build peniko::ImageData from decoded RGBA8 data
-    let blob: Blob<u8> = Blob::from(decoded.data.to_vec());
-    let image_data = ImageData {
-        data: blob,
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: decoded.width,
-        height: decoded.height,
-    };
 
     // Compute the transform to map image pixels into the layout rect.
     // Image pixels are in their own coordinate space (0,0)-(iw,ih).
@@ -79,12 +69,17 @@ pub fn paint_image(
 
     // For "cover", clip to the element rect to hide overflow
     if object_fit == "cover" {
-        scene.push_clip_layer(Fill::NonZero, node_transform, &rect);
+        painter.push_clip(Fill::NonZero, node_transform, &rect.into());
     }
 
-    scene.draw_image(&image_data, img_transform);
+    let paint_image = PaintImage {
+        data: &decoded.data,
+        width: decoded.width,
+        height: decoded.height,
+    };
+    painter.draw_image(&paint_image, img_transform);
 
     if object_fit == "cover" {
-        scene.pop_layer();
+        painter.pop_layer();
     }
 }

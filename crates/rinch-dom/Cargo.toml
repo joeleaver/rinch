@@ -40,4 +40,11 @@ selectors = "0.35"
 precomputed-hash = "0.1"
 web_atoms = "0.2"
 
+tiny-skia = { version = "0.11", optional = true }
+swash = { version = "0.2", optional = true }
+
+[features]
+default = ["software-renderer"]
+software-renderer = ["tiny-skia", "swash"]
+
 [dev-dependencies]

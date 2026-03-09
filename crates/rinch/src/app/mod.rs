@@ -26,6 +26,8 @@ use rinch_core::ce::{self, ContentEditableApi};
 use rinch_core::dom::{DomDocument, NodeHandle, RenderScope, clear_render_scope, set_render_scope};
 use rinch_core::events;
 use rinch_dom::RinchDocument;
+use rinch_dom::paint::painter::Painter;
+use rinch_dom::paint::vello_painter::VelloPainter;
 #[cfg(feature = "debug")]
 use rinch_dom::text_query::glyph_bounds_for_offset_layout;
 use rinch_dom::text_query::{byte_offset_from_position, caret_position_for_offset_layout};
@@ -65,8 +67,8 @@ pub(crate) struct PendingDrag {
 pub(crate) struct ActiveDrag {
     /// The draggable source element.
     pub node_id: usize,
-    /// Captured Vello scene of the source element's subtree (at origin).
-    pub snapshot: Scene,
+    /// Captured painting of the source element's subtree (at origin).
+    pub snapshot: VelloPainter,
     /// Offset within element where the grab happened (physical px, relative to element top-left).
     pub anchor: (f32, f32),
     /// Current cursor position (physical pixels).
@@ -114,8 +116,8 @@ pub struct RinchApp {
     pub(crate) _render_scope: Option<Rc<RefCell<RenderScope>>>,
     /// The document (shared with RenderScope).
     pub(crate) doc: Option<Rc<RefCell<RinchDocument>>>,
-    /// Vello scene (reused across frames).
-    pub(crate) scene: Scene,
+    /// Painter (reused across frames). Wraps vello::Scene for GPU rendering.
+    pub(crate) painter: VelloPainter,
     /// Parley layout context for paint-time text layout.
     pub(crate) paint_layout_cx: parley::LayoutContext<peniko::Brush>,
     /// Current cursor position.
@@ -184,7 +186,7 @@ impl RinchApp {
             component: Some(Box::new(component)),
             _render_scope: None,
             doc: None,
-            scene: Scene::new(),
+            painter: VelloPainter::new(),
             paint_layout_cx: parley::LayoutContext::new(),
             cursor_pos: None,
             scrollbar_drag: None,
@@ -461,19 +463,20 @@ impl RinchApp {
 
     /// Build the Vello scene from the current document state.
     ///
-    /// The scene is built into `self.scene` and a reference is returned.
+    /// The scene is painted via the `Painter` trait and a reference to the
+    /// underlying `vello::Scene` is returned for the GPU renderer.
     pub fn build_scene(&mut self, scale: f64, size: (u32, u32)) -> &Scene {
         if !self.scene_dirty {
-            return &self.scene;
+            return self.painter.scene();
         }
 
-        self.scene.reset();
+        self.painter.reset();
         if let Some(doc) = &self.doc {
             let mut d = doc.borrow_mut();
             let d = &mut *d;
             rinch_dom::paint::paint_document(
                 &d.tree,
-                &mut self.scene,
+                &mut self.painter,
                 scale,
                 (size.0 as f32, size.1 as f32),
                 &mut d.font_cx,
@@ -486,12 +489,13 @@ impl RinchApp {
             use peniko::kurbo::Affine;
             let tx = (drag.cursor.0 - drag.anchor.0) as f64;
             let ty = (drag.cursor.1 - drag.anchor.1) as f64;
-            self.scene
-                .append(&drag.snapshot, Some(Affine::translate((tx, ty))));
+            self.painter
+                .scene_mut()
+                .append(drag.snapshot.scene(), Some(Affine::translate((tx, ty))));
         }
 
         self.scene_dirty = false;
-        &self.scene
+        self.painter.scene()
     }
 
     /// Check if there are dirty nodes that need repaint.

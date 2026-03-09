@@ -10,6 +10,8 @@ pub mod memory_profile;
 pub mod rinch_runtime;
 #[cfg(feature = "debug")]
 pub mod screenshot;
+#[cfg(feature = "software-renderer")]
+pub mod softbuffer_renderer;
 pub mod transparent_renderer;
 pub mod types;
 

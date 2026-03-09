@@ -1,6 +1,6 @@
-//! Vello scene building for rinch-dom.
+//! Abstract scene building for rinch-dom.
 //!
-//! Walks the node tree and emits Vello drawing commands
+//! Walks the node tree and emits drawing commands via the `Painter` trait
 //! for backgrounds, borders, and text.
 
 mod borders;
@@ -9,6 +9,7 @@ pub mod image;
 pub mod painter;
 mod svg;
 mod text;
+pub mod vello_painter;
 
 use borders::*;
 use contenteditable::*;
@@ -18,7 +19,8 @@ use text::*;
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, BezPath, Rect, RoundedRect, RoundedRectRadii, Shape};
 use peniko::{Brush, Fill};
-use vello::Scene;
+
+use painter::{BlendMode, Painter};
 
 use crate::computed_style::{
     BackgroundValue, DisplayValue, LineHeightValue, OverflowValue, PositionValue, VisibilityValue,
@@ -111,14 +113,13 @@ fn build_background_with_holes(
     path
 }
 
-/// Paint a subtree rooted at `root_node_id` into `scene`, positioned at (0, 0).
+/// Paint a subtree rooted at `root_node_id` into `painter`, positioned at (0, 0).
 ///
 /// Used for drag-and-drop snapshot capture. The subtree is translated so its
-/// top-left corner is at the scene origin, making it easy to reposition later
-/// via `Scene::append()` with an `Affine::translate()`.
+/// top-left corner is at the scene origin, making it easy to reposition later.
 pub fn paint_subtree(
     tree: &NodeTree,
-    scene: &mut Scene,
+    painter: &mut dyn Painter,
     root_node_id: RawNodeId,
     scale: f64,
     font_cx: &mut parley::FontContext,
@@ -136,7 +137,7 @@ pub fn paint_subtree(
     paint_node(
         tree,
         root_node_id,
-        scene,
+        painter,
         scale,
         offset_x,
         offset_y,
@@ -146,23 +147,23 @@ pub fn paint_subtree(
     );
 }
 
-/// Paint the entire document to a Vello scene.
+/// Paint the entire document using a Painter.
 ///
 /// `scale` is the DPI scale factor (1.0 = 96dpi).
 /// `viewport` is the viewport size in physical pixels.
 pub fn paint_document(
     tree: &NodeTree,
-    scene: &mut Scene,
+    painter: &mut dyn Painter,
     scale: f64,
     _viewport: (f32, f32),
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<Brush>,
 ) {
-    scene.reset();
+    painter.reset();
     paint_node(
         tree,
         tree.body_id,
-        scene,
+        painter,
         scale,
         0.0,
         0.0,
@@ -187,7 +188,7 @@ pub fn paint_document(
 fn paint_children_with_stacking(
     tree: &NodeTree,
     node_id: RawNodeId,
-    scene: &mut Scene,
+    painter: &mut dyn Painter,
     scale: f64,
     offset_x: f64,
     offset_y: f64,
@@ -214,7 +215,7 @@ fn paint_children_with_stacking(
             paint_node(
                 tree,
                 entry.node_id,
-                scene,
+                painter,
                 scale,
                 entry.offset_x,
                 entry.offset_y,
@@ -238,7 +239,7 @@ fn paint_children_with_stacking(
             paint_node(
                 tree,
                 child_id,
-                scene,
+                painter,
                 scale,
                 offset_x,
                 offset_y,
@@ -256,7 +257,7 @@ fn paint_children_with_stacking(
             paint_node(
                 tree,
                 entry.node_id,
-                scene,
+                painter,
                 scale,
                 entry.offset_x,
                 entry.offset_y,
@@ -281,7 +282,7 @@ fn paint_children_with_stacking(
             paint_node(
                 tree,
                 child_id,
-                scene,
+                painter,
                 scale,
                 offset_x,
                 offset_y,
@@ -297,7 +298,7 @@ fn paint_children_with_stacking(
 fn paint_node(
     tree: &NodeTree,
     node_id: RawNodeId,
-    scene: &mut Scene,
+    painter: &mut dyn Painter,
     scale: f64,
     offset_x: f64,
     offset_y: f64,
@@ -336,7 +337,7 @@ fn paint_node(
                 paint_node(
                     tree,
                     child_id,
-                    scene,
+                    painter,
                     scale,
                     offset_x,
                     offset_y,
@@ -386,7 +387,7 @@ fn paint_node(
 
     match &node.kind {
         NodeKind::Element(el) if el.tag == "svg" => {
-            paint_svg(tree, node, scene, scale, x, y, w, h);
+            paint_svg(tree, node, painter, scale, x, y, w, h);
         }
         NodeKind::Element(el) if el.tag == "img" => {
             let rect = Rect::new(x, y, x + w, y + h);
@@ -429,13 +430,7 @@ fn paint_node(
             // Opacity
             let opacity = node.computed_style.opacity;
             if opacity < 1.0 {
-                scene.push_layer(
-                    Fill::NonZero,
-                    peniko::Mix::Normal,
-                    opacity,
-                    node_transform,
-                    &rect,
-                );
+                painter.push_layer(BlendMode::Normal, opacity, node_transform, &rect.into());
             }
 
             // Paint background (if any) before image
@@ -445,22 +440,22 @@ fn paint_node(
             );
             if visible {
                 if let BackgroundValue::Color(bg_color) = &node.computed_style.background {
-                    scene.fill(Fill::NonZero, node_transform, *bg_color, None, &rect);
+                    painter.fill_color(Fill::NonZero, node_transform, *bg_color, &rect.into());
                 }
 
                 // Paint the image itself
                 if let Some(src) = node.attributes.get("src")
                     && let Some(decoded) = tree.image_cache.get(src)
                 {
-                    image::paint_image(scene, decoded, rect, scale, fit, node_transform);
+                    image::paint_image(painter, decoded, rect, scale, fit, node_transform);
                 }
 
                 // Borders (no border-radius for img elements)
-                paint_borders(scene, node, scale, x, y, w, h, 0.0.into(), node_transform);
+                paint_borders(painter, node, scale, x, y, w, h, 0.0.into(), node_transform);
             }
 
             if opacity < 1.0 {
-                scene.pop_layer();
+                painter.pop_layer();
             }
         }
         NodeKind::Element(_) => {
@@ -511,13 +506,7 @@ fn paint_node(
             let opacity = node.computed_style.opacity;
             let has_opacity = opacity < 1.0;
             if has_opacity {
-                scene.push_layer(
-                    Fill::NonZero,
-                    peniko::Mix::Normal,
-                    opacity,
-                    node_transform,
-                    &rect,
-                );
+                painter.push_layer(BlendMode::Normal, opacity, node_transform, &rect.into());
             }
 
             // Handle overflow clipping — detect early so we can cut holes
@@ -548,7 +537,7 @@ fn paint_node(
                 // Render box-shadow from computed style
                 if !node.computed_style.box_shadow.is_empty() {
                     paint_box_shadow(
-                        scene,
+                        painter,
                         &node.computed_style.box_shadow,
                         x,
                         y,
@@ -568,23 +557,28 @@ fn paint_node(
                     let bg_path = build_background_with_holes(rect, radii, radius, &viewport_holes);
                     match &node.computed_style.background {
                         BackgroundValue::Color(bg_color) => {
-                            scene.fill(Fill::EvenOdd, node_transform, *bg_color, None, &bg_path);
+                            painter.fill_color(
+                                Fill::EvenOdd,
+                                node_transform,
+                                *bg_color,
+                                &bg_path.into(),
+                            );
                         }
                         BackgroundValue::LinearGradient {
                             angle_degrees,
                             stops,
                         } => {
                             let brush = build_linear_gradient_brush(*angle_degrees, stops, &rect);
-                            scene.fill(Fill::EvenOdd, node_transform, &brush, None, &bg_path);
+                            painter.fill(Fill::EvenOdd, node_transform, &brush, &bg_path.into());
                         }
                         BackgroundValue::RadialGradient { stops } => {
                             let brush = build_radial_gradient_brush(stops, &rect);
-                            scene.fill(Fill::EvenOdd, node_transform, &brush, None, &bg_path);
+                            painter.fill(Fill::EvenOdd, node_transform, &brush, &bg_path.into());
                         }
                         BackgroundValue::Image { url } => {
                             if let Some(decoded) = tree.image_cache.get(url) {
                                 image::paint_image(
-                                    scene,
+                                    painter,
                                     decoded,
                                     rect,
                                     scale,
@@ -600,9 +594,19 @@ fn paint_node(
                         BackgroundValue::Color(bg_color) => {
                             if radius > 0.0 {
                                 let rrect = rect.to_rounded_rect(radii);
-                                scene.fill(Fill::NonZero, node_transform, *bg_color, None, &rrect);
+                                painter.fill_color(
+                                    Fill::NonZero,
+                                    node_transform,
+                                    *bg_color,
+                                    &rrect.into(),
+                                );
                             } else {
-                                scene.fill(Fill::NonZero, node_transform, *bg_color, None, &rect);
+                                painter.fill_color(
+                                    Fill::NonZero,
+                                    node_transform,
+                                    *bg_color,
+                                    &rect.into(),
+                                );
                             }
                         }
                         BackgroundValue::LinearGradient {
@@ -612,24 +616,24 @@ fn paint_node(
                             let brush = build_linear_gradient_brush(*angle_degrees, stops, &rect);
                             if radius > 0.0 {
                                 let rrect = rect.to_rounded_rect(radii);
-                                scene.fill(Fill::NonZero, node_transform, &brush, None, &rrect);
+                                painter.fill(Fill::NonZero, node_transform, &brush, &rrect.into());
                             } else {
-                                scene.fill(Fill::NonZero, node_transform, &brush, None, &rect);
+                                painter.fill(Fill::NonZero, node_transform, &brush, &rect.into());
                             }
                         }
                         BackgroundValue::RadialGradient { stops } => {
                             let brush = build_radial_gradient_brush(stops, &rect);
                             if radius > 0.0 {
                                 let rrect = rect.to_rounded_rect(radii);
-                                scene.fill(Fill::NonZero, node_transform, &brush, None, &rrect);
+                                painter.fill(Fill::NonZero, node_transform, &brush, &rrect.into());
                             } else {
-                                scene.fill(Fill::NonZero, node_transform, &brush, None, &rect);
+                                painter.fill(Fill::NonZero, node_transform, &brush, &rect.into());
                             }
                         }
                         BackgroundValue::Image { url } => {
                             if let Some(decoded) = tree.image_cache.get(url) {
                                 image::paint_image(
-                                    scene,
+                                    painter,
                                     decoded,
                                     rect,
                                     scale,
@@ -643,16 +647,16 @@ fn paint_node(
                 }
 
                 // Render borders per-side with style support
-                paint_borders(scene, node, scale, x, y, w, h, radii, node_transform);
+                paint_borders(painter, node, scale, x, y, w, h, radii, node_transform);
 
                 // Render outline (drawn outside the box model)
-                paint_outline(scene, node, scale, x, y, w, h, radii, node_transform);
+                paint_outline(painter, node, scale, x, y, w, h, radii, node_transform);
 
                 // Render input element value
                 if matches!(node.tag(), Some("input" | "textarea")) {
                     paint_input_value(
                         node,
-                        scene,
+                        painter,
                         scale,
                         x,
                         y,
@@ -668,9 +672,9 @@ fn paint_node(
             if clips {
                 if radius > 0.0 {
                     let clip_rrect = rect.to_rounded_rect(radii);
-                    scene.push_clip_layer(Fill::NonZero, node_transform, &clip_rrect);
+                    painter.push_clip(Fill::NonZero, node_transform, &clip_rrect.into());
                 } else {
-                    scene.push_clip_layer(Fill::NonZero, node_transform, &rect);
+                    painter.push_clip(Fill::NonZero, node_transform, &rect.into());
                 }
             }
 
@@ -716,7 +720,7 @@ fn paint_node(
                     let text_len = inline_layout.text_content.len();
                     paint_contenteditable_cursor(
                         node,
-                        scene,
+                        painter,
                         scale,
                         text_x,
                         text_y,
@@ -741,7 +745,7 @@ fn paint_node(
                             let text_y = y + child.layout.y as f64 * scale - ce_scroll_y;
                             paint_contenteditable_cursor(
                                 node,
-                                scene,
+                                painter,
                                 scale,
                                 text_x,
                                 text_y,
@@ -785,12 +789,11 @@ fn paint_node(
                                 x + pad_x + 1.5 * scale,
                                 y + pad_y + caret_height,
                             );
-                            scene.fill(
+                            painter.fill_color(
                                 Fill::NonZero,
                                 node_transform,
                                 caret_color,
-                                None,
-                                &caret_rect,
+                                &caret_rect.into(),
                             );
                         }
                         handled = true;
@@ -854,7 +857,7 @@ fn paint_node(
                                     if let Some(ref inline_layout) = child.text_layout {
                                         paint_contenteditable_cursor(
                                             node,
-                                            scene,
+                                            painter,
                                             scale,
                                             child_x,
                                             child_y,
@@ -880,7 +883,7 @@ fn paint_node(
                                                     .unwrap_or(0);
                                                 paint_contenteditable_cursor(
                                                     node,
-                                                    scene,
+                                                    painter,
                                                     scale,
                                                     child_x,
                                                     child_y,
@@ -922,12 +925,11 @@ fn paint_node(
                                                         child_x + 1.5 * scale,
                                                         child_y + caret_height,
                                                     );
-                                                    scene.fill(
+                                                    painter.fill_color(
                                                         Fill::NonZero,
                                                         node_transform,
                                                         caret_color,
-                                                        None,
-                                                        &caret_rect,
+                                                        &caret_rect.into(),
                                                     );
                                                 }
                                             } else {
@@ -935,7 +937,7 @@ fn paint_node(
                                                 paint_ce_sub_blocks(
                                                     tree,
                                                     node,
-                                                    scene,
+                                                    painter,
                                                     scale,
                                                     x + child.layout.x as f64 * scale - ce_scroll_x,
                                                     y + child.layout.y as f64 * scale - ce_scroll_y,
@@ -975,7 +977,7 @@ fn paint_node(
                 let ifc_text_shadows = node.computed_style.text_shadow.as_slice();
                 paint_inline_layout(
                     tree,
-                    scene,
+                    painter,
                     scale,
                     content_x,
                     content_y,
@@ -990,7 +992,7 @@ fn paint_node(
                 paint_children_with_stacking(
                     tree,
                     node_id,
-                    scene,
+                    painter,
                     scale,
                     x - scroll_x,
                     y - scroll_y,
@@ -1006,7 +1008,7 @@ fn paint_node(
                 paint_children_with_stacking(
                     tree,
                     node_id,
-                    scene,
+                    painter,
                     scale,
                     x - scroll_x,
                     y - scroll_y,
@@ -1018,7 +1020,7 @@ fn paint_node(
             }
 
             if clips {
-                scene.pop_layer();
+                painter.pop_layer();
             }
 
             // Paint scrollbar overlay for scroll containers
@@ -1068,12 +1070,11 @@ fn paint_node(
                         scrollbar_width * 0.5,
                     );
                     let thumb_color = AlphaColor::<Srgb>::new([0.0, 0.0, 0.0, 0.4_f32]);
-                    scene.fill(
+                    painter.fill(
                         Fill::NonZero,
                         node_transform,
                         &Brush::Solid(thumb_color),
-                        None,
-                        &thumb_rect,
+                        &thumb_rect.into(),
                     );
                 }
             }
@@ -1092,54 +1093,47 @@ fn paint_node(
                         let dark = AlphaColor::<Srgb>::from_rgba8(0, 0, 0, alpha);
                         if radius > 0.0 {
                             let rrect = rect.to_rounded_rect(radii);
-                            scene.fill(Fill::NonZero, node_transform, dark, None, &rrect);
+                            painter.fill_color(Fill::NonZero, node_transform, dark, &rrect.into());
                         } else {
-                            scene.fill(Fill::NonZero, node_transform, dark, None, &rect);
+                            painter.fill_color(Fill::NonZero, node_transform, dark, &rect.into());
                         }
                     } else if brightness > 1.0 {
                         // Brighten: overlay white with alpha proportional to excess brightness
-                        // brightness=2.0 → fully white, so alpha = (brightness - 1.0) clamped
                         let alpha = ((brightness - 1.0).clamp(0.0, 1.0) * 255.0) as u8;
                         let light = AlphaColor::<Srgb>::from_rgba8(255, 255, 255, alpha);
                         if radius > 0.0 {
                             let rrect = rect.to_rounded_rect(radii);
-                            scene.fill(Fill::NonZero, node_transform, light, None, &rrect);
+                            painter.fill_color(Fill::NonZero, node_transform, light, &rrect.into());
                         } else {
-                            scene.fill(Fill::NonZero, node_transform, light, None, &rect);
+                            painter.fill_color(Fill::NonZero, node_transform, light, &rect.into());
                         }
                     }
                 }
 
-                // Grayscale approximation: overlay a semi-transparent gray matching average luminance
-                // This is a rough approximation — proper grayscale needs color matrix support
-                // For now, we apply a desaturation effect by overlaying gray at the grayscale intensity
+                // Grayscale approximation: desaturation effect
                 if cs.filter_grayscale > 0.0 {
-                    // Use Mix::Saturation blend mode if available, otherwise skip
-                    // Vello's push_layer supports peniko::Mix blend modes
-                    // Mix::Saturation would desaturate the content underneath
                     let grayscale = cs.filter_grayscale.clamp(0.0, 1.0);
                     // Push a saturation layer: gray rect with Saturation blend at grayscale alpha
-                    scene.push_layer(
-                        Fill::NonZero,
-                        peniko::Mix::Saturation,
+                    painter.push_layer(
+                        BlendMode::Saturation,
                         grayscale,
                         node_transform,
-                        &rect,
+                        &rect.into(),
                     );
                     // Fill with neutral gray
                     let gray = AlphaColor::<Srgb>::from_rgba8(128, 128, 128, 255);
                     if radius > 0.0 {
                         let rrect = rect.to_rounded_rect(radii);
-                        scene.fill(Fill::NonZero, node_transform, gray, None, &rrect);
+                        painter.fill_color(Fill::NonZero, node_transform, gray, &rrect.into());
                     } else {
-                        scene.fill(Fill::NonZero, node_transform, gray, None, &rect);
+                        painter.fill_color(Fill::NonZero, node_transform, gray, &rect.into());
                     }
-                    scene.pop_layer();
+                    painter.pop_layer();
                 }
             }
 
             if has_opacity {
-                scene.pop_layer();
+                painter.pop_layer();
             }
         }
 
@@ -1168,7 +1162,14 @@ fn paint_node(
                     .and_then(|p| tree.get(p))
                     .map(|p| p.computed_style.text_shadow.as_slice())
                     .unwrap_or(&[]);
-                render_text_with_shadow(scene, cached_layout, x, y, text_shadows, parent_transform);
+                render_text_with_shadow(
+                    painter,
+                    cached_layout,
+                    x,
+                    y,
+                    text_shadows,
+                    parent_transform,
+                );
                 return;
             }
 
@@ -1224,11 +1225,11 @@ fn paint_node(
                 .unwrap_or(parley::layout::Alignment::Start);
             text_layout.align(alignment, parley::layout::AlignmentOptions::default());
 
-            // Render text glyphs to scene
+            // Render text glyphs
             let text_shadows = parent_computed
                 .map(|s| s.text_shadow.as_slice())
                 .unwrap_or(&[]);
-            render_text_with_shadow(scene, &text_layout, x, y, text_shadows, parent_transform);
+            render_text_with_shadow(painter, &text_layout, x, y, text_shadows, parent_transform);
         }
 
         _ => {} // Document, Comment -- invisible

@@ -1187,7 +1187,7 @@ impl RinchApp {
     ) {
         let Some(doc) = &self.doc else { return };
 
-        let mut snapshot = Scene::new();
+        let mut snapshot = VelloPainter::new();
         let anchor;
 
         {

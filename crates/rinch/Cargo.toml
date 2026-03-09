@@ -49,6 +49,7 @@ rinch-web = { workspace = true, optional = true }
 rinch-video = { workspace = true, optional = true }
 ureq = { version = "3", optional = true }
 memory-stats = { version = "1.2", optional = true }
+softbuffer = { version = "0.4", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", optional = true }
@@ -90,3 +91,4 @@ debug = ["dep:rinch-debug"]
 web = ["dep:rinch-web"]
 video = ["dep:rinch-video"]
 image-network = ["dep:ureq"]
+software-renderer = ["dep:softbuffer", "dep:winit"]
