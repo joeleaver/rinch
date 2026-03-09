@@ -90,7 +90,7 @@ fn request_repaint() {
 /// When set on a [`RenderSurfaceHandle`], the compositor reads this texture
 /// directly instead of uploading CPU pixel data. The texture must be created
 /// on the same wgpu Device (available via [`super::shell::desktop::gpu_handle`]).
-#[cfg(feature = "desktop")]
+#[cfg(feature = "gpu")]
 pub struct TextureSource {
     /// The texture view to composite.
     pub view: wgpu::TextureView,
@@ -266,7 +266,7 @@ pub struct RenderSurfaceHandle {
     /// Shared pixel buffer (CPU path).
     pub(crate) buffer: Arc<Mutex<SurfaceBuffer>>,
     /// GPU texture source for zero-copy compositing (replaces pixel path when set).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "gpu")]
     pub(crate) texture_source: Arc<Mutex<Option<TextureSource>>>,
     /// Dirty flag (set by writer, cleared by frame collector).
     pub(crate) needs_redraw: Arc<AtomicBool>,
@@ -326,7 +326,7 @@ impl RenderSurfaceHandle {
     /// (e.g., on viewport resize). The texture content is read each frame
     /// by the compositor — only the view reference needs to be set, not
     /// the pixel data.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "gpu")]
     pub fn set_texture_source(&self, view: wgpu::TextureView, width: u32, height: u32) {
         *self.texture_source.lock().unwrap() = Some(TextureSource {
             view,
@@ -340,7 +340,7 @@ impl RenderSurfaceHandle {
     }
 
     /// Check if this surface has a GPU texture source set.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "gpu")]
     pub fn has_texture_source(&self) -> bool {
         self.texture_source.lock().unwrap().is_some()
     }
@@ -359,7 +359,7 @@ impl RenderSurfaceHandle {
     /// This extracts the `Send`-able parts of `RenderSurfaceHandle` so a background
     /// renderer (e.g., a game engine on a worker thread) can call `set_texture_source`
     /// without holding the main-thread `Rc<RefCell<...>>` event handler field.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "gpu")]
     pub fn gpu_registrar(&self) -> GpuTextureRegistrar {
         GpuTextureRegistrar {
             texture_source: self.texture_source.clone(),
@@ -408,7 +408,7 @@ impl RenderSurfaceHandle {
 ///
 /// Obtained via [`RenderSurfaceHandle::gpu_registrar`]. Wraps only the thread-safe
 /// `Arc<Mutex<>>` fields — the main-thread `Rc` event handler is excluded.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "gpu")]
 #[derive(Clone)]
 pub struct GpuTextureRegistrar {
     /// GPU texture source for zero-copy compositing.
@@ -419,7 +419,7 @@ pub struct GpuTextureRegistrar {
     layout_size: Arc<Mutex<(u32, u32)>>,
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "gpu")]
 impl GpuTextureRegistrar {
     /// Register a GPU texture as the frame source for zero-copy compositing.
     ///
@@ -491,7 +491,7 @@ pub fn create_render_surface() -> RenderSurfaceHandle {
             width: 0,
             height: 0,
         })),
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "gpu")]
         texture_source: Arc::new(Mutex::new(None)),
         needs_redraw: Arc::new(AtomicBool::new(false)),
         event_handler: std::rc::Rc::new(RefCell::new(None)),
@@ -523,7 +523,7 @@ pub fn create_render_surface_with_name(viewport_name: &str) -> RenderSurfaceHand
             width: 0,
             height: 0,
         })),
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "gpu")]
         texture_source: Arc::new(Mutex::new(None)),
         needs_redraw: Arc::new(AtomicBool::new(false)),
         event_handler: std::rc::Rc::new(RefCell::new(None)),
@@ -599,6 +599,7 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
         let mut frames = Vec::new();
         for surface in reg.iter() {
             // Skip surfaces that use GPU texture source
+            #[cfg(feature = "gpu")]
             if surface.texture_source.lock().unwrap().is_some() {
                 continue;
             }
@@ -624,7 +625,7 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
 /// texture source set. The compositor reads the `TextureView` directly from
 /// the `Arc<Mutex<Option<TextureSource>>>` — no pixel upload needed.
 /// Clears dirty flags as a side effect.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "gpu")]
 pub fn collect_texture_sources() -> Vec<(String, Arc<Mutex<Option<TextureSource>>>)> {
     SURFACE_REGISTRY.with(|reg| {
         let reg = reg.borrow();

@@ -30,6 +30,24 @@ use crate::computed_style::{
 };
 use crate::node::{NodeKind, NodeTree, RawNodeId};
 
+use std::cell::RefCell;
+use std::collections::HashSet;
+
+thread_local! {
+    /// Viewport names that have active surface frames this paint cycle.
+    /// When set, only these viewports get holes punched in backgrounds.
+    /// When empty, ALL viewports get holes (GPU compositor default).
+    static ACTIVE_VIEWPORTS: RefCell<Option<HashSet<String>>> = const { RefCell::new(None) };
+}
+
+/// Set the active viewport names for hole-punching during this paint cycle.
+///
+/// Only viewports in this set will have holes cut in ancestor backgrounds.
+/// Call with `None` to revert to the default (all viewports get holes).
+pub fn set_active_viewports(names: Option<HashSet<String>>) {
+    ACTIVE_VIEWPORTS.with(|v| *v.borrow_mut() = names);
+}
+
 /// Compute the absolute position of a node in physical pixels by walking
 /// up the parent chain, summing layout offsets and subtracting scroll offsets.
 pub fn compute_absolute_position(tree: &NodeTree, node_id: RawNodeId, scale: f64) -> (f64, f64) {
@@ -70,10 +88,20 @@ fn find_viewport_rects(
     let nx = offset_x + node.layout.x as f64 * scale;
     let ny = offset_y + node.layout.y as f64 * scale;
 
-    if node.attributes.contains_key("data-viewport") {
-        let vw = node.layout.width as f64 * scale;
-        let vh = node.layout.height as f64 * scale;
-        result.push(Rect::new(nx, ny, nx + vw, ny + vh));
+    if let Some(viewport_name) = node.attributes.get("data-viewport") {
+        // If ACTIVE_VIEWPORTS is set, only cut holes for viewports with active frames
+        let active = ACTIVE_VIEWPORTS.with(|v| {
+            let guard = v.borrow();
+            match guard.as_ref() {
+                None => true, // No filter set — all viewports get holes (GPU default)
+                Some(set) => set.contains(viewport_name),
+            }
+        });
+        if active {
+            let vw = node.layout.width as f64 * scale;
+            let vh = node.layout.height as f64 * scale;
+            result.push(Rect::new(nx, ny, nx + vw, ny + vh));
+        }
         return;
     }
 
@@ -162,7 +190,6 @@ pub fn paint_document(
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<Brush>,
 ) {
-    painter.reset();
     paint_node(
         tree,
         tree.body_id,

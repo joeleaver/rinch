@@ -263,9 +263,11 @@ impl RinchApp {
                     let dist = (dx * dx + dy * dy).sqrt();
                     if dist >= DRAG_THRESHOLD {
                         let node_id = pending.node_id;
+                        #[cfg(feature = "gpu")]
                         let mousedown_pos = pending.mousedown_pos;
                         self.pending_drag = None;
 
+                        #[cfg(feature = "gpu")]
                         self.activate_drag(node_id, mousedown_pos, (x, y), scale_factor);
 
                         if let Some(doc) = &self.doc {
@@ -446,6 +448,7 @@ impl RinchApp {
                                     node.scroll_offset.1 = new_y;
                                     node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
                                     doc_mut.tree.dirty_nodes.insert(scroll_node_id);
+                                    self.scene_dirty = true;
                                 }
                             }
                         }

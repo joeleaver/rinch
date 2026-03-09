@@ -11,6 +11,7 @@ path = "src/lib.rs"
 
 [features]
 desktop = ["rinch/desktop"]
+gpu = ["desktop", "rinch/gpu"]
 
 [dependencies]
 rinch = { workspace = true, default-features = false, features = ["components", "theme"] }

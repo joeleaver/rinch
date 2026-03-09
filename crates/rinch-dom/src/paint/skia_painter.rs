@@ -304,6 +304,77 @@ impl TinySkiaPainter {
     pub fn fill_white(&mut self) {
         self.pixmap.fill(tiny_skia::Color::WHITE);
     }
+
+    /// Fill the entire surface with an opaque black background.
+    ///
+    /// Used as the base layer when composite surfaces are present,
+    /// matching the GPU compositor's black clear color.
+    pub fn fill_black(&mut self) {
+        self.pixmap.fill(tiny_skia::Color::BLACK);
+    }
+
+    /// Blit RGBA pixel data into a destination rectangle on the surface.
+    ///
+    /// The source pixels are scaled to fit the destination rect. Pixels outside
+    /// the surface bounds are clipped. Used for compositing RenderSurface frames
+    /// (video, custom renderers) in the software path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn blit_rgba(
+        &mut self,
+        pixels: &[u8],
+        src_w: u32,
+        src_h: u32,
+        dst_x: f32,
+        dst_y: f32,
+        dst_w: f32,
+        dst_h: f32,
+    ) {
+        if src_w == 0 || src_h == 0 || dst_w <= 0.0 || dst_h <= 0.0 {
+            return;
+        }
+        let expected = (src_w * src_h * 4) as usize;
+        if pixels.len() < expected {
+            return;
+        }
+
+        // Create a pixmap from the source RGBA data.
+        // tiny-skia expects premultiplied alpha, so premultiply in-place.
+        let mut premul = pixels[..expected].to_vec();
+        for chunk in premul.chunks_exact_mut(4) {
+            let a = chunk[3] as u16;
+            if a == 0 {
+                chunk[0] = 0;
+                chunk[1] = 0;
+                chunk[2] = 0;
+            } else if a < 255 {
+                chunk[0] = ((chunk[0] as u16 * a + 128) / 255) as u8;
+                chunk[1] = ((chunk[1] as u16 * a + 128) / 255) as u8;
+                chunk[2] = ((chunk[2] as u16 * a + 128) / 255) as u8;
+            }
+        }
+
+        let Some(src_pixmap) = PixmapRef::from_bytes(&premul, src_w, src_h) else {
+            return;
+        };
+
+        // Compute transform: scale source to destination size, then translate
+        let sx = dst_w / src_w as f32;
+        let sy = dst_h / src_h as f32;
+        let transform = Transform::from_scale(sx, sy).post_translate(dst_x, dst_y);
+
+        self.pixmap.draw_pixmap(
+            0,
+            0,
+            src_pixmap,
+            &PixmapPaint {
+                opacity: 1.0,
+                blend_mode: tiny_skia::BlendMode::SourceOver,
+                quality: tiny_skia::FilterQuality::Bilinear,
+            },
+            transform,
+            None,
+        );
+    }
 }
 
 impl Painter for TinySkiaPainter {

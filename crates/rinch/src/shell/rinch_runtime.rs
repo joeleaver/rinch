@@ -31,14 +31,18 @@ use winit::window::{WindowAttributes, WindowId};
 use rinch_core::clear_context;
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::events;
+#[cfg(feature = "gpu")]
+use rinch_platform::PlatformRenderer;
 use rinch_platform::{
     AppAction, KeyCode, Modifiers, MouseButton as PlatformMouseButton, PlatformEvent,
-    PlatformRenderer, PlatformWindow, UserEvent,
+    PlatformWindow, UserEvent,
 };
 
 use crate::app::RinchApp;
 
-use super::desktop::{WgpuRenderer, WinitWindow};
+#[cfg(feature = "gpu")]
+use super::desktop::WgpuRenderer;
+use super::window::WinitWindow;
 
 #[cfg(feature = "debug")]
 use {super::screenshot, base64::Engine, rinch_debug::DebugResult};
@@ -130,8 +134,12 @@ pub struct RinchRuntime {
     app: RinchApp,
     /// Desktop window wrapper.
     window: Option<WinitWindow>,
-    /// GPU renderer.
+    /// GPU renderer (only available with `gpu` feature).
+    #[cfg(feature = "gpu")]
     renderer: Option<WgpuRenderer>,
+    /// Software renderer (CPU pixel presentation via softbuffer).
+    #[cfg(not(feature = "gpu"))]
+    soft_renderer: Option<super::softbuffer_renderer::SoftbufferRenderer>,
     /// Event loop proxy for sending events.
     proxy: Option<EventLoopProxy>,
     /// Window title.
@@ -142,12 +150,6 @@ pub struct RinchRuntime {
     modifiers: winit::keyboard::ModifiersState,
     /// Native menu bar (attached to the window).
     native_menu: Option<muda::Menu>,
-    /// Software renderer (CPU pixel presentation via softbuffer).
-    #[cfg(feature = "software-renderer")]
-    soft_renderer: Option<super::softbuffer_renderer::SoftbufferRenderer>,
-    /// Whether to use software rendering instead of GPU.
-    #[cfg(feature = "software-renderer")]
-    use_software: bool,
 }
 
 impl RinchRuntime {
@@ -160,17 +162,16 @@ impl RinchRuntime {
         Self {
             app: RinchApp::new(component),
             window: None,
+            #[cfg(feature = "gpu")]
             renderer: None,
+            #[cfg(not(feature = "gpu"))]
+            soft_renderer: None,
             proxy: None,
             title: title.to_string(),
             width,
             height,
             modifiers: winit::keyboard::ModifiersState::empty(),
             native_menu: None,
-            #[cfg(feature = "software-renderer")]
-            soft_renderer: None,
-            #[cfg(feature = "software-renderer")]
-            use_software: std::env::var("RINCH_SOFTWARE").is_ok(),
         }
     }
 
@@ -189,8 +190,11 @@ impl RinchRuntime {
         drop(self.app.ce_ops.take());
         drop(self.app.doc.take());
 
-        // 4. Drop GPU renderer before window — Surface holds a window handle reference.
+        // 4. Drop renderer before window — Surface holds a window handle reference.
+        #[cfg(feature = "gpu")]
         drop(self.renderer.take());
+        #[cfg(not(feature = "gpu"))]
+        drop(self.soft_renderer.take());
 
         // 5. Window can now be dropped safely.
         drop(self.window.take());
@@ -253,13 +257,9 @@ impl RinchRuntime {
 
         let size = window.surface_size();
 
-        // Create GPU renderer (skip when using software rendering)
-        #[cfg(feature = "software-renderer")]
-        let skip_gpu = self.use_software;
-        #[cfg(not(feature = "software-renderer"))]
-        let skip_gpu = false;
-
-        if !skip_gpu {
+        // Create renderer
+        #[cfg(feature = "gpu")]
+        {
             let gpu = WgpuRenderer::new(&*window, size.width.max(1), size.height.max(1));
             self.renderer = Some(gpu);
         }
@@ -297,7 +297,10 @@ impl RinchRuntime {
         // Clear the direct redraw callback before dropping the window.
         crate::render_surface::clear_redraw_callback();
         // Drop renderer first — it holds a reference to the window surface.
+        #[cfg(feature = "gpu")]
         drop(self.renderer.take());
+        #[cfg(not(feature = "gpu"))]
+        drop(self.soft_renderer.take());
         drop(self.window.take());
     }
 
@@ -346,14 +349,9 @@ impl RinchRuntime {
             .create_window(window_attrs)
             .expect("Failed to recreate window");
 
-        let size = window.surface_size();
-
-        #[cfg(feature = "software-renderer")]
-        let skip_gpu = self.use_software;
-        #[cfg(not(feature = "software-renderer"))]
-        let skip_gpu = false;
-
-        if !skip_gpu {
+        #[cfg(feature = "gpu")]
+        {
+            let size = window.surface_size();
             let gpu = WgpuRenderer::new(&*window, size.width.max(1), size.height.max(1));
             self.renderer = Some(gpu);
         }
@@ -374,14 +372,17 @@ impl RinchRuntime {
 
     /// Paint the current scene to the window.
     fn paint(&mut self) -> Result<(), String> {
-        #[cfg(feature = "software-renderer")]
-        if self.use_software {
-            return self.paint_software();
+        #[cfg(feature = "gpu")]
+        {
+            self.paint_gpu()
         }
-        self.paint_gpu()
+        #[cfg(not(feature = "gpu"))]
+        {
+            self.paint_software()
+        }
     }
 
-    #[cfg(feature = "software-renderer")]
+    #[cfg(not(feature = "gpu"))]
     fn paint_software(&mut self) -> Result<(), String> {
         let paint_start = std::time::Instant::now();
         let Some(window) = &self.window else {
@@ -390,8 +391,74 @@ impl RinchRuntime {
 
         let scale = window.scale_factor();
         let size = window.inner_size();
+        let s = scale as f32;
 
-        let (pixels, w, h) = self.app.build_pixels(scale, size);
+        // Update layout sizes for render surfaces so callbacks get correct dimensions
+        let reg_names = crate::render_surface::registered_viewport_names();
+        for viewport_name in &reg_names {
+            if let Some(viewport) = self.app.viewport_rect(viewport_name) {
+                let phys_w = (viewport.2 * s) as u32;
+                let phys_h = (viewport.3 * s) as u32;
+                crate::render_surface::update_layout_size(viewport_name, phys_w, phys_h);
+            }
+        }
+
+        // Invoke per-frame render callbacks before collecting frames
+        crate::render_surface::invoke_render_callbacks();
+
+        // If any surfaces have new frames, force a repaint so layers are
+        // composited underneath the fresh UI.
+        if crate::render_surface::any_surface_dirty() {
+            self.app.mark_scene_dirty();
+        }
+
+        // Collect surface frames and resolve viewport rects + letterboxing
+        // BEFORE build_pixels, since layers are composited underneath the UI.
+        use crate::app::SoftwareLayer;
+        let surface_frames = crate::render_surface::collect_surface_frames();
+        let layers: Vec<SoftwareLayer> = surface_frames
+            .into_iter()
+            .filter_map(|(viewport_name, pixels, surf_w, surf_h)| {
+                let viewport = self.app.viewport_rect(&viewport_name)?;
+                let (vx, vy, vw, vh) = (
+                    viewport.0 * s,
+                    viewport.1 * s,
+                    viewport.2 * s,
+                    viewport.3 * s,
+                );
+                // Letterbox: fit source within viewport preserving aspect ratio
+                let src_aspect = surf_w as f32 / surf_h.max(1) as f32;
+                let vp_aspect = vw / vh.max(1.0);
+                let (dst_x, dst_y, dst_w, dst_h) = if (src_aspect - vp_aspect).abs() < 0.001 {
+                    (vx, vy, vw, vh)
+                } else if src_aspect > vp_aspect {
+                    let fit_h = vw / src_aspect;
+                    (vx, vy + (vh - fit_h) / 2.0, vw, fit_h)
+                } else {
+                    let fit_w = vh * src_aspect;
+                    (vx + (vw - fit_w) / 2.0, vy, fit_w, vh)
+                };
+                Some(SoftwareLayer {
+                    viewport_name,
+                    pixels,
+                    src_w: surf_w,
+                    src_h: surf_h,
+                    dst_x,
+                    dst_y,
+                    dst_w,
+                    dst_h,
+                })
+            })
+            .collect();
+
+        // Build the scene with layers composited underneath the UI
+        let (_base, w, h) = self.app.build_pixels(scale, size, &layers);
+        let pixels = self
+            .app
+            .skia_painter
+            .as_ref()
+            .map(|p| p.pixels())
+            .unwrap_or(&[]);
 
         // Lazily create or get the softbuffer renderer
         if self.soft_renderer.is_none() {
@@ -417,6 +484,7 @@ impl RinchRuntime {
         Ok(())
     }
 
+    #[cfg(feature = "gpu")]
     fn paint_gpu(&mut self) -> Result<(), String> {
         let paint_start = std::time::Instant::now();
         let Some(renderer) = &mut self.renderer else {
@@ -768,34 +836,35 @@ impl RinchRuntime {
     /// Capture a screenshot from whichever renderer is active.
     #[cfg(feature = "debug")]
     fn capture_screenshot_impl(&mut self) -> DebugResult {
-        // Software renderer: get pixels directly from TinySkiaPainter
-        #[cfg(feature = "software-renderer")]
-        if self.use_software {
+        #[cfg(not(feature = "gpu"))]
+        {
             let scale = self.scale_factor();
             let size = self.window_size();
-            let (pixels, w, h) = self.app.build_pixels(scale, size);
+            // Screenshot: pass empty layers (captures UI only, not live surfaces)
+            let (pixels, w, h) = self.app.build_pixels(scale, size, &[]);
             let png_bytes = screenshot::encode_png(pixels, w, h);
-            return DebugResult::Bytes {
+            DebugResult::Bytes {
                 data: base64::engine::general_purpose::STANDARD.encode(&png_bytes),
-            };
-        }
-
-        // GPU renderer
-        if let Some(renderer) = &self.renderer {
-            match renderer.capture_screenshot() {
-                Ok((w, h, rgba)) => {
-                    let png_bytes = screenshot::encode_png(&rgba, w, h);
-                    DebugResult::Bytes {
-                        data: base64::engine::general_purpose::STANDARD.encode(&png_bytes),
-                    }
-                }
-                Err(e) => DebugResult::Error {
-                    message: format!("Screenshot capture failed: {}", e),
-                },
             }
-        } else {
-            DebugResult::Error {
-                message: "No renderer".into(),
+        }
+        #[cfg(feature = "gpu")]
+        {
+            if let Some(renderer) = &self.renderer {
+                match renderer.capture_screenshot() {
+                    Ok((w, h, rgba)) => {
+                        let png_bytes = screenshot::encode_png(&rgba, w, h);
+                        DebugResult::Bytes {
+                            data: base64::engine::general_purpose::STANDARD.encode(&png_bytes),
+                        }
+                    }
+                    Err(e) => DebugResult::Error {
+                        message: format!("Screenshot capture failed: {}", e),
+                    },
+                }
+            } else {
+                DebugResult::Error {
+                    message: "No renderer".into(),
+                }
             }
         }
     }
@@ -905,6 +974,7 @@ impl ApplicationHandler for RinchRuntime {
             WindowEvent::CloseRequested => PlatformEvent::CloseRequested,
             WindowEvent::SurfaceResized(size) => {
                 // Also resize the renderer
+                #[cfg(feature = "gpu")]
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(size.width.max(1), size.height.max(1));
                 }

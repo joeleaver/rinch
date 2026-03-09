@@ -9,6 +9,8 @@ use rinch::render_surface::{SurfaceEvent, SurfaceMouseButton, create_render_surf
 
 // ── wgpu Instanced Cube Wave (cross-platform) ──────────────────────────────
 
+#[cfg(feature = "gpu")]
+#[allow(dead_code)]
 mod gpu_cube {
     use wgpu::util::DeviceExt;
 
@@ -510,7 +512,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // ── Desktop backend (zero-copy via shared device) ─────────────────────
 
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "gpu")]
     pub struct GpuCube {
         device: std::sync::Arc<wgpu::Device>,
         queue: std::sync::Arc<wgpu::Queue>,
@@ -524,7 +526,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         offscreen_view: wgpu::TextureView,
     }
 
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "gpu")]
     impl GpuCube {
         /// Create using rinch's shared GPU device for zero-copy compositing.
         pub fn new(gpu: &rinch::shell::desktop::GpuHandle) -> Self {
@@ -649,7 +651,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "gpu")]
     fn create_offscreen_texture(
         device: &wgpu::Device,
         w: u32,
@@ -735,6 +737,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
 // ── Cube State ──────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 struct CubeState {
     angle_x: f32,
     angle_y: f32,
@@ -816,6 +819,7 @@ pub fn render_surface_section() -> NodeHandle {
     }
 
     // Render callback — runs every frame
+    #[allow(unused_variables)]
     {
         let state = cube_state.clone();
 
@@ -877,7 +881,7 @@ pub fn render_surface_section() -> NodeHandle {
             });
         }
 
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "gpu")]
         {
             // Spawn a render thread — the game engine drives its own loop,
             // completely independent of the UI event loop.

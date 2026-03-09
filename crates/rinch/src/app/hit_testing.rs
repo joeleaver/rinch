@@ -332,8 +332,7 @@ pub(crate) fn find_scroll_container(tree: &rinch_dom::NodeTree, start: usize) ->
         let node = tree.get(node_id)?;
         let overflow_y = &node.computed_style.overflow_y;
         match overflow_y {
-            OverflowValue::Scroll | OverflowValue::Auto => return Some(node_id),
-            OverflowValue::Hidden => {
+            OverflowValue::Scroll | OverflowValue::Auto | OverflowValue::Hidden => {
                 let content_h = compute_content_height(tree, node_id);
                 if content_h > node.layout.height as f64 {
                     return Some(node_id);
@@ -401,8 +400,7 @@ pub(crate) fn find_horizontal_scroll_container(
         let node = tree.get(node_id)?;
         let overflow_x = &node.computed_style.overflow_x;
         match overflow_x {
-            OverflowValue::Scroll | OverflowValue::Auto => return Some(node_id),
-            OverflowValue::Hidden => {
+            OverflowValue::Scroll | OverflowValue::Auto | OverflowValue::Hidden => {
                 let content_w = compute_content_width(tree, node_id);
                 if content_w > node.layout.width as f64 {
                     return Some(node_id);

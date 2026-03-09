@@ -1,19 +1,23 @@
 //! Shell module - window management and event loop.
 
+#[cfg(feature = "gpu")]
 pub(crate) mod compositor;
+#[cfg(feature = "gpu")]
 pub mod desktop;
 pub mod devtools;
 pub mod devtools_overlay;
+#[cfg(feature = "gpu")]
 pub(crate) mod frame_upload;
 pub mod html_parser;
 pub mod memory_profile;
 pub mod rinch_runtime;
 #[cfg(feature = "debug")]
 pub mod screenshot;
-#[cfg(feature = "software-renderer")]
 pub mod softbuffer_renderer;
+#[cfg(feature = "gpu")]
 pub mod transparent_renderer;
 pub mod types;
+pub mod window;
 
 pub use devtools::{DevToolsPanel, DevToolsState};
 pub use devtools_overlay::render_overlay;

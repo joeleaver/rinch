@@ -44,10 +44,12 @@ impl RinchApp {
                     let dist = (dx * dx + dy * dy).sqrt();
                     if dist >= DRAG_THRESHOLD {
                         let node_id = pending.node_id;
+                        #[cfg(feature = "gpu")]
                         let mousedown_pos = pending.mousedown_pos;
                         self.pending_drag = None;
 
-                        // Capture snapshot and compute anchor
+                        // Capture snapshot and compute anchor (GPU only — needs VelloPainter)
+                        #[cfg(feature = "gpu")]
                         self.activate_drag(node_id, mousedown_pos, (x, y), scale_factor);
 
                         // Fire ondragstart handler
@@ -525,6 +527,7 @@ impl RinchApp {
                                     node.scroll_offset.1 = new_y;
                                     node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
                                     doc_mut.tree.dirty_nodes.insert(scroll_node_id);
+                                    self.scene_dirty = true;
                                 }
                             }
                         }
@@ -546,6 +549,7 @@ impl RinchApp {
                                     node.scroll_offset.0 = new_x;
                                     node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
                                     doc_mut.tree.dirty_nodes.insert(scroll_node_id);
+                                    self.scene_dirty = true;
                                 }
                             }
                         }
@@ -1178,6 +1182,7 @@ impl RinchApp {
 
     /// Transition from pending drag to active drag: capture snapshot and set
     /// up the active drag state.
+    #[cfg(feature = "gpu")]
     pub(crate) fn activate_drag(
         &mut self,
         node_id: usize,

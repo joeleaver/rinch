@@ -19,6 +19,8 @@ pub(crate) use hit_testing::*;
 use html_parser::*;
 
 use std::cell::{Cell, RefCell};
+#[cfg(not(feature = "gpu"))]
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::ce_ops::CeOps;
@@ -27,8 +29,9 @@ use rinch_core::dom::{DomDocument, NodeHandle, RenderScope, clear_render_scope, 
 use rinch_core::events;
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::painter::Painter;
-#[cfg(feature = "software-renderer")]
+#[cfg(not(feature = "gpu"))]
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
+#[cfg(feature = "gpu")]
 use rinch_dom::paint::vello_painter::VelloPainter;
 #[cfg(feature = "debug")]
 use rinch_dom::text_query::glyph_bounds_for_offset_layout;
@@ -40,10 +43,24 @@ use rinch_editable::{
 use rinch_platform::{
     AppAction, Instant, KeyCode, Modifiers, MouseButton, PlatformEvent, UserEvent,
 };
+#[cfg(feature = "gpu")]
 use vello::Scene;
 
 /// Viewport rectangle as (x, y, width, height) in logical pixels.
 pub type ViewportRect = (f32, f32, f32, f32);
+
+/// A resolved surface layer ready to blit onto the software pixmap.
+#[cfg(not(feature = "gpu"))]
+pub struct SoftwareLayer {
+    pub viewport_name: String,
+    pub pixels: Vec<u8>,
+    pub src_w: u32,
+    pub src_h: u32,
+    pub dst_x: f32,
+    pub dst_y: f32,
+    pub dst_w: f32,
+    pub dst_h: f32,
+}
 
 #[cfg(feature = "desktop")]
 use crate::shell::devtools::DevToolsState;
@@ -70,8 +87,10 @@ pub(crate) struct ActiveDrag {
     /// The draggable source element.
     pub node_id: usize,
     /// Captured painting of the source element's subtree (at origin).
+    #[cfg(feature = "gpu")]
     pub snapshot: VelloPainter,
     /// Offset within element where the grab happened (physical px, relative to element top-left).
+    #[cfg(feature = "gpu")]
     pub anchor: (f32, f32),
     /// Current cursor position (physical pixels).
     pub cursor: (f32, f32),
@@ -118,10 +137,11 @@ pub struct RinchApp {
     pub(crate) _render_scope: Option<Rc<RefCell<RenderScope>>>,
     /// The document (shared with RenderScope).
     pub(crate) doc: Option<Rc<RefCell<RinchDocument>>>,
-    /// Painter (reused across frames). Wraps vello::Scene for GPU rendering.
+    /// GPU painter (reused across frames). Wraps vello::Scene.
+    #[cfg(feature = "gpu")]
     pub(crate) painter: VelloPainter,
     /// Software painter (reused across frames). Uses tiny-skia for CPU rendering.
-    #[cfg(feature = "software-renderer")]
+    #[cfg(not(feature = "gpu"))]
     pub(crate) skia_painter: Option<TinySkiaPainter>,
     /// Parley layout context for paint-time text layout.
     pub(crate) paint_layout_cx: parley::LayoutContext<peniko::Brush>,
@@ -191,8 +211,9 @@ impl RinchApp {
             component: Some(Box::new(component)),
             _render_scope: None,
             doc: None,
+            #[cfg(feature = "gpu")]
             painter: VelloPainter::new(),
-            #[cfg(feature = "software-renderer")]
+            #[cfg(not(feature = "gpu"))]
             skia_painter: None,
             paint_layout_cx: parley::LayoutContext::new(),
             cursor_pos: None,
@@ -472,6 +493,7 @@ impl RinchApp {
     ///
     /// The scene is painted via the `Painter` trait and a reference to the
     /// underlying `vello::Scene` is returned for the GPU renderer.
+    #[cfg(feature = "gpu")]
     pub fn build_scene(&mut self, scale: f64, size: (u32, u32)) -> &Scene {
         if !self.scene_dirty {
             return self.painter.scene();
@@ -507,10 +529,18 @@ impl RinchApp {
 
     /// Build pixels via TinySkiaPainter for software rendering.
     ///
+    /// `layers` are composited underneath the UI (like the GPU compositor):
+    /// black base → surface layers → document (with hole-punched backgrounds).
+    ///
     /// Returns (pixels, width, height) in RGBA8 format. The painter is lazily
     /// created on first call and resized as needed.
-    #[cfg(feature = "software-renderer")]
-    pub fn build_pixels(&mut self, scale: f64, size: (u32, u32)) -> (&[u8], u32, u32) {
+    #[cfg(not(feature = "gpu"))]
+    pub fn build_pixels(
+        &mut self,
+        scale: f64,
+        size: (u32, u32),
+        layers: &[SoftwareLayer],
+    ) -> (&[u8], u32, u32) {
         let w = (size.0 as f64 * scale).round() as u32;
         let h = (size.1 as f64 * scale).round() as u32;
 
@@ -523,13 +553,38 @@ impl RinchApp {
             painter.resize(w, h);
         }
 
-        let transparent = self.window_props.as_ref().is_some_and(|p| p.transparent);
         if self.scene_dirty {
             painter.reset();
-            // Fill with white background (non-transparent windows)
-            if !transparent {
+
+            // Composite layers UNDER the UI, matching the GPU compositor order:
+            // 1. Black base (shows through viewport holes and behind letterboxed video)
+            // 2. Surface layers at their viewport rects
+            // 3. Document on top (backgrounds have holes at viewport rects)
+            if !layers.is_empty() {
+                painter.fill_black();
+                for layer in layers {
+                    painter.blit_rgba(
+                        &layer.pixels,
+                        layer.src_w,
+                        layer.src_h,
+                        layer.dst_x,
+                        layer.dst_y,
+                        layer.dst_w,
+                        layer.dst_h,
+                    );
+                }
+            } else {
+                // No composite layers — fill white (normal app background)
                 painter.fill_white();
             }
+
+            // Tell the hole-punch code which viewports have active frames
+            let active_names: HashSet<String> =
+                layers.iter().map(|l| l.viewport_name.clone()).collect();
+            if !active_names.is_empty() {
+                rinch_dom::paint::set_active_viewports(Some(active_names));
+            }
+
             if let Some(doc) = &self.doc {
                 let mut d = doc.borrow_mut();
                 let d = &mut *d;
@@ -542,11 +597,20 @@ impl RinchApp {
                     &mut d.layout_cx,
                 );
             }
+
+            // Clear active viewports filter
+            rinch_dom::paint::set_active_viewports(None);
+
             // TODO: DnD snapshot overlay for software path
             self.scene_dirty = false;
         }
 
         (self.skia_painter.as_ref().unwrap().pixels(), w, h)
+    }
+
+    /// Mark the scene as needing a repaint on the next frame.
+    pub fn mark_scene_dirty(&mut self) {
+        self.scene_dirty = true;
     }
 
     /// Check if there are dirty nodes that need repaint.
