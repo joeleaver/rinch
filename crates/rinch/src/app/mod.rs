@@ -27,6 +27,8 @@ use rinch_core::dom::{DomDocument, NodeHandle, RenderScope, clear_render_scope, 
 use rinch_core::events;
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::painter::Painter;
+#[cfg(feature = "software-renderer")]
+use rinch_dom::paint::skia_painter::TinySkiaPainter;
 use rinch_dom::paint::vello_painter::VelloPainter;
 #[cfg(feature = "debug")]
 use rinch_dom::text_query::glyph_bounds_for_offset_layout;
@@ -118,6 +120,9 @@ pub struct RinchApp {
     pub(crate) doc: Option<Rc<RefCell<RinchDocument>>>,
     /// Painter (reused across frames). Wraps vello::Scene for GPU rendering.
     pub(crate) painter: VelloPainter,
+    /// Software painter (reused across frames). Uses tiny-skia for CPU rendering.
+    #[cfg(feature = "software-renderer")]
+    pub(crate) skia_painter: Option<TinySkiaPainter>,
     /// Parley layout context for paint-time text layout.
     pub(crate) paint_layout_cx: parley::LayoutContext<peniko::Brush>,
     /// Current cursor position.
@@ -187,6 +192,8 @@ impl RinchApp {
             _render_scope: None,
             doc: None,
             painter: VelloPainter::new(),
+            #[cfg(feature = "software-renderer")]
+            skia_painter: None,
             paint_layout_cx: parley::LayoutContext::new(),
             cursor_pos: None,
             scrollbar_drag: None,
@@ -496,6 +503,50 @@ impl RinchApp {
 
         self.scene_dirty = false;
         self.painter.scene()
+    }
+
+    /// Build pixels via TinySkiaPainter for software rendering.
+    ///
+    /// Returns (pixels, width, height) in RGBA8 format. The painter is lazily
+    /// created on first call and resized as needed.
+    #[cfg(feature = "software-renderer")]
+    pub fn build_pixels(&mut self, scale: f64, size: (u32, u32)) -> (&[u8], u32, u32) {
+        let w = (size.0 as f64 * scale).round() as u32;
+        let h = (size.1 as f64 * scale).round() as u32;
+
+        // Lazily create or resize the painter
+        if self.skia_painter.is_none() {
+            self.skia_painter = Some(TinySkiaPainter::new(w, h));
+        }
+        let painter = self.skia_painter.as_mut().unwrap();
+        if painter.width() != w || painter.height() != h {
+            painter.resize(w, h);
+        }
+
+        let transparent = self.window_props.as_ref().is_some_and(|p| p.transparent);
+        if self.scene_dirty {
+            painter.reset();
+            // Fill with white background (non-transparent windows)
+            if !transparent {
+                painter.fill_white();
+            }
+            if let Some(doc) = &self.doc {
+                let mut d = doc.borrow_mut();
+                let d = &mut *d;
+                rinch_dom::paint::paint_document(
+                    &d.tree,
+                    painter,
+                    scale,
+                    (size.0 as f32, size.1 as f32),
+                    &mut d.font_cx,
+                    &mut d.layout_cx,
+                );
+            }
+            // TODO: DnD snapshot overlay for software path
+            self.scene_dirty = false;
+        }
+
+        (self.skia_painter.as_ref().unwrap().pixels(), w, h)
     }
 
     /// Check if there are dirty nodes that need repaint.

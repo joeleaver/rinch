@@ -2,16 +2,13 @@
 //!
 //! Implements the [`Painter`] trait for CPU-based rasterization.
 
-#![cfg(feature = "software-renderer")]
-
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, PathEl, Shape, Stroke as KurboStroke};
 use peniko::{Brush, Fill, FontData, Gradient, GradientKind};
 
 use tiny_skia::{
-    Color as SkColor, FillRule, GradientStop, LineCap, LineJoin, LinearGradient, Mask, Paint,
-    Path, PathBuilder, Pixmap, PixmapPaint, PixmapRef, SpreadMode,
-    Stroke as SkStroke, Transform,
+    Color as SkColor, FillRule, GradientStop, LineCap, LineJoin, LinearGradient, Mask, Paint, Path,
+    PathBuilder, Pixmap, PixmapPaint, PixmapRef, SpreadMode, Stroke as SkStroke, Transform,
 };
 
 use super::painter::{BlendMode, PaintGlyph, PaintImage, PaintShape, Painter};
@@ -24,7 +21,14 @@ use super::painter::{BlendMode, PaintGlyph, PaintImage, PaintShape, Painter};
 /// to tiny-skia's `Transform::from_row(sx, ky, kx, sy, tx, ty)`.
 fn affine_to_transform(a: Affine) -> Transform {
     let c = a.as_coeffs();
-    Transform::from_row(c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32, c[4] as f32, c[5] as f32)
+    Transform::from_row(
+        c[0] as f32,
+        c[1] as f32,
+        c[2] as f32,
+        c[3] as f32,
+        c[4] as f32,
+        c[5] as f32,
+    )
 }
 
 /// Convert a peniko `AlphaColor<Srgb>` to a tiny-skia `Color`.
@@ -46,12 +50,11 @@ fn to_fill_rule(fill: Fill) -> FillRule {
 /// Returns `None` for image brushes (not supported).
 fn brush_to_paint(brush: &Brush) -> Option<Paint<'static>> {
     match brush {
-        Brush::Solid(color) => {
-            let mut paint = Paint::default();
-            paint.shader = tiny_skia::Shader::SolidColor(to_skia_color(*color));
-            paint.anti_alias = true;
-            Some(paint)
-        }
+        Brush::Solid(color) => Some(Paint {
+            shader: tiny_skia::Shader::SolidColor(to_skia_color(*color)),
+            anti_alias: true,
+            ..Paint::default()
+        }),
         Brush::Gradient(gradient) => gradient_to_paint(gradient),
         Brush::Image(_) => {
             // Image brushes not supported in software renderer
@@ -107,7 +110,7 @@ fn gradient_to_paint(gradient: &Gradient) -> Option<Paint<'static>> {
             tiny_skia::RadialGradient::new(
                 start,
                 end,
-                radial.end_radius as f32,
+                radial.end_radius,
                 stops,
                 spread,
                 Transform::identity(),
@@ -124,22 +127,19 @@ fn gradient_to_paint(gradient: &Gradient) -> Option<Paint<'static>> {
         }
     };
 
-    let mut paint = Paint::default();
-    paint.shader = shader;
-    paint.anti_alias = true;
-    Some(paint)
+    Some(Paint {
+        shader,
+        anti_alias: true,
+        ..Paint::default()
+    })
 }
 
 /// Convert a `PaintShape` to a tiny-skia `Path`.
 fn shape_to_path(shape: &PaintShape) -> Option<Path> {
     match shape {
         PaintShape::Rect(r) => {
-            let rect = tiny_skia::Rect::from_ltrb(
-                r.x0 as f32,
-                r.y0 as f32,
-                r.x1 as f32,
-                r.y1 as f32,
-            )?;
+            let rect =
+                tiny_skia::Rect::from_ltrb(r.x0 as f32, r.y0 as f32, r.x1 as f32, r.y1 as f32)?;
             Some(PathBuilder::from_rect(rect))
         }
         PaintShape::RoundedRect(rr) => {
@@ -201,24 +201,29 @@ fn shape_to_path(shape: &PaintShape) -> Option<Path> {
 
 /// Convert a kurbo `Stroke` to a tiny-skia `Stroke`.
 fn to_skia_stroke(stroke: &KurboStroke) -> SkStroke {
-    let mut s = SkStroke::default();
-    s.width = stroke.width as f32;
-    s.miter_limit = stroke.miter_limit as f32;
-    s.line_cap = match stroke.start_cap {
+    let line_cap = match stroke.start_cap {
         peniko::kurbo::Cap::Butt => LineCap::Butt,
         peniko::kurbo::Cap::Round => LineCap::Round,
         peniko::kurbo::Cap::Square => LineCap::Square,
     };
-    s.line_join = match stroke.join {
+    let line_join = match stroke.join {
         peniko::kurbo::Join::Bevel => LineJoin::Bevel,
         peniko::kurbo::Join::Miter => LineJoin::Miter,
         peniko::kurbo::Join::Round => LineJoin::Round,
     };
-    if !stroke.dash_pattern.is_empty() {
+    let dash = if !stroke.dash_pattern.is_empty() {
         let pattern: Vec<f32> = stroke.dash_pattern.iter().map(|d| *d as f32).collect();
-        s.dash = tiny_skia::StrokeDash::new(pattern, stroke.dash_offset as f32);
+        tiny_skia::StrokeDash::new(pattern, stroke.dash_offset as f32)
+    } else {
+        None
+    };
+    SkStroke {
+        width: stroke.width as f32,
+        miter_limit: stroke.miter_limit as f32,
+        line_cap,
+        line_join,
+        dash,
     }
-    s
 }
 
 // ── Layer state ───────────────────────────────────────────────────────────
@@ -226,9 +231,7 @@ fn to_skia_stroke(stroke: &KurboStroke) -> SkStroke {
 /// Saved state for clip/layer operations.
 enum LayerState {
     /// A clip layer — just a saved mask to restore on pop.
-    Clip {
-        previous_mask: Option<Mask>,
-    },
+    Clip { previous_mask: Option<Mask> },
     /// An opacity/blend layer — content drawn to a temporary pixmap.
     Opacity {
         parent_pixmap: Pixmap,
@@ -297,6 +300,10 @@ impl TinySkiaPainter {
         self.pixmap.height()
     }
 
+    /// Fill the entire surface with an opaque white background.
+    pub fn fill_white(&mut self) {
+        self.pixmap.fill(tiny_skia::Color::WHITE);
+    }
 }
 
 impl Painter for TinySkiaPainter {
@@ -319,7 +326,13 @@ impl Painter for TinySkiaPainter {
             .fill_path(&path, &paint, fill_rule, ts, self.clip_mask.as_ref());
     }
 
-    fn stroke(&mut self, stroke: &KurboStroke, transform: Affine, brush: &Brush, shape: &PaintShape) {
+    fn stroke(
+        &mut self,
+        stroke: &KurboStroke,
+        transform: Affine,
+        brush: &Brush,
+        shape: &PaintShape,
+    ) {
         let Some(paint) = brush_to_paint(brush) else {
             return;
         };
@@ -480,9 +493,7 @@ impl Painter for TinySkiaPainter {
 
         let Some(path) = shape_to_path(shape) else {
             // Can't create path — push a no-op layer so pop_layer still works
-            self.layer_stack.push(LayerState::Clip {
-                previous_mask,
-            });
+            self.layer_stack.push(LayerState::Clip { previous_mask });
             return;
         };
 
@@ -503,9 +514,7 @@ impl Painter for TinySkiaPainter {
         }
 
         self.clip_mask = Some(mask);
-        self.layer_stack.push(LayerState::Clip {
-            previous_mask,
-        });
+        self.layer_stack.push(LayerState::Clip { previous_mask });
     }
 
     fn push_layer(
@@ -565,14 +574,7 @@ impl Painter for TinySkiaPainter {
                     blend_mode: tiny_skia::BlendMode::SourceOver,
                     quality: tiny_skia::FilterQuality::Nearest,
                 };
-                parent_pixmap.draw_pixmap(
-                    0,
-                    0,
-                    layer_ref,
-                    &paint,
-                    Transform::identity(),
-                    None,
-                );
+                parent_pixmap.draw_pixmap(0, 0, layer_ref, &paint, Transform::identity(), None);
 
                 self.pixmap = parent_pixmap;
                 self.clip_mask = parent_mask;

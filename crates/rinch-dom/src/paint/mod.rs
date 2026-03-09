@@ -11,6 +11,9 @@ mod svg;
 mod text;
 pub mod vello_painter;
 
+#[cfg(feature = "software-renderer")]
+pub mod skia_painter;
+
 use borders::*;
 use contenteditable::*;
 use svg::*;

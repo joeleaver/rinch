@@ -142,6 +142,12 @@ pub struct RinchRuntime {
     modifiers: winit::keyboard::ModifiersState,
     /// Native menu bar (attached to the window).
     native_menu: Option<muda::Menu>,
+    /// Software renderer (CPU pixel presentation via softbuffer).
+    #[cfg(feature = "software-renderer")]
+    soft_renderer: Option<super::softbuffer_renderer::SoftbufferRenderer>,
+    /// Whether to use software rendering instead of GPU.
+    #[cfg(feature = "software-renderer")]
+    use_software: bool,
 }
 
 impl RinchRuntime {
@@ -161,6 +167,10 @@ impl RinchRuntime {
             height,
             modifiers: winit::keyboard::ModifiersState::empty(),
             native_menu: None,
+            #[cfg(feature = "software-renderer")]
+            soft_renderer: None,
+            #[cfg(feature = "software-renderer")]
+            use_software: std::env::var("RINCH_SOFTWARE").is_ok(),
         }
     }
 
@@ -243,9 +253,16 @@ impl RinchRuntime {
 
         let size = window.surface_size();
 
-        // Create GPU renderer
-        let gpu = WgpuRenderer::new(&*window, size.width.max(1), size.height.max(1));
-        self.renderer = Some(gpu);
+        // Create GPU renderer (skip when using software rendering)
+        #[cfg(feature = "software-renderer")]
+        let skip_gpu = self.use_software;
+        #[cfg(not(feature = "software-renderer"))]
+        let skip_gpu = false;
+
+        if !skip_gpu {
+            let gpu = WgpuRenderer::new(&*window, size.width.max(1), size.height.max(1));
+            self.renderer = Some(gpu);
+        }
 
         // Attach native menu bar to the window if configured
         if let Some(menu) = &self.native_menu {
@@ -330,8 +347,16 @@ impl RinchRuntime {
             .expect("Failed to recreate window");
 
         let size = window.surface_size();
-        let gpu = WgpuRenderer::new(&*window, size.width.max(1), size.height.max(1));
-        self.renderer = Some(gpu);
+
+        #[cfg(feature = "software-renderer")]
+        let skip_gpu = self.use_software;
+        #[cfg(not(feature = "software-renderer"))]
+        let skip_gpu = false;
+
+        if !skip_gpu {
+            let gpu = WgpuRenderer::new(&*window, size.width.max(1), size.height.max(1));
+            self.renderer = Some(gpu);
+        }
 
         let winit_window = WinitWindow::new(window);
         self.window = Some(winit_window);
@@ -349,6 +374,50 @@ impl RinchRuntime {
 
     /// Paint the current scene to the window.
     fn paint(&mut self) -> Result<(), String> {
+        #[cfg(feature = "software-renderer")]
+        if self.use_software {
+            return self.paint_software();
+        }
+        self.paint_gpu()
+    }
+
+    #[cfg(feature = "software-renderer")]
+    fn paint_software(&mut self) -> Result<(), String> {
+        let paint_start = std::time::Instant::now();
+        let Some(window) = &self.window else {
+            return Ok(());
+        };
+
+        let scale = window.scale_factor();
+        let size = window.inner_size();
+
+        let (pixels, w, h) = self.app.build_pixels(scale, size);
+
+        // Lazily create or get the softbuffer renderer
+        if self.soft_renderer.is_none() {
+            self.soft_renderer = Some(super::softbuffer_renderer::SoftbufferRenderer::new(
+                window.window.clone(),
+                w,
+                h,
+            ));
+        }
+
+        if let Some(renderer) = &mut self.soft_renderer {
+            renderer.present_pixels(pixels, w, h);
+        }
+
+        if std::env::var("RINCH_PERF").is_ok() {
+            let elapsed = paint_start.elapsed();
+            eprintln!(
+                "[PERF] paint (software): {:.2}ms",
+                elapsed.as_secs_f64() * 1000.0
+            );
+        }
+
+        Ok(())
+    }
+
+    fn paint_gpu(&mut self) -> Result<(), String> {
         let paint_start = std::time::Instant::now();
         let Some(renderer) = &mut self.renderer else {
             return Ok(());
@@ -696,6 +765,41 @@ impl RinchRuntime {
         }
     }
 
+    /// Capture a screenshot from whichever renderer is active.
+    #[cfg(feature = "debug")]
+    fn capture_screenshot_impl(&mut self) -> DebugResult {
+        // Software renderer: get pixels directly from TinySkiaPainter
+        #[cfg(feature = "software-renderer")]
+        if self.use_software {
+            let scale = self.scale_factor();
+            let size = self.window_size();
+            let (pixels, w, h) = self.app.build_pixels(scale, size);
+            let png_bytes = screenshot::encode_png(pixels, w, h);
+            return DebugResult::Bytes {
+                data: base64::engine::general_purpose::STANDARD.encode(&png_bytes),
+            };
+        }
+
+        // GPU renderer
+        if let Some(renderer) = &self.renderer {
+            match renderer.capture_screenshot() {
+                Ok((w, h, rgba)) => {
+                    let png_bytes = screenshot::encode_png(&rgba, w, h);
+                    DebugResult::Bytes {
+                        data: base64::engine::general_purpose::STANDARD.encode(&png_bytes),
+                    }
+                }
+                Err(e) => DebugResult::Error {
+                    message: format!("Screenshot capture failed: {}", e),
+                },
+            }
+        } else {
+            DebugResult::Error {
+                message: "No renderer".into(),
+            }
+        }
+    }
+
     /// Handle debug commands that require the renderer (e.g., screenshots).
     /// Returns true if the event loop should exit.
     #[cfg(feature = "debug")]
@@ -720,23 +824,8 @@ impl RinchRuntime {
                         DebugResult::Error {
                             message: format!("Paint failed: {}", e),
                         }
-                    } else if let Some(renderer) = &self.renderer {
-                        match renderer.capture_screenshot() {
-                            Ok((w, h, rgba)) => {
-                                let png_bytes = screenshot::encode_png(&rgba, w, h);
-                                DebugResult::Bytes {
-                                    data: base64::engine::general_purpose::STANDARD
-                                        .encode(&png_bytes),
-                                }
-                            }
-                            Err(e) => DebugResult::Error {
-                                message: format!("Screenshot capture failed: {}", e),
-                            },
-                        }
                     } else {
-                        DebugResult::Error {
-                            message: "No renderer".into(),
-                        }
+                        self.capture_screenshot_impl()
                     }
                 }
                 _ => {
