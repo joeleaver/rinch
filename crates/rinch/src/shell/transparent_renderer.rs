@@ -99,7 +99,7 @@ impl TransparentWindowRenderer {
             tracing::info!("Using DX12 with DirectComposition for transparent window");
             Backends::DX12
         } else {
-            Backends::from_env().unwrap_or_default()
+            Backends::from_env().unwrap_or(Backends::VULKAN | Backends::METAL | Backends::DX12)
         };
 
         let state = self.create_render_state(window, width, height, backends);

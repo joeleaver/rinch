@@ -166,7 +166,11 @@ impl WgpuRenderer {
         let width = width.max(1);
         let height = height.max(1);
 
-        let backends = Backends::from_env().unwrap_or_default();
+        // Default to GPU-only backends (Vulkan/Metal/DX12). Skip GL/GLES probing
+        // which loads Mesa gallium + LLVM (~70MB RSS) but can't run Vello anyway
+        // (Vello requires compute shaders). WGPU_BACKEND env var still overrides.
+        let backends =
+            Backends::from_env().unwrap_or(Backends::VULKAN | Backends::METAL | Backends::DX12);
         let instance = Instance::new(&InstanceDescriptor {
             backends,
             flags: wgpu::InstanceFlags::from_build_config().with_env(),
