@@ -465,18 +465,26 @@ impl std::fmt::Debug for RenderSurfaceHandle {
 // ── Thread-local registry ────────────────────────────────────────────────────
 
 thread_local! {
-    /// All active render surfaces.
+    /// Mounted render surfaces — only surfaces with a live DOM element.
+    ///
+    /// Surfaces are added when their [`RenderSurface`] component mounts and
+    /// removed when the component's scope is disposed (tab switch, conditional
+    /// hide, etc.). This ensures the compositor, render callbacks, and event
+    /// dispatch only operate on surfaces that are actually visible.
     static SURFACE_REGISTRY: RefCell<Vec<RenderSurfaceHandle>> = const { RefCell::new(Vec::new()) };
     /// Currently focused surface ID (receives keyboard events).
     static FOCUSED_SURFACE: RefCell<Option<usize>> = const { RefCell::new(None) };
 }
 
-/// Create a new render surface and register it.
+/// Create a new render surface.
 ///
 /// Returns a handle that should be passed to the [`RenderSurface`] component.
+/// The surface is **not** registered for compositing until the component mounts.
+/// Writers and GPU registrars can be obtained immediately and will buffer data
+/// until the surface becomes visible.
 pub fn create_render_surface() -> RenderSurfaceHandle {
     let id = next_surface_id();
-    let handle = RenderSurfaceHandle {
+    RenderSurfaceHandle {
         id,
         buffer: Arc::new(Mutex::new(SurfaceBuffer {
             pixels: Vec::new(),
@@ -494,20 +502,18 @@ pub fn create_render_surface() -> RenderSurfaceHandle {
         #[cfg(target_arch = "wasm32")]
         canvas_ctx: std::rc::Rc::new(RefCell::new(None)),
         render_callback: std::rc::Rc::new(RefCell::new(None)),
-    };
-
-    SURFACE_REGISTRY.with(|reg| {
-        reg.borrow_mut().push(handle.clone());
-    });
-
-    handle
+    }
 }
 
-/// Create a render surface with a specific viewport name.
+/// Create a render surface with a specific viewport name and auto-register it.
 ///
 /// Used internally to bridge video players to the RenderSurface compositing
 /// pipeline. The viewport name must match the `data-viewport` attribute on
 /// the corresponding DOM element (e.g., `VideoViewport`).
+///
+/// Unlike [`create_render_surface`], this auto-registers because video surfaces
+/// bypass the [`RenderSurface`] component (they use `VideoViewport` + a raw
+/// `SurfaceWriter` instead).
 pub fn create_render_surface_with_name(viewport_name: &str) -> RenderSurfaceHandle {
     let id = next_surface_id();
     let handle = RenderSurfaceHandle {
@@ -537,7 +543,26 @@ pub fn create_render_surface_with_name(viewport_name: &str) -> RenderSurfaceHand
     handle
 }
 
-/// Unregister a render surface by ID.
+/// Register a surface as mounted (visible in the DOM).
+///
+/// Called by [`RenderSurface::render`] when the component mounts. If the
+/// surface is already registered (e.g., re-mounted), this is a no-op.
+pub fn mount_render_surface(handle: &RenderSurfaceHandle) {
+    SURFACE_REGISTRY.with(|reg| {
+        let mut reg = reg.borrow_mut();
+        // Avoid duplicate registration (e.g., if same handle passed to two components)
+        if !reg.iter().any(|s| s.id == handle.id) {
+            reg.push(handle.clone());
+        }
+    });
+}
+
+/// Unregister a render surface by ID (unmount).
+///
+/// Called when the [`RenderSurface`] component's scope is disposed.
+/// Removes the surface from the mounted registry so the compositor
+/// stops collecting its frames and invoking its render callback.
+/// Also clears focus if this surface was focused.
 pub fn unregister_render_surface(id: usize) {
     SURFACE_REGISTRY.with(|reg| {
         reg.borrow_mut().retain(|s| s.id != id);
@@ -633,7 +658,7 @@ pub fn update_layout_size(viewport_name: &str, width: u32, height: u32) {
     });
 }
 
-/// Check if any render surfaces are registered (even if they haven't submitted frames yet).
+/// Check if any render surfaces are currently mounted (have a live DOM element).
 pub fn any_surfaces_registered() -> bool {
     SURFACE_REGISTRY.with(|reg| !reg.borrow().is_empty())
 }
@@ -735,6 +760,19 @@ pub struct RenderSurface {
 
 impl Component for RenderSurface {
     fn render(&self, scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
+        if let Some(ref surface) = self.surface {
+            // Mount: register the surface so the compositor, render callbacks,
+            // and event dispatch can find it.
+            mount_render_surface(surface);
+
+            // Unmount: unregister when this scope is disposed (tab switch,
+            // conditional hide, etc.) so stale surfaces aren't composited.
+            let surface_id = surface.id;
+            scope.on_cleanup(move || {
+                unregister_render_surface(surface_id);
+            });
+        }
+
         #[cfg(not(target_arch = "wasm32"))]
         {
             let div = scope.create_element("div");

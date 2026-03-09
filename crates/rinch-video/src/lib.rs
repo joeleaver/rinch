@@ -12,8 +12,9 @@
 //! # Architecture
 //!
 //! - **Desktop**: libmpv handles decoding, A/V sync, and audio output.
-//!   Decoded frames are uploaded as wgpu textures and composited underneath
-//!   the Vello UI layer.
+//!   Decoded frames are delivered through a frame sink (registered via
+//!   [`set_frame_sink_factory`]) which routes them to a `SurfaceWriter`
+//!   for compositing via the RenderSurface pipeline.
 //! - **WASM**: A real `<video>` DOM element is created; the browser handles
 //!   everything.
 //!
@@ -89,12 +90,6 @@ thread_local! {
     /// Registry of active (playing) video players.
     /// Polled each frame to drain backend updates into signals.
     static ACTIVE_PLAYERS: RefCell<Vec<VideoPlayer>> = const { RefCell::new(Vec::new()) };
-
-    /// Persistent frame cache: last decoded frame per player viewport.
-    /// Ensures all players' frames are composited every cycle, not just
-    /// the ones that decoded a new frame this particular cycle.
-    #[cfg(not(target_arch = "wasm32"))]
-    static FRAME_CACHE: RefCell<Vec<(String, Vec<u8>, u32, u32)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Check if any video player is currently active (playing).
@@ -177,49 +172,5 @@ pub fn poll_active_players() {
     ACTIVE_PLAYERS.with(|list| {
         let mut list = list.borrow_mut();
         list.retain(|p| p.state.get() != PlaybackState::Ended);
-    });
-}
-
-/// Update the persistent frame cache with any new frames from active players,
-/// then return ALL cached frames for compositing.
-///
-/// This ensures every player's last frame is always composited, even if only
-/// some players decoded a new frame this cycle.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn collect_video_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
-    ACTIVE_PLAYERS.with(|list| {
-        let list = list.borrow();
-        FRAME_CACHE.with(|cache| {
-            let mut cache = cache.borrow_mut();
-            // Update cache with any new frames
-            for player in list.iter() {
-                if player.has_new_frame() {
-                    if let Some((pixels, w, h)) = player.take_frame() {
-                        let vid = player.viewport_id();
-                        // Update or insert this player's cached frame
-                        if let Some(entry) = cache.iter_mut().find(|(name, _, _, _)| *name == vid) {
-                            *entry = (vid, pixels, w, h);
-                        } else {
-                            cache.push((vid, pixels, w, h));
-                        }
-                    }
-                }
-            }
-            // Remove cached frames for players no longer active
-            let active_ids: Vec<String> = list.iter().map(|p| p.viewport_id()).collect();
-            cache.retain(|(name, _, _, _)| active_ids.contains(name));
-            // Return clones of all cached frames
-            cache.clone()
-        })
-    })
-}
-
-/// Clear the frame cache for a specific viewport (called on cleanup).
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn clear_frame_cache(viewport_id: &str) {
-    FRAME_CACHE.with(|cache| {
-        cache
-            .borrow_mut()
-            .retain(|(name, _, _, _)| name != viewport_id);
     });
 }

@@ -17,7 +17,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use rinch_core::Signal;
 
@@ -54,21 +54,13 @@ enum MpvUpdate {
     VideoHeight(i64),
 }
 
-// ── Shared frame buffer ─────────────────────────────────────────────────────
-
-struct FrameBuffer {
-    pixels: Vec<u8>,
-    width: u32,
-    height: u32,
-    new_frame: bool,
-}
-
 // ── MpvPlayer ───────────────────────────────────────────────────────────────
 
 /// libmpv-based video player with software frame rendering.
 pub struct MpvPlayer {
     mpv: Arc<Mutex<libmpv2::Mpv>>,
-    frame_buffer: Arc<Mutex<FrameBuffer>>,
+    /// Reusable pixel buffer for SW rendering (avoids per-frame allocation).
+    render_buffer: RefCell<Vec<u8>>,
     /// SW render context for frame extraction (raw pointer, main-thread only).
     render_ctx: *mut libmpv2_sys::mpv_render_context,
     /// Current video display width (from dwidth property).
@@ -81,11 +73,9 @@ pub struct MpvPlayer {
     signals: PlayerSignals,
     /// Flag to stop the event thread.
     running: Arc<Mutex<bool>>,
-    /// Kept alive for the render update callback (writes to this via raw pointer).
-    /// We use timer-based throttling rather than reading this flag directly.
-    _needs_render: Arc<AtomicBool>,
-    /// Timestamp of last render() call for frame-rate throttling.
-    last_render: Cell<Instant>,
+    /// Set by mpv's render update callback when a new frame is available.
+    /// Checked and cleared on each poll to render only when needed.
+    needs_render: Arc<AtomicBool>,
     /// Set to true on EndFile — short-circuits all mpv interaction in poll_updates.
     /// Cleared when play() restarts playback.
     finished: Cell<bool>,
@@ -221,19 +211,15 @@ impl VideoPlayerBackend for MpvPlayer {
             }
         }
 
-        // Throttle render calls to ~30fps (33ms) to prevent mpv from advancing
-        // faster than realtime. Each render() call may advance mpv's internal state,
-        // so calling too frequently causes fast-forward playback.
-        // Skip rendering when playback has ended or errored to avoid blocking.
+        // Render when mpv signals a new frame is available via the update callback.
+        // Since we use BLOCK=0 and never call report_swap(), rendering is a
+        // non-blocking snapshot of the current audio-clock position — safe to call
+        // at display refresh rate without causing fast-forward.
         if !self.render_ctx.is_null() {
             let state = self.signals.state.get();
             let should_render = matches!(state, PlaybackState::Playing | PlaybackState::Loading);
-            if should_render {
-                let now = Instant::now();
-                if now.duration_since(self.last_render.get()) >= Duration::from_millis(33) {
-                    self.last_render.set(now);
-                    self.render_sw_frame();
-                }
+            if should_render && self.needs_render.swap(false, Ordering::AcqRel) {
+                self.render_sw_frame();
             }
         }
     }
@@ -302,26 +288,10 @@ impl VideoPlayerBackend for MpvPlayer {
     fn set_frame_sink(&self, sink: crate::player::FrameSink) {
         *self.frame_sink.borrow_mut() = Some(sink);
     }
-
-    fn has_new_frame(&self) -> bool {
-        self.frame_buffer
-            .lock()
-            .map(|fb| fb.new_frame)
-            .unwrap_or(false)
-    }
-
-    fn take_frame(&self) -> Option<(Vec<u8>, u32, u32)> {
-        let mut fb = self.frame_buffer.lock().ok()?;
-        if !fb.new_frame || fb.pixels.is_empty() {
-            return None;
-        }
-        fb.new_frame = false;
-        Some((fb.pixels.clone(), fb.width, fb.height))
-    }
 }
 
 impl MpvPlayer {
-    /// Render the current video frame into the shared FrameBuffer using the SW render API.
+    /// Render the current video frame using the SW render API and deliver via the frame sink.
     ///
     /// IMPORTANT: mpv requires `mpv_render_context_render` to be called every time
     /// the update callback fires, otherwise it won't fire again. When video dimensions
@@ -343,31 +313,21 @@ impl MpvPlayer {
         let stride = w as usize * 4; // 4 bytes per pixel (rgb0)
         let buf_size = stride * h as usize;
 
-        // Prepare the pixel buffer
-        let mut fb = match self.frame_buffer.lock() {
-            Ok(fb) => fb,
-            Err(_) => return,
-        };
-
-        // Resize buffer if needed
-        if fb.pixels.len() != buf_size {
-            fb.pixels.resize(buf_size, 0);
+        let mut buf = self.render_buffer.borrow_mut();
+        if buf.len() != buf_size {
+            buf.resize(buf_size, 0);
         }
-        fb.width = w;
-        fb.height = h;
 
-        self.do_sw_render(fb.pixels.as_mut_ptr(), w, h, stride);
+        self.do_sw_render(buf.as_mut_ptr(), w, h, stride);
+
         // Fix alpha channel: rgb0 format gives A=0, we need A=255 for opaque video
-        for pixel in fb.pixels.chunks_exact_mut(4) {
+        for pixel in buf.chunks_exact_mut(4) {
             pixel[3] = 255;
         }
 
-        // Deliver frame through the sink if one is set (RenderSurface pipeline).
-        // Otherwise, mark the frame buffer for the legacy collect_video_frames path.
+        // Deliver frame through the sink (RenderSurface compositing pipeline).
         if let Some(sink) = self.frame_sink.borrow().as_ref() {
-            sink(&fb.pixels, w, h);
-        } else {
-            fb.new_frame = true;
+            sink(&buf, w, h);
         }
     }
 
@@ -476,9 +436,9 @@ fn create_mpv_player_impl(
     if start_paused {
         mpv.set_property("pause", true)?;
     }
-    // Don't set video-sync — the SW render API controls frame timing externally
-    // via our 33ms throttle. Setting video-sync modes can cause blocking near
-    // end-of-file when mpv tries to sync to a clock we don't control.
+    // Don't set video-sync — we render on demand via the update callback flag.
+    // Setting video-sync modes can cause blocking near end-of-file when mpv
+    // tries to sync to a clock we don't control.
 
     // Create SW render context
     let render_ctx = {
@@ -521,9 +481,8 @@ fn create_mpv_player_impl(
         tracing::info!("rinch-video: vo={vo}");
     }
 
-    // Set up render update callback. We ALSO poll render() on every frame
-    // tick (brute-force), but mpv may need the callback registered to engage
-    // its render pipeline.
+    // Set up render update callback. mpv calls this from an internal thread
+    // when a new frame is available, setting the needs_render flag.
     let needs_render = Arc::new(AtomicBool::new(false));
     {
         let flag = Arc::clone(&needs_render);
@@ -564,12 +523,6 @@ fn create_mpv_player_impl(
     )?;
 
     let mpv = Arc::new(Mutex::new(mpv));
-    let frame_buffer = Arc::new(Mutex::new(FrameBuffer {
-        pixels: Vec::new(),
-        width: 0,
-        height: 0,
-        new_frame: false,
-    }));
     let video_width = Arc::new(Mutex::new(0u32));
     let video_height = Arc::new(Mutex::new(0u32));
 
@@ -610,15 +563,14 @@ fn create_mpv_player_impl(
 
     let backend = MpvPlayer {
         mpv: mpv.clone(),
-        frame_buffer,
+        render_buffer: RefCell::new(Vec::new()),
         render_ctx,
         video_width,
         video_height,
         update_rx,
         signals: signals.clone(),
         running,
-        _needs_render: needs_render,
-        last_render: Cell::new(Instant::now()),
+        needs_render,
         finished: Cell::new(false),
         frame_sink: RefCell::new(None),
     };

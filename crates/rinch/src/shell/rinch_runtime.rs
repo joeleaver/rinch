@@ -365,51 +365,9 @@ impl RinchRuntime {
         let mut all_layers: Vec<rinch_platform::CompositeLayer> = Vec::new();
         let s = scale as f32;
 
-        // Extract video frames for compositing
-        #[cfg(feature = "video")]
-        {
-            // When videos are actively playing, grab new frames for compositing.
-            // When paused/ended but still loaded, keep the last frame visible.
-            // Only clear video layers when all videos are fully unloaded (cleanup).
-            if rinch_video::is_video_active() {
-                let frames = rinch_video::collect_video_frames();
-                for (viewport_name, pixels, vid_w, vid_h) in frames {
-                    if let Some(viewport) = self.app.viewport_rect(&viewport_name) {
-                        // Scale viewport from logical to physical pixels
-                        let viewport = (
-                            viewport.0 * s,
-                            viewport.1 * s,
-                            viewport.2 * s,
-                            viewport.3 * s,
-                        );
-
-                        // Letterbox: fit video within viewport preserving aspect ratio
-                        let viewport = {
-                            let (vx, vy, vw, vh) = viewport;
-                            let video_aspect = vid_w as f32 / vid_h as f32;
-                            let viewport_aspect = vw / vh;
-                            if video_aspect > viewport_aspect {
-                                let fit_h = vw / video_aspect;
-                                let offset_y = (vh - fit_h) / 2.0;
-                                (vx, vy + offset_y, vw, fit_h)
-                            } else {
-                                let fit_w = vh * video_aspect;
-                                let offset_x = (vw - fit_w) / 2.0;
-                                (vx + offset_x, vy, fit_w, vh)
-                            }
-                        };
-
-                        all_layers.push(rinch_platform::CompositeLayer {
-                            pixels,
-                            width: vid_w,
-                            height: vid_h,
-                            viewport,
-                            border_radius: [0.0; 4],
-                        });
-                    }
-                }
-            }
-        }
+        // Video frames are delivered through the frame sink → RenderSurface pipeline
+        // (set up via set_frame_sink_factory at startup). They are collected alongside
+        // other render surface frames below — no separate video collection needed.
 
         // Update layout sizes for all render surfaces so render callbacks
         // receive correct dimensions.  Previously this was only done for GPU
@@ -440,6 +398,26 @@ impl RinchRuntime {
                         viewport.2 * s,
                         viewport.3 * s,
                     );
+
+                    // Letterbox: fit source within viewport preserving aspect ratio.
+                    // No-op when source and viewport aspects already match.
+                    let viewport = {
+                        let (vx, vy, vw, vh) = viewport;
+                        let src_aspect = surf_w as f32 / surf_h.max(1) as f32;
+                        let vp_aspect = vw / vh.max(1.0);
+                        if (src_aspect - vp_aspect).abs() < 0.001 {
+                            viewport
+                        } else if src_aspect > vp_aspect {
+                            let fit_h = vw / src_aspect;
+                            let offset_y = (vh - fit_h) / 2.0;
+                            (vx, vy + offset_y, vw, fit_h)
+                        } else {
+                            let fit_w = vh * src_aspect;
+                            let offset_x = (vw - fit_w) / 2.0;
+                            (vx + offset_x, vy, fit_w, vh)
+                        }
+                    };
+
                     let border_radius = [radii[0] * s, radii[1] * s, radii[2] * s, radii[3] * s];
                     all_layers.push(rinch_platform::CompositeLayer {
                         pixels,
@@ -490,13 +468,15 @@ impl RinchRuntime {
             renderer.set_composite_layers(all_layers);
             renderer.set_gpu_layers(gpu_layers);
         } else if renderer.has_composite_layers() {
-            // Clear layers only when nothing is active (no video, no surfaces)
+            // Clear stale layers when nothing was collected this frame.
+            // Keep layers alive only when a video is loaded but paused
+            // (so the last decoded frame remains visible).
             #[cfg(feature = "video")]
             let video_loaded = rinch_video::is_video_loaded();
             #[cfg(not(feature = "video"))]
             let video_loaded = false;
 
-            if !video_loaded && !crate::render_surface::any_surfaces_registered() {
+            if !video_loaded {
                 renderer.set_composite_layers(vec![]);
                 renderer.set_gpu_layers(vec![]);
             }

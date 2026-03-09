@@ -54,24 +54,11 @@ pub trait VideoPlayerBackend {
 
     /// Set a frame sink callback that receives decoded RGBA frames.
     ///
-    /// When set, `render_sw_frame()` delivers frames through this sink
-    /// instead of (or in addition to) storing in the internal frame buffer.
-    /// The sink is `Send + Sync` and can be called from any thread.
+    /// The sink is called from the main thread during `poll_updates()` with
+    /// each decoded frame. The sink is `Send + Sync` so it can route frames
+    /// to a `SurfaceWriter` for compositing.
     #[cfg(not(target_arch = "wasm32"))]
     fn set_frame_sink(&self, _sink: FrameSink) {}
-
-    /// Desktop only: check if a new frame is available since last call.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn has_new_frame(&self) -> bool {
-        false
-    }
-
-    /// Desktop only: get the current frame pixels (RGBA8, width, height).
-    /// Returns None if no frame is available.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn take_frame(&self) -> Option<(Vec<u8>, u32, u32)> {
-        None
-    }
 }
 
 /// Handle to a video player instance.
@@ -201,25 +188,11 @@ impl VideoPlayer {
 
     /// Set a frame sink that receives decoded RGBA frames.
     ///
-    /// When set, frames are delivered through this callback instead of
-    /// being stored internally. Used by rinch to route video frames
-    /// through the RenderSurface compositing pipeline.
+    /// Frames are delivered through this callback and routed to the
+    /// RenderSurface compositing pipeline via `SurfaceWriter`.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn set_frame_sink(&self, sink: FrameSink) {
         self.inner.borrow().set_frame_sink(sink);
-    }
-
-    /// Check if a new decoded frame is available (desktop only).
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn has_new_frame(&self) -> bool {
-        self.inner.borrow().has_new_frame()
-    }
-
-    /// Take the latest decoded frame pixels (desktop only).
-    /// Returns (rgba_pixels, width, height) or None.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn take_frame(&self) -> Option<(Vec<u8>, u32, u32)> {
-        self.inner.borrow().take_frame()
     }
 }
 
