@@ -161,13 +161,29 @@ impl RinchApp {
                     let scroll_delta = (dy as f64 / track_height) * drag.content_height;
                     let new_scroll = (drag.start_scroll + scroll_delta).clamp(0.0, max_scroll);
 
+                    let mut scroll_handler_to_fire: Option<(usize, f64)> = None;
                     if let Some(doc) = &self.doc {
                         let mut d = doc.borrow_mut();
+                        // Extract handler ID before mutable node access to avoid borrow conflicts
+                        let handler_id = d
+                            .tree
+                            .nodes
+                            .get(node_id)
+                            .and_then(|n| n.attributes.get("data-onscroll"))
+                            .and_then(|s| s.parse::<usize>().ok());
                         if let Some(node) = d.tree.nodes.get_mut(node_id) {
                             node.scroll_offset.1 = new_scroll;
                             node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
                             d.tree.push_dirty(node_id);
                         }
+                        d.tree.dirty_nodes.insert(node_id);
+                        if let Some(hid) = handler_id {
+                            scroll_handler_to_fire = Some((hid, new_scroll));
+                        }
+                    }
+                    if let Some((handler_id, scroll_top)) = scroll_handler_to_fire {
+                        use rinch_core::events::{EventHandlerId, dispatch_scroll_event};
+                        dispatch_scroll_event(EventHandlerId(handler_id), scroll_top);
                     }
                     actions.push(AppAction::RequestRedraw);
                     return actions;
@@ -340,6 +356,7 @@ impl RinchApp {
                 };
 
                 if let Some((node_id, content_height, container_height)) = scrollbar_hit {
+                    let mut scroll_handler_to_fire: Option<(usize, f64)> = None;
                     if let Some(doc) = &self.doc {
                         let mut d = doc.borrow_mut();
                         let node_abs_y = compute_absolute_y(&d.tree, node_id);
@@ -350,10 +367,20 @@ impl RinchApp {
                         let click_ratio = ((y as f64 - track_top) / track_height).clamp(0.0, 1.0);
                         let new_scroll = click_ratio * max_scroll;
 
+                        let handler_id = d
+                            .tree
+                            .nodes
+                            .get(node_id)
+                            .and_then(|n| n.attributes.get("data-onscroll"))
+                            .and_then(|s| s.parse::<usize>().ok());
                         if let Some(node) = d.tree.nodes.get_mut(node_id) {
                             node.scroll_offset.1 = new_scroll;
                             node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
                             d.tree.push_dirty(node_id);
+                        }
+                        d.tree.dirty_nodes.insert(node_id);
+                        if let Some(hid) = handler_id {
+                            scroll_handler_to_fire = Some((hid, new_scroll));
                         }
 
                         self.scrollbar_drag = Some(ScrollbarDrag {
@@ -363,6 +390,10 @@ impl RinchApp {
                             content_height,
                             container_height,
                         });
+                    }
+                    if let Some((handler_id, scroll_top)) = scroll_handler_to_fire {
+                        use rinch_core::events::{EventHandlerId, dispatch_scroll_event};
+                        dispatch_scroll_event(EventHandlerId(handler_id), scroll_top);
                     }
                     actions.push(AppAction::RequestRedraw);
                 } else {
@@ -509,6 +540,7 @@ impl RinchApp {
                     let hit_node = hit_test(&doc.borrow().tree, x, y);
                     if let Some(hit_node) = hit_node {
                         let mut doc_mut = doc.borrow_mut();
+                        let mut scroll_handler_to_fire: Option<(usize, f64)> = None;
 
                         // Vertical scrolling
                         if delta_y.abs() > 0.0
@@ -521,13 +553,30 @@ impl RinchApp {
                                 compute_visible_content_area_height(&doc_mut.tree, scroll_node_id);
                             let max_scroll = (content_height - visible_height).max(0.0);
 
-                            if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
-                                let new_y = (node.scroll_offset.1 - delta_y).clamp(0.0, max_scroll);
-                                if new_y != node.scroll_offset.1 {
+                            // Read handler ID before mutable borrow
+                            let handler_id = doc_mut
+                                .tree
+                                .nodes
+                                .get(scroll_node_id)
+                                .and_then(|n| n.attributes.get("data-onscroll"))
+                                .and_then(|s| s.parse::<usize>().ok());
+                            let old_y = doc_mut
+                                .tree
+                                .nodes
+                                .get(scroll_node_id)
+                                .map(|n| n.scroll_offset.1)
+                                .unwrap_or(0.0);
+                            let new_y = (old_y - delta_y).clamp(0.0, max_scroll);
+                            if new_y != old_y {
+                                if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
                                     node.scroll_offset.1 = new_y;
                                     node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
                                     doc_mut.tree.push_dirty(scroll_node_id);
                                     self.scene_dirty = true;
+                                }
+                                doc_mut.tree.dirty_nodes.insert(scroll_node_id);
+                                if let Some(hid) = handler_id {
+                                    scroll_handler_to_fire = Some((hid, new_y));
                                 }
                             }
                         }
@@ -555,6 +604,10 @@ impl RinchApp {
                         }
 
                         drop(doc_mut);
+                        if let Some((handler_id, scroll_top)) = scroll_handler_to_fire {
+                            use rinch_core::events::{EventHandlerId, dispatch_scroll_event};
+                            dispatch_scroll_event(EventHandlerId(handler_id), scroll_top);
+                        }
                         actions.push(AppAction::RequestRedraw);
                     }
                 }

@@ -92,6 +92,14 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                         #elem_var.set_attribute("data-oninput", &__handler_id.0.to_string());
                     }
                 }
+            } else if event_name == "onscroll" {
+                // Scroll events use register_scroll_handler with Fn(f64)
+                quote! {
+                    {
+                        let __handler_id = __scope.register_scroll_handler(#handler);
+                        #elem_var.set_attribute("data-onscroll", &__handler_id.0.to_string());
+                    }
+                }
             } else if event_name == "onfiledrop" {
                 // OS file-drop events use register_file_drop_handler with Fn(Vec<PathBuf>)
                 quote! {
