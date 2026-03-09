@@ -6,6 +6,7 @@
 mod borders;
 mod contenteditable;
 pub mod image;
+pub mod painter;
 mod svg;
 mod text;
 
