@@ -38,7 +38,10 @@ pub use reactive::{
 };
 
 // Re-export context for sharing state across components
-pub use context::{clear_context, create_context, try_use_context, use_context};
+pub use context::{
+    clear_context, create_context, create_store, try_use_context, try_use_store, use_context,
+    use_store,
+};
 
 // Re-export event handling types
 pub use events::{

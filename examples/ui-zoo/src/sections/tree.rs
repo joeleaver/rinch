@@ -7,7 +7,7 @@ use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 use std::rc::Rc;
 
-/// State for the Tree section, stored in context.
+/// State for the Tree section, stored in a store.
 #[derive(Clone)]
 pub struct TreeSectionState {
     /// Currently selected node value (for selection demo).
@@ -27,7 +27,7 @@ pub struct TreeSectionState {
 
 /// Initialize the Tree section state. Call this from the main app function.
 pub fn init_tree_state() {
-    create_context(TreeSectionState {
+    create_store(TreeSectionState {
         selected_value: Signal::new(None),
         basic_tree: UseTreeReturn::new(UseTreeOptions {
             initial_expanded: get_tree_expanded_state(&basic_data(), &["src"]),
@@ -77,7 +77,7 @@ pub fn init_tree_state() {
 
 #[component]
 pub fn tree_section() -> NodeHandle {
-    let state = use_context::<TreeSectionState>();
+    let state = use_store::<TreeSectionState>();
 
     let (
         selected_value,

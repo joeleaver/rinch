@@ -2,7 +2,7 @@
 
 use rinch::prelude::*;
 
-/// State for the Inputs section, stored in context.
+/// State for the Inputs section, stored in a store.
 #[derive(Clone)]
 pub struct InputsSectionState {
     pub check1: Signal<bool>,
@@ -28,7 +28,7 @@ pub struct InputsSectionState {
 
 /// Initialize the Inputs section state. Call this from the main app function.
 pub fn init_inputs_state() {
-    create_context(InputsSectionState {
+    create_store(InputsSectionState {
         check1: Signal::new(false),
         check2: Signal::new(true),
         check_xs: Signal::new(true),
@@ -53,8 +53,8 @@ pub fn init_inputs_state() {
 
 #[component]
 pub fn inputs_section() -> NodeHandle {
-    // Get state from context (initialized in main app)
-    let state = use_context::<InputsSectionState>();
+    // Get state from store (initialized in main app)
+    let state = use_store::<InputsSectionState>();
 
     let (
         check1,

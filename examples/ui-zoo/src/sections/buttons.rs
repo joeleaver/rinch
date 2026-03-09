@@ -2,7 +2,7 @@
 
 use rinch::prelude::*;
 
-/// State for the Buttons section, stored in context.
+/// State for the Buttons section, stored in a store.
 #[derive(Clone)]
 pub struct ButtonsSectionState {
     pub counter: Signal<i32>,
@@ -10,15 +10,15 @@ pub struct ButtonsSectionState {
 
 /// Initialize the Buttons section state. Call this from the main app function.
 pub fn init_buttons_state() {
-    create_context(ButtonsSectionState {
+    create_store(ButtonsSectionState {
         counter: Signal::new(0),
     });
 }
 
 #[component]
 pub fn buttons_section() -> NodeHandle {
-    // Get state from context
-    let state = use_context::<ButtonsSectionState>();
+    // Get state from store
+    let state = use_store::<ButtonsSectionState>();
 
     let counter = state.counter;
 

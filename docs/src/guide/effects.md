@@ -2,10 +2,12 @@
 
 An **Effect** is a side-effect that runs when its dependencies change. Effects automatically track which signals they read and re-run when any of those signals update.
 
+> **Note:** `Effect` is not in the prelude — it's a power-user tool for rare cases like syncing to external systems. For reactive DOM updates, use `{|| expr}` closures in rsx. For state mutations, use [store methods](./stores.md). Import explicitly when needed: `use rinch::reactive::Effect;`
+
 ## Creating Effects
 
 ```rust
-use rinch::prelude::*;
+use rinch::reactive::Effect;
 
 let count = Signal::new(0);
 

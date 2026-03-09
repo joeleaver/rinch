@@ -2,7 +2,7 @@
 
 use rinch::prelude::*;
 
-/// State for the Feedback section, stored in context.
+/// State for the Feedback section, stored in a store.
 #[derive(Clone)]
 pub struct FeedbackSectionState {
     pub progress_value: Signal<f64>,
@@ -12,7 +12,7 @@ pub struct FeedbackSectionState {
 
 /// Initialize the Feedback section state. Call this from the main app function.
 pub fn init_feedback_state() {
-    create_context(FeedbackSectionState {
+    create_store(FeedbackSectionState {
         progress_value: Signal::new(65.0),
         notification_visible: Signal::new(false),
         notification_error_visible: Signal::new(false),
@@ -21,7 +21,7 @@ pub fn init_feedback_state() {
 
 #[component]
 pub fn feedback_section() -> NodeHandle {
-    let state = use_context::<FeedbackSectionState>();
+    let state = use_store::<FeedbackSectionState>();
 
     let (progress_value, notification_visible, notification_error_visible) = (
         state.progress_value,

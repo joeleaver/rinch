@@ -16,13 +16,16 @@ Fine-grained reactivity tracks dependencies at a granular level. When a signal c
 
 ## Core Primitives
 
-Rinch provides three core reactive primitives:
+Rinch provides three core reactive primitives, plus a store pattern for shared state:
 
 | Primitive | Purpose | When to Use |
 |-----------|---------|-------------|
 | [Signal](./signals.md) | Holds reactive state | For any mutable state |
-| [Effect](./effects.md) | Runs side-effects | For DOM updates, logging, API calls |
 | [Memo](./memos.md) | Caches computed values | For derived/computed state |
+| [Stores](./stores.md) | Shared state with actions | For state used by multiple components |
+| [Effect](./effects.md) | Runs side-effects | Advanced: syncing to external systems |
+
+> **Note:** For DOM updates, use `{|| expr}` closures in rsx rather than `Effect`. For shared state, use [stores](./stores.md). `Effect` is a power-user escape hatch for rare cases like syncing to external systems.
 
 ## Quick Example
 
@@ -36,11 +39,6 @@ fn counter() -> NodeHandle {
 
     // Create a derived value (Memo is Copy, just like Signal)
     let doubled = Memo::new(move || count.get() * 2);
-
-    // Side effect: log when count changes (auto-tracks dependencies)
-    Effect::new(move || {
-        println!("Count changed to: {}", count.get());
-    });
 
     rsx! {
         div {
@@ -135,5 +133,6 @@ drop(scope);
 ## Next Steps
 
 - [Signals](./signals.md) - Reactive state containers
-- [Effects](./effects.md) - Side-effects that track dependencies
 - [Memos](./memos.md) - Cached computed values
+- [Stores](./stores.md) - Shared state with action methods
+- [Effects](./effects.md) - Advanced: side-effects that track dependencies

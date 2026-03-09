@@ -193,7 +193,7 @@ pub fn section_content(__scope: &mut RenderScope, current_section: Signal<usize>
 /// Renders the overlay components (Modal, Drawer, Notification) for the Overlays section demo.
 /// These are rendered at the body level (outside .main-content) for proper fixed positioning.
 pub fn overlays_demo_overlays(__scope: &mut RenderScope) -> NodeHandle {
-    let state = use_context::<OverlaysSectionState>();
+    let state = use_store::<OverlaysSectionState>();
 
     let (modal_opened, modal_lg_opened, drawer_opened, drawer_right_opened, notification_visible) = (
         state.modal_opened,

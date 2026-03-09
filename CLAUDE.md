@@ -425,18 +425,21 @@ rsx! {
 
 ## State Management
 
-Rinch uses reactive primitives directly for state management. Component functions run **once** to build the DOM, and Effects handle all subsequent updates surgically.
+Component functions run **once** to build the DOM. Reactive closures (`{|| expr}`) in rsx handle all subsequent DOM updates surgically.
 
 ### Core Primitives
 
 | Primitive | Purpose |
 |-----------|---------|
 | `Signal::new(value)` | Reactive state that triggers updates |
-| `Effect::new(closure)` | Side effects with auto-tracked dependencies |
 | `Memo::new(closure)` | Cached computed values |
-| `create_context(value)` | Shared state across components |
+| `create_store(value)` | Share a store across components (recommended for shared state) |
+| `use_store::<T>()` | Access a shared store (panics if missing) |
+| `try_use_store::<T>()` | Try to access a shared store (returns Option<T>) |
+| `create_context(value)` | Low-level shared state (used by framework internals) |
 | `use_context::<T>()` | Access shared context (panics if missing) |
-| `try_use_context::<T>()` | Try to access shared context (returns Option<T>) |
+
+> **Note:** `Effect` is intentionally excluded from the prelude. Use `{|| expr}` in rsx for reactive DOM updates, and store methods for side effects. For rare advanced cases (syncing to external systems), import explicitly: `use rinch::reactive::Effect;`
 
 ### Basic Example
 
@@ -446,12 +449,10 @@ use rinch::prelude::*;
 #[component]
 fn app() -> NodeHandle {
     let count = Signal::new(0);
-    let name = Signal::new(String::from("World"));
 
     rsx! {
         div {
-            // Use closure syntax {|| ...} for reactive text updates
-            h1 { "Hello, " {|| name.get()} "!" }
+            // Closure syntax {|| ...} creates reactive DOM updates
             p { "Count: " {|| count.get().to_string()} }
             button { onclick: move || count.update(|n| *n += 1),
                 "Increment"
@@ -467,6 +468,43 @@ fn main() {
 
 > **Important:** The closure syntax `{|| expr}` is required for fine-grained reactive updates. Without it, values are captured once at initial render and never update. See [RSX Syntax - Reactive Expressions](docs/src/guide/rsx-syntax.md#reactive-expressions). The `#[component]` macro injects `__scope` automatically, so the `rsx!` macro works without manually declaring it.
 
+### Store Pattern (Recommended for Shared State)
+
+A store is a struct with `Signal` fields and methods that encapsulate state mutations. Use `create_store()` / `use_store()` to share it across components:
+
+```rust
+#[derive(Clone, Copy)]
+struct CounterStore {
+    count: Signal<i32>,
+}
+
+impl CounterStore {
+    fn new() -> Self {
+        Self { count: Signal::new(0) }
+    }
+    fn increment(&self) {
+        self.count.update(|n| *n += 1);
+    }
+}
+
+#[component]
+fn app() -> NodeHandle {
+    create_store(CounterStore::new());
+    rsx! { Counter {} }
+}
+
+#[component]
+fn counter() -> NodeHandle {
+    let store = use_store::<CounterStore>();
+    rsx! {
+        p { {|| store.count.get().to_string()} }
+        button { onclick: move || store.increment(), "+" }
+    }
+}
+```
+
+For component-local state, just use `Signal::new()` directly — no store needed.
+
 ### Primitive Reference
 
 **`Signal::new()`** - Reactive state:
@@ -475,15 +513,6 @@ let count = Signal::new(0);
 count.get();              // Read value
 count.set(5);             // Set new value
 count.update(|n| *n += 1); // Update with function
-```
-
-**`Effect::new()`** - Side effects with auto-tracking:
-```rust
-let count = Signal::new(0);
-Effect::new(move || {
-    println!("Count changed to: {}", count.get());
-});
-// Re-runs automatically when count changes — no dependency arrays needed
 ```
 
 **`Memo::new()`** - Cached computed values:
@@ -495,23 +524,45 @@ let multiplier = Signal::new(2);
 let result = Memo::new(move || count.get() * multiplier.get());
 ```
 
-**`create_context` / `use_context`** - Shared state:
+**`create_store` / `use_store`** - Shared state across components:
+```rust
+#[derive(Clone, Copy)]
+struct AppStore {
+    dark_mode: Signal<bool>,
+    user_name: Signal<String>,
+}
+
+#[component]
+fn app() -> NodeHandle {
+    create_store(AppStore {
+        dark_mode: Signal::new(false),
+        user_name: Signal::new("Guest".into()),
+    });
+    // ...
+}
+
+#[component]
+fn child_component() -> NodeHandle {
+    let store = use_store::<AppStore>();
+    // For optional access: let store = try_use_store::<AppStore>(); // returns Option<T>
+    // ...
+}
+```
+
+**`create_context` / `use_context`** - Low-level shared state (still works, appropriate for framework internals):
 ```rust
 #[derive(Clone)]
 struct Theme { color: String }
 
 #[component]
 fn app() -> NodeHandle {
-    // Create context at top level
     create_context(Theme { color: "#007bff".into() });
     // ...
 }
 
 #[component]
 fn child_component() -> NodeHandle {
-    // Access context anywhere in tree — returns T directly, panics if not found
     let theme = use_context::<Theme>();
-    // For optional access: let theme = try_use_context::<Theme>(); // returns Option<T>
     // ...
 }
 ```

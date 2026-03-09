@@ -835,7 +835,7 @@ fn dnd_tree_node(
         // Build children signal and keep in sync with tree changes
         let children_data = Signal::new(node.children.clone());
         let nid = node_id.clone();
-        Effect::new(move || {
+        __scope.create_effect(move || {
             fn find_children(nodes: &[DndNode], id: &str) -> Vec<DndNode> {
                 for n in nodes {
                     if n.id == id {

@@ -111,9 +111,11 @@ pub mod prelude {
     #[cfg(feature = "desktop")]
     pub use crate::shell::{run, run_with_theme};
     pub use rinch_core::element::*;
-    pub use rinch_core::{Effect, Memo, Scope, Signal, batch, derived, untracked};
-    // Context for sharing state across components
-    pub use rinch_core::{create_context, try_use_context, use_context};
+    pub use rinch_core::{Memo, Scope, Signal, batch, derived, untracked};
+    // Context and stores for sharing state across components
+    pub use rinch_core::{
+        create_context, create_store, try_use_context, try_use_store, use_context, use_store,
+    };
     // Event handling - click context, drag support, input callbacks, file-drop callbacks
     pub use rinch_core::{
         ClickContext, Drag, DragContext, FileDropCallback, InputCallback, get_click_context,
@@ -187,6 +189,16 @@ pub use shell::{
 };
 
 pub use rinch_core as core;
+/// Reactive primitives (Signal, Effect, Memo, Scope).
+///
+/// Most reactive types are re-exported in the prelude. `Effect` is intentionally
+/// excluded from the prelude — use `{|| expr}` in rsx for reactive DOM updates,
+/// and store methods for side effects. Import `Effect` explicitly when needed:
+///
+/// ```ignore
+/// use rinch::reactive::Effect;
+/// ```
+pub use rinch_core::reactive;
 #[cfg(feature = "desktop")]
 pub use rinch_renderer as renderer;
 

@@ -15,7 +15,7 @@ pub struct IconsSectionState {
 
 /// Initialize the icons section state
 pub fn init_icons_state() {
-    create_context(IconsSectionState {
+    create_store(IconsSectionState {
         current_page: Signal::new(0),
         use_filled: Signal::new(false),
     });
@@ -24,7 +24,7 @@ pub fn init_icons_state() {
 /// Icons section component
 #[component]
 pub fn icons_section() -> NodeHandle {
-    let state = use_context::<IconsSectionState>();
+    let state = use_store::<IconsSectionState>();
 
     let (current_page, use_filled) = (state.current_page, state.use_filled);
 

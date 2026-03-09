@@ -129,6 +129,75 @@ pub fn try_use_context<T: Clone + 'static>() -> Option<T> {
     })
 }
 
+/// Create a store — a shared state container accessible from any component.
+///
+/// Stores are the recommended way to manage application state in rinch.
+/// A store is a struct with [`Signal`] fields and action methods that
+/// encapsulate state mutations and side effects.
+///
+/// This is an alias for [`create_context`] with store-oriented naming.
+///
+/// # Example
+///
+/// ```ignore
+/// use rinch::prelude::*;
+///
+/// #[derive(Clone)]
+/// struct CounterStore {
+///     count: Signal<i32>,
+/// }
+///
+/// impl CounterStore {
+///     fn new() -> Self {
+///         Self { count: Signal::new(0) }
+///     }
+///
+///     fn increment(&self) {
+///         self.count.update(|n| *n += 1);
+///     }
+/// }
+///
+/// #[component]
+/// fn app() -> NodeHandle {
+///     create_store(CounterStore::new());
+///     rsx! { Counter {} }
+/// }
+///
+/// #[component]
+/// fn counter() -> NodeHandle {
+///     let store = use_store::<CounterStore>();
+///     rsx! {
+///         p { {|| store.count.get().to_string()} }
+///         button { onclick: move || store.increment(), "+" }
+///     }
+/// }
+/// ```
+pub fn create_store<T: Clone + 'static>(value: T) -> T {
+    create_context(value)
+}
+
+/// Retrieve a store by type.
+///
+/// Returns the store value directly. Panics with a helpful message if no store
+/// of the given type has been created via [`create_store`].
+///
+/// This is an alias for [`use_context`] with store-oriented naming.
+pub fn use_store<T: Clone + 'static>() -> T {
+    try_use_store::<T>().unwrap_or_else(|| {
+        panic!(
+            "Store not found: {}\nDid you forget to call create_store() in a parent component?",
+            std::any::type_name::<T>()
+        )
+    })
+}
+
+/// Try to retrieve a store by type, returning `None` if not found.
+///
+/// This is an alias for [`try_use_context`] with store-oriented naming.
+pub fn try_use_store<T: Clone + 'static>() -> Option<T> {
+    try_use_context::<T>()
+}
+
 /// Clear all context (called during app reset).
 pub fn clear_context() {
     CONTEXT_STORE.with(|store| store.borrow_mut().clear());

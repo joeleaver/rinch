@@ -1,6 +1,41 @@
 # Sharing State
 
-There are two main ways to share state between components in Rinch: **lifting state up** (passing signals as props) and **context** (implicit sharing through the component tree).
+There are three ways to share state between components in Rinch: **stores** (recommended), **lifting state up** (passing signals as props), and **context** (low-level implicit sharing).
+
+> **Recommended:** For most shared state, use the [store pattern](./stores.md) — a struct with Signal fields shared via `create_store()` / `use_store()`.
+
+## Stores (Recommended)
+
+See the full [Stores guide](./stores.md). Quick summary:
+
+```rust
+#[derive(Clone, Copy)]
+struct AppStore {
+    count: Signal<i32>,
+}
+
+impl AppStore {
+    fn new() -> Self { Self { count: Signal::new(0) } }
+    fn increment(&self) { self.count.update(|n| *n += 1); }
+}
+
+#[component]
+fn app() -> NodeHandle {
+    create_store(AppStore::new());
+    rsx! { div { Counter {} } }
+}
+
+#[component]
+fn counter() -> NodeHandle {
+    let store = use_store::<AppStore>();
+    rsx! {
+        p { {|| store.count.get().to_string()} }
+        button { onclick: move || store.increment(), "+" }
+    }
+}
+```
+
+---
 
 ## Lifting State Up
 
@@ -165,8 +200,8 @@ Because `Signal<T>` is `Copy`, the `AppState` struct itself is `Copy` when all i
 
 | Situation | Approach |
 |-----------|----------|
-| 1–2 nearby components | Lift state up (pass signals as props) |
-| Many components at different nesting levels | Context |
-| Optional / may not always be provided | `try_use_context` |
-| State that changes over time | Signal inside context |
+| Shared state with action methods | [Store](./stores.md) (`create_store` / `use_store`) |
+| 1--2 nearby components | Lift state up (pass signals as props) |
+| Framework-internal shared state | Context (`create_context` / `use_context`) |
+| Optional / may not always be provided | `try_use_store` or `try_use_context` |
 | Static configuration (theme colors, locale) | Plain value in context |

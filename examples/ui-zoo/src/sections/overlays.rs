@@ -2,7 +2,7 @@
 
 use rinch::prelude::*;
 
-/// State for the Overlays section, stored in context.
+/// State for the Overlays section, stored in a store.
 #[derive(Clone)]
 pub struct OverlaysSectionState {
     pub modal_opened: Signal<bool>,
@@ -16,7 +16,7 @@ pub struct OverlaysSectionState {
 
 /// Initialize the Overlays section state. Call this from the main app function.
 pub fn init_overlays_state() {
-    create_context(OverlaysSectionState {
+    create_store(OverlaysSectionState {
         modal_opened: Signal::new(false),
         modal_lg_opened: Signal::new(false),
         drawer_opened: Signal::new(false),
@@ -29,7 +29,7 @@ pub fn init_overlays_state() {
 
 #[component]
 pub fn overlays_section() -> NodeHandle {
-    let state = use_context::<OverlaysSectionState>();
+    let state = use_store::<OverlaysSectionState>();
 
     let (
         modal_opened,

@@ -2,7 +2,7 @@
 
 use rinch::prelude::*;
 
-/// State for the Navigation section, stored in context.
+/// State for the Navigation section, stored in a store.
 #[derive(Clone)]
 pub struct NavigationSectionState {
     pub pagination_page: Signal<u32>,
@@ -14,7 +14,7 @@ pub struct NavigationSectionState {
 
 /// Initialize the Navigation section state. Call this from the main app function.
 pub fn init_navigation_state() {
-    create_context(NavigationSectionState {
+    create_store(NavigationSectionState {
         pagination_page: Signal::new(1),
         pagination_with_edges_page: Signal::new(10),
         stepper_active: Signal::new(1),
@@ -25,7 +25,7 @@ pub fn init_navigation_state() {
 
 #[component]
 pub fn navigation_section() -> NodeHandle {
-    let state = use_context::<NavigationSectionState>();
+    let state = use_store::<NavigationSectionState>();
 
     let (pagination_page, pagination_with_edges_page, stepper_active, tabs_value, tabs_pills_value) = (
         state.pagination_page,

@@ -888,7 +888,7 @@ pub fn render_surface_section() -> NodeHandle {
             // Effects run on the main thread and write to Arc<Mutex<CubeState>>.
             {
                 let state = state.clone();
-                Effect::new(move || {
+                __scope.create_effect(move || {
                     let mut s = state.lock().unwrap();
                     s.spinning = spinning.get();
                     s.speed = speed.get() as f32;

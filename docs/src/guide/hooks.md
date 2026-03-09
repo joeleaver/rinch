@@ -1,15 +1,19 @@
 # State Management
 
-Rinch uses **fine-grained reactive primitives** for managing state in your components. Components run once to build the DOM, and reactive primitives handle all subsequent updates surgically.
+Rinch uses **fine-grained reactive primitives** for managing state in your components. Components run once to build the DOM, and reactive closures (`{|| expr}`) handle all subsequent updates surgically.
 
 ## Core Primitives
 
 | Primitive | Purpose |
 |-----------|---------|
 | [`Signal::new()`](#signal) | Reactive state that triggers updates |
-| [`Effect::new()`](#effect) | Side effects that auto-track dependencies |
 | [`Memo::new()`](#memo) | Cached computed values |
-| [`create_context()`](#context) | Shared state across components |
+| [`create_store()`](./stores.md) | Share state across components (recommended) |
+| [`use_store::<T>()`](./stores.md) | Access a shared store |
+| [`create_context()`](#context) | Low-level shared state (framework internals) |
+
+> **Recommended:** For shared state, use the [store pattern](./stores.md) — a struct with Signal fields and action methods, shared via `create_store()` / `use_store()`.
+
 
 ```rust
 use rinch::prelude::*;
@@ -63,11 +67,13 @@ For more details, see [Signals](./signals.md).
 
 ---
 
-## Effect
+## Effect (Advanced)
 
-Run side effects that automatically track which signals they read and re-run when those signals change.
+Most reactive DOM updates use `{|| expr}` closures in rsx. For rare cases like syncing to external systems, use `Effect` — import it explicitly since it's not in the prelude:
 
 ```rust
+use rinch::reactive::Effect;
+
 let count = Signal::new(0);
 
 // Auto-tracks count — re-runs when count changes
@@ -76,9 +82,9 @@ Effect::new(move || {
 });
 ```
 
-No dependency arrays needed — dependencies are discovered automatically at runtime.
+No dependency arrays needed — dependencies are discovered automatically at runtime. For more details, see [Effects](./effects.md).
 
-For more details, see [Effects](./effects.md).
+> **Tip:** If you're updating the DOM, use `{|| expr}` in rsx. If you're updating state, put logic in a [store method](./stores.md). Effect is for the rare case where you need to react to signal changes outside of both.
 
 ---
 
@@ -196,11 +202,6 @@ fn app() -> NodeHandle {
 
     // Derived state
     let count = Memo::new(move || todos.get().len());
-
-    // Log changes
-    Effect::new(move || {
-        println!("Todo count: {}", count.get());
-    });
 
     // Extract shared handler — both Enter key and button click add a todo.
     // Signal is Copy, so no .clone() needed before closures.
