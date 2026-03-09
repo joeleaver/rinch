@@ -52,6 +52,88 @@ pub fn init_inputs_state() {
 }
 
 #[component]
+fn SliderClipTest() -> NodeHandle {
+    let panel_open = Signal::new(false);
+    let slider_a = Signal::new(50.0);
+    let slider_b = Signal::new(25.0);
+    let slider_c = Signal::new(75.0);
+    let slider_d = Signal::new(10.0);
+    let slider_e = Signal::new(90.0);
+    let slider_f = Signal::new(40.0);
+    let slider_g = Signal::new(60.0);
+    let slider_h = Signal::new(30.0);
+
+    rsx! {
+        div { style: "position: relative;",
+            Button {
+                variant: "light",
+                onclick: move || panel_open.update(|v| *v = !*v),
+                {|| if panel_open.get() { "Close Slider Panel" } else { "Open Slider Panel" }}
+            }
+            if panel_open.get() {
+                div { style: "position: absolute; top: 100%; left: 0; z-index: 100; width: 320px; margin-top: 8px;",
+                    Paper { p: "md", radius: "md", with_border: true,
+                        style: "box-shadow: var(--rinch-shadow-lg); background: var(--rinch-color-body);",
+                        Stack { gap: "xs",
+                            Group { justify: "between",
+                                Text { weight: "600", "Slider Panel" }
+                                Badge { color: "teal", "Clip Test" }
+                            }
+                            Text { size: "xs", color: "dimmed", "Sliders in a scrolling container — thumbs and bars should clip at the panel boundary." }
+                            Divider {}
+                            div { style: "overflow-y: auto; max-height: 200px;",
+                                Stack { gap: "sm", p: "xs",
+                                    Group { justify: "between",
+                                        Text { size: "sm", "Alpha" }
+                                        Text { size: "xs", color: "dimmed", {|| format!("{:.0}", slider_a.get())} }
+                                    }
+                                    Slider { value_signal: Some(slider_a), onchange: move |v| slider_a.set(v) }
+                                    Group { justify: "between",
+                                        Text { size: "sm", "Beta" }
+                                        Text { size: "xs", color: "dimmed", {|| format!("{:.0}", slider_b.get())} }
+                                    }
+                                    Slider { color: "teal", value_signal: Some(slider_b), onchange: move |v| slider_b.set(v) }
+                                    Group { justify: "between",
+                                        Text { size: "sm", "Gamma" }
+                                        Text { size: "xs", color: "dimmed", {|| format!("{:.0}", slider_c.get())} }
+                                    }
+                                    Slider { color: "violet", value_signal: Some(slider_c), onchange: move |v| slider_c.set(v) }
+                                    Group { justify: "between",
+                                        Text { size: "sm", "Delta" }
+                                        Text { size: "xs", color: "dimmed", {|| format!("{:.0}", slider_d.get())} }
+                                    }
+                                    Slider { color: "orange", value_signal: Some(slider_d), onchange: move |v| slider_d.set(v) }
+                                    Group { justify: "between",
+                                        Text { size: "sm", "Epsilon" }
+                                        Text { size: "xs", color: "dimmed", {|| format!("{:.0}", slider_e.get())} }
+                                    }
+                                    Slider { color: "pink", value_signal: Some(slider_e), onchange: move |v| slider_e.set(v) }
+                                    Group { justify: "between",
+                                        Text { size: "sm", "Zeta" }
+                                        Text { size: "xs", color: "dimmed", {|| format!("{:.0}", slider_f.get())} }
+                                    }
+                                    Slider { color: "cyan", value_signal: Some(slider_f), onchange: move |v| slider_f.set(v) }
+                                    Group { justify: "between",
+                                        Text { size: "sm", "Eta" }
+                                        Text { size: "xs", color: "dimmed", {|| format!("{:.0}", slider_g.get())} }
+                                    }
+                                    Slider { color: "grape", value_signal: Some(slider_g), onchange: move |v| slider_g.set(v) }
+                                    Group { justify: "between",
+                                        Text { size: "sm", "Theta" }
+                                        Text { size: "xs", color: "dimmed", {|| format!("{:.0}", slider_h.get())} }
+                                    }
+                                    Slider { color: "red", value_signal: Some(slider_h), onchange: move |v| slider_h.set(v) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
 pub fn inputs_section() -> NodeHandle {
     // Get state from store (initialized in main app)
     let state = use_store::<InputsSectionState>();
@@ -397,6 +479,9 @@ pub fn inputs_section() -> NodeHandle {
                     }
                 }
             }
+
+            // Overflow clipping test: floating panel with sliders in a scrolling area
+            SliderClipTest {}
 
             // ============================================
             // COLOR PICKER

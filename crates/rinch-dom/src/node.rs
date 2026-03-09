@@ -471,7 +471,7 @@ impl Node {
     /// - `opacity < 1.0`
     /// - `transform` is non-identity
     pub fn creates_stacking_context(&self) -> bool {
-        use crate::computed_style::PositionValue;
+        use crate::computed_style::{OverflowValue, PositionValue};
 
         if !matches!(self.computed_style.position, PositionValue::Static)
             && self.computed_style.z_index.is_some()
@@ -482,6 +482,15 @@ impl Node {
             return true;
         }
         if !self.computed_style.transform.is_identity {
+            return true;
+        }
+        // Overflow clipping must create a stacking context so that descendant
+        // SCs (e.g. z-indexed children) are collected and painted within the
+        // clip layer rather than escaping to an ancestor SC.
+        if matches!(
+            self.computed_style.overflow_y,
+            OverflowValue::Hidden | OverflowValue::Scroll | OverflowValue::Auto
+        ) {
             return true;
         }
         false
