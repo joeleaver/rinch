@@ -46,7 +46,7 @@
 //! so creating a GPU context first prevents it from being claimed. Events, layout
 //! size, and resize observation work regardless of context type.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -78,9 +78,20 @@ pub(crate) fn clear_redraw_callback() {
 /// Request a window repaint directly, bypassing the event loop queue.
 #[cfg(feature = "desktop")]
 fn request_repaint() {
+    // Suppress during invoke_render_callbacks — the paint cycle is already
+    // in progress, so requesting another redraw would create an infinite loop.
+    if IN_RENDER_CALLBACK.with(|f| f.get()) {
+        return;
+    }
     if let Some(cb) = REDRAW_CALLBACK.lock().unwrap().as_ref() {
         cb();
     }
+}
+
+#[cfg(feature = "desktop")]
+thread_local! {
+    /// Guard flag: true while `invoke_render_callbacks` is running.
+    static IN_RENDER_CALLBACK: Cell<bool> = const { Cell::new(false) };
 }
 
 // ── TextureSource (desktop only) ────────────────────────────────────────────
@@ -682,6 +693,11 @@ pub fn registered_viewport_names() -> Vec<String> {
 /// Called once per frame on desktop (before `collect_surface_frames`).
 /// On web, each surface with a callback drives its own `requestAnimationFrame` loop instead.
 pub fn invoke_render_callbacks() {
+    // Set guard so submit_frame() inside callbacks won't call request_repaint()
+    // — we're already inside a paint cycle.
+    #[cfg(feature = "desktop")]
+    IN_RENDER_CALLBACK.with(|f| f.set(true));
+
     SURFACE_REGISTRY.with(|reg| {
         let reg = reg.borrow();
         for surface in reg.iter() {
@@ -700,6 +716,9 @@ pub fn invoke_render_callbacks() {
             }
         }
     });
+
+    #[cfg(feature = "desktop")]
+    IN_RENDER_CALLBACK.with(|f| f.set(false));
 }
 
 /// Dispatch a surface event to the handler of the surface with the given ID.

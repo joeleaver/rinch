@@ -191,6 +191,12 @@ impl RinchDocument {
             }
         }
 
+        // Clear sensitivity flags before re-resolution so Stylo's matching
+        // can re-set them accurately for the current class/selector state.
+        self.tree.nodes[node_id].hover_sensitive.set(false);
+        self.tree.nodes[node_id].active_sensitive.set(false);
+        self.tree.nodes[node_id].focus_sensitive.set(false);
+
         // Compute styles in a block so borrows are dropped before recursion
         let computed = {
             // Create the RinchNode wrapper for Stylo
@@ -291,31 +297,6 @@ impl RinchDocument {
         // Now we can recurse without holding borrows
         for child_id in children {
             self.resolve_styles_recursive(child_id, Some(computed.clone()));
-        }
-    }
-
-    /// Clear cached `stylo_element_data` for a node and all its descendants,
-    /// forcing `resolve_styles_recursive()` to re-resolve their CSS.
-    ///
-    /// This is needed when pseudo-class state changes (hover, focus, active)
-    /// because the cache optimization in `resolve_styles_recursive()` would
-    /// otherwise skip nodes that already have computed styles.
-    ///
-    /// Only the root `node_id` is recorded in `style_roots` — descendants
-    /// are covered by the recursive walk in `resolve_styles_recursive()`.
-    pub(crate) fn invalidate_style_subtree(&mut self, node_id: usize) {
-        // Track the root of this invalidation for targeted resolution
-        self.tree.style_roots.push(node_id);
-        self.invalidate_style_subtree_inner(node_id);
-    }
-
-    fn invalidate_style_subtree_inner(&mut self, node_id: usize) {
-        if let Some(node) = self.tree.nodes.get_mut(node_id) {
-            *node.stylo_element_data.borrow_mut() = None;
-            let children: Vec<usize> = node.children.clone();
-            for child_id in children {
-                self.invalidate_style_subtree_inner(child_id);
-            }
         }
     }
 }

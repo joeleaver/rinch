@@ -300,6 +300,43 @@ impl TinySkiaPainter {
         self.pixmap.height()
     }
 
+    /// Clear a rectangular region to white.
+    ///
+    /// Used for dirty region caching: only the changed area is cleared
+    /// before repainting, preserving unchanged pixels from the previous frame.
+    pub fn clear_rect_white(&mut self, x: u32, y: u32, w: u32, h: u32) {
+        self.clear_rect_rgba(x, y, w, h, 255, 255, 255, 255);
+    }
+
+    /// Clear a rectangular region to black.
+    pub fn clear_rect_black(&mut self, x: u32, y: u32, w: u32, h: u32) {
+        self.clear_rect_rgba(x, y, w, h, 0, 0, 0, 255);
+    }
+
+    /// Clear a rectangular region to a specific premultiplied RGBA color.
+    #[allow(clippy::too_many_arguments)]
+    fn clear_rect_rgba(&mut self, x: u32, y: u32, w: u32, h: u32, r: u8, g: u8, b: u8, a: u8) {
+        let pw = self.pixmap.width();
+        let ph = self.pixmap.height();
+        let x1 = (x + w).min(pw);
+        let y1 = (y + h).min(ph);
+        let x0 = x.min(x1);
+        let y0 = y.min(y1);
+
+        let data = self.pixmap.data_mut();
+        for row in y0..y1 {
+            let row_start = (row * pw + x0) as usize * 4;
+            let row_end = (row * pw + x1) as usize * 4;
+            let row_data = &mut data[row_start..row_end];
+            for pixel in row_data.chunks_exact_mut(4) {
+                pixel[0] = r;
+                pixel[1] = g;
+                pixel[2] = b;
+                pixel[3] = a;
+            }
+        }
+    }
+
     /// Fill the entire surface with an opaque white background.
     pub fn fill_white(&mut self) {
         self.pixmap.fill(tiny_skia::Color::WHITE);
@@ -391,6 +428,13 @@ impl Painter for TinySkiaPainter {
         let Some(path) = shape_to_path(shape) else {
             return;
         };
+        // Skip degenerate paths that tiny-skia can't fill (warns on zero-area).
+        // Use || since a zero-height horizontal line or zero-width vertical line
+        // has no fillable area either.
+        let bounds = path.bounds();
+        if bounds.width() < 0.001 || bounds.height() < 0.001 {
+            return;
+        }
         let ts = affine_to_transform(transform);
         let fill_rule = to_fill_rule(fill);
         self.pixmap
@@ -410,6 +454,11 @@ impl Painter for TinySkiaPainter {
         let Some(path) = shape_to_path(shape) else {
             return;
         };
+        // Skip empty paths — stroke_path internally converts to fill_path
+        // which warns on zero-area results
+        if path.bounds().width() < 0.001 && path.bounds().height() < 0.001 {
+            return;
+        }
         let ts = affine_to_transform(transform);
         let sk_stroke = to_skia_stroke(stroke);
         self.pixmap
@@ -568,6 +617,12 @@ impl Painter for TinySkiaPainter {
             return;
         };
 
+        let bounds = path.bounds();
+        if bounds.width() < 0.001 || bounds.height() < 0.001 {
+            self.layer_stack.push(LayerState::Clip { previous_mask });
+            return;
+        }
+
         let w = self.pixmap.width();
         let h = self.pixmap.height();
         let mut mask = Mask::new(w, h).expect("failed to create clip mask");
@@ -665,6 +720,9 @@ impl Painter for TinySkiaPainter {
 
 impl TinySkiaPainter {
     /// Blit an alpha mask glyph onto the pixmap with the given color.
+    ///
+    /// Uses a temporary pixmap + `draw_pixmap()` so that the full transform
+    /// (including rotation/skew) is applied by tiny-skia.
     #[allow(clippy::too_many_arguments)]
     fn blit_alpha_mask(
         &mut self,
@@ -680,61 +738,51 @@ impl TinySkiaPainter {
         transform: Transform,
         _glyph_transform: Option<Transform>,
     ) {
-        // For now, use the transform to compute final position
-        // (ignoring rotation/skew for text — just translation + scale)
-        let px = (gx * transform.sx + gy * transform.kx + transform.tx) as i32;
-        let py = (gx * transform.ky + gy * transform.sy + transform.ty) as i32;
+        if glyph_w == 0 || glyph_h == 0 {
+            return;
+        }
 
-        let pw = self.pixmap.width() as i32;
-        let ph = self.pixmap.height() as i32;
-        let pixels = self.pixmap.data_mut();
+        // Build a temporary RGBA pixmap from the alpha mask + brush color
+        let mut glyph_pm = match Pixmap::new(glyph_w, glyph_h) {
+            Some(pm) => pm,
+            None => return,
+        };
+        let glyph_pixels = glyph_pm.data_mut();
 
-        for row in 0..glyph_h as i32 {
-            let dy = py + row;
-            if dy < 0 || dy >= ph {
+        for (i, &alpha) in mask_data
+            .iter()
+            .enumerate()
+            .take((glyph_w * glyph_h) as usize)
+        {
+            if alpha == 0 {
                 continue;
             }
-            for col in 0..glyph_w as i32 {
-                let dx = px + col;
-                if dx < 0 || dx >= pw {
-                    continue;
-                }
-
-                let alpha = mask_data[(row as u32 * glyph_w + col as u32) as usize];
-                if alpha == 0 {
-                    continue;
-                }
-
-                // Combine glyph alpha with brush alpha
-                let a = ((alpha as u16 * ca as u16 + 127) / 255) as u8;
-                if a == 0 {
-                    continue;
-                }
-
-                // Source-over compositing (premultiplied)
-                let idx = (dy as usize * pw as usize + dx as usize) * 4;
-                let af = a as f32 / 255.0;
-                let inv_a = 1.0 - af;
-
-                let sr = cr as f32 * af;
-                let sg = cg as f32 * af;
-                let sb = cb as f32 * af;
-                let sa = a as f32;
-
-                let dr = pixels[idx] as f32;
-                let dg = pixels[idx + 1] as f32;
-                let db = pixels[idx + 2] as f32;
-                let da = pixels[idx + 3] as f32;
-
-                pixels[idx] = (sr + dr * inv_a).min(255.0) as u8;
-                pixels[idx + 1] = (sg + dg * inv_a).min(255.0) as u8;
-                pixels[idx + 2] = (sb + db * inv_a).min(255.0) as u8;
-                pixels[idx + 3] = (sa + da * inv_a).min(255.0) as u8;
+            // Combine glyph alpha with brush alpha → premultiplied RGBA
+            let a = ((alpha as u16 * ca as u16 + 127) / 255) as u8;
+            if a == 0 {
+                continue;
             }
+            let af = a as f32 / 255.0;
+            let idx = i * 4;
+            glyph_pixels[idx] = (cr as f32 * af) as u8;
+            glyph_pixels[idx + 1] = (cg as f32 * af) as u8;
+            glyph_pixels[idx + 2] = (cb as f32 * af) as u8;
+            glyph_pixels[idx + 3] = a;
         }
+
+        // Compose the transform: first translate to glyph position, then apply the node transform
+        let glyph_offset = Transform::from_translate(gx, gy);
+        let ts = transform.pre_concat(glyph_offset);
+
+        let paint = PixmapPaint::default();
+        self.pixmap
+            .draw_pixmap(0, 0, glyph_pm.as_ref(), &paint, ts, self.clip_mask.as_ref());
     }
 
     /// Blit a color (RGBA) glyph onto the pixmap.
+    ///
+    /// Uses a temporary pixmap + `draw_pixmap()` so that the full transform
+    /// (including rotation/skew) is applied by tiny-skia.
     #[allow(clippy::too_many_arguments)]
     fn blit_color_glyph(
         &mut self,
@@ -746,63 +794,51 @@ impl TinySkiaPainter {
         transform: Transform,
         _glyph_transform: Option<Transform>,
     ) {
-        let px = (gx * transform.sx + gy * transform.kx + transform.tx) as i32;
-        let py = (gx * transform.ky + gy * transform.sy + transform.ty) as i32;
+        if glyph_w == 0 || glyph_h == 0 {
+            return;
+        }
 
-        let pw = self.pixmap.width() as i32;
-        let ph = self.pixmap.height() as i32;
-        let pixels = self.pixmap.data_mut();
+        // Build a temporary pixmap from the RGBA glyph data (convert to premultiplied)
+        let mut glyph_pm = match Pixmap::new(glyph_w, glyph_h) {
+            Some(pm) => pm,
+            None => return,
+        };
+        let glyph_pixels = glyph_pm.data_mut();
 
-        for row in 0..glyph_h as i32 {
-            let dy = py + row;
-            if dy < 0 || dy >= ph {
+        let pixel_count = (glyph_w * glyph_h) as usize;
+        for i in 0..pixel_count.min(rgba_data.len() / 4) {
+            let src_idx = i * 4;
+            let sr = rgba_data[src_idx];
+            let sg = rgba_data[src_idx + 1];
+            let sb = rgba_data[src_idx + 2];
+            let sa = rgba_data[src_idx + 3];
+
+            if sa == 0 {
                 continue;
             }
-            for col in 0..glyph_w as i32 {
-                let dx = px + col;
-                if dx < 0 || dx >= pw {
-                    continue;
-                }
 
-                let src_idx = (row as u32 * glyph_w + col as u32) as usize * 4;
-                let sr = rgba_data[src_idx];
-                let sg = rgba_data[src_idx + 1];
-                let sb = rgba_data[src_idx + 2];
-                let sa = rgba_data[src_idx + 3];
-
-                if sa == 0 {
-                    continue;
-                }
-
-                let idx = (dy as usize * pw as usize + dx as usize) * 4;
-
-                if sa == 255 {
-                    // Fully opaque — just overwrite
-                    pixels[idx] = sr;
-                    pixels[idx + 1] = sg;
-                    pixels[idx + 2] = sb;
-                    pixels[idx + 3] = 255;
-                } else {
-                    // Source-over (assuming source is straight alpha, convert to premul)
-                    let af = sa as f32 / 255.0;
-                    let inv_a = 1.0 - af;
-
-                    let spr = sr as f32 * af;
-                    let spg = sg as f32 * af;
-                    let spb = sb as f32 * af;
-                    let spa = sa as f32;
-
-                    let dr = pixels[idx] as f32;
-                    let dg = pixels[idx + 1] as f32;
-                    let db = pixels[idx + 2] as f32;
-                    let da = pixels[idx + 3] as f32;
-
-                    pixels[idx] = (spr + dr * inv_a).min(255.0) as u8;
-                    pixels[idx + 1] = (spg + dg * inv_a).min(255.0) as u8;
-                    pixels[idx + 2] = (spb + db * inv_a).min(255.0) as u8;
-                    pixels[idx + 3] = (spa + da * inv_a).min(255.0) as u8;
-                }
+            let dst_idx = i * 4;
+            if sa == 255 {
+                glyph_pixels[dst_idx] = sr;
+                glyph_pixels[dst_idx + 1] = sg;
+                glyph_pixels[dst_idx + 2] = sb;
+                glyph_pixels[dst_idx + 3] = 255;
+            } else {
+                // Convert straight alpha to premultiplied
+                let af = sa as f32 / 255.0;
+                glyph_pixels[dst_idx] = (sr as f32 * af) as u8;
+                glyph_pixels[dst_idx + 1] = (sg as f32 * af) as u8;
+                glyph_pixels[dst_idx + 2] = (sb as f32 * af) as u8;
+                glyph_pixels[dst_idx + 3] = sa;
             }
         }
+
+        // Compose the transform: first translate to glyph position, then apply the node transform
+        let glyph_offset = Transform::from_translate(gx, gy);
+        let ts = transform.pre_concat(glyph_offset);
+
+        let paint = PixmapPaint::default();
+        self.pixmap
+            .draw_pixmap(0, 0, glyph_pm.as_ref(), &paint, ts, self.clip_mask.as_ref());
     }
 }

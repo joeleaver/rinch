@@ -172,6 +172,9 @@ pub struct RinchApp {
     pub(crate) modifiers: Modifiers,
     /// Whether the Vello scene needs to be rebuilt.
     pub(crate) scene_dirty: bool,
+    /// Whether we have a previous frame's pixels for dirty region caching.
+    #[cfg(not(feature = "gpu"))]
+    pub(crate) has_previous_frame: bool,
     /// The data-oninput handler ID for the currently focused text input.
     pub(crate) focused_input_handler_id: Option<usize>,
     /// Current accumulated text value for the focused text input.
@@ -230,6 +233,8 @@ impl RinchApp {
             window_props: None,
             modifiers: Modifiers::default(),
             scene_dirty: true,
+            #[cfg(not(feature = "gpu"))]
+            has_previous_frame: false,
             focused_input_handler_id: None,
             focused_input_value: String::new(),
             focused_input_state: None,
@@ -532,6 +537,9 @@ impl RinchApp {
     /// `layers` are composited underneath the UI (like the GPU compositor):
     /// black base → surface layers → document (with hole-punched backgrounds).
     ///
+    /// Uses dirty region caching: when only a few nodes changed, clears and
+    /// repaints only the affected rectangular area, preserving unchanged pixels.
+    ///
     /// Returns (pixels, width, height) in RGBA8 format. The painter is lazily
     /// created on first call and resized as needed.
     #[cfg(not(feature = "gpu"))]
@@ -545,64 +553,162 @@ impl RinchApp {
         let h = (size.1 as f64 * scale).round() as u32;
 
         // Lazily create or resize the painter
-        if self.skia_painter.is_none() {
-            self.skia_painter = Some(TinySkiaPainter::new(w, h));
-        }
+        let resized = match &mut self.skia_painter {
+            None => {
+                self.skia_painter = Some(TinySkiaPainter::new(w, h));
+                self.has_previous_frame = false;
+                true
+            }
+            Some(painter) => {
+                let r = painter.width() != w || painter.height() != h;
+                if r {
+                    painter.resize(w, h);
+                    self.has_previous_frame = false;
+                }
+                r
+            }
+        };
         let painter = self.skia_painter.as_mut().unwrap();
-        if painter.width() != w || painter.height() != h {
-            painter.resize(w, h);
-        }
 
         if self.scene_dirty {
-            painter.reset();
+            let paint_start = Instant::now();
 
-            // Composite layers UNDER the UI, matching the GPU compositor order:
-            // 1. Black base (shows through viewport holes and behind letterboxed video)
-            // 2. Surface layers at their viewport rects
-            // 3. Document on top (backgrounds have holes at viewport rects)
-            if !layers.is_empty() {
-                painter.fill_black();
-                for layer in layers {
-                    painter.blit_rgba(
-                        &layer.pixels,
-                        layer.src_w,
-                        layer.src_h,
-                        layer.dst_x,
-                        layer.dst_y,
-                        layer.dst_w,
-                        layer.dst_h,
+            // Compute dirty region before clearing paint_dirty_nodes
+            let dirty_region = if self.has_previous_frame && !resized && layers.is_empty() {
+                self.doc.as_ref().and_then(|doc| {
+                    let d = doc.borrow();
+                    rinch_dom::paint::compute_dirty_region(&d.tree, scale, w as f64, h as f64)
+                })
+            } else {
+                None // Full repaint: first frame, resize, or layers present
+            };
+
+            // Drain paint_dirty_nodes now that we've computed the region
+            if let Some(doc) = &self.doc {
+                doc.borrow_mut().tree.paint_dirty_nodes.clear();
+            }
+
+            // Check if dirty region is small enough to benefit from caching
+            // (less than 50% of viewport area)
+            let use_dirty_region = dirty_region.is_some_and(|r| {
+                let region_area = r.width() * r.height();
+                let viewport_area = w as f64 * h as f64;
+                region_area < viewport_area * 0.5 && region_area > 0.0
+            });
+
+            if use_dirty_region {
+                let region = dirty_region.unwrap();
+
+                // Clear only the dirty region
+                let rx = region.x0 as u32;
+                let ry = region.y0 as u32;
+                let rw = region.width().ceil() as u32;
+                let rh = region.height().ceil() as u32;
+                if !layers.is_empty() {
+                    painter.clear_rect_black(rx, ry, rw, rh);
+                } else {
+                    painter.clear_rect_white(rx, ry, rw, rh);
+                }
+
+                // Set dirty region so paint_node can skip subtrees outside it
+                use peniko::kurbo::Rect;
+                rinch_dom::paint::set_dirty_region(Some(Rect::new(
+                    region.x0, region.y0, region.x1, region.y1,
+                )));
+
+                // Push a clip rect to prevent drawing outside the dirty region
+                let clip_shape = rinch_dom::paint::painter::PaintShape::Rect(Rect::new(
+                    region.x0, region.y0, region.x1, region.y1,
+                ));
+                painter.push_clip(
+                    peniko::Fill::NonZero,
+                    peniko::kurbo::Affine::IDENTITY,
+                    &clip_shape,
+                );
+
+                if let Some(doc) = &self.doc {
+                    let mut d = doc.borrow_mut();
+                    let d = &mut *d;
+                    rinch_dom::paint::paint_document(
+                        &d.tree,
+                        painter,
+                        scale,
+                        (size.0 as f32, size.1 as f32),
+                        &mut d.font_cx,
+                        &mut d.layout_cx,
                     );
                 }
+
+                painter.pop_layer();
+                rinch_dom::paint::set_dirty_region(None);
             } else {
-                // No composite layers — fill white (normal app background)
-                painter.fill_white();
+                // Full repaint
+                painter.reset();
+
+                // Composite layers UNDER the UI
+                if !layers.is_empty() {
+                    painter.fill_black();
+                    for layer in layers {
+                        painter.blit_rgba(
+                            &layer.pixels,
+                            layer.src_w,
+                            layer.src_h,
+                            layer.dst_x,
+                            layer.dst_y,
+                            layer.dst_w,
+                            layer.dst_h,
+                        );
+                    }
+                } else {
+                    painter.fill_white();
+                }
+
+                // Tell the hole-punch code which viewports have active frames
+                let active_names: HashSet<String> =
+                    layers.iter().map(|l| l.viewport_name.clone()).collect();
+                if !active_names.is_empty() {
+                    rinch_dom::paint::set_active_viewports(Some(active_names));
+                }
+
+                if let Some(doc) = &self.doc {
+                    let mut d = doc.borrow_mut();
+                    let d = &mut *d;
+                    rinch_dom::paint::paint_document(
+                        &d.tree,
+                        painter,
+                        scale,
+                        (size.0 as f32, size.1 as f32),
+                        &mut d.font_cx,
+                        &mut d.layout_cx,
+                    );
+                }
+
+                rinch_dom::paint::set_active_viewports(None);
             }
 
-            // Tell the hole-punch code which viewports have active frames
-            let active_names: HashSet<String> =
-                layers.iter().map(|l| l.viewport_name.clone()).collect();
-            if !active_names.is_empty() {
-                rinch_dom::paint::set_active_viewports(Some(active_names));
+            // Log paint timing if RINCH_PERF is set
+            if std::env::var("RINCH_PERF").is_ok() {
+                let elapsed = paint_start.elapsed();
+                if use_dirty_region {
+                    let region = dirty_region.unwrap();
+                    let pct = (region.width() * region.height()) / (w as f64 * h as f64) * 100.0;
+                    eprintln!(
+                        "[PERF] paint (dirty region {:.0}x{:.0}, {:.1}%): {:.2}ms",
+                        region.width(),
+                        region.height(),
+                        pct,
+                        elapsed.as_secs_f64() * 1000.0,
+                    );
+                } else {
+                    eprintln!(
+                        "[PERF] paint (full): {:.2}ms",
+                        elapsed.as_secs_f64() * 1000.0,
+                    );
+                }
             }
 
-            if let Some(doc) = &self.doc {
-                let mut d = doc.borrow_mut();
-                let d = &mut *d;
-                rinch_dom::paint::paint_document(
-                    &d.tree,
-                    painter,
-                    scale,
-                    (size.0 as f32, size.1 as f32),
-                    &mut d.font_cx,
-                    &mut d.layout_cx,
-                );
-            }
-
-            // Clear active viewports filter
-            rinch_dom::paint::set_active_viewports(None);
-
-            // TODO: DnD snapshot overlay for software path
             self.scene_dirty = false;
+            self.has_previous_frame = true;
         }
 
         (self.skia_painter.as_ref().unwrap().pixels(), w, h)
@@ -617,7 +723,10 @@ impl RinchApp {
     pub fn has_dirty_nodes(&self) -> bool {
         self.doc
             .as_ref()
-            .map(|doc| !doc.borrow().tree.dirty_nodes.is_empty())
+            .map(|doc| {
+                let d = doc.borrow();
+                !d.tree.dirty_nodes.is_empty() || d.tree.styles_dirty
+            })
             .unwrap_or(false)
     }
 

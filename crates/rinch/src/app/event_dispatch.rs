@@ -195,7 +195,7 @@ impl RinchApp {
                     }
                 }
 
-                // Update hover state for CSS :hover support
+                // Update hover state and cursor
                 if let Some(doc) = &self.doc {
                     let (hovered, cursor_style) = {
                         let d = doc.borrow();
@@ -206,14 +206,14 @@ impl RinchApp {
                             .unwrap_or(rinch_platform::CursorStyle::Default);
                         (h, cs)
                     };
-                    let changed = doc.borrow_mut().update_hover(hovered);
-                    if changed {
-                        // Dispatch data-onenter handlers on newly hovered node
+                    let mut hovered_changed = false;
+                    doc.borrow_mut().update_hover(hovered, &mut hovered_changed);
+                    if hovered_changed {
                         if let Some(hit_id) = hovered {
                             Self::dispatch_onenter(doc, hit_id);
                         }
-                        actions.push(AppAction::RequestRedraw);
                     }
+                    // Don't request redraw — AboutToWait batches dirty state.
                     actions.push(AppAction::SetCursor(cursor_style));
 
                     // Dispatch MouseMove + MouseEnter/MouseLeave to render surfaces
@@ -292,19 +292,18 @@ impl RinchApp {
                 self.last_click_time = now;
                 self.last_click_pos = (x, y);
 
-                // Update :active and :focus pseudo-class state
+                // Update :active and :focus pseudo-class state.
+                // Don't request redraw here — AboutToWait will pick up the
+                // dirty styles and batch them into a single repaint.
                 if let Some(doc) = &self.doc {
                     let hit = {
                         let d = doc.borrow();
                         hit_test(&d.tree, x, y)
                     };
                     // :active applies while mouse is pressed
-                    let active_changed = doc.borrow_mut().update_active(hit);
+                    doc.borrow_mut().update_active(hit);
                     // :focus applies to the clicked element (persists after release)
-                    let focus_changed = doc.borrow_mut().update_focus(hit);
-                    if active_changed || focus_changed {
-                        actions.push(AppAction::RequestRedraw);
-                    }
+                    doc.borrow_mut().update_focus(hit);
                 }
 
                 // Check for draggable element — enter pending drag instead of
@@ -461,12 +460,10 @@ impl RinchApp {
                 self.scrollbar_drag = None;
                 self.ce_selecting = false;
 
-                // Clear :active pseudo-class state on mouse release
+                // Clear :active pseudo-class state on mouse release.
+                // Don't request redraw — AboutToWait batches dirty state.
                 if let Some(doc) = &self.doc {
-                    let changed = doc.borrow_mut().update_active(None);
-                    if changed {
-                        actions.push(AppAction::RequestRedraw);
-                    }
+                    doc.borrow_mut().update_active(None);
                 }
             }
             PlatformEvent::MouseWheel {
@@ -898,10 +895,7 @@ impl RinchApp {
                     }
                 }
 
-                // Check if any render surface has new frames — request redraw
-                let any_surfaces = crate::render_surface::any_surface_dirty();
-
-                if any_transitions || any_video || any_surfaces {
+                if any_transitions || any_video {
                     actions.push(AppAction::RequestRedraw);
                 }
             }

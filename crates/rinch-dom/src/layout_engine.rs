@@ -685,12 +685,18 @@ impl RinchDocument {
             && let Ok(taffy_layout) = self.tree.taffy.layout(taffy_id)
         {
             let node = &mut self.tree.nodes[node_id];
-            node.layout = LayoutResult {
+            let new_layout = LayoutResult {
                 x: taffy_layout.location.x,
                 y: taffy_layout.location.y,
                 width: taffy_layout.size.width,
                 height: taffy_layout.size.height,
             };
+            // Save previous layout for dirty region computation
+            node.prev_layout = node.layout;
+            if node.layout != new_layout {
+                node.layout = new_layout;
+                self.tree.paint_dirty_nodes.push(node_id);
+            }
         }
 
         for child_id in children {

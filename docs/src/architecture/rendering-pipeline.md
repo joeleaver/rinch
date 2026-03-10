@@ -1,6 +1,6 @@
 # Rendering Pipeline
 
-Rinch uses a multi-stage rendering pipeline that transforms component code into GPU-rendered pixels on the desktop backend. The web backend uses browser-native DOM instead (see note at the end).
+Rinch uses a multi-stage rendering pipeline that transforms component code into pixels on the desktop backend. Two rendering backends are available: GPU (Vello/wgpu) and software (tiny-skia/softbuffer). The web backend uses browser-native DOM instead (see note at the end).
 
 ## Pipeline Stages (Desktop)
 
@@ -16,7 +16,7 @@ Rinch uses a multi-stage rendering pipeline that transforms component code into 
 ┌───────────────────────────────────────────────────────────────┐
 │                   2. DOM Construction                           │
 │  DomDocument creates nodes programmatically via RenderScope   │
-│  (RinchDocument uses Taffy + Parley + Vello on desktop)       │
+│  (RinchDocument uses Taffy + Parley on desktop)               │
 └───────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -33,22 +33,20 @@ Rinch uses a multi-stage rendering pipeline that transforms component code into 
                               │
                               ▼
 ┌───────────────────────────────────────────────────────────────┐
-│                   5. Painting                                   │
-│  rinch-renderer generates paint commands for the layout       │
+│                   5. Painting (via Painter trait)                │
+│  paint_document() walks the DOM tree and emits drawing        │
+│  commands through the abstract Painter interface               │
 └───────────────────────────────────────────────────────────────┘
                               │
-                              ▼
-┌───────────────────────────────────────────────────────────────┐
-│                   6. Scene Construction                         │
-│  Commands are converted to a Vello scene graph                │
-└───────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌───────────────────────────────────────────────────────────────┐
-│                   7. GPU Rendering                              │
-│  Vello renders the scene using wgpu                           │
-└───────────────────────────────────────────────────────────────┘
-                              │
+                    ┌─────────┴─────────┐
+                    ▼                   ▼
+┌──────────────────────────┐  ┌──────────────────────────┐
+│  6a. GPU (Vello)         │  │  6b. Software (tiny-skia) │
+│  Scene graph → wgpu →    │  │  Rasterize to RGBA pixmap │
+│  GPU compositing         │  │  → softbuffer → display   │
+└──────────────────────────┘  └──────────────────────────┘
+                    │                   │
+                    └─────────┬─────────┘
                               ▼
                           Display
 ```
@@ -78,8 +76,9 @@ The `#[component]` macro injects a `__scope: &mut RenderScope` parameter. The `r
 
 The custom DOM and layout engine built specifically for Rinch:
 
-- **rinch-dom** - DOM implementation with Taffy layout, Parley text shaping, and Vello rendering
-- **rinch-renderer** - Converts styled DOM to Vello paint commands
+- **rinch-dom** - DOM implementation with Taffy layout, Parley text shaping, and a `Painter` trait for backend-agnostic rendering
+- **VelloPainter** - GPU backend: records drawing commands into a Vello scene graph
+- **TinySkiaPainter** - Software backend: rasterizes directly to an RGBA pixel buffer
 
 ### Stylo
 
@@ -99,47 +98,81 @@ A flexbox/grid layout engine that computes:
 - Flexbox alignment and distribution
 - CSS Grid support
 
-### Vello
+### Painter Trait
 
-A GPU-accelerated 2D graphics library:
+All rendering goes through the `Painter` trait, which abstracts over both backends:
+
+```rust
+pub trait Painter {
+    fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape);
+    fn stroke(&mut self, stroke: &Stroke, transform: Affine, brush: &Brush, shape: &PaintShape);
+    fn draw_glyphs(&mut self, font: &FontData, font_size: f32, ...);
+    fn draw_image(&mut self, image: &PaintImage, transform: Affine);
+    fn push_clip(&mut self, fill: Fill, transform: Affine, shape: &PaintShape);
+    fn push_layer(&mut self, blend: BlendMode, opacity: f32, ...);
+    fn pop_layer(&mut self);
+    // ...
+}
+```
+
+Application code never interacts with the Painter directly — the backend is selected at compile time via Cargo features.
+
+### Vello (GPU Backend)
+
+A GPU-accelerated 2D graphics library (enabled with `features = ["gpu"]`):
 
 - Scene graph-based rendering
 - Efficient batching
 - High-quality anti-aliasing
 - Path rendering (beziers, fills, strokes)
 - Text rendering with proper shaping
+- Requires wgpu (Vulkan, Metal, DX12, or WebGPU)
 
-### wgpu
+### tiny-skia (Software Backend)
 
-Cross-platform GPU abstraction:
+A CPU-based rasterizer (the default when `gpu` is not enabled):
 
-- Works on Vulkan, Metal, DX12, WebGPU
-- Handles surface creation and management
-- Provides compute shaders for Vello
+- Direct pixel rendering to an RGBA buffer
+- Presented via softbuffer (no GPU required)
+- Dirty region caching — only changed areas are repainted
+- Subtree pruning — nodes outside the dirty region are skipped
+- Works in headless environments, CI, containers, SSH sessions
 
-## Window Rendering Flow
+## Rendering Backends
+
+### Choosing a Backend
+
+Set it in your `Cargo.toml`:
+
+```toml
+# GPU mode (recommended for most apps):
+rinch = { workspace = true, features = ["desktop", "gpu"] }
+
+# Software mode (default — no GPU required):
+rinch = { workspace = true, features = ["desktop"] }
+```
+
+### GPU Rendering Flow
 
 ```rust
-// Simplified rendering flow in rinch_runtime.rs
-
-impl RinchRuntime {
-    fn paint_scene(&mut self) {
-        // 1. Get the document's scene from rinch-dom
-        let scene = self.doc.render();
-
-        // 2. Set up render parameters
-        let params = RenderParams {
-            width: self.size.width,
-            height: self.size.height,
-            base_color: Color::WHITE,
-            antialiasing: AaConfig::default(),
-        };
-
-        // 3. Submit to Vello renderer
-        self.renderer.render_to_surface(&scene, &params, &self.surface);
-    }
+// Simplified GPU rendering flow
+fn paint_gpu(&mut self) {
+    let scene = self.app.build_scene(scale, size);
+    self.renderer.render_to_surface(&scene, &params, &surface);
 }
 ```
+
+### Software Rendering Flow
+
+```rust
+// Simplified software rendering flow
+fn paint_software(&mut self) {
+    let (pixels, w, h) = self.app.build_pixels(scale, size, &layers);
+    // pixels are blitted to the window via softbuffer
+}
+```
+
+The software renderer includes **dirty region caching**: when only a small part of the UI changes (e.g., cursor blink, hover feedback), only the affected rectangular region is cleared and repainted. Nodes outside the dirty region are skipped entirely during the paint traversal.
 
 ## Incremental Updates
 
@@ -156,8 +189,8 @@ When content changes, the pipeline can skip unchanged stages:
 | DOM Build | O(n) | Incremental (surgical updates) |
 | Style Resolve | O(n x rules) | Selector cache |
 | Layout | O(n) | Subtree cache |
-| Paint | O(visible) | Command cache |
-| GPU Render | O(primitives) | GPU buffers |
+| Paint | O(visible) | Dirty region caching (software) |
+| GPU Render | O(primitives) | GPU buffers (GPU mode) |
 
 ## Web Backend
 
@@ -169,11 +202,14 @@ The pipeline above is **desktop-only**. The web backend (`ui-zoo-web`) takes a c
 
 On the web, `WebDocument` implements `DomDocument` using `web_sys` to create real browser DOM elements. The browser handles style resolution, layout, painting, and compositing natively. No Taffy, Parley, Stylo, Vello, or wgpu are needed for the web backend, resulting in a much smaller WASM binary.
 
-## Future Optimizations
+## Optimizations
 
-Planned improvements to the rendering pipeline:
+Current and planned improvements to the rendering pipeline:
 
-- **Dirty tracking** - Only re-style/re-layout changed subtrees
-- **Layer compositing** - GPU layers for transformed content
-- **Text caching** - Glyph atlas for repeated text
-- **Viewport culling** - Skip off-screen content
+- **Dirty region caching** (software) - Only repaint the rectangular area covering changed nodes
+- **Subtree pruning** (software) - Skip paint traversal for nodes outside the dirty region
+- **Sensitivity flags** - Hover/active/focus only trigger repaints for nodes with matching CSS selectors
+- **Batched redraws** - Multiple state changes are batched into a single repaint via `AboutToWait`
+- **Layer compositing** - GPU layers for transformed content (planned)
+- **Text caching** - Glyph atlas for repeated text (planned)
+- **Viewport culling** - Skip off-screen content (planned)

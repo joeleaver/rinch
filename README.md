@@ -2,7 +2,7 @@
 
 A lightweight cross-platform GUI library for Rust with fine-grained reactive rendering.
 
-Rinch provides a declarative UI framework using HTML/CSS for layout and GPU rendering via Vello. Instead of virtual DOM diffing and full re-renders, Rinch uses fine-grained reactivity—signals and effects—to surgically update only the DOM nodes that changed.
+Rinch provides a declarative UI framework using HTML/CSS for layout with two rendering backends: GPU-accelerated rendering via Vello/wgpu, and a software renderer via tiny-skia for environments without GPU access. Instead of virtual DOM diffing and full re-renders, Rinch uses fine-grained reactivity—signals and effects—to surgically update only the DOM nodes that changed.
 
 ## Architecture Highlights
 
@@ -21,11 +21,13 @@ Unlike virtual DOM approaches, Rinch tracks which signals each reactive expressi
 - **Stylo** CSS engine for style computation
 - **Taffy** layout engine for flexbox
 - **Parley** for text shaping and layout
-- **Vello** for GPU-accelerated 2D rendering via wgpu
+- **Vello** for GPU-accelerated 2D rendering via wgpu (GPU mode)
+- **tiny-skia** for CPU-based 2D rendering (software mode)
 
 **Platform Abstraction**
 
-- **Desktop**: winit for windowing, wgpu for rendering
+- **Desktop (GPU)**: winit for windowing, Vello + wgpu for rendering
+- **Desktop (Software)**: winit for windowing, tiny-skia + softbuffer for rendering — no GPU required
 - **Web**: WASM target ready (Stylo compiles to wasm32-unknown-unknown)
 
 ## Features
@@ -53,6 +55,10 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
+# GPU mode (recommended — requires GPU):
+rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["desktop", "gpu", "components", "theme"] }
+
+# Software mode (no GPU needed — runs anywhere):
 rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["desktop", "components", "theme"] }
 ```
 
@@ -135,7 +141,7 @@ Rinch is organized as a workspace of specialized crates:
 | **UI** | rinch-components, rinch-theme, rinch-tabler-icons | 55+ components, theme system, 5000+ icons |
 | **Editor** | rinch-editor, rinch-editor-macros, rinch-editor-components, rinch-editable | Rich-text editor with CRDT backing, editing utilities |
 | **Tooling** | rinch-debug, rinch-mcp-server, rinch-clipboard | IPC debug server, Claude MCP integration, clipboard support |
-| **Rendering** | rinch-renderer | (Placeholder for custom rendering) |
+| **Rendering** | rinch-renderer | GPU (Vello/wgpu) and software (tiny-skia/softbuffer) backends |
 
 ## Examples
 
@@ -208,6 +214,42 @@ cargo test
 cargo clippy
 cargo fmt
 ```
+
+## Rendering Backends
+
+Rinch supports two rendering backends, selected at compile time via Cargo features:
+
+| Backend | Feature | Renderer | Presentation | Best For |
+|---------|---------|----------|--------------|----------|
+| **GPU** | `"gpu"` | Vello + wgpu | GPU compositing | Most apps — smooth animations, high-quality rendering |
+| **Software** | (default) | tiny-skia | softbuffer | Headless, CI, servers, environments without GPU |
+
+### Choosing a Backend
+
+Set it in your `Cargo.toml` — no runtime flags needed:
+
+```toml
+# GPU mode (recommended for most apps):
+rinch = { workspace = true, features = ["desktop", "gpu", "components", "theme"] }
+
+# Software mode (default — no GPU required):
+rinch = { workspace = true, features = ["desktop", "components", "theme"] }
+```
+
+Both backends use the same `Painter` trait abstraction, so your application code is identical regardless of backend. The software renderer includes dirty region caching — when only a small part of the UI changes (cursor blink, hover feedback, button click), only that region is repainted, making incremental updates fast even without a GPU.
+
+### GPU Backend (Vello)
+
+The GPU backend renders via [Vello](https://github.com/linebender/vello), a GPU-accelerated 2D graphics library built on wgpu. It provides smooth animations, efficient scene-graph rendering, and high-quality anti-aliased path rendering. Requires a GPU supporting Vulkan, Metal, DX12, or WebGPU.
+
+### Software Backend (tiny-skia)
+
+The software backend rasterizes to a CPU pixel buffer using [tiny-skia](https://github.com/nickel-org/tiny-skia) and presents via [softbuffer](https://github.com/rust-windowing/softbuffer). No GPU is needed. Features:
+
+- Full rendering fidelity (same output as GPU mode)
+- Dirty region caching for fast incremental updates
+- Subtree pruning — unchanged parts of the DOM tree are skipped during paint
+- Works in headless environments, CI, SSH sessions, containers
 
 ## Transparent Windows (Windows)
 
@@ -300,6 +342,8 @@ Rinch builds on excellent projects:
 - [Taffy](https://github.com/DioxusLabs/taffy) — Flexbox layout engine
 - [Parley](https://github.com/linebender/parley) — Text shaping and layout
 - [Vello](https://github.com/linebender/vello) — GPU rendering
+- [tiny-skia](https://github.com/nickel-org/tiny-skia) — Software rendering
+- [softbuffer](https://github.com/rust-windowing/softbuffer) — Software presentation
 - [winit](https://github.com/rust-windowing/winit) — Cross-platform windowing
 - [muda](https://github.com/tauri-apps/muda) — Native menus
 - [Automerge](https://automerge.org/) — CRDT for rich-text editor

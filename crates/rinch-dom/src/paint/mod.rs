@@ -30,6 +30,74 @@ use crate::computed_style::{
 };
 use crate::node::{NodeKind, NodeTree, RawNodeId};
 
+/// Compute the dirty region (union of all paint-dirty node rects) in physical pixels.
+///
+/// Returns `None` if no nodes are dirty. Includes both current and previous
+/// layout positions so moved/resized nodes get their old area cleared too.
+/// Expands the region by a margin to account for anti-aliasing and box-shadows.
+pub fn compute_dirty_region(
+    tree: &NodeTree,
+    scale: f64,
+    viewport_w: f64,
+    viewport_h: f64,
+) -> Option<Rect> {
+    if tree.paint_dirty_nodes.is_empty() {
+        return None;
+    }
+
+    let margin = 4.0; // pixels margin for anti-aliasing / shadows
+    let mut region: Option<Rect> = None;
+
+    // Deduplicate — paint_dirty_nodes may have duplicates
+    let mut seen = HashSet::new();
+    for &node_id in &tree.paint_dirty_nodes {
+        if !seen.insert(node_id) {
+            continue;
+        }
+
+        // Current position
+        let (ax, ay) = compute_absolute_position(tree, node_id, scale);
+        if let Some(node) = tree.get(node_id) {
+            let w = node.layout.width as f64 * scale;
+            let h = node.layout.height as f64 * scale;
+            if w > 0.0 && h > 0.0 {
+                let r = Rect::new(ax - margin, ay - margin, ax + w + margin, ay + h + margin);
+                region = Some(region.map_or(r, |prev| prev.union(r)));
+            }
+
+            // Previous position (for moved/resized nodes)
+            let pw = node.prev_layout.width as f64 * scale;
+            let ph = node.prev_layout.height as f64 * scale;
+            if (pw > 0.0 && ph > 0.0) && node.prev_layout != node.layout {
+                // Approximate old absolute position: use current abs pos adjusted
+                // by the difference in layout offsets. Not perfectly accurate for
+                // deep ancestor layout changes, but covers the common case.
+                let dx = (node.layout.x - node.prev_layout.x) as f64 * scale;
+                let dy = (node.layout.y - node.prev_layout.y) as f64 * scale;
+                let old_x = ax - dx;
+                let old_y = ay - dy;
+                let r = Rect::new(
+                    old_x - margin,
+                    old_y - margin,
+                    old_x + pw + margin,
+                    old_y + ph + margin,
+                );
+                region = Some(region.map_or(r, |prev| prev.union(r)));
+            }
+        }
+    }
+
+    // Clamp to viewport bounds
+    region.map(|r| {
+        Rect::new(
+            r.x0.max(0.0),
+            r.y0.max(0.0),
+            r.x1.min(viewport_w),
+            r.y1.min(viewport_h),
+        )
+    })
+}
+
 use std::cell::RefCell;
 use std::collections::HashSet;
 
@@ -38,6 +106,10 @@ thread_local! {
     /// When set, only these viewports get holes punched in backgrounds.
     /// When empty, ALL viewports get holes (GPU compositor default).
     static ACTIVE_VIEWPORTS: RefCell<Option<HashSet<String>>> = const { RefCell::new(None) };
+
+    /// Dirty region for incremental painting. When set, paint_node can
+    /// skip subtrees entirely outside this rect (in physical pixels).
+    static DIRTY_REGION: RefCell<Option<Rect>> = const { RefCell::new(None) };
 }
 
 /// Set the active viewport names for hole-punching during this paint cycle.
@@ -46,6 +118,31 @@ thread_local! {
 /// Call with `None` to revert to the default (all viewports get holes).
 pub fn set_active_viewports(names: Option<HashSet<String>>) {
     ACTIVE_VIEWPORTS.with(|v| *v.borrow_mut() = names);
+}
+
+/// Set the dirty region for incremental painting.
+///
+/// When set, `paint_node` will skip subtrees whose bounds are entirely
+/// outside this rect, avoiding expensive glyph rasterization and path
+/// operations for unchanged content. Set to `None` for full repaint.
+pub fn set_dirty_region(region: Option<Rect>) {
+    DIRTY_REGION.with(|v| *v.borrow_mut() = region);
+}
+
+/// Check whether a node rect intersects the current dirty region.
+/// Returns true if there is no dirty region (full repaint) or if the
+/// node's absolute rect overlaps the dirty region.
+fn intersects_dirty_region(x: f64, y: f64, w: f64, h: f64) -> bool {
+    DIRTY_REGION.with(|v| {
+        let guard = v.borrow();
+        match guard.as_ref() {
+            None => true, // No dirty region → full repaint, paint everything
+            Some(dr) => {
+                // AABB intersection test
+                x < dr.x1 && x + w > dr.x0 && y < dr.y1 && y + h > dr.y0
+            }
+        }
+    })
 }
 
 /// Compute the absolute position of a node in physical pixels by walking
@@ -354,9 +451,16 @@ fn paint_node(
     // Skip zero-size elements (display: none produces 0x0 layout).
     // display:contents nodes also have 0x0 layout (no box), but their children
     // still need to be painted — recurse into children then return.
-    if layout.width == 0.0 && layout.height == 0.0 {
-        if node.computed_style.display == DisplayValue::Contents {
+    // Also skip elements with either dimension zero — they have no fillable area
+    // for backgrounds/borders, and attempting to paint them produces degenerate
+    // zero-area rects that trigger warnings in renderers like tiny-skia.
+    if layout.width == 0.0 || layout.height == 0.0 {
+        if node.computed_style.display == DisplayValue::Contents
+            || (layout.width == 0.0) != (layout.height == 0.0)
+        {
             // display:contents has no box, so it never forms a SC itself.
+            // Elements with one zero dimension (e.g. collapsed height) may still
+            // have overflowing children that need painting.
             // Skip SC children — they'll be collected by an ancestor SC.
             for &child_id in &node.children {
                 let dominated_by_ancestor_sc =
@@ -414,6 +518,39 @@ fn paint_node(
     } else {
         (x, y)
     };
+
+    // Dirty region optimization: skip drawing for nodes entirely outside
+    // the dirty region. If overflow is clipped or node is a leaf, skip the
+    // entire subtree. Otherwise skip only this node's drawing but still
+    // recurse into children (they may have absolute positioning inside the
+    // dirty region).
+    let node_outside_dirty = !intersects_dirty_region(x, y, w, h);
+    if node_outside_dirty {
+        let overflow_clips = matches!(
+            node.computed_style.overflow_x,
+            OverflowValue::Hidden | OverflowValue::Scroll | OverflowValue::Auto
+        ) || matches!(
+            node.computed_style.overflow_y,
+            OverflowValue::Hidden | OverflowValue::Scroll | OverflowValue::Auto
+        );
+        if overflow_clips || node.children.is_empty() {
+            return;
+        }
+        // Skip drawing this node but recurse into children
+        paint_children_with_stacking(
+            tree,
+            node_id,
+            painter,
+            scale,
+            x,
+            y,
+            font_cx,
+            layout_cx,
+            parent_transform,
+            false,
+        );
+        return;
+    }
 
     match &node.kind {
         NodeKind::Element(el) if el.tag == "svg" => {

@@ -363,33 +363,35 @@ pub(super) fn paint_box_shadow(
             })
             .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 40));
 
-        let expand = blur * 0.5 + spread;
-        let shadow_rect = Rect::new(
-            x + offset_x - expand,
-            y + offset_y - expand,
-            x + w + offset_x + expand,
-            y + h + offset_y + expand,
-        );
-
         if blur > 0.0 {
-            // Multi-layer blur approximation: 3 layers with increasing expansion
-            let layers = 3;
+            // Approximate Gaussian box-shadow blur with concentric layers.
+            // The max expansion is empirically tuned to match Chrome's visible
+            // shadow extent. Using Gaussian-weighted alpha per layer with the
+            // actual shadow color (not hardcoded black).
+            let max_expand = blur * 0.5 + spread;
+            let layers: usize = 8;
+
+            // Extract actual shadow RGB
+            let sr = (color.components[0] * 255.0) as u8;
+            let sg = (color.components[1] * 255.0) as u8;
+            let sb = (color.components[2] * 255.0) as u8;
+            let base_alpha = color.components[3] as f64;
+
             for i in 0..layers {
                 let t = (i as f64 + 1.0) / layers as f64;
-                let layer_expand = expand * t;
+                let layer_expand = max_expand * t;
                 let layer_rect = Rect::new(
                     x + offset_x - layer_expand,
                     y + offset_y - layer_expand,
                     x + w + offset_x + layer_expand,
                     y + h + offset_y + layer_expand,
                 );
-                let alpha_scale = (1.0 - t * 0.6) / layers as f64;
-                let layer_color = AlphaColor::<Srgb>::from_rgba8(
-                    0,
-                    0,
-                    0,
-                    (color.components[3] * alpha_scale as f32 * 255.0) as u8,
-                );
+                let alpha_scale = (1.0 - t * 0.7) / layers as f64;
+                let alpha_u8 = (base_alpha * alpha_scale * 255.0).min(255.0) as u8;
+                if alpha_u8 == 0 {
+                    continue;
+                }
+                let layer_color = AlphaColor::<Srgb>::from_rgba8(sr, sg, sb, alpha_u8);
                 if has_radius {
                     let expanded_radii = RoundedRectRadii::new(
                         radii.top_left + layer_expand,
@@ -405,6 +407,13 @@ pub(super) fn paint_box_shadow(
             }
         } else {
             // No blur: simple offset shadow
+            let total_expand = spread;
+            let shadow_rect = Rect::new(
+                x + offset_x - total_expand,
+                y + offset_y - total_expand,
+                x + w + offset_x + total_expand,
+                y + h + offset_y + total_expand,
+            );
             if has_radius {
                 let rrect = shadow_rect.to_rounded_rect(radii);
                 painter.fill_color(Fill::NonZero, transform, color, &rrect.into());

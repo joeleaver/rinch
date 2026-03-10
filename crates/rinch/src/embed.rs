@@ -535,7 +535,9 @@ impl RinchOverlayRenderer {
             sample_count: 1,
             dimension: TextureDimension::D2,
             format,
-            usage: TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING,
+            usage: TextureUsages::STORAGE_BINDING
+                | TextureUsages::TEXTURE_BINDING
+                | TextureUsages::COPY_SRC,
             view_formats: &[],
         })
     }

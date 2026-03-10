@@ -5,11 +5,17 @@ use crate::node::DirtyFlags;
 
 impl RinchDocument {
     /// Update hover state: set the hovered node and its ancestors as hovered,
-    /// clear previous hover, and recompute styles for affected nodes.
-    /// Returns true if the hovered node changed (caller should repaint).
-    pub fn update_hover(&mut self, new_hovered: Option<usize>) -> bool {
+    /// clear previous hover, and invalidate styles only for nodes that Stylo
+    /// flagged as hover-sensitive during selector matching.
+    ///
+    /// Returns `true` if a repaint is needed (some hover-sensitive node changed
+    /// state). The `hovered_changed` out-parameter is set when the hovered node
+    /// identity changed (used by the caller to dispatch `data-onenter`
+    /// regardless of whether repaint is needed).
+    pub fn update_hover(&mut self, new_hovered: Option<usize>, hovered_changed: &mut bool) -> bool {
         let old_hovered = self.tree.hovered_node;
-        if old_hovered == new_hovered {
+        *hovered_changed = old_hovered != new_hovered;
+        if !*hovered_changed {
             return false;
         }
 
@@ -49,40 +55,72 @@ impl RinchDocument {
 
         self.tree.hovered_node = new_hovered;
 
-        // Recompute styles for nodes that changed hover state
-        // (nodes in old chain but not new, and vice versa)
-        let mut dirty_nodes: Vec<usize> = Vec::new();
+        // Collect nodes whose hover state changed (symmetric difference).
+        // Only invalidate styles for nodes where Stylo's selector matching
+        // actually evaluated `:hover` — meaning some CSS rule depends on
+        // this node's hover state. The `hover_sensitive` flag is set by
+        // `match_non_ts_pseudo_class` during style resolution.
+        let mut needs_repaint = false;
         for &id in &old_chain {
-            if !new_chain.contains(&id) {
-                dirty_nodes.push(id);
+            if new_chain.contains(&id) {
+                continue;
+            }
+            if self.node_is_hover_sensitive(id) {
+                self.invalidate_hover_node(id);
+                needs_repaint = true;
             }
         }
         for &id in &new_chain {
-            if !old_chain.contains(&id) {
-                dirty_nodes.push(id);
+            if old_chain.contains(&id) {
+                continue;
+            }
+            if self.node_is_hover_sensitive(id) {
+                self.invalidate_hover_node(id);
+                needs_repaint = true;
             }
         }
 
-        // Clear cached styles for affected nodes and their descendants
-        // so resolve_styles_recursive() will re-resolve their CSS
-        for &id in &dirty_nodes {
-            self.invalidate_style_subtree(id);
+        if needs_repaint {
+            self.tree.styles_dirty = true;
         }
 
-        // Defer style resolution to resolve_layout()
-        self.tree.styles_dirty = true;
+        needs_repaint
+    }
 
-        // Mark dirty nodes for repaint
-        for id in dirty_nodes {
-            self.push_dirty_flags(id, DirtyFlags::STYLE | DirtyFlags::PAINT);
+    fn node_is_hover_sensitive(&self, id: usize) -> bool {
+        self.tree
+            .nodes
+            .get(id)
+            .is_some_and(|n| n.hover_sensitive.get())
+    }
+
+    fn node_is_active_sensitive(&self, id: usize) -> bool {
+        self.tree
+            .nodes
+            .get(id)
+            .is_some_and(|n| n.active_sensitive.get())
+    }
+
+    fn node_is_focus_sensitive(&self, id: usize) -> bool {
+        self.tree
+            .nodes
+            .get(id)
+            .is_some_and(|n| n.focus_sensitive.get())
+    }
+
+    fn invalidate_hover_node(&mut self, id: usize) {
+        if let Some(node) = self.tree.nodes.get(id) {
+            *node.stylo_element_data.borrow_mut() = None;
         }
-
-        true
+        self.tree.style_roots.push(id);
+        self.push_dirty_flags(id, DirtyFlags::STYLE | DirtyFlags::PAINT);
     }
 
     /// Update focus state: set the focused node, clear previous focus,
-    /// and invalidate styles for affected nodes (resolved at next layout).
-    /// Returns true if the focused node changed (caller should repaint).
+    /// and invalidate styles only for nodes that Stylo flagged as
+    /// focus-sensitive during selector matching.
+    ///
+    /// Returns `true` if a repaint is needed.
     pub fn update_focus(&mut self, new_focused: Option<usize>) -> bool {
         let old_focused = self.tree.focused_node;
         if old_focused == new_focused {
@@ -105,31 +143,33 @@ impl RinchDocument {
 
         self.tree.focused_node = new_focused;
 
-        // Clear cached styles for affected nodes and their descendants
+        // Only invalidate nodes that have CSS rules depending on :focus.
+        let mut needs_repaint = false;
         if let Some(id) = old_focused {
-            self.invalidate_style_subtree(id);
+            if self.node_is_focus_sensitive(id) {
+                self.invalidate_hover_node(id);
+                needs_repaint = true;
+            }
         }
         if let Some(id) = new_focused {
-            self.invalidate_style_subtree(id);
+            if self.node_is_focus_sensitive(id) {
+                self.invalidate_hover_node(id);
+                needs_repaint = true;
+            }
         }
 
-        // Defer style resolution to resolve_layout()
-        self.tree.styles_dirty = true;
-
-        // Mark dirty nodes for repaint
-        if let Some(id) = old_focused {
-            self.push_dirty_flags(id, DirtyFlags::STYLE | DirtyFlags::PAINT);
-        }
-        if let Some(id) = new_focused {
-            self.push_dirty_flags(id, DirtyFlags::STYLE | DirtyFlags::PAINT);
+        if needs_repaint {
+            self.tree.styles_dirty = true;
         }
 
-        true
+        needs_repaint
     }
 
     /// Update active (mouse-pressed) state: set the active node and its
-    /// ancestors, clear previous active, and invalidate styles (resolved at next layout).
-    /// Returns true if the active node changed (caller should repaint).
+    /// ancestors, clear previous active, and invalidate styles only for
+    /// nodes that Stylo flagged as active-sensitive during selector matching.
+    ///
+    /// Returns `true` if a repaint is needed.
     pub fn update_active(&mut self, new_active: Option<usize>) -> bool {
         let old_active = self.tree.active_node;
         if old_active == new_active {
@@ -172,32 +212,32 @@ impl RinchDocument {
 
         self.tree.active_node = new_active;
 
-        // Collect nodes whose active state changed (symmetric difference)
-        let mut dirty_nodes: Vec<usize> = Vec::new();
+        // Only invalidate nodes whose active state changed AND that have
+        // CSS rules depending on :active.
+        let mut needs_repaint = false;
         for &id in &old_chain {
-            if !new_chain.contains(&id) {
-                dirty_nodes.push(id);
+            if old_chain.contains(&id) && new_chain.contains(&id) {
+                continue;
+            }
+            if self.node_is_active_sensitive(id) {
+                self.invalidate_hover_node(id);
+                needs_repaint = true;
             }
         }
         for &id in &new_chain {
-            if !old_chain.contains(&id) {
-                dirty_nodes.push(id);
+            if old_chain.contains(&id) {
+                continue;
+            }
+            if self.node_is_active_sensitive(id) {
+                self.invalidate_hover_node(id);
+                needs_repaint = true;
             }
         }
 
-        // Clear cached styles for affected nodes and their descendants
-        for &id in &dirty_nodes {
-            self.invalidate_style_subtree(id);
+        if needs_repaint {
+            self.tree.styles_dirty = true;
         }
 
-        // Defer style resolution to resolve_layout()
-        self.tree.styles_dirty = true;
-
-        // Mark dirty nodes for repaint
-        for id in dirty_nodes {
-            self.push_dirty_flags(id, DirtyFlags::STYLE | DirtyFlags::PAINT);
-        }
-
-        true
+        needs_repaint
     }
 }

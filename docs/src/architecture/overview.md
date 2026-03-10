@@ -72,7 +72,7 @@ rinch/
 │  (HTML/CSS)   │  (CSS vars)   │  (~55 components)            │
 ├──────────────────────────────────────────────────────────────┤
 │                    External Crates                            │
-│  Taffy (layout) │ Parley (text) │ Stylo (CSS) │ Vello (GPU) │
+│  Taffy (layout) │ Parley (text) │ Stylo (CSS) │ Vello/tiny-skia │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -168,7 +168,7 @@ HTML/CSS DOM implementation:
 - **Layout** - Taffy for flexbox/grid layout
 - **Text** - Parley for text shaping and line breaking
 - **Styling** - Stylo for CSS parsing and computed styles
-- **Rendering** - Vello for GPU-accelerated 2D graphics
+- **Rendering** - Vello (GPU) or tiny-skia (software) via the Painter trait abstraction
 
 ### rinch-web / ui-zoo-web
 
@@ -312,7 +312,7 @@ MCP server for Claude integration:
                   │
                   ▼
     ┌──────────────────────────────┐
-    │         Vello                │  GPU rendering
+    │    Vello / tiny-skia         │  GPU or software rendering
     │       (re-paint)             │
     └──────────────────────────────┘
                   │
@@ -340,7 +340,9 @@ This is much more efficient than regenerating HTML and replacing the entire docu
 | **Taffy** | Flexbox and grid layout engine |
 | **Parley** | Text shaping, line breaking, bidirectional text |
 | **Stylo** | CSS parsing and computed style resolution |
-| **Vello** | GPU-accelerated 2D rendering |
+| **Vello** | GPU-accelerated 2D rendering (GPU mode) |
+| **tiny-skia** | CPU-based 2D rendering (software mode) |
+| **softbuffer** | Software window presentation (software mode) |
 | **wgpu** | Cross-platform GPU abstraction (WebGPU API) |
 | **winit** | Cross-platform windowing and input |
 | **muda** | Native menu support (macOS/Windows/Linux) |

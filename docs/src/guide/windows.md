@@ -469,11 +469,24 @@ fn restore_window(saved: WindowState) -> WindowHandle {
 
 ---
 
-## GPU-Accelerated Rendering
+## Rendering Backends
 
-All windows are rendered using Vello, a GPU-accelerated 2D graphics library. This provides:
+Rinch supports two rendering backends, selected at compile time:
+
+### GPU Mode (`features = ["gpu"]`)
+
+Windows are rendered using Vello, a GPU-accelerated 2D graphics library via wgpu. This provides:
 
 - Smooth animations
 - High-quality text rendering
-- Efficient repaints
-- Cross-platform consistency
+- Efficient GPU-accelerated repaints
+- Cross-platform consistency (Vulkan, Metal, DX12, WebGPU)
+
+### Software Mode (default)
+
+Without the `gpu` feature, windows are rendered using tiny-skia (CPU rasterizer) and presented via softbuffer. This provides:
+
+- No GPU required — works in headless, CI, containers, SSH sessions
+- Full rendering fidelity (same visual output as GPU mode)
+- Dirty region caching — only changed areas are repainted for fast incremental updates
+- Subtree pruning — nodes outside the dirty region are skipped during paint

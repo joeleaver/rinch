@@ -67,7 +67,7 @@ impl RinchApp {
                 let ids = rinch_dom::testing::query_selector(&d.tree, &selector);
                 let nodes: Vec<_> = ids
                     .iter()
-                    .filter_map(|&id| rinch_dom::testing::get_node_detail(&d.tree, id))
+                    .filter_map(|&id| rinch_dom::testing::get_node_summary(&d.tree, id))
                     .collect();
                 DebugResult::Json { data: json!(nodes) }
             }
@@ -362,11 +362,15 @@ impl RinchApp {
                         let d = doc.borrow();
                         hit_test(&d.tree, x, y)
                     };
-                    let changed = doc.borrow_mut().update_hover(hovered);
-                    if changed {
+                    let mut hovered_changed = false;
+                    let needs_repaint =
+                        doc.borrow_mut().update_hover(hovered, &mut hovered_changed);
+                    if hovered_changed {
                         if let Some(hit_id) = hovered {
                             Self::dispatch_onenter(doc, hit_id);
                         }
+                    }
+                    if needs_repaint {
                         actions.push(AppAction::RequestRedraw);
                     }
 

@@ -12,3 +12,6 @@ rinch-core = { workspace = true }
 rinch-tabler-icons.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[features]
+gpu = ["rinch/gpu", "ui-zoo/gpu"]

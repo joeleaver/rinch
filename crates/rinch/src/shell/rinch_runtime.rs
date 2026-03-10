@@ -403,14 +403,8 @@ impl RinchRuntime {
             }
         }
 
-        // Invoke per-frame render callbacks before collecting frames
+        // Invoke per-frame render callbacks before collecting frames.
         crate::render_surface::invoke_render_callbacks();
-
-        // If any surfaces have new frames, force a repaint so layers are
-        // composited underneath the fresh UI.
-        if crate::render_surface::any_surface_dirty() {
-            self.app.mark_scene_dirty();
-        }
 
         // Collect surface frames and resolve viewport rects + letterboxing
         // BEFORE build_pixels, since layers are composited underneath the UI.
@@ -519,7 +513,9 @@ impl RinchRuntime {
             }
         }
 
-        // Invoke per-frame render callbacks before collecting frames
+        // Invoke per-frame render callbacks before collecting frames.
+        // The IN_RENDER_CALLBACK guard suppresses request_repaint() inside
+        // submit_frame() so these don't trigger another redraw cycle.
         crate::render_surface::invoke_render_callbacks();
 
         // Extract render surface frames for compositing (CPU pixel path)
@@ -1245,7 +1241,12 @@ pub fn run_rinch<F>(title: &str, width: u32, height: u32, component: F)
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    let _ = tracing_subscriber::fmt::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .try_init();
 
     // Clear stale state
     events::clear_handlers();
@@ -1327,7 +1328,12 @@ pub fn run_rinch_with_window_props_and_menu<F>(
 ) where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    let _ = tracing_subscriber::fmt::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .try_init();
 
     events::clear_handlers();
     clear_context();

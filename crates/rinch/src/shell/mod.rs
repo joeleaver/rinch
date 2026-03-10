@@ -11,7 +11,6 @@ pub(crate) mod frame_upload;
 pub mod html_parser;
 pub mod memory_profile;
 pub mod rinch_runtime;
-#[cfg(feature = "debug")]
 pub mod screenshot;
 pub mod softbuffer_renderer;
 #[cfg(feature = "gpu")]
