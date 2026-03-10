@@ -68,6 +68,28 @@ pub fn styles() -> String {
     app-region: no-drag;
 }
 
+/* Spacer that reserves titlebar space for inline menu items overlay.
+   Uses --rinch-menu-spacer-width which is set dynamically; falls back to 0. */
+.rinch-borderlesswindow__menu-spacer {
+    flex-shrink: 0;
+    width: var(--rinch-menu-spacer-width, 0px);
+}
+
+/* Branded title in inline menu row — bold with multi-color letters in a pill */
+.rinch-borderlesswindow__brand {
+    display: flex;
+    align-items: center;
+    font-size: var(--rinch-font-size-sm);
+    font-weight: 700;
+    white-space: nowrap;
+    padding: 2px 10px;
+    margin: 0 4px;
+    letter-spacing: 0.5px;
+    background: rgba(255, 255, 255, 0.9);
+    border-radius: var(--rinch-radius-sm);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
 /* Title text */
 .rinch-borderlesswindow__title {
     flex: 1;

@@ -483,26 +483,24 @@ fn paint_node(
         {
             // display:contents has no box, so it never forms a SC itself.
             // Elements with one zero dimension (e.g. collapsed height) may still
-            // have overflowing children that need painting.
-            // Skip SC children — they'll be collected by an ancestor SC.
-            for &child_id in &node.children {
-                let dominated_by_ancestor_sc =
-                    tree.get(child_id).is_some_and(creates_stacking_context);
-                if dominated_by_ancestor_sc {
-                    continue;
-                }
-                paint_node(
-                    tree,
-                    child_id,
-                    painter,
-                    scale,
-                    offset_x,
-                    offset_y,
-                    font_cx,
-                    layout_cx,
-                    parent_transform,
-                );
-            }
+            // have overflowing children that need painting (e.g. overflow:visible
+            // with absolutely-positioned children).
+            //
+            // Use full stacking-context-aware painting so that SC children
+            // (e.g. z-indexed absolute children) are properly collected and
+            // painted in z-index order, rather than being skipped.
+            paint_children_with_stacking(
+                tree,
+                node_id,
+                painter,
+                scale,
+                offset_x,
+                offset_y,
+                font_cx,
+                layout_cx,
+                parent_transform,
+                false,
+            );
         }
         return;
     }
