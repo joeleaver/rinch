@@ -714,7 +714,7 @@ fn paint_node(
                                         &decoded,
                                         rect,
                                         scale,
-                                        "fill",
+                                        "contain",
                                         node_transform,
                                     );
 

@@ -493,7 +493,7 @@ impl RinchMcpServer {
 
         // Build cargo run command
         let mut cmd = Command::new("cargo");
-        cmd.arg("run").arg("-p").arg(package);
+        cmd.arg("run").arg("--release").arg("-p").arg(package);
         if let Some(extra) = &params.0.extra_args {
             for arg in extra.split_whitespace() {
                 cmd.arg(arg);
