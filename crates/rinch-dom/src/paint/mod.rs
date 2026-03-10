@@ -99,7 +99,17 @@ pub fn compute_dirty_region(
 }
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+
+/// Pixel data for a render surface, keyed by surface ID.
+pub struct SurfacePixelData {
+    /// RGBA8 pixel data.
+    pub data: Vec<u8>,
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+}
 
 thread_local! {
     /// Viewport names that have active surface frames this paint cycle.
@@ -110,6 +120,10 @@ thread_local! {
     /// Dirty region for incremental painting. When set, paint_node can
     /// skip subtrees entirely outside this rect (in physical pixels).
     static DIRTY_REGION: RefCell<Option<Rect>> = const { RefCell::new(None) };
+
+    /// Surface pixel data for inline painting, keyed by surface ID.
+    /// Set before paint_document() and cleared after.
+    static SURFACE_PIXELS: RefCell<Option<HashMap<usize, SurfacePixelData>>> = const { RefCell::new(None) };
 }
 
 /// Set the active viewport names for hole-punching during this paint cycle.
@@ -118,6 +132,15 @@ thread_local! {
 /// Call with `None` to revert to the default (all viewports get holes).
 pub fn set_active_viewports(names: Option<HashSet<String>>) {
     ACTIVE_VIEWPORTS.with(|v| *v.borrow_mut() = names);
+}
+
+/// Set surface pixel data for inline painting during the current paint cycle.
+///
+/// Call with `Some(map)` before `paint_document()` and `None` after.
+/// When set, `paint_node()` will draw surface pixels inline at the
+/// element's position, like `<img>` elements.
+pub fn set_surface_pixels(pixels: Option<HashMap<usize, SurfacePixelData>>) {
+    SURFACE_PIXELS.with(|v| *v.borrow_mut() = pixels);
 }
 
 /// Set the dirty region for incremental painting.
@@ -621,6 +644,135 @@ fn paint_node(
                 paint_borders(painter, node, scale, x, y, w, h, 0.0.into(), node_transform);
             }
 
+            if opacity < 1.0 {
+                painter.pop_layer();
+            }
+        }
+        // Inline painting for render surfaces — draws pixels at the element's
+        // position like <img>, participating in normal stacking and clipping.
+        NodeKind::Element(_) if node.attributes.contains_key("data-render-surface") => {
+            let surface_painted = node
+                .attributes
+                .get("data-render-surface")
+                .and_then(|id_str| id_str.parse::<usize>().ok())
+                .map(|surface_id| {
+                    SURFACE_PIXELS.with(|sp| {
+                        let guard = sp.borrow();
+                        if let Some(map) = guard.as_ref() {
+                            if let Some(pixels) = map.get(&surface_id) {
+                                if pixels.width > 0 && pixels.height > 0 && !pixels.data.is_empty()
+                                {
+                                    let rect = Rect::new(x, y, x + w, y + h);
+                                    let node_transform =
+                                        if !node.computed_style.transform.is_identity {
+                                            let m = &node.computed_style.transform.matrix;
+                                            let cs = &node.computed_style;
+                                            let ox =
+                                                cs.transform_origin_x.resolve(node.layout.width);
+                                            let oy =
+                                                cs.transform_origin_y.resolve(node.layout.height);
+                                            let cx = x + ox as f64 * scale;
+                                            let cy = y + oy as f64 * scale;
+                                            parent_transform
+                                                * Affine::translate((cx, cy))
+                                                * Affine::new(*m)
+                                                * Affine::translate((-cx, -cy))
+                                        } else {
+                                            parent_transform
+                                        };
+
+                                    let opacity = node.computed_style.opacity;
+                                    if opacity < 1.0 {
+                                        painter.push_layer(
+                                            BlendMode::Normal,
+                                            opacity,
+                                            node_transform,
+                                            &rect.into(),
+                                        );
+                                    }
+
+                                    // Paint background behind the surface if any
+                                    if let BackgroundValue::Color(bg_color) =
+                                        &node.computed_style.background
+                                    {
+                                        painter.fill_color(
+                                            Fill::NonZero,
+                                            node_transform,
+                                            *bg_color,
+                                            &rect.into(),
+                                        );
+                                    }
+
+                                    // Paint the surface pixels inline, like an image
+                                    let decoded = crate::image_cache::DecodedImage {
+                                        data: pixels.data.clone(),
+                                        width: pixels.width,
+                                        height: pixels.height,
+                                    };
+                                    image::paint_image(
+                                        painter,
+                                        &decoded,
+                                        rect,
+                                        scale,
+                                        "fill",
+                                        node_transform,
+                                    );
+
+                                    if opacity < 1.0 {
+                                        painter.pop_layer();
+                                    }
+                                    return true;
+                                }
+                            }
+                        }
+                        false
+                    })
+                })
+                .unwrap_or(false);
+
+            if !surface_painted {
+                // No pixel data yet — paint as a normal element (shows background)
+                // Fall through to generic element painting below
+            } else {
+                return; // Surface painted inline, done
+            }
+
+            // Fall through: paint as generic element if no surface data
+            let rect = Rect::new(x, y, x + w, y + h);
+            let visible = !matches!(
+                node.computed_style.visibility,
+                VisibilityValue::Hidden | VisibilityValue::Collapse
+            );
+            let node_transform = if !node.computed_style.transform.is_identity {
+                let m = &node.computed_style.transform.matrix;
+                let cs = &node.computed_style;
+                let ox = cs.transform_origin_x.resolve(node.layout.width);
+                let oy = cs.transform_origin_y.resolve(node.layout.height);
+                let cx = x + ox as f64 * scale;
+                let cy = y + oy as f64 * scale;
+                parent_transform
+                    * Affine::translate((cx, cy))
+                    * Affine::new(*m)
+                    * Affine::translate((-cx, -cy))
+            } else {
+                parent_transform
+            };
+            let opacity = node.computed_style.opacity;
+            if opacity < 1.0 {
+                painter.push_layer(BlendMode::Normal, opacity, node_transform, &rect.into());
+            }
+            if visible {
+                if let BackgroundValue::Color(bg_color) = &node.computed_style.background {
+                    let radius =
+                        node.computed_style.border_radius_top_left.to_px().max(0.0) as f64 * scale;
+                    if radius > 0.0 {
+                        let rrect = rect.to_rounded_rect(radius);
+                        painter.fill_color(Fill::NonZero, node_transform, *bg_color, &rrect.into());
+                    } else {
+                        painter.fill_color(Fill::NonZero, node_transform, *bg_color, &rect.into());
+                    }
+                }
+            }
             if opacity < 1.0 {
                 painter.pop_layer();
             }

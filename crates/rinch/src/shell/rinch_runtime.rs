@@ -394,59 +394,32 @@ impl RinchRuntime {
         let s = scale as f32;
 
         // Update layout sizes for render surfaces so callbacks get correct dimensions
-        let reg_names = crate::render_surface::registered_viewport_names();
-        for viewport_name in &reg_names {
-            if let Some(viewport) = self.app.viewport_rect(viewport_name) {
-                let phys_w = (viewport.2 * s) as u32;
-                let phys_h = (viewport.3 * s) as u32;
-                crate::render_surface::update_layout_size(viewport_name, phys_w, phys_h);
+        let surface_ids = crate::render_surface::registered_surface_ids();
+        for &surface_id in &surface_ids {
+            if let Some(rect) = self.app.surface_layout_rect(surface_id) {
+                let phys_w = (rect.2 * s) as u32;
+                let phys_h = (rect.3 * s) as u32;
+                crate::render_surface::update_layout_size_by_id(surface_id, phys_w, phys_h);
             }
         }
 
         // Invoke per-frame render callbacks before collecting frames.
         crate::render_surface::invoke_render_callbacks();
 
-        // Collect surface frames and resolve viewport rects + letterboxing
-        // BEFORE build_pixels, since layers are composited underneath the UI.
-        use crate::app::SoftwareLayer;
-        let surface_frames = crate::render_surface::collect_surface_frames();
-        let layers: Vec<SoftwareLayer> = surface_frames
-            .into_iter()
-            .filter_map(|(viewport_name, pixels, surf_w, surf_h)| {
-                let viewport = self.app.viewport_rect(&viewport_name)?;
-                let (vx, vy, vw, vh) = (
-                    viewport.0 * s,
-                    viewport.1 * s,
-                    viewport.2 * s,
-                    viewport.3 * s,
-                );
-                // Letterbox: fit source within viewport preserving aspect ratio
-                let src_aspect = surf_w as f32 / surf_h.max(1) as f32;
-                let vp_aspect = vw / vh.max(1.0);
-                let (dst_x, dst_y, dst_w, dst_h) = if (src_aspect - vp_aspect).abs() < 0.001 {
-                    (vx, vy, vw, vh)
-                } else if src_aspect > vp_aspect {
-                    let fit_h = vw / src_aspect;
-                    (vx, vy + (vh - fit_h) / 2.0, vw, fit_h)
-                } else {
-                    let fit_w = vh * src_aspect;
-                    (vx + (vw - fit_w) / 2.0, vy, fit_w, vh)
-                };
-                Some(SoftwareLayer {
-                    viewport_name,
-                    pixels,
-                    src_w: surf_w,
-                    src_h: surf_h,
-                    dst_x,
-                    dst_y,
-                    dst_w,
-                    dst_h,
-                })
-            })
-            .collect();
+        // Collect surface pixel data and set it for inline painting.
+        // Surfaces are painted inline during paint_document() (like <img> elements).
+        let surface_pixels = crate::render_surface::collect_surface_pixels_by_id();
+        if !surface_pixels.is_empty() {
+            // Mark scene dirty so build_pixels() actually repaints
+            self.app.mark_scene_dirty();
+            rinch_dom::paint::set_surface_pixels(Some(surface_pixels));
+        }
 
-        // Build the scene with layers composited underneath the UI
-        let (_base, w, h) = self.app.build_pixels(scale, size, &layers);
+        // Build the scene — surfaces paint inline at their layout positions
+        let (_base, w, h) = self.app.build_pixels(scale, size);
+
+        rinch_dom::paint::set_surface_pixels(None);
+
         let pixels = self
             .app
             .skia_painter
@@ -491,49 +464,67 @@ impl RinchRuntime {
         let scale = window.scale_factor();
         let size = window.inner_size();
         let transparent = self.app.is_transparent();
-
-        // Collect all composite layers (video + render surfaces)
-        let mut all_layers: Vec<rinch_platform::CompositeLayer> = Vec::new();
         let s = scale as f32;
 
-        // Video frames are delivered through the frame sink → RenderSurface pipeline
-        // (set up via set_frame_sink_factory at startup). They are collected alongside
-        // other render surface frames below — no separate video collection needed.
-
         // Update layout sizes for all render surfaces so render callbacks
-        // receive correct dimensions.  Previously this was only done for GPU
-        // texture-source surfaces; CPU callback-only surfaces never got their
-        // layout_size set, so their callbacks were skipped (w==0, h==0).
+        // receive correct dimensions.
+        let surface_ids = crate::render_surface::registered_surface_ids();
+        for &surface_id in &surface_ids {
+            if let Some(rect) = self.app.surface_layout_rect(surface_id) {
+                let phys_w = (rect.2 * s) as u32;
+                let phys_h = (rect.3 * s) as u32;
+                crate::render_surface::update_layout_size_by_id(surface_id, phys_w, phys_h);
+            }
+        }
+
+        // Also update layout sizes for video/GameViewport surfaces that still
+        // use the viewport_name path (data-viewport attribute).
         let reg_names = crate::render_surface::registered_viewport_names();
-        for viewport_name in reg_names {
-            if let Some(viewport) = self.app.viewport_rect(&viewport_name) {
+        for viewport_name in &reg_names {
+            if let Some(viewport) = self.app.viewport_rect(viewport_name) {
                 let phys_w = (viewport.2 * s) as u32;
                 let phys_h = (viewport.3 * s) as u32;
-                crate::render_surface::update_layout_size(&viewport_name, phys_w, phys_h);
+                crate::render_surface::update_layout_size(viewport_name, phys_w, phys_h);
             }
         }
 
         // Invoke per-frame render callbacks before collecting frames.
-        // The IN_RENDER_CALLBACK guard suppresses request_repaint() inside
-        // submit_frame() so these don't trigger another redraw cycle.
         crate::render_surface::invoke_render_callbacks();
 
-        // Extract render surface frames for compositing (CPU pixel path)
+        // Read back GPU textures to CPU for inline-paint RenderSurface components.
+        // This must happen before collect_surface_pixels_by_id().
+        crate::render_surface::readback_gpu_textures();
+
+        // Collect CPU surface pixel data for inline painting (RenderSurface path).
+        // After readback, this includes both pure-CPU and readback-GPU surfaces.
+        let surface_pixels = crate::render_surface::collect_surface_pixels_by_id();
+        if !surface_pixels.is_empty() {
+            self.app.mark_scene_dirty();
+            rinch_dom::paint::set_surface_pixels(Some(surface_pixels));
+        }
+
+        // Video surfaces still use the compositor/hole-punch path.
+        // Track which viewport names have compositor layers so we can set
+        // ACTIVE_VIEWPORTS to prevent hole-punching for inline-painted surfaces.
+        let mut all_layers: Vec<rinch_platform::CompositeLayer> = Vec::new();
+        let mut gpu_layers = Vec::new();
+        let mut compositor_viewport_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        // Collect compositor-path surface frames (video, GameViewport — not RenderSurface)
         {
             let surface_frames = crate::render_surface::collect_surface_frames();
             for (viewport_name, pixels, surf_w, surf_h) in surface_frames {
                 if let Some((viewport, radii)) = self.app.viewport_rect_with_radius(&viewport_name)
                 {
-                    // Scale viewport and radii from logical to physical pixels
+                    compositor_viewport_names.insert(viewport_name.clone());
                     let viewport = (
                         viewport.0 * s,
                         viewport.1 * s,
                         viewport.2 * s,
                         viewport.3 * s,
                     );
-
                     // Letterbox: fit source within viewport preserving aspect ratio.
-                    // No-op when source and viewport aspects already match.
                     let viewport = {
                         let (vx, vy, vw, vh) = viewport;
                         let src_aspect = surf_w as f32 / surf_h.max(1) as f32;
@@ -550,7 +541,6 @@ impl RinchRuntime {
                             (vx + offset_x, vy, fit_w, vh)
                         }
                     };
-
                     let border_radius = [radii[0] * s, radii[1] * s, radii[2] * s, radii[3] * s];
                     all_layers.push(rinch_platform::CompositeLayer {
                         pixels,
@@ -563,19 +553,23 @@ impl RinchRuntime {
             }
         }
 
-        // Extract GPU texture sources for zero-copy compositing
-        let mut gpu_layers = Vec::new();
+        // Extract GPU texture sources for compositor — only non-inline surfaces
+        // (video, GameViewport). Inline RenderSurface GPU textures are read back
+        // to CPU above and painted inline.
         {
             let texture_sources = crate::render_surface::collect_texture_sources();
-            for (viewport_name, tex_source_arc) in texture_sources {
+            for (surface_id, viewport_name, is_inline, tex_source_arc) in texture_sources {
+                // Skip inline surfaces — they're already read back to CPU pixels
+                if is_inline {
+                    continue;
+                }
+
                 if let Some((viewport, radii)) = self.app.viewport_rect_with_radius(&viewport_name)
                 {
+                    compositor_viewport_names.insert(viewport_name.clone());
                     let phys_w = (viewport.2 * s) as u32;
                     let phys_h = (viewport.3 * s) as u32;
-
-                    // Update layout size so the engine thread can match its
-                    // offscreen texture to the actual viewport dimensions.
-                    crate::render_surface::update_layout_size(&viewport_name, phys_w, phys_h);
+                    crate::render_surface::update_layout_size_by_id(surface_id, phys_w, phys_h);
 
                     let viewport = (
                         viewport.0 * s,
@@ -584,7 +578,6 @@ impl RinchRuntime {
                         viewport.3 * s,
                     );
                     let border_radius = [radii[0] * s, radii[1] * s, radii[2] * s, radii[3] * s];
-                    // Lock the texture source to get the view
                     if let Some(ref ts) = *tex_source_arc.lock().unwrap() {
                         gpu_layers.push(super::desktop::GpuTextureLayer {
                             view: ts.view.clone(),
@@ -596,14 +589,11 @@ impl RinchRuntime {
             }
         }
 
-        // Set or clear composite layers on the renderer
+        // Set or clear composite layers on the renderer (GPU texture + video only)
         if !all_layers.is_empty() || !gpu_layers.is_empty() {
             renderer.set_composite_layers(all_layers);
             renderer.set_gpu_layers(gpu_layers);
         } else if renderer.has_composite_layers() {
-            // Clear stale layers when nothing was collected this frame.
-            // Keep layers alive only when a video is loaded but paused
-            // (so the last decoded frame remains visible).
             #[cfg(feature = "video")]
             let video_loaded = rinch_video::is_video_loaded();
             #[cfg(not(feature = "video"))]
@@ -615,13 +605,21 @@ impl RinchRuntime {
             }
         }
 
-        // Build scene from document
+        // Set active viewports so hole-punching only applies to compositor surfaces
+        // (GPU textures + video), not inline-painted CPU surfaces.
+        if !compositor_viewport_names.is_empty() {
+            rinch_dom::paint::set_active_viewports(Some(compositor_viewport_names));
+        }
+
+        // Build scene from document — CPU surfaces paint inline via draw_image()
         let scene = self.app.build_scene(scale, size);
+
+        rinch_dom::paint::set_active_viewports(None);
+        rinch_dom::paint::set_surface_pixels(None);
 
         // Render to screen
         renderer.paint(scene, transparent)?;
 
-        // Log paint time if RINCH_PERF is set
         if std::env::var("RINCH_PERF").is_ok() {
             let elapsed = paint_start.elapsed();
             eprintln!("[PERF] paint: {:.2}ms", elapsed.as_secs_f64() * 1000.0);
@@ -837,7 +835,7 @@ impl RinchRuntime {
             let scale = self.scale_factor();
             let size = self.window_size();
             // Screenshot: pass empty layers (captures UI only, not live surfaces)
-            let (pixels, w, h) = self.app.build_pixels(scale, size, &[]);
+            let (pixels, w, h) = self.app.build_pixels(scale, size);
             let png_bytes = screenshot::encode_png(pixels, w, h);
             DebugResult::Bytes {
                 data: base64::engine::general_purpose::STANDARD.encode(&png_bytes),

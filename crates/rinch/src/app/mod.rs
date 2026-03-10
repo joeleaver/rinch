@@ -19,8 +19,6 @@ pub(crate) use hit_testing::*;
 use html_parser::*;
 
 use std::cell::{Cell, RefCell};
-#[cfg(not(feature = "gpu"))]
-use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::ce_ops::CeOps;
@@ -48,19 +46,6 @@ use vello::Scene;
 
 /// Viewport rectangle as (x, y, width, height) in logical pixels.
 pub type ViewportRect = (f32, f32, f32, f32);
-
-/// A resolved surface layer ready to blit onto the software pixmap.
-#[cfg(not(feature = "gpu"))]
-pub struct SoftwareLayer {
-    pub viewport_name: String,
-    pub pixels: Vec<u8>,
-    pub src_w: u32,
-    pub src_h: u32,
-    pub dst_x: f32,
-    pub dst_y: f32,
-    pub dst_w: f32,
-    pub dst_h: f32,
-}
 
 #[cfg(feature = "desktop")]
 use crate::shell::devtools::DevToolsState;
@@ -534,8 +519,8 @@ impl RinchApp {
 
     /// Build pixels via TinySkiaPainter for software rendering.
     ///
-    /// `layers` are composited underneath the UI (like the GPU compositor):
-    /// black base → surface layers → document (with hole-punched backgrounds).
+    /// Surface pixels are painted inline during paint traversal (like `<img>`),
+    /// set via `rinch_dom::paint::set_surface_pixels()` before calling this.
     ///
     /// Uses dirty region caching: when only a few nodes changed, clears and
     /// repaints only the affected rectangular area, preserving unchanged pixels.
@@ -543,12 +528,7 @@ impl RinchApp {
     /// Returns (pixels, width, height) in RGBA8 format. The painter is lazily
     /// created on first call and resized as needed.
     #[cfg(not(feature = "gpu"))]
-    pub fn build_pixels(
-        &mut self,
-        scale: f64,
-        size: (u32, u32),
-        layers: &[SoftwareLayer],
-    ) -> (&[u8], u32, u32) {
+    pub fn build_pixels(&mut self, scale: f64, size: (u32, u32)) -> (&[u8], u32, u32) {
         let w = (size.0 as f64 * scale).round() as u32;
         let h = (size.1 as f64 * scale).round() as u32;
 
@@ -573,14 +553,35 @@ impl RinchApp {
         if self.scene_dirty {
             let paint_start = Instant::now();
 
+            // Mark surface DOM nodes as paint-dirty when new pixels arrive,
+            // so dirty region caching correctly includes surface rects.
+            if let Some(doc) = &self.doc {
+                let mut d = doc.borrow_mut();
+                let dirty_surface_nodes: Vec<_> = d
+                    .tree
+                    .nodes
+                    .iter()
+                    .filter_map(|(node_id, node)| {
+                        let id_str = node.attributes.get("data-render-surface")?;
+                        let sid = id_str.parse::<usize>().ok()?;
+                        if crate::render_surface::is_surface_dirty_by_id(sid) {
+                            Some(node_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                d.tree.paint_dirty_nodes.extend(dirty_surface_nodes);
+            }
+
             // Compute dirty region before clearing paint_dirty_nodes
-            let dirty_region = if self.has_previous_frame && !resized && layers.is_empty() {
+            let dirty_region = if self.has_previous_frame && !resized {
                 self.doc.as_ref().and_then(|doc| {
                     let d = doc.borrow();
                     rinch_dom::paint::compute_dirty_region(&d.tree, scale, w as f64, h as f64)
                 })
             } else {
-                None // Full repaint: first frame, resize, or layers present
+                None // Full repaint: first frame or resize
             };
 
             // Drain paint_dirty_nodes now that we've computed the region
@@ -604,11 +605,7 @@ impl RinchApp {
                 let ry = region.y0 as u32;
                 let rw = region.width().ceil() as u32;
                 let rh = region.height().ceil() as u32;
-                if !layers.is_empty() {
-                    painter.clear_rect_black(rx, ry, rw, rh);
-                } else {
-                    painter.clear_rect_white(rx, ry, rw, rh);
-                }
+                painter.clear_rect_white(rx, ry, rw, rh);
 
                 // Set dirty region so paint_node can skip subtrees outside it
                 use peniko::kurbo::Rect;
@@ -644,31 +641,7 @@ impl RinchApp {
             } else {
                 // Full repaint
                 painter.reset();
-
-                // Composite layers UNDER the UI
-                if !layers.is_empty() {
-                    painter.fill_black();
-                    for layer in layers {
-                        painter.blit_rgba(
-                            &layer.pixels,
-                            layer.src_w,
-                            layer.src_h,
-                            layer.dst_x,
-                            layer.dst_y,
-                            layer.dst_w,
-                            layer.dst_h,
-                        );
-                    }
-                } else {
-                    painter.fill_white();
-                }
-
-                // Tell the hole-punch code which viewports have active frames
-                let active_names: HashSet<String> =
-                    layers.iter().map(|l| l.viewport_name.clone()).collect();
-                if !active_names.is_empty() {
-                    rinch_dom::paint::set_active_viewports(Some(active_names));
-                }
+                painter.fill_white();
 
                 if let Some(doc) = &self.doc {
                     let mut d = doc.borrow_mut();
@@ -682,8 +655,6 @@ impl RinchApp {
                         &mut d.layout_cx,
                     );
                 }
-
-                rinch_dom::paint::set_active_viewports(None);
             }
 
             // Log paint timing if RINCH_PERF is set
@@ -1075,6 +1046,45 @@ impl RinchApp {
                     (abs_x, abs_y, node.layout.width, node.layout.height),
                     clip_radii,
                 ));
+            }
+        }
+        None
+    }
+
+    /// Find a render surface's layout rect by surface ID.
+    ///
+    /// Searches for a DOM element with `data-render-surface={id}` and returns
+    /// its absolute position and size in logical pixels.
+    pub fn surface_layout_rect(&self, surface_id: usize) -> Option<ViewportRect> {
+        let doc = self.doc.as_ref()?;
+        let d = doc.borrow();
+        let id_str = surface_id.to_string();
+        for (node_id, node) in &d.tree.nodes {
+            if node
+                .attributes
+                .get("data-render-surface")
+                .map(|v| v.as_str())
+                == Some(&id_str)
+            {
+                let mut abs_x = 0.0_f32;
+                let mut abs_y = 0.0_f32;
+                let mut current = Some(node_id);
+                while let Some(id) = current {
+                    if let Some(n) = d.tree.get(id) {
+                        abs_x += n.layout.x;
+                        abs_y += n.layout.y;
+                        if let Some(parent_id) = n.parent
+                            && let Some(parent) = d.tree.get(parent_id)
+                        {
+                            abs_x -= parent.scroll_offset.0 as f32;
+                            abs_y -= parent.scroll_offset.1 as f32;
+                        }
+                        current = n.parent;
+                    } else {
+                        break;
+                    }
+                }
+                return Some((abs_x, abs_y, node.layout.width, node.layout.height));
             }
         }
         None

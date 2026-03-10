@@ -649,6 +649,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         pub fn offscreen_view(&self) -> &wgpu::TextureView {
             &self.offscreen_view
         }
+
+        pub fn offscreen_texture(&self) -> &wgpu::Texture {
+            &self.offscreen_texture
+        }
     }
 
     #[cfg(feature = "gpu")]
@@ -669,7 +673,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
@@ -962,7 +968,12 @@ pub fn render_surface_section() -> NodeHandle {
                     {
                         if (w, h) != registered_size {
                             registered_size = (w, h);
-                            registrar.set_texture_source(cube.offscreen_view().clone(), w, h);
+                            registrar.set_texture_source(
+                                cube.offscreen_texture().clone(),
+                                cube.offscreen_view().clone(),
+                                w,
+                                h,
+                            );
                         } else {
                             registrar.notify_frame_ready();
                         }
