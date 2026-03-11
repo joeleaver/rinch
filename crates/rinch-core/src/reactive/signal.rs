@@ -171,7 +171,19 @@ impl<T: 'static> Signal<T> {
     /// Set the signal to a new value.
     ///
     /// This will notify all subscribers to re-run.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from a background thread. Use [`send()`](Signal::send)
+    /// for automatic cross-thread dispatch.
     pub fn set(&self, value: T) {
+        if !super::is_main_thread() {
+            panic!(
+                "Signal::set() called from a background thread. \
+                 Use signal.send(value) for automatic cross-thread dispatch, \
+                 or rinch::run_on_main_thread() to dispatch manually."
+            );
+        }
         SIGNAL_STORE.with(|store| {
             let mut store = store.borrow_mut();
             let slot = store
@@ -185,7 +197,19 @@ impl<T: 'static> Signal<T> {
     /// Update the signal's value using a function.
     ///
     /// This will notify all subscribers to re-run.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from a background thread. Use [`update_send()`](Signal::update_send)
+    /// for automatic cross-thread dispatch.
     pub fn update(&self, f: impl FnOnce(&mut T)) {
+        if !super::is_main_thread() {
+            panic!(
+                "Signal::update() called from a background thread. \
+                 Use signal.update_send() for automatic cross-thread dispatch, \
+                 or rinch::run_on_main_thread() to dispatch manually."
+            );
+        }
         SIGNAL_STORE.with(|store| {
             let mut store = store.borrow_mut();
             let slot = store
@@ -198,6 +222,65 @@ impl<T: 'static> Signal<T> {
             f(value);
         });
         self.notify();
+    }
+}
+
+impl<T: Send + 'static> Signal<T> {
+    /// Set the signal from any thread.
+    ///
+    /// If called from the main thread, behaves identically to [`set()`](Signal::set).
+    /// If called from a background thread, automatically dispatches to the main
+    /// thread where the signal store lives.
+    ///
+    /// Requires `T: Send` since the value may cross thread boundaries.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let level = Signal::new(0.0f32);
+    ///
+    /// std::thread::spawn(move || {
+    ///     // This just works — no run_on_main_thread() wrapper needed
+    ///     level.send(0.5);
+    /// });
+    /// ```
+    pub fn send(&self, value: T) {
+        if super::is_main_thread() {
+            self.set(value);
+        } else {
+            let signal = *self;
+            super::dispatch_to_main_thread(Box::new(move || {
+                signal.set(value);
+            }));
+        }
+    }
+
+    /// Update the signal from any thread.
+    ///
+    /// If called from the main thread, behaves identically to [`update()`](Signal::update).
+    /// If called from a background thread, automatically dispatches to the main
+    /// thread where the signal store lives.
+    ///
+    /// Requires the closure to be `Send + 'static` since it may cross thread boundaries.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let items = Signal::new(vec![1, 2, 3]);
+    ///
+    /// std::thread::spawn(move || {
+    ///     items.update_send(|list| list.push(4));
+    /// });
+    /// ```
+    pub fn update_send(&self, f: impl FnOnce(&mut T) + Send + 'static) {
+        if super::is_main_thread() {
+            self.update(f);
+        } else {
+            let signal = *self;
+            super::dispatch_to_main_thread(Box::new(move || {
+                signal.update(f);
+            }));
+        }
     }
 }
 

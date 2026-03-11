@@ -381,8 +381,9 @@ pub fn generate_component_field_assignments(
                 quote! { #name: String::from(#value) }
             } else if invoke_closures {
                 if let Some(closure) = get_closure_expr(value) {
-                    // Invoke the closure to get current value as String
-                    quote! { #name: String::from(::std::string::ToString::to_string(&(#closure)())) }
+                    // Invoke the closure to get current value, using .into() so
+                    // &str → String, bool → bool, etc. all work correctly.
+                    quote! { #name: ((#closure)()).into() }
                 } else {
                     quote! { #name: #value }
                 }

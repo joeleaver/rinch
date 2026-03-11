@@ -1,17 +1,18 @@
-//! AV section - Audio/Video device controls (Zoom-style).
+//! AV section - Audio/Video device controls.
 //!
 //! Demonstrates rinch-av integration: real camera preview via RenderSurface,
-//! live microphone level, device enumeration, and Zoom-like toolbar controls.
+//! live microphone level, mic test (record & playback), and device selection.
 
 use rinch::prelude::*;
 use rinch_av::DeviceInfo;
 use rinch_av::audio::{
-    AudioInputConfig, audio_input_devices, audio_output_devices, open_audio_input,
+    AudioInputConfig, AudioOutputConfig, audio_input_devices, audio_output_devices,
+    open_audio_input, open_audio_output,
 };
 use rinch_av::camera::{CameraConfig, camera_devices, open_camera};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// State for the AV section.
 #[derive(Clone)]
@@ -19,19 +20,18 @@ pub struct AvSectionState {
     // Toggles
     pub mic_muted: Signal<bool>,
     pub camera_off: Signal<bool>,
-    pub screen_sharing: Signal<bool>,
-    pub hand_raised: Signal<bool>,
 
     // Audio level (0.0 - 1.0) — updated from atomic on each frame
     pub audio_level: Signal<f32>,
 
-    // Device selection
+    // Mic test state
+    pub mic_test_recording: Signal<bool>,
+    pub mic_test_playing: Signal<bool>,
+    pub mic_test_has_clip: Signal<bool>,
+
+    // Settings modals
     pub audio_settings_open: Signal<bool>,
     pub video_settings_open: Signal<bool>,
-
-    // Status
-    pub call_active: Signal<bool>,
-    pub call_duration: Signal<u32>,
 
     // Device lists (populated from real hardware)
     pub mic_devices: Signal<Vec<DeviceInfo>>,
@@ -42,10 +42,6 @@ pub struct AvSectionState {
     pub selected_mic: Signal<String>,
     pub selected_speaker: Signal<String>,
     pub selected_camera: Signal<String>,
-
-    // Volume controls (0-100)
-    pub input_volume: Signal<f64>,
-    pub output_volume: Signal<f64>,
 
     // Error message for device failures
     pub error_msg: Signal<String>,
@@ -93,21 +89,18 @@ pub fn init_av_state() {
     create_store(AvSectionState {
         mic_muted: Signal::new(false),
         camera_off: Signal::new(true), // Start with camera off
-        screen_sharing: Signal::new(false),
-        hand_raised: Signal::new(false),
         audio_level: Signal::new(0.0),
+        mic_test_recording: Signal::new(false),
+        mic_test_playing: Signal::new(false),
+        mic_test_has_clip: Signal::new(false),
         audio_settings_open: Signal::new(false),
         video_settings_open: Signal::new(false),
-        call_active: Signal::new(false),
-        call_duration: Signal::new(0),
         mic_devices: Signal::new(mics),
         speaker_devices: Signal::new(speakers),
         camera_devices: Signal::new(cameras),
         selected_mic: Signal::new(default_mic_name),
         selected_speaker: Signal::new(default_speaker_name),
         selected_camera: Signal::new(default_camera_name),
-        input_volume: Signal::new(75.0),
-        output_volume: Signal::new(80.0),
         error_msg: Signal::new(String::new()),
     });
 }
@@ -116,39 +109,18 @@ pub fn init_av_state() {
 pub fn av_section() -> NodeHandle {
     let state = use_store::<AvSectionState>();
 
-    let (
-        mic_muted,
-        camera_off,
-        screen_sharing,
-        hand_raised,
-        audio_level,
-        audio_settings_open,
-        video_settings_open,
-        call_active,
-        call_duration,
-        selected_mic,
-        selected_speaker,
-        selected_camera,
-        input_volume,
-        output_volume,
-        error_msg,
-    ) = (
-        state.mic_muted,
-        state.camera_off,
-        state.screen_sharing,
-        state.hand_raised,
-        state.audio_level,
-        state.audio_settings_open,
-        state.video_settings_open,
-        state.call_active,
-        state.call_duration,
-        state.selected_mic,
-        state.selected_speaker,
-        state.selected_camera,
-        state.input_volume,
-        state.output_volume,
-        state.error_msg,
-    );
+    let mic_muted = state.mic_muted;
+    let camera_off = state.camera_off;
+    let audio_level = state.audio_level;
+    let mic_test_recording = state.mic_test_recording;
+    let mic_test_playing = state.mic_test_playing;
+    let mic_test_has_clip = state.mic_test_has_clip;
+    let audio_settings_open = state.audio_settings_open;
+    let video_settings_open = state.video_settings_open;
+    let selected_mic = state.selected_mic;
+    let selected_speaker = state.selected_speaker;
+    let selected_camera = state.selected_camera;
+    let error_msg = state.error_msg;
 
     // ── Camera preview via RenderSurface ──
     let camera_surface = create_render_surface();
@@ -202,17 +174,37 @@ pub fn av_section() -> NodeHandle {
     let mic_level_writer = mic_level_atomic.clone();
     let mic_active = Signal::new(false);
 
+    // Shared ring buffer for mic test recording (5 seconds at 48kHz mono)
+    let max_samples = 48000 * 5;
+    let recording_buf: Arc<std::sync::Mutex<Vec<f32>>> =
+        Arc::new(std::sync::Mutex::new(Vec::with_capacity(max_samples)));
+    let recording_flag = Arc::new(AtomicBool::new(false));
+
     // Open audio input — cpal runs its own audio thread, leak handle to keep alive
     {
+        let recording_buf_writer = recording_buf.clone();
+        let recording_flag_reader = recording_flag.clone();
         let config = AudioInputConfig {
             sample_rate: 48000,
             channels: 1,
             buffer_size: 1024,
         };
         match open_audio_input(config, move |samples: &[f32]| {
+            // Compute RMS level
             let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
             let level = (rms * 5.0).min(1.0);
             mic_level_writer.store(level.to_bits(), Ordering::Relaxed);
+
+            // Record samples if mic test is active
+            if recording_flag_reader.load(Ordering::Relaxed)
+                && let Ok(mut buf) = recording_buf_writer.try_lock()
+            {
+                let remaining = max_samples.saturating_sub(buf.len());
+                if remaining > 0 {
+                    let take = remaining.min(samples.len());
+                    buf.extend_from_slice(&samples[..take]);
+                }
+            }
         }) {
             Ok(stream) => {
                 mic_active.set(true);
@@ -224,20 +216,120 @@ pub fn av_section() -> NodeHandle {
         }
     }
 
-    // Poll the atomic audio level into the signal using the camera surface's
-    // render callback (fires every frame when camera is active)
-    let mic_level_reader = mic_level_atomic.clone();
-    camera_surface.set_render_callback(move |_writer, _w, _h| {
-        let bits = mic_level_reader.load(Ordering::Relaxed);
-        let level = f32::from_bits(bits);
-        // Only update signal if value changed meaningfully (avoid unnecessary repaints)
-        let current = audio_level.get();
-        if (level - current).abs() > 0.005 {
-            audio_level.set(level);
-        }
-    });
+    // Poll the atomic audio level into the signal from a background thread.
+    // Signal::send() automatically dispatches to the main thread.
+    {
+        let mic_level_reader = mic_level_atomic.clone();
+        std::thread::Builder::new()
+            .name("mic-level-poll".into())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    let bits = mic_level_reader.load(Ordering::Relaxed);
+                    let level = f32::from_bits(bits);
+                    audio_level.send(level);
+                }
+            })
+            .ok();
+    }
 
-    // Clone for use in video settings modal (rsx moves the handle into closures)
+    // Mic test: start/stop recording, then play back
+    let recording_buf_for_record = recording_buf.clone();
+    let recording_flag_for_record = recording_flag.clone();
+    let recording_buf_for_play = recording_buf.clone();
+
+    let start_recording = {
+        let recording_buf = recording_buf_for_record.clone();
+        let recording_flag = recording_flag_for_record.clone();
+        Callback::new(move || {
+            // Clear previous recording
+            if let Ok(mut buf) = recording_buf.lock() {
+                buf.clear();
+            }
+            recording_flag.store(true, Ordering::Relaxed);
+            mic_test_recording.set(true);
+            mic_test_has_clip.set(false);
+
+            // Auto-stop after 5 seconds
+            let flag = recording_flag.clone();
+            std::thread::Builder::new()
+                .name("mic-test-timer".into())
+                .spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    flag.store(false, Ordering::Relaxed);
+                    mic_test_recording.send(false);
+                    mic_test_has_clip.send(true);
+                })
+                .ok();
+        })
+    };
+
+    let stop_recording = {
+        let flag = recording_flag.clone();
+        Callback::new(move || {
+            flag.store(false, Ordering::Relaxed);
+            mic_test_recording.set(false);
+            mic_test_has_clip.set(true);
+        })
+    };
+
+    let play_recording = {
+        let recording_buf = recording_buf_for_play.clone();
+        Callback::new(move || {
+            let samples = if let Ok(buf) = recording_buf.lock() {
+                buf.clone()
+            } else {
+                return;
+            };
+            if samples.is_empty() {
+                return;
+            }
+
+            mic_test_playing.set(true);
+
+            std::thread::Builder::new()
+                .name("mic-test-playback".into())
+                .spawn(move || {
+                    let mut pos = 0usize;
+                    let config = AudioOutputConfig {
+                        sample_rate: 48000,
+                        channels: 1,
+                        buffer_size: 1024,
+                    };
+                    let total = samples.len();
+                    let done = Arc::new(AtomicBool::new(false));
+                    let done_writer = done.clone();
+                    match open_audio_output(config, move |buf: &mut [f32]| {
+                        for s in buf.iter_mut() {
+                            if pos < total {
+                                *s = samples[pos];
+                                pos += 1;
+                            } else {
+                                *s = 0.0;
+                                done_writer.store(true, Ordering::Relaxed);
+                            }
+                        }
+                    }) {
+                        Ok(_stream) => {
+                            // Wait for playback to finish
+                            while !done.load(Ordering::Relaxed) {
+                                std::thread::sleep(std::time::Duration::from_millis(50));
+                            }
+                            // Small tail to flush audio buffer
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            mic_test_playing.send(false);
+                        }
+                        Err(e) => {
+                            eprintln!("Playback failed: {}", e);
+                            mic_test_playing.send(false);
+                        }
+                    }
+                })
+                .ok();
+        })
+    };
+
+    // Clone for use in video settings modal
     let camera_surface2 = camera_surface.clone();
 
     rsx! {
@@ -245,7 +337,7 @@ pub fn av_section() -> NodeHandle {
             // Header
             Title { order: 1, "Audio / Video" }
             Text { color: "dimmed", size: "lg",
-                "Camera, microphone, and speaker controls powered by rinch-av. Zoom-style toolbar with device settings."
+                "Camera preview, microphone controls, and device selection — powered by rinch-av."
             }
             Space { h: "xl" }
 
@@ -265,46 +357,35 @@ pub fn av_section() -> NodeHandle {
                 Paper { p: "0", radius: "lg", with_border: true,
                     style: "flex: 1; overflow: hidden; min-width: 0;",
 
-                    // Camera view — RenderSurface always visible at fixed size
+                    // Camera view
                     div { style: "position: relative; width: 100%; height: 400px; background: var(--rinch-color-dark-7, #1a1b1e);",
 
-                        // Always-visible RenderSurface (camera frames render here)
                         RenderSurface {
                             surface: Some(camera_surface.clone()),
                             style: "width: 100%; height: 100%;",
                         }
 
-                        // Camera off overlay (floats on top when camera is off)
+                        // Camera off overlay
                         if camera_off.get() {
                             div { style: "position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: var(--rinch-color-dark-7, #1a1b1e); display: flex; align-items: center; justify-content: center; z-index: 1;",
                                 div { style: "display: flex; flex-direction: column; align-items: center; gap: 12px;",
                                     div { style: "width: 80px; height: 80px; border-radius: 50%; background: var(--rinch-color-dark-5, #373A40); display: flex; align-items: center; justify-content: center;",
-                                        Text { size: "xl", weight: "bold", color: "dimmed", "JD" }
+                                        div { style: "width: 36px; height: 36px; color: var(--rinch-color-dimmed);",
+                                            {render_tabler_icon(__scope, TablerIcon::VideoOff, TablerIconStyle::Outline)}
+                                        }
                                     }
                                     Text { size: "sm", color: "dimmed", "Camera is off" }
                                 }
                             }
                         }
 
-                        // Name tag (bottom-left)
-                        div { style: "position: absolute; bottom: 12px; left: 12px; background: rgba(0,0,0,0.6); padding: 4px 10px; border-radius: 6px; display: flex; align-items: center; gap: 6px;",
-                            Text { size: "xs", style: "color: white;", "You" }
-                            if mic_muted.get() {
+                        // Mute indicator overlay (bottom-left)
+                        if mic_muted.get() {
+                            div { style: "position: absolute; bottom: 12px; left: 12px; background: rgba(0,0,0,0.6); padding: 4px 10px; border-radius: 6px; display: flex; align-items: center; gap: 6px;",
                                 div { style: "width: 14px; height: 14px; color: #ff6b6b;",
                                     {render_tabler_icon(__scope, TablerIcon::MicrophoneOff, TablerIconStyle::Outline)}
                                 }
-                            }
-                        }
-
-                        // Duration overlay (top-right) when call active
-                        if call_active.get() {
-                            div { style: "position: absolute; top: 12px; right: 12px; background: rgba(0,0,0,0.6); padding: 4px 10px; border-radius: 6px;",
-                                Text { size: "xs", style: "color: white;",
-                                    {|| {
-                                        let secs = call_duration.get();
-                                        format!("{:02}:{:02}", secs / 60, secs % 60)
-                                    }}
-                                }
+                                Text { size: "xs", style: "color: white;", "Muted" }
                             }
                         }
                     }
@@ -318,8 +399,6 @@ pub fn av_section() -> NodeHandle {
                             TablerIcon::MicrophoneOff,
                             mic_muted,
                             "red",
-                            "Mute",
-                            "Unmute",
                         )}
 
                         // Camera toggle
@@ -329,29 +408,7 @@ pub fn av_section() -> NodeHandle {
                             TablerIcon::VideoOff,
                             camera_off,
                             "red",
-                            "Stop Video",
-                            "Start Video",
                         )}
-
-                        // Screen share toggle
-                        ActionIcon {
-                            size: "xl",
-                            radius: "xl",
-                            variant: {|| if screen_sharing.get() { "filled" } else { "default" }},
-                            color: {|| if screen_sharing.get() { "green" } else { "" }},
-                            onclick: move || screen_sharing.update(|v| *v = !*v),
-                            {render_tabler_icon(__scope, TablerIcon::ScreenShare, TablerIconStyle::Outline)}
-                        }
-
-                        // Raise hand
-                        ActionIcon {
-                            size: "xl",
-                            radius: "xl",
-                            variant: {|| if hand_raised.get() { "filled" } else { "default" }},
-                            color: {|| if hand_raised.get() { "yellow" } else { "" }},
-                            onclick: move || hand_raised.update(|v| *v = !*v),
-                            {render_tabler_icon(__scope, TablerIcon::HandStop, TablerIconStyle::Outline)}
-                        }
 
                         // Divider
                         div { style: "width: 1px; background: var(--rinch-color-dark-4, #ced4da); margin: 4px 4px;" }
@@ -365,55 +422,25 @@ pub fn av_section() -> NodeHandle {
                             {render_tabler_icon(__scope, TablerIcon::Settings, TablerIconStyle::Outline)}
                         }
 
-                        // End/Start call
+                        // Video settings
                         ActionIcon {
                             size: "xl",
                             radius: "xl",
-                            variant: "filled",
-                            color: {|| if call_active.get() { "red" } else { "green" }},
-                            onclick: move || {
-                                call_active.update(|v| *v = !*v);
-                                if !call_active.get() {
-                                    call_duration.set(0);
-                                }
-                            },
-                            if call_active.get() {
-                                {render_tabler_icon(__scope, TablerIcon::PhoneOff, TablerIconStyle::Outline)}
-                            } else {
-                                {render_tabler_icon(__scope, TablerIcon::Phone, TablerIconStyle::Outline)}
-                            }
+                            variant: "default",
+                            onclick: move || video_settings_open.set(true),
+                            {render_tabler_icon(__scope, TablerIcon::Camera, TablerIconStyle::Outline)}
                         }
                     }
                 }
 
-                // ── Sidebar: Status + Audio Meter ──
+                // ── Sidebar ──
                 Stack { gap: "md", style: "width: 280px; flex-shrink: 0;",
 
-                    // Status card
-                    Paper { p: "md", radius: "md", with_border: true,
-                        Stack { gap: "sm",
-                            Text { weight: "600", "Status" }
-                            Divider {}
-                            Group { gap: "xs",
-                                Badge {
-                                    color: {|| if call_active.get() { "green" } else { "gray" }},
-                                    {|| if call_active.get() { "In Call" } else { "Not Connected" }}
-                                }
-                                if hand_raised.get() {
-                                    Badge { color: "yellow", "Hand Raised" }
-                                }
-                                if screen_sharing.get() {
-                                    Badge { color: "green", "Sharing" }
-                                }
-                            }
-                        }
-                    }
-
-                    // Audio level meter (live from microphone)
+                    // Microphone level meter (live from microphone)
                     Paper { p: "md", radius: "md", with_border: true,
                         Stack { gap: "sm",
                             Group { justify: "space-between",
-                                Text { weight: "600", "Microphone Level" }
+                                Text { weight: "600", "Microphone" }
                                 Badge {
                                     color: {|| if mic_muted.get() { "red" } else if mic_active.get() { "green" } else { "gray" }},
                                     variant: "light",
@@ -423,109 +450,22 @@ pub fn av_section() -> NodeHandle {
 
                             // Level bar
                             {audio_level_bar(__scope, audio_level, mic_muted)}
-                        }
-                    }
-
-                    // Device info card
-                    Paper { p: "md", radius: "md", with_border: true,
-                        Stack { gap: "sm",
-                            Text { weight: "600", "Devices" }
-                            Divider {}
-
-                            // Microphone
-                            Group { gap: "xs",
-                                div { style: "width: 16px; height: 16px; color: var(--rinch-color-dimmed);",
-                                    {render_tabler_icon(__scope, TablerIcon::Microphone, TablerIconStyle::Outline)}
-                                }
-                                Text { size: "sm", {|| {
-                                    let name = selected_mic.get();
-                                    if name.is_empty() { "No microphone found".to_string() } else { name }
-                                }} }
-                            }
-
-                            // Speaker
-                            Group { gap: "xs",
-                                div { style: "width: 16px; height: 16px; color: var(--rinch-color-dimmed);",
-                                    {render_tabler_icon(__scope, TablerIcon::Volume, TablerIconStyle::Outline)}
-                                }
-                                Text { size: "sm", {|| {
-                                    let name = selected_speaker.get();
-                                    if name.is_empty() { "No speaker found".to_string() } else { name }
-                                }} }
-                            }
-
-                            // Camera
-                            Group { gap: "xs",
-                                div { style: "width: 16px; height: 16px; color: var(--rinch-color-dimmed);",
-                                    {render_tabler_icon(__scope, TablerIcon::Video, TablerIconStyle::Outline)}
-                                }
-                                Text { size: "sm", {|| {
-                                    let name = selected_camera.get();
-                                    if name.is_empty() { "No camera found".to_string() } else { name }
-                                }} }
-                            }
-
-                            Space { h: "xs" }
-                            Button {
-                                variant: "light",
-                                size: "xs",
-                                full_width: true,
-                                onclick: move || audio_settings_open.set(true),
-                                "Audio Settings"
-                            }
-                            Button {
-                                variant: "light",
-                                size: "xs",
-                                full_width: true,
-                                onclick: move || video_settings_open.set(true),
-                                "Video Settings"
-                            }
-                        }
-                    }
-
-                    // Volume controls
-                    Paper { p: "md", radius: "md", with_border: true,
-                        Stack { gap: "sm",
-                            Text { weight: "600", "Volume" }
-                            Divider {}
-
-                            // Input volume
-                            Group { gap: "xs",
-                                div { style: "width: 16px; height: 16px; color: var(--rinch-color-dimmed);",
-                                    {render_tabler_icon(__scope, TablerIcon::Microphone, TablerIconStyle::Outline)}
-                                }
-                                Text { size: "sm", "Input" }
-                            }
-                            Slider {
-                                value_signal: Some(input_volume),
-                                onchange: move |v: f64| input_volume.set(v),
-                                min: 0.0,
-                                max: 100.0,
-                            }
 
                             Space { h: "xs" }
 
-                            // Output volume
-                            Group { gap: "xs",
-                                div { style: "width: 16px; height: 16px; color: var(--rinch-color-dimmed);",
-                                    {render_tabler_icon(__scope, TablerIcon::Volume, TablerIconStyle::Outline)}
-                                }
-                                Text { size: "sm", "Output" }
+                            // Mic test
+                            Text { size: "sm", weight: "500", "Mic Test" }
+                            Text { size: "xs", color: "dimmed",
+                                "Record a short clip, then play it back to check your mic."
                             }
-                            Slider {
-                                value_signal: Some(output_volume),
-                                onchange: move |v: f64| output_volume.set(v),
-                                min: 0.0,
-                                max: 100.0,
-                            }
+                            {mic_test_controls(__scope, start_recording.clone(), stop_recording.clone(), play_recording.clone(), mic_test_recording, mic_test_playing, mic_test_has_clip)}
                         }
                     }
+
                 }
             }
 
-            // ── Settings modals ──
-
-            // Audio Settings Modal
+            // ── Audio Settings Modal ──
             Modal {
                 opened_fn: move || audio_settings_open.get(),
                 onclose: move || audio_settings_open.set(false),
@@ -546,32 +486,6 @@ pub fn av_section() -> NodeHandle {
                     // Speaker selection
                     Text { weight: "600", size: "sm", "Speaker" }
                     {device_selector(__scope, selected_speaker, state.speaker_devices)}
-
-                    Divider {}
-
-                    // Noise suppression toggle
-                    Group { justify: "space-between",
-                        Stack { gap: "0",
-                            Text { size: "sm", "Noise Suppression" }
-                            Text { size: "xs", color: "dimmed", "Reduce background noise" }
-                        }
-                        Switch {
-                            checked_fn: move || true,
-                            onchange: move || {},
-                        }
-                    }
-
-                    // Echo cancellation toggle
-                    Group { justify: "space-between",
-                        Stack { gap: "0",
-                            Text { size: "sm", "Echo Cancellation" }
-                            Text { size: "xs", color: "dimmed", "Prevent audio feedback" }
-                        }
-                        Switch {
-                            checked_fn: move || true,
-                            onchange: move || {},
-                        }
-                    }
                 }
 
                 Space { h: "lg" }
@@ -580,7 +494,7 @@ pub fn av_section() -> NodeHandle {
                 }
             }
 
-            // Video Settings Modal
+            // ── Video Settings Modal ──
             Modal {
                 opened_fn: move || video_settings_open.get(),
                 onclose: move || video_settings_open.set(false),
@@ -605,32 +519,6 @@ pub fn av_section() -> NodeHandle {
                     // Camera selection
                     Text { weight: "600", size: "sm", "Camera" }
                     {device_selector(__scope, selected_camera, state.camera_devices)}
-
-                    Divider {}
-
-                    // HD video toggle
-                    Group { justify: "space-between",
-                        Stack { gap: "0",
-                            Text { size: "sm", "HD Video" }
-                            Text { size: "xs", color: "dimmed", "Send 720p video (uses more bandwidth)" }
-                        }
-                        Switch {
-                            checked_fn: move || true,
-                            onchange: move || {},
-                        }
-                    }
-
-                    // Mirror video toggle
-                    Group { justify: "space-between",
-                        Stack { gap: "0",
-                            Text { size: "sm", "Mirror My Video" }
-                            Text { size: "xs", color: "dimmed", "Flip camera horizontally" }
-                        }
-                        Switch {
-                            checked_fn: move || true,
-                            onchange: move || {},
-                        }
-                    }
                 }
 
                 Space { h: "lg" }
@@ -650,21 +538,145 @@ fn toolbar_button(
     icon_off: TablerIcon,
     toggled: Signal<bool>,
     active_color: &'static str,
-    _label_on: &'static str,
-    _label_off: &'static str,
 ) -> NodeHandle {
-    rsx! {
-        ActionIcon {
-            size: "xl",
-            radius: "xl",
-            variant: {|| if toggled.get() { "filled" } else { "default" }},
-            color: {|| if toggled.get() { active_color } else { "" }},
-            onclick: move || toggled.update(|v| *v = !*v),
+    let btn = __scope.create_element("button");
+    btn.set_attribute("type", "button");
+    let handler_id = __scope.register_handler(move || toggled.update(|v| *v = !*v));
+    btn.set_attribute("data-rid", &handler_id.0.to_string());
+
+    let on_icon = render_tabler_icon(__scope, icon_on, TablerIconStyle::Outline);
+    let off_icon = render_tabler_icon(__scope, icon_off, TablerIconStyle::Outline);
+    btn.append_child(&on_icon);
+    btn.append_child(&off_icon);
+
+    __scope.create_effect({
+        let btn = btn.clone();
+        let on_icon = on_icon.clone();
+        let off_icon = off_icon.clone();
+        let active_color = active_color.to_string();
+        move || {
             if toggled.get() {
-                {render_tabler_icon(__scope, icon_off, TablerIconStyle::Outline)}
+                btn.set_attribute(
+                    "class",
+                    "rinch-action-icon rinch-action-icon--filled rinch-action-icon--xl rinch-action-icon--radius-xl",
+                );
+                btn.set_attribute("style", &format!(
+                    "--rinch-action-icon-color: var(--rinch-color-{}-6)", active_color
+                ));
+                on_icon.set_attribute("style", "display: none");
+                off_icon.set_attribute("style", "");
             } else {
-                {render_tabler_icon(__scope, icon_on, TablerIconStyle::Outline)}
+                btn.set_attribute("class",
+                    "rinch-action-icon rinch-action-icon--default rinch-action-icon--xl rinch-action-icon--radius-xl"
+                );
+                btn.set_attribute("style", "");
+                on_icon.set_attribute("style", "");
+                off_icon.set_attribute("style", "display: none");
             }
+        }
+    });
+
+    btn
+}
+
+// ── Helper: mic test record/play controls ──
+// Extracted to its own function so Callback values are passed as owned args
+// (avoids FnOnce issues from reactive `if` blocks capturing non-Copy closures).
+
+fn mic_test_controls(
+    __scope: &mut RenderScope,
+    start_recording: Callback,
+    stop_recording: Callback,
+    play_recording: Callback,
+    recording: Signal<bool>,
+    playing: Signal<bool>,
+    has_clip: Signal<bool>,
+) -> NodeHandle {
+    // Dispatch record/stop/play based on state — all in one onclick per button
+    // to avoid reactive component re-render + FnOnce issues with Callback.
+    let record_btn = __scope.create_element("button");
+    record_btn.set_attribute("class", "rinch-Button rinch-Button--light rinch-Button--xs");
+    let record_text = __scope.create_text("Record");
+    record_btn.append_child(&record_text);
+
+    // Reactive text + style for record button
+    __scope.create_effect({
+        let btn = record_btn.clone();
+        let text = record_text.clone();
+        move || {
+            if recording.get() {
+                btn.set_attribute(
+                    "class",
+                    "rinch-Button rinch-Button--filled rinch-Button--xs rinch-Button--red",
+                );
+                text.set_text("Stop");
+            } else {
+                btn.set_attribute("class", "rinch-Button rinch-Button--light rinch-Button--xs");
+                text.set_text("Record");
+            }
+            if playing.get() {
+                btn.set_attribute("data-disabled", "true");
+            } else {
+                btn.remove_attribute("data-disabled");
+            }
+        }
+    });
+
+    // Record button click handler
+    let handler_id = __scope.register_handler({
+        let start = start_recording;
+        let stop = stop_recording;
+        move || {
+            if recording.get() {
+                stop.invoke();
+            } else {
+                start.invoke();
+            }
+        }
+    });
+    record_btn.set_attribute("data-rid", &handler_id.0.to_string());
+
+    // Play button
+    let play_btn = __scope.create_element("button");
+    play_btn.set_attribute("class", "rinch-Button rinch-Button--light rinch-Button--xs");
+    let play_text = __scope.create_text("Play");
+    play_btn.append_child(&play_text);
+
+    __scope.create_effect({
+        let btn = play_btn.clone();
+        let text = play_text.clone();
+        move || {
+            if playing.get() {
+                text.set_text("Playing…");
+                btn.set_attribute("data-disabled", "true");
+            } else {
+                text.set_text("Play");
+                if !has_clip.get() || recording.get() {
+                    btn.set_attribute("data-disabled", "true");
+                } else {
+                    btn.remove_attribute("data-disabled");
+                }
+            }
+        }
+    });
+
+    let play_handler_id = __scope.register_handler(move || play_recording.invoke());
+    play_btn.set_attribute("data-rid", &play_handler_id.0.to_string());
+
+    // Recording status text
+    let status = rsx! {
+        if recording.get() {
+            Text { size: "xs", color: "red", "Recording… (max 5s)" }
+        }
+    };
+
+    rsx! {
+        Fragment {
+            Group { gap: "sm",
+                {record_btn}
+                {play_btn}
+            }
+            {status}
         }
     }
 }

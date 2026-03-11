@@ -96,6 +96,15 @@ pub fn run_on_main_thread(f: impl FnOnce() + Send + 'static) {
     send_native_event(RinchNativeEvent::ReRender);
 }
 
+/// Dispatcher function for cross-thread signal updates.
+///
+/// Registered with `rinch_core::set_cross_thread_dispatcher()` so that
+/// `Signal::send()` can automatically route updates to the main thread.
+fn dispatch_to_main_thread(f: Box<dyn FnOnce() + Send>) {
+    MAIN_QUEUE.lock().unwrap().push(f);
+    send_native_event(RinchNativeEvent::ReRender);
+}
+
 /// Drain and execute all pending main-thread callbacks.
 fn drain_main_queue() {
     let callbacks: Vec<Box<dyn FnOnce() + Send>> = MAIN_QUEUE.lock().unwrap().drain(..).collect();
@@ -1254,6 +1263,10 @@ where
 
     let proxy = event_loop.create_proxy();
 
+    // Register main thread and cross-thread dispatcher for Signal::send()
+    rinch_core::register_main_thread();
+    rinch_core::set_cross_thread_dispatcher(dispatch_to_main_thread);
+
     // Set up signal change notification
     rinch_core::set_on_signal_change(move || {
         send_native_event(RinchNativeEvent::ReRender);
@@ -1339,6 +1352,10 @@ pub fn run_rinch_with_window_props_and_menu<F>(
     let event_loop = EventLoop::new().expect("Failed to create event loop");
 
     let proxy = event_loop.create_proxy();
+
+    // Register main thread and cross-thread dispatcher for Signal::send()
+    rinch_core::register_main_thread();
+    rinch_core::set_cross_thread_dispatcher(dispatch_to_main_thread);
 
     rinch_core::set_on_signal_change(move || {
         send_native_event(RinchNativeEvent::ReRender);

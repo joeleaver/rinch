@@ -515,6 +515,12 @@ let count = Signal::new(0);
 count.get();              // Read value
 count.set(5);             // Set new value
 count.update(|n| *n += 1); // Update with function
+
+// Cross-thread: send() auto-dispatches to the main thread
+std::thread::spawn(move || {
+    count.send(10);                       // T: Send required
+    count.update_send(|n| *n += 1);       // closure must be Send + 'static
+});
 ```
 
 **`Memo::new()`** - Cached computed values:
