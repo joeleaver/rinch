@@ -1,0 +1,34 @@
+[package]
+name = "rinch-screen-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cross-platform screen capture for rinch — returns VideoTrack frames"
+
+[dependencies]
+rinch-av = { workspace = true, features = ["camera"] }
+tracing = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
+pipewire = { version = "0.8" }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Navigator",
+    "MediaDevices",
+    "MediaStream",
+    "MediaStreamTrack",
+    "MediaStreamConstraints",
+    "DisplayMediaStreamConstraints",
+    "HtmlVideoElement",
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "ImageData",
+    "Document",
+    "Window",
+] }

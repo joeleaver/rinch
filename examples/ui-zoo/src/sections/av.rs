@@ -10,6 +10,7 @@ use rinch_av::audio::{
     open_audio_input, open_audio_output,
 };
 use rinch_av::camera::{CameraConfig, camera_devices, open_camera};
+use rinch_screen_capture::{CaptureConfig, ScreenCapture};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -465,6 +466,18 @@ pub fn av_section() -> NodeHandle {
                 }
             }
 
+            // ── Screen Sharing ──
+            Space { h: "xl" }
+            Title { order: 2, "Screen Sharing" }
+            Text { color: "dimmed", size: "lg",
+                "Capture your screen or a window via PipeWire + XDG Desktop Portal."
+            }
+            Space { h: "md" }
+
+            ScreenShareDemo {}
+
+            Space { h: "xl" }
+
             // ── Audio Settings Modal ──
             Modal {
                 opened_fn: move || audio_settings_open.get(),
@@ -766,4 +779,106 @@ fn device_selector(
     }
 
     container
+}
+
+// ── Screen Sharing Demo ─────────────────────────────────────────────────────
+
+#[component]
+fn ScreenShareDemo() -> NodeHandle {
+    let sharing = Signal::new(false);
+    let status = Signal::new(String::new());
+    let screen_surface = create_render_surface();
+
+    // Hold the capture handle + pipe so they stay alive while sharing.
+    // Use Arc<Mutex> so the background thread can store them.
+    let capture_handle: Arc<std::sync::Mutex<Option<ScreenCapture>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let pipe_handle: Arc<std::sync::Mutex<Option<rinch_av::VideoPipe>>> =
+        Arc::new(std::sync::Mutex::new(None));
+
+    let writer = screen_surface.writer();
+    let capture_ref = capture_handle.clone();
+    let pipe_ref = pipe_handle.clone();
+
+    let toggle = Callback::new(move || {
+        if sharing.get() {
+            // Stop: drop capture + pipe
+            pipe_ref.lock().unwrap().take();
+            capture_ref.lock().unwrap().take();
+            sharing.set(false);
+            status.set("Stopped".into());
+        } else {
+            status.set("Opening screen picker...".into());
+
+            // ScreenCapture::start blocks for the portal dialog, so run on
+            // a background thread. Once we have the capture, pipe frames to
+            // the RenderSurface writer from the capture thread.
+            let sharing_sig = sharing;
+            let status_sig = status;
+            let writer = writer.clone();
+            let capture_ref = capture_ref.clone();
+            let pipe_ref = pipe_ref.clone();
+
+            std::thread::spawn(
+                move || match ScreenCapture::start(CaptureConfig::default()) {
+                    Ok(capture) => {
+                        let pipe = capture.video_track().pipe_to(move |frame| {
+                            writer.submit_frame(&frame.data, frame.width, frame.height);
+                        });
+                        *pipe_ref.lock().unwrap() = Some(pipe);
+                        *capture_ref.lock().unwrap() = Some(capture);
+                        sharing_sig.send(true);
+                        status_sig.send("Sharing".into());
+                    }
+                    Err(rinch_screen_capture::CaptureError::Cancelled) => {
+                        status_sig.send("Cancelled".into());
+                    }
+                    Err(e) => {
+                        status_sig.send(format!("Error: {e}"));
+                    }
+                },
+            );
+        }
+    });
+
+    rsx! {
+        Paper { p: "0", radius: "lg", with_border: true,
+            style: "overflow: hidden;",
+
+            // Screen capture preview
+            div { style: "position: relative; width: 100%; height: 400px; background: var(--rinch-color-dark-7, #1a1b1e);",
+                RenderSurface {
+                    surface: Some(screen_surface),
+                    style: "width: 100%; height: 100%;",
+                }
+
+                // Placeholder overlay when not sharing
+                if !sharing.get() {
+                    div { style: "position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;",
+                        div { style: "display: flex; flex-direction: column; align-items: center; gap: 12px;",
+                            div { style: "width: 80px; height: 80px; border-radius: 50%; background: var(--rinch-color-dark-5, #373A40); display: flex; align-items: center; justify-content: center;",
+                                div { style: "width: 36px; height: 36px; color: var(--rinch-color-dimmed);",
+                                    {render_tabler_icon(__scope, TablerIcon::ScreenShare, TablerIconStyle::Outline)}
+                                }
+                            }
+                            Text { size: "sm", color: "dimmed", "Click below to share your screen" }
+                        }
+                    }
+                }
+            }
+
+            // Toolbar
+            div { style: "padding: 12px 16px; display: flex; align-items: center; gap: 12px; background: var(--rinch-color-body);",
+                Button {
+                    variant: {|| if sharing.get() { "filled" } else { "light" }},
+                    color: {|| if sharing.get() { "red" } else { "blue" }},
+                    onclick: toggle.clone(),
+                    {render_tabler_icon(__scope, TablerIcon::ScreenShare, TablerIconStyle::Outline)}
+                    {|| if sharing.get() { " Stop Sharing" } else { " Share Screen" }}
+                }
+
+                Text { size: "sm", color: "dimmed", {|| status.get()} }
+            }
+        }
+    }
 }

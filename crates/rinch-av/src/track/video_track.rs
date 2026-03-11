@@ -121,6 +121,14 @@ impl VideoTrack {
         *self.latest.lock().unwrap() = Some(frame);
     }
 
+    /// Get a cloneable handle to the frame storage.
+    ///
+    /// This is useful for passing to background threads that produce frames
+    /// (e.g. screen capture) without needing to clone the entire `VideoTrack`.
+    pub fn frame_sink(&self) -> Arc<Mutex<Option<VideoFrame>>> {
+        self.latest.clone()
+    }
+
     /// Get the track handle.
     pub fn track(&self) -> &TrackHandle {
         &self.handle

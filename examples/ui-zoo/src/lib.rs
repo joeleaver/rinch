@@ -125,6 +125,11 @@ pub fn nav_links<F: Fn() + 'static>(
                 active_fn: move || current_section.get() == 17,
                 onclick: nav(17)
             }
+            NavLink {
+                label: "WebRTC",
+                active_fn: move || current_section.get() == 18,
+                onclick: nav(18)
+            }
         }
     }
 }
@@ -191,6 +196,7 @@ pub fn section_content(__scope: &mut RenderScope, current_section: Signal<usize>
                 15 => { context_menus_section(__scope) },
                 16 => { file_drop_section(__scope) },
                 17 => { av_section(__scope) },
+                18 => { webrtc_section(__scope) },
                 _ => div { },
             }
         }

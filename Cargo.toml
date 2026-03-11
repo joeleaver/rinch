@@ -36,6 +36,9 @@ rinch-visual-test = { path = "crates/rinch-visual-test" }
 rinch-web = { path = "crates/rinch-web" }
 rinch-video = { path = "crates/rinch-video" }
 rinch-av = { path = "crates/rinch-av" }
+rinch-webrtc = { path = "crates/rinch-webrtc" }
+rinch-signaling = { path = "crates/rinch-signaling" }
+rinch-screen-capture = { path = "crates/rinch-screen-capture" }
 
 # Rendering
 anyrender = "0.7"

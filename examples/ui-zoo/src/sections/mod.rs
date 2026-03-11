@@ -18,6 +18,7 @@ mod render_surface;
 mod tree;
 mod typography;
 mod video;
+mod webrtc;
 
 pub use av::{av_section, init_av_state};
 pub use buttons::{buttons_section, init_buttons_state};
@@ -37,3 +38,4 @@ pub use render_surface::render_surface_section;
 pub use tree::{init_tree_state, tree_section};
 pub use typography::typography_section;
 pub use video::video_section;
+pub use webrtc::webrtc_section;
