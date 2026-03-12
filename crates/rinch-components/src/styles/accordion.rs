@@ -102,21 +102,9 @@ pub fn styles() -> String {
     color: var(--rinch-color-dimmed);
 }
 
-.rinch-accordion__item[data-active="true"] .rinch-accordion__chevron,
-.rinch-accordion__item--active .rinch-accordion__chevron {
-    transform: rotate(180deg);
-}
-
-/* Accordion panel */
+/* Accordion panel — visibility toggled via inline display:none by the component */
 .rinch-accordion__panel {
     overflow: hidden;
-    max-height: 0;
-    transition: max-height 200ms ease;
-}
-
-.rinch-accordion__item[data-active="true"] .rinch-accordion__panel,
-.rinch-accordion__item--active .rinch-accordion__panel {
-    max-height: 1000px;
 }
 
 .rinch-accordion__content {

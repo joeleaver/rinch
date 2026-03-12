@@ -3,6 +3,7 @@
 //! Collapsible content sections.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
+use rinch_core::reactive::Signal;
 use rinch_core::{Callback, Component};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
@@ -133,6 +134,7 @@ impl Component for Accordion {
         let container = rinch_macros::rsx! { div { class: "rinch-accordion" } };
         container.set_attribute("class", &self.class_string());
 
+        // Store active value as data attribute so AccordionItem can read it
         let active_value = if !self.value.is_empty() {
             &self.value
         } else {
@@ -155,6 +157,9 @@ impl Component for Accordion {
 }
 
 /// Individual accordion item container.
+///
+/// Wires up toggle behavior: finds the AccordionControl (button) and
+/// AccordionPanel among its children and connects them via a Signal.
 #[derive(Debug, Default)]
 pub struct AccordionItem {
     /// Item identifier value.
@@ -169,8 +174,59 @@ impl Component for AccordionItem {
             item.set_attribute("data-item-value", &self.value);
         }
 
+        let is_open = Signal::new(false);
+
+        // Find the control button and panel among children
+        let mut control_btn: Option<NodeHandle> = None;
+        let mut panel: Option<NodeHandle> = None;
+
         for child in children {
+            if let Some(cls) = child.get_attribute("class") {
+                if cls.contains("rinch-accordion__control") {
+                    control_btn = Some(child.clone());
+                } else if cls.contains("rinch-accordion__panel") {
+                    panel = Some(child.clone());
+                }
+            }
             item.append_child(child);
+        }
+
+        // Wire up click handler on the control button
+        if let Some(ref btn) = control_btn {
+            let handler_id = __scope.register_handler(move || {
+                is_open.update(|v| *v = !*v);
+            });
+            btn.set_attribute("data-rid", &handler_id.0.to_string());
+        }
+
+        // Toggle panel display
+        if let Some(ref p) = panel {
+            let p = p.clone();
+            __scope.create_effect(move || {
+                if is_open.get() {
+                    p.set_style("display", "");
+                } else {
+                    p.set_style("display", "none");
+                }
+            });
+        }
+
+        // Rotate chevron on control — find the SVG child with the chevron class
+        if let Some(ref btn) = control_btn {
+            let chevron = btn.children().into_iter().find(|child| {
+                child
+                    .get_attribute("class")
+                    .is_some_and(|c| c.contains("rinch-accordion__chevron"))
+            });
+            if let Some(chevron) = chevron {
+                __scope.create_effect(move || {
+                    if is_open.get() {
+                        chevron.set_style("transform", "rotate(180deg)");
+                    } else {
+                        chevron.set_style("transform", "");
+                    }
+                });
+            }
         }
 
         item
@@ -208,14 +264,12 @@ impl Component for AccordionControl {
         let btn = rinch_macros::rsx! { button { class: "rinch-accordion__control" } };
         btn.set_attribute("class", &classes.join(" "));
 
-        // Mark this as an accordion toggle - the shell will handle DOM toggle
-        btn.set_attribute("data-accordion-toggle", "true");
-
         if self.disabled {
             btn.set_attribute("disabled", "");
         }
 
-        // Register click handler if provided
+        // If user provided a click callback, register it.
+        // The toggle behavior is wired by AccordionItem, which sets data-rid on this button.
         if let Some(ref cb) = self.onclick
             && !self.disabled
         {

@@ -286,20 +286,70 @@ pub fn data_display_section() -> NodeHandle {
             Text { color: "dimmed", size: "sm", "Image rendering with object-fit modes and background-image CSS." }
             Space { h: "md" }
 
+            // Object-fit modes — 1024x1024 source in 200x120 containers
+            SimpleGrid { cols: Some(5), spacing: "md",
+                Paper { p: "md", radius: "md", with_border: true,
+                    Stack { gap: "sm",
+                        Text { weight: "600", size: "sm", "fill" }
+                        Text { size: "xs", color: "dimmed", "Stretches to fill" }
+                        div { style: "border: 1px dashed var(--rinch-color-border);",
+                            Image { src: "test_image.png", width: "180", height: "120", fit: "fill" }
+                        }
+                    }
+                }
+                Paper { p: "md", radius: "md", with_border: true,
+                    Stack { gap: "sm",
+                        Text { weight: "600", size: "sm", "contain" }
+                        Text { size: "xs", color: "dimmed", "Fits inside, letterboxed" }
+                        div { style: "border: 1px dashed var(--rinch-color-border);",
+                            Image { src: "test_image.png", width: "180", height: "120", fit: "contain" }
+                        }
+                    }
+                }
+                Paper { p: "md", radius: "md", with_border: true,
+                    Stack { gap: "sm",
+                        Text { weight: "600", size: "sm", "cover" }
+                        Text { size: "xs", color: "dimmed", "Fills and clips overflow" }
+                        div { style: "border: 1px dashed var(--rinch-color-border);",
+                            Image { src: "test_image.png", width: "180", height: "120", fit: "cover" }
+                        }
+                    }
+                }
+                Paper { p: "md", radius: "md", with_border: true,
+                    Stack { gap: "sm",
+                        Text { weight: "600", size: "sm", "none" }
+                        Text { size: "xs", color: "dimmed", "Natural size, centered" }
+                        div { style: "border: 1px dashed var(--rinch-color-border);",
+                            Image { src: "test_image.png", width: "180", height: "120", fit: "none" }
+                        }
+                    }
+                }
+                Paper { p: "md", radius: "md", with_border: true,
+                    Stack { gap: "sm",
+                        Text { weight: "600", size: "sm", "scale-down" }
+                        Text { size: "xs", color: "dimmed", "Like contain, never upscales" }
+                        div { style: "border: 1px dashed var(--rinch-color-border);",
+                            Image { src: "test_image.png", width: "180", height: "120", fit: "scale-down" }
+                        }
+                    }
+                }
+            }
+
+            Space { h: "md" }
+
+            // Raw img element and background-image
             SimpleGrid { cols: Some(3), spacing: "lg",
-                // img element
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
-                        Text { weight: "600", "img Element" }
+                        Text { weight: "600", "Raw img element" }
                         Divider {}
-                        Image { src: "test_image.png", width: "200", height: "150", fit: "contain" }
+                        img { style: "width: 200px; height: 150px; object-fit: contain;", src: "test_image.png" }
                     }
                 }
 
-                // background-image
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
-                        Text { weight: "600", "Background Image" }
+                        Text { weight: "600", "background-image" }
                         Divider {}
                         div {
                             style: "width: 200px; height: 150px; background-image: url(test_image.png); background-size: cover;",
@@ -307,12 +357,11 @@ pub fn data_display_section() -> NodeHandle {
                     }
                 }
 
-                // img with different fit
                 Paper { p: "xl", radius: "md", with_border: true,
                     Stack { gap: "md",
-                        Text { weight: "600", "Image Fit: Fill" }
+                        Text { weight: "600", "Auto sizing" }
                         Divider {}
-                        Image { src: "test_image.png", width: "200", height: "100", fit: "fill" }
+                        img { style: "width: 150px;", src: "test_image.png" }
                     }
                 }
             }

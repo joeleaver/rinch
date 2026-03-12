@@ -285,12 +285,16 @@ fn collect_sc_recursive(
         if creates_stacking_context(child) {
             // This child is a SC — collect it with the current accumulated offset.
             // paint_node will add child.layout.x/y itself, so we pass parent_offset.
+            // position: fixed elements are viewport-relative — zero the offset so
+            // paint_node uses only the node's own layout.x/y (set by the fixed override).
+            let is_fixed = child.computed_style.position
+                == crate::computed_style::PositionValue::Fixed;
             let z = child.computed_style.z_index.unwrap_or(0);
             result.push(StackingContextEntry {
                 z_index: z,
                 node_id: child_id,
-                offset_x: parent_offset_x,
-                offset_y: parent_offset_y,
+                offset_x: if is_fixed { 0.0 } else { parent_offset_x },
+                offset_y: if is_fixed { 0.0 } else { parent_offset_y },
                 dom_order: *order_counter,
             });
             *order_counter += 1;

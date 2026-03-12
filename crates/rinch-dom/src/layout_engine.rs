@@ -274,19 +274,23 @@ impl RinchDocument {
                                 // Image still loading — return zero size
                                 return taffy::Size::ZERO;
                             }
+                            let aspect = iw / ih;
                             // Use intrinsic dimensions as default, but respect
-                            // CSS width/height if set (via known_dims from Taffy style)
+                            // CSS width/height if set (via known_dims from Taffy style).
+                            // Maintain aspect ratio when only one dimension is constrained.
+                            let w = match (known_dims.width, known_dims.height) {
+                                (Some(kw), _) => kw,
+                                (None, Some(kh)) => kh * aspect,
+                                (None, None) => iw,
+                            };
+                            let h = match (known_dims.height, known_dims.width) {
+                                (Some(kh), _) => kh,
+                                (None, Some(kw)) => kw / aspect,
+                                (None, None) => ih,
+                            };
                             taffy::Size {
-                                width: known_dims.width.unwrap_or(iw),
-                                height: known_dims.height.unwrap_or_else(|| {
-                                    // If width is constrained but height isn't,
-                                    // maintain aspect ratio
-                                    if let Some(kw) = known_dims.width {
-                                        ih * (kw / iw)
-                                    } else {
-                                        ih
-                                    }
-                                }),
+                                width: w,
+                                height: h,
                             }
                         }
                         Some(NodeContext::InlineRoot(root_id)) => {
@@ -685,12 +689,54 @@ impl RinchDocument {
             && let Ok(taffy_layout) = self.tree.taffy.layout(taffy_id)
         {
             let node = &mut self.tree.nodes[node_id];
-            let new_layout = LayoutResult {
+            let mut new_layout = LayoutResult {
                 x: taffy_layout.location.x,
                 y: taffy_layout.location.y,
                 width: taffy_layout.size.width,
                 height: taffy_layout.size.height,
             };
+
+            // position: fixed elements use the viewport as their containing block.
+            // Taffy treats them as absolute (relative to parent), so we override
+            // their layout to be viewport-relative with proper sizing from insets.
+            // Skip when:
+            //   - display is none (element itself is hidden)
+            //   - Taffy computed 0x0 size (ancestor has display:none — the node's
+            //     own display may be Block but it's inside a hidden subtree)
+            if node.computed_style.position == crate::computed_style::PositionValue::Fixed
+                && !matches!(
+                    node.computed_style.display,
+                    crate::computed_style::DisplayValue::None
+                )
+                && (new_layout.width > 0.0 || new_layout.height > 0.0)
+            {
+                let vw = self.tree.viewport.width;
+                let vh = self.tree.viewport.height;
+                let style = &node.computed_style;
+
+                // Resolve insets (top/right/bottom/left)
+                let top = style.top.resolve(vh);
+                let right = style.right.resolve(vw);
+                let bottom = style.bottom.resolve(vh);
+                let left = style.left.resolve(vw);
+
+                new_layout.x = left.unwrap_or(0.0);
+                new_layout.y = top.unwrap_or(0.0);
+
+                // If both horizontal insets are set, compute width from viewport
+                if let (Some(l), Some(r)) = (left, right) {
+                    if style.width.is_auto() {
+                        new_layout.width = (vw - l - r).max(0.0);
+                    }
+                }
+                // If both vertical insets are set, compute height from viewport
+                if let (Some(t), Some(b)) = (top, bottom) {
+                    if style.height.is_auto() {
+                        new_layout.height = (vh - t - b).max(0.0);
+                    }
+                }
+            }
+
             // Save previous layout for dirty region computation
             node.prev_layout = node.layout;
             if node.layout != new_layout {

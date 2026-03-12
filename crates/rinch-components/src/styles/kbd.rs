@@ -2,9 +2,10 @@ pub fn styles() -> String {
     r#"
 /* Kbd base */
 .rinch-kbd {
-    display: inline-flex;
+    display: flex;
     align-items: center;
     justify-content: center;
+    align-self: center;
     font-family: var(--rinch-font-family-monospace);
     font-size: var(--rinch-font-size-xs);
     font-weight: 700;

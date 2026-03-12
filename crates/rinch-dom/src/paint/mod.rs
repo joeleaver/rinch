@@ -178,6 +178,12 @@ pub fn compute_absolute_position(tree: &NodeTree, node_id: RawNodeId, scale: f64
         if let Some(node) = tree.get(id) {
             x += node.layout.x as f64 * scale;
             y += node.layout.y as f64 * scale;
+            // position: fixed elements are viewport-relative — stop accumulating
+            // parent offsets so the element stays at its top/left position
+            // regardless of where it sits in the DOM tree or scroll state.
+            if node.computed_style.position == crate::computed_style::PositionValue::Fixed {
+                break;
+            }
             if let Some(parent_id) = node.parent {
                 if let Some(parent) = tree.get(parent_id) {
                     x -= parent.scroll_offset.0 * scale;
@@ -580,24 +586,7 @@ fn paint_node(
         NodeKind::Element(el) if el.tag == "img" => {
             let rect = Rect::new(x, y, x + w, y + h);
 
-            // Get object-fit from CSS (default: fill)
-            let object_fit = node
-                .attributes
-                .get("style")
-                .and_then(|s| {
-                    s.split(';').find_map(|part| {
-                        let part = part.trim();
-                        part.strip_prefix("object-fit:")
-                            .or_else(|| part.strip_prefix("object-fit :"))
-                            .map(|v| v.trim().to_string())
-                    })
-                })
-                .unwrap_or_default();
-            let fit = if object_fit.is_empty() {
-                "fill"
-            } else {
-                &object_fit
-            };
+            let fit = node.computed_style.object_fit;
 
             // Compute transform (same as generic element)
             let node_transform = if !node.computed_style.transform.is_identity {
@@ -712,7 +701,7 @@ fn paint_node(
                                         &decoded,
                                         rect,
                                         scale,
-                                        "contain",
+                                        crate::computed_style::ObjectFitValue::Contain,
                                         node_transform,
                                     );
 
@@ -899,7 +888,7 @@ fn paint_node(
                                     decoded,
                                     rect,
                                     scale,
-                                    "fill",
+                                    crate::computed_style::ObjectFitValue::Fill,
                                     node_transform,
                                 );
                             }
@@ -954,7 +943,7 @@ fn paint_node(
                                     decoded,
                                     rect,
                                     scale,
-                                    "fill",
+                                    crate::computed_style::ObjectFitValue::Fill,
                                     node_transform,
                                 );
                             }

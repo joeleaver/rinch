@@ -33,12 +33,15 @@ fn collect_sc_for_hit_test(
         };
 
         if child.creates_stacking_context() {
+            // position: fixed elements are viewport-relative — zero the offset
+            let is_fixed =
+                child.computed_style.position == rinch_dom::computed_style::PositionValue::Fixed;
             let z = child.computed_style.z_index.unwrap_or(0);
             result.push(HitTestScEntry {
                 z_index: z,
                 node_id: child_id,
-                offset_x,
-                offset_y,
+                offset_x: if is_fixed { 0.0 } else { offset_x },
+                offset_y: if is_fixed { 0.0 } else { offset_y },
                 dom_order: *order_counter,
             });
             *order_counter += 1;
@@ -71,8 +74,18 @@ fn hit_test_node(
 ) -> Option<usize> {
     let node = tree.get(node_id)?;
 
-    let nx = offset_x + node.layout.x;
-    let ny = offset_y + node.layout.y;
+    // position: fixed elements are viewport-relative — ignore parent offsets
+    let is_fixed = node.computed_style.position == rinch_dom::computed_style::PositionValue::Fixed;
+    let nx = if is_fixed {
+        node.layout.x
+    } else {
+        offset_x + node.layout.x
+    };
+    let ny = if is_fixed {
+        node.layout.y
+    } else {
+        offset_y + node.layout.y
+    };
     let nw = node.layout.width;
     let nh = node.layout.height;
 
@@ -484,8 +497,18 @@ fn find_scrollbar_hit_node(
         return None;
     }
 
-    let nx = offset_x + node.layout.x;
-    let ny = offset_y + node.layout.y;
+    // position: fixed elements are viewport-relative — ignore parent offsets
+    let is_fixed = node.computed_style.position == rinch_dom::computed_style::PositionValue::Fixed;
+    let nx = if is_fixed {
+        node.layout.x
+    } else {
+        offset_x + node.layout.x
+    };
+    let ny = if is_fixed {
+        node.layout.y
+    } else {
+        offset_y + node.layout.y
+    };
     let nw = node.layout.width;
     let nh = node.layout.height;
 
@@ -530,6 +553,10 @@ pub(crate) fn compute_absolute_y(tree: &rinch_dom::NodeTree, node_id: usize) -> 
     while let Some(id) = current {
         if let Some(node) = tree.get(id) {
             y += node.layout.y;
+            // position: fixed — viewport-relative, stop accumulating parent offsets
+            if node.computed_style.position == rinch_dom::computed_style::PositionValue::Fixed {
+                break;
+            }
             if let Some(parent_id) = node.parent
                 && let Some(parent) = tree.get(parent_id)
             {

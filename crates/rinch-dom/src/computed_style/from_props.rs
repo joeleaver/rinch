@@ -266,6 +266,9 @@ impl ComputedStyle {
                 }
                 "text-overflow" => style.text_overflow = TextOverflowValue::parse(value),
 
+                // Object fit (for <img> elements)
+                "object-fit" => style.object_fit = ObjectFitValue::parse(value),
+
                 // Grid properties
                 "grid-template-columns" => {
                     style.grid_template_columns = parse_grid_template(value);

@@ -273,6 +273,10 @@ fn compute_absolute_position(tree: &NodeTree, id: RawNodeId) -> (f32, f32) {
         if let Some(node) = tree.get(nid) {
             x += node.layout.x;
             y += node.layout.y;
+            // position: fixed — viewport-relative, stop accumulating parent offsets
+            if node.computed_style.position == crate::computed_style::PositionValue::Fixed {
+                break;
+            }
             // Subtract parent's scroll offset (same as hit_test)
             if let Some(parent_id) = node.parent {
                 if let Some(parent) = tree.get(parent_id) {
