@@ -197,18 +197,21 @@ impl RinchApp {
 
                 // Update hover state and cursor
                 if let Some(doc) = &self.doc {
-                    let (hovered, cursor_style) = {
+                    let (hovered, cursor_style, old_hovered) = {
                         let d = doc.borrow();
                         let h = hit_test(&d.tree, x, y);
                         let cs = h
                             .and_then(|id| d.tree.get(id))
                             .map(|n| cursor_value_to_style(&n.computed_style.cursor))
                             .unwrap_or(rinch_platform::CursorStyle::Default);
-                        (h, cs)
+                        (h, cs, d.tree.hovered_node)
                     };
                     let mut hovered_changed = false;
                     doc.borrow_mut().update_hover(hovered, &mut hovered_changed);
                     if hovered_changed {
+                        if let Some(old_id) = old_hovered {
+                            Self::dispatch_onleave(doc, old_id);
+                        }
                         if let Some(hit_id) = hovered {
                             Self::dispatch_onenter(doc, hit_id);
                         }
@@ -916,6 +919,35 @@ impl RinchApp {
             while let Some(nid) = current {
                 if let Some(node) = d.tree.get(nid) {
                     if let Some(val) = node.attributes.get("data-onenter") {
+                        if let Ok(id) = val.parse::<usize>() {
+                            found = Some(id);
+                        }
+                        break;
+                    }
+                    current = node.parent;
+                } else {
+                    break;
+                }
+            }
+            found
+        };
+        if let Some(id) = handler_id {
+            events::dispatch_event(events::EventHandlerId(id));
+        }
+    }
+
+    /// Dispatch `data-onleave` handler for the previously hovered node or its ancestors.
+    ///
+    /// Walks up from `old_id` looking for a `data-onleave` attribute. If found,
+    /// dispatches the registered event handler. Used for tooltip hover-out.
+    pub(super) fn dispatch_onleave(doc: &Rc<RefCell<RinchDocument>>, old_id: usize) {
+        let handler_id = {
+            let d = doc.borrow();
+            let mut current = Some(old_id);
+            let mut found = None;
+            while let Some(nid) = current {
+                if let Some(node) = d.tree.get(nid) {
+                    if let Some(val) = node.attributes.get("data-onleave") {
                         if let Ok(id) = val.parse::<usize>() {
                             found = Some(id);
                         }

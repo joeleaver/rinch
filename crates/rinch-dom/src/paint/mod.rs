@@ -358,10 +358,18 @@ fn paint_children_with_stacking(
     };
 
     let is_sc_root = node_id == tree.body_id || creates_stacking_context(node);
+    let is_body = node_id == tree.body_id;
 
     if is_sc_root {
-        // Collect all descendant SCs that should be painted at this level
-        let entries = collect_stacking_contexts(tree, &node.children, scale, offset_x, offset_y);
+        // Collect descendant SCs that should be painted at this level.
+        // At the body level, use the root variant which hoists position:fixed
+        // SCs from within intermediate SC boundaries — fixed elements should
+        // always paint at viewport level, not clipped by ancestor overflow.
+        let entries = if is_body {
+            collect_stacking_contexts_root(tree, &node.children, scale, offset_x, offset_y)
+        } else {
+            collect_stacking_contexts(tree, &node.children, scale, offset_x, offset_y)
+        };
 
         // Phase 1: Negative z-index stacking contexts (sorted ascending)
         let mut negative: Vec<&StackingContextEntry> =

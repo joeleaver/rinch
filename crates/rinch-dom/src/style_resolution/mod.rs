@@ -471,6 +471,43 @@ impl RinchDocument {
                 }
             }
 
+            // position:fixed elements use the viewport as their containing block.
+            // Taffy treats fixed as absolute (relative to DOM parent), so we give
+            // these nodes explicit viewport dimensions. This ensures their children
+            // (e.g. drawer panels with top:0;bottom:0) get correct layout.
+            if self.tree.nodes[node_id].computed_style.position
+                == crate::computed_style::PositionValue::Fixed
+                && self.tree.nodes[node_id].computed_style.display
+                    != crate::computed_style::DisplayValue::None
+            {
+                let vw = self.tree.viewport.width;
+                let vh = self.tree.viewport.height;
+                let cs = &self.tree.nodes[node_id].computed_style;
+
+                // Compute width: if both left and right insets are set with auto width,
+                // use viewport minus insets. Otherwise use full viewport width.
+                if taffy_style.size.width == taffy::Dimension::auto() {
+                    let left = cs.left.resolve(vw);
+                    let right = cs.right.resolve(vw);
+                    let w = match (left, right) {
+                        (Some(l), Some(r)) => (vw - l - r).max(0.0),
+                        _ => vw,
+                    };
+                    taffy_style.size.width = taffy::Dimension::length(w);
+                }
+
+                // Compute height: same logic for top/bottom insets.
+                if taffy_style.size.height == taffy::Dimension::auto() {
+                    let top = cs.top.resolve(vh);
+                    let bottom = cs.bottom.resolve(vh);
+                    let h = match (top, bottom) {
+                        (Some(t), Some(b)) => (vh - t - b).max(0.0),
+                        _ => vh,
+                    };
+                    taffy_style.size.height = taffy::Dimension::length(h);
+                }
+            }
+
             // Only call set_style if the Taffy style actually changed.
             // This avoids marking the Taffy tree dirty for paint-only changes
             // (e.g. background-color on hover) which don't affect layout.

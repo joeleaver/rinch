@@ -221,6 +221,8 @@ impl Drawer {
             if let Ok(size) = self.size.parse::<DrawerSize>() {
                 classes.push(size.class_name());
             }
+        } else {
+            classes.push(DrawerSize::Md.class_name());
         }
 
         if opened {

@@ -358,14 +358,17 @@ impl RinchApp {
 
                 // Update hover state
                 if let Some(doc) = &self.doc {
-                    let hovered = {
+                    let (hovered, old_hovered) = {
                         let d = doc.borrow();
-                        hit_test(&d.tree, x, y)
+                        (hit_test(&d.tree, x, y), d.tree.hovered_node)
                     };
                     let mut hovered_changed = false;
                     let needs_repaint =
                         doc.borrow_mut().update_hover(hovered, &mut hovered_changed);
                     if hovered_changed {
+                        if let Some(old_id) = old_hovered {
+                            Self::dispatch_onleave(doc, old_id);
+                        }
                         if let Some(hit_id) = hovered {
                             Self::dispatch_onenter(doc, hit_id);
                         }

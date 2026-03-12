@@ -15,14 +15,14 @@ pub fn styles() -> String {
     display: none !important;
 }
 
-/* Drawer overlay */
+/* Drawer overlay — absolute within the fixed root */
 .rinch-drawer__overlay {
-    position: fixed;
+    position: absolute;
     top: 0;
     left: 0;
     right: 0;
     bottom: 0;
-    background-color: rgba(0, 0, 0, var(--rinch-drawer-overlay-opacity, 0.75));
+    background-color: rgba(0, 0, 0, 0.75);
 }
 
 /* Drawer container */

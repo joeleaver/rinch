@@ -185,6 +185,8 @@ impl Modal {
             if let Ok(size) = self.size.parse::<ModalSize>() {
                 classes.push(size.class_name());
             }
+        } else {
+            classes.push(ModalSize::Md.class_name());
         }
 
         if !self.radius.is_empty() {

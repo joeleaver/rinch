@@ -264,10 +264,40 @@ pub(super) fn collect_stacking_contexts(
         offset_y,
         &mut result,
         &mut order_counter,
+        false,
     );
     result
 }
 
+/// Collect stacking contexts for the body (root SC).
+///
+/// This is like `collect_stacking_contexts` but also hoists `position: fixed`
+/// SCs from within intermediate SC boundaries. In CSS, fixed-position elements
+/// are always relative to the viewport and should not be clipped by ancestor
+/// stacking contexts (e.g. overflow:auto containers).
+pub(super) fn collect_stacking_contexts_root(
+    tree: &NodeTree,
+    children: &[usize],
+    scale: f64,
+    offset_x: f64,
+    offset_y: f64,
+) -> Vec<StackingContextEntry> {
+    let mut result = Vec::new();
+    let mut order_counter = 0usize;
+    collect_sc_recursive(
+        tree,
+        children,
+        scale,
+        offset_x,
+        offset_y,
+        &mut result,
+        &mut order_counter,
+        true,
+    );
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
 fn collect_sc_recursive(
     tree: &NodeTree,
     children: &[usize],
@@ -276,6 +306,7 @@ fn collect_sc_recursive(
     parent_offset_y: f64,
     result: &mut Vec<StackingContextEntry>,
     order_counter: &mut usize,
+    hoist_fixed: bool,
 ) {
     for &child_id in children {
         let Some(child) = tree.get(child_id) else {
@@ -283,22 +314,35 @@ fn collect_sc_recursive(
         };
 
         if creates_stacking_context(child) {
-            // This child is a SC — collect it with the current accumulated offset.
-            // paint_node will add child.layout.x/y itself, so we pass parent_offset.
-            // position: fixed elements are viewport-relative — zero the offset so
-            // paint_node uses only the node's own layout.x/y (set by the fixed override).
-            let is_fixed = child.computed_style.position
-                == crate::computed_style::PositionValue::Fixed;
+            let is_fixed =
+                child.computed_style.position == crate::computed_style::PositionValue::Fixed;
+
+            if !hoist_fixed && is_fixed {
+                // Non-root SC: skip fixed-position SCs — they've been hoisted
+                // to the body level by collect_stacking_contexts_root.
+                *order_counter += 1;
+                continue;
+            }
+
             let z = child.computed_style.z_index.unwrap_or(0);
             result.push(StackingContextEntry {
                 z_index: z,
                 node_id: child_id,
+                // position: fixed elements are viewport-relative — zero the offset so
+                // paint_node uses only the node's own layout.x/y (set by the fixed override).
                 offset_x: if is_fixed { 0.0 } else { parent_offset_x },
                 offset_y: if is_fixed { 0.0 } else { parent_offset_y },
                 dom_order: *order_counter,
             });
             *order_counter += 1;
-            // Don't recurse — deeper SCs belong to this child's SC level.
+
+            // When hoisting fixed elements: recurse INTO SC boundaries to find
+            // position:fixed descendants that need to be painted at the root
+            // level (not clipped by intermediate overflow containers).
+            if hoist_fixed {
+                collect_fixed_from_sc(tree, &child.children, result, order_counter);
+            }
+            // Normal case: don't recurse — deeper SCs belong to this child's SC level.
         } else {
             // Not a SC — recurse through its children to find deeper SCs.
             // Accumulate this node's layout offset.
@@ -315,7 +359,48 @@ fn collect_sc_recursive(
                 child_y - sy,
                 result,
                 order_counter,
+                hoist_fixed,
             );
+        }
+    }
+}
+
+/// Walk into SC subtrees to find and hoist position:fixed descendants.
+///
+/// This handles the case where a fixed-position element (e.g. a modal overlay)
+/// is nested inside an intermediate stacking context (e.g. a scrollable
+/// container with overflow:auto). Without hoisting, the fixed element would
+/// be painted within the ancestor SC's clip mask, incorrectly clipping it.
+fn collect_fixed_from_sc(
+    tree: &NodeTree,
+    children: &[usize],
+    result: &mut Vec<StackingContextEntry>,
+    order_counter: &mut usize,
+) {
+    for &child_id in children {
+        let Some(child) = tree.get(child_id) else {
+            continue;
+        };
+
+        if creates_stacking_context(child) {
+            let is_fixed =
+                child.computed_style.position == crate::computed_style::PositionValue::Fixed;
+            if is_fixed {
+                let z = child.computed_style.z_index.unwrap_or(0);
+                result.push(StackingContextEntry {
+                    z_index: z,
+                    node_id: child_id,
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                    dom_order: *order_counter,
+                });
+                *order_counter += 1;
+            }
+            // Continue recursing into SC children to find deeper fixed elements
+            collect_fixed_from_sc(tree, &child.children, result, order_counter);
+        } else {
+            *order_counter += 1;
+            collect_fixed_from_sc(tree, &child.children, result, order_counter);
         }
     }
 }
