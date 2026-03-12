@@ -126,7 +126,7 @@ pub fn css_features_section() -> NodeHandle {
                 div { style: "cursor: pointer; background-color: var(--rinch-color-blue-1); border: 1px solid var(--rinch-color-blue-6); padding: 12px; border-radius: 8px; display: flex; align-items: center; justify-content: center",
                     Text { size: "sm", "cursor: pointer" }
                 }
-                div { style: "pointer-events: none; background-color: var(--rinch-color-gray-1); border: 1px solid var(--rinch-color-gray-4); padding: 12px; border-radius: 8px; display: flex; align-items: center; justify-content: center",
+                div { style: "pointer-events: none; background-color: var(--rinch-color-default); border: 1px solid var(--rinch-color-border); padding: 12px; border-radius: 8px; display: flex; align-items: center; justify-content: center",
                     Text { size: "sm", color: "dimmed", "pointer-events: none" }
                 }
                 div { style: "visibility: hidden; background-color: var(--rinch-color-red-1); border: 1px solid var(--rinch-color-red-6); padding: 12px; width: 140px; height: 44px; border-radius: 8px",

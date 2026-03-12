@@ -166,7 +166,7 @@ impl RinchApp {
                         if let Some(node) = d.tree.nodes.get_mut(node_id) {
                             node.scroll_offset.1 = new_scroll;
                             node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                            d.tree.dirty_nodes.insert(node_id);
+                            d.tree.push_dirty(node_id);
                         }
                     }
                     actions.push(AppAction::RequestRedraw);
@@ -350,7 +350,7 @@ impl RinchApp {
                         if let Some(node) = d.tree.nodes.get_mut(node_id) {
                             node.scroll_offset.1 = new_scroll;
                             node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                            d.tree.dirty_nodes.insert(node_id);
+                            d.tree.push_dirty(node_id);
                         }
 
                         self.scrollbar_drag = Some(ScrollbarDrag {
@@ -523,7 +523,7 @@ impl RinchApp {
                                 if new_y != node.scroll_offset.1 {
                                     node.scroll_offset.1 = new_y;
                                     node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                                    doc_mut.tree.dirty_nodes.insert(scroll_node_id);
+                                    doc_mut.tree.push_dirty(scroll_node_id);
                                     self.scene_dirty = true;
                                 }
                             }
@@ -545,7 +545,7 @@ impl RinchApp {
                                 if new_x != node.scroll_offset.0 {
                                     node.scroll_offset.0 = new_x;
                                     node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                                    doc_mut.tree.dirty_nodes.insert(scroll_node_id);
+                                    doc_mut.tree.push_dirty(scroll_node_id);
                                     self.scene_dirty = true;
                                 }
                             }

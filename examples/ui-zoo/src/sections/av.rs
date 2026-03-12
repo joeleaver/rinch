@@ -359,7 +359,7 @@ pub fn av_section() -> NodeHandle {
                     style: "flex: 1; overflow: hidden; min-width: 0;",
 
                     // Camera view
-                    div { style: "position: relative; width: 100%; height: 400px; background: var(--rinch-color-dark-7, #1a1b1e);",
+                    div { style: "position: relative; width: 100%; height: 400px; background: var(--rinch-color-body);",
 
                         RenderSurface {
                             surface: Some(camera_surface.clone()),
@@ -368,9 +368,9 @@ pub fn av_section() -> NodeHandle {
 
                         // Camera off overlay
                         if camera_off.get() {
-                            div { style: "position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: var(--rinch-color-dark-7, #1a1b1e); display: flex; align-items: center; justify-content: center; z-index: 1;",
+                            div { style: "position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: var(--rinch-color-body); display: flex; align-items: center; justify-content: center; z-index: 1;",
                                 div { style: "display: flex; flex-direction: column; align-items: center; gap: 12px;",
-                                    div { style: "width: 80px; height: 80px; border-radius: 50%; background: var(--rinch-color-dark-5, #373A40); display: flex; align-items: center; justify-content: center;",
+                                    div { style: "width: 80px; height: 80px; border-radius: 50%; background: var(--rinch-color-default); display: flex; align-items: center; justify-content: center;",
                                         div { style: "width: 36px; height: 36px; color: var(--rinch-color-dimmed);",
                                             {render_tabler_icon(__scope, TablerIcon::VideoOff, TablerIconStyle::Outline)}
                                         }
@@ -383,10 +383,10 @@ pub fn av_section() -> NodeHandle {
                         // Mute indicator overlay (bottom-left)
                         if mic_muted.get() {
                             div { style: "position: absolute; bottom: 12px; left: 12px; background: rgba(0,0,0,0.6); padding: 4px 10px; border-radius: 6px; display: flex; align-items: center; gap: 6px;",
-                                div { style: "width: 14px; height: 14px; color: #ff6b6b;",
+                                div { style: "width: 14px; height: 14px; color: var(--rinch-color-red-6);",
                                     {render_tabler_icon(__scope, TablerIcon::MicrophoneOff, TablerIconStyle::Outline)}
                                 }
-                                Text { size: "xs", style: "color: white;", "Muted" }
+                                Text { size: "xs", style: "color: var(--rinch-color-white);", "Muted" }
                             }
                         }
                     }
@@ -412,7 +412,7 @@ pub fn av_section() -> NodeHandle {
                         )}
 
                         // Divider
-                        div { style: "width: 1px; background: var(--rinch-color-dark-4, #ced4da); margin: 4px 4px;" }
+                        div { style: "width: 1px; background: var(--rinch-color-border); margin: 4px 4px;" }
 
                         // Audio settings
                         ActionIcon {
@@ -702,11 +702,11 @@ fn audio_level_bar(
     muted: Signal<bool>,
 ) -> NodeHandle {
     rsx! {
-        div { style: "height: 8px; border-radius: 4px; background: var(--rinch-color-dark-4, #dee2e6); overflow: hidden;",
+        div { style: "height: 8px; border-radius: 4px; background: var(--rinch-color-border); overflow: hidden;",
             div {
                 style: {|| {
                     let pct = if muted.get() { 0.0 } else { level.get() * 100.0 };
-                    let color = if pct > 80.0 { "#ff6b6b" } else if pct > 50.0 { "#fcc419" } else { "#51cf66" };
+                    let color = if pct > 80.0 { "var(--rinch-color-red-6)" } else if pct > 50.0 { "var(--rinch-color-yellow-6)" } else { "var(--rinch-color-green-6)" };
                     format!(
                         "height: 100%; width: {pct}%; background: {color}; border-radius: 4px; transition: width 0.1s ease;",
                     )
@@ -749,9 +749,9 @@ fn device_selector(
                     let d = dev_name.clone();
                     move || {
                         if selected.get() == d {
-                            "padding: 8px 12px; border-radius: 6px; border: 1px solid var(--rinch-primary-color); background: var(--rinch-primary-color-light, rgba(34, 139, 230, 0.1)); cursor: pointer; display: flex; align-items: center; gap: 8px;"
+                            "padding: 8px 12px; border-radius: 6px; border: 1px solid var(--rinch-primary-color); background: var(--rinch-primary-color-light); cursor: pointer; display: flex; align-items: center; gap: 8px;"
                         } else {
-                            "padding: 8px 12px; border-radius: 6px; border: 1px solid var(--rinch-color-dark-4, #dee2e6); cursor: pointer; display: flex; align-items: center; gap: 8px;"
+                            "padding: 8px 12px; border-radius: 6px; border: 1px solid var(--rinch-color-border); cursor: pointer; display: flex; align-items: center; gap: 8px;"
                         }
                     }
                 },
@@ -767,7 +767,7 @@ fn device_selector(
                             if is_sel {
                                 "width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--rinch-primary-color); background: var(--rinch-primary-color);"
                             } else {
-                                "width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--rinch-color-dark-4, #ced4da);"
+                                "width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--rinch-color-border);"
                             }
                         }
                     },
@@ -846,7 +846,7 @@ fn ScreenShareDemo() -> NodeHandle {
             style: "overflow: hidden;",
 
             // Screen capture preview
-            div { style: "position: relative; width: 100%; height: 400px; background: var(--rinch-color-dark-7, #1a1b1e);",
+            div { style: "position: relative; width: 100%; height: 400px; background: var(--rinch-color-body);",
                 RenderSurface {
                     surface: Some(screen_surface),
                     style: "width: 100%; height: 100%;",
@@ -856,7 +856,7 @@ fn ScreenShareDemo() -> NodeHandle {
                 if !sharing.get() {
                     div { style: "position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;",
                         div { style: "display: flex; flex-direction: column; align-items: center; gap: 12px;",
-                            div { style: "width: 80px; height: 80px; border-radius: 50%; background: var(--rinch-color-dark-5, #373A40); display: flex; align-items: center; justify-content: center;",
+                            div { style: "width: 80px; height: 80px; border-radius: 50%; background: var(--rinch-color-default); display: flex; align-items: center; justify-content: center;",
                                 div { style: "width: 36px; height: 36px; color: var(--rinch-color-dimmed);",
                                     {render_tabler_icon(__scope, TablerIcon::ScreenShare, TablerIconStyle::Outline)}
                                 }

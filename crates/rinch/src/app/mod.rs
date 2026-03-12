@@ -427,6 +427,13 @@ impl RinchApp {
                     d.update_theme_variables(&current_theme);
                     d.recompute_all_styles_full();
                 }
+                // Force full repaint — recompute_all_styles_full() updates computed
+                // styles but doesn't populate paint_dirty_nodes, so the software
+                // renderer's dirty region optimization would skip most of the screen.
+                #[cfg(not(feature = "gpu"))]
+                {
+                    self.has_previous_frame = false;
+                }
             }
         }
 

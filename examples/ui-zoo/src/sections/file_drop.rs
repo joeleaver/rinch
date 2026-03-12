@@ -102,8 +102,8 @@ pub fn file_drop_section() -> NodeHandle {
                         format!("{base} border: 2px dashed var(--rinch-color-blue-5); \
                                  background: var(--rinch-color-blue-0);")
                     } else {
-                        format!("{base} border: 2px dashed var(--rinch-color-gray-4); \
-                                 background: var(--rinch-color-gray-0);")
+                        format!("{base} border: 2px dashed var(--rinch-color-border); \
+                                 background: var(--rinch-color-default);")
                     }
                 }},
 

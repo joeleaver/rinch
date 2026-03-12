@@ -389,9 +389,26 @@ impl AnimatableValue {
 }
 
 /// Linearly interpolate between two colors in sRGB space.
+///
+/// Per CSS spec, `transparent` interpolates as the other color with alpha 0,
+/// not as rgba(0,0,0,0). This avoids dark flashes when transitioning between
+/// transparent and a light color.
 fn lerp_color(a: Color, b: Color, t: f32) -> Color {
-    let a = a.to_rgba8();
-    let b = b.to_rgba8();
+    let mut a = a.to_rgba8();
+    let mut b = b.to_rgba8();
+
+    // When one side is fully transparent, inherit RGB from the opaque side
+    // so the transition only fades alpha, matching browser behavior.
+    if a.a == 0 && b.a != 0 {
+        a.r = b.r;
+        a.g = b.g;
+        a.b = b.b;
+    } else if b.a == 0 && a.a != 0 {
+        b.r = a.r;
+        b.g = a.g;
+        b.b = a.b;
+    }
+
     let r = (a.r as f32 + (b.r as f32 - a.r as f32) * t).round() as u8;
     let g = (a.g as f32 + (b.g as f32 - a.g as f32) * t).round() as u8;
     let bl = (a.b as f32 + (b.b as f32 - a.b as f32) * t).round() as u8;

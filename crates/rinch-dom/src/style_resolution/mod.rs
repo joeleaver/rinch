@@ -205,17 +205,34 @@ impl RinchDocument {
     /// Recompute taffy styles for all element nodes, clearing cached style props
     /// so that CSS variables are re-resolved. Use this after `update_theme_variables()`.
     pub fn recompute_all_styles_full(&mut self) {
-        // Clear cached Stylo element data so styles are recomputed
+        // Clear cached Stylo element data so styles are recomputed.
+        // Also clear text_layout so build_ifc_layouts() doesn't skip
+        // IFC roots whose text content hasn't changed but whose style
+        // (e.g. text color) has — the old Parley layout has stale brushes.
         let node_ids: Vec<usize> = self.tree.nodes.iter().map(|(id, _)| id).collect();
         for &nid in &node_ids {
             *self.tree.nodes[nid].stylo_element_data.borrow_mut() = None;
+            self.tree.nodes[nid].text_layout = None;
         }
+        // Disable transitions during full restyle — theme changes should apply
+        // instantly. Without this, elements with `transition: color` would start
+        // animating from old values, baking stale colors into Parley text layouts.
+        let transitions_were_enabled = self.tree.transitions_enabled;
+        self.tree.transitions_enabled = false;
+        self.tree.active_transitions.clear();
         // Clear roots to force full tree walk
         self.tree.style_roots.clear();
         // Resolve styles using Stylo
         self.tree.styles_dirty = true;
         self.resolve_styles();
         self.apply_stylo_styles_to_taffy();
+        self.tree.transitions_enabled = transitions_were_enabled;
+        // Force IFC rebuild so text layouts pick up new colors/fonts from
+        // the updated computed styles (text brush is baked into Parley layout).
+        // Also set layout_dirty so resolve_layout doesn't early-return before
+        // reaching the ifc_dirty branch.
+        self.tree.ifc_dirty = true;
+        self.tree.layout_dirty = true;
     }
 
     /// Recompute taffy styles for all element nodes.
