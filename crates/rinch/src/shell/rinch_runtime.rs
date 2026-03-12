@@ -31,14 +31,18 @@ use winit::window::{WindowAttributes, WindowId};
 use rinch_core::clear_context;
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::events;
+#[cfg(feature = "gpu")]
+use rinch_platform::PlatformRenderer;
 use rinch_platform::{
     AppAction, KeyCode, Modifiers, MouseButton as PlatformMouseButton, PlatformEvent,
-    PlatformRenderer, PlatformWindow, UserEvent,
+    PlatformWindow, UserEvent,
 };
 
 use crate::app::RinchApp;
 
-use super::desktop::{WgpuRenderer, WinitWindow};
+#[cfg(feature = "gpu")]
+use super::desktop::WgpuRenderer;
+use super::window::WinitWindow;
 
 #[cfg(feature = "debug")]
 use {super::screenshot, base64::Engine, rinch_debug::DebugResult};
@@ -92,6 +96,15 @@ pub fn run_on_main_thread(f: impl FnOnce() + Send + 'static) {
     send_native_event(RinchNativeEvent::ReRender);
 }
 
+/// Dispatcher function for cross-thread signal updates.
+///
+/// Registered with `rinch_core::set_cross_thread_dispatcher()` so that
+/// `Signal::send()` can automatically route updates to the main thread.
+fn dispatch_to_main_thread(f: Box<dyn FnOnce() + Send>) {
+    MAIN_QUEUE.lock().unwrap().push(f);
+    send_native_event(RinchNativeEvent::ReRender);
+}
+
 /// Drain and execute all pending main-thread callbacks.
 fn drain_main_queue() {
     let callbacks: Vec<Box<dyn FnOnce() + Send>> = MAIN_QUEUE.lock().unwrap().drain(..).collect();
@@ -130,8 +143,12 @@ pub struct RinchRuntime {
     app: RinchApp,
     /// Desktop window wrapper.
     window: Option<WinitWindow>,
-    /// GPU renderer.
+    /// GPU renderer (only available with `gpu` feature).
+    #[cfg(feature = "gpu")]
     renderer: Option<WgpuRenderer>,
+    /// Software renderer (CPU pixel presentation via softbuffer).
+    #[cfg(not(feature = "gpu"))]
+    soft_renderer: Option<super::softbuffer_renderer::SoftbufferRenderer>,
     /// Event loop proxy for sending events.
     proxy: Option<EventLoopProxy>,
     /// Window title.
@@ -154,7 +171,10 @@ impl RinchRuntime {
         Self {
             app: RinchApp::new(component),
             window: None,
+            #[cfg(feature = "gpu")]
             renderer: None,
+            #[cfg(not(feature = "gpu"))]
+            soft_renderer: None,
             proxy: None,
             title: title.to_string(),
             width,
@@ -179,8 +199,11 @@ impl RinchRuntime {
         drop(self.app.ce_ops.take());
         drop(self.app.doc.take());
 
-        // 4. Drop GPU renderer before window — Surface holds a window handle reference.
+        // 4. Drop renderer before window — Surface holds a window handle reference.
+        #[cfg(feature = "gpu")]
         drop(self.renderer.take());
+        #[cfg(not(feature = "gpu"))]
+        drop(self.soft_renderer.take());
 
         // 5. Window can now be dropped safely.
         drop(self.window.take());
@@ -243,9 +266,12 @@ impl RinchRuntime {
 
         let size = window.surface_size();
 
-        // Create GPU renderer
-        let gpu = WgpuRenderer::new(&*window, size.width.max(1), size.height.max(1));
-        self.renderer = Some(gpu);
+        // Create renderer
+        #[cfg(feature = "gpu")]
+        {
+            let gpu = WgpuRenderer::new(&*window, size.width.max(1), size.height.max(1));
+            self.renderer = Some(gpu);
+        }
 
         // Attach native menu bar to the window if configured
         if let Some(menu) = &self.native_menu {
@@ -280,7 +306,10 @@ impl RinchRuntime {
         // Clear the direct redraw callback before dropping the window.
         crate::render_surface::clear_redraw_callback();
         // Drop renderer first — it holds a reference to the window surface.
+        #[cfg(feature = "gpu")]
         drop(self.renderer.take());
+        #[cfg(not(feature = "gpu"))]
+        drop(self.soft_renderer.take());
         drop(self.window.take());
     }
 
@@ -329,9 +358,12 @@ impl RinchRuntime {
             .create_window(window_attrs)
             .expect("Failed to recreate window");
 
-        let size = window.surface_size();
-        let gpu = WgpuRenderer::new(&*window, size.width.max(1), size.height.max(1));
-        self.renderer = Some(gpu);
+        #[cfg(feature = "gpu")]
+        {
+            let size = window.surface_size();
+            let gpu = WgpuRenderer::new(&*window, size.width.max(1), size.height.max(1));
+            self.renderer = Some(gpu);
+        }
 
         let winit_window = WinitWindow::new(window);
         self.window = Some(winit_window);
@@ -349,6 +381,87 @@ impl RinchRuntime {
 
     /// Paint the current scene to the window.
     fn paint(&mut self) -> Result<(), String> {
+        #[cfg(feature = "gpu")]
+        {
+            self.paint_gpu()
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            self.paint_software()
+        }
+    }
+
+    #[cfg(not(feature = "gpu"))]
+    fn paint_software(&mut self) -> Result<(), String> {
+        let paint_start = std::time::Instant::now();
+        let Some(window) = &self.window else {
+            return Ok(());
+        };
+
+        let scale = window.scale_factor();
+        let size = window.inner_size();
+        let s = scale as f32;
+
+        // Update layout sizes for render surfaces so callbacks get correct dimensions
+        let surface_ids = crate::render_surface::registered_surface_ids();
+        for &surface_id in &surface_ids {
+            if let Some(rect) = self.app.surface_layout_rect(surface_id) {
+                let phys_w = (rect.2 * s) as u32;
+                let phys_h = (rect.3 * s) as u32;
+                crate::render_surface::update_layout_size_by_id(surface_id, phys_w, phys_h);
+            }
+        }
+
+        // Invoke per-frame render callbacks before collecting frames.
+        crate::render_surface::invoke_render_callbacks();
+
+        // Collect surface pixel data and set it for inline painting.
+        // Surfaces are painted inline during paint_document() (like <img> elements).
+        let surface_pixels = crate::render_surface::collect_surface_pixels_by_id();
+        if !surface_pixels.is_empty() {
+            // Mark scene dirty so build_pixels() actually repaints
+            self.app.mark_scene_dirty();
+            rinch_dom::paint::set_surface_pixels(Some(surface_pixels));
+        }
+
+        // Build the scene — surfaces paint inline at their layout positions
+        let (_base, w, h) = self.app.build_pixels(scale, size);
+
+        rinch_dom::paint::set_surface_pixels(None);
+
+        let pixels = self
+            .app
+            .skia_painter
+            .as_ref()
+            .map(|p| p.pixels())
+            .unwrap_or(&[]);
+
+        // Lazily create or get the softbuffer renderer
+        if self.soft_renderer.is_none() {
+            self.soft_renderer = Some(super::softbuffer_renderer::SoftbufferRenderer::new(
+                window.window.clone(),
+                w,
+                h,
+            ));
+        }
+
+        if let Some(renderer) = &mut self.soft_renderer {
+            renderer.present_pixels(pixels, w, h);
+        }
+
+        if std::env::var("RINCH_PERF").is_ok() {
+            let elapsed = paint_start.elapsed();
+            eprintln!(
+                "[PERF] paint (software): {:.2}ms",
+                elapsed.as_secs_f64() * 1000.0
+            );
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "gpu")]
+    fn paint_gpu(&mut self) -> Result<(), String> {
         let paint_start = std::time::Instant::now();
         let Some(renderer) = &mut self.renderer else {
             return Ok(());
@@ -360,47 +473,67 @@ impl RinchRuntime {
         let scale = window.scale_factor();
         let size = window.inner_size();
         let transparent = self.app.is_transparent();
-
-        // Collect all composite layers (video + render surfaces)
-        let mut all_layers: Vec<rinch_platform::CompositeLayer> = Vec::new();
         let s = scale as f32;
 
-        // Video frames are delivered through the frame sink → RenderSurface pipeline
-        // (set up via set_frame_sink_factory at startup). They are collected alongside
-        // other render surface frames below — no separate video collection needed.
-
         // Update layout sizes for all render surfaces so render callbacks
-        // receive correct dimensions.  Previously this was only done for GPU
-        // texture-source surfaces; CPU callback-only surfaces never got their
-        // layout_size set, so their callbacks were skipped (w==0, h==0).
-        let reg_names = crate::render_surface::registered_viewport_names();
-        for viewport_name in reg_names {
-            if let Some(viewport) = self.app.viewport_rect(&viewport_name) {
-                let phys_w = (viewport.2 * s) as u32;
-                let phys_h = (viewport.3 * s) as u32;
-                crate::render_surface::update_layout_size(&viewport_name, phys_w, phys_h);
+        // receive correct dimensions.
+        let surface_ids = crate::render_surface::registered_surface_ids();
+        for &surface_id in &surface_ids {
+            if let Some(rect) = self.app.surface_layout_rect(surface_id) {
+                let phys_w = (rect.2 * s) as u32;
+                let phys_h = (rect.3 * s) as u32;
+                crate::render_surface::update_layout_size_by_id(surface_id, phys_w, phys_h);
             }
         }
 
-        // Invoke per-frame render callbacks before collecting frames
+        // Also update layout sizes for video/GameViewport surfaces that still
+        // use the viewport_name path (data-viewport attribute).
+        let reg_names = crate::render_surface::registered_viewport_names();
+        for viewport_name in &reg_names {
+            if let Some(viewport) = self.app.viewport_rect(viewport_name) {
+                let phys_w = (viewport.2 * s) as u32;
+                let phys_h = (viewport.3 * s) as u32;
+                crate::render_surface::update_layout_size(viewport_name, phys_w, phys_h);
+            }
+        }
+
+        // Invoke per-frame render callbacks before collecting frames.
         crate::render_surface::invoke_render_callbacks();
 
-        // Extract render surface frames for compositing (CPU pixel path)
+        // Read back GPU textures to CPU for inline-paint RenderSurface components.
+        // This must happen before collect_surface_pixels_by_id().
+        crate::render_surface::readback_gpu_textures();
+
+        // Collect CPU surface pixel data for inline painting (RenderSurface path).
+        // After readback, this includes both pure-CPU and readback-GPU surfaces.
+        let surface_pixels = crate::render_surface::collect_surface_pixels_by_id();
+        if !surface_pixels.is_empty() {
+            self.app.mark_scene_dirty();
+            rinch_dom::paint::set_surface_pixels(Some(surface_pixels));
+        }
+
+        // Video surfaces still use the compositor/hole-punch path.
+        // Track which viewport names have compositor layers so we can set
+        // ACTIVE_VIEWPORTS to prevent hole-punching for inline-painted surfaces.
+        let mut all_layers: Vec<rinch_platform::CompositeLayer> = Vec::new();
+        let mut gpu_layers = Vec::new();
+        let mut compositor_viewport_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        // Collect compositor-path surface frames (video, GameViewport — not RenderSurface)
         {
             let surface_frames = crate::render_surface::collect_surface_frames();
             for (viewport_name, pixels, surf_w, surf_h) in surface_frames {
                 if let Some((viewport, radii)) = self.app.viewport_rect_with_radius(&viewport_name)
                 {
-                    // Scale viewport and radii from logical to physical pixels
+                    compositor_viewport_names.insert(viewport_name.clone());
                     let viewport = (
                         viewport.0 * s,
                         viewport.1 * s,
                         viewport.2 * s,
                         viewport.3 * s,
                     );
-
                     // Letterbox: fit source within viewport preserving aspect ratio.
-                    // No-op when source and viewport aspects already match.
                     let viewport = {
                         let (vx, vy, vw, vh) = viewport;
                         let src_aspect = surf_w as f32 / surf_h.max(1) as f32;
@@ -417,7 +550,6 @@ impl RinchRuntime {
                             (vx + offset_x, vy, fit_w, vh)
                         }
                     };
-
                     let border_radius = [radii[0] * s, radii[1] * s, radii[2] * s, radii[3] * s];
                     all_layers.push(rinch_platform::CompositeLayer {
                         pixels,
@@ -430,19 +562,23 @@ impl RinchRuntime {
             }
         }
 
-        // Extract GPU texture sources for zero-copy compositing
-        let mut gpu_layers = Vec::new();
+        // Extract GPU texture sources for compositor — only non-inline surfaces
+        // (video, GameViewport). Inline RenderSurface GPU textures are read back
+        // to CPU above and painted inline.
         {
             let texture_sources = crate::render_surface::collect_texture_sources();
-            for (viewport_name, tex_source_arc) in texture_sources {
+            for (surface_id, viewport_name, is_inline, tex_source_arc) in texture_sources {
+                // Skip inline surfaces — they're already read back to CPU pixels
+                if is_inline {
+                    continue;
+                }
+
                 if let Some((viewport, radii)) = self.app.viewport_rect_with_radius(&viewport_name)
                 {
+                    compositor_viewport_names.insert(viewport_name.clone());
                     let phys_w = (viewport.2 * s) as u32;
                     let phys_h = (viewport.3 * s) as u32;
-
-                    // Update layout size so the engine thread can match its
-                    // offscreen texture to the actual viewport dimensions.
-                    crate::render_surface::update_layout_size(&viewport_name, phys_w, phys_h);
+                    crate::render_surface::update_layout_size_by_id(surface_id, phys_w, phys_h);
 
                     let viewport = (
                         viewport.0 * s,
@@ -451,7 +587,6 @@ impl RinchRuntime {
                         viewport.3 * s,
                     );
                     let border_radius = [radii[0] * s, radii[1] * s, radii[2] * s, radii[3] * s];
-                    // Lock the texture source to get the view
                     if let Some(ref ts) = *tex_source_arc.lock().unwrap() {
                         gpu_layers.push(super::desktop::GpuTextureLayer {
                             view: ts.view.clone(),
@@ -463,14 +598,11 @@ impl RinchRuntime {
             }
         }
 
-        // Set or clear composite layers on the renderer
+        // Set or clear composite layers on the renderer (GPU texture + video only)
         if !all_layers.is_empty() || !gpu_layers.is_empty() {
             renderer.set_composite_layers(all_layers);
             renderer.set_gpu_layers(gpu_layers);
         } else if renderer.has_composite_layers() {
-            // Clear stale layers when nothing was collected this frame.
-            // Keep layers alive only when a video is loaded but paused
-            // (so the last decoded frame remains visible).
             #[cfg(feature = "video")]
             let video_loaded = rinch_video::is_video_loaded();
             #[cfg(not(feature = "video"))]
@@ -482,13 +614,21 @@ impl RinchRuntime {
             }
         }
 
-        // Build scene from document
+        // Set active viewports so hole-punching only applies to compositor surfaces
+        // (GPU textures + video), not inline-painted CPU surfaces.
+        if !compositor_viewport_names.is_empty() {
+            rinch_dom::paint::set_active_viewports(Some(compositor_viewport_names));
+        }
+
+        // Build scene from document — CPU surfaces paint inline via draw_image()
         let scene = self.app.build_scene(scale, size);
+
+        rinch_dom::paint::set_active_viewports(None);
+        rinch_dom::paint::set_surface_pixels(None);
 
         // Render to screen
         renderer.paint(scene, transparent)?;
 
-        // Log paint time if RINCH_PERF is set
         if std::env::var("RINCH_PERF").is_ok() {
             let elapsed = paint_start.elapsed();
             eprintln!("[PERF] paint: {:.2}ms", elapsed.as_secs_f64() * 1000.0);
@@ -696,6 +836,42 @@ impl RinchRuntime {
         }
     }
 
+    /// Capture a screenshot from whichever renderer is active.
+    #[cfg(feature = "debug")]
+    fn capture_screenshot_impl(&mut self) -> DebugResult {
+        #[cfg(not(feature = "gpu"))]
+        {
+            let scale = self.scale_factor();
+            let size = self.window_size();
+            // Screenshot: pass empty layers (captures UI only, not live surfaces)
+            let (pixels, w, h) = self.app.build_pixels(scale, size);
+            let png_bytes = screenshot::encode_png(pixels, w, h);
+            DebugResult::Bytes {
+                data: base64::engine::general_purpose::STANDARD.encode(&png_bytes),
+            }
+        }
+        #[cfg(feature = "gpu")]
+        {
+            if let Some(renderer) = &self.renderer {
+                match renderer.capture_screenshot() {
+                    Ok((w, h, rgba)) => {
+                        let png_bytes = screenshot::encode_png(&rgba, w, h);
+                        DebugResult::Bytes {
+                            data: base64::engine::general_purpose::STANDARD.encode(&png_bytes),
+                        }
+                    }
+                    Err(e) => DebugResult::Error {
+                        message: format!("Screenshot capture failed: {}", e),
+                    },
+                }
+            } else {
+                DebugResult::Error {
+                    message: "No renderer".into(),
+                }
+            }
+        }
+    }
+
     /// Handle debug commands that require the renderer (e.g., screenshots).
     /// Returns true if the event loop should exit.
     #[cfg(feature = "debug")]
@@ -720,23 +896,8 @@ impl RinchRuntime {
                         DebugResult::Error {
                             message: format!("Paint failed: {}", e),
                         }
-                    } else if let Some(renderer) = &self.renderer {
-                        match renderer.capture_screenshot() {
-                            Ok((w, h, rgba)) => {
-                                let png_bytes = screenshot::encode_png(&rgba, w, h);
-                                DebugResult::Bytes {
-                                    data: base64::engine::general_purpose::STANDARD
-                                        .encode(&png_bytes),
-                                }
-                            }
-                            Err(e) => DebugResult::Error {
-                                message: format!("Screenshot capture failed: {}", e),
-                            },
-                        }
                     } else {
-                        DebugResult::Error {
-                            message: "No renderer".into(),
-                        }
+                        self.capture_screenshot_impl()
                     }
                 }
                 _ => {
@@ -816,6 +977,7 @@ impl ApplicationHandler for RinchRuntime {
             WindowEvent::CloseRequested => PlatformEvent::CloseRequested,
             WindowEvent::SurfaceResized(size) => {
                 // Also resize the renderer
+                #[cfg(feature = "gpu")]
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(size.width.max(1), size.height.max(1));
                 }
@@ -1086,7 +1248,12 @@ pub fn run_rinch<F>(title: &str, width: u32, height: u32, component: F)
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    let _ = tracing_subscriber::fmt::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .try_init();
 
     // Clear stale state
     events::clear_handlers();
@@ -1095,6 +1262,10 @@ where
     let event_loop = EventLoop::new().expect("Failed to create event loop");
 
     let proxy = event_loop.create_proxy();
+
+    // Register main thread and cross-thread dispatcher for Signal::send()
+    rinch_core::register_main_thread();
+    rinch_core::set_cross_thread_dispatcher(dispatch_to_main_thread);
 
     // Set up signal change notification
     rinch_core::set_on_signal_change(move || {
@@ -1168,7 +1339,12 @@ pub fn run_rinch_with_window_props_and_menu<F>(
 ) where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    let _ = tracing_subscriber::fmt::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .try_init();
 
     events::clear_handlers();
     clear_context();
@@ -1176,6 +1352,10 @@ pub fn run_rinch_with_window_props_and_menu<F>(
     let event_loop = EventLoop::new().expect("Failed to create event loop");
 
     let proxy = event_loop.create_proxy();
+
+    // Register main thread and cross-thread dispatcher for Signal::send()
+    rinch_core::register_main_thread();
+    rinch_core::set_cross_thread_dispatcher(dispatch_to_main_thread);
 
     rinch_core::set_on_signal_change(move || {
         send_native_event(RinchNativeEvent::ReRender);

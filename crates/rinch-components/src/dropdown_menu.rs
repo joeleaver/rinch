@@ -4,7 +4,12 @@
 
 use rinch_core::Component;
 use rinch_core::dom::{NodeHandle, RenderScope};
+use rinch_core::reactive::Effect;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
+use std::rc::Rc;
+
+/// Reactive callback type for opened state.
+pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 
 /// Dropdown menu position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -87,10 +92,11 @@ impl std::str::FromStr for DropdownMenuPosition {
 ///     }
 /// }
 /// ```
-#[derive(Debug)]
 pub struct DropdownMenu {
-    /// Whether the menu is open.
+    /// Whether the menu is open (static, for initial render or non-reactive use).
     pub opened: bool,
+    /// Reactive opened getter - use this for fine-grained updates.
+    pub opened_fn: Option<ReactiveBool>,
     /// Position relative to target.
     pub position: String,
     /// Offset from target.
@@ -109,10 +115,21 @@ pub struct DropdownMenu {
     pub z_index: Option<i32>,
 }
 
+impl std::fmt::Debug for DropdownMenu {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DropdownMenu")
+            .field("opened", &self.opened)
+            .field("opened_fn", &self.opened_fn.as_ref().map(|_| "<reactive>"))
+            .field("position", &self.position)
+            .finish()
+    }
+}
+
 impl Default for DropdownMenu {
     fn default() -> Self {
         Self {
             opened: false,
+            opened_fn: None,
             position: String::new(),
             offset: None,
             radius: String::new(),
@@ -169,6 +186,12 @@ impl DropdownMenu {
 
 impl Component for DropdownMenu {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
+        let is_opened = if let Some(ref opened_fn) = self.opened_fn {
+            opened_fn()
+        } else {
+            self.opened
+        };
+
         let mut style_parts = Vec::new();
         if let Some(offset) = self.offset {
             style_parts.push(format!("--rinch-dropdown-menu-offset: {}px", offset));
@@ -184,8 +207,40 @@ impl Component for DropdownMenu {
             root.set_attribute("style", &style_parts.join("; "));
         }
 
-        for child in children {
+        // Collect dropdown content children (everything after the first child/target)
+        let mut dropdown_handles = Vec::new();
+        for (i, child) in children.iter().enumerate() {
             root.append_child(child);
+            if i > 0 {
+                dropdown_handles.push(child.clone());
+            }
+        }
+
+        // Set initial inline visibility on dropdown children.
+        // Use display:none to hide — visibility/pointer-events don't propagate
+        // reliably to descendants through Stylo's style recomputation.
+        let vis_style = if is_opened {
+            "display: block"
+        } else {
+            "display: none"
+        };
+        for handle in &dropdown_handles {
+            handle.set_attribute("style", vis_style);
+        }
+
+        // If reactive opened_fn is provided, create an Effect to toggle visibility
+        if let Some(ref opened_fn) = self.opened_fn {
+            let opened_fn = opened_fn.clone();
+            Effect::new(move || {
+                let style = if opened_fn() {
+                    "display: block"
+                } else {
+                    "display: none"
+                };
+                for handle in &dropdown_handles {
+                    handle.set_attribute("style", style);
+                }
+            });
         }
 
         root

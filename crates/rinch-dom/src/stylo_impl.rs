@@ -361,9 +361,18 @@ impl<'a> Element for RinchNode<'a> {
         _context: &mut MatchingContext<Self::Impl>,
     ) -> bool {
         match *pseudo_class {
-            NonTSPseudoClass::Hover => self.node().is_hovered,
-            NonTSPseudoClass::Active => self.node().is_active,
-            NonTSPseudoClass::Focus => self.node().is_focused,
+            NonTSPseudoClass::Hover => {
+                self.node().hover_sensitive.set(true);
+                self.node().is_hovered
+            }
+            NonTSPseudoClass::Active => {
+                self.node().active_sensitive.set(true);
+                self.node().is_active
+            }
+            NonTSPseudoClass::Focus => {
+                self.node().focus_sensitive.set(true);
+                self.node().is_focused
+            }
             NonTSPseudoClass::Enabled => true,
             NonTSPseudoClass::Disabled => false,
             NonTSPseudoClass::Checked => {

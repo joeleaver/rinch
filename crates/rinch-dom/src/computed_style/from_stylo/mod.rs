@@ -195,6 +195,9 @@ impl ComputedStyle {
             filter_saturate: extract_filter_saturate(&effects.filter),
             filter_hue_rotate: extract_filter_hue_rotate(&effects.filter),
 
+            // Object fit
+            object_fit: object_fit_from_stylo(&cv.clone_object_fit()),
+
             // Cursor
             cursor: cursor_from_stylo(&inherited_ui.cursor.keyword),
 

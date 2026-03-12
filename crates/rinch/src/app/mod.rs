@@ -26,6 +26,11 @@ use rinch_core::ce::{self, ContentEditableApi};
 use rinch_core::dom::{DomDocument, NodeHandle, RenderScope, clear_render_scope, set_render_scope};
 use rinch_core::events;
 use rinch_dom::RinchDocument;
+use rinch_dom::paint::painter::Painter;
+#[cfg(not(feature = "gpu"))]
+use rinch_dom::paint::skia_painter::TinySkiaPainter;
+#[cfg(feature = "gpu")]
+use rinch_dom::paint::vello_painter::VelloPainter;
 #[cfg(feature = "debug")]
 use rinch_dom::text_query::glyph_bounds_for_offset_layout;
 use rinch_dom::text_query::{byte_offset_from_position, caret_position_for_offset_layout};
@@ -36,6 +41,7 @@ use rinch_editable::{
 use rinch_platform::{
     AppAction, Instant, KeyCode, Modifiers, MouseButton, PlatformEvent, UserEvent,
 };
+#[cfg(feature = "gpu")]
 use vello::Scene;
 
 /// Viewport rectangle as (x, y, width, height) in logical pixels.
@@ -65,9 +71,11 @@ pub(crate) struct PendingDrag {
 pub(crate) struct ActiveDrag {
     /// The draggable source element.
     pub node_id: usize,
-    /// Captured Vello scene of the source element's subtree (at origin).
-    pub snapshot: Scene,
+    /// Captured painting of the source element's subtree (at origin).
+    #[cfg(feature = "gpu")]
+    pub snapshot: VelloPainter,
     /// Offset within element where the grab happened (physical px, relative to element top-left).
+    #[cfg(feature = "gpu")]
     pub anchor: (f32, f32),
     /// Current cursor position (physical pixels).
     pub cursor: (f32, f32),
@@ -114,8 +122,12 @@ pub struct RinchApp {
     pub(crate) _render_scope: Option<Rc<RefCell<RenderScope>>>,
     /// The document (shared with RenderScope).
     pub(crate) doc: Option<Rc<RefCell<RinchDocument>>>,
-    /// Vello scene (reused across frames).
-    pub(crate) scene: Scene,
+    /// GPU painter (reused across frames). Wraps vello::Scene.
+    #[cfg(feature = "gpu")]
+    pub(crate) painter: VelloPainter,
+    /// Software painter (reused across frames). Uses tiny-skia for CPU rendering.
+    #[cfg(not(feature = "gpu"))]
+    pub(crate) skia_painter: Option<TinySkiaPainter>,
     /// Parley layout context for paint-time text layout.
     pub(crate) paint_layout_cx: parley::LayoutContext<peniko::Brush>,
     /// Current cursor position.
@@ -145,6 +157,9 @@ pub struct RinchApp {
     pub(crate) modifiers: Modifiers,
     /// Whether the Vello scene needs to be rebuilt.
     pub(crate) scene_dirty: bool,
+    /// Whether we have a previous frame's pixels for dirty region caching.
+    #[cfg(not(feature = "gpu"))]
+    pub(crate) has_previous_frame: bool,
     /// The data-oninput handler ID for the currently focused text input.
     pub(crate) focused_input_handler_id: Option<usize>,
     /// Current accumulated text value for the focused text input.
@@ -184,7 +199,10 @@ impl RinchApp {
             component: Some(Box::new(component)),
             _render_scope: None,
             doc: None,
-            scene: Scene::new(),
+            #[cfg(feature = "gpu")]
+            painter: VelloPainter::new(),
+            #[cfg(not(feature = "gpu"))]
+            skia_painter: None,
             paint_layout_cx: parley::LayoutContext::new(),
             cursor_pos: None,
             scrollbar_drag: None,
@@ -200,6 +218,8 @@ impl RinchApp {
             window_props: None,
             modifiers: Modifiers::default(),
             scene_dirty: true,
+            #[cfg(not(feature = "gpu"))]
+            has_previous_frame: false,
             focused_input_handler_id: None,
             focused_input_value: String::new(),
             focused_input_state: None,
@@ -407,6 +427,13 @@ impl RinchApp {
                     d.update_theme_variables(&current_theme);
                     d.recompute_all_styles_full();
                 }
+                // Force full repaint — recompute_all_styles_full() updates computed
+                // styles but doesn't populate paint_dirty_nodes, so the software
+                // renderer's dirty region optimization would skip most of the screen.
+                #[cfg(not(feature = "gpu"))]
+                {
+                    self.has_previous_frame = false;
+                }
             }
         }
 
@@ -461,19 +488,21 @@ impl RinchApp {
 
     /// Build the Vello scene from the current document state.
     ///
-    /// The scene is built into `self.scene` and a reference is returned.
+    /// The scene is painted via the `Painter` trait and a reference to the
+    /// underlying `vello::Scene` is returned for the GPU renderer.
+    #[cfg(feature = "gpu")]
     pub fn build_scene(&mut self, scale: f64, size: (u32, u32)) -> &Scene {
         if !self.scene_dirty {
-            return &self.scene;
+            return self.painter.scene();
         }
 
-        self.scene.reset();
+        self.painter.reset();
         if let Some(doc) = &self.doc {
             let mut d = doc.borrow_mut();
             let d = &mut *d;
             rinch_dom::paint::paint_document(
                 &d.tree,
-                &mut self.scene,
+                &mut self.painter,
                 scale,
                 (size.0 as f32, size.1 as f32),
                 &mut d.font_cx,
@@ -486,19 +515,196 @@ impl RinchApp {
             use peniko::kurbo::Affine;
             let tx = (drag.cursor.0 - drag.anchor.0) as f64;
             let ty = (drag.cursor.1 - drag.anchor.1) as f64;
-            self.scene
-                .append(&drag.snapshot, Some(Affine::translate((tx, ty))));
+            self.painter
+                .scene_mut()
+                .append(drag.snapshot.scene(), Some(Affine::translate((tx, ty))));
         }
 
         self.scene_dirty = false;
-        &self.scene
+        self.painter.scene()
+    }
+
+    /// Build pixels via TinySkiaPainter for software rendering.
+    ///
+    /// Surface pixels are painted inline during paint traversal (like `<img>`),
+    /// set via `rinch_dom::paint::set_surface_pixels()` before calling this.
+    ///
+    /// Uses dirty region caching: when only a few nodes changed, clears and
+    /// repaints only the affected rectangular area, preserving unchanged pixels.
+    ///
+    /// Returns (pixels, width, height) in RGBA8 format. The painter is lazily
+    /// created on first call and resized as needed.
+    #[cfg(not(feature = "gpu"))]
+    pub fn build_pixels(&mut self, scale: f64, size: (u32, u32)) -> (&[u8], u32, u32) {
+        let w = (size.0 as f64 * scale).round() as u32;
+        let h = (size.1 as f64 * scale).round() as u32;
+
+        // Lazily create or resize the painter
+        let resized = match &mut self.skia_painter {
+            None => {
+                self.skia_painter = Some(TinySkiaPainter::new(w, h));
+                self.has_previous_frame = false;
+                true
+            }
+            Some(painter) => {
+                let r = painter.width() != w || painter.height() != h;
+                if r {
+                    painter.resize(w, h);
+                    self.has_previous_frame = false;
+                }
+                r
+            }
+        };
+        let painter = self.skia_painter.as_mut().unwrap();
+
+        if self.scene_dirty {
+            let paint_start = Instant::now();
+
+            // Mark surface DOM nodes as paint-dirty when new pixels arrive,
+            // so dirty region caching correctly includes surface rects.
+            if let Some(doc) = &self.doc {
+                let mut d = doc.borrow_mut();
+                let dirty_surface_nodes: Vec<_> = d
+                    .tree
+                    .nodes
+                    .iter()
+                    .filter_map(|(node_id, node)| {
+                        let id_str = node.attributes.get("data-render-surface")?;
+                        let sid = id_str.parse::<usize>().ok()?;
+                        if crate::render_surface::is_surface_dirty_by_id(sid) {
+                            Some(node_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                d.tree.paint_dirty_nodes.extend(dirty_surface_nodes);
+            }
+
+            // Compute dirty region before clearing paint_dirty_nodes
+            let dirty_region = if self.has_previous_frame && !resized {
+                self.doc.as_ref().and_then(|doc| {
+                    let d = doc.borrow();
+                    rinch_dom::paint::compute_dirty_region(&d.tree, scale, w as f64, h as f64)
+                })
+            } else {
+                None // Full repaint: first frame or resize
+            };
+
+            // Drain paint_dirty_nodes now that we've computed the region
+            if let Some(doc) = &self.doc {
+                doc.borrow_mut().tree.paint_dirty_nodes.clear();
+            }
+
+            // Check if dirty region is small enough to benefit from caching
+            // (less than 50% of viewport area)
+            let use_dirty_region = dirty_region.is_some_and(|r| {
+                let region_area = r.width() * r.height();
+                let viewport_area = w as f64 * h as f64;
+                region_area < viewport_area * 0.5 && region_area > 0.0
+            });
+
+            if use_dirty_region {
+                let region = dirty_region.unwrap();
+
+                // Clear only the dirty region
+                let rx = region.x0 as u32;
+                let ry = region.y0 as u32;
+                let rw = region.width().ceil() as u32;
+                let rh = region.height().ceil() as u32;
+                painter.clear_rect_white(rx, ry, rw, rh);
+
+                // Set dirty region so paint_node can skip subtrees outside it
+                use peniko::kurbo::Rect;
+                rinch_dom::paint::set_dirty_region(Some(Rect::new(
+                    region.x0, region.y0, region.x1, region.y1,
+                )));
+
+                // Push a clip rect to prevent drawing outside the dirty region
+                let clip_shape = rinch_dom::paint::painter::PaintShape::Rect(Rect::new(
+                    region.x0, region.y0, region.x1, region.y1,
+                ));
+                painter.push_clip(
+                    peniko::Fill::NonZero,
+                    peniko::kurbo::Affine::IDENTITY,
+                    &clip_shape,
+                );
+
+                if let Some(doc) = &self.doc {
+                    let mut d = doc.borrow_mut();
+                    let d = &mut *d;
+                    rinch_dom::paint::paint_document(
+                        &d.tree,
+                        painter,
+                        scale,
+                        (size.0 as f32, size.1 as f32),
+                        &mut d.font_cx,
+                        &mut d.layout_cx,
+                    );
+                }
+
+                painter.pop_layer();
+                rinch_dom::paint::set_dirty_region(None);
+            } else {
+                // Full repaint
+                painter.reset();
+                painter.fill_white();
+
+                if let Some(doc) = &self.doc {
+                    let mut d = doc.borrow_mut();
+                    let d = &mut *d;
+                    rinch_dom::paint::paint_document(
+                        &d.tree,
+                        painter,
+                        scale,
+                        (size.0 as f32, size.1 as f32),
+                        &mut d.font_cx,
+                        &mut d.layout_cx,
+                    );
+                }
+            }
+
+            // Log paint timing if RINCH_PERF is set
+            if std::env::var("RINCH_PERF").is_ok() {
+                let elapsed = paint_start.elapsed();
+                if use_dirty_region {
+                    let region = dirty_region.unwrap();
+                    let pct = (region.width() * region.height()) / (w as f64 * h as f64) * 100.0;
+                    eprintln!(
+                        "[PERF] paint (dirty region {:.0}x{:.0}, {:.1}%): {:.2}ms",
+                        region.width(),
+                        region.height(),
+                        pct,
+                        elapsed.as_secs_f64() * 1000.0,
+                    );
+                } else {
+                    eprintln!(
+                        "[PERF] paint (full): {:.2}ms",
+                        elapsed.as_secs_f64() * 1000.0,
+                    );
+                }
+            }
+
+            self.scene_dirty = false;
+            self.has_previous_frame = true;
+        }
+
+        (self.skia_painter.as_ref().unwrap().pixels(), w, h)
+    }
+
+    /// Mark the scene as needing a repaint on the next frame.
+    pub fn mark_scene_dirty(&mut self) {
+        self.scene_dirty = true;
     }
 
     /// Check if there are dirty nodes that need repaint.
     pub fn has_dirty_nodes(&self) -> bool {
         self.doc
             .as_ref()
-            .map(|doc| !doc.borrow().tree.dirty_nodes.is_empty())
+            .map(|doc| {
+                let d = doc.borrow();
+                !d.tree.dirty_nodes.is_empty() || d.tree.styles_dirty
+            })
             .unwrap_or(false)
     }
 
@@ -847,6 +1053,45 @@ impl RinchApp {
                     (abs_x, abs_y, node.layout.width, node.layout.height),
                     clip_radii,
                 ));
+            }
+        }
+        None
+    }
+
+    /// Find a render surface's layout rect by surface ID.
+    ///
+    /// Searches for a DOM element with `data-render-surface={id}` and returns
+    /// its absolute position and size in logical pixels.
+    pub fn surface_layout_rect(&self, surface_id: usize) -> Option<ViewportRect> {
+        let doc = self.doc.as_ref()?;
+        let d = doc.borrow();
+        let id_str = surface_id.to_string();
+        for (node_id, node) in &d.tree.nodes {
+            if node
+                .attributes
+                .get("data-render-surface")
+                .map(|v| v.as_str())
+                == Some(&id_str)
+            {
+                let mut abs_x = 0.0_f32;
+                let mut abs_y = 0.0_f32;
+                let mut current = Some(node_id);
+                while let Some(id) = current {
+                    if let Some(n) = d.tree.get(id) {
+                        abs_x += n.layout.x;
+                        abs_y += n.layout.y;
+                        if let Some(parent_id) = n.parent
+                            && let Some(parent) = d.tree.get(parent_id)
+                        {
+                            abs_x -= parent.scroll_offset.0 as f32;
+                            abs_y -= parent.scroll_offset.1 as f32;
+                        }
+                        current = n.parent;
+                    } else {
+                        break;
+                    }
+                }
+                return Some((abs_x, abs_y, node.layout.width, node.layout.height));
             }
         }
         None

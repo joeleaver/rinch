@@ -74,7 +74,18 @@ impl ComputedStyle {
             flex_shrink: self.flex_shrink,
             flex_basis: self.flex_basis.to_taffy(),
             align_items: self.align_items.map(|v| v.to_taffy()),
-            align_self: self.align_self.map(|v| v.to_taffy()),
+            // CSS spec: absolute/fixed elements are NOT flex items, so the parent's
+            // align-items: stretch shouldn't stretch them.  Taffy doesn't distinguish,
+            // so force flex-start when align-self isn't explicitly set.
+            align_self: if self.align_self.is_none()
+                && matches!(
+                    self.position,
+                    PositionValue::Absolute | PositionValue::Fixed
+                ) {
+                Some(taffy::AlignSelf::FlexStart)
+            } else {
+                self.align_self.map(|v| v.to_taffy())
+            },
             justify_content: self.justify_content.map(|v| v.to_taffy()),
 
             padding: Rect {

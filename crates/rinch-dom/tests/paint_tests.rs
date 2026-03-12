@@ -1,14 +1,14 @@
 use peniko::Brush;
 use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
-use vello::Scene;
+use rinch_dom::paint::vello_painter::VelloPainter;
 
 /// Helper to paint a document, creating the paint-specific layout context.
-fn paint(doc: &mut RinchDocument, scene: &mut Scene) {
+fn paint(doc: &mut RinchDocument, painter: &mut VelloPainter) {
     let mut paint_layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
     rinch_dom::paint::paint_document(
         &doc.tree,
-        scene,
+        painter,
         1.0,
         (800.0, 600.0),
         &mut doc.font_cx,
@@ -20,8 +20,8 @@ fn paint(doc: &mut RinchDocument, scene: &mut Scene) {
 fn test_paint_empty_document() {
     let mut doc = RinchDocument::new();
     doc.resolve_layout(800.0, 600.0);
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
     // Empty document should produce a valid (possibly empty) scene
 }
 
@@ -38,10 +38,10 @@ fn test_paint_colored_box() {
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
     assert!(
-        !scene.encoding().is_empty(),
+        !painter.scene().encoding().is_empty(),
         "scene should have draw commands for colored box"
     );
 }
@@ -57,12 +57,12 @@ fn test_paint_text() {
     doc.append_child(div, text);
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
     // Note: text rendering depends on system fonts being available.
     // In headless/CI environments, parley may not find fonts and produce no glyphs.
     // We just verify painting doesn't panic.
-    let _ = scene.encoding().is_empty();
+    let _ = painter.scene().encoding().is_empty();
 }
 
 #[test]
@@ -78,10 +78,10 @@ fn test_paint_with_border() {
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
     assert!(
-        !scene.encoding().is_empty(),
+        !painter.scene().encoding().is_empty(),
         "scene should have draw commands for border"
     );
 }
@@ -99,9 +99,9 @@ fn test_paint_hex_color() {
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
-    assert!(!scene.encoding().is_empty());
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
+    assert!(!painter.scene().encoding().is_empty());
 }
 
 #[test]
@@ -126,9 +126,9 @@ fn test_paint_nested_layout() {
 
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
-    assert!(!scene.encoding().is_empty());
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
+    assert!(!painter.scene().encoding().is_empty());
 }
 
 #[test]
@@ -146,28 +146,28 @@ fn test_paint_at_scale() {
 
     let mut paint_layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
 
-    let mut scene1 = Scene::new();
+    let mut painter1 = VelloPainter::new();
     rinch_dom::paint::paint_document(
         &doc.tree,
-        &mut scene1,
+        &mut painter1,
         1.0,
         (800.0, 600.0),
         &mut doc.font_cx,
         &mut paint_layout_cx,
     );
 
-    let mut scene2 = Scene::new();
+    let mut painter2 = VelloPainter::new();
     rinch_dom::paint::paint_document(
         &doc.tree,
-        &mut scene2,
+        &mut painter2,
         2.0,
         (1600.0, 1200.0),
         &mut doc.font_cx,
         &mut paint_layout_cx,
     );
 
-    assert!(!scene1.encoding().is_empty());
-    assert!(!scene2.encoding().is_empty());
+    assert!(!painter1.scene().encoding().is_empty());
+    assert!(!painter2.scene().encoding().is_empty());
 }
 
 #[test]
@@ -183,9 +183,9 @@ fn test_paint_rgb_color() {
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
-    assert!(!scene.encoding().is_empty());
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
+    assert!(!painter.scene().encoding().is_empty());
 }
 
 #[test]
@@ -201,9 +201,9 @@ fn test_paint_rgba_color() {
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
-    assert!(!scene.encoding().is_empty());
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
+    assert!(!painter.scene().encoding().is_empty());
 }
 
 #[test]
@@ -245,10 +245,10 @@ fn test_paint_visibility_hidden() {
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
     // Hidden elements should not produce draw commands for themselves, but we just verify no panic
-    let _ = scene.encoding().is_empty();
+    let _ = painter.scene().encoding().is_empty();
 }
 
 #[test]
@@ -264,10 +264,10 @@ fn test_paint_dashed_border() {
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
     assert!(
-        !scene.encoding().is_empty(),
+        !painter.scene().encoding().is_empty(),
         "dashed border should produce draw commands"
     );
 }
@@ -285,10 +285,10 @@ fn test_paint_dotted_border() {
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
     assert!(
-        !scene.encoding().is_empty(),
+        !painter.scene().encoding().is_empty(),
         "dotted border should produce draw commands"
     );
 }
@@ -306,10 +306,10 @@ fn test_paint_per_side_border_colors() {
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
     assert!(
-        !scene.encoding().is_empty(),
+        !painter.scene().encoding().is_empty(),
         "per-side border colors should produce draw commands"
     );
 }
@@ -327,10 +327,10 @@ fn test_paint_outline() {
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
     assert!(
-        !scene.encoding().is_empty(),
+        !painter.scene().encoding().is_empty(),
         "outline should produce draw commands"
     );
 }
@@ -348,10 +348,10 @@ fn test_paint_transform_rotate() {
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
     assert!(
-        !scene.encoding().is_empty(),
+        !painter.scene().encoding().is_empty(),
         "rotated element should produce draw commands"
     );
 }
@@ -369,10 +369,10 @@ fn test_paint_transform_scale() {
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
     assert!(
-        !scene.encoding().is_empty(),
+        !painter.scene().encoding().is_empty(),
         "scaled element should produce draw commands"
     );
 }
@@ -390,10 +390,10 @@ fn test_paint_linear_gradient() {
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
     assert!(
-        !scene.encoding().is_empty(),
+        !painter.scene().encoding().is_empty(),
         "linear gradient should produce draw commands"
     );
 }
@@ -411,10 +411,10 @@ fn test_paint_radial_gradient() {
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
     assert!(
-        !scene.encoding().is_empty(),
+        !painter.scene().encoding().is_empty(),
         "radial gradient should produce draw commands"
     );
 }
@@ -430,10 +430,10 @@ fn test_paint_text_shadow() {
     doc.append_child(div, text);
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
     // Text rendering depends on fonts
-    let _ = scene.encoding().is_empty();
+    let _ = painter.scene().encoding().is_empty();
 }
 
 #[test]
@@ -466,10 +466,10 @@ fn test_paint_z_index_ordering() {
 
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
     assert!(
-        !scene.encoding().is_empty(),
+        !painter.scene().encoding().is_empty(),
         "z-indexed elements should produce draw commands"
     );
 }
@@ -487,10 +487,10 @@ fn test_paint_filter_brightness() {
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
     // Filters are extracted but may not affect paint output yet
-    let _ = scene.encoding().is_empty();
+    let _ = painter.scene().encoding().is_empty();
 }
 
 #[test]
@@ -506,10 +506,10 @@ fn test_paint_filter_grayscale() {
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
     // Filters are extracted but may not affect paint output yet
-    let _ = scene.encoding().is_empty();
+    let _ = painter.scene().encoding().is_empty();
 }
 
 #[test]
@@ -525,10 +525,10 @@ fn test_paint_opacity_with_transform() {
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
     assert!(
-        !scene.encoding().is_empty(),
+        !painter.scene().encoding().is_empty(),
         "opacity with transform should produce draw commands"
     );
 }
@@ -546,10 +546,10 @@ fn test_paint_border_style_double() {
     doc.append_child(body, div);
     doc.resolve_layout(800.0, 600.0);
 
-    let mut scene = Scene::new();
-    paint(&mut doc, &mut scene);
+    let mut painter = VelloPainter::new();
+    paint(&mut doc, &mut painter);
     assert!(
-        !scene.encoding().is_empty(),
+        !painter.scene().encoding().is_empty(),
         "double border should produce draw commands"
     );
 }

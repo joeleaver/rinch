@@ -205,17 +205,35 @@ impl RinchDocument {
     /// Recompute taffy styles for all element nodes, clearing cached style props
     /// so that CSS variables are re-resolved. Use this after `update_theme_variables()`.
     pub fn recompute_all_styles_full(&mut self) {
-        // Clear cached Stylo element data so styles are recomputed
+        // Clear cached Stylo element data so styles are recomputed.
+        // Also clear text_layout so build_ifc_layouts() doesn't skip
+        // IFC roots whose text content hasn't changed but whose style
+        // (e.g. text color) has — the old Parley layout has stale brushes.
         let node_ids: Vec<usize> = self.tree.nodes.iter().map(|(id, _)| id).collect();
         for &nid in &node_ids {
             *self.tree.nodes[nid].stylo_element_data.borrow_mut() = None;
+            self.tree.nodes[nid].text_layout = None;
         }
+        // Disable transitions during full restyle — theme changes should apply
+        // instantly. Without this, elements with `transition: color` would start
+        // animating from old values, baking stale colors into Parley text layouts.
+        let transitions_were_enabled = self.tree.transitions_enabled;
+        self.tree.transitions_enabled = false;
+        self.tree.active_transitions.clear();
+        self.tree.active_animations.clear();
         // Clear roots to force full tree walk
         self.tree.style_roots.clear();
         // Resolve styles using Stylo
         self.tree.styles_dirty = true;
         self.resolve_styles();
         self.apply_stylo_styles_to_taffy();
+        self.tree.transitions_enabled = transitions_were_enabled;
+        // Force IFC rebuild so text layouts pick up new colors/fonts from
+        // the updated computed styles (text brush is baked into Parley layout).
+        // Also set layout_dirty so resolve_layout doesn't early-return before
+        // reaching the ifc_dirty branch.
+        self.tree.ifc_dirty = true;
+        self.tree.layout_dirty = true;
     }
 
     /// Recompute taffy styles for all element nodes.
@@ -407,6 +425,50 @@ impl RinchDocument {
                 self.tree.nodes[node_id].computed_style = new_style.clone();
             }
 
+            // --- Animation logic ---
+            // Extract animation specs from Stylo
+            let animation_specs =
+                crate::animation::AnimationSpec::extract_from_stylo(&computed_values);
+            self.tree.nodes[node_id].animation_specs = animation_specs;
+
+            if self.tree.transitions_enabled {
+                let anim_specs = self.tree.nodes[node_id].animation_specs.clone();
+                let base_style = self.tree.nodes[node_id].computed_style.clone();
+                let guard = self.tree.guard.read();
+
+                // Extract active_animations temporarily to avoid borrow conflict
+                let mut active_animations = std::mem::take(&mut self.tree.active_animations);
+                crate::animation::start_animations(
+                    &mut active_animations,
+                    node_id,
+                    &anim_specs,
+                    &base_style,
+                    &self.stylist,
+                    &guard,
+                    &self.tree,
+                    current_time_ms,
+                );
+                self.tree.active_animations = active_animations;
+                drop(guard);
+
+                // Apply current animation values on top of computed_style
+                if let Some(animations) = self.tree.active_animations.get(&node_id) {
+                    for anim in animations {
+                        if let crate::animation::AnimationResult::Values(values) =
+                            anim.values_at(current_time_ms)
+                        {
+                            for (prop, value) in &values {
+                                apply_value_to_style(
+                                    &mut self.tree.nodes[node_id].computed_style,
+                                    *prop,
+                                    value,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             // Mark node as styled so future changes can trigger transitions
             self.tree.nodes[node_id].has_been_styled = true;
 
@@ -451,6 +513,43 @@ impl RinchDocument {
                 }
                 if taffy_style.size.width == taffy::Dimension::auto() {
                     taffy_style.size.width = taffy::Dimension::percent(1.0);
+                }
+            }
+
+            // position:fixed elements use the viewport as their containing block.
+            // Taffy treats fixed as absolute (relative to DOM parent), so we give
+            // these nodes explicit viewport dimensions. This ensures their children
+            // (e.g. drawer panels with top:0;bottom:0) get correct layout.
+            if self.tree.nodes[node_id].computed_style.position
+                == crate::computed_style::PositionValue::Fixed
+                && self.tree.nodes[node_id].computed_style.display
+                    != crate::computed_style::DisplayValue::None
+            {
+                let vw = self.tree.viewport.width;
+                let vh = self.tree.viewport.height;
+                let cs = &self.tree.nodes[node_id].computed_style;
+
+                // Compute width: if both left and right insets are set with auto width,
+                // use viewport minus insets. Otherwise use full viewport width.
+                if taffy_style.size.width == taffy::Dimension::auto() {
+                    let left = cs.left.resolve(vw);
+                    let right = cs.right.resolve(vw);
+                    let w = match (left, right) {
+                        (Some(l), Some(r)) => (vw - l - r).max(0.0),
+                        _ => vw,
+                    };
+                    taffy_style.size.width = taffy::Dimension::length(w);
+                }
+
+                // Compute height: same logic for top/bottom insets.
+                if taffy_style.size.height == taffy::Dimension::auto() {
+                    let top = cs.top.resolve(vh);
+                    let bottom = cs.bottom.resolve(vh);
+                    let h = match (top, bottom) {
+                        (Some(t), Some(b)) => (vh - t - b).max(0.0),
+                        _ => vh,
+                    };
+                    taffy_style.size.height = taffy::Dimension::length(h);
                 }
             }
 

@@ -133,6 +133,7 @@ pub fn tick_transitions(tree: &mut NodeTree, current_time_ms: f64) -> bool {
         // Mark dirty
         if needs_paint {
             tree.nodes[node_id].dirty.insert(DirtyFlags::PAINT);
+            tree.paint_dirty_nodes.push(node_id);
         }
         if needs_layout {
             tree.nodes[node_id]

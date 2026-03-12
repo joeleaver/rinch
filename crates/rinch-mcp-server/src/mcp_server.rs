@@ -491,14 +491,70 @@ impl RinchMcpServer {
 
         let package = &params.0.package;
 
-        // Build cargo run command
-        let mut cmd = Command::new("cargo");
-        cmd.arg("run").arg("-p").arg(package);
-        if let Some(extra) = &params.0.extra_args {
-            for arg in extra.split_whitespace() {
-                cmd.arg(arg);
-            }
+        // Collect extra args, filtering out --release (we always add it ourselves)
+        let extra_args: Vec<&str> = params
+            .0
+            .extra_args
+            .as_deref()
+            .unwrap_or("")
+            .split_whitespace()
+            .filter(|a| *a != "--release")
+            .collect();
+
+        // Step 1: Build first so we can report compilation errors and not waste
+        // the connection timeout waiting for a build.
+        let mut build_cmd = Command::new("cargo");
+        build_cmd
+            .arg("build")
+            .arg("--release")
+            .arg("-p")
+            .arg(package);
+        for arg in &extra_args {
+            build_cmd.arg(arg);
         }
+
+        match build_cmd.output() {
+            Ok(output) if !output.status.success() => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                // Trim to last 2000 chars to avoid huge error messages
+                let trimmed = if stderr.len() > 2000 {
+                    &stderr[stderr.len() - 2000..]
+                } else {
+                    &stderr
+                };
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Build failed for {}:\n{}",
+                    package, trimmed
+                ))]));
+            }
+            Err(e) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Failed to run cargo build: {}",
+                    e
+                ))]));
+            }
+            _ => {} // build succeeded
+        }
+
+        // Step 2: Run the built binary directly (not via cargo run) so that the
+        // PID we track is the actual application process.
+        let binary_name = package;
+        let binary_path = std::env::current_dir()
+            .unwrap_or_default()
+            .join("target/release")
+            .join(binary_name);
+
+        let mut cmd = if binary_path.exists() {
+            Command::new(&binary_path)
+        } else {
+            // Fallback: use cargo run (binary name may differ from package name)
+            let mut c = Command::new("cargo");
+            c.arg("run").arg("--release").arg("-p").arg(package);
+            for arg in &extra_args {
+                c.arg(arg);
+            }
+            c
+        };
 
         // Set env to enable debug
         cmd.env("RINCH_DEBUG", "1");
@@ -508,9 +564,9 @@ impl RinchMcpServer {
             cmd.env("DISPLAY", display);
         }
 
-        // Spawn detached
+        // Capture stderr so we can report runtime errors; stdout not needed
         cmd.stdout(std::process::Stdio::null());
-        cmd.stderr(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::piped());
 
         match cmd.spawn() {
             Ok(child) => {
@@ -519,28 +575,71 @@ impl RinchMcpServer {
                 // Store the child process handle
                 self.spawned_processes.lock().unwrap().insert(pid, child);
 
-                // Wait for the app to register with debug server (poll for up to 30 seconds)
-                for _ in 0..60 {
+                // Snapshot existing apps before we start polling so we can detect
+                // new registrations even if the PID doesn't match (cargo run case).
+                let pre_apps: std::collections::HashSet<u32> =
+                    discovery::list_apps().iter().map(|a| a.pid).collect();
+
+                // Wait for the app to register with debug server (poll for up to 15 seconds)
+                for _ in 0..30 {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    let apps = discovery::list_apps();
-                    if let Some(app) = apps.iter().find(|a| a.pid == pid) {
-                        // Try to connect
-                        match DebugClient::connect(app.port) {
-                            Ok(c) => {
-                                let msg = format!(
-                                    "Launched {} (PID {}) and connected on port {}",
-                                    c.app_name, pid, app.port
-                                );
-                                *self.client.lock().unwrap() = Some(c);
-                                return Ok(CallToolResult::success(vec![Content::text(msg)]));
+
+                    // Check if the process exited early (build error, crash, etc.)
+                    {
+                        let mut procs = self.spawned_processes.lock().unwrap();
+                        if let Some(child) = procs.get_mut(&pid)
+                            && let Ok(Some(status)) = child.try_wait()
+                        {
+                            let mut stderr_msg = String::new();
+                            if let Some(ref mut stderr) = child.stderr {
+                                use std::io::Read;
+                                let _ = stderr.read_to_string(&mut stderr_msg);
                             }
-                            Err(_) => continue,
+                            let trimmed = if stderr_msg.len() > 2000 {
+                                &stderr_msg[stderr_msg.len() - 2000..]
+                            } else {
+                                &stderr_msg
+                            };
+                            procs.remove(&pid);
+                            return Ok(CallToolResult::error(vec![Content::text(format!(
+                                "{} exited with {} before connecting.\n{}",
+                                package, status, trimmed
+                            ))]));
+                        }
+                    }
+
+                    let apps = discovery::list_apps();
+
+                    // Try exact PID match first (direct binary execution)
+                    if let Some(app) = apps.iter().find(|a| a.pid == pid)
+                        && let Ok(c) = DebugClient::connect(app.port)
+                    {
+                        let msg = format!(
+                            "Launched {} (PID {}) and connected on port {}",
+                            c.app_name, pid, app.port
+                        );
+                        *self.client.lock().unwrap() = Some(c);
+                        return Ok(CallToolResult::success(vec![Content::text(msg)]));
+                    }
+
+                    // Also check for any newly registered app (cargo run gives child
+                    // processes a different PID than the cargo wrapper we spawned)
+                    for app in &apps {
+                        if !pre_apps.contains(&app.pid)
+                            && let Ok(c) = DebugClient::connect(app.port)
+                        {
+                            let msg = format!(
+                                "Launched {} (PID {}) and connected on port {}",
+                                c.app_name, app.pid, app.port
+                            );
+                            *self.client.lock().unwrap() = Some(c);
+                            return Ok(CallToolResult::success(vec![Content::text(msg)]));
                         }
                     }
                 }
 
                 Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Launched {} (PID {}) but could not auto-connect. The app may not have debug enabled. Use 'list_apps' to check.",
+                    "Launched {} (PID {}) but could not auto-connect within 15s. The app may not have debug enabled. Use 'list_apps' to check.",
                     package, pid
                 ))]))
             }

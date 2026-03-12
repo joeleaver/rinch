@@ -274,19 +274,23 @@ impl RinchDocument {
                                 // Image still loading — return zero size
                                 return taffy::Size::ZERO;
                             }
+                            let aspect = iw / ih;
                             // Use intrinsic dimensions as default, but respect
-                            // CSS width/height if set (via known_dims from Taffy style)
+                            // CSS width/height if set (via known_dims from Taffy style).
+                            // Maintain aspect ratio when only one dimension is constrained.
+                            let w = match (known_dims.width, known_dims.height) {
+                                (Some(kw), _) => kw,
+                                (None, Some(kh)) => kh * aspect,
+                                (None, None) => iw,
+                            };
+                            let h = match (known_dims.height, known_dims.width) {
+                                (Some(kh), _) => kh,
+                                (None, Some(kw)) => kw / aspect,
+                                (None, None) => ih,
+                            };
                             taffy::Size {
-                                width: known_dims.width.unwrap_or(iw),
-                                height: known_dims.height.unwrap_or_else(|| {
-                                    // If width is constrained but height isn't,
-                                    // maintain aspect ratio
-                                    if let Some(kw) = known_dims.width {
-                                        ih * (kw / iw)
-                                    } else {
-                                        ih
-                                    }
-                                }),
+                                width: w,
+                                height: h,
                             }
                         }
                         Some(NodeContext::InlineRoot(root_id)) => {
@@ -684,18 +688,133 @@ impl RinchDocument {
         if let Some(taffy_id) = self.tree.nodes[node_id].taffy_id
             && let Ok(taffy_layout) = self.tree.taffy.layout(taffy_id)
         {
-            let node = &mut self.tree.nodes[node_id];
-            node.layout = LayoutResult {
+            let mut new_layout = LayoutResult {
                 x: taffy_layout.location.x,
                 y: taffy_layout.location.y,
                 width: taffy_layout.size.width,
                 height: taffy_layout.size.height,
             };
+
+            // position: fixed elements use the viewport as their containing block.
+            // Taffy treats them as absolute (relative to parent), so we override
+            // their layout to be viewport-relative with proper sizing from insets.
+            // Skip when:
+            //   - display is none (element itself is hidden)
+            //   - Taffy computed 0x0 size (ancestor has display:none — the node's
+            //     own display may be Block but it's inside a hidden subtree)
+            {
+                let node = &self.tree.nodes[node_id];
+                if node.computed_style.position == crate::computed_style::PositionValue::Fixed
+                    && !matches!(
+                        node.computed_style.display,
+                        crate::computed_style::DisplayValue::None
+                    )
+                    && (new_layout.width > 0.0 || new_layout.height > 0.0)
+                {
+                    let vw = self.tree.viewport.width;
+                    let vh = self.tree.viewport.height;
+                    let style = &node.computed_style;
+
+                    // Resolve insets (top/right/bottom/left)
+                    let top = style.top.resolve(vh);
+                    let right = style.right.resolve(vw);
+                    let bottom = style.bottom.resolve(vh);
+                    let left = style.left.resolve(vw);
+                    let width_auto = style.width.is_auto();
+                    let height_auto = style.height.is_auto();
+
+                    // Horizontal positioning
+                    if let (Some(l), Some(r)) = (left, right) {
+                        new_layout.x = l;
+                        if width_auto {
+                            new_layout.width = (vw - l - r).max(0.0);
+                        }
+                    } else if let Some(l) = left {
+                        new_layout.x = l;
+                    } else if let Some(r) = right {
+                        new_layout.x = (vw - new_layout.width - r).max(0.0);
+                    } else {
+                        new_layout.x = 0.0;
+                    }
+
+                    // Vertical positioning
+                    if let (Some(t), Some(b)) = (top, bottom) {
+                        new_layout.y = t;
+                        if height_auto {
+                            new_layout.height = (vh - t - b).max(0.0);
+                        }
+                    } else if let Some(t) = top {
+                        new_layout.y = t;
+                        // Taffy may compute wrong height for fixed elements
+                        // (their Taffy parent differs from the CSS containing
+                        // block which should be the viewport).  Re-derive
+                        // content height from children.
+                        if height_auto {
+                            let _ = node;
+                            new_layout.height = self.compute_content_height(node_id, &new_layout);
+                        }
+                    } else if let Some(b) = bottom {
+                        if height_auto {
+                            let _ = node;
+                            new_layout.height = self.compute_content_height(node_id, &new_layout);
+                        }
+                        new_layout.y = (vh - new_layout.height - b).max(0.0);
+                    } else {
+                        new_layout.y = 0.0;
+                    }
+                }
+            }
+
+            // Save previous layout for dirty region computation
+            let node = &mut self.tree.nodes[node_id];
+            node.prev_layout = node.layout;
+            if node.layout != new_layout {
+                node.layout = new_layout;
+                self.tree.paint_dirty_nodes.push(node_id);
+            }
         }
 
         for child_id in children {
             self.read_layout_results(child_id);
         }
+    }
+
+    /// Compute the intrinsic content height of a node from its children's
+    /// Taffy-computed sizes. Used for position:fixed elements where Taffy's
+    /// parent-relative sizing gives the wrong result.
+    fn compute_content_height(&self, node_id: usize, _parent_layout: &LayoutResult) -> f32 {
+        let node = &self.tree.nodes[node_id];
+        let pad_top = node.computed_style.padding_top.to_px();
+        let pad_bottom = node.computed_style.padding_bottom.to_px();
+        let border_top = node.computed_style.border_top_width.to_px();
+        let border_bottom = node.computed_style.border_bottom_width.to_px();
+        let gap = node.computed_style.gap_row.to_px();
+        let is_column = matches!(
+            node.computed_style.flex_direction,
+            crate::computed_style::FlexDirectionValue::Column
+                | crate::computed_style::FlexDirectionValue::ColumnReverse
+        );
+
+        let mut content_h: f32 = 0.0;
+        let child_count = node.children.len();
+
+        for (i, &child_id) in node.children.iter().enumerate() {
+            if let Some(child_taffy) = self.tree.nodes.get(child_id).and_then(|c| c.taffy_id) {
+                if let Ok(child_layout) = self.tree.taffy.layout(child_taffy) {
+                    let ch = child_layout.size.height;
+                    if is_column {
+                        content_h += ch;
+                        if i > 0 && i < child_count {
+                            content_h += gap;
+                        }
+                    } else {
+                        content_h = content_h.max(ch);
+                    }
+                }
+            }
+        }
+
+        content_h + pad_top + pad_bottom + border_top + border_bottom
     }
 
     /// Handle display:contents nodes by reparenting their taffy children

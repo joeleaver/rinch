@@ -2,9 +2,9 @@
 
 use peniko::Fill;
 use peniko::color::{AlphaColor, Srgb};
-use peniko::kurbo::{Affine, Cap, Rect, RoundedRectRadii, Stroke};
-use vello::Scene;
+use peniko::kurbo::{Affine, BezPath, Cap, Point, Rect, RoundedRectRadii, Stroke};
 
+use super::painter::Painter;
 use crate::computed_style::BorderStyleValue;
 use crate::node::{Node, NodeTree};
 
@@ -13,7 +13,7 @@ use crate::node::{Node, NodeTree};
 /// Paint per-side borders with style support (solid, dashed, dotted, double).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_borders(
-    scene: &mut Scene,
+    painter: &mut dyn Painter,
     node: &Node,
     scale: f64,
     x: f64,
@@ -26,7 +26,7 @@ pub(super) fn paint_borders(
     let cs = &node.computed_style;
 
     let sides = [
-        // (width, color, style, start, end) for each side
+        // (width, color, style) for each side
         (
             cs.border_top_width.to_px(),
             cs.border_top_color,
@@ -70,9 +70,9 @@ pub(super) fn paint_borders(
 
             if has_radius {
                 let rrect = border_rect.to_rounded_rect(radii);
-                scene.stroke(&stroke, transform, bc, None, &rrect);
+                painter.stroke_color(&stroke, transform, bc, &rrect.into());
             } else {
-                scene.stroke(&stroke, transform, bc, None, &border_rect);
+                painter.stroke_color(&stroke, transform, bc, &border_rect.into());
             }
         }
         return;
@@ -83,6 +83,24 @@ pub(super) fn paint_borders(
     let right_w = sides[1].0 as f64 * scale;
     let bottom_w = sides[2].0 as f64 * scale;
     let left_w = sides[3].0 as f64 * scale;
+
+    // When widths are uniform and border-radius is present, draw arc paths per side
+    // instead of straight lines. This is needed for spinners (border-radius: 50%
+    // with only one side colored).
+    let has_radius = radii.top_left > 0.0
+        || radii.top_right > 0.0
+        || radii.bottom_right > 0.0
+        || radii.bottom_left > 0.0;
+    let widths_uniform = (top_w - right_w).abs() < 0.01
+        && (top_w - bottom_w).abs() < 0.01
+        && (top_w - left_w).abs() < 0.01;
+
+    if widths_uniform && has_radius && top_w > 0.0 {
+        paint_borders_arc_per_side(painter, &sides, scale, x, y, w, h, radii, top_w, transform);
+        return;
+    }
+
+    // Fallback: straight lines per side (no border-radius)
 
     // Top border
     if top_w > 0.0
@@ -95,7 +113,7 @@ pub(super) fn paint_borders(
         let stroke = make_border_stroke(top_w, sides[0].2);
         let half = top_w * 0.5;
         let path = peniko::kurbo::Line::new((x, y + half), (x + w, y + half));
-        scene.stroke(&stroke, transform, bc, None, &path);
+        painter.stroke_color(&stroke, transform, bc, &path.into());
     }
 
     // Right border
@@ -109,7 +127,7 @@ pub(super) fn paint_borders(
         let stroke = make_border_stroke(right_w, sides[1].2);
         let half = right_w * 0.5;
         let path = peniko::kurbo::Line::new((x + w - half, y), (x + w - half, y + h));
-        scene.stroke(&stroke, transform, bc, None, &path);
+        painter.stroke_color(&stroke, transform, bc, &path.into());
     }
 
     // Bottom border
@@ -123,7 +141,7 @@ pub(super) fn paint_borders(
         let stroke = make_border_stroke(bottom_w, sides[2].2);
         let half = bottom_w * 0.5;
         let path = peniko::kurbo::Line::new((x, y + h - half), (x + w, y + h - half));
-        scene.stroke(&stroke, transform, bc, None, &path);
+        painter.stroke_color(&stroke, transform, bc, &path.into());
     }
 
     // Left border
@@ -137,8 +155,168 @@ pub(super) fn paint_borders(
         let stroke = make_border_stroke(left_w, sides[3].2);
         let half = left_w * 0.5;
         let path = peniko::kurbo::Line::new((x + half, y), (x + half, y + h));
-        scene.stroke(&stroke, transform, bc, None, &path);
+        painter.stroke_color(&stroke, transform, bc, &path.into());
     }
+}
+
+/// Paint per-side borders as arcs along a rounded rect.
+///
+/// Each CSS side owns the straight segment plus half of each adjacent corner arc.
+/// This correctly renders spinners (border-radius: 50% with only one side colored).
+#[allow(clippy::too_many_arguments)]
+fn paint_borders_arc_per_side(
+    painter: &mut dyn Painter,
+    sides: &[(f32, Option<AlphaColor<Srgb>>, BorderStyleValue); 4],
+    _scale: f64,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    radii: RoundedRectRadii,
+    bw: f64,
+    transform: Affine,
+) {
+    let half = bw * 0.5;
+    // Stroke centerline rect
+    let ix = x + half;
+    let iy = y + half;
+    let iw = w - bw;
+    let ih = h - bw;
+
+    // Inset radii for stroke centerline (can't go negative)
+    let tl = (radii.top_left - half).max(0.0);
+    let tr = (radii.top_right - half).max(0.0);
+    let br = (radii.bottom_right - half).max(0.0);
+    let bl = (radii.bottom_left - half).max(0.0);
+
+    // Build arc paths for each side
+    let paths = build_per_side_arc_paths(ix, iy, iw, ih, tl, tr, br, bl);
+
+    // sides: [top, right, bottom, left]
+    for (i, path) in paths.iter().enumerate() {
+        let (_, color, style) = sides[i];
+        if matches!(style, BorderStyleValue::None | BorderStyleValue::Hidden) {
+            continue;
+        }
+        if let Some(bc) = color {
+            let stroke = make_border_stroke(bw, style);
+            painter.stroke_color(&stroke, transform, bc, &path.clone().into());
+        }
+    }
+}
+
+/// Build BezPath for each side of a rounded rect.
+///
+/// Each side includes: second half of the preceding corner arc + straight segment
+/// + first half of the following corner arc. Corner arcs are split at t=0.5
+///   using De Casteljau subdivision.
+#[allow(clippy::too_many_arguments)]
+fn build_per_side_arc_paths(
+    ix: f64,
+    iy: f64,
+    iw: f64,
+    ih: f64,
+    tl: f64,
+    tr: f64,
+    br: f64,
+    bl: f64,
+) -> [BezPath; 4] {
+    // κ for quarter-circle cubic Bézier approximation
+    const K: f64 = 0.5522847498;
+
+    // Corner arc endpoints and control points.
+    // TL: from (ix, iy+tl) to (ix+tl, iy)  [left→top, counterclockwise around corner]
+    let tl_p0 = Point::new(ix, iy + tl);
+    let tl_p1 = Point::new(ix, iy + tl - tl * K);
+    let tl_p2 = Point::new(ix + tl - tl * K, iy);
+    let tl_p3 = Point::new(ix + tl, iy);
+
+    // TR: from (ix+iw-tr, iy) to (ix+iw, iy+tr)  [top→right]
+    let tr_p0 = Point::new(ix + iw - tr, iy);
+    let tr_p1 = Point::new(ix + iw - tr + tr * K, iy);
+    let tr_p2 = Point::new(ix + iw, iy + tr - tr * K);
+    let tr_p3 = Point::new(ix + iw, iy + tr);
+
+    // BR: from (ix+iw, iy+ih-br) to (ix+iw-br, iy+ih)  [right→bottom]
+    let br_p0 = Point::new(ix + iw, iy + ih - br);
+    let br_p1 = Point::new(ix + iw, iy + ih - br + br * K);
+    let br_p2 = Point::new(ix + iw - br + br * K, iy + ih);
+    let br_p3 = Point::new(ix + iw - br, iy + ih);
+
+    // BL: from (ix+bl, iy+ih) to (ix, iy+ih-bl)  [bottom→left]
+    let bl_p0 = Point::new(ix + bl, iy + ih);
+    let bl_p1 = Point::new(ix + bl - bl * K, iy + ih);
+    let bl_p2 = Point::new(ix, iy + ih - bl + bl * K);
+    let bl_p3 = Point::new(ix, iy + ih - bl);
+
+    // Split each corner arc at t=0.5
+    let (tl_first, tl_second) = split_cubic_half(tl_p0, tl_p1, tl_p2, tl_p3);
+    let (tr_first, tr_second) = split_cubic_half(tr_p0, tr_p1, tr_p2, tr_p3);
+    let (br_first, br_second) = split_cubic_half(br_p0, br_p1, br_p2, br_p3);
+    let (bl_first, bl_second) = split_cubic_half(bl_p0, bl_p1, bl_p2, bl_p3);
+
+    // Top: second half of TL arc + top straight + first half of TR arc
+    let mut top = BezPath::new();
+    top.move_to(tl_second.0);
+    if tl > 0.01 {
+        top.curve_to(tl_second.1, tl_second.2, tl_second.3);
+    }
+    top.line_to(tr_first.0);
+    if tr > 0.01 {
+        top.curve_to(tr_first.1, tr_first.2, tr_first.3);
+    }
+
+    // Right: second half of TR arc + right straight + first half of BR arc
+    let mut right = BezPath::new();
+    right.move_to(tr_second.0);
+    if tr > 0.01 {
+        right.curve_to(tr_second.1, tr_second.2, tr_second.3);
+    }
+    right.line_to(br_first.0);
+    if br > 0.01 {
+        right.curve_to(br_first.1, br_first.2, br_first.3);
+    }
+
+    // Bottom: second half of BR arc + bottom straight + first half of BL arc
+    let mut bottom = BezPath::new();
+    bottom.move_to(br_second.0);
+    if br > 0.01 {
+        bottom.curve_to(br_second.1, br_second.2, br_second.3);
+    }
+    bottom.line_to(bl_first.0);
+    if bl > 0.01 {
+        bottom.curve_to(bl_first.1, bl_first.2, bl_first.3);
+    }
+
+    // Left: second half of BL arc + left straight + first half of TL arc
+    let mut left = BezPath::new();
+    left.move_to(bl_second.0);
+    if bl > 0.01 {
+        left.curve_to(bl_second.1, bl_second.2, bl_second.3);
+    }
+    left.line_to(tl_first.0);
+    if tl > 0.01 {
+        left.curve_to(tl_first.1, tl_first.2, tl_first.3);
+    }
+
+    [top, right, bottom, left]
+}
+
+type CubicPoints = (Point, Point, Point, Point);
+
+/// Split a cubic Bézier at t=0.5 using De Casteljau's algorithm.
+fn split_cubic_half(p0: Point, p1: Point, p2: Point, p3: Point) -> (CubicPoints, CubicPoints) {
+    let m01 = midpt(p0, p1);
+    let m12 = midpt(p1, p2);
+    let m23 = midpt(p2, p3);
+    let m012 = midpt(m01, m12);
+    let m123 = midpt(m12, m23);
+    let mid = midpt(m012, m123);
+    ((p0, m01, m012, mid), (mid, m123, m23, p3))
+}
+
+fn midpt(a: Point, b: Point) -> Point {
+    Point::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5)
 }
 
 /// Create a Stroke with dash pattern based on border style.
@@ -160,7 +338,7 @@ pub(super) fn make_border_stroke(width: f64, style: BorderStyleValue) -> Stroke 
 /// Paint outline outside the box model.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_outline(
-    scene: &mut Scene,
+    painter: &mut dyn Painter,
     node: &Node,
     scale: f64,
     x: f64,
@@ -212,9 +390,9 @@ pub(super) fn paint_outline(
             radii.bottom_left + expand,
         );
         let rrect = outline_rect.to_rounded_rect(outline_radii);
-        scene.stroke(&stroke, transform, color, None, &rrect);
+        painter.stroke_color(&stroke, transform, color, &rrect.into());
     } else {
-        scene.stroke(&stroke, transform, color, None, &outline_rect);
+        painter.stroke_color(&stroke, transform, color, &outline_rect.into());
     }
 }
 
@@ -264,10 +442,40 @@ pub(super) fn collect_stacking_contexts(
         offset_y,
         &mut result,
         &mut order_counter,
+        false,
     );
     result
 }
 
+/// Collect stacking contexts for the body (root SC).
+///
+/// This is like `collect_stacking_contexts` but also hoists `position: fixed`
+/// SCs from within intermediate SC boundaries. In CSS, fixed-position elements
+/// are always relative to the viewport and should not be clipped by ancestor
+/// stacking contexts (e.g. overflow:auto containers).
+pub(super) fn collect_stacking_contexts_root(
+    tree: &NodeTree,
+    children: &[usize],
+    scale: f64,
+    offset_x: f64,
+    offset_y: f64,
+) -> Vec<StackingContextEntry> {
+    let mut result = Vec::new();
+    let mut order_counter = 0usize;
+    collect_sc_recursive(
+        tree,
+        children,
+        scale,
+        offset_x,
+        offset_y,
+        &mut result,
+        &mut order_counter,
+        true,
+    );
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
 fn collect_sc_recursive(
     tree: &NodeTree,
     children: &[usize],
@@ -276,6 +484,7 @@ fn collect_sc_recursive(
     parent_offset_y: f64,
     result: &mut Vec<StackingContextEntry>,
     order_counter: &mut usize,
+    hoist_fixed: bool,
 ) {
     for &child_id in children {
         let Some(child) = tree.get(child_id) else {
@@ -283,18 +492,35 @@ fn collect_sc_recursive(
         };
 
         if creates_stacking_context(child) {
-            // This child is a SC — collect it with the current accumulated offset.
-            // paint_node will add child.layout.x/y itself, so we pass parent_offset.
+            let is_fixed =
+                child.computed_style.position == crate::computed_style::PositionValue::Fixed;
+
+            if !hoist_fixed && is_fixed {
+                // Non-root SC: skip fixed-position SCs — they've been hoisted
+                // to the body level by collect_stacking_contexts_root.
+                *order_counter += 1;
+                continue;
+            }
+
             let z = child.computed_style.z_index.unwrap_or(0);
             result.push(StackingContextEntry {
                 z_index: z,
                 node_id: child_id,
-                offset_x: parent_offset_x,
-                offset_y: parent_offset_y,
+                // position: fixed elements are viewport-relative — zero the offset so
+                // paint_node uses only the node's own layout.x/y (set by the fixed override).
+                offset_x: if is_fixed { 0.0 } else { parent_offset_x },
+                offset_y: if is_fixed { 0.0 } else { parent_offset_y },
                 dom_order: *order_counter,
             });
             *order_counter += 1;
-            // Don't recurse — deeper SCs belong to this child's SC level.
+
+            // When hoisting fixed elements: recurse INTO SC boundaries to find
+            // position:fixed descendants that need to be painted at the root
+            // level (not clipped by intermediate overflow containers).
+            if hoist_fixed {
+                collect_fixed_from_sc(tree, &child.children, result, order_counter);
+            }
+            // Normal case: don't recurse — deeper SCs belong to this child's SC level.
         } else {
             // Not a SC — recurse through its children to find deeper SCs.
             // Accumulate this node's layout offset.
@@ -311,7 +537,48 @@ fn collect_sc_recursive(
                 child_y - sy,
                 result,
                 order_counter,
+                hoist_fixed,
             );
+        }
+    }
+}
+
+/// Walk into SC subtrees to find and hoist position:fixed descendants.
+///
+/// This handles the case where a fixed-position element (e.g. a modal overlay)
+/// is nested inside an intermediate stacking context (e.g. a scrollable
+/// container with overflow:auto). Without hoisting, the fixed element would
+/// be painted within the ancestor SC's clip mask, incorrectly clipping it.
+fn collect_fixed_from_sc(
+    tree: &NodeTree,
+    children: &[usize],
+    result: &mut Vec<StackingContextEntry>,
+    order_counter: &mut usize,
+) {
+    for &child_id in children {
+        let Some(child) = tree.get(child_id) else {
+            continue;
+        };
+
+        if creates_stacking_context(child) {
+            let is_fixed =
+                child.computed_style.position == crate::computed_style::PositionValue::Fixed;
+            if is_fixed {
+                let z = child.computed_style.z_index.unwrap_or(0);
+                result.push(StackingContextEntry {
+                    z_index: z,
+                    node_id: child_id,
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                    dom_order: *order_counter,
+                });
+                *order_counter += 1;
+            }
+            // Continue recursing into SC children to find deeper fixed elements
+            collect_fixed_from_sc(tree, &child.children, result, order_counter);
+        } else {
+            *order_counter += 1;
+            collect_fixed_from_sc(tree, &child.children, result, order_counter);
         }
     }
 }
@@ -320,7 +587,7 @@ fn collect_sc_recursive(
 /// Approximates blur by drawing expanded, semi-transparent rounded rects.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_box_shadow(
-    scene: &mut Scene,
+    painter: &mut dyn Painter,
     shadows: &[crate::computed_style::BoxShadowValue],
     x: f64,
     y: f64,
@@ -363,33 +630,35 @@ pub(super) fn paint_box_shadow(
             })
             .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 40));
 
-        let expand = blur * 0.5 + spread;
-        let shadow_rect = Rect::new(
-            x + offset_x - expand,
-            y + offset_y - expand,
-            x + w + offset_x + expand,
-            y + h + offset_y + expand,
-        );
-
         if blur > 0.0 {
-            // Multi-layer blur approximation: 3 layers with increasing expansion
-            let layers = 3;
+            // Approximate Gaussian box-shadow blur with concentric layers.
+            // The max expansion is empirically tuned to match Chrome's visible
+            // shadow extent. Using Gaussian-weighted alpha per layer with the
+            // actual shadow color (not hardcoded black).
+            let max_expand = blur * 0.5 + spread;
+            let layers: usize = 8;
+
+            // Extract actual shadow RGB
+            let sr = (color.components[0] * 255.0) as u8;
+            let sg = (color.components[1] * 255.0) as u8;
+            let sb = (color.components[2] * 255.0) as u8;
+            let base_alpha = color.components[3] as f64;
+
             for i in 0..layers {
                 let t = (i as f64 + 1.0) / layers as f64;
-                let layer_expand = expand * t;
+                let layer_expand = max_expand * t;
                 let layer_rect = Rect::new(
                     x + offset_x - layer_expand,
                     y + offset_y - layer_expand,
                     x + w + offset_x + layer_expand,
                     y + h + offset_y + layer_expand,
                 );
-                let alpha_scale = (1.0 - t * 0.6) / layers as f64;
-                let layer_color = AlphaColor::<Srgb>::from_rgba8(
-                    0,
-                    0,
-                    0,
-                    (color.components[3] * alpha_scale as f32 * 255.0) as u8,
-                );
+                let alpha_scale = (1.0 - t * 0.7) / layers as f64;
+                let alpha_u8 = (base_alpha * alpha_scale * 255.0).min(255.0) as u8;
+                if alpha_u8 == 0 {
+                    continue;
+                }
+                let layer_color = AlphaColor::<Srgb>::from_rgba8(sr, sg, sb, alpha_u8);
                 if has_radius {
                     let expanded_radii = RoundedRectRadii::new(
                         radii.top_left + layer_expand,
@@ -398,18 +667,25 @@ pub(super) fn paint_box_shadow(
                         radii.bottom_left + layer_expand,
                     );
                     let rrect = layer_rect.to_rounded_rect(expanded_radii);
-                    scene.fill(Fill::NonZero, transform, layer_color, None, &rrect);
+                    painter.fill_color(Fill::NonZero, transform, layer_color, &rrect.into());
                 } else {
-                    scene.fill(Fill::NonZero, transform, layer_color, None, &layer_rect);
+                    painter.fill_color(Fill::NonZero, transform, layer_color, &layer_rect.into());
                 }
             }
         } else {
             // No blur: simple offset shadow
+            let total_expand = spread;
+            let shadow_rect = Rect::new(
+                x + offset_x - total_expand,
+                y + offset_y - total_expand,
+                x + w + offset_x + total_expand,
+                y + h + offset_y + total_expand,
+            );
             if has_radius {
                 let rrect = shadow_rect.to_rounded_rect(radii);
-                scene.fill(Fill::NonZero, transform, color, None, &rrect);
+                painter.fill_color(Fill::NonZero, transform, color, &rrect.into());
             } else {
-                scene.fill(Fill::NonZero, transform, color, None, &shadow_rect);
+                painter.fill_color(Fill::NonZero, transform, color, &shadow_rect.into());
             }
         }
     }

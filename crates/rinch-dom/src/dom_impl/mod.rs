@@ -318,6 +318,55 @@ impl RinchDocument {
         any_active
     }
 
+    /// Advance all active CSS animations by one frame.
+    /// Returns true if any animations are still active (caller should keep polling).
+    pub fn tick_animations(&mut self) -> bool {
+        use std::time::SystemTime;
+        let current_time_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64()
+            * 1000.0;
+
+        let any_active = crate::animation::tick_animations(&mut self.tree, current_time_ms);
+
+        // For layout-affecting animations, re-sync Taffy styles.
+        let layout_dirty: Vec<usize> = self
+            .tree
+            .active_animations
+            .keys()
+            .copied()
+            .chain(self.tree.dirty_nodes.iter().copied())
+            .collect();
+
+        for node_id in layout_dirty {
+            if node_id == self.tree.root_id || node_id == self.tree.html_id {
+                continue;
+            }
+            if !self.tree.contains(node_id) {
+                continue;
+            }
+            let node = &self.tree.nodes[node_id];
+            if !node.dirty.contains(DirtyFlags::LAYOUT) {
+                continue;
+            }
+            if let Some(taffy_id) = node.taffy_id {
+                let dd = self.default_display_for_node(node_id);
+                let taffy_style = node.computed_style.to_taffy_style(dd);
+
+                if let Ok(old_taffy_style) = self.tree.taffy.style(taffy_id) {
+                    if old_taffy_style != &taffy_style {
+                        let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
+                    }
+                } else {
+                    let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
+                }
+            }
+        }
+
+        any_active
+    }
+
     /// Request an image load for a node's `src` attribute.
     ///
     /// If the image is already decoded in the cache, updates intrinsic dimensions

@@ -1,11 +1,13 @@
 //! Node tree data structures for rinch-dom.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use rinch_core::image::ImageLoader;
 
+use crate::animation::types::{ActiveAnimation, AnimationSpec};
 use crate::image_cache::ImageCache;
 use crate::transition::{ActiveTransition, TransitionProperty, TransitionSpec};
 
@@ -117,7 +119,7 @@ pub struct TextMeasure {
 }
 
 /// Layout result for a node after Taffy computation.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct LayoutResult {
     pub x: f32,
     pub y: f32,
@@ -228,6 +230,8 @@ pub struct Node {
     pub taffy_id: Option<taffy::NodeId>,
     /// Computed layout result.
     pub layout: LayoutResult,
+    /// Previous frame's layout (for dirty region computation).
+    pub prev_layout: LayoutResult,
     /// CSS display mode (parsed from style attribute).
     pub display_mode: DisplayMode,
     /// If this node is an inline child, which IFC root owns it.
@@ -261,6 +265,8 @@ pub struct Node {
     pub computed_style: ComputedStyle,
     /// Parsed CSS transition specs for this node.
     pub transition_specs: Vec<TransitionSpec>,
+    /// Parsed CSS animation specs for this node.
+    pub animation_specs: Vec<AnimationSpec>,
     /// Whether this node has been styled at least once.
     /// Prevents transitions from firing on initial style application.
     pub has_been_styled: bool,
@@ -280,6 +286,16 @@ pub struct Node {
     /// Cached parsed inline style attribute (Stylo PropertyDeclarationBlock).
     /// Populated when style attribute is set, used by Stylo for cascade.
     pub style_attribute_cache: Option<ServoArc<Locked<PropertyDeclarationBlock>>>,
+    /// Set during Stylo selector matching when a `:hover` pseudo-class is
+    /// evaluated against this node. Nodes without this flag can skip style
+    /// invalidation on hover changes because no CSS rule depends on their
+    /// hover state. Cleared before each style re-resolution so stale flags
+    /// don't persist after class changes.
+    pub hover_sensitive: Cell<bool>,
+    /// Set by Stylo when `:active` is evaluated during selector matching.
+    pub active_sensitive: Cell<bool>,
+    /// Set by Stylo when `:focus` is evaluated during selector matching.
+    pub focus_sensitive: Cell<bool>,
 }
 
 impl std::fmt::Debug for Node {
@@ -313,6 +329,7 @@ impl Node {
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
             layout: LayoutResult::default(),
+            prev_layout: LayoutResult::default(),
             display_mode: DisplayMode::Block,
             ifc_root: None,
             text_layout: None,
@@ -325,6 +342,7 @@ impl Node {
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
+            animation_specs: Vec::new(),
             has_been_styled: false,
             // Stylo fields
             stylo_element_data: AtomicRefCell::new(None),
@@ -333,6 +351,9 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            hover_sensitive: Cell::new(false),
+            active_sensitive: Cell::new(false),
+            focus_sensitive: Cell::new(false),
         }
     }
 
@@ -351,6 +372,7 @@ impl Node {
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
             layout: LayoutResult::default(),
+            prev_layout: LayoutResult::default(),
             display_mode,
             ifc_root: None,
             text_layout: None,
@@ -363,6 +385,7 @@ impl Node {
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
+            animation_specs: Vec::new(),
             has_been_styled: false,
             // Stylo fields
             stylo_element_data: AtomicRefCell::new(None),
@@ -371,6 +394,9 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            hover_sensitive: Cell::new(false),
+            active_sensitive: Cell::new(false),
+            focus_sensitive: Cell::new(false),
         }
     }
 
@@ -388,6 +414,7 @@ impl Node {
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
             layout: LayoutResult::default(),
+            prev_layout: LayoutResult::default(),
             display_mode: DisplayMode::Inline,
             ifc_root: None,
             text_layout: None,
@@ -400,6 +427,7 @@ impl Node {
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
+            animation_specs: Vec::new(),
             has_been_styled: false,
             // Stylo fields
             stylo_element_data: AtomicRefCell::new(None),
@@ -408,6 +436,9 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            hover_sensitive: Cell::new(false),
+            active_sensitive: Cell::new(false),
+            focus_sensitive: Cell::new(false),
         }
     }
 
@@ -423,6 +454,7 @@ impl Node {
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
             layout: LayoutResult::default(),
+            prev_layout: LayoutResult::default(),
             display_mode: DisplayMode::Inline,
             ifc_root: None,
             text_layout: None,
@@ -435,6 +467,7 @@ impl Node {
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
+            animation_specs: Vec::new(),
             has_been_styled: false,
             // Stylo fields
             stylo_element_data: AtomicRefCell::new(None),
@@ -443,6 +476,9 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            hover_sensitive: Cell::new(false),
+            active_sensitive: Cell::new(false),
+            focus_sensitive: Cell::new(false),
         }
     }
 
@@ -541,6 +577,9 @@ pub struct NodeTree {
     pub body_id: RawNodeId,
     /// IDs of nodes that have been mutated since last take_dirty_nodes.
     pub dirty_nodes: HashSet<RawNodeId>,
+    /// IDs of nodes that need repainting. Persists across layout resolve
+    /// until consumed by the paint phase for dirty region computation.
+    pub paint_dirty_nodes: Vec<RawNodeId>,
     /// IDs of nodes whose styles were recomputed and need Taffy sync.
     pub style_dirty_nodes: Vec<RawNodeId>,
     /// Roots of subtrees needing style resolution. When non-empty,
@@ -575,6 +614,8 @@ pub struct NodeTree {
     pub anonymous_block_boxes: Vec<RawNodeId>,
     /// Active CSS transitions per node, keyed by property.
     pub active_transitions: HashMap<RawNodeId, HashMap<TransitionProperty, ActiveTransition>>,
+    /// Active CSS animations per node.
+    pub active_animations: HashMap<RawNodeId, Vec<ActiveAnimation>>,
     /// Whether transitions are enabled (false until first layout completes).
     pub transitions_enabled: bool,
     /// Cache of loaded and decoded images.
@@ -673,6 +714,7 @@ impl NodeTree {
             html_id,
             body_id,
             dirty_nodes: HashSet::new(),
+            paint_dirty_nodes: Vec::new(),
             style_dirty_nodes: Vec::new(),
             style_roots: Vec::new(),
             styles_dirty: true, // Initial render needs styles
@@ -687,6 +729,7 @@ impl NodeTree {
             guard,
             anonymous_block_boxes: Vec::new(),
             active_transitions: HashMap::new(),
+            active_animations: HashMap::new(),
             transitions_enabled: false,
             image_cache: ImageCache::new(),
             image_loader: None,
@@ -713,6 +756,7 @@ impl NodeTree {
     /// Push a node ID to the dirty list (deduplicated).
     pub fn push_dirty(&mut self, id: RawNodeId) {
         self.dirty_nodes.insert(id);
+        self.paint_dirty_nodes.push(id);
     }
 
     /// Remove a node and all its descendants from the slab.
@@ -722,6 +766,7 @@ impl NodeTree {
         self.collect_descendants(id, &mut to_remove);
         for node_id in &to_remove {
             self.active_transitions.remove(node_id);
+            self.active_animations.remove(node_id);
         }
         for node_id in to_remove {
             self.nodes.remove(node_id);

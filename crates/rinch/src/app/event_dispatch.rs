@@ -44,10 +44,12 @@ impl RinchApp {
                     let dist = (dx * dx + dy * dy).sqrt();
                     if dist >= DRAG_THRESHOLD {
                         let node_id = pending.node_id;
+                        #[cfg(feature = "gpu")]
                         let mousedown_pos = pending.mousedown_pos;
                         self.pending_drag = None;
 
-                        // Capture snapshot and compute anchor
+                        // Capture snapshot and compute anchor (GPU only — needs VelloPainter)
+                        #[cfg(feature = "gpu")]
                         self.activate_drag(node_id, mousedown_pos, (x, y), scale_factor);
 
                         // Fire ondragstart handler
@@ -164,7 +166,7 @@ impl RinchApp {
                         if let Some(node) = d.tree.nodes.get_mut(node_id) {
                             node.scroll_offset.1 = new_scroll;
                             node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                            d.tree.dirty_nodes.insert(node_id);
+                            d.tree.push_dirty(node_id);
                         }
                     }
                     actions.push(AppAction::RequestRedraw);
@@ -193,25 +195,28 @@ impl RinchApp {
                     }
                 }
 
-                // Update hover state for CSS :hover support
+                // Update hover state and cursor
                 if let Some(doc) = &self.doc {
-                    let (hovered, cursor_style) = {
+                    let (hovered, cursor_style, old_hovered) = {
                         let d = doc.borrow();
                         let h = hit_test(&d.tree, x, y);
                         let cs = h
                             .and_then(|id| d.tree.get(id))
                             .map(|n| cursor_value_to_style(&n.computed_style.cursor))
                             .unwrap_or(rinch_platform::CursorStyle::Default);
-                        (h, cs)
+                        (h, cs, d.tree.hovered_node)
                     };
-                    let changed = doc.borrow_mut().update_hover(hovered);
-                    if changed {
-                        // Dispatch data-onenter handlers on newly hovered node
+                    let mut hovered_changed = false;
+                    doc.borrow_mut().update_hover(hovered, &mut hovered_changed);
+                    if hovered_changed {
+                        if let Some(old_id) = old_hovered {
+                            Self::dispatch_onleave(doc, old_id);
+                        }
                         if let Some(hit_id) = hovered {
                             Self::dispatch_onenter(doc, hit_id);
                         }
-                        actions.push(AppAction::RequestRedraw);
                     }
+                    // Don't request redraw — AboutToWait batches dirty state.
                     actions.push(AppAction::SetCursor(cursor_style));
 
                     // Dispatch MouseMove + MouseEnter/MouseLeave to render surfaces
@@ -290,19 +295,18 @@ impl RinchApp {
                 self.last_click_time = now;
                 self.last_click_pos = (x, y);
 
-                // Update :active and :focus pseudo-class state
+                // Update :active and :focus pseudo-class state.
+                // Don't request redraw here — AboutToWait will pick up the
+                // dirty styles and batch them into a single repaint.
                 if let Some(doc) = &self.doc {
                     let hit = {
                         let d = doc.borrow();
                         hit_test(&d.tree, x, y)
                     };
                     // :active applies while mouse is pressed
-                    let active_changed = doc.borrow_mut().update_active(hit);
+                    doc.borrow_mut().update_active(hit);
                     // :focus applies to the clicked element (persists after release)
-                    let focus_changed = doc.borrow_mut().update_focus(hit);
-                    if active_changed || focus_changed {
-                        actions.push(AppAction::RequestRedraw);
-                    }
+                    doc.borrow_mut().update_focus(hit);
                 }
 
                 // Check for draggable element — enter pending drag instead of
@@ -349,7 +353,7 @@ impl RinchApp {
                         if let Some(node) = d.tree.nodes.get_mut(node_id) {
                             node.scroll_offset.1 = new_scroll;
                             node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                            d.tree.dirty_nodes.insert(node_id);
+                            d.tree.push_dirty(node_id);
                         }
 
                         self.scrollbar_drag = Some(ScrollbarDrag {
@@ -459,12 +463,10 @@ impl RinchApp {
                 self.scrollbar_drag = None;
                 self.ce_selecting = false;
 
-                // Clear :active pseudo-class state on mouse release
+                // Clear :active pseudo-class state on mouse release.
+                // Don't request redraw — AboutToWait batches dirty state.
                 if let Some(doc) = &self.doc {
-                    let changed = doc.borrow_mut().update_active(None);
-                    if changed {
-                        actions.push(AppAction::RequestRedraw);
-                    }
+                    doc.borrow_mut().update_active(None);
                 }
             }
             PlatformEvent::MouseWheel {
@@ -524,7 +526,8 @@ impl RinchApp {
                                 if new_y != node.scroll_offset.1 {
                                     node.scroll_offset.1 = new_y;
                                     node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                                    doc_mut.tree.dirty_nodes.insert(scroll_node_id);
+                                    doc_mut.tree.push_dirty(scroll_node_id);
+                                    self.scene_dirty = true;
                                 }
                             }
                         }
@@ -545,7 +548,8 @@ impl RinchApp {
                                 if new_x != node.scroll_offset.0 {
                                     node.scroll_offset.0 = new_x;
                                     node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                                    doc_mut.tree.dirty_nodes.insert(scroll_node_id);
+                                    doc_mut.tree.push_dirty(scroll_node_id);
+                                    self.scene_dirty = true;
                                 }
                             }
                         }
@@ -850,9 +854,15 @@ impl RinchApp {
                     false
                 };
 
-                // Transitions modify computed_style directly — mark scene dirty
+                let any_animations = if let Some(doc) = &self.doc {
+                    doc.borrow_mut().tick_animations()
+                } else {
+                    false
+                };
+
+                // Transitions/animations modify computed_style directly — mark scene dirty
                 // so build_scene() rebuilds the Vello scene with interpolated values.
-                if any_transitions {
+                if any_transitions || any_animations {
                     self.scene_dirty = true;
                 }
 
@@ -894,10 +904,7 @@ impl RinchApp {
                     }
                 }
 
-                // Check if any render surface has new frames — request redraw
-                let any_surfaces = crate::render_surface::any_surface_dirty();
-
-                if any_transitions || any_video || any_surfaces {
+                if any_transitions || any_animations || any_video {
                     actions.push(AppAction::RequestRedraw);
                 }
             }
@@ -918,6 +925,35 @@ impl RinchApp {
             while let Some(nid) = current {
                 if let Some(node) = d.tree.get(nid) {
                     if let Some(val) = node.attributes.get("data-onenter") {
+                        if let Ok(id) = val.parse::<usize>() {
+                            found = Some(id);
+                        }
+                        break;
+                    }
+                    current = node.parent;
+                } else {
+                    break;
+                }
+            }
+            found
+        };
+        if let Some(id) = handler_id {
+            events::dispatch_event(events::EventHandlerId(id));
+        }
+    }
+
+    /// Dispatch `data-onleave` handler for the previously hovered node or its ancestors.
+    ///
+    /// Walks up from `old_id` looking for a `data-onleave` attribute. If found,
+    /// dispatches the registered event handler. Used for tooltip hover-out.
+    pub(super) fn dispatch_onleave(doc: &Rc<RefCell<RinchDocument>>, old_id: usize) {
+        let handler_id = {
+            let d = doc.borrow();
+            let mut current = Some(old_id);
+            let mut found = None;
+            while let Some(nid) = current {
+                if let Some(node) = d.tree.get(nid) {
+                    if let Some(val) = node.attributes.get("data-onleave") {
                         if let Ok(id) = val.parse::<usize>() {
                             found = Some(id);
                         }
@@ -1178,6 +1214,7 @@ impl RinchApp {
 
     /// Transition from pending drag to active drag: capture snapshot and set
     /// up the active drag state.
+    #[cfg(feature = "gpu")]
     pub(crate) fn activate_drag(
         &mut self,
         node_id: usize,
@@ -1187,7 +1224,7 @@ impl RinchApp {
     ) {
         let Some(doc) = &self.doc else { return };
 
-        let mut snapshot = Scene::new();
+        let mut snapshot = VelloPainter::new();
         let anchor;
 
         {

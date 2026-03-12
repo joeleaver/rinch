@@ -46,7 +46,7 @@
 //! so creating a GPU context first prevents it from being claimed. Events, layout
 //! size, and resize observation work regardless of context type.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -78,21 +78,35 @@ pub(crate) fn clear_redraw_callback() {
 /// Request a window repaint directly, bypassing the event loop queue.
 #[cfg(feature = "desktop")]
 fn request_repaint() {
+    // Suppress during invoke_render_callbacks — the paint cycle is already
+    // in progress, so requesting another redraw would create an infinite loop.
+    if IN_RENDER_CALLBACK.with(|f| f.get()) {
+        return;
+    }
     if let Some(cb) = REDRAW_CALLBACK.lock().unwrap().as_ref() {
         cb();
     }
 }
 
+#[cfg(feature = "desktop")]
+thread_local! {
+    /// Guard flag: true while `invoke_render_callbacks` is running.
+    static IN_RENDER_CALLBACK: Cell<bool> = const { Cell::new(false) };
+}
+
 // ── TextureSource (desktop only) ────────────────────────────────────────────
 
-/// A GPU texture source for zero-copy compositing.
+/// A GPU texture source for compositing or readback.
 ///
-/// When set on a [`RenderSurfaceHandle`], the compositor reads this texture
-/// directly instead of uploading CPU pixel data. The texture must be created
+/// When set on a [`RenderSurfaceHandle`], the runtime reads this texture
+/// each frame. For inline-paint surfaces (RenderSurface), the texture is
+/// read back to CPU pixels for inline painting. The texture must be created
 /// on the same wgpu Device (available via [`super::shell::desktop::gpu_handle`]).
-#[cfg(feature = "desktop")]
+#[cfg(feature = "gpu")]
 pub struct TextureSource {
-    /// The texture view to composite.
+    /// The underlying texture (needed for GPU→CPU readback).
+    pub texture: wgpu::Texture,
+    /// The texture view (used by the compositor for video/GameViewport).
     pub view: wgpu::TextureView,
     /// Texture width in pixels.
     pub width: u32,
@@ -266,7 +280,7 @@ pub struct RenderSurfaceHandle {
     /// Shared pixel buffer (CPU path).
     pub(crate) buffer: Arc<Mutex<SurfaceBuffer>>,
     /// GPU texture source for zero-copy compositing (replaces pixel path when set).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "gpu")]
     pub(crate) texture_source: Arc<Mutex<Option<TextureSource>>>,
     /// Dirty flag (set by writer, cleared by frame collector).
     pub(crate) needs_redraw: Arc<AtomicBool>,
@@ -316,31 +330,34 @@ impl RenderSurfaceHandle {
         &self.viewport_name
     }
 
-    /// Set a GPU texture as the frame source for zero-copy compositing.
+    /// Set a GPU texture as the frame source.
     ///
-    /// When set, the compositor reads this texture directly instead of uploading
-    /// CPU pixel data. The texture must be created on the shared wgpu Device
-    /// (available via [`super::shell::desktop::gpu_handle`]).
+    /// The runtime reads this texture each frame — for RenderSurface components,
+    /// the pixels are read back to CPU for inline painting. The texture must be
+    /// created on the shared wgpu Device (via [`super::shell::desktop::gpu_handle`]).
     ///
     /// Call this once at init and again whenever the texture is recreated
-    /// (e.g., on viewport resize). The texture content is read each frame
-    /// by the compositor — only the view reference needs to be set, not
-    /// the pixel data.
-    #[cfg(feature = "desktop")]
-    pub fn set_texture_source(&self, view: wgpu::TextureView, width: u32, height: u32) {
+    /// (e.g., on viewport resize).
+    #[cfg(feature = "gpu")]
+    pub fn set_texture_source(
+        &self,
+        texture: wgpu::Texture,
+        view: wgpu::TextureView,
+        width: u32,
+        height: u32,
+    ) {
         *self.texture_source.lock().unwrap() = Some(TextureSource {
+            texture,
             view,
             width,
             height,
         });
         self.needs_redraw.store(true, Ordering::Release);
-
-        // Request repaint so the compositor picks up the new texture
         request_repaint();
     }
 
     /// Check if this surface has a GPU texture source set.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "gpu")]
     pub fn has_texture_source(&self) -> bool {
         self.texture_source.lock().unwrap().is_some()
     }
@@ -359,7 +376,7 @@ impl RenderSurfaceHandle {
     /// This extracts the `Send`-able parts of `RenderSurfaceHandle` so a background
     /// renderer (e.g., a game engine on a worker thread) can call `set_texture_source`
     /// without holding the main-thread `Rc<RefCell<...>>` event handler field.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "gpu")]
     pub fn gpu_registrar(&self) -> GpuTextureRegistrar {
         GpuTextureRegistrar {
             texture_source: self.texture_source.clone(),
@@ -408,7 +425,7 @@ impl RenderSurfaceHandle {
 ///
 /// Obtained via [`RenderSurfaceHandle::gpu_registrar`]. Wraps only the thread-safe
 /// `Arc<Mutex<>>` fields — the main-thread `Rc` event handler is excluded.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "gpu")]
 #[derive(Clone)]
 pub struct GpuTextureRegistrar {
     /// GPU texture source for zero-copy compositing.
@@ -419,13 +436,20 @@ pub struct GpuTextureRegistrar {
     layout_size: Arc<Mutex<(u32, u32)>>,
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "gpu")]
 impl GpuTextureRegistrar {
-    /// Register a GPU texture as the frame source for zero-copy compositing.
+    /// Register a GPU texture as the frame source.
     ///
     /// Safe to call from any thread. Requests a repaint directly.
-    pub fn set_texture_source(&self, view: wgpu::TextureView, width: u32, height: u32) {
+    pub fn set_texture_source(
+        &self,
+        texture: wgpu::Texture,
+        view: wgpu::TextureView,
+        width: u32,
+        height: u32,
+    ) {
         *self.texture_source.lock().unwrap() = Some(TextureSource {
+            texture,
             view,
             width,
             height,
@@ -491,7 +515,7 @@ pub fn create_render_surface() -> RenderSurfaceHandle {
             width: 0,
             height: 0,
         })),
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "gpu")]
         texture_source: Arc::new(Mutex::new(None)),
         needs_redraw: Arc::new(AtomicBool::new(false)),
         event_handler: std::rc::Rc::new(RefCell::new(None)),
@@ -523,7 +547,7 @@ pub fn create_render_surface_with_name(viewport_name: &str) -> RenderSurfaceHand
             width: 0,
             height: 0,
         })),
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "gpu")]
         texture_source: Arc::new(Mutex::new(None)),
         needs_redraw: Arc::new(AtomicBool::new(false)),
         event_handler: std::rc::Rc::new(RefCell::new(None)),
@@ -585,12 +609,21 @@ pub fn any_surface_dirty() -> bool {
     })
 }
 
-/// Collect frames from registered surfaces that use CPU pixel data.
+/// Check if a surface uses inline painting (RenderSurface component)
+/// vs compositor/hole-punch (video, GameViewport).
 ///
-/// Returns `(viewport_name, pixels, width, height)` for every surface with
-/// a non-empty buffer that does NOT have a GPU texture source set.
-/// Surfaces with a texture source are handled separately via
-/// [`collect_texture_sources`].
+/// Surfaces created by `create_render_surface()` have auto-generated names
+/// starting with `__render_surface_` and paint inline. Surfaces created by
+/// `create_render_surface_with_name()` have custom names and use the compositor.
+fn is_inline_surface(surface: &RenderSurfaceHandle) -> bool {
+    surface.viewport_name.starts_with("__render_surface_")
+}
+
+/// Collect frames from registered surfaces that use the compositor path
+/// (video, GameViewport — NOT RenderSurface components).
+///
+/// Returns `(viewport_name, pixels, width, height)` for every compositor
+/// surface with a non-empty buffer that does NOT have a GPU texture source set.
 /// Clears dirty flags as a side effect.
 #[cfg(feature = "desktop")]
 pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
@@ -598,7 +631,12 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
         let reg = reg.borrow();
         let mut frames = Vec::new();
         for surface in reg.iter() {
+            // Skip inline-paint surfaces (handled by collect_surface_pixels_by_id)
+            if is_inline_surface(surface) {
+                continue;
+            }
             // Skip surfaces that use GPU texture source
+            #[cfg(feature = "gpu")]
             if surface.texture_source.lock().unwrap().is_some() {
                 continue;
             }
@@ -618,14 +656,186 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
     })
 }
 
-/// Collect viewport names for surfaces that have a GPU texture source.
+/// Collect surface pixel data keyed by surface ID for inline painting.
 ///
-/// Returns `(viewport_name, texture_source_arc)` for each surface with a
-/// texture source set. The compositor reads the `TextureView` directly from
-/// the `Arc<Mutex<Option<TextureSource>>>` — no pixel upload needed.
+/// Returns a HashMap suitable for passing to `rinch_dom::paint::set_surface_pixels()`.
+/// Only includes RenderSurface components (not video/GameViewport).
+/// For GPU texture surfaces, call [`readback_gpu_textures`] first to
+/// populate the CPU buffers.
 /// Clears dirty flags as a side effect.
 #[cfg(feature = "desktop")]
-pub fn collect_texture_sources() -> Vec<(String, Arc<Mutex<Option<TextureSource>>>)> {
+pub fn collect_surface_pixels_by_id()
+-> std::collections::HashMap<usize, rinch_dom::paint::SurfacePixelData> {
+    use std::collections::HashMap;
+    SURFACE_REGISTRY.with(|reg| {
+        let reg = reg.borrow();
+        let mut map = HashMap::new();
+        for surface in reg.iter() {
+            // Only collect inline-paint surfaces (RenderSurface components)
+            if !is_inline_surface(surface) {
+                continue;
+            }
+            surface.needs_redraw.store(false, Ordering::Release);
+            let buf = surface.buffer.lock().unwrap();
+            if !buf.pixels.is_empty() {
+                map.insert(
+                    surface.id,
+                    rinch_dom::paint::SurfacePixelData {
+                        data: buf.pixels.clone(),
+                        width: buf.width,
+                        height: buf.height,
+                    },
+                );
+            }
+        }
+        map
+    })
+}
+
+/// Update the layout size for a render surface by ID.
+pub fn update_layout_size_by_id(surface_id: usize, width: u32, height: u32) {
+    SURFACE_REGISTRY.with(|reg| {
+        let reg = reg.borrow();
+        if let Some(surface) = reg.iter().find(|s| s.id == surface_id) {
+            *surface.layout_size.lock().unwrap() = (width, height);
+        }
+    });
+}
+
+/// Return the IDs of all registered render surfaces.
+pub fn registered_surface_ids() -> Vec<usize> {
+    SURFACE_REGISTRY.with(|reg| reg.borrow().iter().map(|s| s.id).collect())
+}
+
+/// Check if a specific surface has new pixels waiting.
+pub fn is_surface_dirty_by_id(id: usize) -> bool {
+    SURFACE_REGISTRY.with(|reg| {
+        reg.borrow()
+            .iter()
+            .any(|s| s.id == id && s.needs_redraw.load(Ordering::Acquire))
+    })
+}
+
+/// Read back GPU textures to CPU pixel buffers for inline-paint surfaces.
+///
+/// For each RenderSurface component with a GPU texture source, copies the
+/// texture to a staging buffer, maps it, and stores the pixels in the
+/// surface's CPU buffer. After this, `collect_surface_pixels_by_id()` will
+/// include these surfaces.
+///
+/// Non-inline surfaces (video, GameViewport) are skipped — they use the
+/// compositor path which reads the texture directly.
+#[cfg(feature = "gpu")]
+pub fn readback_gpu_textures() {
+    let Some(gpu) = crate::shell::desktop::gpu_handle() else {
+        return;
+    };
+
+    SURFACE_REGISTRY.with(|reg| {
+        let reg = reg.borrow();
+        for surface in reg.iter() {
+            // Only readback inline surfaces (RenderSurface components)
+            if !is_inline_surface(surface) {
+                continue;
+            }
+
+            let ts_guard = surface.texture_source.lock().unwrap();
+            let Some(ref ts) = *ts_guard else {
+                continue;
+            };
+
+            let width = ts.width;
+            let height = ts.height;
+            if width == 0 || height == 0 {
+                continue;
+            }
+
+            // Compute row alignment: wgpu requires bytes_per_row aligned to 256
+            let bytes_per_pixel = 4u32;
+            let unpadded_row = width * bytes_per_pixel;
+            let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+            let padded_row = unpadded_row.div_ceil(align) * align;
+
+            let buffer_size = (padded_row * height) as u64;
+            let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("rinch_surface_readback"),
+                size: buffer_size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+
+            let mut encoder = gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("rinch_surface_readback"),
+                });
+
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &ts.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &staging,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(padded_row),
+                        rows_per_image: Some(height),
+                    },
+                },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+
+            gpu.queue.submit(std::iter::once(encoder.finish()));
+
+            // Map the buffer synchronously
+            let buffer_slice = staging.slice(..);
+            let (tx, rx) = std::sync::mpsc::channel();
+            buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+                let _ = tx.send(result);
+            });
+            let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
+
+            if rx.recv().ok().and_then(|r| r.ok()).is_some() {
+                let data = buffer_slice.get_mapped_range();
+
+                // Copy to the surface's CPU buffer, stripping row padding
+                let mut pixels = Vec::with_capacity((width * height * bytes_per_pixel) as usize);
+                for row in 0..height {
+                    let start = (row * padded_row) as usize;
+                    let end = start + unpadded_row as usize;
+                    pixels.extend_from_slice(&data[start..end]);
+                }
+                drop(data);
+                staging.unmap();
+
+                // Store in the CPU buffer
+                let mut buf = surface.buffer.lock().unwrap();
+                buf.pixels = pixels;
+                buf.width = width;
+                buf.height = height;
+                // Mark as needing redraw so collect_surface_pixels_by_id picks it up
+                surface.needs_redraw.store(true, Ordering::Release);
+            }
+        }
+    });
+}
+
+/// Collect GPU texture sources with surface ID, viewport name, and inline flag.
+///
+/// Returns `(id, viewport_name, is_inline, texture_source_arc)` for each surface
+/// with a texture source set. The compositor reads the `TextureView` directly from
+/// the `Arc<Mutex<Option<TextureSource>>>` — no pixel upload needed.
+/// Clears dirty flags as a side effect.
+#[cfg(feature = "gpu")]
+#[allow(clippy::type_complexity)]
+pub fn collect_texture_sources() -> Vec<(usize, String, bool, Arc<Mutex<Option<TextureSource>>>)> {
     SURFACE_REGISTRY.with(|reg| {
         let reg = reg.borrow();
         let mut sources = Vec::new();
@@ -633,7 +843,9 @@ pub fn collect_texture_sources() -> Vec<(String, Arc<Mutex<Option<TextureSource>
             if surface.texture_source.lock().unwrap().is_some() {
                 surface.needs_redraw.store(false, Ordering::Release);
                 sources.push((
+                    surface.id,
                     surface.viewport_name.clone(),
+                    is_inline_surface(surface),
                     surface.texture_source.clone(),
                 ));
             }
@@ -681,6 +893,11 @@ pub fn registered_viewport_names() -> Vec<String> {
 /// Called once per frame on desktop (before `collect_surface_frames`).
 /// On web, each surface with a callback drives its own `requestAnimationFrame` loop instead.
 pub fn invoke_render_callbacks() {
+    // Set guard so submit_frame() inside callbacks won't call request_repaint()
+    // — we're already inside a paint cycle.
+    #[cfg(feature = "desktop")]
+    IN_RENDER_CALLBACK.with(|f| f.set(true));
+
     SURFACE_REGISTRY.with(|reg| {
         let reg = reg.borrow();
         for surface in reg.iter() {
@@ -699,6 +916,9 @@ pub fn invoke_render_callbacks() {
             }
         }
     });
+
+    #[cfg(feature = "desktop")]
+    IN_RENDER_CALLBACK.with(|f| f.set(false));
 }
 
 /// Dispatch a surface event to the handler of the surface with the given ID.
@@ -778,12 +998,9 @@ impl Component for RenderSurface {
             let div = scope.create_element("div");
 
             if let Some(ref surface) = self.surface {
-                div.set_attribute("data-viewport", &surface.viewport_name);
                 div.set_attribute("data-render-surface", &surface.id.to_string());
             }
 
-            // Transparent background so the composited layer pixels show through
-            // (hole-punch pattern: Vello UI is alpha-blended over the layer content).
             div.set_attribute("style", "width: 100%; height: 100%;");
 
             div
@@ -1067,9 +1284,7 @@ fn setup_resize_observer(canvas: &web_sys::HtmlCanvasElement, surface_id: usize)
             let width = rect.width() as u32;
             let height = rect.height() as u32;
             if width > 0 && height > 0 {
-                // Update layout_size via viewport name lookup
-                let viewport_name = format!("__render_surface_{surface_id}");
-                update_layout_size(&viewport_name, width, height);
+                update_layout_size_by_id(surface_id, width, height);
             }
         }
     }) as Box<dyn FnMut(js_sys::Array, JsValue)>);

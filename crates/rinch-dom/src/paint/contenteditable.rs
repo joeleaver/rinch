@@ -3,8 +3,8 @@
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, Rect};
 use peniko::{Brush, Fill};
-use vello::Scene;
 
+use super::painter::Painter;
 use crate::computed_style::LineHeightValue;
 use crate::node::{Node, NodeTree};
 
@@ -171,7 +171,7 @@ pub(super) fn collect_text_len_recursive(
 pub(super) fn paint_ce_sub_blocks(
     tree: &NodeTree,
     ce_node: &Node,
-    scene: &mut Scene,
+    painter: &mut dyn Painter,
     scale: f64,
     parent_x: f64,
     parent_y: f64,
@@ -224,7 +224,7 @@ pub(super) fn paint_ce_sub_blocks(
                 if let Some(ref il) = sub_node.text_layout {
                     paint_contenteditable_cursor(
                         ce_node,
-                        scene,
+                        painter,
                         scale,
                         sub_x,
                         sub_y,
@@ -252,7 +252,12 @@ pub(super) fn paint_ce_sub_blocks(
                             .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(33, 37, 41, 255));
                         let caret_rect =
                             Rect::new(sub_x, sub_y, sub_x + 1.5 * scale, sub_y + caret_height);
-                        scene.fill(Fill::NonZero, transform, caret_color, None, &caret_rect);
+                        painter.fill_color(
+                            Fill::NonZero,
+                            transform,
+                            caret_color,
+                            &caret_rect.into(),
+                        );
                     }
                 } else {
                     // Try sub-node's text children
@@ -264,7 +269,7 @@ pub(super) fn paint_ce_sub_blocks(
                             let gc_len = gc.text_content().map(|s| s.len()).unwrap_or(0);
                             paint_contenteditable_cursor(
                                 ce_node,
-                                scene,
+                                painter,
                                 scale,
                                 sub_x,
                                 sub_y,
@@ -285,7 +290,7 @@ pub(super) fn paint_ce_sub_blocks(
                         paint_ce_sub_blocks(
                             tree,
                             ce_node,
-                            scene,
+                            painter,
                             scale,
                             parent_x + sub_node.layout.x as f64 * scale,
                             parent_y + sub_node.layout.y as f64 * scale,
@@ -312,7 +317,7 @@ pub(super) fn paint_ce_sub_blocks(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_contenteditable_cursor(
     node: &Node,
-    scene: &mut Scene,
+    painter: &mut dyn Painter,
     scale: f64,
     text_x: f64,
     text_y: f64,
@@ -362,11 +367,9 @@ pub(super) fn paint_contenteditable_cursor(
                 text_x + end_x as f64,
                 text_y + start_y as f64 + actual_line_height,
             );
-            scene.fill(Fill::NonZero, transform, sel_color, None, &sel_rect);
+            painter.fill_color(Fill::NonZero, transform, sel_color, &sel_rect.into());
         } else {
-            // Multi-line selection: cursor.geometry().y0 returns the line BOX
-            // top (including half-leading), not baseline - ascent (glyph top).
-            // Use line_box_top for rect positioning to match cursor geometry.
+            // Multi-line selection
             for line in layout.lines() {
                 let line_metrics = line.metrics();
                 let glyph_top = line_metrics.baseline - line_metrics.ascent;
@@ -400,7 +403,7 @@ pub(super) fn paint_contenteditable_cursor(
                     text_x + rect_end_x,
                     rect_y + line_metrics.line_height as f64,
                 );
-                scene.fill(Fill::NonZero, transform, sel_color, None, &sel_rect);
+                painter.fill_color(Fill::NonZero, transform, sel_color, &sel_rect.into());
             }
         }
     }
@@ -427,14 +430,14 @@ pub(super) fn paint_contenteditable_cursor(
             caret_x + 1.5 * scale,
             caret_y + caret_height,
         );
-        scene.fill(Fill::NonZero, transform, caret_color, None, &caret_rect);
+        painter.fill_color(Fill::NonZero, transform, caret_color, &caret_rect.into());
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_input_value(
     node: &Node,
-    scene: &mut Scene,
+    painter: &mut dyn Painter,
     scale: f64,
     x: f64,
     y: f64,
@@ -578,15 +581,8 @@ pub(super) fn paint_input_value(
             let sel_width = (end_x - start_x) as f64;
             let sel_y = text_y + start_y as f64;
 
-            let sel_rect =
-                vello::kurbo::Rect::new(sel_x, sel_y, sel_x + sel_width, sel_y + line_height);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                sel_color,
-                None,
-                &sel_rect,
-            );
+            let sel_rect = Rect::new(sel_x, sel_y, sel_x + sel_width, sel_y + line_height);
+            painter.fill_color(Fill::NonZero, transform, sel_color, &sel_rect.into());
         } else {
             // Multi-line selection - draw rectangles for each line
             let content_width = (w - padding_left * 2.0) as f32;
@@ -612,19 +608,13 @@ pub(super) fn paint_input_value(
                     (0.0, content_width)
                 };
 
-                let sel_rect = vello::kurbo::Rect::new(
+                let sel_rect = Rect::new(
                     text_x + rect_start_x as f64,
                     rect_y,
                     text_x + rect_end_x as f64,
                     rect_y + line_height,
                 );
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    sel_color,
-                    None,
-                    &sel_rect,
-                );
+                painter.fill_color(Fill::NonZero, transform, sel_color, &sel_rect.into());
             }
         }
     }
@@ -632,7 +622,14 @@ pub(super) fn paint_input_value(
     // Render text
     if !text.is_empty() {
         let text_shadows = node.computed_style.text_shadow.as_slice();
-        render_text_with_shadow(scene, &text_layout, text_x, text_y, text_shadows, transform);
+        render_text_with_shadow(
+            painter,
+            &text_layout,
+            text_x,
+            text_y,
+            text_shadows,
+            transform,
+        );
     }
 
     // Draw cursor/caret if focused and visible
@@ -650,19 +647,13 @@ pub(super) fn paint_input_value(
 
         // Draw caret line
         let caret_color = base_color;
-        let caret_rect = vello::kurbo::Rect::new(
+        let caret_rect = Rect::new(
             caret_x,
             caret_y,
             caret_x + 1.5 * scale,
             caret_y + caret_height,
         );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            caret_color,
-            None,
-            &caret_rect,
-        );
+        painter.fill_color(Fill::NonZero, transform, caret_color, &caret_rect.into());
     }
 }
 

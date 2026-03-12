@@ -138,6 +138,9 @@ impl RinchContext {
         let logical_h = height as f32 / scale_factor as f32;
         app.mount_component(logical_w, logical_h);
 
+        // Register main thread for cross-thread signal dispatch
+        rinch_core::register_main_thread();
+
         // Set up signal-change callback so the game loop can detect dirty state
         let dirty = Arc::new(AtomicBool::new(false));
         let dirty_clone = dirty.clone();
@@ -535,7 +538,9 @@ impl RinchOverlayRenderer {
             sample_count: 1,
             dimension: TextureDimension::D2,
             format,
-            usage: TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING,
+            usage: TextureUsages::STORAGE_BINDING
+                | TextureUsages::TEXTURE_BINDING
+                | TextureUsages::COPY_SRC,
             view_formats: &[],
         })
     }

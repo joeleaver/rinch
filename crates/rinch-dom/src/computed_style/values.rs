@@ -187,6 +187,11 @@ impl DimensionValue {
             Self::Percent(v) => taffy::Dimension::percent(*v),
         }
     }
+
+    /// Whether this is Auto.
+    pub fn is_auto(&self) -> bool {
+        matches!(self, Self::Auto)
+    }
 }
 
 /// CSS length-percentage value (padding, border-width, gap).
@@ -332,6 +337,16 @@ impl LengthPercentageAutoValue {
         match self {
             Self::Length(v) => *v,
             Self::Auto | Self::Percent(_) => 0.0,
+        }
+    }
+
+    /// Resolve to a concrete pixel value given a reference size.
+    /// Returns None for Auto.
+    pub fn resolve(&self, reference: f32) -> Option<f32> {
+        match self {
+            Self::Auto => None,
+            Self::Length(v) => Some(*v),
+            Self::Percent(v) => Some(*v * reference),
         }
     }
 }
@@ -874,6 +889,39 @@ impl Default for TransformValue {
             is_identity: true,
             translate_x_pct: 0.0,
             translate_y_pct: 0.0,
+        }
+    }
+}
+
+/// CSS `object-fit` property for replaced elements (`<img>`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub enum ObjectFitValue {
+    #[default]
+    Fill,
+    Contain,
+    Cover,
+    None,
+    ScaleDown,
+}
+
+impl ObjectFitValue {
+    pub fn parse(s: &str) -> Self {
+        match s.trim() {
+            "contain" => Self::Contain,
+            "cover" => Self::Cover,
+            "none" => Self::None,
+            "scale-down" => Self::ScaleDown,
+            _ => Self::Fill,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Fill => "fill",
+            Self::Contain => "contain",
+            Self::Cover => "cover",
+            Self::None => "none",
+            Self::ScaleDown => "scale-down",
         }
     }
 }

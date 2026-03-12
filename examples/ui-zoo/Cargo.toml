@@ -11,6 +11,7 @@ path = "src/lib.rs"
 
 [features]
 desktop = ["rinch/desktop"]
+gpu = ["desktop", "rinch/gpu"]
 
 [dependencies]
 rinch = { workspace = true, default-features = false, features = ["components", "theme"] }
@@ -19,6 +20,10 @@ rinch-macros = { workspace = true }
 rinch-platform = { workspace = true }
 rinch-tabler-icons.workspace = true
 rinch-video = { workspace = true }
+rinch-av = { workspace = true, features = ["audio", "camera"] }
+rinch-webrtc = { workspace = true, features = ["native"] }
+rinch-signaling = { workspace = true }
+rinch-screen-capture = { workspace = true }
 wgpu = { workspace = true, features = ["webgl"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

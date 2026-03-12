@@ -46,7 +46,7 @@
 pub mod app;
 #[cfg(feature = "desktop")]
 pub mod ce_ops;
-#[cfg(feature = "desktop")]
+#[cfg(feature = "gpu")]
 pub mod embed;
 #[cfg(feature = "desktop")]
 pub mod menu;
@@ -139,7 +139,7 @@ pub mod prelude {
     pub use rinch_core::{FineForBuilder, ForItem, for_each_dom, to_for_items};
 
     // Embed API for game engine integration
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "gpu")]
     pub use crate::embed::{
         GameViewport, LayoutRect, RinchContext, RinchContextConfig, RinchOverlayRenderer,
     };
@@ -151,11 +151,11 @@ pub mod prelude {
     };
 
     // Desktop-only GPU types for render surfaces
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "gpu")]
     pub use crate::render_surface::{GpuTextureRegistrar, TextureSource};
 
     // Shared GPU handle for zero-copy compositing
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "gpu")]
     pub use crate::shell::desktop::{GpuHandle, gpu_handle};
 
     // Re-export theme types when the theme feature is enabled
@@ -199,7 +199,7 @@ pub use rinch_core as core;
 /// use rinch::reactive::Effect;
 /// ```
 pub use rinch_core::reactive;
-#[cfg(feature = "desktop")]
+#[cfg(feature = "gpu")]
 pub use rinch_renderer as renderer;
 
 /// Dynamically update theme CSS at runtime.

@@ -127,6 +127,9 @@ pub struct ComputedStyle {
     pub filter_saturate: f32,
     pub filter_hue_rotate: f32,
 
+    // Object fit (for <img> elements)
+    pub object_fit: ObjectFitValue,
+
     // Cursor
     pub cursor: CursorValue,
 
@@ -248,6 +251,8 @@ impl Default for ComputedStyle {
             filter_grayscale: 0.0,
             filter_saturate: 1.0,
             filter_hue_rotate: 0.0,
+
+            object_fit: ObjectFitValue::default(),
 
             cursor: CursorValue::default(),
             pointer_events: PointerEventsValue::default(),

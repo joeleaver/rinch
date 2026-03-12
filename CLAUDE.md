@@ -4,11 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, Taffy, Parley, and Vello. The goal is to provide a reactive GUI framework using HTML/CSS for layout with a Vello-based renderer.
+Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, Taffy, Parley, and dual rendering backends (Vello for GPU, tiny-skia for software). The goal is to provide a reactive GUI framework using HTML/CSS for layout.
 
 **Key dependencies:**
-- **rinch-dom** - HTML/CSS DOM implementation (Taffy for layout, Parley for text)
-- **vello** - 2D GPU rendering via wgpu
+- **rinch-dom** - HTML/CSS DOM implementation (Taffy for layout, Parley for text, Painter trait for rendering)
+- **vello** - 2D GPU rendering via wgpu (GPU mode, enabled with `features = ["gpu"]`)
+- **tiny-skia** - 2D software rendering (default mode, no GPU required)
+- **softbuffer** - Software window presentation (default mode)
 - **winit** - Cross-platform windowing and input
 - **muda** - Native menu support
 
@@ -513,6 +515,12 @@ let count = Signal::new(0);
 count.get();              // Read value
 count.set(5);             // Set new value
 count.update(|n| *n += 1); // Update with function
+
+// Cross-thread: send() auto-dispatches to the main thread
+std::thread::spawn(move || {
+    count.send(10);                       // T: Send required
+    count.update_send(|n| *n += 1);       // closure must be Send + 'static
+});
 ```
 
 **`Memo::new()`** - Cached computed values:
@@ -677,6 +685,37 @@ File drops from the OS use `data-onfiledragenter`, `data-onfiledragleave` attrib
 - `F12` - Toggle DevTools window
 
 ## Features
+
+### Rendering Backends
+
+Rinch supports two rendering backends, selected at compile time:
+
+| Backend | Feature | Renderer | Presentation |
+|---------|---------|----------|--------------|
+| **GPU** | `"gpu"` | Vello + wgpu | GPU compositing |
+| **Software** | (default) | tiny-skia | softbuffer |
+
+Set in `Cargo.toml`:
+```toml
+# GPU mode:
+rinch = { workspace = true, features = ["desktop", "gpu"] }
+
+# Software mode (default):
+rinch = { workspace = true, features = ["desktop"] }
+```
+
+Both use the same `Painter` trait (`crates/rinch-dom/src/paint/painter.rs`):
+- `VelloPainter` — records commands into `vello::Scene`
+- `TinySkiaPainter` — rasterizes directly to RGBA pixmap
+
+The software renderer includes **dirty region caching**: when only a few nodes change, only the affected rectangular area is cleared and repainted. Subtrees outside the dirty region are skipped during paint traversal.
+
+**Key files:**
+- `crates/rinch-dom/src/paint/painter.rs` — Abstract `Painter` trait
+- `crates/rinch-dom/src/paint/vello_painter.rs` — GPU backend
+- `crates/rinch-dom/src/paint/skia_painter.rs` — Software backend
+- `crates/rinch-dom/src/paint/mod.rs` — `paint_document()`, dirty region computation, subtree pruning
+- `crates/rinch/src/app/mod.rs` — `build_scene()` (GPU) / `build_pixels()` (software)
 
 ### Image Support
 

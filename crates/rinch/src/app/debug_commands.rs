@@ -67,7 +67,7 @@ impl RinchApp {
                 let ids = rinch_dom::testing::query_selector(&d.tree, &selector);
                 let nodes: Vec<_> = ids
                     .iter()
-                    .filter_map(|&id| rinch_dom::testing::get_node_detail(&d.tree, id))
+                    .filter_map(|&id| rinch_dom::testing::get_node_summary(&d.tree, id))
                     .collect();
                 DebugResult::Json { data: json!(nodes) }
             }
@@ -263,9 +263,11 @@ impl RinchApp {
                     let dist = (dx * dx + dy * dy).sqrt();
                     if dist >= DRAG_THRESHOLD {
                         let node_id = pending.node_id;
+                        #[cfg(feature = "gpu")]
                         let mousedown_pos = pending.mousedown_pos;
                         self.pending_drag = None;
 
+                        #[cfg(feature = "gpu")]
                         self.activate_drag(node_id, mousedown_pos, (x, y), scale_factor);
 
                         if let Some(doc) = &self.doc {
@@ -356,15 +358,22 @@ impl RinchApp {
 
                 // Update hover state
                 if let Some(doc) = &self.doc {
-                    let hovered = {
+                    let (hovered, old_hovered) = {
                         let d = doc.borrow();
-                        hit_test(&d.tree, x, y)
+                        (hit_test(&d.tree, x, y), d.tree.hovered_node)
                     };
-                    let changed = doc.borrow_mut().update_hover(hovered);
-                    if changed {
+                    let mut hovered_changed = false;
+                    let needs_repaint =
+                        doc.borrow_mut().update_hover(hovered, &mut hovered_changed);
+                    if hovered_changed {
+                        if let Some(old_id) = old_hovered {
+                            Self::dispatch_onleave(doc, old_id);
+                        }
                         if let Some(hit_id) = hovered {
                             Self::dispatch_onenter(doc, hit_id);
                         }
+                    }
+                    if needs_repaint {
                         actions.push(AppAction::RequestRedraw);
                     }
 
@@ -446,6 +455,7 @@ impl RinchApp {
                                     node.scroll_offset.1 = new_y;
                                     node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
                                     doc_mut.tree.dirty_nodes.insert(scroll_node_id);
+                                    self.scene_dirty = true;
                                 }
                             }
                         }

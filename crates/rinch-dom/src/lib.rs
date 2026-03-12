@@ -4,9 +4,11 @@
 //! Uses a direct Taffy + Parley + Vello pipeline.
 //! Implements the [`DomDocument`] trait from rinch-core.
 
+pub mod animation;
 pub mod computed_style;
 mod dom_impl;
 pub mod html_parser;
+pub mod html_serializer;
 mod ifc;
 pub mod image_cache;
 pub mod layout;

@@ -48,14 +48,12 @@ pub fn styles() -> String {
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
     padding: 4px;
     z-index: 200;
-    opacity: 0;
-    visibility: hidden;
+    display: none;
 }
 
 /* Show dropdown for the opened menu (toggled by active_menu signal) */
 .rinch-app-menu-item__dropdown--visible {
-    opacity: 1;
-    visibility: visible;
+    display: block;
 }
 
 /* Highlight the label of the currently opened menu item */
@@ -154,13 +152,11 @@ pub fn styles() -> String {
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
     padding: 4px;
     z-index: 200;
-    opacity: 0;
-    visibility: hidden;
+    display: none;
 }
 
 .rinch-app-menu-submenu:hover > .rinch-app-menu-submenu__dropdown {
-    opacity: 1;
-    visibility: visible;
+    display: block;
 }
 
 /* Content padding-top is set via inline style (varies by window type) */

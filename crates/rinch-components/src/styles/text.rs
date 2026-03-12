@@ -1,7 +1,11 @@
 pub fn styles() -> String {
     r#"
-/* Text base */
+/* Text base — flex-row so inline elements (Kbd, Highlight, etc.) flow with text */
 .rinch-text {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
     font-family: var(--rinch-font-family);
     margin: 0;
 }

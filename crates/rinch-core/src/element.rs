@@ -388,6 +388,9 @@ pub struct MenuBarContext {
     pub items_renderer: Option<MenuBarRenderer>,
     /// Renderer for just the click-outside overlay (used by InlineTitlebar layout).
     pub overlay_renderer: Option<MenuBarRenderer>,
+    /// Estimated width (px) of the inline menu row, used by BorderlessWindow
+    /// to insert a titlebar spacer so the title doesn't overlap menu items.
+    pub spacer_width: u32,
 }
 
 /// Callback invoked when the window close button is pressed.

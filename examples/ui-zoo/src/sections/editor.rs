@@ -51,7 +51,7 @@ pub fn editor_section() -> NodeHandle {
                     }
 
                     // Separator
-                    div { style: "width: 1px; height: 20px; background: var(--rinch-color-gray-3); margin: 0 4px;" }
+                    div { style: "width: 1px; height: 20px; background: var(--rinch-color-border); margin: 0 4px;" }
 
                     // Block types
                     ActionIcon { variant: "subtle", size: "sm",
@@ -72,7 +72,7 @@ pub fn editor_section() -> NodeHandle {
                     }
 
                     // Separator
-                    div { style: "width: 1px; height: 20px; background: var(--rinch-color-gray-3); margin: 0 4px;" }
+                    div { style: "width: 1px; height: 20px; background: var(--rinch-color-border); margin: 0 4px;" }
 
                     // Block quote
                     ActionIcon { variant: "subtle", size: "sm",
@@ -91,7 +91,7 @@ pub fn editor_section() -> NodeHandle {
                     }
 
                     // Separator
-                    div { style: "width: 1px; height: 20px; background: var(--rinch-color-gray-3); margin: 0 4px;" }
+                    div { style: "width: 1px; height: 20px; background: var(--rinch-color-border); margin: 0 4px;" }
 
                     // Indent / Outdent
                     ActionIcon { variant: "subtle", size: "sm",
@@ -104,7 +104,7 @@ pub fn editor_section() -> NodeHandle {
                     }
 
                     // Separator
-                    div { style: "width: 1px; height: 20px; background: var(--rinch-color-gray-3); margin: 0 4px;" }
+                    div { style: "width: 1px; height: 20px; background: var(--rinch-color-border); margin: 0 4px;" }
 
                     // Undo / Redo
                     ActionIcon { variant: "subtle", size: "sm",
@@ -201,7 +201,7 @@ fn render_api_row(__scope: &mut RenderScope, method: &str, desc: &str) -> NodeHa
     row.set_attribute(
         "style",
         "display: flex; justify-content: space-between; align-items: center; \
-         padding: 4px 8px; border-radius: 4px; background: var(--rinch-color-gray-0);",
+         padding: 4px 8px; border-radius: 4px; background: var(--rinch-color-default);",
     );
 
     let code = __scope.create_element("span");
@@ -229,7 +229,7 @@ fn render_shortcut_row(__scope: &mut RenderScope, shortcut: &str, desc: &str) ->
     row.set_attribute(
         "style",
         "display: flex; justify-content: space-between; align-items: center; \
-         padding: 4px 8px; border-radius: 4px; background: var(--rinch-color-gray-0);",
+         padding: 4px 8px; border-radius: 4px; background: var(--rinch-color-default);",
     );
 
     let label = __scope.create_element("span");
@@ -241,7 +241,7 @@ fn render_shortcut_row(__scope: &mut RenderScope, shortcut: &str, desc: &str) ->
     badge.set_attribute(
         "style",
         "font-size: 11px; font-family: monospace; padding: 2px 8px; border-radius: 4px; \
-         background: var(--rinch-color-gray-2); color: var(--rinch-color-text);",
+         background: var(--rinch-color-default); color: var(--rinch-color-text);",
     );
     badge.set_text(shortcut);
     row.append_child(&badge);
@@ -267,14 +267,14 @@ fn render_editor_styles() -> NodeHandle {
             color: var(--rinch-color-dimmed);
         }
         .editor-content pre {
-            background: var(--rinch-color-gray-1);
+            background: var(--rinch-color-default);
             border-radius: var(--rinch-radius-sm);
             padding: 12px; margin: 8px 0;
             font-family: monospace; font-size: 14px;
             overflow-x: auto;
         }
         .editor-content code {
-            background: var(--rinch-color-gray-1);
+            background: var(--rinch-color-default);
             padding: 2px 4px; border-radius: 3px;
             font-size: 0.9em;
         }
@@ -286,7 +286,7 @@ fn render_editor_styles() -> NodeHandle {
         }
         .editor-content li { margin: 2px 0; }
         .editor-content hr {
-            border: none; border-top: 1px solid var(--rinch-color-gray-3);
+            border: none; border-top: 1px solid var(--rinch-color-border);
             margin: 16px 0;
         }
         .editor-content mark {

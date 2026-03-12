@@ -35,6 +35,10 @@ rinch-platform = { path = "crates/rinch-platform" }
 rinch-visual-test = { path = "crates/rinch-visual-test" }
 rinch-web = { path = "crates/rinch-web" }
 rinch-video = { path = "crates/rinch-video" }
+rinch-av = { path = "crates/rinch-av" }
+rinch-webrtc = { path = "crates/rinch-webrtc" }
+rinch-signaling = { path = "crates/rinch-signaling" }
+rinch-screen-capture = { path = "crates/rinch-screen-capture" }
 
 # Rendering
 anyrender = "0.7"
@@ -77,7 +81,7 @@ servo_arc = "0.4"
 # Utilities
 thiserror = "1"
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Hot reload
 notify = "7"

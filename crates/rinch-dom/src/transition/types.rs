@@ -304,7 +304,9 @@ impl TransitionSpec {
 }
 
 /// Convert a Stylo timing function to our TimingFunction.
-fn convert_timing_function(tf: &style::values::computed::easing::TimingFunction) -> TimingFunction {
+pub fn convert_timing_function(
+    tf: &style::values::computed::easing::TimingFunction,
+) -> TimingFunction {
     use style::values::generics::easing::TimingFunction as StyloTF;
 
     match tf {
@@ -333,6 +335,19 @@ pub enum AnimatableValue {
     LengthPercentage(LengthPercentageValue),
     LengthPercentageAuto(LengthPercentageAutoValue),
     Transform([f64; 6]),
+    /// Component-based transform for correct interpolation of rotate, scale, etc.
+    TransformComponents(Vec<TransformOp>),
+}
+
+/// Individual transform operations for component-wise interpolation.
+#[derive(Debug, Clone)]
+pub enum TransformOp {
+    Rotate(f64),         // radians
+    Scale(f64, f64),     // sx, sy
+    Translate(f64, f64), // tx, ty in px
+    SkewX(f64),          // radians
+    SkewY(f64),          // radians
+    Matrix([f64; 6]),    // fallback
 }
 
 impl AnimatableValue {
@@ -382,6 +397,11 @@ impl AnimatableValue {
                 }
                 Some(AnimatableValue::Transform(result))
             }
+            (AnimatableValue::TransformComponents(a), AnimatableValue::TransformComponents(b)) => {
+                Some(AnimatableValue::TransformComponents(
+                    TransformOp::interpolate_lists(a, b, t as f64),
+                ))
+            }
             // Incompatible types — snap immediately
             _ => None,
         }
@@ -389,9 +409,26 @@ impl AnimatableValue {
 }
 
 /// Linearly interpolate between two colors in sRGB space.
+///
+/// Per CSS spec, `transparent` interpolates as the other color with alpha 0,
+/// not as rgba(0,0,0,0). This avoids dark flashes when transitioning between
+/// transparent and a light color.
 fn lerp_color(a: Color, b: Color, t: f32) -> Color {
-    let a = a.to_rgba8();
-    let b = b.to_rgba8();
+    let mut a = a.to_rgba8();
+    let mut b = b.to_rgba8();
+
+    // When one side is fully transparent, inherit RGB from the opaque side
+    // so the transition only fades alpha, matching browser behavior.
+    if a.a == 0 && b.a != 0 {
+        a.r = b.r;
+        a.g = b.g;
+        a.b = b.b;
+    } else if b.a == 0 && a.a != 0 {
+        b.r = a.r;
+        b.g = a.g;
+        b.b = a.b;
+    }
+
     let r = (a.r as f32 + (b.r as f32 - a.r as f32) * t).round() as u8;
     let g = (a.g as f32 + (b.g as f32 - a.g as f32) * t).round() as u8;
     let bl = (a.b as f32 + (b.b as f32 - a.b as f32) * t).round() as u8;
@@ -439,6 +476,102 @@ impl ActiveTransition {
         let elapsed = current_time_ms - self.start_time_ms;
         elapsed >= self.delay_ms + self.duration_ms
     }
+}
+
+impl TransformOp {
+    /// Convert a single transform operation to a 2D affine matrix [a, b, c, d, e, f].
+    pub fn to_matrix(&self) -> [f64; 6] {
+        match self {
+            TransformOp::Rotate(rad) => {
+                let cos = rad.cos();
+                let sin = rad.sin();
+                [cos, sin, -sin, cos, 0.0, 0.0]
+            }
+            TransformOp::Scale(sx, sy) => [*sx, 0.0, 0.0, *sy, 0.0, 0.0],
+            TransformOp::Translate(tx, ty) => [1.0, 0.0, 0.0, 1.0, *tx, *ty],
+            TransformOp::SkewX(rad) => [1.0, 0.0, rad.tan(), 1.0, 0.0, 0.0],
+            TransformOp::SkewY(rad) => [1.0, rad.tan(), 0.0, 1.0, 0.0, 0.0],
+            TransformOp::Matrix(m) => *m,
+        }
+    }
+
+    /// Interpolate between two transform op lists component-wise.
+    /// If lists have matching operations, interpolate each pair.
+    /// If lists differ in length/type, fall back to matrix interpolation.
+    pub fn interpolate_lists(a: &[TransformOp], b: &[TransformOp], t: f64) -> Vec<TransformOp> {
+        if a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.same_type(y)) {
+            a.iter()
+                .zip(b.iter())
+                .map(|(x, y)| x.interpolate(y, t))
+                .collect()
+        } else {
+            // Fall back: compose each list to matrix, interpolate matrices
+            let ma = compose_matrices(a);
+            let mb = compose_matrices(b);
+            let mut result = [0.0_f64; 6];
+            for i in 0..6 {
+                result[i] = ma[i] + (mb[i] - ma[i]) * t;
+            }
+            vec![TransformOp::Matrix(result)]
+        }
+    }
+
+    fn same_type(&self, other: &TransformOp) -> bool {
+        matches!(
+            (self, other),
+            (TransformOp::Rotate(_), TransformOp::Rotate(_))
+                | (TransformOp::Scale(_, _), TransformOp::Scale(_, _))
+                | (TransformOp::Translate(_, _), TransformOp::Translate(_, _))
+                | (TransformOp::SkewX(_), TransformOp::SkewX(_))
+                | (TransformOp::SkewY(_), TransformOp::SkewY(_))
+                | (TransformOp::Matrix(_), TransformOp::Matrix(_))
+        )
+    }
+
+    fn interpolate(&self, other: &TransformOp, t: f64) -> TransformOp {
+        match (self, other) {
+            (TransformOp::Rotate(a), TransformOp::Rotate(b)) => {
+                TransformOp::Rotate(a + (b - a) * t)
+            }
+            (TransformOp::Scale(ax, ay), TransformOp::Scale(bx, by)) => {
+                TransformOp::Scale(ax + (bx - ax) * t, ay + (by - ay) * t)
+            }
+            (TransformOp::Translate(ax, ay), TransformOp::Translate(bx, by)) => {
+                TransformOp::Translate(ax + (bx - ax) * t, ay + (by - ay) * t)
+            }
+            (TransformOp::SkewX(a), TransformOp::SkewX(b)) => TransformOp::SkewX(a + (b - a) * t),
+            (TransformOp::SkewY(a), TransformOp::SkewY(b)) => TransformOp::SkewY(a + (b - a) * t),
+            (TransformOp::Matrix(a), TransformOp::Matrix(b)) => {
+                let mut result = [0.0_f64; 6];
+                for i in 0..6 {
+                    result[i] = a[i] + (b[i] - a[i]) * t;
+                }
+                TransformOp::Matrix(result)
+            }
+            _ => self.clone(), // shouldn't happen due to same_type check
+        }
+    }
+}
+
+/// Compose a list of transform operations into a single 2D matrix.
+pub fn compose_matrices(ops: &[TransformOp]) -> [f64; 6] {
+    let mut result = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]; // identity
+    for op in ops {
+        let m = op.to_matrix();
+        result = multiply_2d_matrices(result, m);
+    }
+    result
+}
+
+fn multiply_2d_matrices(a: [f64; 6], b: [f64; 6]) -> [f64; 6] {
+    [
+        a[0] * b[0] + a[2] * b[1],
+        a[1] * b[0] + a[3] * b[1],
+        a[0] * b[2] + a[2] * b[3],
+        a[1] * b[2] + a[3] * b[3],
+        a[0] * b[4] + a[2] * b[5] + a[4],
+        a[1] * b[4] + a[3] * b[5] + a[5],
+    ]
 }
 
 /// A detected change in an animatable property.

@@ -197,14 +197,28 @@ impl Component for BorderlessWindow {
                 left.append_child(&content);
             }
             titlebar.append_child(&left);
+        } else {
+            // Inline mode: add a spacer to reserve titlebar space for the
+            // absolutely-positioned menu items that overlay the titlebar.
+            let spacer = __scope.create_element("div");
+            spacer.set_attribute("class", "rinch-borderlesswindow__menu-spacer");
+            if let Some(ref ctx) = menu_ctx {
+                spacer.set_attribute("style", &format!("width: {}px;", ctx.spacer_width));
+            }
+            titlebar.append_child(&spacer);
         }
 
-        // Title
+        // Title — hidden in inline mode (title is rendered in the inline menu row instead)
         let title_el = __scope.create_element("div");
-        title_el.set_attribute("class", "rinch-borderlesswindow__title");
-        if !self.title.is_empty() {
-            let title_text = __scope.create_text(&self.title);
-            title_el.append_child(&title_text);
+        if is_inline {
+            title_el.set_attribute("class", "rinch-borderlesswindow__title");
+            // Empty spacer — title lives in the inline row
+        } else {
+            title_el.set_attribute("class", "rinch-borderlesswindow__title");
+            if !self.title.is_empty() {
+                let title_text = __scope.create_text(&self.title);
+                title_el.append_child(&title_text);
+            }
         }
         titlebar.append_child(&title_el);
 
@@ -365,6 +379,31 @@ impl Component for BorderlessWindow {
             if let Some(ref render_left) = self.left_section {
                 let left_content = render_left(__scope);
                 items_row.append_child(&left_content);
+            }
+            // Render title as branded text with multi-color gradient effect
+            if !self.title.is_empty() {
+                let brand = __scope.create_element("div");
+                brand.set_attribute("class", "rinch-borderlesswindow__brand");
+                // Cycle through gradient colors for each character
+                let colors = [
+                    "#ff6b6b", "#feca57", "#48dbfb", "#ff9ff3", "#54a0ff", "#5f27cd",
+                ];
+                for (i, ch) in self.title.chars().enumerate() {
+                    if ch == ' ' {
+                        let space = __scope.create_text("\u{00A0}");
+                        brand.append_child(&space);
+                    } else {
+                        let span = __scope.create_element("span");
+                        span.set_attribute(
+                            "style",
+                            &format!("color: {};", colors[i % colors.len()]),
+                        );
+                        let ch_text = __scope.create_text(&ch.to_string());
+                        span.append_child(&ch_text);
+                        brand.append_child(&span);
+                    }
+                }
+                items_row.append_child(&brand);
             }
             // Render menu items
             if let Some(ref items_renderer) = menu_ctx.items_renderer {

@@ -162,6 +162,10 @@ fn main() {
         "Rich Text Editor",
         "CSS Features",
         "Video",
+        "RenderSurface",
+        "Context Menu",
+        "File Drop",
+        "Audio / Video",
     ];
 
     // View > Go To submenu with all sections

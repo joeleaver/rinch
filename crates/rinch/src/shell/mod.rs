@@ -1,17 +1,22 @@
 //! Shell module - window management and event loop.
 
+#[cfg(feature = "gpu")]
 pub(crate) mod compositor;
+#[cfg(feature = "gpu")]
 pub mod desktop;
 pub mod devtools;
 pub mod devtools_overlay;
+#[cfg(feature = "gpu")]
 pub(crate) mod frame_upload;
 pub mod html_parser;
 pub mod memory_profile;
 pub mod rinch_runtime;
-#[cfg(feature = "debug")]
 pub mod screenshot;
+pub mod softbuffer_renderer;
+#[cfg(feature = "gpu")]
 pub mod transparent_renderer;
 pub mod types;
+pub mod window;
 
 pub use devtools::{DevToolsPanel, DevToolsState};
 pub use devtools_overlay::render_overlay;
@@ -224,12 +229,22 @@ pub fn run_with_window_props_and_menu<F>(
                             })
                         };
 
+                        // Estimate inline row width for titlebar spacer:
+                        // 10px padding-left + hamburger(~36px) + 2px gap per item
+                        // + each label (~8px/char + 16px padding) + 10px padding-right
+                        let labels_width: u32 = menu_data_rc
+                            .iter()
+                            .map(|(l, _)| (l.len() as u32) * 8 + 16 + 2)
+                            .sum();
+                        let spacer_w = 10 + 36 + labels_width + 10;
+
                         rinch_core::create_context(rinch_core::MenuBarContext {
                             renderer: items_renderer.clone(),
                             bar_height: 0,
                             layout: rinch_core::MenuBarLayout::InlineTitlebar,
                             items_renderer: Some(items_renderer),
                             overlay_renderer: Some(overlay_renderer),
+                            spacer_width: spacer_w,
                         });
                     } else {
                         // Below-titlebar layout: single standalone renderer
@@ -251,6 +266,7 @@ pub fn run_with_window_props_and_menu<F>(
                             layout: rinch_core::MenuBarLayout::BelowTitlebar,
                             items_renderer: None,
                             overlay_renderer: None,
+                            spacer_width: 0,
                         });
                     }
 

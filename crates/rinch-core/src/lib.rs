@@ -34,7 +34,8 @@ pub use reconcile::{ListOp, diff_keyed};
 // Re-export reactive types for convenience
 pub use reactive::{
     Effect, Memo, Scope, Signal, batch, clear_on_signal_change, clear_signals_changed, derived,
-    set_on_signal_change, signals_changed, untracked,
+    register_main_thread, set_cross_thread_dispatcher, set_on_signal_change, signals_changed,
+    untracked,
 };
 
 // Re-export context for sharing state across components

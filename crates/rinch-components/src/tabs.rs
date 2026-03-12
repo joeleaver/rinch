@@ -3,6 +3,7 @@
 //! Tab-based navigation for switching between content panels.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
+use rinch_core::reactive::Signal;
 use rinch_core::{Callback, Component};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
@@ -101,6 +102,9 @@ impl std::str::FromStr for TabsPosition {
 
 /// A tabs container for organizing content into switchable panels.
 ///
+/// Wires up tab switching: clicking a Tab button shows the corresponding
+/// TabsPanel and hides others.
+///
 /// # Example
 ///
 /// ```ignore
@@ -174,15 +178,6 @@ impl Component for Tabs {
         let container = rinch_macros::rsx! { div { class: "rinch-tabs" } };
         container.set_attribute("class", &self.class_string());
 
-        let active_value = if !self.value.is_empty() {
-            &self.value
-        } else {
-            &self.default_value
-        };
-        if !active_value.is_empty() {
-            container.set_attribute("data-active-tab", active_value);
-        }
-
         if !self.color.is_empty() {
             let c = &self.color;
             let style = if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
@@ -193,8 +188,152 @@ impl Component for Tabs {
             container.set_attribute("style", &style);
         }
 
+        let active_value = if !self.value.is_empty() {
+            self.value.clone()
+        } else {
+            self.default_value.clone()
+        };
+
+        let active_tab = Signal::new(active_value);
+
+        // Collect tab buttons and panels from children
+        let mut tab_buttons: Vec<(String, NodeHandle)> = Vec::new();
+        let mut panels: Vec<(String, NodeHandle)> = Vec::new();
+
         for child in children {
+            if let Some(cls) = child.get_attribute("class") {
+                if cls.contains("rinch-tabs__list") {
+                    // Walk the TabsList's children to find Tab buttons
+                    for tab_btn in child.children() {
+                        if let Some(val) = tab_btn.get_attribute("data-tab-value") {
+                            tab_buttons.push((val, tab_btn));
+                        }
+                    }
+                } else if cls.contains("rinch-tabs__panel") {
+                    if let Some(val) = child.get_attribute("data-panel-value") {
+                        panels.push((val, child.clone()));
+                    }
+                }
+            }
             container.append_child(child);
+        }
+
+        // Wire up click handlers on tab buttons
+        for (value, btn) in &tab_buttons {
+            let val = value.clone();
+            let active = active_tab;
+            // Preserve any user-provided onclick handler
+            let user_rid = btn
+                .get_attribute("data-user-rid")
+                .and_then(|s| s.parse::<usize>().ok())
+                .map(rinch_core::events::EventHandlerId);
+            let handler_id = __scope.register_handler(move || {
+                active.set(val.clone());
+                // Also fire user's onclick callback if present
+                if let Some(rid) = user_rid {
+                    rinch_core::events::dispatch_event(rid);
+                }
+            });
+            btn.set_attribute("data-rid", &handler_id.0.to_string());
+        }
+
+        // Determine variant for styling
+        let variant = if !self.variant.is_empty() {
+            self.variant.parse::<TabsVariant>().unwrap_or_default()
+        } else {
+            TabsVariant::Default
+        };
+
+        // Reactive: update active tab styling via inline styles.
+        // We must set color on the label span (not the button) because the button
+        // is display:flex and set_style on it won't invalidate child text layouts.
+        for (value, btn) in &tab_buttons {
+            let val = value.clone();
+            let btn = btn.clone();
+            let active = active_tab;
+
+            // Find the label span inside the button
+            let label_span = btn.children().into_iter().find(|c| {
+                c.get_attribute("class")
+                    .is_some_and(|cls| cls.contains("rinch-tabs__tab-label"))
+            });
+
+            // Create underline indicator element for Default variant
+            let indicator = if variant == TabsVariant::Default {
+                let el = __scope.create_element("div");
+                el.set_attribute(
+                    "style",
+                    "position: absolute; bottom: -2px; left: 0; right: 0; height: 2px;",
+                );
+                btn.append_child(&el);
+                Some(el)
+            } else {
+                None
+            };
+
+            __scope.create_effect(move || {
+                let is_active = active.get() == val;
+                if is_active {
+                    // Set color on label span for proper text invalidation
+                    let active_color = match variant {
+                        TabsVariant::Pills => "white",
+                        _ => "var(--rinch-tabs-color, var(--rinch-primary-color))",
+                    };
+                    if let Some(ref span) = label_span {
+                        span.set_style("color", active_color);
+                    }
+                    match variant {
+                        TabsVariant::Pills => {
+                            btn.set_style(
+                                "background-color",
+                                "var(--rinch-tabs-color, var(--rinch-primary-color))",
+                            );
+                        }
+                        TabsVariant::Outline => {
+                            btn.set_style("border-color", "var(--rinch-color-border)");
+                            btn.set_style("background-color", "var(--rinch-color-body)");
+                        }
+                        _ => {}
+                    }
+                    if let Some(ref ind) = indicator {
+                        ind.set_style(
+                            "background-color",
+                            "var(--rinch-tabs-color, var(--rinch-primary-color))",
+                        );
+                    }
+                } else {
+                    if let Some(ref span) = label_span {
+                        span.set_style("color", "");
+                    }
+                    match variant {
+                        TabsVariant::Pills => {
+                            btn.set_style("background-color", "");
+                        }
+                        TabsVariant::Outline => {
+                            btn.set_style("border-color", "transparent");
+                            btn.set_style("background-color", "");
+                        }
+                        _ => {}
+                    }
+                    if let Some(ref ind) = indicator {
+                        ind.set_style("background-color", "transparent");
+                    }
+                }
+            });
+        }
+
+        // Reactive: show/hide panels
+        for (value, panel) in &panels {
+            let val = value.clone();
+            let panel = panel.clone();
+            let active = active_tab;
+            __scope.create_effect(move || {
+                if active.get() == val {
+                    panel.set_style("display", "");
+                } else {
+                    panel.set_style("display", "none");
+                }
+            });
         }
 
         container
@@ -278,15 +417,16 @@ impl Component for Tab {
             btn.set_attribute("disabled", "");
         }
 
-        // Register click handler
+        // User-provided click callback (toggle logic is wired by Tabs parent)
         if let Some(ref cb) = self.onclick
             && !self.disabled
         {
+            // Store as a secondary attribute; Tabs will overwrite data-rid for switching
             let handler_id = __scope.register_handler({
                 let cb = cb.clone();
                 move || cb.invoke()
             });
-            btn.set_attribute("data-rid", &handler_id.0.to_string());
+            btn.set_attribute("data-user-rid", &handler_id.0.to_string());
         }
 
         // Left section icon

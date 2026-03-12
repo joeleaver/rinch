@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-rinch = { workspace = true, features = ["desktop", "components", "theme", "debug"] }
+rinch = { workspace = true, features = ["desktop", "gpu", "components", "theme", "debug"] }
 rinch-core = { workspace = true }
 rinch-platform = { workspace = true }
 wgpu = { workspace = true }

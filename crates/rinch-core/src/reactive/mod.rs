@@ -36,6 +36,7 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
+use std::sync::{Mutex, OnceLock};
 
 // Re-export flush_effects for use by signal::notify and batch
 use effect::flush_effects;
@@ -139,6 +140,59 @@ pub fn clear_signals_changed() {
     RUNTIME.with(|rt| {
         rt.borrow_mut().signals_changed = false;
     });
+}
+
+// ============================================================================
+// Cross-Thread Signal Dispatch
+// ============================================================================
+
+/// The thread ID of the main (UI) thread, set once at runtime startup.
+static MAIN_THREAD_ID: OnceLock<std::thread::ThreadId> = OnceLock::new();
+
+/// Dispatcher function for sending closures to the main thread.
+type DispatchFn = fn(Box<dyn FnOnce() + Send>);
+static CROSS_THREAD_DISPATCHER: Mutex<Option<DispatchFn>> = Mutex::new(None);
+
+/// Register the current thread as the main (UI) thread.
+///
+/// Called by the rinch runtime at startup. Must be called from the main thread
+/// before any signals are used cross-thread.
+pub fn register_main_thread() {
+    MAIN_THREAD_ID.get_or_init(|| std::thread::current().id());
+}
+
+/// Register a function that dispatches closures to the main thread.
+///
+/// Called by the rinch runtime at startup. The dispatcher should queue the
+/// closure for execution on the main thread and wake the event loop.
+pub fn set_cross_thread_dispatcher(dispatcher: fn(Box<dyn FnOnce() + Send>)) {
+    *CROSS_THREAD_DISPATCHER.lock().unwrap() = Some(dispatcher);
+}
+
+/// Check if the current thread is the main (UI) thread.
+///
+/// Returns `true` if `register_main_thread()` hasn't been called yet
+/// (backwards compatibility for tests and non-rinch usage).
+pub(crate) fn is_main_thread() -> bool {
+    match MAIN_THREAD_ID.get() {
+        Some(id) => std::thread::current().id() == *id,
+        None => true,
+    }
+}
+
+/// Dispatch a closure to the main thread via the registered dispatcher.
+///
+/// Panics if no dispatcher has been registered (i.e., rinch runtime not initialized).
+pub(crate) fn dispatch_to_main_thread(f: Box<dyn FnOnce() + Send>) {
+    let dispatcher = CROSS_THREAD_DISPATCHER.lock().unwrap();
+    if let Some(dispatch) = *dispatcher {
+        dispatch(f);
+    } else {
+        panic!(
+            "Signal::send() called but no cross-thread dispatcher is registered. \
+             Ensure the rinch runtime is initialized before using send() from background threads."
+        );
+    }
 }
 
 /// Unique identifier for an observer (effect or memo)

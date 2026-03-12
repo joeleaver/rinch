@@ -3,8 +3,8 @@
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, Stroke};
 use peniko::{Brush, Fill, Gradient};
-use vello::Scene;
 
+use super::painter::Painter;
 use crate::layout::parse_color;
 use crate::node::{Node, NodeKind, NodeTree};
 
@@ -17,7 +17,7 @@ use crate::node::{Node, NodeKind, NodeTree};
 pub(super) fn paint_svg(
     tree: &NodeTree,
     node: &Node,
-    scene: &mut Scene,
+    painter: &mut dyn Painter,
     _scale: f64,
     x: f64,
     y: f64,
@@ -111,12 +111,13 @@ pub(super) fn paint_svg(
                 if let Some(d) = child.attributes.get("d")
                     && let Ok(path) = BezPath::from_svg(d)
                 {
+                    let shape = super::painter::PaintShape::BezPath(path);
                     if let Some(fc) = fill_color {
-                        scene.fill(Fill::NonZero, transform, fc, None, &path);
+                        painter.fill_color(Fill::NonZero, transform, fc, &shape);
                     }
                     if let Some(sc) = stroke_color {
                         let stroke = Stroke::new(stroke_w).with_caps(linecap).with_join(linejoin);
-                        scene.stroke(&stroke, transform, sc, None, &path);
+                        painter.stroke_color(&stroke, transform, sc, &shape);
                     }
                 }
             }
@@ -143,11 +144,11 @@ pub(super) fn paint_svg(
                     .unwrap_or(0.0);
                 let rect = Rect::new(rx, ry, rx + rw, ry + rh);
                 if let Some(fc) = fill_color {
-                    scene.fill(Fill::NonZero, transform, fc, None, &rect);
+                    painter.fill_color(Fill::NonZero, transform, fc, &rect.into());
                 }
                 if let Some(sc) = stroke_color {
                     let stroke = Stroke::new(stroke_w).with_caps(linecap).with_join(linejoin);
-                    scene.stroke(&stroke, transform, sc, None, &rect);
+                    painter.stroke_color(&stroke, transform, sc, &rect.into());
                 }
             }
             "circle" => {
@@ -168,11 +169,11 @@ pub(super) fn paint_svg(
                     .unwrap_or(0.0);
                 let circle = peniko::kurbo::Circle::new((cx, cy), r);
                 if let Some(fc) = fill_color {
-                    scene.fill(Fill::NonZero, transform, fc, None, &circle);
+                    painter.fill_color(Fill::NonZero, transform, fc, &circle.into());
                 }
                 if let Some(sc) = stroke_color {
                     let stroke = Stroke::new(stroke_w).with_caps(linecap).with_join(linejoin);
-                    scene.stroke(&stroke, transform, sc, None, &circle);
+                    painter.stroke_color(&stroke, transform, sc, &circle.into());
                 }
             }
             "line" => {
@@ -199,19 +200,20 @@ pub(super) fn paint_svg(
                 let line = peniko::kurbo::Line::new((x1, y1), (x2, y2));
                 if let Some(sc) = stroke_color {
                     let stroke = Stroke::new(stroke_w).with_caps(linecap).with_join(linejoin);
-                    scene.stroke(&stroke, transform, sc, None, &line);
+                    painter.stroke_color(&stroke, transform, sc, &line.into());
                 }
             }
             "polyline" | "polygon" => {
                 if let Some(points_str) = child.attributes.get("points")
                     && let Some(path) = parse_polyline_points(points_str, el.tag == "polygon")
                 {
+                    let shape = super::painter::PaintShape::BezPath(path);
                     if let Some(fc) = fill_color {
-                        scene.fill(Fill::NonZero, transform, fc, None, &path);
+                        painter.fill_color(Fill::NonZero, transform, fc, &shape);
                     }
                     if let Some(sc) = stroke_color {
                         let stroke = Stroke::new(stroke_w).with_caps(linecap).with_join(linejoin);
-                        scene.stroke(&stroke, transform, sc, None, &path);
+                        painter.stroke_color(&stroke, transform, sc, &shape);
                     }
                 }
             }

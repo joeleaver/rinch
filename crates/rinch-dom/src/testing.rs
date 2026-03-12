@@ -7,12 +7,23 @@ use serde_json::{Value, json};
 
 use crate::node::{NodeKind, NodeTree, RawNodeId};
 
-/// Serialize the DOM tree starting from body as a JSON value.
+/// Serialize the DOM tree starting from body as a JSON value (compact — no computed styles).
 pub fn serialize_tree(tree: &NodeTree) -> Value {
-    serialize_node(tree, tree.body_id, 0.0, 0.0)
+    serialize_node(tree, tree.body_id, 0.0, 0.0, false)
 }
 
-fn serialize_node(tree: &NodeTree, id: RawNodeId, offset_x: f32, offset_y: f32) -> Value {
+/// Serialize the DOM tree with full computed styles on every node.
+pub fn serialize_tree_verbose(tree: &NodeTree) -> Value {
+    serialize_node(tree, tree.body_id, 0.0, 0.0, true)
+}
+
+fn serialize_node(
+    tree: &NodeTree,
+    id: RawNodeId,
+    offset_x: f32,
+    offset_y: f32,
+    verbose: bool,
+) -> Value {
     let Some(node) = tree.get(id) else {
         return Value::Null;
     };
@@ -33,7 +44,7 @@ fn serialize_node(tree: &NodeTree, id: RawNodeId, offset_x: f32, offset_y: f32) 
     let children: Vec<Value> = node
         .children
         .iter()
-        .map(|&child_id| serialize_node(tree, child_id, abs_x - sx, abs_y - sy))
+        .map(|&child_id| serialize_node(tree, child_id, abs_x - sx, abs_y - sy, verbose))
         .collect();
 
     let mut obj = json!({
@@ -63,8 +74,9 @@ fn serialize_node(tree: &NodeTree, id: RawNodeId, offset_x: f32, offset_y: f32) 
     if !node.attributes.is_empty() {
         obj["attributes"] = json!(node.attributes);
     }
-    // Include computed styles in tree serialization
-    obj["computed_styles"] = json!(&node.computed_style);
+    if verbose {
+        obj["computed_styles"] = json!(&node.computed_style);
+    }
     if !children.is_empty() {
         obj["children"] = Value::Array(children);
     }
@@ -161,7 +173,48 @@ fn collect_text(tree: &NodeTree, id: RawNodeId, buf: &mut String) {
     }
 }
 
-/// Get detailed info for a single node.
+/// Get compact summary for a node (no computed styles).
+/// Used by query_selector to keep results small.
+pub fn get_node_summary(tree: &NodeTree, id: RawNodeId) -> Option<Value> {
+    let node = tree.get(id)?;
+
+    let abs = compute_absolute_position(tree, id);
+
+    let (node_type, tag, text) = match &node.kind {
+        NodeKind::Document => ("document", None, None),
+        NodeKind::Element(el) => ("element", Some(el.tag.as_str()), None),
+        NodeKind::Text(t) => ("text", None, Some(t.content.as_str())),
+        NodeKind::Comment(c) => ("comment", None, Some(c.as_str())),
+    };
+
+    let mut obj = json!({
+        "id": node.id,
+        "type": node_type,
+        "layout": {
+            "x": abs.0,
+            "y": abs.1,
+            "width": node.layout.width,
+            "height": node.layout.height,
+        },
+        "children": node.children,
+        "parent": node.parent,
+        "text_content": get_text_content(tree, id),
+    });
+
+    if let Some(tag) = tag {
+        obj["tag"] = Value::String(tag.to_string());
+    }
+    if let Some(text) = text {
+        obj["text"] = Value::String(text.to_string());
+    }
+    if !node.attributes.is_empty() {
+        obj["attributes"] = json!(node.attributes);
+    }
+
+    Some(obj)
+}
+
+/// Get detailed info for a single node (includes computed styles).
 pub fn get_node_detail(tree: &NodeTree, id: RawNodeId) -> Option<Value> {
     let node = tree.get(id)?;
 
@@ -220,6 +273,10 @@ fn compute_absolute_position(tree: &NodeTree, id: RawNodeId) -> (f32, f32) {
         if let Some(node) = tree.get(nid) {
             x += node.layout.x;
             y += node.layout.y;
+            // position: fixed — viewport-relative, stop accumulating parent offsets
+            if node.computed_style.position == crate::computed_style::PositionValue::Fixed {
+                break;
+            }
             // Subtract parent's scroll offset (same as hit_test)
             if let Some(parent_id) = node.parent {
                 if let Some(parent) = tree.get(parent_id) {

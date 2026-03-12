@@ -8,7 +8,8 @@ rinch = { workspace = true, features = ["desktop", "components", "theme"] }
 ```
 
 > **Note:** The workspace dependency uses `default-features = false`, so features must be listed explicitly:
-> - `"desktop"` — enables `run()`, window management, and the Vello renderer
+> - `"desktop"` — enables `run()`, window management, and the software renderer (tiny-skia)
+> - `"gpu"` — (optional) enables GPU rendering via Vello/wgpu instead of the software renderer
 > - `"components"` — enables the component library (Button, TextInput, Stack, etc.)
 > - `"theme"` — enables automatic theme CSS loading and CSS variables
 

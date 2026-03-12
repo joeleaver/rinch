@@ -16,6 +16,19 @@ pub(super) fn visibility_from_stylo(
     }
 }
 
+pub(super) fn object_fit_from_stylo(
+    fit: &style::properties::longhands::object_fit::computed_value::T,
+) -> ObjectFitValue {
+    use style::properties::longhands::object_fit::computed_value::T as ObjFit;
+    match *fit {
+        ObjFit::Fill => ObjectFitValue::Fill,
+        ObjFit::Contain => ObjectFitValue::Contain,
+        ObjFit::Cover => ObjectFitValue::Cover,
+        ObjFit::None => ObjectFitValue::None,
+        ObjFit::ScaleDown => ObjectFitValue::ScaleDown,
+    }
+}
+
 pub(super) fn cursor_from_stylo(cursor: &style::values::specified::ui::CursorKind) -> CursorValue {
     use style::values::specified::ui::CursorKind;
     match *cursor {

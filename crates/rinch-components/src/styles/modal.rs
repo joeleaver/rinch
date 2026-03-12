@@ -19,14 +19,14 @@ pub fn styles() -> String {
     display: none !important;
 }
 
-/* Modal overlay */
+/* Modal overlay — absolute within the fixed root */
 .rinch-modal__overlay {
-    position: fixed;
+    position: absolute;
     top: 0;
     left: 0;
     right: 0;
     bottom: 0;
-    background-color: rgba(0, 0, 0, var(--rinch-modal-overlay-opacity, 0.75));
+    background-color: rgba(0, 0, 0, 0.75);
     backdrop-filter: blur(var(--rinch-modal-overlay-blur, 0));
 }
 

@@ -49,6 +49,7 @@ rinch-web = { workspace = true, optional = true }
 rinch-video = { workspace = true, optional = true }
 ureq = { version = "3", optional = true }
 memory-stats = { version = "1.2", optional = true }
+softbuffer = { version = "0.4", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", optional = true }
@@ -73,12 +74,18 @@ windows-sys = { version = "0.59", features = ["Win32_Graphics_Gdi", "Win32_Found
 default = ["desktop"]
 desktop = [
     "dep:rinch-dom", "dep:rinch-editable", "dep:parley",
-    "dep:peniko", "dep:vello", "dep:serde_json",
-    "dep:rinch-renderer", "dep:anyrender", "dep:anyrender_vello",
-    "dep:wgpu", "dep:winit", "dep:muda", "dep:tokio", "dep:pollster",
-    "dep:futures-util", "dep:tracing-subscriber",
+    "dep:peniko", "dep:serde_json",
+    "dep:winit", "dep:muda",
+    "dep:tracing-subscriber",
     "dep:png", "dep:base64", "dep:keyboard-types",
     "dep:bytemuck",
+    "dep:softbuffer", "rinch-dom/software-renderer",
+]
+gpu = [
+    "desktop",
+    "dep:vello", "dep:wgpu",
+    "dep:rinch-renderer", "dep:anyrender", "dep:anyrender_vello",
+    "dep:tokio", "dep:pollster", "dep:futures-util",
 ]
 file-dialogs = ["rfd"]
 clipboard = ["dep:rinch-clipboard"]

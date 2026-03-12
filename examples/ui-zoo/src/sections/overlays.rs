@@ -179,7 +179,7 @@ pub fn overlays_section() -> NodeHandle {
                         }
                         Text { size: "sm", color: "dimmed", "Click to open a menu of actions." }
                         Divider {}
-                        DropdownMenu { opened: dropdown_opened.get(),
+                        DropdownMenu { opened_fn: move || dropdown_opened.get(),
                             DropdownMenuTarget {
                                 Button { onclick: move || dropdown_opened.update(|v| *v = !*v), "Open Menu" }
                             }

@@ -104,7 +104,10 @@ impl Component for Image {
         let src = if self.src.is_empty() { "" } else { &self.src };
         let alt = if self.alt.is_empty() { "" } else { &self.alt };
 
-        let mut styles = Vec::new();
+        // Build inline styles for the <img> element directly.
+        // Setting dimensions on the <img> (not the wrapper) ensures Taffy's
+        // image measure function can resolve intrinsic sizing correctly.
+        let mut img_styles = Vec::new();
         if !self.width.is_empty() {
             let w = &self.width;
             let w = if w.chars().all(|c| c.is_ascii_digit()) {
@@ -112,7 +115,7 @@ impl Component for Image {
             } else {
                 w.clone()
             };
-            styles.push(format!("width: {}", w));
+            img_styles.push(format!("width: {}", w));
         }
         if !self.height.is_empty() {
             let h = &self.height;
@@ -121,17 +124,31 @@ impl Component for Image {
             } else {
                 h.clone()
             };
-            styles.push(format!("height: {}", h));
+            img_styles.push(format!("height: {}", h));
+        }
+
+        // Apply object-fit as inline style so the paint code picks it up
+        // from computed styles (CSS class selectors may not cascade reliably).
+        let fit: ImageFit = if self.fit.is_empty() {
+            ImageFit::default()
+        } else {
+            self.fit.parse().unwrap_or_default()
+        };
+        match fit {
+            ImageFit::Cover => img_styles.push("object-fit: cover".into()),
+            ImageFit::Contain => img_styles.push("object-fit: contain".into()),
+            ImageFit::None => img_styles.push("object-fit: none".into()),
+            ImageFit::ScaleDown => img_styles.push("object-fit: scale-down".into()),
+            ImageFit::Fill => {} // default, no need to set
         }
 
         let figure = rinch_macros::rsx! { figure { class: "rinch-image__wrapper" } };
 
-        if !styles.is_empty() {
-            figure.set_attribute("style", &styles.join("; "));
-        }
-
         let img = rinch_macros::rsx! { img { class: "rinch-image" } };
         img.set_attribute("class", &self.class_string());
+        if !img_styles.is_empty() {
+            img.set_attribute("style", &img_styles.join("; "));
+        }
         img.set_attribute("src", src);
         img.set_attribute("alt", alt);
 
