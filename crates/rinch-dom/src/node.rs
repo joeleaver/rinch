@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicBool;
 
 use rinch_core::image::ImageLoader;
 
+use crate::animation::types::{ActiveAnimation, AnimationSpec};
 use crate::image_cache::ImageCache;
 use crate::transition::{ActiveTransition, TransitionProperty, TransitionSpec};
 
@@ -264,6 +265,8 @@ pub struct Node {
     pub computed_style: ComputedStyle,
     /// Parsed CSS transition specs for this node.
     pub transition_specs: Vec<TransitionSpec>,
+    /// Parsed CSS animation specs for this node.
+    pub animation_specs: Vec<AnimationSpec>,
     /// Whether this node has been styled at least once.
     /// Prevents transitions from firing on initial style application.
     pub has_been_styled: bool,
@@ -339,6 +342,7 @@ impl Node {
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
+            animation_specs: Vec::new(),
             has_been_styled: false,
             // Stylo fields
             stylo_element_data: AtomicRefCell::new(None),
@@ -381,6 +385,7 @@ impl Node {
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
+            animation_specs: Vec::new(),
             has_been_styled: false,
             // Stylo fields
             stylo_element_data: AtomicRefCell::new(None),
@@ -422,6 +427,7 @@ impl Node {
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
+            animation_specs: Vec::new(),
             has_been_styled: false,
             // Stylo fields
             stylo_element_data: AtomicRefCell::new(None),
@@ -461,6 +467,7 @@ impl Node {
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
+            animation_specs: Vec::new(),
             has_been_styled: false,
             // Stylo fields
             stylo_element_data: AtomicRefCell::new(None),
@@ -607,6 +614,8 @@ pub struct NodeTree {
     pub anonymous_block_boxes: Vec<RawNodeId>,
     /// Active CSS transitions per node, keyed by property.
     pub active_transitions: HashMap<RawNodeId, HashMap<TransitionProperty, ActiveTransition>>,
+    /// Active CSS animations per node.
+    pub active_animations: HashMap<RawNodeId, Vec<ActiveAnimation>>,
     /// Whether transitions are enabled (false until first layout completes).
     pub transitions_enabled: bool,
     /// Cache of loaded and decoded images.
@@ -720,6 +729,7 @@ impl NodeTree {
             guard,
             anonymous_block_boxes: Vec::new(),
             active_transitions: HashMap::new(),
+            active_animations: HashMap::new(),
             transitions_enabled: false,
             image_cache: ImageCache::new(),
             image_loader: None,
@@ -756,6 +766,7 @@ impl NodeTree {
         self.collect_descendants(id, &mut to_remove);
         for node_id in &to_remove {
             self.active_transitions.remove(node_id);
+            self.active_animations.remove(node_id);
         }
         for node_id in to_remove {
             self.nodes.remove(node_id);

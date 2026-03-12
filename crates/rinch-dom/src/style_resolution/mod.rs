@@ -220,6 +220,7 @@ impl RinchDocument {
         let transitions_were_enabled = self.tree.transitions_enabled;
         self.tree.transitions_enabled = false;
         self.tree.active_transitions.clear();
+        self.tree.active_animations.clear();
         // Clear roots to force full tree walk
         self.tree.style_roots.clear();
         // Resolve styles using Stylo
@@ -422,6 +423,50 @@ impl RinchDocument {
             } else {
                 // No transitions — apply directly (current behavior)
                 self.tree.nodes[node_id].computed_style = new_style.clone();
+            }
+
+            // --- Animation logic ---
+            // Extract animation specs from Stylo
+            let animation_specs =
+                crate::animation::AnimationSpec::extract_from_stylo(&computed_values);
+            self.tree.nodes[node_id].animation_specs = animation_specs;
+
+            if self.tree.transitions_enabled {
+                let anim_specs = self.tree.nodes[node_id].animation_specs.clone();
+                let base_style = self.tree.nodes[node_id].computed_style.clone();
+                let guard = self.tree.guard.read();
+
+                // Extract active_animations temporarily to avoid borrow conflict
+                let mut active_animations = std::mem::take(&mut self.tree.active_animations);
+                crate::animation::start_animations(
+                    &mut active_animations,
+                    node_id,
+                    &anim_specs,
+                    &base_style,
+                    &self.stylist,
+                    &guard,
+                    &self.tree,
+                    current_time_ms,
+                );
+                self.tree.active_animations = active_animations;
+                drop(guard);
+
+                // Apply current animation values on top of computed_style
+                if let Some(animations) = self.tree.active_animations.get(&node_id) {
+                    for anim in animations {
+                        if let crate::animation::AnimationResult::Values(values) =
+                            anim.values_at(current_time_ms)
+                        {
+                            for (prop, value) in &values {
+                                apply_value_to_style(
+                                    &mut self.tree.nodes[node_id].computed_style,
+                                    *prop,
+                                    value,
+                                );
+                            }
+                        }
+                    }
+                }
             }
 
             // Mark node as styled so future changes can trigger transitions

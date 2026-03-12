@@ -2,7 +2,7 @@
 
 use peniko::Fill;
 use peniko::color::{AlphaColor, Srgb};
-use peniko::kurbo::{Affine, Cap, Rect, RoundedRectRadii, Stroke};
+use peniko::kurbo::{Affine, BezPath, Cap, Point, Rect, RoundedRectRadii, Stroke};
 
 use super::painter::Painter;
 use crate::computed_style::BorderStyleValue;
@@ -84,6 +84,24 @@ pub(super) fn paint_borders(
     let bottom_w = sides[2].0 as f64 * scale;
     let left_w = sides[3].0 as f64 * scale;
 
+    // When widths are uniform and border-radius is present, draw arc paths per side
+    // instead of straight lines. This is needed for spinners (border-radius: 50%
+    // with only one side colored).
+    let has_radius = radii.top_left > 0.0
+        || radii.top_right > 0.0
+        || radii.bottom_right > 0.0
+        || radii.bottom_left > 0.0;
+    let widths_uniform = (top_w - right_w).abs() < 0.01
+        && (top_w - bottom_w).abs() < 0.01
+        && (top_w - left_w).abs() < 0.01;
+
+    if widths_uniform && has_radius && top_w > 0.0 {
+        paint_borders_arc_per_side(painter, &sides, scale, x, y, w, h, radii, top_w, transform);
+        return;
+    }
+
+    // Fallback: straight lines per side (no border-radius)
+
     // Top border
     if top_w > 0.0
         && !matches!(
@@ -139,6 +157,166 @@ pub(super) fn paint_borders(
         let path = peniko::kurbo::Line::new((x + half, y), (x + half, y + h));
         painter.stroke_color(&stroke, transform, bc, &path.into());
     }
+}
+
+/// Paint per-side borders as arcs along a rounded rect.
+///
+/// Each CSS side owns the straight segment plus half of each adjacent corner arc.
+/// This correctly renders spinners (border-radius: 50% with only one side colored).
+#[allow(clippy::too_many_arguments)]
+fn paint_borders_arc_per_side(
+    painter: &mut dyn Painter,
+    sides: &[(f32, Option<AlphaColor<Srgb>>, BorderStyleValue); 4],
+    _scale: f64,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    radii: RoundedRectRadii,
+    bw: f64,
+    transform: Affine,
+) {
+    let half = bw * 0.5;
+    // Stroke centerline rect
+    let ix = x + half;
+    let iy = y + half;
+    let iw = w - bw;
+    let ih = h - bw;
+
+    // Inset radii for stroke centerline (can't go negative)
+    let tl = (radii.top_left - half).max(0.0);
+    let tr = (radii.top_right - half).max(0.0);
+    let br = (radii.bottom_right - half).max(0.0);
+    let bl = (radii.bottom_left - half).max(0.0);
+
+    // Build arc paths for each side
+    let paths = build_per_side_arc_paths(ix, iy, iw, ih, tl, tr, br, bl);
+
+    // sides: [top, right, bottom, left]
+    for (i, path) in paths.iter().enumerate() {
+        let (_, color, style) = sides[i];
+        if matches!(style, BorderStyleValue::None | BorderStyleValue::Hidden) {
+            continue;
+        }
+        if let Some(bc) = color {
+            let stroke = make_border_stroke(bw, style);
+            painter.stroke_color(&stroke, transform, bc, &path.clone().into());
+        }
+    }
+}
+
+/// Build BezPath for each side of a rounded rect.
+///
+/// Each side includes: second half of the preceding corner arc + straight segment
+/// + first half of the following corner arc. Corner arcs are split at t=0.5
+///   using De Casteljau subdivision.
+#[allow(clippy::too_many_arguments)]
+fn build_per_side_arc_paths(
+    ix: f64,
+    iy: f64,
+    iw: f64,
+    ih: f64,
+    tl: f64,
+    tr: f64,
+    br: f64,
+    bl: f64,
+) -> [BezPath; 4] {
+    // κ for quarter-circle cubic Bézier approximation
+    const K: f64 = 0.5522847498;
+
+    // Corner arc endpoints and control points.
+    // TL: from (ix, iy+tl) to (ix+tl, iy)  [left→top, counterclockwise around corner]
+    let tl_p0 = Point::new(ix, iy + tl);
+    let tl_p1 = Point::new(ix, iy + tl - tl * K);
+    let tl_p2 = Point::new(ix + tl - tl * K, iy);
+    let tl_p3 = Point::new(ix + tl, iy);
+
+    // TR: from (ix+iw-tr, iy) to (ix+iw, iy+tr)  [top→right]
+    let tr_p0 = Point::new(ix + iw - tr, iy);
+    let tr_p1 = Point::new(ix + iw - tr + tr * K, iy);
+    let tr_p2 = Point::new(ix + iw, iy + tr - tr * K);
+    let tr_p3 = Point::new(ix + iw, iy + tr);
+
+    // BR: from (ix+iw, iy+ih-br) to (ix+iw-br, iy+ih)  [right→bottom]
+    let br_p0 = Point::new(ix + iw, iy + ih - br);
+    let br_p1 = Point::new(ix + iw, iy + ih - br + br * K);
+    let br_p2 = Point::new(ix + iw - br + br * K, iy + ih);
+    let br_p3 = Point::new(ix + iw - br, iy + ih);
+
+    // BL: from (ix+bl, iy+ih) to (ix, iy+ih-bl)  [bottom→left]
+    let bl_p0 = Point::new(ix + bl, iy + ih);
+    let bl_p1 = Point::new(ix + bl - bl * K, iy + ih);
+    let bl_p2 = Point::new(ix, iy + ih - bl + bl * K);
+    let bl_p3 = Point::new(ix, iy + ih - bl);
+
+    // Split each corner arc at t=0.5
+    let (tl_first, tl_second) = split_cubic_half(tl_p0, tl_p1, tl_p2, tl_p3);
+    let (tr_first, tr_second) = split_cubic_half(tr_p0, tr_p1, tr_p2, tr_p3);
+    let (br_first, br_second) = split_cubic_half(br_p0, br_p1, br_p2, br_p3);
+    let (bl_first, bl_second) = split_cubic_half(bl_p0, bl_p1, bl_p2, bl_p3);
+
+    // Top: second half of TL arc + top straight + first half of TR arc
+    let mut top = BezPath::new();
+    top.move_to(tl_second.0);
+    if tl > 0.01 {
+        top.curve_to(tl_second.1, tl_second.2, tl_second.3);
+    }
+    top.line_to(tr_first.0);
+    if tr > 0.01 {
+        top.curve_to(tr_first.1, tr_first.2, tr_first.3);
+    }
+
+    // Right: second half of TR arc + right straight + first half of BR arc
+    let mut right = BezPath::new();
+    right.move_to(tr_second.0);
+    if tr > 0.01 {
+        right.curve_to(tr_second.1, tr_second.2, tr_second.3);
+    }
+    right.line_to(br_first.0);
+    if br > 0.01 {
+        right.curve_to(br_first.1, br_first.2, br_first.3);
+    }
+
+    // Bottom: second half of BR arc + bottom straight + first half of BL arc
+    let mut bottom = BezPath::new();
+    bottom.move_to(br_second.0);
+    if br > 0.01 {
+        bottom.curve_to(br_second.1, br_second.2, br_second.3);
+    }
+    bottom.line_to(bl_first.0);
+    if bl > 0.01 {
+        bottom.curve_to(bl_first.1, bl_first.2, bl_first.3);
+    }
+
+    // Left: second half of BL arc + left straight + first half of TL arc
+    let mut left = BezPath::new();
+    left.move_to(bl_second.0);
+    if bl > 0.01 {
+        left.curve_to(bl_second.1, bl_second.2, bl_second.3);
+    }
+    left.line_to(tl_first.0);
+    if tl > 0.01 {
+        left.curve_to(tl_first.1, tl_first.2, tl_first.3);
+    }
+
+    [top, right, bottom, left]
+}
+
+type CubicPoints = (Point, Point, Point, Point);
+
+/// Split a cubic Bézier at t=0.5 using De Casteljau's algorithm.
+fn split_cubic_half(p0: Point, p1: Point, p2: Point, p3: Point) -> (CubicPoints, CubicPoints) {
+    let m01 = midpt(p0, p1);
+    let m12 = midpt(p1, p2);
+    let m23 = midpt(p2, p3);
+    let m012 = midpt(m01, m12);
+    let m123 = midpt(m12, m23);
+    let mid = midpt(m012, m123);
+    ((p0, m01, m012, mid), (mid, m123, m23, p3))
+}
+
+fn midpt(a: Point, b: Point) -> Point {
+    Point::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5)
 }
 
 /// Create a Stroke with dash pattern based on border style.

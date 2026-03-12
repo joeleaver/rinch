@@ -854,9 +854,15 @@ impl RinchApp {
                     false
                 };
 
-                // Transitions modify computed_style directly — mark scene dirty
+                let any_animations = if let Some(doc) = &self.doc {
+                    doc.borrow_mut().tick_animations()
+                } else {
+                    false
+                };
+
+                // Transitions/animations modify computed_style directly — mark scene dirty
                 // so build_scene() rebuilds the Vello scene with interpolated values.
-                if any_transitions {
+                if any_transitions || any_animations {
                     self.scene_dirty = true;
                 }
 
@@ -898,7 +904,7 @@ impl RinchApp {
                     }
                 }
 
-                if any_transitions || any_video {
+                if any_transitions || any_animations || any_video {
                     actions.push(AppAction::RequestRedraw);
                 }
             }
