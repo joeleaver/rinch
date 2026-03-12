@@ -170,20 +170,16 @@ impl Component for Tooltip {
         let label_text = __scope.create_text(label);
         content.append_child(&label_text);
 
-        // Use an Effect to toggle inline opacity based on hover state
+        // Use an Effect to toggle inline display based on hover state.
+        // Use display:none to hide — visibility/pointer-events don't propagate
+        // reliably to descendants through Stylo's style recomputation.
         {
             let content = content.clone();
             Effect::new(move || {
                 if hovered.get() {
-                    content.set_attribute(
-                        "style",
-                        "opacity: 1; visibility: visible; pointer-events: auto",
-                    );
+                    content.set_attribute("style", "opacity: 1; display: block");
                 } else {
-                    content.set_attribute(
-                        "style",
-                        "opacity: 0; visibility: hidden; pointer-events: none",
-                    );
+                    content.set_attribute("style", "display: none");
                 }
             });
         }

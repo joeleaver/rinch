@@ -22,8 +22,6 @@ pub fn styles() -> String {
     border-radius: var(--rinch-radius-sm);
     white-space: nowrap;
     pointer-events: none;
-    opacity: 0;
-    transition: opacity 150ms ease, transform 150ms ease;
 }
 
 /* Tooltip positions */
@@ -53,32 +51,6 @@ pub fn styles() -> String {
     top: 50%;
     transform: translateY(-50%) translateX(0.25rem);
     margin-left: 0.375rem;
-}
-
-/* Tooltip visible states - trigger on target hover only, not entire container */
-.rinch-tooltip__target:hover + .rinch-tooltip__content,
-.rinch-tooltip--opened .rinch-tooltip__content {
-    opacity: 1;
-}
-
-.rinch-tooltip--top .rinch-tooltip__target:hover + .rinch-tooltip__content,
-.rinch-tooltip--top.rinch-tooltip--opened .rinch-tooltip__content {
-    transform: translateX(-50%) translateY(0);
-}
-
-.rinch-tooltip--bottom .rinch-tooltip__target:hover + .rinch-tooltip__content,
-.rinch-tooltip--bottom.rinch-tooltip--opened .rinch-tooltip__content {
-    transform: translateX(-50%) translateY(0);
-}
-
-.rinch-tooltip--left .rinch-tooltip__target:hover + .rinch-tooltip__content,
-.rinch-tooltip--left.rinch-tooltip--opened .rinch-tooltip__content {
-    transform: translateY(-50%) translateX(0);
-}
-
-.rinch-tooltip--right .rinch-tooltip__target:hover + .rinch-tooltip__content,
-.rinch-tooltip--right.rinch-tooltip--opened .rinch-tooltip__content {
-    transform: translateY(-50%) translateX(0);
 }
 
 /* Tooltip with arrow */

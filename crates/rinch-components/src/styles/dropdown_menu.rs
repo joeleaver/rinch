@@ -11,7 +11,7 @@ pub fn styles() -> String {
     display: inline-block;
 }
 
-/* Dropdown */
+/* Dropdown — visibility controlled by inline styles (Stylo limitation) */
 .rinch-dropdown-menu__dropdown {
     position: absolute;
     background-color: var(--rinch-color-body);
@@ -22,14 +22,6 @@ pub fn styles() -> String {
     width: var(--rinch-dropdown-menu-width, auto);
     min-width: 160px;
     z-index: 100;
-    opacity: 0;
-    visibility: hidden;
-    transition: opacity 150ms ease, visibility 150ms ease;
-}
-
-.rinch-dropdown-menu--opened .rinch-dropdown-menu__dropdown {
-    opacity: 1;
-    visibility: visible;
 }
 
 /* Positions - default to bottom-start for better UX */
