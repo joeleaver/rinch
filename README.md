@@ -1,68 +1,14 @@
 # Rinch
 
-A lightweight cross-platform GUI library for Rust with fine-grained reactive rendering.
+**A GUI framework for Rust that doesn't hate you.**
 
-Rinch provides a declarative UI framework using HTML/CSS for layout with two rendering backends: GPU-accelerated rendering via Vello/wgpu, and a software renderer via tiny-skia for environments without GPU access. Instead of virtual DOM diffing and full re-renders, Rinch uses fine-grained reactivity—signals and effects—to surgically update only the DOM nodes that changed.
+Every few months, someone on r/rust asks "what's the state of GUI in Rust?" and the thread fills with the same apologetic answers: "it's getting better," "try [framework du jour]," "have you considered a web view?" Rinch exists because "getting better" has been the answer for seven years and we got tired of waiting.
 
-## Architecture Highlights
+## The Pitch
 
-**Fine-Grained Reactivity**
+Rinch gives you HTML and CSS — the layout system that billions of people have already debugged for you — but renders it natively with Vello (GPU) or tiny-skia (CPU). No Electron. No web view. No 200MB runtime. Your app is a single binary that starts in milliseconds.
 
-Signals and effects provide surgical DOM updates without full re-renders:
-
-```
-Signal.set() → Effect runs → NodeHandle.set_text() → Minimal re-layout
-```
-
-Unlike virtual DOM approaches, Rinch tracks which signals each reactive expression depends on. When a signal changes, only the Effects that read that signal re-run and update their target nodes.
-
-**HTML/CSS Rendering**
-
-- **Stylo** CSS engine for style computation
-- **Taffy** layout engine for flexbox
-- **Parley** for text shaping and layout
-- **Vello** for GPU-accelerated 2D rendering via wgpu (GPU mode)
-- **tiny-skia** for CPU-based 2D rendering (software mode)
-
-**Platform Abstraction**
-
-- **Desktop (GPU)**: winit for windowing, Vello + wgpu for rendering
-- **Desktop (Software)**: winit for windowing, tiny-skia + softbuffer for rendering — no GPU required
-- **Web**: WASM target ready (Stylo compiles to wasm32-unknown-unknown)
-
-## Features
-
-- **Fine-Grained Reactivity** — Signals, Effects, Memos. Only changed DOM nodes update.
-- **55+ Components** — Mantine-inspired UI components (buttons, inputs, cards, navigation, overlays, etc.)
-- **HTML/CSS Rendering** — Stylo CSS engine, Taffy flexbox, Parley text shaping
-- **Reactive Primitives** — `Signal::new()`, `Effect::new()`, `Memo::new()`, `create_context()` with automatic dependency tracking
-- **RSX Macro** — JSX-like syntax with reactive closures for declarative UIs
-- **Theme System** — CSS variables, 20 color palettes, dark mode support, spacing/radius/typography scales
-- **5000+ Icons** — Tabler Icons with type-safe enum API
-- **Rich-Text Editor** — CRDT-backed editor (Automerge), 22 extensions, markdown shortcuts
-- **Image Support** — `<img>` elements and `background-image` CSS, async loading, local files and HTTP(S) via optional `image-network` feature
-- **Native Integration** — Menus (muda), file dialogs, clipboard, system tray
-- **Transparent Windows** — Borderless frameless windows with custom chrome (Windows)
-- **DevTools** — F12 inspector, layout debug overlay, performance stats
-- **MCP Debug Server** — Screenshot, DOM inspection, input simulation for AI-assisted development
-- **Cross-Platform** — Desktop (Windows, macOS, Linux) and WASM
-
-## Quick Start
-
-### Installation
-
-Add to `Cargo.toml`:
-
-```toml
-[dependencies]
-# GPU mode (recommended — requires GPU):
-rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["desktop", "gpu", "components", "theme"] }
-
-# Software mode (no GPU needed — runs anywhere):
-rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["desktop", "components", "theme"] }
-```
-
-### Basic Counter Example
+Reactivity is fine-grained. When a signal changes, Rinch updates *that one DOM node*. Not the component. Not the subtree. Not "the whole thing but we diff it so it's fine." The node. Your component function runs exactly once.
 
 ```rust
 use rinch::prelude::*;
@@ -70,13 +16,10 @@ use rinch::prelude::*;
 #[component]
 fn app() -> NodeHandle {
     let count = Signal::new(0);
-
     rsx! {
         div {
             h1 { "Count: " {|| count.get().to_string()} }
-            button { onclick: move || count.update(|n| *n += 1),
-                "Increment"
-            }
+            button { onclick: move || count.update(|n| *n += 1), "+" }
         }
     }
 }
@@ -86,287 +29,110 @@ fn main() {
 }
 ```
 
-**Key API Points:**
+That `{|| ...}` closure is doing all the work. It creates an Effect that tracks which signals it reads, then surgically updates its text node when they change. No virtual DOM. No diffing. No reconciler. Just a function pointer and a node reference.
 
-- Components use the `#[component]` attribute which auto-injects the render scope:
-  ```rust
-  #[component]
-  fn app() -> NodeHandle {
-      // ...
-  }
-  ```
-  This expands to `fn app(__scope: &mut RenderScope) -> NodeHandle`. The manual signature also works.
-- Entry point: `run("title", width, height, component_fn)`
-- Reactive expressions use closure syntax: `{|| expr}` (without closure = captured once at initial render)
-- `Signal` and `Memo` implement `Copy` — no `.clone()` needed before closures
+## Why Not [Other Framework]?
 
-### Component with Multiple Signals
+| Complaint | Rinch's answer |
+|-----------|---------------|
+| "I have to learn a custom layout system" | It's CSS. You already mass it. Flexbox via Taffy, style resolution via Servo's Stylo engine. |
+| "Reactivity requires re-rendering the whole component" | Signals → Effects → surgical node updates. Component runs once. |
+| "No component library" | 60+ components. Buttons, inputs, modals, tabs, accordions, color pickers, rich text editors. |
+| "Styling is painful" | Theme system with CSS variables, 20 color palettes, dark mode, spacing scales. Write `p: "md"` instead of `padding: var(--rinch-spacing-md)`. |
+| "I can't inspect anything" | F12 opens DevTools. Alt+I for inspect mode. There's an MCP server so Claude can screenshot your app and fix your CSS. |
+| "Text rendering is bad" | Parley for shaping, HarfBuzz under the hood. Ligatures, BiDi, the works. |
+| "No web target" | Compiles to WASM. Browser-native DOM backend — no canvas, just real DOM nodes. 3MB binary. |
+
+## What's In The Box
+
+**Rendering.** Dual backend — GPU via [Vello](https://github.com/linebender/vello)/wgpu, or software via [tiny-skia](https://github.com/nickel-org/tiny-skia). Same code, same output, pick at compile time. The software renderer does dirty-region tracking, so even without a GPU, incremental updates are fast.
+
+**60+ Components.** A Mantine-inspired component library that actually works: `Button`, `TextInput`, `Modal`, `Tabs`, `Accordion`, `Select`, `ColorPicker`, `Stepper`, `RichTextEditor`, and about fifty more. Plus 5,000+ [Tabler Icons](https://tabler.io/icons) with a type-safe enum API.
+
+**Fine-Grained Reactivity.** `Signal`, `Memo`, `Effect` — all `Copy`, no `.clone()` ceremony. Cross-thread dispatch built in (`signal.send(value)` from any thread). Stores for shared state. Context for dependency injection.
+
+**Native Rust Control Flow.** `if`, `for`, `match` in RSX — all automatically reactive. Keyed list reconciliation with the LIS algorithm. No `.map()` gymnastics.
 
 ```rust
-use rinch::prelude::*;
-
-#[component]
-fn app() -> NodeHandle {
-    let name = Signal::new(String::from("World"));
-    let count = Signal::new(0);
-
-    rsx! {
-        div {
-            input {
-                oninput: move |value: String| name.set(value),
-                placeholder: "Enter your name"
-            }
-            h1 { "Hello, " {|| name.get()} "!" }
-            p { "Count: " {|| count.get().to_string()} }
-            button { onclick: move || count.update(|n| *n += 1),
-                "Increment"
-            }
-        }
+for todo in todos.get() {
+    div { key: todo.id,
+        {todo.name.clone()}
+        button { onclick: move || todos.update(|t| t.retain(|x| x.id != todo.id)), "×" }
     }
-}
-
-fn main() {
-    run("Hello App", 500, 300, app);
 }
 ```
 
-## Crate Structure
+**Platform Integration.** Native menus via muda. File dialogs. Clipboard. System tray with minimize-to-tray. Transparent borderless windows with custom chrome (Windows). Keyboard shortcuts.
 
-Rinch is organized as a workspace of specialized crates:
+**Rich Text Editing.** CRDT-backed editor (Automerge), 22 formatting extensions, markdown input rules, syntax highlighting, find & replace. Not a toy.
 
-| Layer | Crates | Purpose |
-|-------|--------|---------|
-| **Core** | rinch, rinch-core, rinch-macros, rinch-dom | Foundation types, reactive primitives, rsx! macro, DOM implementation |
-| **Platform** | rinch-platform, rinch-web | Platform abstraction traits, WASM backend |
-| **UI** | rinch-components, rinch-theme, rinch-tabler-icons | 55+ components, theme system, 5000+ icons |
-| **Editor** | rinch-editor, rinch-editor-macros, rinch-editor-components, rinch-editable | Rich-text editor with CRDT backing, editing utilities |
-| **Tooling** | rinch-debug, rinch-mcp-server, rinch-clipboard | IPC debug server, Claude MCP integration, clipboard support |
-| **Rendering** | rinch-renderer | GPU (Vello/wgpu) and software (tiny-skia/softbuffer) backends |
+**Game Engine Embedding.** Two modes: `RenderSurface` (Rinch owns the window, your renderer submits frames) or `RinchContext` (your engine owns the window, Rinch produces a Vello scene you composite). Either way, Rinch handles the UI and gets out of your way.
+
+**Developer Tooling.** F12 DevTools panel. Layout debug overlay. Inspect mode. An MCP debug server that lets Claude Code take screenshots of your running app, inspect the DOM, simulate clicks, and help you fix things. Yes, really.
+
+## Getting Started
+
+```toml
+[dependencies]
+rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["desktop", "gpu", "components", "theme"] }
+```
+
+Drop the `"gpu"` feature for software rendering (no GPU required — works in CI, containers, SSH sessions, your grandma's laptop).
+
+```bash
+# Run the component showcase
+cargo run --release -p ui-zoo-desktop
+
+# Run the todo app example
+cargo run --release -p todo-app
+
+# Build your own app
+cargo run --release
+```
+
+> **Use `--release`.** Debug mode is noticeably slow because Stylo and Parley do a lot of work. Release builds are fast.
+
+## Project Status
+
+Rinch is pre-1.0, under active development, and used by its author to build real applications. The API is stabilizing but not yet stable. Things that work well: layout, rendering, reactivity, the component library, text editing. Things that are still evolving: documentation, web target polish, test coverage.
+
+If you want a GUI framework that's been blessed by a foundation and has a 200-page book, this isn't it yet. If you want one where the HTML and CSS knowledge you already have actually transfers, where reactivity doesn't require re-rendering the universe, and where you can ship a single native binary — pull up a chair.
 
 ## Examples
 
-### ui-zoo-desktop
+| Example | What it is |
+|---------|-----------|
+| `ui-zoo-desktop` | Component showcase — every widget, interactive |
+| `todo-app` | Classic todo app |
+| `markdown-editor` | Rich text editor with CRDT backing |
+| `drag-and-drop-demo` | Drag and drop between lists |
+| `game-embed` | Game engine integration demo |
+| `video-call` | WebRTC video calling |
+| `paint-desktop` | Drawing application |
 
-A rich-text editor with formatting toolbar and markdown shortcuts:
+[**Live web demo**](https://joeleaver.github.io/rinch/ui-zoo/) (requires WebGPU)
 
-```bash
-cargo run -p ui-zoo-desktop
+## Architecture, Briefly
+
+```
+rinch              ← Facade crate. This is what you depend on.
+rinch-core         ← Signal, Effect, Memo, NodeHandle, RenderScope
+rinch-macros       ← rsx! macro, #[component] attribute
+rinch-dom          ← Stylo + Taffy + Parley. The "browser engine" bits.
+rinch-components   ← 60+ UI components
+rinch-theme        ← CSS variable generation, color palettes
+rinch-tabler-icons ← 5000+ icons, downloaded at build time
+rinch-editor       ← Rich text editor core
+rinch-debug        ← TCP IPC server for tooling
+rinch-mcp-server   ← MCP server for Claude Code integration
 ```
 
-Features:
-- CRDT-backed document (Automerge)
-- 22 formatting extensions (bold, italic, strikethrough, code blocks, etc.)
-- Markdown input rules (e.g., `# ` → heading)
-- Syntax highlighting
-- Find & replace
+The full layout is in `CLAUDE.md` if you want the gory details.
 
-### ui-zoo
+## Standing On Shoulders
 
-Interactive component showcase displaying all 55+ Rinch components.
-[**Try the live demo**](https://joeleaver.github.io/rinch/ui-zoo/) (requires WebGPU) or run locally:
-
-```bash
-cargo run -p ui-zoo
-```
-
-Perfect for exploring the component library and theme customization.
-
-## Keyboard Shortcuts
-
-| Shortcut | Action |
-|----------|--------|
-| `F12` | Toggle DevTools window |
-| `Alt+D` | Toggle layout debug overlay |
-| `Alt+I` | Toggle inspect mode (hover highlight for element info) |
-| `Alt+P` | Toggle performance stats console logging |
-| `Alt+T` | Print Taffy layout tree to console |
-| `Ctrl/Cmd + +/-/0` | Zoom in/out/reset |
-
-## Documentation
-
-- **Getting Started Guide**: https://joeleaver.github.io/rinch/
-- **API Documentation**: Run `cargo doc --open`
-- **Architecture Overview**: See `CLAUDE.md` in the repository
-
-## Development Setup
-
-```bash
-# Clone the repository
-git clone git@github.com:joeleaver/rinch.git
-cd rinch
-
-# Build all crates
-cargo build
-
-# Run the rich-text editor example
-cargo run -p ui-zoo-desktop
-
-# Run the component showcase
-cargo run -p ui-zoo
-
-# Build and open API docs
-cargo doc --open
-
-# Run tests
-cargo test
-
-# Lint and format
-cargo clippy
-cargo fmt
-```
-
-## Rendering Backends
-
-Rinch supports two rendering backends, selected at compile time via Cargo features:
-
-| Backend | Feature | Renderer | Presentation | Best For |
-|---------|---------|----------|--------------|----------|
-| **GPU** | `"gpu"` | Vello + wgpu | GPU compositing | Most apps — smooth animations, high-quality rendering |
-| **Software** | (default) | tiny-skia | softbuffer | Headless, CI, servers, environments without GPU |
-
-### Choosing a Backend
-
-Set it in your `Cargo.toml` — no runtime flags needed:
-
-```toml
-# GPU mode (recommended for most apps):
-rinch = { workspace = true, features = ["desktop", "gpu", "components", "theme"] }
-
-# Software mode (default — no GPU required):
-rinch = { workspace = true, features = ["desktop", "components", "theme"] }
-```
-
-Both backends use the same `Painter` trait abstraction, so your application code is identical regardless of backend. The software renderer includes dirty region caching — when only a small part of the UI changes (cursor blink, hover feedback, button click), only that region is repainted, making incremental updates fast even without a GPU.
-
-### GPU Backend (Vello)
-
-The GPU backend renders via [Vello](https://github.com/linebender/vello), a GPU-accelerated 2D graphics library built on wgpu. It provides smooth animations, efficient scene-graph rendering, and high-quality anti-aliased path rendering. Requires a GPU supporting Vulkan, Metal, DX12, or WebGPU.
-
-### Software Backend (tiny-skia)
-
-The software backend rasterizes to a CPU pixel buffer using [tiny-skia](https://github.com/nickel-org/tiny-skia) and presents via [softbuffer](https://github.com/rust-windowing/softbuffer). No GPU is needed. Features:
-
-- Full rendering fidelity (same output as GPU mode)
-- Dirty region caching for fast incremental updates
-- Subtree pruning — unchanged parts of the DOM tree are skipped during paint
-- Works in headless environments, CI, SSH sessions, containers
-
-## Transparent Windows (Windows)
-
-Rinch supports true window transparency on Windows via DX12 + DirectComposition, enabling VS Code-style frameless windows with custom chrome:
-
-```rust
-use rinch::prelude::*;
-
-#[component]
-fn app() -> NodeHandle {
-    rsx! {
-        BorderlessWindow {
-            title: "My App",
-            radius: "md",
-            // Custom content
-            div { "Hello from transparent window!" }
-        }
-    }
-}
-
-fn main() {
-    run("Transparent App", 800, 600, app);
-}
-```
-
-For custom window controls in your titlebar:
-
-```rust
-button { onclick: || minimize_current_window(), "−" }
-button { onclick: || toggle_maximize_current_window(), "□" }
-button { onclick: || close_current_window(), "×" }
-```
-
-### Requirements
-
-Transparent windows on Windows require a patched wgpu to enable Rgba8Unorm storage textures for Vello rendering with DX12. This is automatically applied via `[patch.crates-io]` in `Cargo.toml`:
-
-- **Repository**: https://github.com/joeleaver/wgpu-fork
-- **Branch**: `rinch-patch`
-- **Upstream PR**: https://github.com/gfx-rs/wgpu/pull/8908
-
-## Claude Code Plugin
-
-Rinch ships a [Claude Code plugin](https://docs.anthropic.com/en/docs/claude-code) that teaches Claude the correct patterns for writing rinch UI code — reactive closures, prop wrapping rules, signal usage, state management, and common pitfalls.
-
-### Install
-
-```bash
-# Add the rinch marketplace
-/plugin marketplace add joeleaver/rinch
-
-# Install the plugin
-/plugin install rinch@rinch
-```
-
-Or test locally from a clone:
-
-```bash
-claude --plugin-dir /path/to/rinch/claude-plugin
-```
-
-Once installed, Claude will proactively apply rinch best practices whenever it writes or edits code that uses the framework.
-
-## AI-Assisted Development with MCP
-
-Rinch integrates with Claude via an MCP (Model Context Protocol) debug server for AI-assisted development. Enable the `debug` feature and use MCP tools to:
-
-- **Screenshot** — Capture and view rendered output inline
-- **DOM Inspection** — Query the DOM tree with computed styles
-- **Input Simulation** — Click, type, and trigger events
-- **Performance Profiling** — Measure frame times and render performance
-
-Configure in `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "rinch": {
-      "command": "/path/to/rinch/target/debug/rinch-mcp-server",
-      "args": [],
-      "cwd": "/path/to/rinch"
-    }
-  }
-}
-```
-
-Build the MCP server first:
-
-```bash
-cargo build -p rinch-mcp-server
-```
-
-## Contributing
-
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch
-3. Run `cargo fmt` and `cargo clippy` before committing
-4. Write tests for new functionality
-5. Update documentation as needed
+[Stylo](https://github.com/nickel-org/stylo) (CSS resolution) · [Taffy](https://github.com/DioxusLabs/taffy) (flexbox) · [Parley](https://github.com/linebender/parley) (text) · [Vello](https://github.com/linebender/vello) (GPU rendering) · [tiny-skia](https://github.com/nickel-org/tiny-skia) (software rendering) · [winit](https://github.com/rust-windowing/winit) (windowing) · [muda](https://github.com/tauri-apps/muda) (menus) · [Automerge](https://automerge.org/) (CRDT)
 
 ## License
 
-MIT
-
-## Acknowledgments
-
-Rinch builds on excellent projects:
-
-- [Stylo](https://github.com/servo/stylo) — CSS engine (via rinch-dom)
-- [Taffy](https://github.com/DioxusLabs/taffy) — Flexbox layout engine
-- [Parley](https://github.com/linebender/parley) — Text shaping and layout
-- [Vello](https://github.com/linebender/vello) — GPU rendering
-- [tiny-skia](https://github.com/nickel-org/tiny-skia) — Software rendering
-- [softbuffer](https://github.com/rust-windowing/softbuffer) — Software presentation
-- [winit](https://github.com/rust-windowing/winit) — Cross-platform windowing
-- [muda](https://github.com/tauri-apps/muda) — Native menus
-- [Automerge](https://automerge.org/) — CRDT for rich-text editor
-- [Tabler Icons](https://tabler.io/icons) — Icon library
+MIT OR Apache-2.0
