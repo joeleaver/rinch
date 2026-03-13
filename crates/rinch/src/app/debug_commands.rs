@@ -535,7 +535,12 @@ impl RinchApp {
                     data: json!({"status": "closing"}),
                 }
             }
-            DebugCommandKind::KeyPress { key, shift, ctrl } => {
+            DebugCommandKind::KeyPress {
+                key,
+                shift,
+                ctrl,
+                alt,
+            } => {
                 // Escape cancels active drag-and-drop
                 if key == "Escape" {
                     if let Some(drag) = self.active_dnd.take() {
@@ -558,12 +563,26 @@ impl RinchApp {
                     }
                 }
 
+                // F12: toggle devtools
+                if key == "F12" {
+                    actions.push(AppAction::ToggleDevTools);
+                    actions.push(AppAction::RequestRedraw);
+                    return DebugResult::Json { data: json!(null) };
+                }
+
+                // Alt+I: toggle inspect mode
+                if (key == "i" || key == "I") && alt && !ctrl && !shift {
+                    actions.push(AppAction::ToggleInspectMode);
+                    actions.push(AppAction::RequestRedraw);
+                    return DebugResult::Json { data: json!(null) };
+                }
+
                 let key_data = events::KeyEventData {
                     key: key.clone(),
                     code: key.clone(),
                     ctrl,
                     shift,
-                    alt: false,
+                    alt,
                     meta: false,
                 };
                 let handled = events::dispatch_keyboard_event(&key_data);
@@ -626,7 +645,7 @@ impl RinchApp {
                             text.as_deref(),
                             shift,
                             ctrl,
-                            false,
+                            alt,
                         );
                     } else {
                         match key.as_str() {

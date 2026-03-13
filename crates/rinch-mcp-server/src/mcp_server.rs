@@ -106,6 +106,9 @@ pub struct KeyPressParams {
     /// Ctrl modifier
     #[serde(default)]
     pub ctrl: bool,
+    /// Alt modifier
+    #[serde(default)]
+    pub alt: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -400,6 +403,7 @@ impl RinchMcpServer {
             key: params.0.key,
             shift: params.0.shift,
             ctrl: params.0.ctrl,
+            alt: params.0.alt,
         })
         .await
     }

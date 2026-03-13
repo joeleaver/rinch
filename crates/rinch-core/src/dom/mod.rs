@@ -364,6 +364,15 @@ impl NodeHandle {
         }
     }
 
+    /// Set multiple CSS style properties in a single operation.
+    /// More efficient than calling `set_style` multiple times because it only
+    /// parses the style string once.
+    pub fn set_styles(&self, properties: &[(&str, &str)]) {
+        if let Some(doc) = self.doc.upgrade() {
+            doc.borrow_mut().set_styles(self.node_id, properties);
+        }
+    }
+
     /// Set the class attribute.
     pub fn set_class(&self, class: &str) {
         self.set_attribute("class", class);

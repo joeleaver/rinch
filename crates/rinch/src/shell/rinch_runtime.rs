@@ -159,6 +159,28 @@ pub struct RinchRuntime {
     modifiers: winit::keyboard::ModifiersState,
     /// Native menu bar (attached to the window).
     native_menu: Option<muda::Menu>,
+
+    // ── DevTools ─────────────────────────────────────────────────
+    /// Shared DevTools store (persists across open/close cycles).
+    devtools_store: Option<super::devtools_store::DevToolsStore>,
+    /// DevTools window app.
+    devtools_app: Option<RinchApp>,
+    /// DevTools window.
+    devtools_window: Option<WinitWindow>,
+    /// DevTools GPU renderer.
+    #[cfg(feature = "gpu")]
+    devtools_renderer: Option<WgpuRenderer>,
+    /// DevTools software renderer.
+    #[cfg(not(feature = "gpu"))]
+    devtools_soft_renderer: Option<super::softbuffer_renderer::SoftbufferRenderer>,
+    /// DevTools keyboard modifier state.
+    devtools_modifiers: winit::keyboard::ModifiersState,
+    /// Previous hovered node ID (for detecting changes).
+    devtools_prev_hovered: Option<usize>,
+    /// Timestamp of the last paint (for FPS calculation).
+    last_paint_time: Option<std::time::Instant>,
+    /// Recent frame times in ms (ring buffer for FPS averaging).
+    frame_times: VecDeque<f64>,
 }
 
 impl RinchRuntime {
@@ -181,11 +203,25 @@ impl RinchRuntime {
             height,
             modifiers: winit::keyboard::ModifiersState::empty(),
             native_menu: None,
+            devtools_store: None,
+            devtools_app: None,
+            devtools_window: None,
+            #[cfg(feature = "gpu")]
+            devtools_renderer: None,
+            #[cfg(not(feature = "gpu"))]
+            devtools_soft_renderer: None,
+            devtools_modifiers: winit::keyboard::ModifiersState::empty(),
+            devtools_prev_hovered: None,
+            last_paint_time: None,
+            frame_times: VecDeque::with_capacity(60),
         }
     }
 
     /// Explicit shutdown: drop resources in the correct order and clear global state.
     fn shutdown(&mut self) {
+        // 0. Close DevTools first.
+        self.close_devtools();
+
         // 1. Clear the signal-change callback so no stale closures fire during drop.
         rinch_core::clear_on_signal_change();
 
@@ -207,6 +243,242 @@ impl RinchRuntime {
 
         // 5. Window can now be dropped safely.
         drop(self.window.take());
+    }
+
+    // ── DevTools window management ──────────────────────────────────────────
+
+    /// Ensure the DevToolsStore exists (created once, persists across open/close).
+    fn ensure_devtools_store(&mut self) {
+        if self.devtools_store.is_none() {
+            let store = super::devtools_store::DevToolsStore::new();
+            rinch_core::create_store(store);
+            self.devtools_store = Some(store);
+        }
+    }
+
+    /// Toggle the DevTools window open/closed.
+    fn toggle_devtools(&mut self, event_loop: &dyn ActiveEventLoop) {
+        if self.devtools_window.is_some() {
+            self.close_devtools();
+        } else {
+            self.open_devtools(event_loop);
+        }
+    }
+
+    /// Open the DevTools window.
+    fn open_devtools(&mut self, event_loop: &dyn ActiveEventLoop) {
+        if self.devtools_window.is_some() {
+            return; // Already open
+        }
+
+        self.ensure_devtools_store();
+        let store = self.devtools_store.unwrap();
+        store.visible.set(true);
+
+        // Provide the main app's document to DevTools via context so it can read directly
+        if let Some(doc) = &self.app.doc {
+            rinch_core::create_context(super::devtools_store::MainDocRef(doc.clone()));
+        }
+
+        // Create DevTools window
+        let window_attrs = WindowAttributes::default()
+            .with_title("DevTools")
+            .with_surface_size(winit::dpi::LogicalSize::new(480u32, 600u32));
+
+        let window = event_loop
+            .create_window(window_attrs)
+            .expect("Failed to create DevTools window");
+
+        let size = window.surface_size();
+
+        #[cfg(feature = "gpu")]
+        {
+            let gpu = WgpuRenderer::new(&*window, size.width.max(1), size.height.max(1));
+            self.devtools_renderer = Some(gpu);
+        }
+
+        let winit_window = WinitWindow::new(window);
+        self.devtools_window = Some(winit_window);
+
+        // Create a separate RinchApp for DevTools with the panel component
+        let mut dt_app = RinchApp::new(super::devtools_panel::devtools_root);
+
+        // Mount the DevTools component
+        dt_app.mount_component(size.width as f32, size.height as f32);
+
+        // Inject DevTools CSS into the document
+        if let Some(doc) = &dt_app.doc {
+            let mut d = doc.borrow_mut();
+            d.load_css(super::devtools_css::DEVTOOLS_CSS);
+            d.recompute_all_styles_full();
+            d.resolve_layout(size.width as f32, size.height as f32);
+        }
+
+        self.devtools_app = Some(dt_app);
+
+        // Bump version to trigger initial tree read in DevTools effects
+        store.bump_version();
+
+        // Resolve DevTools layout with the initial data
+        self.resolve_devtools();
+
+        // Request initial draw
+        self.devtools_window.as_ref().unwrap().request_redraw();
+
+        tracing::info!("DevTools: opened");
+    }
+
+    /// Close the DevTools window. Store persists.
+    fn close_devtools(&mut self) {
+        if let Some(store) = &self.devtools_store {
+            store.visible.set(false);
+        }
+
+        // Drop DevTools app
+        if let Some(mut dt_app) = self.devtools_app.take() {
+            drop(dt_app.component.take());
+            drop(dt_app._render_scope.take());
+            drop(dt_app.ce_ops.take());
+            drop(dt_app.doc.take());
+        }
+
+        // Drop renderer before window
+        #[cfg(feature = "gpu")]
+        drop(self.devtools_renderer.take());
+        #[cfg(not(feature = "gpu"))]
+        drop(self.devtools_soft_renderer.take());
+
+        drop(self.devtools_window.take());
+
+        tracing::info!("DevTools: closed");
+    }
+
+    /// Toggle inspect mode on/off.
+    fn toggle_inspect_mode(&mut self) {
+        self.ensure_devtools_store();
+        if let Some(store) = &self.devtools_store {
+            let current = store.inspect_mode.get();
+            store.inspect_mode.set(!current);
+            if current {
+                // Turning off: clear highlights
+                store.hovered_node_id.set(None);
+                self.app.inspect_highlight = None;
+                self.app.mark_scene_dirty();
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+            }
+            tracing::info!("Inspect mode: {}", if !current { "ON" } else { "OFF" });
+        }
+    }
+
+    /// Update inspect highlight from the DevTools store.
+    /// Called before painting the main window.
+    fn update_inspect_highlight(&mut self) {
+        let Some(store) = &self.devtools_store else {
+            self.app.inspect_highlight = None;
+            return;
+        };
+
+        let hovered_id = store.hovered_node_id.get();
+        let new_rect = hovered_id.and_then(|node_id| {
+            let doc = self.app.doc.as_ref()?;
+            let d = doc.borrow();
+            let node = d.tree.nodes.get(node_id)?;
+            let layout = node
+                .taffy_id
+                .and_then(|tid| d.tree.taffy.layout(tid).ok())?;
+            let (abs_x, abs_y) = compute_absolute_pos(&d.tree, node_id);
+            Some((abs_x, abs_y, layout.size.width, layout.size.height))
+        });
+
+        if self.app.inspect_highlight != new_rect {
+            self.app.inspect_highlight = new_rect;
+            self.app.mark_scene_dirty();
+        }
+    }
+
+    /// Get the DevTools window ID (if open).
+    fn devtools_window_id(&self) -> Option<WindowId> {
+        self.devtools_window.as_ref().map(|w| w.window.id())
+    }
+
+    /// Paint the DevTools window.
+    fn paint_devtools(&mut self) -> Result<(), String> {
+        #[cfg(feature = "gpu")]
+        {
+            self.paint_devtools_gpu()
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            self.paint_devtools_software()
+        }
+    }
+
+    #[cfg(not(feature = "gpu"))]
+    fn paint_devtools_software(&mut self) -> Result<(), String> {
+        let Some(window) = &self.devtools_window else {
+            return Ok(());
+        };
+        let Some(dt_app) = &mut self.devtools_app else {
+            return Ok(());
+        };
+
+        let scale = window.scale_factor();
+        let size = window.inner_size();
+        let (_base, w, h) = dt_app.build_pixels(scale, size);
+
+        let pixels = dt_app
+            .skia_painter
+            .as_ref()
+            .map(|p| p.pixels())
+            .unwrap_or(&[]);
+
+        if self.devtools_soft_renderer.is_none() {
+            self.devtools_soft_renderer = Some(
+                super::softbuffer_renderer::SoftbufferRenderer::new(window.window.clone(), w, h),
+            );
+        }
+
+        if let Some(renderer) = &mut self.devtools_soft_renderer {
+            renderer.present_pixels(pixels, w, h);
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "gpu")]
+    fn paint_devtools_gpu(&mut self) -> Result<(), String> {
+        let Some(renderer) = &mut self.devtools_renderer else {
+            return Ok(());
+        };
+        let Some(window) = &self.devtools_window else {
+            return Ok(());
+        };
+        let Some(dt_app) = &mut self.devtools_app else {
+            return Ok(());
+        };
+
+        let scale = window.scale_factor();
+        let size = window.inner_size();
+        let scene = dt_app.build_scene(scale, size);
+        renderer.paint(scene, false)?;
+        Ok(())
+    }
+
+    /// Resolve and repaint the DevTools window after signal changes.
+    fn resolve_devtools(&mut self) {
+        let Some(dt_app) = &mut self.devtools_app else {
+            return;
+        };
+        let Some(window) = &self.devtools_window else {
+            return;
+        };
+        let size = window.inner_size();
+        let changed = dt_app.resolve_and_repaint(size.0 as f32, size.1 as f32);
+        if changed {
+            window.request_redraw();
+        }
     }
 
     fn create_window(&mut self, event_loop: &dyn ActiveEventLoop) {
@@ -381,14 +653,49 @@ impl RinchRuntime {
 
     /// Paint the current scene to the window.
     fn paint(&mut self) -> Result<(), String> {
-        #[cfg(feature = "gpu")]
-        {
-            self.paint_gpu()
+        // Update inspect highlight rect from DevTools store before painting
+        self.update_inspect_highlight();
+
+        let paint_start = std::time::Instant::now();
+
+        let result = {
+            #[cfg(feature = "gpu")]
+            {
+                self.paint_gpu()
+            }
+            #[cfg(not(feature = "gpu"))]
+            {
+                self.paint_software()
+            }
+        };
+
+        // Track frame timing for DevTools Performance panel
+        if let Some(last) = self.last_paint_time {
+            let frame_ms = paint_start.duration_since(last).as_secs_f64() * 1000.0;
+            if self.frame_times.len() >= 60 {
+                self.frame_times.pop_front();
+            }
+            self.frame_times.push_back(frame_ms);
+
+            if let Some(store) = &self.devtools_store {
+                if store.visible.get() {
+                    let paint_ms = paint_start.elapsed().as_secs_f64() * 1000.0;
+                    store.frame_time_ms.set(paint_ms);
+
+                    // Average FPS over recent frames
+                    if !self.frame_times.is_empty() {
+                        let avg_ms: f64 =
+                            self.frame_times.iter().sum::<f64>() / self.frame_times.len() as f64;
+                        if avg_ms > 0.0 {
+                            store.fps.set(1000.0 / avg_ms);
+                        }
+                    }
+                }
+            }
         }
-        #[cfg(not(feature = "gpu"))]
-        {
-            self.paint_software()
-        }
+        self.last_paint_time = Some(paint_start);
+
+        result
     }
 
     #[cfg(not(feature = "gpu"))]
@@ -702,6 +1009,12 @@ impl RinchRuntime {
                         ));
                     }
                 }
+                AppAction::ToggleDevTools => {
+                    self.toggle_devtools(event_loop);
+                }
+                AppAction::ToggleInspectMode => {
+                    self.toggle_inspect_mode();
+                }
             }
         }
     }
@@ -965,14 +1278,25 @@ impl ApplicationHandler for RinchRuntime {
         for event in events {
             self.handle_native_event(event, event_loop);
         }
+
+        // Also resolve DevTools if signals changed
+        if self.devtools_window.is_some() {
+            self.resolve_devtools();
+        }
     }
 
     fn window_event(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
-        _window_id: WindowId,
+        window_id: WindowId,
         event: WindowEvent,
     ) {
+        // Route DevTools window events separately
+        if Some(window_id) == self.devtools_window_id() {
+            self.handle_devtools_window_event(event_loop, event);
+            return;
+        }
+
         let platform_event = match event {
             WindowEvent::CloseRequested => PlatformEvent::CloseRequested,
             WindowEvent::SurfaceResized(size) => {
@@ -1016,6 +1340,30 @@ impl ApplicationHandler for RinchRuntime {
                 };
                 // For click handling, we need the cursor position
                 let (x, y) = self.app.cursor_pos.unwrap_or((0.0, 0.0));
+
+                // Inspect mode: click selects node and exits inspect mode
+                if platform_button == PlatformMouseButton::Left {
+                    if let Some(store) = &self.devtools_store {
+                        if store.inspect_mode.get() {
+                            if let Some(doc) = &self.app.doc {
+                                let d = doc.borrow();
+                                let hit = crate::app::hit_testing::hit_test(&d.tree, x, y);
+                                store.selected_node_id.set(hit);
+                            }
+                            store
+                                .active_tab
+                                .set(super::devtools_store::DevToolsTab::Elements);
+                            store.inspect_mode.set(false);
+                            store.hovered_node_id.set(None);
+                            self.app.inspect_highlight = None;
+                            self.app.mark_scene_dirty();
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
+                            return;
+                        }
+                    }
+                }
 
                 // Set current window ID so window control functions work
                 if let Some(w) = &self.window {
@@ -1165,6 +1513,21 @@ impl ApplicationHandler for RinchRuntime {
             _ => return,
         };
 
+        // Inspect mode: intercept mouse events for hit-testing
+        if let Some(store) = &self.devtools_store {
+            if store.inspect_mode.get() {
+                if let PlatformEvent::MouseMove { x, y } = &platform_event {
+                    // Hit-test the main app's document
+                    self.app.cursor_pos = Some((*x, *y));
+                    if let Some(doc) = &self.app.doc {
+                        let d = doc.borrow();
+                        let hit = crate::app::hit_testing::hit_test(&d.tree, *x, *y);
+                        store.hovered_node_id.set(hit);
+                    }
+                }
+            }
+        }
+
         let size = self.window_size();
         let scale = self.scale_factor();
         let actions = self.app.handle_event(platform_event, size, scale);
@@ -1178,6 +1541,32 @@ impl ApplicationHandler for RinchRuntime {
             .app
             .handle_event(PlatformEvent::AboutToWait, size, scale);
         self.process_actions(actions, event_loop);
+
+        // Notify DevTools when main app DOM changed, then resolve its layout
+        if self.devtools_window.is_some() {
+            // Bump version counter so DevTools effects re-read the document.
+            // The version only changes when the main app actually resolved
+            // dirty nodes (scene_dirty is set in resolve_and_repaint).
+            if self.app.scene_dirty {
+                if let Some(store) = &self.devtools_store {
+                    store.bump_version();
+                }
+            }
+
+            self.resolve_devtools();
+
+            // If hovered node changed in DevTools, request main window repaint
+            // for inspect highlight
+            if let Some(store) = &self.devtools_store {
+                let new_hovered = store.hovered_node_id.get();
+                if new_hovered != self.devtools_prev_hovered {
+                    self.devtools_prev_hovered = new_hovered;
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1210,6 +1599,245 @@ impl RinchRuntime {
         let actions = self.app.handle_event(platform_event, size, scale);
         self.process_actions(actions, event_loop);
     }
+
+    /// Handle events for the DevTools window.
+    fn handle_devtools_window_event(
+        &mut self,
+        _event_loop: &dyn ActiveEventLoop,
+        event: WindowEvent,
+    ) {
+        match event {
+            WindowEvent::CloseRequested => {
+                self.close_devtools();
+            }
+            WindowEvent::SurfaceResized(size) => {
+                #[cfg(feature = "gpu")]
+                if let Some(renderer) = &mut self.devtools_renderer {
+                    renderer.resize(size.width.max(1), size.height.max(1));
+                }
+                if let Some(dt_app) = &mut self.devtools_app {
+                    dt_app.resize_layout(size.width, size.height);
+                }
+                if let Some(w) = &self.devtools_window {
+                    w.request_redraw();
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                if let Err(e) = self.paint_devtools() {
+                    eprintln!("DevTools paint error: {}", e);
+                }
+            }
+            WindowEvent::PointerMoved { position, .. } => {
+                if let Some(dt_app) = &mut self.devtools_app {
+                    let size = self
+                        .devtools_window
+                        .as_ref()
+                        .map(|w| w.inner_size())
+                        .unwrap_or((480, 600));
+                    let scale = self
+                        .devtools_window
+                        .as_ref()
+                        .map(|w| w.scale_factor())
+                        .unwrap_or(1.0);
+                    let actions = dt_app.handle_event(
+                        PlatformEvent::MouseMove {
+                            x: position.x as f32,
+                            y: position.y as f32,
+                        },
+                        size,
+                        scale,
+                    );
+                    for action in actions {
+                        if let AppAction::RequestRedraw = action {
+                            if let Some(w) = &self.devtools_window {
+                                w.request_redraw();
+                            }
+                        }
+                    }
+                }
+            }
+            WindowEvent::PointerButton {
+                state: ElementState::Pressed,
+                button,
+                ..
+            } => {
+                let platform_button = match button {
+                    winit::event::ButtonSource::Mouse(MouseButton::Left) => {
+                        PlatformMouseButton::Left
+                    }
+                    winit::event::ButtonSource::Mouse(MouseButton::Right) => {
+                        PlatformMouseButton::Right
+                    }
+                    winit::event::ButtonSource::Mouse(MouseButton::Middle) => {
+                        PlatformMouseButton::Middle
+                    }
+                    _ => return,
+                };
+                if let Some(dt_app) = &mut self.devtools_app {
+                    let (x, y) = dt_app.cursor_pos.unwrap_or((0.0, 0.0));
+                    let size = self
+                        .devtools_window
+                        .as_ref()
+                        .map(|w| w.inner_size())
+                        .unwrap_or((480, 600));
+                    let scale = self
+                        .devtools_window
+                        .as_ref()
+                        .map(|w| w.scale_factor())
+                        .unwrap_or(1.0);
+                    let actions = dt_app.handle_event(
+                        PlatformEvent::MouseDown {
+                            x,
+                            y,
+                            button: platform_button,
+                        },
+                        size,
+                        scale,
+                    );
+                    for action in actions {
+                        if let AppAction::RequestRedraw = action {
+                            if let Some(w) = &self.devtools_window {
+                                w.request_redraw();
+                            }
+                        }
+                    }
+                }
+            }
+            WindowEvent::PointerButton {
+                state: ElementState::Released,
+                button,
+                ..
+            } => {
+                let platform_button = match button {
+                    winit::event::ButtonSource::Mouse(MouseButton::Left) => {
+                        PlatformMouseButton::Left
+                    }
+                    winit::event::ButtonSource::Mouse(MouseButton::Right) => {
+                        PlatformMouseButton::Right
+                    }
+                    winit::event::ButtonSource::Mouse(MouseButton::Middle) => {
+                        PlatformMouseButton::Middle
+                    }
+                    _ => return,
+                };
+                if let Some(dt_app) = &mut self.devtools_app {
+                    let (x, y) = dt_app.cursor_pos.unwrap_or((0.0, 0.0));
+                    let size = self
+                        .devtools_window
+                        .as_ref()
+                        .map(|w| w.inner_size())
+                        .unwrap_or((480, 600));
+                    let scale = self
+                        .devtools_window
+                        .as_ref()
+                        .map(|w| w.scale_factor())
+                        .unwrap_or(1.0);
+                    let actions = dt_app.handle_event(
+                        PlatformEvent::MouseUp {
+                            x,
+                            y,
+                            button: platform_button,
+                        },
+                        size,
+                        scale,
+                    );
+                    for action in actions {
+                        if let AppAction::RequestRedraw = action {
+                            if let Some(w) = &self.devtools_window {
+                                w.request_redraw();
+                            }
+                        }
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let (dx, dy) = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => {
+                        (x as f64 * 40.0, y as f64 * 40.0)
+                    }
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x, pos.y),
+                };
+                if let Some(dt_app) = &mut self.devtools_app {
+                    let (cx, cy) = dt_app.cursor_pos.unwrap_or((0.0, 0.0));
+                    let size = self
+                        .devtools_window
+                        .as_ref()
+                        .map(|w| w.inner_size())
+                        .unwrap_or((480, 600));
+                    let scale = self
+                        .devtools_window
+                        .as_ref()
+                        .map(|w| w.scale_factor())
+                        .unwrap_or(1.0);
+                    let actions = dt_app.handle_event(
+                        PlatformEvent::MouseWheel {
+                            x: cx,
+                            y: cy,
+                            delta_x: dx,
+                            delta_y: dy,
+                        },
+                        size,
+                        scale,
+                    );
+                    for action in actions {
+                        if let AppAction::RequestRedraw = action {
+                            if let Some(w) = &self.devtools_window {
+                                w.request_redraw();
+                            }
+                        }
+                    }
+                }
+            }
+            WindowEvent::ModifiersChanged(new_modifiers) => {
+                self.devtools_modifiers = new_modifiers.state();
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    winit::event::KeyEvent {
+                        physical_key: winit::keyboard::PhysicalKey::Code(key_code),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                // F12 in DevTools window also toggles
+                if key_code == winit::keyboard::KeyCode::F12 {
+                    self.close_devtools();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+// ── DevTools data extraction helpers ─────────────────────────────────────────
+
+use rinch_dom::node::RawNodeId;
+
+/// Compute absolute position of a node by walking up the parent chain.
+fn compute_absolute_pos(tree: &rinch_dom::node::NodeTree, id: RawNodeId) -> (f32, f32) {
+    let mut x = 0.0f32;
+    let mut y = 0.0f32;
+    let mut current = Some(id);
+    while let Some(nid) = current {
+        if let Some(node) = tree.get(nid) {
+            x += node.layout.x;
+            y += node.layout.y;
+            if node.computed_style.position == rinch_dom::computed_style::PositionValue::Fixed {
+                break;
+            }
+            if let Some(parent_id) = node.parent {
+                if let Some(parent) = tree.get(parent_id) {
+                    x -= parent.scroll_offset.0 as f32;
+                    y -= parent.scroll_offset.1 as f32;
+                }
+            }
+            current = node.parent;
+        } else {
+            break;
+        }
+    }
+    (x, y)
 }
 
 // ── Public entry points ──────────────────────────────────────────────────────

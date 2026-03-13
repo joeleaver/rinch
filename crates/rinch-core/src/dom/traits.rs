@@ -136,6 +136,16 @@ pub trait DomDocument {
     /// Set a CSS style property on an element.
     fn set_style(&mut self, node: NodeId, property: &str, value: &str);
 
+    /// Set multiple CSS style properties on an element in a single operation.
+    /// More efficient than calling `set_style` multiple times because it only
+    /// parses the style string once.
+    fn set_styles(&mut self, node: NodeId, properties: &[(&str, &str)]) {
+        // Default implementation falls back to calling set_style for each property.
+        for &(property, value) in properties {
+            self.set_style(node, property, value);
+        }
+    }
+
     /// Mark a node as dirty (needs re-layout).
     fn mark_dirty(&mut self, node: NodeId);
 

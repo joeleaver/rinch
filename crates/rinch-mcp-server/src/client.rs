@@ -61,6 +61,8 @@ pub enum DebugCommandKind {
         key: String,
         shift: bool,
         ctrl: bool,
+        #[serde(default)]
+        alt: bool,
     },
     #[serde(rename = "get_caret_position")]
     GetCaretPosition { node_id: usize, byte_offset: usize },

@@ -4,8 +4,9 @@
 pub(crate) mod compositor;
 #[cfg(feature = "gpu")]
 pub mod desktop;
-pub mod devtools;
-pub mod devtools_overlay;
+pub mod devtools_css;
+pub mod devtools_panel;
+pub mod devtools_store;
 #[cfg(feature = "gpu")]
 pub(crate) mod frame_upload;
 pub mod html_parser;
@@ -18,8 +19,7 @@ pub mod transparent_renderer;
 pub mod types;
 pub mod window;
 
-pub use devtools::{DevToolsPanel, DevToolsState};
-pub use devtools_overlay::render_overlay;
+pub use devtools_store::DevToolsStore;
 #[allow(deprecated)]
 pub use rinch_runtime::{run_on_main_thread, run_rinch, run_rinch_with_window_props};
 pub use types::{ElementLayout, HoveredElementInfo, RinchEvent};

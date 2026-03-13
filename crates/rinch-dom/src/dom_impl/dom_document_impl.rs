@@ -513,6 +513,58 @@ impl DomDocument for RinchDocument {
         );
     }
 
+    fn set_styles(&mut self, node: NodeId, properties: &[(&str, &str)]) {
+        let mut styles: HashMap<String, String> = self.tree.nodes[node.0]
+            .attributes
+            .get("style")
+            .map(|s| parse_style_string(s))
+            .unwrap_or_default();
+        for &(property, value) in properties {
+            styles.insert(property.to_string(), value.to_string());
+        }
+        let style_str = styles
+            .iter()
+            .map(|(k, v)| format!("{}: {}", k, v))
+            .collect::<Vec<_>>()
+            .join("; ");
+        self.tree.nodes[node.0]
+            .attributes
+            .insert("style".to_string(), style_str.clone());
+
+        use style::properties::parse_style_attribute;
+        use style::stylesheets::CssRuleType;
+        use url::Url;
+
+        let url = Url::parse("about:blank").unwrap();
+        let extra_data = style::stylesheets::UrlExtraData::from(url);
+        let pdb = parse_style_attribute(
+            &style_str,
+            &extra_data,
+            None,
+            QuirksMode::NoQuirks,
+            CssRuleType::Style,
+        );
+        self.tree.nodes[node.0].style_attribute_cache =
+            Some(ServoArc::new(self.tree.guard.wrap(pdb)));
+
+        *self.tree.nodes[node.0].stylo_element_data.borrow_mut() = None;
+        self.tree.style_roots.push(node.0);
+        self.tree.styles_dirty = true;
+        if self.tree.nodes[node.0].ifc_root.is_some()
+            || self.tree.nodes[node.0].is_inline()
+            || self.tree.nodes[node.0].text_layout.is_some()
+        {
+            self.invalidate_ifc_for_node(node.0);
+            if let Some(parent_id) = self.tree.nodes[node.0].parent {
+                self.invalidate_parent_ifc(parent_id);
+            }
+        }
+        self.push_dirty_flags(
+            node.0,
+            DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT,
+        );
+    }
+
     fn mark_dirty(&mut self, node: NodeId) {
         self.push_dirty(node.0);
     }

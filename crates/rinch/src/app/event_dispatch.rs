@@ -693,16 +693,13 @@ impl RinchApp {
                 } else {
                     #[cfg(feature = "desktop")]
                     if key == KeyCode::F12 {
-                        self.devtools.toggle();
-                        tracing::info!(
-                            "DevTools: {}",
-                            if self.devtools.visible {
-                                "opened"
-                            } else {
-                                "closed"
-                            }
-                        );
-                        actions.push(AppAction::RequestRedraw);
+                        actions.push(AppAction::ToggleDevTools);
+                        return actions;
+                    }
+
+                    // Alt+I: toggle inspect mode
+                    if key == KeyCode::KeyI && alt && !ctrl && !shift {
+                        actions.push(AppAction::ToggleInspectMode);
                         return actions;
                     }
 

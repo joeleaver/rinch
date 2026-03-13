@@ -110,6 +110,10 @@ pub enum AppAction {
     DragResizeWindow(ResizeDirection),
     /// Set the mouse cursor icon. Values match CSS cursor keywords.
     SetCursor(CursorStyle),
+    /// Toggle the DevTools window.
+    ToggleDevTools,
+    /// Toggle inspect mode (hover highlight).
+    ToggleInspectMode,
 }
 
 /// Platform-agnostic cursor style matching CSS cursor property values.

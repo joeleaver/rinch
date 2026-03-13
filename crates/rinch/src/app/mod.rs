@@ -48,8 +48,6 @@ use vello::Scene;
 pub type ViewportRect = (f32, f32, f32, f32);
 
 #[cfg(feature = "desktop")]
-use crate::shell::devtools::DevToolsState;
-
 #[cfg(feature = "debug")]
 use {
     rinch_debug::{CommandReceiver, DebugCommandKind, DebugResult},
@@ -138,9 +136,6 @@ pub struct RinchApp {
     pub(crate) pending_drag: Option<PendingDrag>,
     /// Active drag-and-drop: threshold crossed, snapshot captured.
     pub(crate) active_dnd: Option<ActiveDrag>,
-    /// DevTools state.
-    #[cfg(feature = "desktop")]
-    pub(crate) devtools: DevToolsState,
     /// Last theme CSS loaded into the document (for change detection).
     pub(crate) last_theme_css: Option<String>,
     /// Timestamp of last mouse click (for multi-click detection).
@@ -182,6 +177,9 @@ pub struct RinchApp {
     pub(crate) hovered_surface: Option<usize>,
     /// Node ID of the current file-drop hover target (for enter/leave during OS drag).
     pub(crate) file_hover_target: Option<usize>,
+    /// Inspect highlight rectangle (absolute x, y, w, h in logical pixels).
+    /// Set by the runtime when inspect mode is active and a node is hovered.
+    pub(crate) inspect_highlight: Option<(f32, f32, f32, f32)>,
     /// Font data to register on the document when it is created (for WASM).
     pub(crate) pending_fonts: Vec<&'static [u8]>,
     /// Debug command receiver.
@@ -208,8 +206,6 @@ impl RinchApp {
             scrollbar_drag: None,
             pending_drag: None,
             active_dnd: None,
-            #[cfg(feature = "desktop")]
-            devtools: DevToolsState::new(),
             last_theme_css: None,
             last_click_time: Instant::now(),
             last_click_pos: (0.0, 0.0),
@@ -230,6 +226,7 @@ impl RinchApp {
             ce_scroll_pending: Cell::new(false),
             hovered_surface: None,
             file_hover_target: None,
+            inspect_highlight: None,
             pending_fonts: Vec::new(),
             #[cfg(feature = "debug")]
             debug_cmd_rx: None,
@@ -520,6 +517,11 @@ impl RinchApp {
                 .append(drag.snapshot.scene(), Some(Affine::translate((tx, ty))));
         }
 
+        // Paint inspect mode highlight overlay
+        if let Some((x, y, w, h)) = self.inspect_highlight {
+            Self::paint_inspect_overlay(&mut self.painter, scale, x, y, w, h);
+        }
+
         self.scene_dirty = false;
         self.painter.scene()
     }
@@ -598,11 +600,14 @@ impl RinchApp {
 
             // Check if dirty region is small enough to benefit from caching
             // (less than 50% of viewport area)
-            let use_dirty_region = dirty_region.is_some_and(|r| {
-                let region_area = r.width() * r.height();
-                let viewport_area = w as f64 * h as f64;
-                region_area < viewport_area * 0.5 && region_area > 0.0
-            });
+            // Disable dirty region when inspect highlight is active (highlight
+            // is painted as an overlay and dirty tracking doesn't cover it).
+            let use_dirty_region = self.inspect_highlight.is_none()
+                && dirty_region.is_some_and(|r| {
+                    let region_area = r.width() * r.height();
+                    let viewport_area = w as f64 * h as f64;
+                    region_area < viewport_area * 0.5 && region_area > 0.0
+                });
 
             if use_dirty_region {
                 let region = dirty_region.unwrap();
@@ -664,6 +669,11 @@ impl RinchApp {
                 }
             }
 
+            // Paint inspect mode highlight overlay (after all document painting)
+            if let Some((x, y, w_r, h_r)) = self.inspect_highlight {
+                Self::paint_inspect_overlay(painter, scale, x, y, w_r, h_r);
+            }
+
             // Log paint timing if RINCH_PERF is set
             if std::env::var("RINCH_PERF").is_ok() {
                 let elapsed = paint_start.elapsed();
@@ -706,6 +716,38 @@ impl RinchApp {
                 !d.tree.dirty_nodes.is_empty() || d.tree.styles_dirty
             })
             .unwrap_or(false)
+    }
+
+    /// Paint a semi-transparent inspect highlight overlay on the given painter.
+    fn paint_inspect_overlay(
+        painter: &mut dyn Painter,
+        scale: f64,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    ) {
+        use peniko::color::AlphaColor;
+        use peniko::kurbo::{Affine, Rect, Stroke};
+        use rinch_dom::paint::painter::PaintShape;
+
+        let s = scale;
+        let rect = Rect::new(
+            (x as f64) * s,
+            (y as f64) * s,
+            ((x + w) as f64) * s,
+            ((y + h) as f64) * s,
+        );
+        let shape = PaintShape::Rect(rect);
+
+        // Semi-transparent blue fill
+        let fill_color = AlphaColor::new([66.0 / 255.0, 133.0 / 255.0, 244.0 / 255.0, 0.3]);
+        painter.fill_color(peniko::Fill::NonZero, Affine::IDENTITY, fill_color, &shape);
+
+        // 1px blue border
+        let border_color = AlphaColor::new([66.0 / 255.0, 133.0 / 255.0, 244.0 / 255.0, 0.8]);
+        let stroke = Stroke::new(1.0 * s);
+        painter.stroke_color(&stroke, Affine::IDENTITY, border_color, &shape);
     }
 
     // ── Input keyboard handling ─────────────────────────────────────────

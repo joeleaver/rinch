@@ -194,6 +194,42 @@ impl<T: 'static> Signal<T> {
         self.notify();
     }
 
+    /// Set the signal's value only if it differs from the current value.
+    ///
+    /// Returns `true` if the value was changed (and subscribers notified).
+    /// This avoids unnecessary effect re-runs when pushing the same data.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from a background thread.
+    pub fn set_if_changed(&self, value: T)
+    where
+        T: PartialEq,
+    {
+        if !super::is_main_thread() {
+            panic!(
+                "Signal::set_if_changed() called from a background thread. \
+                 Use signal.send(value) for automatic cross-thread dispatch, \
+                 or rinch::run_on_main_thread() to dispatch manually."
+            );
+        }
+        let changed = SIGNAL_STORE.with(|store| {
+            let mut store = store.borrow_mut();
+            let slot = store
+                .get_slot_mut(self.id, self.generation)
+                .expect("Signal::set_if_changed() on freed signal");
+            let old = slot.value.downcast_ref::<T>().unwrap();
+            if *old == value {
+                return false;
+            }
+            slot.value = Box::new(value);
+            true
+        });
+        if changed {
+            self.notify();
+        }
+    }
+
     /// Update the signal's value using a function.
     ///
     /// This will notify all subscribers to re-run.
