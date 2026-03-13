@@ -1,0 +1,15 @@
+{
+  "name": "rinch",
+  "owner": {
+    "name": "Rinch Contributors",
+    "url": "https://github.com/joeleaver/rinch"
+  },
+  "plugins": [
+    {
+      "name": "rinch",
+      "source": "./claude-plugin",
+      "description": "Best practices and code guidance for building UIs with the Rinch GUI framework for Rust",
+      "version": "0.1.0"
+    }
+  ]
+}
