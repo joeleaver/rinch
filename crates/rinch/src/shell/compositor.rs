@@ -45,6 +45,8 @@ struct Uniforms {
     _pad: vec2<f32>,
     // Border radii in pixels: (top-left, top-right, bottom-right, bottom-left)
     border_radius: vec4<f32>,
+    // Clip rect in UV coords: (x, y, w, h). When w > 0, pixels outside are discarded.
+    clip_rect: vec4<f32>,
 };
 
 @group(0) @binding(0) var layer_tex: texture_2d<f32>;
@@ -79,6 +81,14 @@ fn sd_rounded_rect(p: vec2<f32>, b: vec2<f32>, r: vec4<f32>) -> f32 {
 fn fs_layer(in: VertexOutput) -> @location(0) vec4<f32> {
     let uv = in.uv;
     let vr = uniforms.layer_rect;
+
+    // Clip to overflow ancestor bounds when set (clip_rect.z > 0 means active)
+    let cr = uniforms.clip_rect;
+    if cr.z > 0.0 {
+        if uv.x < cr.x || uv.x > cr.x + cr.z || uv.y < cr.y || uv.y > cr.y + cr.w {
+            discard;
+        }
+    }
 
     // Only write inside the layer viewport rect
     if uv.x >= vr.x && uv.x <= vr.x + vr.z && uv.y >= vr.y && uv.y <= vr.y + vr.w {
@@ -129,6 +139,8 @@ struct Uniforms {
     _pad: [f32; 2],
     /// Border radii in physical pixels: [top-left, top-right, bottom-right, bottom-left].
     border_radius: [f32; 4],
+    /// Clip rect in UV coords: [x, y, w, h]. w > 0 means active.
+    clip_rect: [f32; 4],
 }
 
 /// GPU pipeline for compositing RGBA layers with the Vello UI.
@@ -301,12 +313,17 @@ impl LayerCompositor {
         surface_size: (u32, u32),
         clear_color: Option<wgpu::Color>,
         border_radius: [f32; 4],
+        clip_rect: Option<(f32, f32, f32, f32)>,
     ) {
         let layer_view = layer_texture.create_view(&TextureViewDescriptor::default());
 
         // Convert viewport from logical pixels to UV coordinates
         let sw = surface_size.0 as f32;
         let sh = surface_size.1 as f32;
+        let clip_uv = match clip_rect {
+            Some((cx, cy, cw, ch)) => [cx / sw, cy / sh, cw / sw, ch / sh],
+            None => [0.0, 0.0, 0.0, 0.0], // w=0 means inactive
+        };
         let uniforms = Uniforms {
             layer_rect: [
                 viewport.0 / sw,
@@ -317,6 +334,7 @@ impl LayerCompositor {
             surface_size: [sw, sh],
             _pad: [0.0, 0.0],
             border_radius,
+            clip_rect: clip_uv,
         };
 
         let pass_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -394,9 +412,14 @@ impl LayerCompositor {
         surface_size: (u32, u32),
         clear_color: Option<wgpu::Color>,
         border_radius: [f32; 4],
+        clip_rect: Option<(f32, f32, f32, f32)>,
     ) {
         let sw = surface_size.0 as f32;
         let sh = surface_size.1 as f32;
+        let clip_uv = match clip_rect {
+            Some((cx, cy, cw, ch)) => [cx / sw, cy / sh, cw / sw, ch / sh],
+            None => [0.0, 0.0, 0.0, 0.0],
+        };
         let uniforms = Uniforms {
             layer_rect: [
                 viewport.0 / sw,
@@ -407,6 +430,7 @@ impl LayerCompositor {
             surface_size: [sw, sh],
             _pad: [0.0, 0.0],
             border_radius,
+            clip_rect: clip_uv,
         };
 
         let pass_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {

@@ -9,6 +9,7 @@ description = "Video playback for rinch applications"
 # Always available (all platforms)
 rinch-core.workspace = true
 rinch-macros.workspace = true
+rinch-tabler-icons.workspace = true
 tracing.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

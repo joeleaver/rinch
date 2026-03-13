@@ -1048,10 +1048,14 @@ impl RinchApp {
         let d = doc.borrow();
         for (node_id, node) in &d.tree.nodes {
             if node.attributes.get("data-viewport").map(|v| v.as_str()) == Some(name) {
-                // Compute absolute position by walking up the parent chain
+                // Compute absolute position by walking up the parent chain.
+                // Also detect orphaned subtrees: if the walk reaches a node with
+                // parent=None that isn't the root, this node was removed from the
+                // live tree (its ancestor was removed via remove_node).
                 let mut abs_x = 0.0_f32;
                 let mut abs_y = 0.0_f32;
                 let mut clip_radii = [0.0_f32; 4];
+                let mut connected = false;
                 let mut current = Some(node_id);
                 while let Some(id) = current {
                     if let Some(n) = d.tree.get(id) {
@@ -1086,16 +1090,115 @@ impl RinchApp {
                             }
                         }
 
+                        if n.parent.is_none() {
+                            // Only connected if this is the actual document root
+                            connected = id == d.tree.root_id;
+                        }
                         current = n.parent;
                     } else {
                         break;
                     }
+                }
+                if !connected {
+                    continue; // orphaned subtree — skip
                 }
                 return Some((
                     (abs_x, abs_y, node.layout.width, node.layout.height),
                     clip_radii,
                 ));
             }
+        }
+        None
+    }
+
+    /// Find the clip rect for a viewport by intersecting ALL overflow-clipping
+    /// ancestors in the parent chain.
+    ///
+    /// Returns the absolute rect `(x, y, w, h)` that is the intersection of
+    /// every ancestor with `overflow: hidden/scroll/auto/clip`. Returns `None`
+    /// if there are no clipping ancestors.
+    pub fn viewport_clip_rect(&self, name: &str) -> Option<ViewportRect> {
+        use rinch_dom::computed_style::values::OverflowValue;
+
+        let doc = self.doc.as_ref()?;
+        let d = doc.borrow();
+        for (_node_id, node) in &d.tree.nodes {
+            // Skip orphaned nodes
+            if node.parent.is_none() {
+                continue;
+            }
+            if node.attributes.get("data-viewport").map(|v| v.as_str()) != Some(name) {
+                continue;
+            }
+
+            // Helper: compute absolute position of a node
+            let abs_pos = |id: usize| -> (f32, f32) {
+                let mut ax = 0.0_f32;
+                let mut ay = 0.0_f32;
+                let mut walk = Some(id);
+                while let Some(wid) = walk {
+                    if let Some(wn) = d.tree.get(wid) {
+                        ax += wn.layout.x;
+                        ay += wn.layout.y;
+                        if let Some(pid) = wn.parent
+                            && let Some(pn) = d.tree.get(pid)
+                        {
+                            ax -= pn.scroll_offset.0 as f32;
+                            ay -= pn.scroll_offset.1 as f32;
+                        }
+                        walk = wn.parent;
+                    } else {
+                        break;
+                    }
+                }
+                (ax, ay)
+            };
+
+            // Walk ALL ancestors and intersect their clip rects
+            let mut result: Option<(f32, f32, f32, f32)> = None; // x1, y1, x2, y2
+            let mut current = node.parent;
+            while let Some(id) = current {
+                let Some(n) = d.tree.get(id) else { break };
+                let cs = &n.computed_style;
+                let clips = matches!(
+                    cs.overflow_x,
+                    OverflowValue::Hidden
+                        | OverflowValue::Scroll
+                        | OverflowValue::Auto
+                        | OverflowValue::Clip
+                ) || matches!(
+                    cs.overflow_y,
+                    OverflowValue::Hidden
+                        | OverflowValue::Scroll
+                        | OverflowValue::Auto
+                        | OverflowValue::Clip
+                );
+                if clips {
+                    let (ax, ay) = abs_pos(id);
+                    let x1 = ax;
+                    let y1 = ay;
+                    let x2 = ax + n.layout.width;
+                    let y2 = ay + n.layout.height;
+                    result = Some(match result {
+                        None => (x1, y1, x2, y2),
+                        Some((rx1, ry1, rx2, ry2)) => {
+                            (rx1.max(x1), ry1.max(y1), rx2.min(x2), ry2.min(y2))
+                        }
+                    });
+                }
+                current = n.parent;
+            }
+
+            return result.map(|(x1, y1, x2, y2)| {
+                let w = x2 - x1;
+                let h = y2 - y1;
+                if w > 0.0 && h > 0.0 {
+                    (x1, y1, w, h)
+                } else {
+                    // Fully clipped — return zero-area rect
+                    (0.0, 0.0, 0.0, 0.0)
+                }
+            });
         }
         None
     }
@@ -1109,6 +1212,10 @@ impl RinchApp {
         let d = doc.borrow();
         let id_str = surface_id.to_string();
         for (node_id, node) in &d.tree.nodes {
+            // Skip orphaned nodes
+            if node.parent.is_none() {
+                continue;
+            }
             if node
                 .attributes
                 .get("data-render-surface")

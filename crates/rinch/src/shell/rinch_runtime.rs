@@ -731,10 +731,73 @@ impl RinchRuntime {
             rinch_dom::paint::set_surface_pixels(Some(surface_pixels));
         }
 
+        // Also update layout sizes for video/GameViewport surfaces that use the
+        // viewport_name path (data-viewport attribute).
+        let reg_names = crate::render_surface::registered_viewport_names();
+        for viewport_name in &reg_names {
+            if let Some(viewport) = self.app.viewport_rect(viewport_name) {
+                let phys_w = (viewport.2 * s) as u32;
+                let phys_h = (viewport.3 * s) as u32;
+                crate::render_surface::update_layout_size(viewport_name, phys_w, phys_h);
+            }
+        }
+
+        // Collect compositor-path surface frames (video, GameViewport).
+        let compositor_frames = crate::render_surface::collect_surface_frames();
+        if !compositor_frames.is_empty() {
+            self.app.mark_scene_dirty();
+        }
+
         // Build the scene — surfaces paint inline at their layout positions
         let (_base, w, h) = self.app.build_pixels(scale, size);
 
         rinch_dom::paint::set_surface_pixels(None);
+
+        // Resolve viewport rects and clip rects for compositor frames before
+        // borrowing pixels mutably.
+        let blit_ops: Vec<_> = compositor_frames
+            .iter()
+            .filter_map(|(viewport_name, src_pixels, src_w, src_h)| {
+                let (viewport, _radii) = self.app.viewport_rect_with_radius(viewport_name)?;
+                let dst_x = (viewport.0 * s) as i32;
+                let dst_y = (viewport.1 * s) as i32;
+                let dst_w = (viewport.2 * s) as u32;
+                let dst_h = (viewport.3 * s) as u32;
+                let src_aspect = *src_w as f32 / (*src_h).max(1) as f32;
+                let vp_aspect = dst_w as f32 / dst_h.max(1) as f32;
+                let (bx, by, bw, bh) = if (src_aspect - vp_aspect).abs() < 0.001 {
+                    (dst_x, dst_y, dst_w, dst_h)
+                } else if src_aspect > vp_aspect {
+                    let fit_h = (dst_w as f32 / src_aspect) as u32;
+                    let offset_y = (dst_h - fit_h) as i32 / 2;
+                    (dst_x, dst_y + offset_y, dst_w, fit_h)
+                } else {
+                    let fit_w = (dst_h as f32 * src_aspect) as u32;
+                    let offset_x = (dst_w - fit_w) as i32 / 2;
+                    (dst_x + offset_x, dst_y, fit_w, dst_h)
+                };
+                // Get clip rect from nearest overflow-clipping ancestor
+                let clip = self.app.viewport_clip_rect(viewport_name).map(|cr| {
+                    (
+                        (cr.0 * s) as i32,
+                        (cr.1 * s) as i32,
+                        (cr.2 * s) as u32,
+                        (cr.3 * s) as u32,
+                    )
+                });
+                Some((src_pixels.as_slice(), *src_w, *src_h, bx, by, bw, bh, clip))
+            })
+            .collect();
+
+        // Blit compositor surface frames (video) onto the pixel buffer.
+        if !blit_ops.is_empty() {
+            if let Some(painter) = self.app.skia_painter.as_mut() {
+                let pixels = painter.pixels_mut();
+                for &(src_pixels, src_w, src_h, bx, by, bw, bh, clip) in &blit_ops {
+                    blit_rgba(pixels, w, h, src_pixels, src_w, src_h, bx, by, bw, bh, clip);
+                }
+            }
+        }
 
         let pixels = self
             .app
@@ -858,12 +921,17 @@ impl RinchRuntime {
                         }
                     };
                     let border_radius = [radii[0] * s, radii[1] * s, radii[2] * s, radii[3] * s];
+                    let clip_rect = self
+                        .app
+                        .viewport_clip_rect(&viewport_name)
+                        .map(|cr| (cr.0 * s, cr.1 * s, cr.2 * s, cr.3 * s));
                     all_layers.push(rinch_platform::CompositeLayer {
                         pixels,
                         width: surf_w,
                         height: surf_h,
                         viewport,
                         border_radius,
+                        clip_rect,
                     });
                 }
             }
@@ -894,11 +962,16 @@ impl RinchRuntime {
                         viewport.3 * s,
                     );
                     let border_radius = [radii[0] * s, radii[1] * s, radii[2] * s, radii[3] * s];
+                    let clip_rect = self
+                        .app
+                        .viewport_clip_rect(&viewport_name)
+                        .map(|cr| (cr.0 * s, cr.1 * s, cr.2 * s, cr.3 * s));
                     if let Some(ref ts) = *tex_source_arc.lock().unwrap() {
                         gpu_layers.push(super::desktop::GpuTextureLayer {
                             view: ts.view.clone(),
                             viewport,
                             border_radius,
+                            clip_rect,
                         });
                     }
                 }
@@ -1838,6 +1911,84 @@ fn compute_absolute_pos(tree: &rinch_dom::node::NodeTree, id: RawNodeId) -> (f32
         }
     }
     (x, y)
+}
+
+// ── Software compositor blit helper ──────────────────────────────────────────
+
+/// Nearest-neighbor blit of an RGBA source into a destination pixel buffer.
+///
+/// Scales `src` (src_w x src_h) into the destination rectangle
+/// (blit_x, blit_y, blit_w, blit_h) within the `dst` buffer (dst_w x dst_h).
+/// Clips to both destination bounds and an optional clip rect from a parent
+/// overflow container.
+#[cfg(not(feature = "gpu"))]
+#[allow(clippy::too_many_arguments)]
+fn blit_rgba(
+    dst: &mut [u8],
+    dst_w: u32,
+    dst_h: u32,
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    blit_x: i32,
+    blit_y: i32,
+    blit_w: u32,
+    blit_h: u32,
+    clip: Option<(i32, i32, u32, u32)>,
+) {
+    if blit_w == 0 || blit_h == 0 || src_w == 0 || src_h == 0 {
+        return;
+    }
+
+    // Compute effective clip bounds (intersection of dst bounds and clip rect)
+    let (clip_min_x, clip_min_y, clip_max_x, clip_max_y) = if let Some((cx, cy, cw, ch)) = clip {
+        (cx, cy, cx + cw as i32, cy + ch as i32)
+    } else {
+        (0, 0, dst_w as i32, dst_h as i32)
+    };
+
+    let dst_stride = dst_w as usize * 4;
+    let src_stride = src_w as usize * 4;
+
+    for dy in 0..blit_h {
+        let out_y = blit_y + dy as i32;
+        if out_y < 0 || out_y >= dst_h as i32 || out_y < clip_min_y || out_y >= clip_max_y {
+            continue;
+        }
+        let sy = ((dy as f32 / blit_h as f32) * src_h as f32) as u32;
+        let sy = sy.min(src_h - 1) as usize;
+
+        for dx in 0..blit_w {
+            let out_x = blit_x + dx as i32;
+            if out_x < 0 || out_x >= dst_w as i32 || out_x < clip_min_x || out_x >= clip_max_x {
+                continue;
+            }
+            let sx = ((dx as f32 / blit_w as f32) * src_w as f32) as u32;
+            let sx = sx.min(src_w - 1) as usize;
+
+            let src_off = sy * src_stride + sx * 4;
+            let dst_off = out_y as usize * dst_stride + out_x as usize * 4;
+
+            if src_off + 3 < src.len() && dst_off + 3 < dst.len() {
+                let r = src[src_off];
+                let g = src[src_off + 1];
+                let b = src[src_off + 2];
+                let a = src[src_off + 3];
+                if a == 255 {
+                    dst[dst_off] = r;
+                    dst[dst_off + 1] = g;
+                    dst[dst_off + 2] = b;
+                    dst[dst_off + 3] = a;
+                } else if a > 0 {
+                    let af = a as f32 / 255.0;
+                    dst[dst_off] = (r as f32 * af) as u8;
+                    dst[dst_off + 1] = (g as f32 * af) as u8;
+                    dst[dst_off + 2] = (b as f32 * af) as u8;
+                    dst[dst_off + 3] = a;
+                }
+            }
+        }
+    }
 }
 
 // ── Public entry points ──────────────────────────────────────────────────────

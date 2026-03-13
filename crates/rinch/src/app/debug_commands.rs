@@ -247,7 +247,7 @@ impl RinchApp {
                     self.resolve_and_repaint(w, h);
                 }
 
-                rinch_core::Drag::cancel();
+                rinch_core::finish_drag(x, y);
                 self.scrollbar_drag = None;
                 self.ce_selecting = false;
                 actions.push(AppAction::RequestRedraw);

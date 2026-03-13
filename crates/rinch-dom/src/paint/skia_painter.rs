@@ -290,6 +290,11 @@ impl TinySkiaPainter {
         self.pixmap.data()
     }
 
+    /// Get mutable access to the raw premultiplied pixel data.
+    pub fn pixels_mut(&mut self) -> &mut [u8] {
+        self.pixmap.data_mut()
+    }
+
     /// Width of the surface in pixels.
     pub fn width(&self) -> u32 {
         self.pixmap.width()

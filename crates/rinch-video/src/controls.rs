@@ -9,8 +9,24 @@
 use rinch_core::Component;
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::events::get_click_context;
+use rinch_tabler_icons::{
+    TablerIcon, TablerIconOptions, TablerIconStyle, render_tabler_icon_with_options,
+};
 
 use crate::VideoPlayer;
+
+/// Render a Tabler icon at a specific pixel size.
+fn icon(scope: &mut RenderScope, which: TablerIcon, size: u32) -> NodeHandle {
+    render_tabler_icon_with_options(
+        scope,
+        which,
+        TablerIconOptions {
+            style: TablerIconStyle::Filled,
+            size: Some(size),
+            ..Default::default()
+        },
+    )
+}
 
 /// Video playback controls.
 ///
@@ -168,29 +184,41 @@ fn video_controls_render(
         "display: flex; align-items: center; gap: 8px; height: 32px;",
     );
 
-    // Play/Pause button
+    // Play/Pause button — pre-render all icon variants, toggle visibility reactively
     let play_btn = scope.create_element("button");
     play_btn.set_attribute(
         "style",
-        "background: none; border: none; color: white; cursor: pointer; font-size: 16px; padding: 4px 8px;",
+        "background: none; border: none; color: white; cursor: pointer; padding: 4px 8px; display: flex; align-items: center; justify-content: center;",
     );
     {
         let p = player.clone();
         let handler_id = scope.register_handler(move || p.toggle());
         play_btn.set_attribute("data-rid", &handler_id.0.to_string());
     }
+    let icon_play = icon(scope, TablerIcon::PlayerPlay, 20);
+    let icon_pause = icon(scope, TablerIcon::PlayerPause, 20);
+    let icon_restart = icon(scope, TablerIcon::Refresh, 20);
+    play_btn.append_child(&icon_play);
+    play_btn.append_child(&icon_pause);
+    play_btn.append_child(&icon_restart);
     {
         let p = player.clone();
-        let btn = play_btn.clone();
+        let i_play = icon_play.clone();
+        let i_pause = icon_pause.clone();
+        let i_restart = icon_restart.clone();
         scope.create_effect(move || {
-            let icon = if p.playing.get() {
-                "\u{23F8}" // pause
-            } else if p.state.get() == crate::PlaybackState::Ended {
-                "\u{21BA}" // restart (↺)
+            let playing = p.playing.get();
+            let ended = p.state.get() == crate::PlaybackState::Ended;
+            let (show_play, show_pause, show_restart) = if playing {
+                ("none", "inline", "none")
+            } else if ended {
+                ("none", "none", "inline")
             } else {
-                "\u{25B6}" // play
+                ("inline", "none", "none")
             };
-            btn.set_text(icon);
+            i_play.set_style("display", show_play);
+            i_pause.set_style("display", show_pause);
+            i_restart.set_style("display", show_restart);
         });
     }
     controls_row.append_child(&play_btn);
@@ -229,27 +257,37 @@ fn video_controls_render(
         let vol_btn = scope.create_element("button");
         vol_btn.set_attribute(
             "style",
-            "background: none; border: none; color: white; cursor: pointer; font-size: 16px; padding: 4px 8px;",
+            "background: none; border: none; color: white; cursor: pointer; padding: 4px 8px; display: flex; align-items: center; justify-content: center;",
         );
         {
             let p = player.clone();
             let handler_id = scope.register_handler(move || p.set_muted(!p.muted.get()));
             vol_btn.set_attribute("data-rid", &handler_id.0.to_string());
         }
+        let icon_vol_off = icon(scope, TablerIcon::VolumeOff, 18);
+        let icon_vol_low = icon(scope, TablerIcon::Volume2, 18);
+        let icon_vol_high = icon(scope, TablerIcon::Volume, 18);
+        vol_btn.append_child(&icon_vol_off);
+        vol_btn.append_child(&icon_vol_low);
+        vol_btn.append_child(&icon_vol_high);
         {
             let p = player.clone();
-            let btn = vol_btn.clone();
+            let i_off = icon_vol_off.clone();
+            let i_low = icon_vol_low.clone();
+            let i_high = icon_vol_high.clone();
             scope.create_effect(move || {
                 let muted = p.muted.get();
                 let vol = p.volume.get();
-                let icon = if muted || vol == 0.0 {
-                    "\u{1F507}" // muted 🔇
+                let (show_off, show_low, show_high) = if muted || vol == 0.0 {
+                    ("inline", "none", "none")
                 } else if vol < 0.5 {
-                    "\u{1F509}" // low volume 🔉
+                    ("none", "inline", "none")
                 } else {
-                    "\u{1F50A}" // high volume 🔊
+                    ("none", "none", "inline")
                 };
-                btn.set_text(icon);
+                i_off.set_style("display", show_off);
+                i_low.set_style("display", show_low);
+                i_high.set_style("display", show_high);
             });
         }
         vol_group.append_child(&vol_btn);

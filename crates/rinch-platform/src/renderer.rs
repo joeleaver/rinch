@@ -74,6 +74,9 @@ pub struct CompositeLayer {
     pub viewport: (f32, f32, f32, f32),
     /// Border radii in physical pixels: [tl, tr, br, bl].
     pub border_radius: [f32; 4],
+    /// Optional clip rectangle from overflow ancestor in physical pixels: (x, y, w, h).
+    /// When set, pixels outside this rect are discarded.
+    pub clip_rect: Option<(f32, f32, f32, f32)>,
 }
 
 /// Backward-compatible alias.

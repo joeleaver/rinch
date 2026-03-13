@@ -4900,6 +4900,7 @@ dependencies = [
  "libmpv2-sys",
  "rinch-core",
  "rinch-macros",
+ "rinch-tabler-icons",
  "tracing",
  "wasm-bindgen",
  "web-sys",

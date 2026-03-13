@@ -51,6 +51,8 @@ pub struct GpuTextureLayer {
     pub viewport: (f32, f32, f32, f32),
     /// Border radii in physical pixels: [tl, tr, br, bl].
     pub border_radius: [f32; 4],
+    /// Optional clip rectangle from overflow ancestor in physical pixels: (x, y, w, h).
+    pub clip_rect: Option<(f32, f32, f32, f32)>,
 }
 
 // ── WinitWindow ──────────────────────────────────────────────────────────────
@@ -440,6 +442,7 @@ impl PlatformRenderer for WgpuRenderer {
                         None
                     },
                     layer.border_radius,
+                    layer.clip_rect,
                 );
                 layer_idx += 1;
             }
@@ -460,6 +463,7 @@ impl PlatformRenderer for WgpuRenderer {
                         None
                     },
                     gpu_layer.border_radius,
+                    gpu_layer.clip_rect,
                 );
                 layer_idx += 1;
             }
