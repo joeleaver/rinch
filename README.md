@@ -291,6 +291,28 @@ Transparent windows on Windows require a patched wgpu to enable Rgba8Unorm stora
 - **Branch**: `rinch-patch`
 - **Upstream PR**: https://github.com/gfx-rs/wgpu/pull/8908
 
+## Claude Code Plugin
+
+Rinch ships a [Claude Code plugin](https://docs.anthropic.com/en/docs/claude-code) that teaches Claude the correct patterns for writing rinch UI code — reactive closures, prop wrapping rules, signal usage, state management, and common pitfalls.
+
+### Install
+
+```bash
+# Add the rinch marketplace
+/plugin marketplace add joeleaver/rinch
+
+# Install the plugin
+/plugin install rinch@rinch
+```
+
+Or test locally from a clone:
+
+```bash
+claude --plugin-dir /path/to/rinch/claude-plugin
+```
+
+Once installed, Claude will proactively apply rinch best practices whenever it writes or edits code that uses the framework.
+
 ## AI-Assisted Development with MCP
 
 Rinch integrates with Claude via an MCP (Model Context Protocol) debug server for AI-assisted development. Enable the `debug` feature and use MCP tools to:
