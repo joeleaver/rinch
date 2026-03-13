@@ -18,6 +18,8 @@ When writing or editing rinch UI code, follow these rules. Violations compile fi
 
 **Rinch is NOT React.** The component function runs **once** to build the DOM. There are no re-renders. All subsequent updates are surgical DOM mutations driven by reactive Effects.
 
+**NEVER write code that re-renders components.** No rebuilding DOM subtrees in Effects, no calling component functions again, no tear-down-and-recreate loops. Use `{|| expr}` closures for reactive updates, `if`/`match`/`for` in rsx for conditional/list content.
+
 ## Rules (Ordered by Impact)
 
 ### 1. Dynamic values MUST use `{|| expr}` closures

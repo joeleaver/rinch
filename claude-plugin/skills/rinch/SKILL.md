@@ -11,6 +11,38 @@ Apply these rules whenever you write or review code that uses rinch.
 
 ---
 
+## Rule 0: NEVER re-render components
+
+Rinch components run **once** to build the DOM. There is no re-render cycle, no virtual DOM diff, no `setState` equivalent that rebuilds a component. **Do not write code that tries to force re-renders.**
+
+Anti-patterns to avoid:
+- Calling a component function again to "refresh" it
+- Using an Effect to tear down and rebuild a DOM subtree when state changes
+- Creating new DOM nodes inside a signal callback to replace existing ones
+- Building a "render loop" that reconstructs the UI on each frame
+
+Instead, use `{|| expr}` closures in rsx for reactive updates — they surgically update individual DOM nodes (text, attributes, styles) without touching the rest of the tree. For conditional content, use `if`/`match` in rsx (they're automatically reactive). For lists, use `for` with `key:`.
+
+```rust
+// WRONG — rebuilding DOM on every change
+Effect::new(move || {
+    container.clear_children();
+    for item in items.get() {
+        let div = scope.create_element("div");
+        // ... rebuild everything
+    }
+});
+
+// CORRECT — declarative, reactive, efficient
+rsx! {
+    div {
+        for item in items.get() {
+            div { key: item.id, {item.name.clone()} }
+        }
+    }
+}
+```
+
 ## Rule 1: Dynamic values MUST use `{|| expr}` closures
 
 This is the single most important rule. Without the closure wrapper, values are captured once at initial render and **silently never update**. It compiles, it shows the initial value, then it's frozen forever.
