@@ -1,6 +1,10 @@
-# Rinch
+<p align="center">
+  <img src="assets/logo.png" alt="Rinch" width="400">
+</p>
 
-**A GUI framework for Rust that doesn't hate you.**
+<h1 align="center">Rinch</h1>
+
+<p align="center"><strong>A GUI framework for Rust that doesn't hate you.</strong></p>
 
 Every few months, someone on r/rust asks "what's the state of GUI in Rust?" and the thread fills with the same apologetic answers: "it's getting better," "try [framework du jour]," "have you considered a web view?" Rinch exists because "getting better" has been the answer for seven years and we got tired of waiting.
 
