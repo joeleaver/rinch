@@ -1,0 +1,18 @@
+[package]
+name = "rinch-signaling-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Minimal WebSocket signaling relay server for rinch WebRTC"
+
+[[bin]]
+name = "rinch-signaling-server"
+path = "src/main.rs"
+
+[dependencies]
+rinch-webrtc = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tungstenite = "0.24"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

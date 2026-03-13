@@ -1,6 +1,14 @@
 # Build artifacts
 /target
+**/target/
+**/dist/
 docs/book/
+
+# Playwright
+.playwright-mcp/
+
+# Generated comparisons
+renderer-compare/
 
 # IDE
 .idea/

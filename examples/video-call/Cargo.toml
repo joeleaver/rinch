@@ -1,0 +1,18 @@
+[package]
+name = "video-call"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Full-featured desktop video calling with WebRTC, camera, mic, and screen sharing"
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop", "components", "theme", "debug"] }
+rinch-core = { workspace = true }
+rinch-macros = { workspace = true }
+rinch-tabler-icons = { workspace = true }
+rinch-av = { workspace = true, features = ["audio", "camera"] }
+rinch-webrtc = { workspace = true, features = ["native"] }
+rinch-signaling = { workspace = true }
+rinch-screen-capture = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

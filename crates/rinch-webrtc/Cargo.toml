@@ -1,0 +1,47 @@
+[package]
+name = "rinch-webrtc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WebRTC peer connections for rinch — native (str0m) and WASM (web_sys) backends"
+
+[dependencies]
+rinch-core = { workspace = true }
+rinch-av = { workspace = true, features = ["audio", "camera"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+str0m = { version = "0.7", optional = true }
+opus = { version = "0.3", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
+web-sys = { version = "0.3", optional = true, features = [
+    "RtcPeerConnection",
+    "RtcConfiguration",
+    "RtcIceServer",
+    "RtcSessionDescription",
+    "RtcSessionDescriptionInit",
+    "RtcSdpType",
+    "RtcIceCandidate",
+    "RtcIceCandidateInit",
+    "RtcPeerConnectionIceEvent",
+    "RtcTrackEvent",
+    "RtcPeerConnectionState",
+    "MediaStream",
+    "MediaStreamTrack",
+    "HtmlVideoElement",
+    "HtmlMediaElement",
+    "MediaDevices",
+    "MediaStreamConstraints",
+    "Navigator",
+] }
+
+[features]
+default = []
+native = ["dep:str0m", "dep:opus"]
+web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys"]
