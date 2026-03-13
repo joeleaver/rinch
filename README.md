@@ -54,10 +54,28 @@ That `{|| ...}` closure is doing all the work. It creates an Effect that tracks 
 **Native Rust Control Flow.** `if`, `for`, `match` in RSX — all automatically reactive. Keyed list reconciliation with the LIS algorithm. No `.map()` gymnastics.
 
 ```rust
-for todo in todos.get() {
-    div { key: todo.id,
-        {todo.name.clone()}
-        button { onclick: move || todos.update(|t| t.retain(|x| x.id != todo.id)), "×" }
+let tab = Signal::new("home");
+let todos = Signal::new(vec![Todo { id: 1, name: "Ship it".into() }]);
+let user = Signal::new(Some("Alice".to_string()));
+
+rsx! {
+    div {
+        // if — shows/hides reactively when the signal changes
+        if let Some(name) = user.get() {
+            p { "Welcome back, " {name} }
+        }
+
+        // match — switches between views
+        match tab.get().as_str() {
+            "home" => div { "Home sweet home" },
+            "settings" => div { "Tweak away" },
+            _ => div { "404, probably" },
+        }
+
+        // for — keyed list with minimal DOM ops on change
+        for todo in todos.get() {
+            div { key: todo.id, {todo.name.clone()} }
+        }
     }
 }
 ```
