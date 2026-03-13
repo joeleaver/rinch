@@ -130,6 +130,18 @@ If you want a GUI framework that's been blessed by a foundation and has a 200-pa
 
 [**Live web demo**](https://joeleaver.github.io/rinch/ui-zoo/) (requires WebGPU)
 
+## Who's Using Rinch
+
+**[PlotWeb](https://github.com/lost-conn/plotweb/)** — A gorgeous fiction writing platform that makes Google Docs look like Notepad. Full rich text editor, git-backed version history (every save is a commit!), Google Fonts integration with 1,500+ searchable fonts, per-book typography settings, and a warm dark mode that won't fry your retinas at 2 AM. The entire frontend is Rinch compiled to WASM — zero JavaScript. This is what "bet on the framework" looks like and it paid off beautifully.
+
+**[gitrinching](https://github.com/lost-conn/gitrinching/)** — A commit graph visualizer that turns your repo history into an interactive node graph with lane-based layout and bezier merge curves. Click commits for details, drag to pan, scroll to zoom. Point it at a directory and it tiles every repo it finds into a grid. Uses the software renderer — no GPU needed, just pure CPU-powered git archaeology. The kind of tool you open "just to check something" and then lose an hour exploring your own history.
+
+**[RKIField](https://github.com/joeleaver/rkifield)** — An SDF-based real-time graphics engine that threw out triangle meshes entirely. Every surface is a signed distance field in a sparse voxel brick pool, ray-marched through a 15-stage compute shader pipeline. Real-time GPU sculpting with CSG ops, volumetric fog/clouds/fire using the same SDF infrastructure as solid geometry, and physics queries against actual distance fields instead of proxy meshes. Rinch powers the editor UI. This project is absurdly ambitious and we are here for it.
+
+**[Rorumall](https://github.com/joeleaver/rorumall)** — A native desktop chat client for the OFSCP federated chat protocol. Multi-server connections over WebSocket, Ed25519-signed API requests, role-based access control, clipboard image paste, Markdown rendering, and a presence system — basically Discord if Discord were a single Rust binary that respected your privacy. Seven full-screen views, six reactive stores, all built on Rinch signals. Proof that the framework scales from counter demos to real applications with real networking and real complexity.
+
+Using rinch? [Open an issue](https://github.com/joeleaver/rinch/issues) or send a PR adding your project — we'd love to show it off.
+
 ## Architecture, Briefly
 
 ```
