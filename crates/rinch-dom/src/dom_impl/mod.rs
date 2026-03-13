@@ -233,6 +233,27 @@ impl RinchDocument {
         }
     }
 
+    /// Invalidate cached Stylo element data for all descendants of `node_id`.
+    /// Used when a parent's class or interaction state changes, since descendant
+    /// selectors (e.g. `.parent--active .child`) require descendants to be
+    /// re-resolved against the updated ancestor.
+    pub(crate) fn invalidate_descendant_styles(&mut self, node_id: usize) {
+        // Collect children first to avoid borrow issues
+        let children: Vec<usize> = self
+            .tree
+            .nodes
+            .get(node_id)
+            .map(|n| n.children.clone())
+            .unwrap_or_default();
+
+        for child_id in children {
+            if let Some(node) = self.tree.nodes.get(child_id) {
+                *node.stylo_element_data.borrow_mut() = None;
+            }
+            self.invalidate_descendant_styles(child_id);
+        }
+    }
+
     /// Advance all active CSS transitions by one frame.
     /// Returns true if any transitions are still active (caller should keep polling).
     pub fn tick_transitions(&mut self) -> bool {

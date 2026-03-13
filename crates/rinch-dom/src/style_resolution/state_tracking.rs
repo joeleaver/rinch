@@ -114,6 +114,9 @@ impl RinchDocument {
         }
         self.tree.style_roots.push(id);
         self.push_dirty_flags(id, DirtyFlags::STYLE | DirtyFlags::PAINT);
+        // Descendant selectors like `.parent:hover .child` require descendants
+        // to be re-resolved when the ancestor's interaction state changes.
+        self.invalidate_descendant_styles(id);
     }
 
     /// Update focus state: set the focused node, clear previous focus,

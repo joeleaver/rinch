@@ -89,12 +89,6 @@ input { oninput: move |value: String| name.set(value) }
 
 `set()`/`update()` panic off the main thread.
 
-### 11. Stylo gotchas
-
-- CSS descendant selectors don't cascade on parent class change — use inline style Effects
-- Clearing inline style doesn't restore class styles — always set explicit values for both states
-- CSS `:hover` descendant selectors unreliable — use `data-onenter`/`data-onleave` + Signals
-
 ## Quick Checklist
 
 Before finishing any rinch code change, verify:

@@ -381,21 +381,27 @@ impl DomDocument for RinchDocument {
 
         // Parse inline style into Stylo PropertyDeclarationBlock
         if name == "style" {
-            use style::properties::parse_style_attribute;
-            use style::stylesheets::CssRuleType;
-            use url::Url;
+            if value.trim().is_empty() {
+                // Empty/blank style: clear the cache entirely so Stylo sees None
+                // (not Some(empty_pdb)) and falls back to class-based styles.
+                self.tree.nodes[node.0].style_attribute_cache = None;
+            } else {
+                use style::properties::parse_style_attribute;
+                use style::stylesheets::CssRuleType;
+                use url::Url;
 
-            let url = Url::parse("about:blank").unwrap();
-            let extra_data = style::stylesheets::UrlExtraData::from(url);
-            let pdb = parse_style_attribute(
-                value,
-                &extra_data,
-                None, // error_reporter
-                QuirksMode::NoQuirks,
-                CssRuleType::Style,
-            );
-            self.tree.nodes[node.0].style_attribute_cache =
-                Some(ServoArc::new(self.tree.guard.wrap(pdb)));
+                let url = Url::parse("about:blank").unwrap();
+                let extra_data = style::stylesheets::UrlExtraData::from(url);
+                let pdb = parse_style_attribute(
+                    value,
+                    &extra_data,
+                    None, // error_reporter
+                    QuirksMode::NoQuirks,
+                    CssRuleType::Style,
+                );
+                self.tree.nodes[node.0].style_attribute_cache =
+                    Some(ServoArc::new(self.tree.guard.wrap(pdb)));
+            }
         }
         // Invalidate IFC if this node belongs to one (style/class changes affect inline layout).
         // Only for nodes that actually participate in inline formatting — block elements
@@ -431,6 +437,14 @@ impl DomDocument for RinchDocument {
                 node.0,
                 DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT,
             );
+
+            // Class changes can affect descendant selectors (e.g. `.parent--active .child`),
+            // so invalidate all descendants' cached Stylo data too. The style_root above
+            // ensures resolve_styles_recursive walks from this node down, and clearing
+            // descendants' caches forces Stylo to re-match selectors against the new class.
+            if name == "class" {
+                self.invalidate_descendant_styles(node.0);
+            }
         } else {
             self.push_dirty(node.0);
         }
@@ -448,6 +462,10 @@ impl DomDocument for RinchDocument {
             self.tree.nodes[node.0].style_attribute_cache = None;
             self.tree.style_roots.push(node.0);
             self.tree.styles_dirty = true;
+            // Class removal affects descendant selectors
+            if name == "class" {
+                self.invalidate_descendant_styles(node.0);
+            }
         } else {
             self.push_dirty(node.0);
         }
