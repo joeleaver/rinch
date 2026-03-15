@@ -103,6 +103,7 @@ fn handle_connection(stream: TcpStream, state: SharedState) -> Result<(), String
     let mut room_id = String::new();
     let room_id_ref = &mut room_id;
 
+    #[allow(clippy::result_large_err)]
     let callback = |req: &tungstenite::handshake::server::Request,
                     resp: tungstenite::handshake::server::Response|
      -> Result<
