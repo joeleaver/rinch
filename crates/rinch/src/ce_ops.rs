@@ -151,6 +151,134 @@ fn unwrap_element(d: &mut RinchDocument, element_id: usize) {
     d.remove_node(rinch_core::dom::NodeId(element_id));
 }
 
+/// Check if a tag is a known inline formatting tag.
+fn is_formatting_tag(tag: &str) -> bool {
+    matches!(
+        tag,
+        "strong" | "b" | "em" | "i" | "u" | "ins" | "s" | "strike" | "del" | "code" | "mark"
+    )
+}
+
+/// Check if a subtree contains any of the given node IDs.
+fn subtree_contains_any(tree: &rinch_dom::NodeTree, node_id: usize, ids: &[usize]) -> bool {
+    if ids.contains(&node_id) {
+        return true;
+    }
+    let children = match tree.get(node_id) {
+        Some(n) => n.children.clone(),
+        None => return false,
+    };
+    children.iter().any(|&c| subtree_contains_any(tree, c, ids))
+}
+
+/// Collect formatting tags between `node_id` and `stop_at` (exclusive),
+/// walking from child up to ancestor. Returns tags innermost-first.
+fn collect_inner_formatting_tags(
+    tree: &rinch_dom::NodeTree,
+    node_id: usize,
+    stop_at: usize,
+) -> Vec<String> {
+    let mut tags = Vec::new();
+    let mut current = node_id;
+    while let Some(parent_id) = tree.get(current).and_then(|n| n.parent) {
+        if parent_id == stop_at {
+            break;
+        }
+        if let Some(tag) = tree.get(parent_id).and_then(|n| n.tag()) {
+            if is_formatting_tag(tag) {
+                tags.push(tag.to_string());
+            }
+        }
+        current = parent_id;
+    }
+    tags
+}
+
+/// Partially unwrap a formatting element, preserving formatting on non-selected
+/// siblings. Only the children containing selected text nodes are moved outside
+/// the formatting element; non-selected children before/after keep their wrapper.
+fn partial_unwrap_formatting(d: &mut RinchDocument, fmt_id: usize, selected_ids: &[usize]) {
+    let parent_id = match d.tree.get(fmt_id).and_then(|n| n.parent) {
+        Some(p) => p,
+        None => return,
+    };
+    let tag = match d.tree.get(fmt_id).and_then(|n| n.tag()) {
+        Some(t) => t.to_string(),
+        None => return,
+    };
+
+    let children: Vec<usize> = d
+        .tree
+        .get(fmt_id)
+        .map(|n| n.children.clone())
+        .unwrap_or_default();
+    if children.is_empty() {
+        return;
+    }
+
+    // Find range of children that contain selected text
+    let first_sel = children
+        .iter()
+        .position(|&c| subtree_contains_any(&d.tree, c, selected_ids));
+    let last_sel = children
+        .iter()
+        .rposition(|&c| subtree_contains_any(&d.tree, c, selected_ids));
+
+    let (first_idx, last_idx) = match (first_sel, last_sel) {
+        (Some(f), Some(l)) => (f, l),
+        _ => return,
+    };
+
+    let before: Vec<usize> = children[..first_idx].to_vec();
+    let middle: Vec<usize> = children[first_idx..=last_idx].to_vec();
+    let after: Vec<usize> = children[last_idx + 1..].to_vec();
+
+    // Insertion reference: the node after fmt_id in parent (if any)
+    let fmt_next = next_sibling(&d.tree, parent_id, fmt_id);
+
+    // Step 1: Move middle children out of formatting, after fmt_id in parent.
+    // Forward iteration with insert_before(fmt_next) maintains correct order.
+    for &mid in &middle {
+        d.remove_node(rinch_core::dom::NodeId(mid));
+        if let Some(ref_id) = fmt_next {
+            d.insert_before(
+                rinch_core::dom::NodeId(parent_id),
+                rinch_core::dom::NodeId(mid),
+                rinch_core::dom::NodeId(ref_id),
+            );
+        } else {
+            d.append_child(
+                rinch_core::dom::NodeId(parent_id),
+                rinch_core::dom::NodeId(mid),
+            );
+        }
+    }
+
+    // Step 2: Wrap after-group in a new formatting element (same tag)
+    if !after.is_empty() {
+        let after_fmt = d.create_element(&tag);
+        if let Some(ref_id) = fmt_next {
+            d.insert_before(
+                rinch_core::dom::NodeId(parent_id),
+                after_fmt,
+                rinch_core::dom::NodeId(ref_id),
+            );
+        } else {
+            d.append_child(rinch_core::dom::NodeId(parent_id), after_fmt);
+        }
+        for &aft in &after {
+            d.remove_node(rinch_core::dom::NodeId(aft));
+            d.append_child(after_fmt, rinch_core::dom::NodeId(aft));
+        }
+    }
+
+    // Step 3: If no before-group, the original formatting element is now empty — remove it.
+    // If before is non-empty, the original element still wraps them.
+    if before.is_empty() {
+        d.remove_node(rinch_core::dom::NodeId(fmt_id));
+    }
+}
+
 /// Merge a list element with adjacent lists of the same type.
 /// Checks the previous and next siblings — if they are the same list tag,
 /// moves all items into one list and removes the others.
@@ -3248,6 +3376,8 @@ impl ContentEditableApi for CeOps {
         let selected_ids = text_nodes_in_range(&d.tree, self.ce_node_id, start, end);
 
         // Collect unique formatting ancestors, then unwrap each.
+        // Use partial unwrap when the formatting element contains non-selected text,
+        // so that sibling content retains its formatting.
         let mut fmt_ids = Vec::new();
         for &nid in &selected_ids {
             if let Some(fmt_id) = find_formatting_ancestor(&d.tree, nid, tag, self.ce_node_id) {
@@ -3257,8 +3387,18 @@ impl ContentEditableApi for CeOps {
             }
         }
         for &fmt_id in &fmt_ids {
-            if d.tree.get(fmt_id).is_some() {
+            if d.tree.get(fmt_id).is_none() {
+                continue;
+            }
+            // Check if ALL text descendants of this formatting element are selected
+            let mut all_text = Vec::new();
+            collect_text_nodes(&d.tree, fmt_id, &mut all_text);
+            let all_selected = all_text.iter().all(|t| selected_ids.contains(t));
+
+            if all_selected {
                 unwrap_element(&mut d, fmt_id);
+            } else {
+                partial_unwrap_formatting(&mut d, fmt_id, &selected_ids);
             }
         }
         drop(d);
@@ -3281,31 +3421,63 @@ impl ContentEditableApi for CeOps {
 
             if let Some(fmt_id) = fmt_ancestor {
                 // Already inside formatting — escape it.
-                // Place cursor in a text node after the formatting element.
+                // Place cursor after the formatting element, but preserve any
+                // inner formatting tags between the cursor and the escaped element.
+                // E.g. inside <strong><em>text|</em></strong>, escaping "strong"
+                // should create <em>ZWS</em> after <strong> so italic is preserved.
                 let parent_id = d
                     .tree
                     .get(fmt_id)
                     .and_then(|n| n.parent)
                     .unwrap_or(self.ce_node_id);
                 let next_sib = next_sibling(&d.tree, parent_id, fmt_id);
-                let escape_id = if let Some(next_id) = next_sib
-                    && d.tree.get(next_id).and_then(|n| n.text_content()).is_some()
-                {
-                    next_id
+
+                // Collect inner formatting tags (innermost-first) between cursor and fmt_id
+                let inner_tags =
+                    collect_inner_formatting_tags(&d.tree, self.cursor.node_id, fmt_id);
+
+                let cursor_target = if inner_tags.is_empty() {
+                    // No inner formatting — just place a ZWS text node after fmt_id
+                    if let Some(next_id) = next_sib
+                        && d.tree.get(next_id).and_then(|n| n.text_content()).is_some()
+                    {
+                        next_id
+                    } else {
+                        let zws = d.create_text("\u{200B}");
+                        if let Some(next_id) = next_sib {
+                            d.insert_before(
+                                rinch_core::dom::NodeId(parent_id),
+                                zws,
+                                rinch_core::dom::NodeId(next_id),
+                            );
+                        } else {
+                            d.append_child(rinch_core::dom::NodeId(parent_id), zws);
+                        }
+                        zws.0
+                    }
                 } else {
+                    // Build nested wrappers for inner formatting, e.g. <em><u>ZWS</u></em>
                     let zws = d.create_text("\u{200B}");
+                    let mut current_node = zws;
+                    // Iterate innermost-first: each wrap becomes the new outermost
+                    for inner_tag in &inner_tags {
+                        let wrapper = d.create_element(inner_tag);
+                        d.append_child(wrapper, current_node);
+                        current_node = wrapper;
+                    }
+                    // Insert outermost wrapper after fmt_id
                     if let Some(next_id) = next_sib {
                         d.insert_before(
                             rinch_core::dom::NodeId(parent_id),
-                            zws,
+                            current_node,
                             rinch_core::dom::NodeId(next_id),
                         );
                     } else {
-                        d.append_child(rinch_core::dom::NodeId(parent_id), zws);
+                        d.append_child(rinch_core::dom::NodeId(parent_id), current_node);
                     }
-                    zws.0
+                    zws.0 // Cursor goes into the innermost ZWS
                 };
-                self.cursor = DomCursor::new(escape_id, 0);
+                self.cursor = DomCursor::new(cursor_target, 0);
                 self.anchor = self.cursor;
             } else {
                 // Not inside formatting — enter it.
