@@ -23,6 +23,7 @@ pub(super) fn paint_svg(
     y: f64,
     w: f64,
     h: f64,
+    css_transform: Affine,
 ) {
     // Parse viewBox (default "0 0 24 24" for most icon SVGs)
     let viewbox = node
@@ -36,13 +37,13 @@ pub(super) fn paint_svg(
         return;
     }
 
-    // Compute transform: scale viewBox to fit layout bounds, then translate to position
+    // Compute transform: CSS transform composed with viewBox-to-layout scaling
     let sx = w / vb_w;
     let sy = h / vb_h;
     let s = sx.min(sy); // uniform scale (preserveAspectRatio default)
     let tx = x + (w - vb_w * s) * 0.5 - vb_x * s;
     let ty = y + (h - vb_h * s) * 0.5 - vb_y * s;
-    let transform = Affine::new([s, 0.0, 0.0, s, tx, ty]);
+    let transform = css_transform * Affine::new([s, 0.0, 0.0, s, tx, ty]);
 
     // Resolve "currentColor" — walk up the tree to find a `color` CSS property
     let current_color = resolve_current_color(tree, node);
