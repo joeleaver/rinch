@@ -435,9 +435,13 @@ impl RinchRuntime {
             .unwrap_or(&[]);
 
         if self.devtools_soft_renderer.is_none() {
-            self.devtools_soft_renderer = Some(
-                super::softbuffer_renderer::SoftbufferRenderer::new(window.window.clone(), w, h),
-            );
+            self.devtools_soft_renderer =
+                Some(super::softbuffer_renderer::SoftbufferRenderer::new(
+                    window.window.clone(),
+                    w,
+                    h,
+                    false,
+                ));
         }
 
         if let Some(renderer) = &mut self.devtools_soft_renderer {
@@ -813,6 +817,7 @@ impl RinchRuntime {
                 window.window.clone(),
                 w,
                 h,
+                transparent,
             ));
         }
 
