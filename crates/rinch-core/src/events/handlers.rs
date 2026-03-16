@@ -113,6 +113,48 @@ impl<F: Fn(Vec<PathBuf>) + 'static> crate::element::IntoEventHandler<FileDropCal
     }
 }
 
+/// Cloneable callback for scroll events.
+///
+/// Receives the current scroll offset (scroll_top) as `f64`.
+#[derive(Clone)]
+pub struct ScrollCallback(pub Rc<dyn Fn(f64)>);
+
+impl ScrollCallback {
+    /// Create a new scroll callback from a function.
+    pub fn new<F: Fn(f64) + 'static>(f: F) -> Self {
+        Self(Rc::new(f))
+    }
+
+    /// Invoke the callback with the current scroll offset.
+    pub fn invoke(&self, scroll_top: f64) {
+        (self.0)(scroll_top)
+    }
+}
+
+impl<F: Fn(f64) + 'static> From<F> for ScrollCallback {
+    fn from(f: F) -> Self {
+        Self::new(f)
+    }
+}
+
+impl std::fmt::Debug for ScrollCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ScrollCallback(...)")
+    }
+}
+
+impl crate::element::IntoEventHandler<ScrollCallback> for ScrollCallback {
+    fn into_event_handler(self) -> ScrollCallback {
+        self
+    }
+}
+
+impl<F: Fn(f64) + 'static> crate::element::IntoEventHandler<ScrollCallback> for F {
+    fn into_event_handler(self) -> ScrollCallback {
+        ScrollCallback::from(self)
+    }
+}
+
 /// Global counter for generating unique event handler IDs.
 static NEXT_HANDLER_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -131,6 +173,7 @@ thread_local! {
     static EVENT_REGISTRY: RefCell<EventRegistry> = RefCell::new(EventRegistry::new());
     static INPUT_REGISTRY: RefCell<InputRegistry> = RefCell::new(InputRegistry::new());
     static FILE_DROP_REGISTRY: RefCell<FileDropRegistry> = RefCell::new(FileDropRegistry::new());
+    static SCROLL_REGISTRY: RefCell<ScrollRegistry> = RefCell::new(ScrollRegistry::new());
     static INPUT_CONTEXT: RefCell<InputContext> = RefCell::new(InputContext::default());
     /// Flag to signal that an input event was handled and a re-render may be needed.
     static INPUT_EVENT_HANDLED: RefCell<bool> = const { RefCell::new(false) };
@@ -177,6 +220,19 @@ pub struct FileDropRegistry {
 }
 
 impl FileDropRegistry {
+    fn new() -> Self {
+        Self {
+            handlers: HashMap::new(),
+        }
+    }
+}
+
+/// Registry that maps event handler IDs to scroll callbacks.
+pub struct ScrollRegistry {
+    handlers: HashMap<EventHandlerId, ScrollCallback>,
+}
+
+impl ScrollRegistry {
     fn new() -> Self {
         Self {
             handlers: HashMap::new(),
@@ -336,6 +392,32 @@ pub fn dispatch_file_drop_event(id: EventHandlerId, paths: Vec<PathBuf>) -> bool
     }
 }
 
+/// Register a scroll event handler and return its ID.
+///
+/// The handler will be called when an element with the corresponding
+/// `data-onscroll` attribute is scrolled, passing the current scroll offset.
+pub fn register_scroll_handler(callback: ScrollCallback) -> EventHandlerId {
+    let id = next_handler_id();
+    SCROLL_REGISTRY.with(|registry| {
+        registry.borrow_mut().handlers.insert(id, callback);
+    });
+    id
+}
+
+/// Dispatch a scroll event to the handler with the given ID.
+///
+/// Returns `true` if a handler was found and called.
+pub fn dispatch_scroll_event(id: EventHandlerId, scroll_top: f64) -> bool {
+    let handler: Option<ScrollCallback> =
+        SCROLL_REGISTRY.with(|registry| registry.borrow().handlers.get(&id).cloned());
+    if let Some(h) = handler {
+        h.invoke(scroll_top);
+        true
+    } else {
+        false
+    }
+}
+
 /// Check if an input event was handled since last check, and clear the flag.
 ///
 /// This allows the shell to know if a re-render is needed after processing
@@ -359,6 +441,9 @@ pub fn clear_handlers() {
         registry.borrow_mut().handlers.clear();
     });
     FILE_DROP_REGISTRY.with(|registry| {
+        registry.borrow_mut().handlers.clear();
+    });
+    SCROLL_REGISTRY.with(|registry| {
         registry.borrow_mut().handlers.clear();
     });
     reset_handler_ids();

@@ -242,6 +242,25 @@ impl RenderScope {
         crate::events::register_file_drop_handler(crate::events::FileDropCallback::new(callback))
     }
 
+    /// Register a scroll event handler and return its ID.
+    ///
+    /// The handler receives the current scroll offset (scroll_top) as `f64`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let handler_id = scope.register_scroll_handler(|scroll_top| {
+    ///     println!("Scrolled to: {}", scroll_top);
+    /// });
+    /// element.set_attribute("data-onscroll", &handler_id.to_string());
+    /// ```
+    pub fn register_scroll_handler<F: Fn(f64) + 'static>(
+        &mut self,
+        callback: F,
+    ) -> crate::events::EventHandlerId {
+        crate::events::register_scroll_handler(crate::events::ScrollCallback::new(callback))
+    }
+
     /// Dispose of this scope and all child scopes.
     pub fn dispose(mut self) {
         // Dispose child scopes first
