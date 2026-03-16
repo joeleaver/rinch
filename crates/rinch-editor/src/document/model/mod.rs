@@ -762,16 +762,16 @@ mod tests {
         // Verify intermediate state
         assert_eq!(doc.block_count(), 1, "should have 1 block");
         let runs = doc.block_inline_runs(0);
-        assert_eq!(
-            runs.len(),
-            3,
-            "should have 3 inline runs, got: {:?}",
-            runs
-        );
+        assert_eq!(runs.len(), 3, "should have 3 inline runs, got: {:?}", runs);
 
         let roundtripped = doc.to_block_data();
 
-        assert_eq!(roundtripped.len(), 1, "roundtrip blocks: {:?}", roundtripped);
+        assert_eq!(
+            roundtripped.len(),
+            1,
+            "roundtrip blocks: {:?}",
+            roundtripped
+        );
         assert_eq!(roundtripped[0].content.len(), 3);
         assert_eq!(roundtripped[0].content[0].text, "hello ");
         assert!(roundtripped[0].content[0].marks.is_empty());
