@@ -46,14 +46,17 @@ impl SoftbufferRenderer {
         }
 
         let mut buffer = self.surface.buffer_mut().unwrap();
-        // Convert RGBA8 to softbuffer's native 0x00RRGGBB format.
+        // Convert RGBA8 to softbuffer's native 0xAARRGGBB format.
+        // Including the alpha channel enables window transparency on platforms
+        // that support it (X11 with 32-bit ARGB visual, Wayland with ARGB8888).
         for (i, pixel) in buffer.iter_mut().enumerate() {
             let src = i * 4;
-            if src + 2 < pixels.len() {
+            if src + 3 < pixels.len() {
                 let r = pixels[src] as u32;
                 let g = pixels[src + 1] as u32;
                 let b = pixels[src + 2] as u32;
-                *pixel = (r << 16) | (g << 8) | b;
+                let a = pixels[src + 3] as u32;
+                *pixel = (a << 24) | (r << 16) | (g << 8) | b;
             }
         }
         buffer.present().unwrap();

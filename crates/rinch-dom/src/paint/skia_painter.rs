@@ -347,6 +347,16 @@ impl TinySkiaPainter {
         self.pixmap.fill(tiny_skia::Color::WHITE);
     }
 
+    /// Fill the entire surface with a fully transparent background.
+    pub fn fill_transparent(&mut self) {
+        self.pixmap.fill(tiny_skia::Color::TRANSPARENT);
+    }
+
+    /// Clear a rectangular region to fully transparent.
+    pub fn clear_rect_transparent(&mut self, x: u32, y: u32, w: u32, h: u32) {
+        self.clear_rect_rgba(x, y, w, h, 0, 0, 0, 0);
+    }
+
     /// Fill the entire surface with an opaque black background.
     ///
     /// Used as the base layer when composite surfaces are present,

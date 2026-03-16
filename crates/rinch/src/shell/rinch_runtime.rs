@@ -426,7 +426,7 @@ impl RinchRuntime {
 
         let scale = window.scale_factor();
         let size = window.inner_size();
-        let (_base, w, h) = dt_app.build_pixels(scale, size);
+        let (_base, w, h) = dt_app.build_pixels(scale, size, false);
 
         let pixels = dt_app
             .skia_painter
@@ -707,6 +707,7 @@ impl RinchRuntime {
 
         let scale = window.scale_factor();
         let size = window.inner_size();
+        let transparent = self.app.is_transparent();
         let s = scale as f32;
 
         // Update layout sizes for render surfaces so callbacks get correct dimensions
@@ -749,7 +750,7 @@ impl RinchRuntime {
         }
 
         // Build the scene — surfaces paint inline at their layout positions
-        let (_base, w, h) = self.app.build_pixels(scale, size);
+        let (_base, w, h) = self.app.build_pixels(scale, size, transparent);
 
         rinch_dom::paint::set_surface_pixels(None);
 
@@ -1230,7 +1231,7 @@ impl RinchRuntime {
             let scale = self.scale_factor();
             let size = self.window_size();
             // Screenshot: pass empty layers (captures UI only, not live surfaces)
-            let (pixels, w, h) = self.app.build_pixels(scale, size);
+            let (pixels, w, h) = self.app.build_pixels(scale, size, false);
             let png_bytes = screenshot::encode_png(pixels, w, h);
             DebugResult::Bytes {
                 data: base64::engine::general_purpose::STANDARD.encode(&png_bytes),

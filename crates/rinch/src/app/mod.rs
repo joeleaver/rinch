@@ -537,7 +537,12 @@ impl RinchApp {
     /// Returns (pixels, width, height) in RGBA8 format. The painter is lazily
     /// created on first call and resized as needed.
     #[cfg(not(feature = "gpu"))]
-    pub fn build_pixels(&mut self, scale: f64, size: (u32, u32)) -> (&[u8], u32, u32) {
+    pub fn build_pixels(
+        &mut self,
+        scale: f64,
+        size: (u32, u32),
+        transparent: bool,
+    ) -> (&[u8], u32, u32) {
         let w = (size.0 as f64 * scale).round() as u32;
         let h = (size.1 as f64 * scale).round() as u32;
 
@@ -617,7 +622,11 @@ impl RinchApp {
                 let ry = region.y0 as u32;
                 let rw = region.width().ceil() as u32;
                 let rh = region.height().ceil() as u32;
-                painter.clear_rect_white(rx, ry, rw, rh);
+                if transparent {
+                    painter.clear_rect_transparent(rx, ry, rw, rh);
+                } else {
+                    painter.clear_rect_white(rx, ry, rw, rh);
+                }
 
                 // Set dirty region so paint_node can skip subtrees outside it
                 use peniko::kurbo::Rect;
@@ -653,7 +662,11 @@ impl RinchApp {
             } else {
                 // Full repaint
                 painter.reset();
-                painter.fill_white();
+                if transparent {
+                    painter.fill_transparent();
+                } else {
+                    painter.fill_white();
+                }
 
                 if let Some(doc) = &self.doc {
                     let mut d = doc.borrow_mut();
