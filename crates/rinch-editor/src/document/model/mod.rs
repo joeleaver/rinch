@@ -3,6 +3,8 @@
 mod mutations;
 mod queries;
 pub(crate) mod serialization;
+#[cfg(test)]
+mod roundtrip_tests;
 
 use std::collections::HashMap;
 
