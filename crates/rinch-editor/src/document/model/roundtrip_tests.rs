@@ -502,7 +502,7 @@ fn long_document() {
     blocks.push(heading("1", vec![plain("Long Document")]));
     for i in 0..20 {
         blocks.push(para(vec![
-            plain(&format!("Paragraph {} with "  , i)),
+            plain(&format!("Paragraph {} with ", i)),
             marked(&format!("bold part {}", i), "bold"),
             plain(" and normal."),
         ]));
@@ -581,12 +581,8 @@ fn insert_text_then_roundtrip() {
 fn insert_text_with_marks_then_roundtrip() {
     let mut doc = EditorDocument::new();
     doc.insert_text(Position::new(0), "Hello ").unwrap();
-    doc.insert_text_with_marks(
-        Position::new(6),
-        "bold",
-        &[MarkData::new("bold")],
-    )
-    .unwrap();
+    doc.insert_text_with_marks(Position::new(6), "bold", &[MarkData::new("bold")])
+        .unwrap();
     doc.insert_text_with_marks(Position::new(10), " world", &[])
         .unwrap();
 
@@ -622,10 +618,7 @@ fn split_block_then_roundtrip() {
     let blocks = doc.to_block_data();
     assert_blocks_eq(
         &roundtrip(&blocks),
-        &[
-            para(vec![plain("Hello")]),
-            para(vec![plain("World")]),
-        ],
+        &[para(vec![plain("Hello")]), para(vec![plain("World")])],
     );
     assert_blocks_eq(&roundtrip_via_bytes(&blocks), &blocks);
 }
@@ -688,10 +681,7 @@ fn triple_roundtrip_stability() {
         ]),
         blockquote(vec![marked("quoted bold", "bold")]),
         bullet(vec![plain("item 1")]),
-        bullet(vec![
-            plain("item 2 with "),
-            marked("emphasis", "italic"),
-        ]),
+        bullet(vec![plain("item 2 with "), marked("emphasis", "italic")]),
     ];
 
     let r1 = roundtrip_via_bytes(&input);
