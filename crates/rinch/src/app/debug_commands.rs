@@ -46,7 +46,7 @@ impl RinchApp {
                     message: "__SCREENSHOT_DELEGATE__".into(),
                 }
             }
-            DebugCommandKind::DomTree => {
+            DebugCommandKind::DomTree { max_depth, root_id } => {
                 let Some(doc) = &self.doc else {
                     return DebugResult::Error {
                         message: "No document".into(),
@@ -54,7 +54,11 @@ impl RinchApp {
                 };
                 let d = doc.borrow();
                 DebugResult::Json {
-                    data: rinch_dom::testing::serialize_tree(&d.tree),
+                    data: rinch_dom::testing::serialize_tree_with_options(
+                        &d.tree,
+                        max_depth.or(Some(3)),
+                        root_id,
+                    ),
                 }
             }
             DebugCommandKind::QuerySelector { selector } => {

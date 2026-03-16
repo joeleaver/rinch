@@ -37,6 +37,14 @@ pub struct NodeIdParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DomTreeParams {
+    /// Maximum depth to recurse (default: 3). Beyond this, children are collapsed to a count and list of IDs.
+    pub max_depth: Option<u32>,
+    /// Start from a specific node ID instead of the body element.
+    pub root_id: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ClickParams {
     /// X coordinate in pixels
     pub x: f64,
@@ -266,9 +274,18 @@ impl RinchMcpServer {
         }
     }
 
-    #[tool(description = "Get the full DOM tree of the rinch application as JSON.")]
-    async fn dom_tree(&self) -> Result<CallToolResult, McpError> {
-        self.forward_json_command(DebugCommandKind::DomTree).await
+    #[tool(
+        description = "Get the DOM tree of the rinch application as JSON. Defaults to depth 3 — use max_depth to go deeper, or root_id to scope to a subtree."
+    )]
+    async fn dom_tree(
+        &self,
+        params: Parameters<DomTreeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.forward_json_command(DebugCommandKind::DomTree {
+            max_depth: params.0.max_depth,
+            root_id: params.0.root_id.map(|id| id as usize),
+        })
+        .await
     }
 
     #[tool(description = "Query DOM nodes by selector.")]

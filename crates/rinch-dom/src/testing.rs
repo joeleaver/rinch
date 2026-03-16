@@ -9,12 +9,25 @@ use crate::node::{NodeKind, NodeTree, RawNodeId};
 
 /// Serialize the DOM tree starting from body as a JSON value (compact — no computed styles).
 pub fn serialize_tree(tree: &NodeTree) -> Value {
-    serialize_node(tree, tree.body_id, 0.0, 0.0, false)
+    serialize_tree_with_options(tree, None, None)
+}
+
+/// Serialize the DOM tree with depth and root options.
+/// `max_depth` limits recursion (default: unlimited). At the limit, children are
+/// replaced with a count so the caller knows there's more to explore.
+/// `root_id` starts serialization from a specific node instead of body.
+pub fn serialize_tree_with_options(
+    tree: &NodeTree,
+    max_depth: Option<u32>,
+    root_id: Option<RawNodeId>,
+) -> Value {
+    let root = root_id.unwrap_or(tree.body_id);
+    serialize_node(tree, root, 0.0, 0.0, false, max_depth, 0)
 }
 
 /// Serialize the DOM tree with full computed styles on every node.
 pub fn serialize_tree_verbose(tree: &NodeTree) -> Value {
-    serialize_node(tree, tree.body_id, 0.0, 0.0, true)
+    serialize_node(tree, tree.body_id, 0.0, 0.0, true, None, 0)
 }
 
 fn serialize_node(
@@ -23,6 +36,8 @@ fn serialize_node(
     offset_x: f32,
     offset_y: f32,
     verbose: bool,
+    max_depth: Option<u32>,
+    depth: u32,
 ) -> Value {
     let Some(node) = tree.get(id) else {
         return Value::Null;
@@ -40,12 +55,6 @@ fn serialize_node(
 
     let sx = node.scroll_offset.0 as f32;
     let sy = node.scroll_offset.1 as f32;
-
-    let children: Vec<Value> = node
-        .children
-        .iter()
-        .map(|&child_id| serialize_node(tree, child_id, abs_x - sx, abs_y - sy, verbose))
-        .collect();
 
     let mut obj = json!({
         "id": node.id,
@@ -77,6 +86,32 @@ fn serialize_node(
     if verbose {
         obj["computed_styles"] = json!(&node.computed_style);
     }
+
+    // At the depth limit, show child count instead of expanding
+    if let Some(max) = max_depth {
+        if depth >= max && !node.children.is_empty() {
+            obj["children_count"] = json!(node.children.len());
+            obj["children_ids"] = json!(node.children);
+            return obj;
+        }
+    }
+
+    let children: Vec<Value> = node
+        .children
+        .iter()
+        .map(|&child_id| {
+            serialize_node(
+                tree,
+                child_id,
+                abs_x - sx,
+                abs_y - sy,
+                verbose,
+                max_depth,
+                depth + 1,
+            )
+        })
+        .collect();
+
     if !children.is_empty() {
         obj["children"] = Value::Array(children);
     }

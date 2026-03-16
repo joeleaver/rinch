@@ -14,7 +14,12 @@ pub enum DebugCommandKind {
     #[serde(rename = "screenshot")]
     Screenshot,
     #[serde(rename = "dom_tree")]
-    DomTree,
+    DomTree {
+        #[serde(default)]
+        max_depth: Option<u32>,
+        #[serde(default)]
+        root_id: Option<usize>,
+    },
     #[serde(rename = "query_selector")]
     QuerySelector { selector: String },
     #[serde(rename = "get_node")]
