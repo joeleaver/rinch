@@ -254,9 +254,11 @@ pub(crate) fn detect_resize_edge(
     inset: f32,
 ) -> Option<rinch_platform::ResizeDirection> {
     use rinch_platform::ResizeDirection::*;
-    let grab = 3.0;
-    let edge = inset + grab;
-    let corner = inset + 6.0;
+    // The inset defines the full resize grab zone from the window edge.
+    // No additional grab extension — keep resize handles within the inset
+    // so they don't overlap content (e.g. scrollbars).
+    let edge = inset;
+    let corner = inset * 2.0;
 
     let near_left = x < edge;
     let near_right = x > window_width - edge;
