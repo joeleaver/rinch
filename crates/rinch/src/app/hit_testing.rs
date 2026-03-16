@@ -254,9 +254,9 @@ pub(crate) fn detect_resize_edge(
     inset: f32,
 ) -> Option<rinch_platform::ResizeDirection> {
     use rinch_platform::ResizeDirection::*;
-    let grab = 8.0;
+    let grab = 3.0;
     let edge = inset + grab;
-    let corner = inset + 16.0;
+    let corner = inset + 6.0;
 
     let near_left = x < edge;
     let near_right = x > window_width - edge;
