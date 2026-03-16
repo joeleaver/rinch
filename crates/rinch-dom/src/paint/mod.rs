@@ -589,7 +589,22 @@ fn paint_node(
 
     match &node.kind {
         NodeKind::Element(el) if el.tag == "svg" => {
-            paint_svg(tree, node, painter, scale, x, y, w, h);
+            // Compute CSS transform for the SVG element (same as img/generic elements)
+            let node_transform = if !node.computed_style.transform.is_identity {
+                let m = &node.computed_style.transform.matrix;
+                let cs = &node.computed_style;
+                let ox = cs.transform_origin_x.resolve(node.layout.width);
+                let oy = cs.transform_origin_y.resolve(node.layout.height);
+                let cx = x + ox as f64 * scale;
+                let cy = y + oy as f64 * scale;
+                parent_transform
+                    * Affine::translate((cx, cy))
+                    * Affine::new(*m)
+                    * Affine::translate((-cx, -cy))
+            } else {
+                parent_transform
+            };
+            paint_svg(tree, node, painter, scale, x, y, w, h, node_transform);
         }
         NodeKind::Element(el) if el.tag == "img" => {
             let rect = Rect::new(x, y, x + w, y + h);
