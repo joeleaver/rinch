@@ -158,10 +158,12 @@ impl EditorDocument {
     /// Used for load: from_bytes → to_block_data → load_content (CE API).
     pub fn from_block_data(blocks: &[BlockData]) -> Self {
         let mut doc = Self::new();
-        // Remove the default empty paragraph
-        if doc.block_count() > 0 {
-            doc.delete_block(0).ok();
+        if blocks.is_empty() {
+            return doc;
         }
+        // Insert all blocks at indices 0..n, pushing the default empty
+        // paragraph to the end. We delete it after the loop when it's
+        // no longer the only block (delete_block refuses the last one).
         for (i, block) in blocks.iter().enumerate() {
             let attrs = if block.attrs.is_empty() {
                 None
@@ -170,7 +172,10 @@ impl EditorDocument {
             };
             doc.insert_block_at(i, &block.block_type, attrs).ok();
 
-            // Insert inline content
+            // Insert inline content.
+            // Always use insert_text_with_marks (even for empty marks) so that
+            // plain-text runs after marked runs create a new inline node instead
+            // of being appended to the marked inline (which would inherit its marks).
             let mut offset = 0;
             let base_pos = doc.block_start_position(i);
             for run in &block.content {
@@ -183,14 +188,12 @@ impl EditorDocument {
                     .map(|m| MarkData::with_attrs(m.mark_type.clone(), m.attrs.clone()))
                     .collect();
                 let pos = crate::document::position::Position::new(base_pos + offset);
-                if marks.is_empty() {
-                    doc.insert_text(pos, &run.text).ok();
-                } else {
-                    doc.insert_text_with_marks(pos, &run.text, &marks).ok();
-                }
+                doc.insert_text_with_marks(pos, &run.text, &marks).ok();
                 offset += run.text.len();
             }
         }
+        // Remove the default empty paragraph (now at the end)
+        doc.delete_block(blocks.len()).ok();
         doc
     }
 

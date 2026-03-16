@@ -670,4 +670,114 @@ mod tests {
         );
         assert_eq!(runs[0].text, "Bold");
     }
+
+    #[test]
+    fn from_block_data_plain_after_bold_not_inherited() {
+        // Regression test: from_block_data must not let plain text inherit
+        // marks from a preceding marked inline. Previously, plain-text runs
+        // used insert_text (which appends to whatever inline the position
+        // resolves to, inheriting its marks) instead of insert_text_with_marks.
+        use rinch_core::ce::{BlockData, InlineMarkData, InlineRunData};
+
+        let blocks = vec![BlockData {
+            block_type: "paragraph".to_string(),
+            attrs: HashMap::new(),
+            content: vec![
+                InlineRunData {
+                    text: "normal ".to_string(),
+                    marks: vec![],
+                },
+                InlineRunData {
+                    text: "bold".to_string(),
+                    marks: vec![InlineMarkData {
+                        mark_type: "bold".to_string(),
+                        attrs: HashMap::new(),
+                    }],
+                },
+                InlineRunData {
+                    text: " normal".to_string(),
+                    marks: vec![],
+                },
+            ],
+        }];
+
+        let doc = EditorDocument::from_block_data(&blocks);
+        let runs = doc.block_inline_runs(0);
+
+        // Should have 3 inline runs preserving mark boundaries
+        assert_eq!(
+            runs.len(),
+            3,
+            "Expected 3 inline runs, got {}: {:?}",
+            runs.len(),
+            runs
+        );
+        // First run: plain
+        assert_eq!(runs[0].text, "normal ");
+        assert!(runs[0].marks.is_empty(), "first run should have no marks");
+        // Second run: bold
+        assert_eq!(runs[1].text, "bold");
+        assert!(
+            runs[1].marks.iter().any(|m| m.mark_type == "bold"),
+            "second run should be bold"
+        );
+        // Third run: plain (NOT bold)
+        assert_eq!(runs[2].text, " normal");
+        assert!(
+            runs[2].marks.is_empty(),
+            "third run should have no marks, got: {:?}",
+            runs[2].marks
+        );
+    }
+
+    #[test]
+    fn from_block_data_roundtrip_preserves_marks() {
+        // Verify that from_block_data -> to_block_data is lossless
+        use rinch_core::ce::{BlockData, InlineMarkData, InlineRunData};
+
+        let original = vec![BlockData {
+            block_type: "paragraph".to_string(),
+            attrs: HashMap::new(),
+            content: vec![
+                InlineRunData {
+                    text: "hello ".to_string(),
+                    marks: vec![],
+                },
+                InlineRunData {
+                    text: "world".to_string(),
+                    marks: vec![InlineMarkData {
+                        mark_type: "bold".to_string(),
+                        attrs: HashMap::new(),
+                    }],
+                },
+                InlineRunData {
+                    text: "!".to_string(),
+                    marks: vec![],
+                },
+            ],
+        }];
+
+        let doc = EditorDocument::from_block_data(&original);
+
+        // Verify intermediate state
+        assert_eq!(doc.block_count(), 1, "should have 1 block");
+        let runs = doc.block_inline_runs(0);
+        assert_eq!(
+            runs.len(),
+            3,
+            "should have 3 inline runs, got: {:?}",
+            runs
+        );
+
+        let roundtripped = doc.to_block_data();
+
+        assert_eq!(roundtripped.len(), 1, "roundtrip blocks: {:?}", roundtripped);
+        assert_eq!(roundtripped[0].content.len(), 3);
+        assert_eq!(roundtripped[0].content[0].text, "hello ");
+        assert!(roundtripped[0].content[0].marks.is_empty());
+        assert_eq!(roundtripped[0].content[1].text, "world");
+        assert_eq!(roundtripped[0].content[1].marks[0].mark_type, "bold");
+        assert_eq!(roundtripped[0].content[2].text, "!");
+        assert!(roundtripped[0].content[2].marks.is_empty());
+    }
 }
