@@ -24,6 +24,8 @@ pub struct InputsSectionState {
     pub brightness: Signal<f64>,
     pub password_visible: Signal<bool>,
     pub password_value: Signal<String>,
+    pub select_framework: Signal<String>,
+    pub select_color: Signal<String>,
 }
 
 /// Initialize the Inputs section state. Call this from the main app function.
@@ -48,6 +50,8 @@ pub fn init_inputs_state() {
         brightness: Signal::new(75.0),
         password_visible: Signal::new(false),
         password_value: Signal::new(String::new()), // Start empty for demo
+        select_framework: Signal::new(String::new()),
+        select_color: Signal::new("blue".to_string()),
     });
 }
 
@@ -158,6 +162,8 @@ pub fn inputs_section() -> NodeHandle {
         brightness,
         password_visible_sig,
         password_value,
+        select_framework,
+        select_color,
     ) = (
         state.check1,
         state.check2,
@@ -178,6 +184,8 @@ pub fn inputs_section() -> NodeHandle {
         state.brightness,
         state.password_visible,
         state.password_value,
+        state.select_framework,
+        state.select_color,
     );
 
     let toggle = |sig: Signal<bool>| move || sig.update(|v| *v = !*v);
@@ -436,6 +444,87 @@ pub fn inputs_section() -> NodeHandle {
                             label: "Large", size: "lg",
                             checked_fn: move || switch_lg.get(),
                             onchange: toggle(switch_lg)
+                        }
+                    }
+                }
+            }
+
+            Space { h: "xl" }
+
+            // ============================================
+            // SELECT
+            // ============================================
+            Title { order: 3, "Select" }
+            Space { h: "sm" }
+            Text { color: "dimmed", size: "sm", "Dropdown select for choosing from a list of options." }
+            Space { h: "md" }
+
+            SimpleGrid { cols: Some(2), spacing: "lg",
+                // Basic Select
+                Paper { p: "xl", radius: "md", with_border: true,
+                    Stack { gap: "md",
+                        Text { weight: "600", "Basic Select" }
+                        Text { size: "sm", color: "dimmed", "Pick your favorite framework" }
+                        Space { h: "xs" }
+                        Select {
+                            label: "Framework",
+                            placeholder: "Choose one...",
+                            value_fn: move || select_framework.get(),
+                            onchange: move |v: String| select_framework.set(v),
+                            data: vec![
+                                SelectOption::new("rinch", "Rinch (obviously)"),
+                                SelectOption::new("dioxus", "Dioxus"),
+                                SelectOption::new("leptos", "Leptos"),
+                                SelectOption::new("iced", "Iced"),
+                                SelectOption::new("slint", "Slint"),
+                                SelectOption::new("egui", "egui"),
+                            ],
+                        }
+                        Text { size: "xs", color: "dimmed",
+                            "Selected: " {|| {
+                                let v = select_framework.get();
+                                if v.is_empty() { "(none)".to_string() } else { v }
+                            }}
+                        }
+                    }
+                }
+
+                // Select states & features
+                Paper { p: "xl", radius: "md", with_border: true,
+                    Stack { gap: "md",
+                        Text { weight: "600", "States & Features" }
+                        Text { size: "sm", color: "dimmed", "Error, disabled, required, description" }
+                        Space { h: "xs" }
+                        Select {
+                            label: "Color",
+                            description: "Used for the primary theme",
+                            value_fn: move || select_color.get(),
+                            onchange: move |v: String| select_color.set(v),
+                            data: vec![
+                                SelectOption::new("blue", "Blue"),
+                                SelectOption::new("cyan", "Cyan"),
+                                SelectOption::new("teal", "Teal"),
+                                SelectOption::new("green", "Green"),
+                                SelectOption::new("red", "Red"),
+                                SelectOption::new("violet", "Violet"),
+                            ],
+                        }
+                        Select {
+                            label: "With Error",
+                            error: "This field is required",
+                            placeholder: "Select something...",
+                            data: vec![
+                                SelectOption::new("a", "Option A"),
+                                SelectOption::new("b", "Option B"),
+                            ],
+                        }
+                        Select {
+                            label: "Disabled",
+                            disabled: true,
+                            value: "locked",
+                            data: vec![
+                                SelectOption::new("locked", "Can't change this"),
+                            ],
                         }
                     }
                 }

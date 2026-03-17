@@ -216,7 +216,7 @@ pub use paper::Paper;
 pub use password_input::PasswordInput;
 pub use progress::Progress;
 pub use radio::{Radio, RadioGroup};
-pub use select::Select;
+pub use select::{Select, SelectOption};
 pub use simple_grid::SimpleGrid;
 pub use skeleton::Skeleton;
 pub use slider::Slider;
