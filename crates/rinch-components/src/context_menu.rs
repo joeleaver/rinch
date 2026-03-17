@@ -21,17 +21,41 @@
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::{Component, Signal};
 
+use crate::dropdown_menu::set_menu_close_signal;
+
 /// A context menu component that shows on right-click.
 ///
 /// Children should be a `ContextMenuTarget` followed by a `ContextMenuDropdown`.
 /// The target gets an `oncontextmenu` handler wired up automatically.
 /// The dropdown is positioned at the click coordinates.
-#[derive(Debug, Default)]
-pub struct ContextMenu;
+pub struct ContextMenu {
+    /// Internal opened state — set automatically, not a user prop.
+    #[doc(hidden)]
+    pub opened: Signal<bool>,
+}
+
+impl std::fmt::Debug for ContextMenu {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContextMenu").finish()
+    }
+}
+
+impl Default for ContextMenu {
+    fn default() -> Self {
+        let opened = Signal::new(false);
+        // Set thread-local so DropdownMenuItem children (rendered after this
+        // struct is constructed but before Component::render) can capture it.
+        set_menu_close_signal(opened);
+        Self { opened }
+    }
+}
 
 impl Component for ContextMenu {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
-        let opened = Signal::new(false);
+        let opened = self.opened;
+        // Children have already been rendered and captured the close signal.
+        // Clear it so nested menus don't leak.
+        crate::dropdown_menu::clear_menu_close_signal();
         let pos_x = Signal::new(0.0f32);
         let pos_y = Signal::new(0.0f32);
         let vp_w = Signal::new(0.0f32);

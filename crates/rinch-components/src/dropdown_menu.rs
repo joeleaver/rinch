@@ -3,10 +3,37 @@
 //! A dropdown menu component (distinct from native AppMenu/Menu).
 
 use rinch_core::Component;
+use rinch_core::Signal;
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::reactive::Effect;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use std::rc::Rc;
+
+/// Thread-local signal that menu containers (ContextMenu, DropdownMenu) set
+/// before their children render. DropdownMenuItem reads it to close the menu
+/// on item click.
+///
+/// This must be thread-local (not context) because Component::render receives
+/// pre-rendered children — context set in render() is too late.
+use std::cell::RefCell;
+thread_local! {
+    static MENU_CLOSE_SIGNAL: RefCell<Option<Signal<bool>>> = const { RefCell::new(None) };
+}
+
+/// Set the menu close signal. Call before rendering menu item children.
+pub fn set_menu_close_signal(signal: Signal<bool>) {
+    MENU_CLOSE_SIGNAL.with(|s| *s.borrow_mut() = Some(signal));
+}
+
+/// Clear the menu close signal. Call after rendering menu item children.
+pub fn clear_menu_close_signal() {
+    MENU_CLOSE_SIGNAL.with(|s| *s.borrow_mut() = None);
+}
+
+/// Get the current menu close signal, if any.
+pub fn get_menu_close_signal() -> Option<Signal<bool>> {
+    MENU_CLOSE_SIGNAL.with(|s| *s.borrow())
+}
 
 /// Reactive callback type for opened state.
 pub type ReactiveBool = Rc<dyn Fn() -> bool>;
@@ -327,11 +354,17 @@ impl Component for DropdownMenuItem {
             btn.set_attribute("disabled", "");
         }
 
-        // Click handler
+        // Click handler — also closes the parent menu if one exists
         if let Some(ref cb) = self.onclick {
+            let close_signal = get_menu_close_signal();
             let handler_id = __scope.register_handler({
                 let cb = cb.clone();
-                move || cb.invoke()
+                move || {
+                    cb.invoke();
+                    if let Some(signal) = close_signal {
+                        signal.set(false);
+                    }
+                }
             });
             btn.set_attribute("data-rid", &handler_id.0.to_string());
         }
