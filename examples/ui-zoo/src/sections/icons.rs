@@ -254,11 +254,11 @@ struct IconCellData {
 #[component]
 fn reactive_icon_grid(current_page: Signal<usize>, use_filled: Signal<bool>) -> NodeHandle {
     // Create a grid container for the icon list
-    let grid_container = __scope.create_element("div");
-    grid_container.set_attribute(
-        "style",
-        "display: grid; grid-template-columns: repeat(10, 1fr); gap: 8px;",
-    );
+    let grid_container = rsx! {
+        div {
+            style: "display: grid; grid-template-columns: repeat(10, 1fr); gap: 8px;",
+        }
+    };
 
     // Create reactive list using for_each_dom - items are inserted as
     // siblings after a comment marker inside the grid container
@@ -289,42 +289,29 @@ fn reactive_icon_grid(current_page: Signal<usize>, use_filled: Signal<bool>) -> 
                 .collect()
         },
         // View function - renders a single icon cell
-        // Note: Could also use auto-downcast with typed parameter: |data: &IconCellData, scope|
         |item, scope| {
+            let __scope = scope;
             let data = item.data.downcast_ref::<IconCellData>().unwrap();
+            let icon_name = data.icon.name();
+            let icon_svg = render_tabler_icon(__scope, data.icon, data.style);
 
-            let cell = scope.create_element("div");
-            cell.set_attribute("class", "icon-cell");
-            cell.set_attribute(
-                "style",
-                "display: flex; flex-direction: column; align-items: center; padding: 12px; \
-                 border-radius: var(--rinch-radius-sm); cursor: pointer; transition: background 0.15s;",
-            );
-            cell.set_attribute("title", data.icon.name());
-
-            // Icon wrapper
-            let icon_wrapper = scope.create_element("div");
-            icon_wrapper.set_attribute(
-                "style",
-                "width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;",
-            );
-
-            // Render the icon
-            let icon_svg = render_tabler_icon(scope, data.icon, data.style);
-            icon_wrapper.append_child(&icon_svg);
-            cell.append_child(&icon_wrapper);
-
-            // Icon name
-            let name_text = scope.create_element("span");
-            name_text.set_attribute(
-                "style",
-                "font-size: 10px; color: var(--rinch-color-dimmed); margin-top: 4px; \
-                 max-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center;",
-            );
-            name_text.set_text(data.icon.name());
-            cell.append_child(&name_text);
-
-            cell
+            rsx! {
+                div {
+                    class: "icon-cell",
+                    style: "display: flex; flex-direction: column; align-items: center; padding: 12px; \
+                            border-radius: var(--rinch-radius-sm); cursor: pointer; transition: background 0.15s;",
+                    title: {icon_name},
+                    div {
+                        style: "width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;",
+                        {icon_svg}
+                    }
+                    span {
+                        style: "font-size: 10px; color: var(--rinch-color-dimmed); margin-top: 4px; \
+                                max-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center;",
+                        {icon_name}
+                    }
+                }
+            }
         },
         None, // No PartialEq-based data comparison (raw ForItem API)
     );

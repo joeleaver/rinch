@@ -197,62 +197,44 @@ pub fn editor_section() -> NodeHandle {
 
 /// Render a single API reference row.
 fn render_api_row(__scope: &mut RenderScope, method: &str, desc: &str) -> NodeHandle {
-    let row = __scope.create_element("div");
-    row.set_attribute(
-        "style",
-        "display: flex; justify-content: space-between; align-items: center; \
-         padding: 4px 8px; border-radius: 4px; background: var(--rinch-color-default);",
-    );
-
-    let code = __scope.create_element("span");
-    code.set_attribute(
-        "style",
-        "font-family: monospace; font-size: 13px; font-weight: 600;",
-    );
-    code.set_text(method);
-    row.append_child(&code);
-
-    let label = __scope.create_element("span");
-    label.set_attribute(
-        "style",
-        "font-size: 13px; color: var(--rinch-color-dimmed);",
-    );
-    label.set_text(desc);
-    row.append_child(&label);
-
-    row
+    rsx! {
+        div {
+            style: "display: flex; justify-content: space-between; align-items: center; \
+                    padding: 4px 8px; border-radius: 4px; background: var(--rinch-color-default);",
+            span {
+                style: "font-family: monospace; font-size: 13px; font-weight: 600;",
+                {method}
+            }
+            span {
+                style: "font-size: 13px; color: var(--rinch-color-dimmed);",
+                {desc}
+            }
+        }
+    }
 }
 
 /// Render a single keyboard shortcut row.
 fn render_shortcut_row(__scope: &mut RenderScope, shortcut: &str, desc: &str) -> NodeHandle {
-    let row = __scope.create_element("div");
-    row.set_attribute(
-        "style",
-        "display: flex; justify-content: space-between; align-items: center; \
-         padding: 4px 8px; border-radius: 4px; background: var(--rinch-color-default);",
-    );
-
-    let label = __scope.create_element("span");
-    label.set_attribute("style", "font-size: 13px;");
-    label.set_text(desc);
-    row.append_child(&label);
-
-    let badge = __scope.create_element("span");
-    badge.set_attribute(
-        "style",
-        "font-size: 11px; font-family: monospace; padding: 2px 8px; border-radius: 4px; \
-         background: var(--rinch-color-default); color: var(--rinch-color-text);",
-    );
-    badge.set_text(shortcut);
-    row.append_child(&badge);
-
-    row
+    rsx! {
+        div {
+            style: "display: flex; justify-content: space-between; align-items: center; \
+                    padding: 4px 8px; border-radius: 4px; background: var(--rinch-color-default);",
+            span {
+                style: "font-size: 13px;",
+                {desc}
+            }
+            span {
+                style: "font-size: 11px; font-family: monospace; padding: 2px 8px; border-radius: 4px; \
+                        background: var(--rinch-color-default); color: var(--rinch-color-text);",
+                {shortcut}
+            }
+        }
+    }
 }
 
 /// Editor-specific CSS styles for content elements.
 #[component]
 fn render_editor_styles() -> NodeHandle {
-    let style = __scope.create_element("style");
     let css = r#"
         .editor-content p { margin: 0 0 8px 0; }
         .editor-content h1 { font-size: 2em; font-weight: 700; margin: 16px 0 8px 0; }
@@ -305,6 +287,7 @@ fn render_editor_styles() -> NodeHandle {
         .editor-content sup { vertical-align: super; font-size: smaller; }
     "#;
 
-    style.set_text(css);
-    style
+    rsx! {
+        style { {css} }
+    }
 }

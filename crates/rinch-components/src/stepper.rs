@@ -256,12 +256,12 @@ impl Component for StepperStep {
             } else if let Some(custom_icon) = self.icon {
                 render_tabler_icon(__scope, custom_icon, TablerIconStyle::Outline)
             } else {
-                __scope.create_text(&step_number.to_string())
+                rinch_core::IntoNode::into_node(step_number.to_string(), __scope)
             }
         } else if let Some(custom_icon) = self.icon {
             render_tabler_icon(__scope, custom_icon, TablerIconStyle::Outline)
         } else {
-            __scope.create_text(&step_number.to_string())
+            rinch_core::IntoNode::into_node(step_number.to_string(), __scope)
         };
 
         icon_container.append_child(&icon_content);
@@ -271,16 +271,14 @@ impl Component for StepperStep {
         let body = rinch_macros::rsx! { div { class: "rinch-stepper__step-body" } };
 
         if !self.label.is_empty() {
-            let label_span = rinch_macros::rsx! { span { class: "rinch-stepper__step-label" } };
-            let label_text = __scope.create_text(&self.label);
-            label_span.append_child(&label_text);
+            let label_span = rinch_macros::rsx! { span { class: "rinch-stepper__step-label", {self.label.clone()} } };
             body.append_child(&label_span);
         }
 
         if !self.description.is_empty() {
             let desc_span =
                 rinch_macros::rsx! { span { class: "rinch-stepper__step-description" } };
-            let desc_text = __scope.create_text(&self.description);
+            let desc_text = rinch_core::IntoNode::into_node(self.description.clone(), __scope);
             desc_span.append_child(&desc_text);
             body.append_child(&desc_span);
         }

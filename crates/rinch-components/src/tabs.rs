@@ -260,7 +260,7 @@ impl Component for Tabs {
 
             // Create underline indicator element for Default variant
             let indicator = if variant == TabsVariant::Default {
-                let el = __scope.create_element("div");
+                let el = rinch_macros::rsx! { div {} };
                 el.set_attribute(
                     "style",
                     "position: absolute; bottom: -2px; left: 0; right: 0; height: 2px;",

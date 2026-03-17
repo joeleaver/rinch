@@ -161,9 +161,8 @@ impl Component for Image {
 
         if !self.caption.is_empty() {
             let caption = &self.caption;
-            let figcaption = rinch_macros::rsx! { figcaption { class: "rinch-image__caption" } };
-            let text_node = __scope.create_text(caption);
-            figcaption.append_child(&text_node);
+            let figcaption =
+                rinch_macros::rsx! { figcaption { class: "rinch-image__caption", {caption} } };
             figure.append_child(&figcaption);
         }
 

@@ -85,7 +85,7 @@ impl std::fmt::Debug for FloatingPanel {
 }
 
 impl Component for FloatingPanel {
-    fn render(&self, scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
+    fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         // Read initial values from signals (or use defaults)
         let x_sig = self.x.unwrap_or_else(|| Signal::new(50.0));
         let y_sig = self.y.unwrap_or_else(|| Signal::new(50.0));
@@ -102,35 +102,29 @@ impl Component for FloatingPanel {
         let resizable = self.resizable;
 
         // Root container — position: absolute
-        let root = scope.create_element("div");
-        root.set_attribute("class", "rinch-floating-panel");
+        let root = rinch_macros::rsx! { div { class: "rinch-floating-panel" } };
         root.set_style("left", &format!("{}px", init_x));
         root.set_style("top", &format!("{}px", init_y));
         root.set_style("width", &format!("{}px", init_w));
         root.set_style("height", &format!("{}px", init_h));
 
         // === Header (drag handle) ===
-        let header = scope.create_element("div");
-        header.set_attribute("class", "rinch-floating-panel__header");
+        let header = rinch_macros::rsx! { div { class: "rinch-floating-panel__header" } };
 
         // Title
         if !self.title.is_empty() {
-            let title_span = scope.create_element("span");
-            title_span.set_attribute("class", "rinch-floating-panel__title");
-            let title_text = scope.create_text(&self.title);
-            title_span.append_child(&title_text);
+            let title_span = rinch_macros::rsx! { span { class: "rinch-floating-panel__title", {self.title.clone()} } };
             header.append_child(&title_span);
         }
 
         // Close button
         if let Some(ref cb) = self.on_close {
-            let close_btn = scope.create_element("button");
-            close_btn.set_attribute("class", "rinch-floating-panel__close");
+            let close_btn = rinch_macros::rsx! { button { class: "rinch-floating-panel__close" } };
             close_btn.set_attribute("aria-label", "Close panel");
-            let close_text = scope.create_text("\u{00D7}"); // × character
+            let close_text = rinch_core::IntoNode::into_node("\u{00D7}", __scope); // × character
             close_btn.append_child(&close_text);
 
-            let handler_id = scope.register_handler({
+            let handler_id = __scope.register_handler({
                 let cb = cb.clone();
                 move || cb.invoke()
             });
@@ -140,7 +134,7 @@ impl Component for FloatingPanel {
 
         // Drag-to-move handler on header
         {
-            let handler_id = scope.register_handler(move || {
+            let handler_id = __scope.register_handler(move || {
                 let ctx = get_click_context();
                 let offset_x = ctx.mouse_x - x_sig.get();
                 let offset_y = ctx.mouse_y - y_sig.get();
@@ -157,8 +151,7 @@ impl Component for FloatingPanel {
         root.append_child(&header);
 
         // === Body (children go here) ===
-        let body = scope.create_element("div");
-        body.set_attribute("class", "rinch-floating-panel__body");
+        let body = rinch_macros::rsx! { div { class: "rinch-floating-panel__body" } };
         for child in children {
             body.append_child(child);
         }
@@ -167,14 +160,13 @@ impl Component for FloatingPanel {
         // === Resize footer + handle (bottom-right corner) ===
         if resizable {
             // Footer spacer keeps the scrollbar above the resize handle
-            let footer = scope.create_element("div");
-            footer.set_attribute("class", "rinch-floating-panel__footer");
+            let footer = rinch_macros::rsx! { div { class: "rinch-floating-panel__footer" } };
             root.append_child(&footer);
 
-            let resize_handle = scope.create_element("div");
-            resize_handle.set_attribute("class", "rinch-floating-panel__resize");
+            let resize_handle =
+                rinch_macros::rsx! { div { class: "rinch-floating-panel__resize" } };
 
-            let handler_id = scope.register_handler(move || {
+            let handler_id = __scope.register_handler(move || {
                 let ctx = get_click_context();
                 let start_w = w_sig.get();
                 let start_h = h_sig.get();
@@ -194,7 +186,7 @@ impl Component for FloatingPanel {
         // === Surgical style Effects ===
 
         // Position effect
-        scope.create_effect({
+        __scope.create_effect({
             let root = root.clone();
             move || {
                 root.set_style("left", &format!("{}px", x_sig.get()));
@@ -203,7 +195,7 @@ impl Component for FloatingPanel {
         });
 
         // Size effect
-        scope.create_effect({
+        __scope.create_effect({
             let root = root.clone();
             move || {
                 root.set_style("width", &format!("{}px", w_sig.get()));

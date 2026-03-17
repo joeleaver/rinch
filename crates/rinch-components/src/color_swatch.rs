@@ -33,7 +33,7 @@ impl std::fmt::Debug for ColorSwatch {
 }
 
 impl Component for ColorSwatch {
-    fn render(&self, scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
+    fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         let size = if self.size.is_empty() {
             "28px"
         } else {
@@ -57,7 +57,7 @@ impl Component for ColorSwatch {
             class.push_str(" rinch-color-swatch--clickable");
         }
 
-        let root = scope.create_element("div");
+        let root = rinch_macros::rsx! { div {} };
         root.set_attribute("class", &class);
         root.set_attribute(
             "style",
@@ -69,13 +69,12 @@ impl Component for ColorSwatch {
 
         if let Some(ref cb) = self.onclick {
             let cb = cb.clone();
-            let handler_id = scope.register_handler(move || cb.invoke());
+            let handler_id = __scope.register_handler(move || cb.invoke());
             root.set_attribute("data-rid", &handler_id.0.to_string());
         }
 
         // Inner overlay for the actual color
-        let overlay = scope.create_element("div");
-        overlay.set_attribute("class", "rinch-color-swatch__overlay");
+        let overlay = rinch_macros::rsx! { div { class: "rinch-color-swatch__overlay" } };
         overlay.set_attribute(
             "style",
             &format!(

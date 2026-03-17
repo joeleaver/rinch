@@ -58,9 +58,9 @@ impl Component for Fieldset {
         }
 
         if !self.legend.is_empty() {
-            let legend_elem = rinch_macros::rsx! { legend { class: "rinch-fieldset__legend" } };
-            let text_node = __scope.create_text(&self.legend);
-            legend_elem.append_child(&text_node);
+            let legend_str = self.legend.clone();
+            let legend_elem =
+                rinch_macros::rsx! { legend { class: "rinch-fieldset__legend", {legend_str} } };
             container.append_child(&legend_elem);
         }
 

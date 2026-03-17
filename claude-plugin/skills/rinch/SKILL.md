@@ -11,7 +11,23 @@ Apply these rules whenever you write or review code that uses rinch.
 
 ---
 
-## Rule 0: NEVER re-render components
+## Rule 0: ALWAYS use `rsx!` — NEVER build DOM imperatively
+
+**This is the most common mistake.** Do NOT use `create_element()`, `create_text()`, `set_attribute()`, or `append_child()` to build UI. These are low-level internal APIs. All UI code MUST use the `rsx!` macro.
+
+If you find yourself writing `scope.create_element("div")` or `__scope.create_text("hello")`, **STOP**. You are doing it wrong. Use `rsx!` instead.
+
+| Imperative | rsx! equivalent |
+|---|---|
+| `scope.create_element("div")` | `div { }` |
+| `scope.create_text("hello")` | `"hello"` |
+| `node.set_attribute("class", "x")` | `class: "x"` |
+| `parent.append_child(&child)` | Nest child inside parent |
+| `register_handler(cb)` + `set_attribute("data-rid", ...)` | `onclick: move \|\| cb()` |
+| `for_each_dom` / `for_each_dom_typed` | `for item in collection { ... }` in rsx |
+| `show_dom` | `if condition { ... }` in rsx |
+
+## Rule 1: NEVER re-render components
 
 Rinch components run **once** to build the DOM. There is no re-render cycle, no virtual DOM diff, no `setState` equivalent that rebuilds a component. **Do not write code that tries to force re-renders.**
 
@@ -43,7 +59,7 @@ rsx! {
 }
 ```
 
-## Rule 1: Dynamic values MUST use `{|| expr}` closures
+## Rule 2: Dynamic values MUST use `{|| expr}` closures
 
 This is the single most important rule. Without the closure wrapper, values are captured once at initial render and **silently never update**. It compiles, it shows the initial value, then it's frozen forever.
 
@@ -65,7 +81,7 @@ span { {|| format!("{} items", items.get().len())} }
 
 **Self-check:** Every `.get()` inside `rsx!` should be inside a `{|| ...}`. If it's not, it's almost certainly a bug.
 
-## Rule 2: Don't manually wrap rsx prop values
+## Rule 3: Don't manually wrap rsx prop values
 
 The `rsx!` macro auto-wraps props. Manual wrapping causes double-wrapping and confusing type errors.
 
@@ -93,7 +109,7 @@ TextInput { value_fn: move || text.get() }
 Button { variant: "filled" }
 ```
 
-## Rule 3: Signal and Memo are Copy — never clone them
+## Rule 4: Signal and Memo are Copy — never clone them
 
 ```rust
 let count = Signal::new(0);
@@ -107,7 +123,7 @@ button { onclick: move || count.update(|n| *n += 1) }
 p { {|| count.get().to_string()} }
 ```
 
-## Rule 4: Component text props are String, not Option
+## Rule 5: Component text props are String, not Option
 
 Props like `variant`, `color`, `size`, `label` are `String`. Empty string = not set. The macro converts string literals automatically.
 
@@ -119,7 +135,7 @@ Button { variant: Some("filled".into()) }
 Button { variant: "filled" }
 ```
 
-## Rule 5: Only use `rinch::prelude::*`
+## Rule 6: Only use `rinch::prelude::*`
 
 The prelude re-exports everything from rinch-components and rinch-theme. Don't add separate crate deps.
 
@@ -139,7 +155,21 @@ use rinch::prelude::*;  // Includes all components, theme, signals, etc.
 // use rinch_theme::*;
 ```
 
-## Rule 6: State architecture
+## Rule 6b: `rsx!` works in ANY crate that depends on `rinch-core`
+
+The `rsx!` macro generates code using `rinch::core::` paths. In end-user crates, `rinch` is the facade crate. In internal crates, add a shim to `lib.rs`:
+
+```rust
+extern crate self as rinch;
+#[doc(hidden)]
+pub mod core {
+    pub use rinch_core::*;
+}
+```
+
+**Do NOT fall back to imperative code** because you think rsx won't work in a particular crate.
+
+## Rule 7: State architecture
 
 | Scope | Use |
 |-------|-----|
@@ -149,7 +179,7 @@ use rinch::prelude::*;  // Includes all components, theme, signals, etc.
 
 `Effect` is intentionally excluded from the prelude. For reactive DOM updates, use `{|| ...}` in rsx. Only import `Effect` explicitly for syncing with external systems.
 
-## Rule 7: Controlled inputs need `value_fn` + `oninput`
+## Rule 8: Controlled inputs need `value_fn` + `oninput`
 
 Without `value_fn`, programmatic `signal.set("")` won't visually clear the input.
 
@@ -172,7 +202,7 @@ TextInput {
 }
 ```
 
-## Rule 8: For loops need `key:` props
+## Rule 9: For loops need `key:` props
 
 Items must be `Clone + PartialEq + 'static`. Use `key:` for stable DOM reconciliation.
 
@@ -193,7 +223,7 @@ for todo in todos.get() {
 
 Items with matching keys are **not** re-rendered when the list changes — their existing DOM is preserved. For per-item reactivity, use per-item Signals.
 
-## Rule 9: Raw HTML `oninput` receives a String
+## Rule 10: Raw HTML `oninput` receives a String
 
 On raw `<input>`/`<textarea>` elements (not the `TextInput` component):
 
@@ -203,7 +233,7 @@ input { oninput: move |value: String| name.set(value) }
 
 `onclick` takes no arguments: `button { onclick: move || do_thing() }`
 
-## Rule 10: Cross-thread signals use `send()`, not `set()`
+## Rule 11: Cross-thread signals use `send()`, not `set()`
 
 `set()` and `update()` panic off the main thread.
 
@@ -218,7 +248,7 @@ std::thread::spawn(move || {
 });
 ```
 
-## Rule 11: All component props accept reactive closures
+## Rule 12: All component props accept reactive closures
 
 Pass `{|| expr}` to any component prop to make it reactive:
 
@@ -233,7 +263,7 @@ Button {
 
 For surgical updates (no full re-render), use `_fn` props where available (`checked_fn`, `value_fn`).
 
-## Rule 12: Component `style:` and `class:` are additive
+## Rule 13: Component `style:` and `class:` are additive
 
 They merge with the component's own styles/classes, not replace them:
 
@@ -246,7 +276,7 @@ Button {
 }
 ```
 
-## Rule 13: Native control flow is always reactive
+## Rule 14: Native control flow is always reactive
 
 `if`, `for`, and `match` inside `rsx!` are automatically tracked by the reactive system:
 

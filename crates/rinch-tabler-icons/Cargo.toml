@@ -9,6 +9,7 @@ readme = "README.md"
 
 [dependencies]
 rinch-core = { workspace = true }
+rinch-macros = { workspace = true }
 
 [build-dependencies]
 ureq = "3"

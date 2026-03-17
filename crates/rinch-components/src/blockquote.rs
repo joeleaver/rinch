@@ -85,9 +85,7 @@ impl Component for Blockquote {
 
         // Citation element
         if !self.cite.is_empty() {
-            let cite_elem = rinch_macros::rsx! { cite { class: "rinch-blockquote__cite" } };
-            let cite_text = __scope.create_text(&self.cite);
-            cite_elem.append_child(&cite_text);
+            let cite_elem = rinch_macros::rsx! { cite { class: "rinch-blockquote__cite", {self.cite.clone()} } };
             container.append_child(&cite_elem);
         }
 

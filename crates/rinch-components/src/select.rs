@@ -84,9 +84,7 @@ impl Component for Select {
         // Label
         if !self.label.is_empty() {
             let label_text = &self.label;
-            let label = rinch_macros::rsx! { label { class: "rinch-select__label" } };
-            let label_text_node = __scope.create_text(label_text);
-            label.append_child(&label_text_node);
+            let label = rinch_macros::rsx! { label { class: "rinch-select__label", {label_text} } };
 
             if self.required {
                 let required_span =
@@ -141,18 +139,15 @@ impl Component for Select {
         // Description
         if !self.description.is_empty() {
             let desc = &self.description;
-            let desc_div = rinch_macros::rsx! { div { class: "rinch-select__description" } };
-            let desc_text = __scope.create_text(desc);
-            desc_div.append_child(&desc_text);
+            let desc_div =
+                rinch_macros::rsx! { div { class: "rinch-select__description", {desc} } };
             container.append_child(&desc_div);
         }
 
         // Error
         if !self.error.is_empty() {
             let err = &self.error;
-            let err_div = rinch_macros::rsx! { div { class: "rinch-select__error" } };
-            let err_text = __scope.create_text(err);
-            err_div.append_child(&err_text);
+            let err_div = rinch_macros::rsx! { div { class: "rinch-select__error", {err} } };
             container.append_child(&err_div);
         }
 

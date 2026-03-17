@@ -63,7 +63,7 @@ impl std::fmt::Debug for ColorInput {
 }
 
 impl Component for ColorInput {
-    fn render(&self, scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
+    fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
         let color_format = ColorFormat::parse(&self.format).unwrap_or(ColorFormat::Hex);
         let show_alpha = self.alpha;
         let disallow_input = self.disallow_input;
@@ -85,29 +85,24 @@ impl Component for ColorInput {
             root_class.push_str(" rinch-color-input--disabled");
         }
 
-        let root = scope.create_element("div");
+        let root = rinch_macros::rsx! { div {} };
         root.set_attribute("class", &root_class);
 
         // Label
         if !self.label.is_empty() {
-            let label_el = scope.create_element("label");
-            label_el.set_attribute("class", "rinch-color-input__label");
-            let label_text = scope.create_text(&self.label);
-            label_el.append_child(&label_text);
+            let label_el = rinch_macros::rsx! { label { class: "rinch-color-input__label", {self.label.clone()} } };
             root.append_child(&label_el);
         }
 
         // Wrapper (position: relative for dropdown)
-        let wrapper = scope.create_element("div");
-        wrapper.set_attribute("class", "rinch-color-input__wrapper");
+        let wrapper = rinch_macros::rsx! { div { class: "rinch-color-input__wrapper" } };
 
         // Input group (swatch + text input)
-        let input_group = scope.create_element("div");
-        input_group.set_attribute("class", "rinch-color-input__input-group");
+        let input_group = rinch_macros::rsx! { div { class: "rinch-color-input__input-group" } };
 
         // Toggle open on click
         {
-            let handler_id = scope.register_handler(move || {
+            let handler_id = __scope.register_handler(move || {
                 opened.update(|v| *v = !*v);
             });
             input_group.set_attribute("data-rid", &handler_id.to_string());
@@ -125,7 +120,7 @@ impl Component for ColorInput {
             radius: "sm".into(),
             ..Default::default()
         };
-        let preview_node = preview.render(scope, &[]);
+        let preview_node = preview.render(__scope, &[]);
         preview_node.set_attribute(
             "class",
             "rinch-color-swatch rinch-color-input__swatch-preview",
@@ -133,8 +128,7 @@ impl Component for ColorInput {
         input_group.append_child(&preview_node);
 
         // Text input
-        let text_input = scope.create_element("input");
-        text_input.set_attribute("class", "rinch-color-input__input");
+        let text_input = rinch_macros::rsx! { input { class: "rinch-color-input__input" } };
         text_input.set_attribute("value", initial_color);
         if !self.placeholder.is_empty() {
             text_input.set_attribute("placeholder", &self.placeholder);
@@ -146,7 +140,7 @@ impl Component for ColorInput {
         // Handle text input changes
         if !disallow_input {
             let onchange = self.onchange.clone();
-            let handler_id = scope.register_input_handler(move |value: String| {
+            let handler_id = __scope.register_input_handler(move |value: String| {
                 if let Some(parsed) = parse_color(&value) {
                     let formatted = format_color(parsed, color_format);
                     current_value.set(formatted.clone());
@@ -162,8 +156,7 @@ impl Component for ColorInput {
         wrapper.append_child(&input_group);
 
         // Dropdown containing the ColorPicker
-        let dropdown = scope.create_element("div");
-        dropdown.set_attribute("class", "rinch-color-input__dropdown");
+        let dropdown = rinch_macros::rsx! { div { class: "rinch-color-input__dropdown" } };
 
         let picker = ColorPicker {
             format: self.format.clone(),
@@ -183,7 +176,7 @@ impl Component for ColorInput {
             })),
             ..Default::default()
         };
-        let picker_node = picker.render(scope, &[]);
+        let picker_node = picker.render(__scope, &[]);
         dropdown.append_child(&picker_node);
 
         wrapper.append_child(&dropdown);
@@ -195,7 +188,7 @@ impl Component for ColorInput {
             let preview_node = preview_node.clone();
             let text_input = text_input.clone();
             let base_class = root_class.clone();
-            scope.create_effect(move || {
+            __scope.create_effect(move || {
                 let is_open = opened.get();
                 let val = current_value.get();
 
@@ -225,7 +218,7 @@ impl Component for ColorInput {
         // value_fn binding
         if let Some(ref value_fn) = self.value_fn {
             let value_fn = value_fn.clone();
-            scope.create_effect(move || {
+            __scope.create_effect(move || {
                 let external = value_fn();
                 let current = current_value.get();
                 if external != current {
@@ -236,19 +229,13 @@ impl Component for ColorInput {
 
         // Description
         if !self.description.is_empty() {
-            let desc = scope.create_element("div");
-            desc.set_attribute("class", "rinch-color-input__description");
-            let desc_text = scope.create_text(&self.description);
-            desc.append_child(&desc_text);
+            let desc = rinch_macros::rsx! { div { class: "rinch-color-input__description", {self.description.clone()} } };
             root.append_child(&desc);
         }
 
         // Error
         if !self.error.is_empty() {
-            let err = scope.create_element("div");
-            err.set_attribute("class", "rinch-color-input__error");
-            let err_text = scope.create_text(&self.error);
-            err.append_child(&err_text);
+            let err = rinch_macros::rsx! { div { class: "rinch-color-input__error", {self.error.clone()} } };
             root.append_child(&err);
         }
 

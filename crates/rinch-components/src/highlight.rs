@@ -59,7 +59,7 @@ impl Component for Highlight {
         }
 
         if highlight.is_empty() {
-            let text_node = __scope.create_text(text);
+            let text_node = rinch_core::IntoNode::into_node(text, __scope);
             container.append_child(&text_node);
             return container;
         }
@@ -82,15 +82,14 @@ impl Component for Highlight {
         for (start, _) in search_text.match_indices(&search_highlight) {
             // Add text before match
             if start > last_end {
-                let before_text = __scope.create_text(&text[last_end..start]);
+                let before_text =
+                    rinch_core::IntoNode::into_node(text[last_end..start].to_string(), __scope);
                 container.append_child(&before_text);
             }
 
             // Add highlighted match (preserving original case)
             let end = start + highlight.len();
-            let mark = rinch_macros::rsx! { mark { class: "rinch-highlight__match" } };
-            let match_text = __scope.create_text(&text[start..end]);
-            mark.append_child(&match_text);
+            let mark = rinch_macros::rsx! { mark { class: "rinch-highlight__match", {text[start..end].to_string()} } };
             container.append_child(&mark);
 
             last_end = end;
@@ -98,7 +97,8 @@ impl Component for Highlight {
 
         // Add remaining text
         if last_end < text.len() {
-            let remaining_text = __scope.create_text(&text[last_end..]);
+            let remaining_text =
+                rinch_core::IntoNode::into_node(text[last_end..].to_string(), __scope);
             container.append_child(&remaining_text);
         }
 

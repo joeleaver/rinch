@@ -25,7 +25,10 @@ impl Parse for RsxElement {
 
         while !content.is_empty() {
             // Try to parse as a prop (name: value)
-            if content.peek(Ident) && content.peek2(Token![:]) && !content.peek2(Token![::]) {
+            if content.peek(Ident)
+                && (content.peek2(Token![:]) && !content.peek2(Token![::])
+                    || content.peek2(Token![-]))
+            {
                 let prop: RsxProp = content.parse()?;
                 props.push(prop);
 
@@ -373,10 +376,32 @@ mod tests {
 
     #[test]
     fn parse_path_expression_not_confused_with_prop() {
-        // `foo::bar` should NOT be parsed as prop `foo:` with value `:`
-        // because we check peek2(Token![:]) && !peek2(Token![::])
         let el: RsxElement = parse_str("div { {foo::bar()} }").unwrap();
         assert!(el.props.is_empty());
         assert_eq!(el.children.len(), 1);
+    }
+
+    #[test]
+    fn parse_hyphenated_attribute() {
+        let el: RsxElement = parse_str(r#"div { data-viewport: "main" }"#).unwrap();
+        assert_eq!(el.props.len(), 1);
+        assert_eq!(el.props[0].name, "data-viewport");
+    }
+
+    #[test]
+    fn parse_aria_attribute() {
+        let el: RsxElement = parse_str(r#"div { aria-label: "Close" }"#).unwrap();
+        assert_eq!(el.props.len(), 1);
+        assert_eq!(el.props[0].name, "aria-label");
+    }
+
+    #[test]
+    fn parse_mixed_hyphenated_and_normal() {
+        let el: RsxElement =
+            parse_str(r#"div { class: "x", data-id: "42", style: "color: red" }"#).unwrap();
+        assert_eq!(el.props.len(), 3);
+        assert_eq!(el.props[0].name, "class");
+        assert_eq!(el.props[1].name, "data-id");
+        assert_eq!(el.props[2].name, "style");
     }
 }

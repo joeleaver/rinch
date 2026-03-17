@@ -216,7 +216,7 @@ fn video_preview(path: String, media: Signal<DroppedMedia>) -> NodeHandle {
 #[component]
 fn file_info(name: String, size: String, ext: String, media: Signal<DroppedMedia>) -> NodeHandle {
     let ext_badge = if ext.is_empty() {
-        __scope.create_element("span") // empty placeholder
+        rsx! { span {} }
     } else {
         let badge_html = format!(".{ext}");
         rsx! { Badge { variant: "light", {badge_html} } }

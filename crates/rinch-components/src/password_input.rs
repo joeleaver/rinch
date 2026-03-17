@@ -228,9 +228,7 @@ impl Component for PasswordInput {
         if !self.label.is_empty() {
             let label_text = &self.label;
             let required_mark = if self.required { " *" } else { "" };
-            let label = rinch_macros::rsx! { label { class: "rinch-password-input__label" } };
-            let label_text_node = __scope.create_text(&format!("{}{}", label_text, required_mark));
-            label.append_child(&label_text_node);
+            let label = rinch_macros::rsx! { label { class: "rinch-password-input__label", {format!("{}{}", label_text, required_mark)} } };
             container.append_child(&label);
         }
 
@@ -239,7 +237,7 @@ impl Component for PasswordInput {
             let desc = &self.description;
             let desc_div =
                 rinch_macros::rsx! { div { class: "rinch-password-input__description" } };
-            let desc_text = __scope.create_text(desc);
+            let desc_text = rinch_core::IntoNode::into_node(desc, __scope);
             desc_div.append_child(&desc_text);
             container.append_child(&desc_div);
         }
@@ -378,9 +376,8 @@ impl Component for PasswordInput {
         // Error message
         if !self.error.is_empty() {
             let err = &self.error;
-            let err_div = rinch_macros::rsx! { div { class: "rinch-password-input__error" } };
-            let err_text = __scope.create_text(err);
-            err_div.append_child(&err_text);
+            let err_div =
+                rinch_macros::rsx! { div { class: "rinch-password-input__error", {err} } };
             container.append_child(&err_div);
         }
 

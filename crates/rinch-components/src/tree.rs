@@ -427,9 +427,8 @@ impl Default for Tree {
 }
 
 impl Component for Tree {
-    fn render(&self, scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
-        let container = scope.create_element("ul");
-        container.set_attribute("class", "rinch-tree");
+    fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
+        let container = rinch_macros::rsx! { ul { class: "rinch-tree" } };
         container.set_attribute("role", "tree");
 
         // Apply level offset CSS variable
@@ -472,18 +471,18 @@ impl Component for Tree {
                 };
 
             for_each_dom_typed(
-                scope,
+                __scope,
                 &container,
                 move || collection(),
                 |node: &TreeNodeData| node.value.clone(),
-                move |node: TreeNodeData, scope: &mut RenderScope| {
-                    render_tree_node(scope, &node, 0, tree_state, cfg.clone())
+                move |node: TreeNodeData, __scope: &mut RenderScope| {
+                    render_tree_node(__scope, &node, 0, tree_state, cfg.clone())
                 },
             );
         } else {
             // No tree state — render statically
             for node in &self.data {
-                let node_handle = render_tree_node_static(scope, node, 0, &config);
+                let node_handle = render_tree_node_static(__scope, node, 0, &config);
                 container.append_child(&node_handle);
             }
         }
@@ -498,7 +497,7 @@ impl Component for Tree {
 
 /// Render a single tree node with full reactive state.
 fn render_tree_node(
-    scope: &mut RenderScope,
+    __scope: &mut RenderScope,
     node: &TreeNodeData,
     level: usize,
     tree_state: UseTreeReturn,
@@ -510,8 +509,7 @@ fn render_tree_node(
     let node_value = node.value.clone();
 
     // Create <li> wrapper
-    let li = scope.create_element("li");
-    li.set_attribute("class", "rinch-tree__node");
+    let li = rinch_macros::rsx! { li { class: "rinch-tree__node" } };
     li.set_attribute("role", "treeitem");
     li.set_attribute("data-value", &node.value);
 
@@ -519,7 +517,7 @@ fn render_tree_node(
     if has_children {
         let li_clone = li.clone();
         let nv = node_value.clone();
-        scope.create_effect(move || {
+        __scope.create_effect(move || {
             let is_expanded = expanded_signal.get().contains(&nv);
             li_clone.set_attribute("aria-expanded", if is_expanded { "true" } else { "false" });
         });
@@ -529,7 +527,7 @@ fn render_tree_node(
     {
         let li_clone = li.clone();
         let nv = node_value.clone();
-        scope.create_effect(move || {
+        __scope.create_effect(move || {
             let is_selected = selected_signal.get().contains(&nv);
             if is_selected {
                 li_clone.set_attribute("aria-selected", "true");
@@ -540,7 +538,7 @@ fn render_tree_node(
     }
 
     // Create content wrapper
-    let content = scope.create_element("div");
+    let content = rinch_macros::rsx! { div {} };
     content.set_attribute("tabindex", "0");
     content.set_attribute(
         "style",
@@ -552,7 +550,7 @@ fn render_tree_node(
         let content_clone = content.clone();
         let nv = node_value.clone();
         let is_disabled = node.disabled;
-        scope.create_effect(move || {
+        __scope.create_effect(move || {
             let is_selected = selected_signal.get().contains(&nv);
             let class = if is_selected {
                 if is_disabled {
@@ -571,14 +569,14 @@ fn render_tree_node(
 
     // Chevron (for expandable nodes)
     if has_children {
-        let chevron = scope.create_element("span");
-        let icon = crate::icons::chevron_right_dom(scope);
+        let chevron = rinch_macros::rsx! { span {} };
+        let icon = crate::icons::chevron_right_dom(__scope);
         chevron.append_child(&icon);
 
         // Reactive chevron class
         let chevron_clone = chevron.clone();
         let nv = node_value.clone();
-        scope.create_effect(move || {
+        __scope.create_effect(move || {
             let is_expanded = expanded_signal.get().contains(&nv);
             chevron_clone.set_attribute(
                 "class",
@@ -597,7 +595,7 @@ fn render_tree_node(
             let value = node_value.clone();
             let onexpand = config.onexpand.clone();
             let oncollapse = config.oncollapse.clone();
-            let handler_id = scope.register_handler(move || {
+            let handler_id = __scope.register_handler(move || {
                 let was_expanded = expanded_signal.get().contains(&value);
                 controller.toggle(&value);
                 if !was_expanded {
@@ -613,16 +611,14 @@ fn render_tree_node(
 
         content.append_child(&chevron);
     } else {
-        let spacer = scope.create_element("span");
-        spacer.set_attribute("class", "rinch-tree__spacer");
+        let spacer = rinch_macros::rsx! { span { class: "rinch-tree__spacer" } };
         content.append_child(&spacer);
     }
 
     // Render node icon if present
     if let Some(ref icon) = node.icon {
-        let icon_wrapper = scope.create_element("span");
-        icon_wrapper.set_attribute("class", "rinch-tree__icon");
-        let icon_el = render_tabler_icon(scope, *icon, TablerIconStyle::Outline);
+        let icon_wrapper = rinch_macros::rsx! { span { class: "rinch-tree__icon" } };
+        let icon_el = render_tabler_icon(__scope, *icon, TablerIconStyle::Outline);
         icon_wrapper.append_child(&icon_el);
         content.append_child(&icon_wrapper);
     }
@@ -637,13 +633,11 @@ fn render_tree_node(
             has_children,
             level,
         };
-        let custom = render_fn(&payload, scope);
+        let custom = render_fn(&payload, __scope);
         content.append_child(&custom);
     } else {
-        let label = scope.create_element("span");
-        label.set_attribute("class", "rinch-tree__label");
-        let text = scope.create_text(&node.label);
-        label.append_child(&text);
+        let label =
+            rinch_macros::rsx! { span { class: "rinch-tree__label", {node.label.clone()} } };
         content.append_child(&label);
     }
 
@@ -657,7 +651,7 @@ fn render_tree_node(
         let onexpand = config.onexpand.clone();
         let oncollapse = config.oncollapse.clone();
 
-        let handler_id = scope.register_handler(move || {
+        let handler_id = __scope.register_handler(move || {
             if expand_on_click {
                 let was_expanded = expanded_signal.get().contains(&value);
                 controller.toggle(&value);
@@ -683,14 +677,13 @@ fn render_tree_node(
 
     // Children — always render, toggle visibility with display:none
     if has_children {
-        let children_ul = scope.create_element("ul");
-        children_ul.set_attribute("class", "rinch-tree__subtree");
+        let children_ul = rinch_macros::rsx! { ul { class: "rinch-tree__subtree" } };
         children_ul.set_attribute("role", "group");
 
         // Reactive display toggle — preserves all child DOM and Effects
         let children_ul_vis = children_ul.clone();
         let nv = node_value.clone();
-        scope.create_effect(move || {
+        __scope.create_effect(move || {
             if expanded_signal.get().contains(&nv) {
                 children_ul_vis.set_style("display", "");
             } else {
@@ -704,12 +697,12 @@ fn render_tree_node(
         let cfg = config.clone();
 
         for_each_dom_typed(
-            scope,
+            __scope,
             &children_ul,
             move || children_data.clone(),
             |node: &TreeNodeData| node.value.clone(),
-            move |child_node: TreeNodeData, scope: &mut RenderScope| {
-                render_tree_node(scope, &child_node, child_level, tree_state, cfg.clone())
+            move |child_node: TreeNodeData, __scope: &mut RenderScope| {
+                render_tree_node(__scope, &child_node, child_level, tree_state, cfg.clone())
             },
         );
 
@@ -722,19 +715,18 @@ fn render_tree_node(
 /// Render a tree node without reactive state (fallback when no tree state provided).
 #[allow(clippy::only_used_in_recursion)]
 fn render_tree_node_static(
-    scope: &mut RenderScope,
+    __scope: &mut RenderScope,
     node: &TreeNodeData,
     level: usize,
     config: &Rc<TreeConfig>,
 ) -> NodeHandle {
     let has_children = node.has_children();
 
-    let li = scope.create_element("li");
-    li.set_attribute("class", "rinch-tree__node");
+    let li = rinch_macros::rsx! { li { class: "rinch-tree__node" } };
     li.set_attribute("role", "treeitem");
     li.set_attribute("data-value", &node.value);
 
-    let content = scope.create_element("div");
+    let content = rinch_macros::rsx! { div {} };
     let base_class = if node.disabled {
         "rinch-tree__node-content rinch-tree__node-content--disabled"
     } else {
@@ -748,40 +740,33 @@ fn render_tree_node_static(
     content.set_attribute("tabindex", "0");
 
     if has_children {
-        let chevron = scope.create_element("span");
-        chevron.set_attribute("class", "rinch-tree__chevron");
-        let icon = crate::icons::chevron_right_dom(scope);
+        let chevron = rinch_macros::rsx! { span { class: "rinch-tree__chevron" } };
+        let icon = crate::icons::chevron_right_dom(__scope);
         chevron.append_child(&icon);
         content.append_child(&chevron);
     } else {
-        let spacer = scope.create_element("span");
-        spacer.set_attribute("class", "rinch-tree__spacer");
+        let spacer = rinch_macros::rsx! { span { class: "rinch-tree__spacer" } };
         content.append_child(&spacer);
     }
 
     if let Some(ref icon) = node.icon {
-        let icon_wrapper = scope.create_element("span");
-        icon_wrapper.set_attribute("class", "rinch-tree__icon");
-        let icon_el = render_tabler_icon(scope, *icon, TablerIconStyle::Outline);
+        let icon_wrapper = rinch_macros::rsx! { span { class: "rinch-tree__icon" } };
+        let icon_el = render_tabler_icon(__scope, *icon, TablerIconStyle::Outline);
         icon_wrapper.append_child(&icon_el);
         content.append_child(&icon_wrapper);
     }
 
-    let label = scope.create_element("span");
-    label.set_attribute("class", "rinch-tree__label");
-    let text = scope.create_text(&node.label);
-    label.append_child(&text);
+    let label = rinch_macros::rsx! { span { class: "rinch-tree__label", {node.label.clone()} } };
     content.append_child(&label);
 
     li.append_child(&content);
 
     if has_children {
-        let children_ul = scope.create_element("ul");
-        children_ul.set_attribute("class", "rinch-tree__subtree");
+        let children_ul = rinch_macros::rsx! { ul { class: "rinch-tree__subtree" } };
         children_ul.set_attribute("role", "group");
 
         for child in &node.children {
-            let child_handle = render_tree_node_static(scope, child, level + 1, config);
+            let child_handle = render_tree_node_static(__scope, child, level + 1, config);
             children_ul.append_child(&child_handle);
         }
 

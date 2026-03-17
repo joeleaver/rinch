@@ -314,54 +314,42 @@ fn state_preservation_tree(
 ) -> NodeHandle {
     // Custom renderer that adds a "Rename" button per leaf node
     let render_fn: RenderTreeNode = Rc::new(move |payload, scope| {
-        let wrapper = scope.create_element("div");
-        wrapper.set_attribute(
-            "style",
-            "display: flex; justify-content: space-between; align-items: center; width: 100%; gap: 8px;",
-        );
+        let __scope = scope;
+        let label_text = payload.node.label.clone();
+        let has_children = payload.has_children;
+        let node_value = payload.node_value.to_string();
 
-        let label = scope.create_element("span");
-        label.set_attribute("class", "rinch-tree__label");
-        let text = scope.create_text(&payload.node.label);
-        label.append_child(&text);
-        wrapper.append_child(&label);
-
-        // Add rename toggle button for leaf nodes
-        if !payload.has_children {
-            let btn = scope.create_element("button");
-            btn.set_attribute(
-                "style",
-                "font-size: var(--rinch-font-size-xs); padding: 2px 8px; border-radius: var(--rinch-radius-sm); border: 1px solid var(--rinch-color-gray-4); background: transparent; cursor: pointer;",
-            );
-
-            let node_value = payload.node_value.to_string();
+        let rename_btn = if !has_children {
             let nv_for_handler = node_value.clone();
-
-            // Reactive button text
-            let btn_text = scope.create_text("Rename");
-            btn.append_child(&btn_text);
-
-            let btn_text_clone = btn_text.clone();
             let nv = node_value.clone();
-            scope.create_effect(move || {
-                let is_renaming = renaming_node.get().as_deref() == Some(&nv);
-                btn_text_clone.set_text(if is_renaming { "Done" } else { "Rename" });
-            });
-
-            let handler_id = scope.register_handler(move || {
-                let current = renaming_node.get();
-                if current.as_deref() == Some(&nv_for_handler) {
-                    renaming_node.set(None);
-                } else {
-                    renaming_node.set(Some(nv_for_handler.clone()));
+            rsx! {
+                button {
+                    style: "font-size: var(--rinch-font-size-xs); padding: 2px 8px; border-radius: var(--rinch-radius-sm); border: 1px solid var(--rinch-color-gray-4); background: transparent; cursor: pointer;",
+                    onclick: move || {
+                        let current = renaming_node.get();
+                        if current.as_deref() == Some(&nv_for_handler) {
+                            renaming_node.set(None);
+                        } else {
+                            renaming_node.set(Some(nv_for_handler.clone()));
+                        }
+                    },
+                    {|| {
+                        let is_renaming = renaming_node.get().as_deref() == Some(&nv);
+                        if is_renaming { "Done" } else { "Rename" }
+                    }}
                 }
-            });
-            btn.set_attribute("data-rid", &handler_id.0.to_string());
+            }
+        } else {
+            rsx! { span {} }
+        };
 
-            wrapper.append_child(&btn);
+        rsx! {
+            div {
+                style: "display: flex; justify-content: space-between; align-items: center; width: 100%; gap: 8px;",
+                span { class: "rinch-tree__label", {label_text.as_str()} }
+                {rename_btn}
+            }
         }
-
-        wrapper
     });
 
     let data_source_closure: Rc<dyn Fn() -> Vec<TreeNodeData>> = Rc::new(move || tree_data.get());
@@ -386,33 +374,36 @@ fn custom_render_tree(
     tree_state: UseTreeReturn,
 ) -> NodeHandle {
     let render_fn: RenderTreeNode = Rc::new(move |payload, scope| {
-        let wrapper = scope.create_element("div");
-        wrapper.set_attribute(
-            "style",
-            "display: flex; justify-content: space-between; align-items: center; width: 100%; gap: 16px;",
-        );
+        let __scope = scope;
+        let label_text = payload.node.label.clone();
+        let has_children = payload.has_children;
+        let meta_text = if !has_children {
+            payload
+                .node
+                .downcast_payload::<FileInfo>()
+                .map(|info| format!("{} \u{2014} {}", info.size, info.modified))
+        } else {
+            None
+        };
 
-        let label = scope.create_element("span");
-        label.set_attribute("class", "rinch-tree__label");
-        let text = scope.create_text(&payload.node.label);
-        label.append_child(&text);
-        wrapper.append_child(&label);
+        let meta_node = if let Some(text) = meta_text {
+            rsx! {
+                span {
+                    style: "color: var(--rinch-color-dimmed); font-size: var(--rinch-font-size-xs);",
+                    {text.as_str()}
+                }
+            }
+        } else {
+            rsx! { span {} }
+        };
 
-        // Show file info for leaf nodes
-        if !payload.has_children
-            && let Some(info) = payload.node.downcast_payload::<FileInfo>()
-        {
-            let meta = scope.create_element("span");
-            meta.set_attribute(
-                "style",
-                "color: var(--rinch-color-dimmed); font-size: var(--rinch-font-size-xs);",
-            );
-            let meta_text = scope.create_text(&format!("{} — {}", info.size, info.modified));
-            meta.append_child(&meta_text);
-            wrapper.append_child(&meta);
+        rsx! {
+            div {
+                style: "display: flex; justify-content: space-between; align-items: center; width: 100%; gap: 16px;",
+                span { class: "rinch-tree__label", {label_text.as_str()} }
+                {meta_node}
+            }
         }
-
-        wrapper
     });
 
     let data_source_closure: Rc<dyn Fn() -> Vec<TreeNodeData>> = Rc::new(move || tree_data.get());
@@ -640,201 +631,169 @@ fn dnd_tree_node(
     let node_id = node.id.clone();
     let is_folder = node.is_folder;
 
-    // -- The outer wrapper <div> --
-    let wrapper = __scope.create_element("div");
-    wrapper.set_attribute("data-value", &node_id);
-
-    // -- The node row: draggable + drop target --
-    let row = __scope.create_element("div");
-    row.set_attribute("draggable", "true");
-
-    // ondragstart
-    {
-        let nid = node_id.clone();
-        let handler_id = rinch::core::register_handler(std::rc::Rc::new(move || {
-            drag_ctx.set(TreeDragData {
-                node_id: nid.clone(),
-            });
-        }));
-        row.set_attribute("data-ondragstart", &handler_id.0.to_string());
-    }
-
-    // ondragend
-    {
-        let handler_id = rinch::core::register_handler(std::rc::Rc::new(move || {
-            drag_ctx.clear();
-            drop_target.set(None);
-        }));
-        row.set_attribute("data-ondragend", &handler_id.0.to_string());
-    }
-
-    // ondrop
-    {
-        let nid = node_id.clone();
-        let label = node.label.clone();
-        let handler_id = rinch::core::register_handler(std::rc::Rc::new(move || {
-            drop_target.set(None);
-            if let Some(drag_data) = drag_ctx.take() {
-                if drag_data.node_id == nid {
-                    return;
-                }
-                tree.update(|data| {
-                    if is_descendant(data, &drag_data.node_id, &nid) {
-                        return;
-                    }
-                    if let Some(dragged) = remove_node(data, &drag_data.node_id) {
-                        let dragged_label = dragged.label.clone();
-                        if is_folder {
-                            if insert_into_folder(data, &nid, dragged) {
-                                expanded.update(|set| {
-                                    set.insert(nid.clone());
-                                });
-                                status.set(format!("Moved '{}' into '{}'", dragged_label, label));
-                            }
-                        } else if insert_before(data, &nid, dragged) {
-                            status.set(format!("Moved '{}' before '{}'", dragged_label, label));
-                        }
-                    }
-                });
-            }
-        }));
-        row.set_attribute("data-ondrop", &handler_id.0.to_string());
-    }
-
-    // ondragenter
-    {
-        let nid = node_id.clone();
-        let handler_id = rinch::core::register_handler(std::rc::Rc::new(move || {
-            drop_target.set(Some(nid.clone()));
-        }));
-        row.set_attribute("data-ondragenter", &handler_id.0.to_string());
-    }
-
-    // ondragleave
-    {
-        let nid = node_id.clone();
-        let handler_id = rinch::core::register_handler(std::rc::Rc::new(move || {
-            if drop_target.get().as_deref() == Some(nid.as_str()) {
-                drop_target.set(None);
-            }
-        }));
-        row.set_attribute("data-ondragleave", &handler_id.0.to_string());
-    }
-
-    // Reactive row style (drag/drop highlighting)
-    {
-        let row_clone = row.clone();
-        let nid = node_id.clone();
-        __scope.create_effect(move || {
-            let is_target = drop_target.get().as_deref() == Some(nid.as_str());
-            let is_dragged =
-                drag_ctx.is_active() && drag_ctx.get().map(|d| d.node_id) == Some(nid.clone());
-            let pad_left = level as u32 * 20;
-            let bg = if is_target && is_folder {
-                "var(--rinch-color-blue-1)"
-            } else {
-                "transparent"
-            };
-            let border_top = if is_target && !is_folder {
-                "2px solid var(--rinch-color-blue-5)"
-            } else {
-                "2px solid transparent"
-            };
-            let opacity = if is_dragged { "0.4" } else { "1.0" };
-            row_clone.set_attribute(
-                "style",
-                &format!(
-                    "display: flex; align-items: center; gap: 4px; padding: 4px 8px 4px {}px; \
-                     cursor: grab; opacity: {}; background: {}; border-top: {}; \
-                     border-radius: var(--rinch-radius-xs); transition: background 0.1s;",
-                    pad_left, opacity, bg, border_top,
-                ),
-            );
-        });
-    }
-
-    // Chevron or spacer
-    if is_folder {
-        let chevron_span = __scope.create_element("span");
+    // Pre-render the chevron/spacer and icon before rsx
+    let chevron_or_spacer = if is_folder {
         let chevron_icon =
             render_tabler_icon(__scope, TablerIcon::ChevronRight, TablerIconStyle::Outline);
-        chevron_span.append_child(&chevron_icon);
-
-        // Reactive chevron rotation
-        let chevron_clone = chevron_span.clone();
         let nid = node_id.clone();
-        __scope.create_effect(move || {
-            let is_expanded = expanded.get().contains(&nid);
-            let rotation = if is_expanded { "90" } else { "0" };
-            chevron_clone.set_attribute(
-                "style",
-                &format!(
-                    "display: flex; width: 18px; height: 18px; cursor: pointer; \
-                     transform: rotate({}deg); transition: transform 0.15s;",
-                    rotation,
-                ),
-            );
-        });
-
-        // Chevron click → toggle expand
-        let nid = node_id.clone();
-        let handler_id = __scope.register_handler(move || {
-            expanded.update(|set| {
-                if set.contains(&nid) {
-                    set.remove(&nid);
-                } else {
-                    set.insert(nid.clone());
-                }
-            });
-        });
-        chevron_span.set_attribute("data-rid", &handler_id.0.to_string());
-
-        row.append_child(&chevron_span);
+        let nid2 = node_id.clone();
+        rsx! {
+            span {
+                style: {
+                    let nid = nid.clone();
+                    move || {
+                        let is_expanded = expanded.get().contains(&nid);
+                        let rotation = if is_expanded { "90" } else { "0" };
+                        format!(
+                            "display: flex; width: 18px; height: 18px; cursor: pointer; \
+                             transform: rotate({rotation}deg); transition: transform 0.15s;",
+                        )
+                    }
+                },
+                onclick: move || {
+                    expanded.update(|set| {
+                        if set.contains(&nid2) {
+                            set.remove(&nid2);
+                        } else {
+                            set.insert(nid2.clone());
+                        }
+                    });
+                },
+                {chevron_icon}
+            }
+        }
     } else {
-        let spacer = __scope.create_element("span");
-        spacer.set_attribute("style", "width: 18px; height: 18px;");
-        row.append_child(&spacer);
-    }
+        rsx! { span { style: "width: 18px; height: 18px;" } }
+    };
 
-    // Icon
-    let icon_span = __scope.create_element("span");
     let icon_color = if is_folder {
         "var(--rinch-color-yellow-6)"
     } else {
         "var(--rinch-color-blue-6)"
     };
-    icon_span.set_attribute("style", &format!("display: flex; color: {};", icon_color));
+    let icon_style = format!("display: flex; color: {};", icon_color);
     let icon_el = render_tabler_icon(__scope, node.icon, TablerIconStyle::Outline);
-    icon_span.append_child(&icon_el);
-    row.append_child(&icon_span);
+    let node_label = node.label.clone();
 
-    // Label
-    let label_span = __scope.create_element("span");
-    label_span.set_attribute("style", "font-size: var(--rinch-font-size-sm);");
-    let label_text = __scope.create_text(&node.label);
-    label_span.append_child(&label_text);
-    row.append_child(&label_span);
+    // Build the row with rsx using drag attributes
+    let row = {
+        let nid_start = node_id.clone();
+        let nid_drop = node_id.clone();
+        let label_drop = node.label.clone();
+        let nid_enter = node_id.clone();
+        let nid_leave = node_id.clone();
+        let nid_style = node_id.clone();
 
-    wrapper.append_child(&row);
+        rsx! {
+            div {
+                draggable: "true",
+                style: {
+                    let nid = nid_style.clone();
+                    move || {
+                        let is_target = drop_target.get().as_deref() == Some(nid.as_str());
+                        let is_dragged =
+                            drag_ctx.is_active() && drag_ctx.get().map(|d| d.node_id) == Some(nid.clone());
+                        let pad_left = level as u32 * 20;
+                        let bg = if is_target && is_folder {
+                            "var(--rinch-color-blue-1)"
+                        } else {
+                            "transparent"
+                        };
+                        let border_top = if is_target && !is_folder {
+                            "2px solid var(--rinch-color-blue-5)"
+                        } else {
+                            "2px solid transparent"
+                        };
+                        let opacity = if is_dragged { "0.4" } else { "1.0" };
+                        format!(
+                            "display: flex; align-items: center; gap: 4px; padding: 4px 8px 4px {pad_left}px; \
+                             cursor: grab; opacity: {opacity}; background: {bg}; border-top: {border_top}; \
+                             border-radius: var(--rinch-radius-xs); transition: background 0.1s;",
+                        )
+                    }
+                },
+                ondragstart: {
+                    let nid = nid_start.clone();
+                    move || {
+                        drag_ctx.set(TreeDragData {
+                            node_id: nid.clone(),
+                        });
+                    }
+                },
+                ondragend: move || {
+                    drag_ctx.clear();
+                    drop_target.set(None);
+                },
+                ondrop: {
+                    let nid = nid_drop.clone();
+                    let label = label_drop.clone();
+                    move || {
+                        drop_target.set(None);
+                        if let Some(drag_data) = drag_ctx.take() {
+                            if drag_data.node_id == nid {
+                                return;
+                            }
+                            tree.update(|data| {
+                                if is_descendant(data, &drag_data.node_id, &nid) {
+                                    return;
+                                }
+                                if let Some(dragged) = remove_node(data, &drag_data.node_id) {
+                                    let dragged_label = dragged.label.clone();
+                                    if is_folder {
+                                        if insert_into_folder(data, &nid, dragged) {
+                                            expanded.update(|set| {
+                                                set.insert(nid.clone());
+                                            });
+                                            status.set(format!("Moved '{}' into '{}'", dragged_label, label));
+                                        }
+                                    } else if insert_before(data, &nid, dragged) {
+                                        status.set(format!("Moved '{}' before '{}'", dragged_label, label));
+                                    }
+                                }
+                            });
+                        }
+                    }
+                },
+                ondragenter: {
+                    let nid = nid_enter.clone();
+                    move || {
+                        drop_target.set(Some(nid.clone()));
+                    }
+                },
+                ondragleave: {
+                    let nid = nid_leave.clone();
+                    move || {
+                        if drop_target.get().as_deref() == Some(nid.as_str()) {
+                            drop_target.set(None);
+                        }
+                    }
+                },
+                {chevron_or_spacer}
+                span { style: {icon_style.as_str()}, {icon_el} }
+                span { style: "font-size: var(--rinch-font-size-sm);", {node_label.as_str()} }
+            }
+        }
+    };
 
     // Children container (folders only)
-    if is_folder && !node.children.is_empty() {
-        let children_container = __scope.create_element("div");
-
-        // Reactive visibility
-        let children_vis = children_container.clone();
-        let nid = node_id.clone();
-        __scope.create_effect(move || {
-            if expanded.get().contains(&nid) {
-                children_vis.set_attribute("style", "display: flex; flex-direction: column;");
-            } else {
-                children_vis.set_attribute("style", "display: none;");
-            }
-        });
+    let children_node = if is_folder && !node.children.is_empty() {
+        let nid_for_vis = node_id.clone();
+        let nid_for_sync = node_id.clone();
+        let children_container = rsx! { div {} };
+        {
+            let vis = children_container.clone();
+            __scope.create_effect(move || {
+                if expanded.get().contains(&nid_for_vis) {
+                    vis.set_attribute("style", "display: flex; flex-direction: column;");
+                } else {
+                    vis.set_attribute("style", "display: none;");
+                }
+            });
+        }
 
         // Build children signal and keep in sync with tree changes
         let children_data = Signal::new(node.children.clone());
-        let nid = node_id.clone();
+        let nid = nid_for_sync;
         __scope.create_effect(move || {
             fn find_children(nodes: &[DndNode], id: &str) -> Vec<DndNode> {
                 for n in nodes {
@@ -871,10 +830,18 @@ fn dnd_tree_node(
             },
         );
 
-        wrapper.append_child(&children_container);
-    }
+        children_container
+    } else {
+        rsx! { span {} }
+    };
 
-    wrapper
+    rsx! {
+        div {
+            data-value: {node_id.as_str()},
+            {row}
+            {children_node}
+        }
+    }
 }
 
 // =============================================================================

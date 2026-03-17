@@ -1,7 +1,7 @@
 {
   "name": "rinch",
   "description": "Best practices and code guidance for building UIs with the Rinch GUI framework for Rust",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": {
     "name": "Rinch Contributors"
   },

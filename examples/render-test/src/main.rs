@@ -1907,47 +1907,26 @@ fn test_image_object_fit(__scope: &mut RenderScope) -> NodeHandle {
     let data_uri = make_test_image_data_uri(100, 60);
     let tall_uri = make_test_image_data_uri(60, 100);
 
-    // Build imperatively to avoid rsx closure move issues with data_uri
-    let root = __scope.create_element("div");
-    root.set_attribute(
-        "style",
-        "display: flex; flex-direction: column; gap: 12px; padding: 12px; background: #f8f9fa;",
-    );
-
     // Helper to create a labeled image cell
     let make_cell = |scope: &mut RenderScope, label: &str, fit: &str, src: &str| {
-        let col = scope.create_element("div");
-        col.set_attribute(
-            "style",
-            "display: flex; flex-direction: column; align-items: center; gap: 4px;",
-        );
-
-        let lbl = scope.create_element("div");
-        lbl.set_attribute("style", "font-size: 12px; text-align: center;");
-        let txt = scope.create_text(label);
-        lbl.append_child(&txt);
-        col.append_child(&lbl);
-
-        let container = scope.create_element("div");
-        container.set_attribute(
-            "style",
-            "width: 120px; height: 120px; border: 1px solid #dee2e6;",
-        );
-
-        let img = scope.create_element("img");
-        img.set_attribute(
-            "style",
-            &format!("width: 120px; height: 120px; object-fit: {};", fit),
-        );
-        img.set_attribute("src", src);
-        container.append_child(&img);
-        col.append_child(&container);
-        col
+        let __scope = scope;
+        let img_style = format!("width: 120px; height: 120px; object-fit: {};", fit);
+        let img_node = rsx! { img {} };
+        img_node.set_attribute("style", &img_style);
+        img_node.set_attribute("src", src);
+        rsx! {
+            div {
+                style: "display: flex; flex-direction: column; align-items: center; gap: 4px;",
+                div { style: "font-size: 12px; text-align: center;", {label} }
+                div {
+                    style: "width: 120px; height: 120px; border: 1px solid #dee2e6;",
+                    {img_node}
+                }
+            }
+        }
     };
 
-    // Wide image row (100x60 source)
-    let row1 = __scope.create_element("div");
-    row1.set_attribute("style", "display: flex; gap: 12px;");
+    let mut row1_cells: Vec<NodeHandle> = Vec::new();
     for (label, fit) in [
         ("fill", "fill"),
         ("contain", "contain"),
@@ -1955,14 +1934,10 @@ fn test_image_object_fit(__scope: &mut RenderScope) -> NodeHandle {
         ("none", "none"),
         ("scale-down", "scale-down"),
     ] {
-        let cell = make_cell(__scope, label, fit, &data_uri);
-        row1.append_child(&cell);
+        row1_cells.push(make_cell(__scope, label, fit, &data_uri));
     }
-    root.append_child(&row1);
 
-    // Tall image row (60x100 source)
-    let row2 = __scope.create_element("div");
-    row2.set_attribute("style", "display: flex; gap: 12px;");
+    let mut row2_cells: Vec<NodeHandle> = Vec::new();
     for (label, fit) in [
         ("fill (tall)", "fill"),
         ("contain (tall)", "contain"),
@@ -1970,94 +1945,82 @@ fn test_image_object_fit(__scope: &mut RenderScope) -> NodeHandle {
         ("none (tall)", "none"),
         ("scale-down (tall)", "scale-down"),
     ] {
-        let cell = make_cell(__scope, label, fit, &tall_uri);
-        row2.append_child(&cell);
+        row2_cells.push(make_cell(__scope, label, fit, &tall_uri));
     }
-    root.append_child(&row2);
 
-    root
+    rsx! {
+        div {
+            style: "display: flex; flex-direction: column; gap: 12px; padding: 12px; background: #f8f9fa;",
+            div { style: "display: flex; gap: 12px;", {row1_cells} }
+            div { style: "display: flex; gap: 12px;", {row2_cells} }
+        }
+    }
 }
 
 fn test_image_sizing(__scope: &mut RenderScope) -> NodeHandle {
     let data_uri = make_test_image_data_uri(200, 120);
 
-    let root = __scope.create_element("div");
-    root.set_attribute(
-        "style",
-        "display: flex; flex-direction: column; gap: 12px; padding: 12px; background: #f8f9fa;",
-    );
-
     let make_case = |scope: &mut RenderScope, label: &str, img_style: &str, src: &str| {
-        let col = scope.create_element("div");
-        col.set_attribute("style", "display: flex; flex-direction: column; gap: 4px;");
-
-        let lbl = scope.create_element("div");
-        lbl.set_attribute("style", "font-size: 12px;");
-        let txt = scope.create_text(label);
-        lbl.append_child(&txt);
-        col.append_child(&lbl);
-
-        let container = scope.create_element("div");
-        container.set_attribute("style", "border: 1px solid #dee2e6;");
-
-        let img = scope.create_element("img");
+        let __scope = scope;
+        let img_node = rsx! { img {} };
         if !img_style.is_empty() {
-            img.set_attribute("style", img_style);
+            img_node.set_attribute("style", img_style);
         }
-        img.set_attribute("src", src);
-        container.append_child(&img);
-        col.append_child(&container);
-        col
+        img_node.set_attribute("src", src);
+        rsx! {
+            div {
+                style: "display: flex; flex-direction: column; gap: 4px;",
+                div { style: "font-size: 12px;", {label} }
+                div { style: "border: 1px solid #dee2e6;", {img_node} }
+            }
+        }
     };
 
-    // Row 1: single-dimension sizing (aspect ratio preservation)
-    let row1 = __scope.create_element("div");
-    row1.set_attribute(
-        "style",
-        "display: flex; gap: 16px; align-items: flex-start;",
-    );
-    row1.append_child(&make_case(
+    let r1c1 = make_case(
         __scope,
         "width: 100px (auto height)",
         "width: 100px;",
         &data_uri,
-    ));
-    row1.append_child(&make_case(
+    );
+    let r1c2 = make_case(
         __scope,
         "height: 80px (auto width)",
         "height: 80px;",
         &data_uri,
-    ));
-    row1.append_child(&make_case(__scope, "no size (intrinsic)", "", &data_uri));
-    root.append_child(&row1);
-
-    // Row 2: explicit width+height with object-fit
-    let row2 = __scope.create_element("div");
-    row2.set_attribute(
-        "style",
-        "display: flex; gap: 16px; align-items: flex-start;",
     );
-    row2.append_child(&make_case(
+    let r1c3 = make_case(__scope, "no size (intrinsic)", "", &data_uri);
+    let r2c1 = make_case(
         __scope,
         "100x100 (fill)",
         "width: 100px; height: 100px;",
         &data_uri,
-    ));
-    row2.append_child(&make_case(
+    );
+    let r2c2 = make_case(
         __scope,
         "100x100 (contain)",
         "width: 100px; height: 100px; object-fit: contain;",
         &data_uri,
-    ));
-    row2.append_child(&make_case(
+    );
+    let r2c3 = make_case(
         __scope,
         "100x100 (cover)",
         "width: 100px; height: 100px; object-fit: cover;",
         &data_uri,
-    ));
-    root.append_child(&row2);
+    );
 
-    root
+    rsx! {
+        div {
+            style: "display: flex; flex-direction: column; gap: 12px; padding: 12px; background: #f8f9fa;",
+            div {
+                style: "display: flex; gap: 16px; align-items: flex-start;",
+                {r1c1} {r1c2} {r1c3}
+            }
+            div {
+                style: "display: flex; gap: 16px; align-items: flex-start;",
+                {r2c1} {r2c2} {r2c3}
+            }
+        }
+    }
 }
 
 // ── Rendering backends ───────────────────────────────────────────────────────

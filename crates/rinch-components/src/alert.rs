@@ -237,9 +237,8 @@ impl Component for Alert {
 
         // Title
         if !self.title.is_empty() {
-            let title_div = rinch_macros::rsx! { div { class: "rinch-alert__title" } };
-            let title_text = __scope.create_text(&self.title);
-            title_div.append_child(&title_text);
+            let title_div =
+                rinch_macros::rsx! { div { class: "rinch-alert__title", {self.title.clone()} } };
             wrapper.append_child(&title_div);
         }
 

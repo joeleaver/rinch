@@ -253,6 +253,7 @@ impl ScrollRegistry {
 /// }));
 /// // The element should have: data-rid="{id}"
 /// ```
+#[doc(hidden)]
 pub fn register_handler(callback: EventCallback) -> EventHandlerId {
     let id = next_handler_id();
     tracing::debug!("register_handler: Registered handler {:?}", id);
@@ -328,6 +329,7 @@ pub fn dispatch_event(id: EventHandlerId) -> bool {
 ///
 /// The handler will be called when an element with the corresponding
 /// `data-oninput` attribute receives input.
+#[doc(hidden)]
 pub fn register_input_handler(callback: InputCallback) -> EventHandlerId {
     let id = next_handler_id();
     INPUT_REGISTRY.with(|registry| {
@@ -370,6 +372,7 @@ pub fn dispatch_input_event(id: EventHandlerId, value: String) -> bool {
 ///
 /// The handler will be called when files are dropped from the OS onto an
 /// element with the corresponding `data-onfiledrop` attribute.
+#[doc(hidden)]
 pub fn register_file_drop_handler(callback: FileDropCallback) -> EventHandlerId {
     let id = next_handler_id();
     FILE_DROP_REGISTRY.with(|registry| {
@@ -396,6 +399,7 @@ pub fn dispatch_file_drop_event(id: EventHandlerId, paths: Vec<PathBuf>) -> bool
 ///
 /// The handler will be called when an element with the corresponding
 /// `data-onscroll` attribute is scrolled, passing the current scroll offset.
+#[doc(hidden)]
 pub fn register_scroll_handler(callback: ScrollCallback) -> EventHandlerId {
     let id = next_handler_id();
     SCROLL_REGISTRY.with(|registry| {

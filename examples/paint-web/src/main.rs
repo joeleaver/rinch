@@ -32,16 +32,14 @@ html, body {
 
 /// The web app wrapper — injects theme and global styles.
 fn web_app(__scope: &mut RenderScope) -> NodeHandle {
-    let style_node = __scope.create_element("style");
-    let style_text = __scope.create_text(CSS_WEB);
-    style_node.append_child(&style_text);
-
     let app_node = paint::app(__scope);
 
-    let wrapper = __scope.create_element("div");
-    wrapper.append_child(&style_node);
-    wrapper.append_child(&app_node);
-    wrapper
+    rsx! {
+        div {
+            style { {CSS_WEB} }
+            {app_node}
+        }
+    }
 }
 
 // -- Event delegation ---------------------------------------------------------

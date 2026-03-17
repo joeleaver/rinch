@@ -125,7 +125,7 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                 };
                 quote! {
                     {
-                        let __handler_id = ::rinch::core::register_handler(std::rc::Rc::new(#handler));
+                        let __handler_id = rinch::core::register_handler(std::rc::Rc::new(#handler));
                         #elem_var.set_attribute(#data_attr, &__handler_id.0.to_string());
                     }
                 }
@@ -203,7 +203,7 @@ pub fn generate_shorthand_code(
                                 let #handle_var = #result_var.clone();
                                 __scope.create_effect(move || {
                                     let __val = ::std::string::ToString::to_string(&(#closure)());
-                                    let __resolved = ::rinch::core::resolve_spacing(&__val);
+                                    let __resolved = rinch::core::resolve_spacing(&__val);
                                     #handle_var.set_style(#css_prop, &__resolved);
                                 });
                             }
@@ -253,7 +253,7 @@ pub fn generate_shorthand_code_reactive(
                         quote! {
                             {
                                 let __val = ::std::string::ToString::to_string(&(#closure)());
-                                let __resolved = ::rinch::core::resolve_spacing(&__val);
+                                let __resolved = rinch::core::resolve_spacing(&__val);
                                 #result_var.set_style(#css_prop, &__resolved);
                             }
                         }

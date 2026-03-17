@@ -78,9 +78,8 @@ impl Component for Divider {
             container.set_attribute("class", &class);
             container
         } else if !self.label.is_empty() {
-            let label_span = rinch_macros::rsx! { span { class: "rinch-divider__label" } };
-            let text_node = __scope.create_text(&self.label);
-            label_span.append_child(&text_node);
+            let label_span =
+                rinch_macros::rsx! { span { class: "rinch-divider__label", {self.label.clone()} } };
 
             let container = rinch_macros::rsx! { div { class: "rinch-divider" } };
             container.set_attribute("class", &class);

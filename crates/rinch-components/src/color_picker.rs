@@ -51,7 +51,7 @@ impl std::fmt::Debug for ColorPicker {
 }
 
 impl Component for ColorPicker {
-    fn render(&self, scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
+    fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
         let color_format = ColorFormat::parse(&self.format).unwrap_or(ColorFormat::Hex);
         let show_alpha = self.alpha;
         let show_input = self.with_input;
@@ -87,32 +87,29 @@ impl Component for ColorPicker {
             "xl" => " rinch-color-picker--xl",
             _ => " rinch-color-picker--md",
         };
-        let root = scope.create_element("div");
+        let root = rinch_macros::rsx! { div {} };
         root.set_attribute("class", &format!("rinch-color-picker{}", size_class));
 
         // === Saturation panel ===
-        let sat_panel = scope.create_element("div");
-        sat_panel.set_attribute("class", "rinch-color-picker__saturation");
+        let sat_panel = rinch_macros::rsx! { div { class: "rinch-color-picker__saturation" } };
 
         // Background: solid hue color
-        let sat_bg = scope.create_element("div");
-        sat_bg.set_attribute("class", "rinch-color-picker__saturation-bg");
+        let sat_bg = rinch_macros::rsx! { div { class: "rinch-color-picker__saturation-bg" } };
         sat_bg.set_attribute(
             "style",
             &format!("background-color: {}", hue_to_rgb_hex(initial.h)),
         );
 
         // White gradient overlay
-        let sat_white = scope.create_element("div");
-        sat_white.set_attribute("class", "rinch-color-picker__saturation-white");
+        let sat_white =
+            rinch_macros::rsx! { div { class: "rinch-color-picker__saturation-white" } };
 
         // Black gradient overlay
-        let sat_black = scope.create_element("div");
-        sat_black.set_attribute("class", "rinch-color-picker__saturation-black");
+        let sat_black =
+            rinch_macros::rsx! { div { class: "rinch-color-picker__saturation-black" } };
 
         // Thumb
-        let sat_thumb = scope.create_element("div");
-        sat_thumb.set_attribute("class", "rinch-color-picker__thumb");
+        let sat_thumb = rinch_macros::rsx! { div { class: "rinch-color-picker__thumb" } };
         sat_thumb.set_attribute(
             "style",
             &format!(
@@ -123,11 +120,11 @@ impl Component for ColorPicker {
         );
 
         // Click overlay
-        let sat_overlay = scope.create_element("div");
-        sat_overlay.set_attribute("class", "rinch-color-picker__saturation-overlay");
+        let sat_overlay =
+            rinch_macros::rsx! { div { class: "rinch-color-picker__saturation-overlay" } };
 
         {
-            let handler_id = scope.register_handler(move || {
+            let handler_id = __scope.register_handler(move || {
                 let ctx = get_click_context();
                 let px = ctx.percent_x() as f64;
                 let py = ctx.percent_y() as f64;
@@ -155,7 +152,7 @@ impl Component for ColorPicker {
         {
             let sat_bg = sat_bg.clone();
             let sat_thumb = sat_thumb.clone();
-            scope.create_effect(move || {
+            __scope.create_effect(move || {
                 let h = hue.get();
                 let s = sat.get();
                 let v = val.get();
@@ -168,18 +165,15 @@ impl Component for ColorPicker {
         }
 
         // === Hue slider ===
-        let hue_slider = scope.create_element("div");
-        hue_slider.set_attribute("class", "rinch-color-picker__hue");
+        let hue_slider = rinch_macros::rsx! { div { class: "rinch-color-picker__hue" } };
 
-        let hue_thumb = scope.create_element("div");
-        hue_thumb.set_attribute("class", "rinch-color-picker__hue-thumb");
+        let hue_thumb = rinch_macros::rsx! { div { class: "rinch-color-picker__hue-thumb" } };
         hue_thumb.set_attribute("style", &format!("left: {}%", initial.h / 360.0 * 100.0));
 
-        let hue_overlay = scope.create_element("div");
-        hue_overlay.set_attribute("class", "rinch-color-picker__hue-overlay");
+        let hue_overlay = rinch_macros::rsx! { div { class: "rinch-color-picker__hue-overlay" } };
 
         {
-            let handler_id = scope.register_handler(move || {
+            let handler_id = __scope.register_handler(move || {
                 let ctx = get_click_context();
                 let px = ctx.percent_x() as f64;
                 hue.set(px * 360.0);
@@ -200,7 +194,7 @@ impl Component for ColorPicker {
         // Update hue thumb reactively
         {
             let hue_thumb = hue_thumb.clone();
-            scope.create_effect(move || {
+            __scope.create_effect(move || {
                 let h = hue.get();
                 hue_thumb.set_attribute("style", &format!("left: {}%", h / 360.0 * 100.0));
             });
@@ -208,24 +202,23 @@ impl Component for ColorPicker {
 
         // === Alpha slider (optional) ===
         if show_alpha {
-            let alpha_slider = scope.create_element("div");
-            alpha_slider.set_attribute("class", "rinch-color-picker__alpha");
+            let alpha_slider = rinch_macros::rsx! { div { class: "rinch-color-picker__alpha" } };
 
-            let alpha_checker = scope.create_element("div");
-            alpha_checker.set_attribute("class", "rinch-color-picker__alpha-checkerboard");
+            let alpha_checker =
+                rinch_macros::rsx! { div { class: "rinch-color-picker__alpha-checkerboard" } };
 
-            let alpha_gradient = scope.create_element("div");
-            alpha_gradient.set_attribute("class", "rinch-color-picker__alpha-gradient");
+            let alpha_gradient =
+                rinch_macros::rsx! { div { class: "rinch-color-picker__alpha-gradient" } };
 
-            let alpha_thumb = scope.create_element("div");
-            alpha_thumb.set_attribute("class", "rinch-color-picker__alpha-thumb");
+            let alpha_thumb =
+                rinch_macros::rsx! { div { class: "rinch-color-picker__alpha-thumb" } };
             alpha_thumb.set_attribute("style", &format!("left: {}%", initial.a * 100.0));
 
-            let alpha_overlay = scope.create_element("div");
-            alpha_overlay.set_attribute("class", "rinch-color-picker__alpha-overlay");
+            let alpha_overlay =
+                rinch_macros::rsx! { div { class: "rinch-color-picker__alpha-overlay" } };
 
             {
-                let handler_id = scope.register_handler(move || {
+                let handler_id = __scope.register_handler(move || {
                     let ctx = get_click_context();
                     let px = ctx.percent_x() as f64;
                     alpha.set(px);
@@ -249,7 +242,7 @@ impl Component for ColorPicker {
             {
                 let alpha_gradient = alpha_gradient.clone();
                 let alpha_thumb = alpha_thumb.clone();
-                scope.create_effect(move || {
+                __scope.create_effect(move || {
                     let h = hue.get();
                     let s = sat.get();
                     let v = val.get();
@@ -270,8 +263,7 @@ impl Component for ColorPicker {
 
         // === Controls row: preview swatch + hex input ===
         if show_input {
-            let controls = scope.create_element("div");
-            controls.set_attribute("class", "rinch-color-picker__controls");
+            let controls = rinch_macros::rsx! { div { class: "rinch-color-picker__controls" } };
 
             // Preview swatch
             let preview_swatch = ColorSwatch {
@@ -280,17 +272,16 @@ impl Component for ColorPicker {
                 radius: "sm".into(),
                 ..Default::default()
             };
-            let preview_node = preview_swatch.render(scope, &[]);
+            let preview_node = preview_swatch.render(__scope, &[]);
             preview_node.set_attribute("class", "rinch-color-swatch rinch-color-picker__preview");
             controls.append_child(&preview_node);
 
             // Hex input
-            let hex_input = scope.create_element("input");
-            hex_input.set_attribute("class", "rinch-color-picker__hex-input");
+            let hex_input = rinch_macros::rsx! { input { class: "rinch-color-picker__hex-input" } };
             hex_input.set_attribute("value", &format_color(initial, color_format));
 
             {
-                let handler_id = scope.register_input_handler(move |value: String| {
+                let handler_id = __scope.register_input_handler(move |value: String| {
                     if let Some(parsed) = parse_color(&value) {
                         hue.set(parsed.h);
                         sat.set(parsed.s);
@@ -308,7 +299,7 @@ impl Component for ColorPicker {
             {
                 let preview_overlay = preview_node.clone();
                 let hex_input = hex_input.clone();
-                scope.create_effect(move || {
+                __scope.create_effect(move || {
                     let hsv = Hsva {
                         h: hue.get(),
                         s: sat.get(),
@@ -335,8 +326,8 @@ impl Component for ColorPicker {
 
         // === Swatches grid ===
         if !self.swatches.is_empty() {
-            let swatches_grid = scope.create_element("div");
-            swatches_grid.set_attribute("class", "rinch-color-picker__swatches");
+            let swatches_grid =
+                rinch_macros::rsx! { div { class: "rinch-color-picker__swatches" } };
             let swatch_size = format!(
                 "{}px",
                 (200 - (swatches_per_row - 1) * 4) / swatches_per_row
@@ -361,7 +352,7 @@ impl Component for ColorPicker {
                     })),
                     ..Default::default()
                 };
-                let swatch_node = swatch.render(scope, &[]);
+                let swatch_node = swatch.render(__scope, &[]);
                 swatches_grid.append_child(&swatch_node);
             }
 
@@ -371,7 +362,7 @@ impl Component for ColorPicker {
         // === Coordinating effect: fire onchange when any signal changes ===
         if let Some(ref onchange) = self.onchange {
             let onchange = onchange.clone();
-            scope.create_effect(move || {
+            __scope.create_effect(move || {
                 let hsv = Hsva {
                     h: hue.get(),
                     s: sat.get(),
@@ -385,7 +376,7 @@ impl Component for ColorPicker {
         // === value_fn binding: external value → internal signals ===
         if let Some(ref value_fn) = self.value_fn {
             let value_fn = value_fn.clone();
-            scope.create_effect(move || {
+            __scope.create_effect(move || {
                 let external = value_fn();
                 if let Some(parsed) = parse_color(&external) {
                     // Only update if meaningfully different to avoid feedback loops

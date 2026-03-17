@@ -124,7 +124,7 @@ pub fn generate_reactive_component_stmt(
     // Pass the actual parent directly to reactive_component_dom — no wrapper div needed.
     // This is the statement path: no return value, the function handles insertion.
     quote! {
-        ::rinch::core::reactive_component_dom(__scope, &#parent_var, move |__child_scope| {
+        rinch::core::reactive_component_dom(__scope, &#parent_var, move |__child_scope| {
             let __scope = __child_scope;
 
             #[allow(clippy::needless_update)]
@@ -135,9 +135,9 @@ pub fn generate_reactive_component_stmt(
 
             let #temp_var = __scope.create_element("template");
             #(#children_code)*
-            let #children_var: Vec<::rinch::core::NodeHandle> = #temp_var.children();
+            let #children_var: Vec<rinch::core::NodeHandle> = #temp_var.children();
 
-            let #result_var = ::rinch::core::Component::render(&#comp_var, __scope, &#children_var);
+            let #result_var = rinch::core::Component::render(&#comp_var, __scope, &#children_var);
             #style_code
             #class_code
             #shorthand_code
@@ -228,10 +228,10 @@ pub fn element_to_dom_component(element: &RsxElement, ctx: &mut DomCodegenContex
             // Render children to NodeHandles
             let #temp_var = __scope.create_element("template");
             #(#children_code)*
-            let #children_var: Vec<::rinch::core::NodeHandle> = #temp_var.children();
+            let #children_var: Vec<rinch::core::NodeHandle> = #temp_var.children();
 
             // Render component directly
-            let #result_var = ::rinch::core::Component::render(&#comp_var, __scope, &#children_var);
+            let #result_var = rinch::core::Component::render(&#comp_var, __scope, &#children_var);
 
             // Apply style/class/shorthand props to the rendered NodeHandle
             #style_code
@@ -324,7 +324,7 @@ pub fn element_to_dom_component_reactive(
         {
             let #wrapper_var = __scope.create_element("div");
             #wrapper_var.set_attribute("style", "display:contents");
-            ::rinch::core::reactive_component_dom(__scope, &#wrapper_var, move |__child_scope| {
+            rinch::core::reactive_component_dom(__scope, &#wrapper_var, move |__child_scope| {
                 let __scope = __child_scope;
 
                 #[allow(clippy::needless_update)]
@@ -335,9 +335,9 @@ pub fn element_to_dom_component_reactive(
 
                 let #temp_var = __scope.create_element("template");
                 #(#children_code)*
-                let #children_var: Vec<::rinch::core::NodeHandle> = #temp_var.children();
+                let #children_var: Vec<rinch::core::NodeHandle> = #temp_var.children();
 
-                let #result_var = ::rinch::core::Component::render(&#comp_var, __scope, &#children_var);
+                let #result_var = rinch::core::Component::render(&#comp_var, __scope, &#children_var);
                 #style_code
                 #class_code
                 #shorthand_code
@@ -359,8 +359,8 @@ pub fn generate_component_field_assignments(
     comp_props
         .iter()
         .map(|prop| {
-            let name = &prop.name;
-            let name_str = prop.name.to_string();
+            let name = prop.name_as_ident();
+            let name_str = prop.name.clone();
             let value = &prop.value;
 
             if name_str == "oninput" || name_str.starts_with("on") {

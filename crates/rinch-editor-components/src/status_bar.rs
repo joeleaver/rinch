@@ -13,34 +13,34 @@ use rinch_core::reactive::{Effect, Signal};
 /// The caller should increment `change_count` on each `on_change` callback
 /// from the editor.
 pub fn render_status_bar(scope: &mut RenderScope, change_count: Signal<usize>) -> NodeHandle {
-    let bar = scope.create_element("div");
-    bar.set_attribute("class", "editor-status-bar");
-    bar.set_attribute(
-        "style",
-        "display: flex; gap: 16px; align-items: center; padding: 6px 12px; \
-         font-size: 12px; color: var(--rinch-color-dimmed); \
-         border-top: 1px solid var(--rinch-color-gray-3); \
-         background: var(--rinch-color-gray-0);",
-    );
+    let __scope = scope;
 
-    // Block type label
-    let block_label = scope.create_element("span");
-    block_label.set_attribute(
-        "style",
-        "padding: 2px 8px; border-radius: 4px; background: var(--rinch-color-gray-2); \
-         font-weight: 500;",
-    );
-    bar.append_child(&block_label);
+    let block_label = rinch_macros::rsx! {
+        span {
+            style: "padding: 2px 8px; border-radius: 4px; background: var(--rinch-color-gray-2); \
+                    font-weight: 500;",
+        }
+    };
 
-    // Active marks container
-    let marks_container = scope.create_element("span");
-    marks_container.set_attribute("style", "display: flex; gap: 4px;");
-    bar.append_child(&marks_container);
+    let marks_container = rinch_macros::rsx! {
+        span { style: "display: flex; gap: 4px;" }
+    };
 
-    // Spacer
-    let spacer = scope.create_element("div");
-    spacer.set_attribute("style", "flex: 1;");
-    bar.append_child(&spacer);
+    let block_label_clone = block_label.clone();
+    let marks_container_clone = marks_container.clone();
+
+    let bar = rinch_macros::rsx! {
+        div {
+            class: "editor-status-bar",
+            style: "display: flex; gap: 16px; align-items: center; padding: 6px 12px; \
+                    font-size: 12px; color: var(--rinch-color-dimmed); \
+                    border-top: 1px solid var(--rinch-color-gray-3); \
+                    background: var(--rinch-color-gray-0);",
+            {block_label}
+            {marks_container}
+            div { style: "flex: 1;" }
+        }
+    };
 
     // Single effect that updates all dynamic content when change_count changes
     Effect::new(move || {
@@ -64,7 +64,7 @@ pub fn render_status_bar(scope: &mut RenderScope, change_count: Signal<usize>) -
             Some(other) => other,
             None => "Unknown",
         };
-        block_label.set_text(block_type_str);
+        block_label_clone.set_text(block_type_str);
 
         // Update active marks from CE API
         let mut mark_names = Vec::new();
@@ -83,9 +83,9 @@ pub fn render_status_bar(scope: &mut RenderScope, change_count: Signal<usize>) -
             }
         }
         if mark_names.is_empty() {
-            marks_container.set_text("");
+            marks_container_clone.set_text("");
         } else {
-            marks_container.set_text(&mark_names.join(" | "));
+            marks_container_clone.set_text(&mark_names.join(" | "));
         }
     });
 

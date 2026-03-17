@@ -73,7 +73,7 @@ pub fn generate_if_block(
             let wrapper_var = ctx.next_var("elif_wrap");
             let nested = generate_if_block(inner_if, &wrapper_var, ctx);
             quote! {
-                Some(move |__child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
+                Some(move |__child_scope: &mut rinch::core::dom::RenderScope| -> rinch::core::dom::NodeHandle {
                     let __scope = __child_scope;
                     let #wrapper_var = __scope.create_element("div");
                     #wrapper_var.set_attribute("style", "display:contents");
@@ -83,13 +83,13 @@ pub fn generate_if_block(
             }
         }
         None => {
-            quote! { None::<fn(&mut ::rinch::core::dom::RenderScope) -> ::rinch::core::dom::NodeHandle> }
+            quote! { None::<fn(&mut rinch::core::dom::RenderScope) -> rinch::core::dom::NodeHandle> }
         }
     };
 
     quote! {
         {
-            ::rinch::core::show_dom(
+            rinch::core::show_dom(
                 __scope,
                 &#parent_var,
                 #when_closure,
@@ -115,7 +115,7 @@ fn generate_branch_closure(
         let pattern = if_block.pattern.as_ref().unwrap();
         let condition = &if_block.condition;
         quote! {
-            move |__child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
+            move |__child_scope: &mut rinch::core::dom::RenderScope| -> rinch::core::dom::NodeHandle {
                 let __scope = __child_scope;
                 #[allow(unreachable_patterns)]
                 let #pattern = #condition else { unreachable!() };
@@ -124,7 +124,7 @@ fn generate_branch_closure(
         }
     } else {
         quote! {
-            move |__child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
+            move |__child_scope: &mut rinch::core::dom::RenderScope| -> rinch::core::dom::NodeHandle {
                 let __scope = __child_scope;
                 #body
             }
@@ -136,7 +136,7 @@ fn generate_branch_closure(
 fn generate_children_closure(children: &[RsxNode], ctx: &mut DomCodegenContext) -> TokenStream2 {
     let body = generate_children_body(children, ctx);
     quote! {
-        move |__child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
+        move |__child_scope: &mut rinch::core::dom::RenderScope| -> rinch::core::dom::NodeHandle {
             let __scope = __child_scope;
             #body
         }
@@ -264,12 +264,12 @@ pub fn generate_for_loop(
 
     quote! {
         {
-            ::rinch::core::for_each_dom_typed(
+            rinch::core::for_each_dom_typed(
                 __scope,
                 &#parent_var,
                 #collection,
                 #key_closure,
-                move |#pattern, __child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
+                move |#pattern, __child_scope: &mut rinch::core::dom::RenderScope| -> rinch::core::dom::NodeHandle {
                     let __scope = __child_scope;
                     #body
                 }
@@ -355,21 +355,21 @@ pub fn generate_match_block(
             // Each branch re-evaluates the scrutinee to bind pattern variables.
             // We use `match` with the specific pattern + a catch-all unreachable.
             quote! {
-                Box::new(move |__child_scope: &mut ::rinch::core::dom::RenderScope| -> ::rinch::core::dom::NodeHandle {
+                Box::new(move |__child_scope: &mut rinch::core::dom::RenderScope| -> rinch::core::dom::NodeHandle {
                     let __scope = __child_scope;
                     #[allow(unreachable_patterns, unused_variables, irrefutable_let_patterns)]
                     match #scrutinee {
                         #pat #guard_check => { #body }
                         _ => unreachable!()
                     }
-                }) as Box<dyn Fn(&mut ::rinch::core::dom::RenderScope) -> ::rinch::core::dom::NodeHandle>
+                }) as Box<dyn Fn(&mut rinch::core::dom::RenderScope) -> rinch::core::dom::NodeHandle>
             }
         })
         .collect();
 
     quote! {
         {
-            ::rinch::core::match_dom(
+            rinch::core::match_dom(
                 __scope,
                 &#parent_var,
                 #discriminant,

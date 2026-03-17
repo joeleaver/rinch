@@ -158,7 +158,7 @@ impl Slider {
 }
 
 impl Component for Slider {
-    fn render(&self, scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
+    fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
         let class = self.class_string();
 
         let min = self.min.unwrap_or(0.0);
@@ -194,18 +194,16 @@ impl Component for Slider {
         style_parts.push(format!("--rinch-slider-value: {}%", percentage));
 
         // Create root container
-        let container = scope.create_element("div");
+        let container = rinch_macros::rsx! { div {} };
         container.set_attribute("class", &class);
         container.set_attribute("style", &style_parts.join("; "));
 
         // Create track
-        let track = scope.create_element("div");
-        track.set_attribute("class", "rinch-slider__track");
+        let track = rinch_macros::rsx! { div { class: "rinch-slider__track" } };
 
         // Create bar (the filled portion)
         // Uses transform: scaleX() instead of width for paint-only updates (no Taffy relayout)
-        let bar = scope.create_element("div");
-        bar.set_attribute("class", "rinch-slider__bar");
+        let bar = rinch_macros::rsx! { div { class: "rinch-slider__bar" } };
         bar.set_style("transform", &format!("scaleX({})", percentage / 100.0));
         track.append_child(&bar);
 
@@ -214,13 +212,11 @@ impl Component for Slider {
         // The thumb itself is positioned via transform on the wrapper:
         // translateX(X%) moves by X% of wrapper width (= track width), centering is
         // handled by the thumb's own negative margin.
-        let thumb_wrapper = scope.create_element("div");
-        thumb_wrapper.set_attribute("class", "rinch-slider__thumb-wrapper");
+        let thumb_wrapper = rinch_macros::rsx! { div { class: "rinch-slider__thumb-wrapper" } };
         thumb_wrapper.set_style("transform", &format!("translateX({}%)", percentage));
 
         // Create a zero-width anchor that centers content on the wrapper's left edge
-        let thumb_anchor = scope.create_element("div");
-        thumb_anchor.set_attribute("class", "rinch-slider__thumb-anchor");
+        let thumb_anchor = rinch_macros::rsx! { div { class: "rinch-slider__thumb-anchor" } };
 
         // Add label if needed
         if !self.label.is_empty() || self.show_label_on_hover || self.label_always_on {
@@ -230,22 +226,17 @@ impl Component for Slider {
                 self.label.replace("{value}", &format!("{}", value))
             };
 
-            let label = scope.create_element("div");
-            label.set_attribute("class", "rinch-slider__label");
-            let label_text_node = scope.create_text(&label_text);
-            label.append_child(&label_text_node);
+            let label = rinch_macros::rsx! { div { class: "rinch-slider__label", {label_text} } };
             thumb_anchor.append_child(&label);
         }
 
         // Create thumb
-        let thumb = scope.create_element("div");
-        thumb.set_attribute("class", "rinch-slider__thumb");
+        let thumb = rinch_macros::rsx! { div { class: "rinch-slider__thumb" } };
         thumb_anchor.append_child(&thumb);
         thumb_wrapper.append_child(&thumb_anchor);
 
         // Create click overlay
-        let overlay = scope.create_element("div");
-        overlay.set_attribute("class", "rinch-slider__overlay");
+        let overlay = rinch_macros::rsx! { div { class: "rinch-slider__overlay" } };
 
         // Register click handler if we have an onchange callback
         if let Some(ref value_cb) = self.onchange {
@@ -264,7 +255,7 @@ impl Component for Slider {
             let calc_value_drag = calc_value;
 
             // Create the click handler that manages drag
-            let handler_id = scope.register_handler(move || {
+            let handler_id = __scope.register_handler(move || {
                 let ctx = get_click_context();
                 let new_value = calc_value(ctx.percent_x() as f64);
                 value_cb.invoke(new_value);
@@ -294,7 +285,7 @@ impl Component for Slider {
             let bar_clone = bar.clone();
             let thumb_wrapper_clone = thumb_wrapper.clone();
 
-            scope.create_effect(move || {
+            __scope.create_effect(move || {
                 let current_value = value_signal.get();
                 let pct = if max > min {
                     ((current_value - min) / (max - min)) * 100.0

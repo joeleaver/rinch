@@ -81,10 +81,10 @@ pub fn element_to_dom_theme_provider(
             {
                 #pc_let
                 #dm_let
-                ::rinch::core::Effect::new(move || {
+                rinch::core::Effect::new(move || {
                     let __color = (__pc_fn)();
                     let __dark = (__dm_fn)();
-                    ::rinch::fine_grained::update_theme(&::rinch::core::element::ThemeProviderProps {
+                    rinch::fine_grained::update_theme(&rinch::core::element::ThemeProviderProps {
                         primary_color: Some(__color.to_string()),
                         dark_mode: __dark,
                         default_radius: #radius_value,

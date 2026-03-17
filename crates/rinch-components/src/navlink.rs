@@ -223,23 +223,19 @@ impl Component for NavLink {
             let body = rinch_macros::rsx! { div { class: "rinch-navlink__body" } };
 
             if !self.label.is_empty() {
-                let label_span = rinch_macros::rsx! { span { class: "rinch-navlink__label" } };
-                let label_text = __scope.create_text(&self.label);
-                label_span.append_child(&label_text);
+                let label_span = rinch_macros::rsx! { span { class: "rinch-navlink__label", {self.label.clone()} } };
                 body.append_child(&label_span);
             }
 
             let desc = &self.description;
-            let desc_span = rinch_macros::rsx! { span { class: "rinch-navlink__description" } };
-            let desc_text = __scope.create_text(desc);
-            desc_span.append_child(&desc_text);
+            let desc_span =
+                rinch_macros::rsx! { span { class: "rinch-navlink__description", {desc} } };
             body.append_child(&desc_span);
 
             inner.append_child(&body);
         } else if !self.label.is_empty() {
-            let label_span = rinch_macros::rsx! { span { class: "rinch-navlink__label" } };
-            let label_text = __scope.create_text(&self.label);
-            label_span.append_child(&label_text);
+            let label_span =
+                rinch_macros::rsx! { span { class: "rinch-navlink__label", {self.label.clone()} } };
             inner.append_child(&label_span);
         }
 

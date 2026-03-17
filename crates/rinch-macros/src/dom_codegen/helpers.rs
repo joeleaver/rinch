@@ -45,13 +45,13 @@ pub fn is_likely_reactive(expr: &Expr) -> bool {
 pub fn generate_component_wrapper(body: TokenStream2, has_children: bool) -> TokenStream2 {
     if has_children {
         quote! {
-            |__scope: &mut ::rinch::core::RenderScope, __children: &[::rinch::core::NodeHandle]| -> ::rinch::core::NodeHandle {
+            |__scope: &mut rinch::core::RenderScope, __children: &[rinch::core::NodeHandle]| -> rinch::core::NodeHandle {
                 #body
             }
         }
     } else {
         quote! {
-            |__scope: &mut ::rinch::core::RenderScope| -> ::rinch::core::NodeHandle {
+            |__scope: &mut rinch::core::RenderScope| -> rinch::core::NodeHandle {
                 #body
             }
         }

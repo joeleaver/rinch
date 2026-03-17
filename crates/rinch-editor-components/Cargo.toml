@@ -7,4 +7,5 @@ description = "Toolbar and control components for Rinch rich-text editor"
 
 [dependencies]
 rinch-core = { workspace = true }
+rinch-macros = { workspace = true }
 rinch-tabler-icons = { workspace = true }

@@ -208,9 +208,8 @@ impl Component for Avatar {
             img.set_attribute("alt", alt);
             container.append_child(&img);
         } else if let Some(initials) = self.get_initials() {
-            let span = rinch_macros::rsx! { span { class: "rinch-avatar__placeholder" } };
-            let text_node = __scope.create_text(&initials);
-            span.append_child(&text_node);
+            let span =
+                rinch_macros::rsx! { span { class: "rinch-avatar__placeholder", {initials} } };
             container.append_child(&span);
         } else {
             let placeholder =

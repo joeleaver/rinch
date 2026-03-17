@@ -316,8 +316,8 @@ impl Component for Pagination {
                     page_btn.set_attribute("class", &page_class);
                     page_btn.set_attribute("data-page", &n.to_string());
 
-                    let page_text = __scope.create_text(&n.to_string());
-                    page_btn.append_child(&page_text);
+                    let page_text_node = rinch_core::IntoNode::into_node(n.to_string(), __scope);
+                    page_btn.append_child(&page_text_node);
 
                     if self.disabled {
                         page_btn.set_attribute("disabled", "");

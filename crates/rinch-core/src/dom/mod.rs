@@ -228,6 +228,7 @@ impl NodeHandle {
     ///
     /// For text nodes, this updates the text directly.
     /// For element nodes, this replaces all children with a single text node.
+    #[doc(hidden)]
     pub fn set_text(&self, text: &str) {
         if let Some(doc) = self.doc.upgrade() {
             tracing::debug!(
@@ -248,6 +249,7 @@ impl NodeHandle {
     ///
     /// # Panics
     /// May panic if called on a non-element node.
+    #[doc(hidden)]
     pub fn set_attribute(&self, name: &str, value: &str) {
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut().set_attribute(self.node_id, name, value);
@@ -268,6 +270,7 @@ impl NodeHandle {
     }
 
     /// Append a child node to this element.
+    #[doc(hidden)]
     pub fn append_child(&self, child: &NodeHandle) {
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut().append_child(self.node_id, child.node_id);
@@ -358,6 +361,7 @@ impl NodeHandle {
     }
 
     /// Set a CSS style property.
+    #[doc(hidden)]
     pub fn set_style(&self, property: &str, value: &str) {
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut().set_style(self.node_id, property, value);
@@ -379,6 +383,7 @@ impl NodeHandle {
     }
 
     /// Add a class to the element's class list.
+    #[doc(hidden)]
     pub fn add_class(&self, class: &str) {
         if let Some(doc) = self.doc.upgrade() {
             // Get current class attribute (borrow ends here)
@@ -394,6 +399,7 @@ impl NodeHandle {
     }
 
     /// Remove a class from the element's class list.
+    #[doc(hidden)]
     pub fn remove_class(&self, class: &str) {
         if let Some(doc) = self.doc.upgrade() {
             // Get current class attribute (borrow ends here)

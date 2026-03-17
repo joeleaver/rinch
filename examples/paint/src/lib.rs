@@ -620,49 +620,33 @@ pub fn app() -> NodeHandle {
     let ps_redo = paint_state.clone();
     let ps_clear = paint_state.clone();
 
-    // Build color palette imperatively (for loop body can't have let bindings in rsx)
+    // Build color palette
     let mut color_swatches: Vec<NodeHandle> = Vec::new();
     for rgb in COLORS.iter() {
         let cr = rgb[0];
         let cg = rgb[1];
         let cb = rgb[2];
         let color_rgba = [cr, cg, cb, 255u8];
-        let swatch = __scope.create_element("div");
-        // Set initial style
-        let initial_border = if cr > 240 && cg > 240 && cb > 240 {
-            "1px solid #ccc"
-        } else {
-            "1px solid transparent"
+        let swatch = rsx! {
+            div {
+                style: {move || {
+                    let active = color_signal.get();
+                    let is_active = active[0] == cr && active[1] == cg && active[2] == cb;
+                    let border = if is_active {
+                        "2px solid var(--rinch-primary-color)"
+                    } else if cr > 240 && cg > 240 && cb > 240 {
+                        "1px solid #ccc"
+                    } else {
+                        "1px solid transparent"
+                    };
+                    format!(
+                        "width: 24px; height: 24px; background: rgb({cr},{cg},{cb}); \
+                         border-radius: 3px; border: {border}; cursor: pointer;"
+                    )
+                }},
+                onclick: move || color_signal.set(color_rgba),
+            }
         };
-        swatch.set_attribute(
-            "style",
-            &format!(
-                "width: 24px; height: 24px; background: rgb({cr},{cg},{cb}); \
-                 border-radius: 3px; border: {initial_border}; cursor: pointer;"
-            ),
-        );
-        // Reactive style update via Effect
-        let swatch_handle = swatch.clone();
-        __scope.create_effect(move || {
-            let active = color_signal.get();
-            let is_active = active[0] == cr && active[1] == cg && active[2] == cb;
-            let border = if is_active {
-                "2px solid var(--rinch-primary-color)"
-            } else if cr > 240 && cg > 240 && cb > 240 {
-                "1px solid #ccc"
-            } else {
-                "1px solid transparent"
-            };
-            swatch_handle.set_attribute(
-                "style",
-                &format!(
-                    "width: 24px; height: 24px; background: rgb({cr},{cg},{cb}); \
-                     border-radius: 3px; border: {border}; cursor: pointer;"
-                ),
-            );
-        });
-        let handler_id = __scope.register_handler(move || color_signal.set(color_rgba));
-        swatch.set_attribute("data-rid", &handler_id.0.to_string());
         color_swatches.push(swatch);
     }
 

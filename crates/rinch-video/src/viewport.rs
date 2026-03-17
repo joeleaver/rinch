@@ -56,29 +56,31 @@ impl Component for VideoViewport {
 /// The compositor queries this rect to position the video frame.
 #[cfg(not(target_arch = "wasm32"))]
 fn video_viewport_render(scope: &mut RenderScope, viewport_name: &str) -> NodeHandle {
-    let div = scope.create_element("div");
-    div.set_attribute("class", "rinch-video-viewport");
-    div.set_attribute("data-viewport", viewport_name);
-    div.set_attribute(
-        "style",
-        "pointer-events: none; background: transparent; width: 100%; height: 100%;",
-    );
-    div
+    let __scope = scope;
+    let el = rinch_macros::rsx! {
+        div {
+            class: "rinch-video-viewport",
+            style: "pointer-events: none; background: transparent; width: 100%; height: 100%;",
+        }
+    };
+    el.set_attribute("data-viewport", viewport_name);
+    el
 }
 
 /// WASM: create a real <video> element (browser handles rendering).
 /// Tagged with `data-video-player` so `WebVideoPlayer` can find it.
 #[cfg(target_arch = "wasm32")]
 fn video_viewport_render(scope: &mut RenderScope, viewport_name: &str) -> NodeHandle {
-    let video = scope.create_element("video");
-    video.set_attribute("class", "rinch-video-viewport");
-    video.set_attribute("data-video-player", viewport_name);
-    video.set_attribute(
-        "style",
-        "width: 100%; height: 100%; object-fit: contain; background: black;",
-    );
-    video.set_attribute("playsinline", "true");
-    video
+    let __scope = scope;
+    let el = rinch_macros::rsx! {
+        video {
+            class: "rinch-video-viewport",
+            style: "width: 100%; height: 100%; object-fit: contain; background: black;",
+            playsinline: "true",
+        }
+    };
+    el.set_attribute("data-video-player", viewport_name);
+    el
 }
 
 /// No-op backend used only for the Default impl.

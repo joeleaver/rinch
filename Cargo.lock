@@ -1610,15 +1610,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8591b0bcc8a98a64310a2fae1bb3e9b8564dd10e381e6e28010fde8e8e8568db"
 
 [[package]]
-name = "fine_grained_window"
-version = "0.1.0"
-dependencies = [
- "rinch",
- "rinch-core",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "flate2"
 version = "1.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4713,6 +4704,7 @@ name = "rinch-editor-components"
 version = "0.1.0"
 dependencies = [
  "rinch-core",
+ "rinch-macros",
  "rinch-tabler-icons",
 ]
 
@@ -4815,6 +4807,7 @@ version = "0.1.0"
 dependencies = [
  "heck 0.5.0",
  "rinch-core",
+ "rinch-macros",
  "serde_json",
  "ureq",
 ]

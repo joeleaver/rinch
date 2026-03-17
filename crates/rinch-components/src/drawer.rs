@@ -298,9 +298,7 @@ impl Component for Drawer {
 
             // Title takes up remaining space
             if !self.title.is_empty() {
-                let title_el = rinch_macros::rsx! { h2 { class: "rinch-drawer__title" } };
-                let title_text = __scope.create_text(&self.title);
-                title_el.append_child(&title_text);
+                let title_el = rinch_macros::rsx! { h2 { class: "rinch-drawer__title", {self.title.clone()} } };
                 header.append_child(&title_el);
             } else {
                 // Spacer when no title

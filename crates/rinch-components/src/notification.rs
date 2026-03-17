@@ -277,9 +277,7 @@ impl Component for Notification {
 
         // Title element
         if !self.title.is_empty() {
-            let title_div = rinch_macros::rsx! { div { class: "rinch-notification__title" } };
-            let title_text = __scope.create_text(&self.title);
-            title_div.append_child(&title_text);
+            let title_div = rinch_macros::rsx! { div { class: "rinch-notification__title", {self.title.clone()} } };
             body.append_child(&title_div);
         }
 

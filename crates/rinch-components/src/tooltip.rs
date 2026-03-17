@@ -165,10 +165,8 @@ impl Component for Tooltip {
         root.append_child(&target);
 
         // Content element — visibility controlled by hovered signal
-        let content =
-            rinch_macros::rsx! { div { class: "rinch-tooltip__content", role: "tooltip" } };
-        let label_text = __scope.create_text(label);
-        content.append_child(&label_text);
+        let label_str = label.to_string();
+        let content = rinch_macros::rsx! { div { class: "rinch-tooltip__content", role: "tooltip", {label_str} } };
 
         // Use an Effect to toggle inline display based on hover state.
         // Use display:none to hide — visibility/pointer-events don't propagate

@@ -54,6 +54,7 @@ impl RenderScope {
     }
 
     /// Create a new element and return a handle to it.
+    #[doc(hidden)]
     pub fn create_element(&mut self, tag: &str) -> NodeHandle {
         let doc = self.doc().expect("Document dropped");
         let node_id = doc.borrow_mut().create_element(tag);
@@ -61,6 +62,7 @@ impl RenderScope {
     }
 
     /// Create a new text node and return a handle to it.
+    #[doc(hidden)]
     pub fn create_text(&mut self, text: &str) -> NodeHandle {
         let doc = self.doc().expect("Document dropped");
         let node_id = doc.borrow_mut().create_text(text);
@@ -72,6 +74,7 @@ impl RenderScope {
     /// Returns `(container_handle, reactive_id)` where:
     /// - `container_handle` is the span element that should be appended to the parent
     /// - `reactive_id` is the unique ID for tracking this reactive text node
+    #[doc(hidden)]
     pub fn create_reactive_text(&mut self, initial_text: &str) -> (NodeHandle, usize) {
         let reactive_id = next_reactive_id();
         let doc = self.doc().expect("Document dropped");
@@ -101,6 +104,7 @@ impl RenderScope {
     }
 
     /// Create a comment node (useful as a placeholder/marker).
+    #[doc(hidden)]
     pub fn create_comment(&mut self, text: &str) -> NodeHandle {
         let doc = self.doc().expect("Document dropped");
         let node_id = doc.borrow_mut().create_comment(text);
@@ -196,6 +200,7 @@ impl RenderScope {
     /// });
     /// element.set_attribute("data-rid", &handler_id.to_string());
     /// ```
+    #[doc(hidden)]
     pub fn register_handler<F: Fn() + 'static>(
         &mut self,
         callback: F,
@@ -216,6 +221,7 @@ impl RenderScope {
     /// });
     /// element.set_attribute("data-oninput", &handler_id.to_string());
     /// ```
+    #[doc(hidden)]
     pub fn register_input_handler<F: Fn(String) + 'static>(
         &mut self,
         callback: F,
@@ -235,6 +241,7 @@ impl RenderScope {
     /// });
     /// element.set_attribute("data-onfiledrop", &handler_id.to_string());
     /// ```
+    #[doc(hidden)]
     pub fn register_file_drop_handler<F: Fn(Vec<std::path::PathBuf>) + 'static>(
         &mut self,
         callback: F,
@@ -254,6 +261,7 @@ impl RenderScope {
     /// });
     /// element.set_attribute("data-onscroll", &handler_id.to_string());
     /// ```
+    #[doc(hidden)]
     pub fn register_scroll_handler<F: Fn(f64) + 'static>(
         &mut self,
         callback: F,

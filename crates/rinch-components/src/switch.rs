@@ -105,7 +105,7 @@ impl Switch {
 }
 
 impl Component for Switch {
-    fn render(&self, scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
+    fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
         let base_class = self.base_class_string();
 
         // Determine if we have a reactive checked state
@@ -123,12 +123,12 @@ impl Component for Switch {
         };
 
         // Create label container
-        let label_node = scope.create_element("label");
+        let label_node = rinch_macros::rsx! { label {} };
         label_node.set_attribute("class", &class);
 
         // Register handler
         if let Some(cb) = &self.onchange {
-            let handler_id = scope.register_handler({
+            let handler_id = __scope.register_handler({
                 let cb = cb.clone();
                 move || cb.invoke()
             });
@@ -136,7 +136,7 @@ impl Component for Switch {
         }
 
         // Input element (hidden, used for accessibility)
-        let input = scope.create_element("input");
+        let input = rinch_macros::rsx! { input {} };
         input.set_attribute("type", "checkbox");
         input.set_attribute("class", "rinch-switch__input");
 
@@ -150,11 +150,9 @@ impl Component for Switch {
         label_node.append_child(&input);
 
         // Track with thumb
-        let track = scope.create_element("span");
-        track.set_attribute("class", "rinch-switch__track");
+        let track = rinch_macros::rsx! { span { class: "rinch-switch__track" } };
 
-        let thumb = scope.create_element("span");
-        thumb.set_attribute("class", "rinch-switch__thumb");
+        let thumb = rinch_macros::rsx! { span { class: "rinch-switch__thumb" } };
         track.append_child(&thumb);
 
         label_node.append_child(&track);
@@ -162,10 +160,8 @@ impl Component for Switch {
         // Label text
         if !self.label.is_empty() {
             let label_text = &self.label;
-            let label_span = scope.create_element("span");
-            label_span.set_attribute("class", "rinch-switch__label");
-            let label_text_node = scope.create_text(label_text);
-            label_span.append_child(&label_text_node);
+            let label_span =
+                rinch_macros::rsx! { span { class: "rinch-switch__label", {label_text} } };
             label_node.append_child(&label_span);
         }
 
@@ -175,7 +171,7 @@ impl Component for Switch {
             let label_clone = label_node.clone();
             let base_class = self.base_class_string();
 
-            scope.create_effect(move || {
+            __scope.create_effect(move || {
                 let is_checked = checked_fn();
                 if is_checked {
                     label_clone

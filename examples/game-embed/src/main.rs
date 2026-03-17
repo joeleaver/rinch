@@ -216,19 +216,6 @@ fn game_ui() -> NodeHandle {
         auto_rotate,
     }));
 
-    // Root fills the viewport. The viewport div has data-viewport so
-    // wants_mouse() returns false for clicks on it (passes to game).
-    let root = __scope.create_element("div");
-    root.set_attribute("style", "width:100%;height:100%;position:relative;");
-
-    let vp = __scope.create_element("div");
-    vp.set_attribute("data-viewport", "main");
-    vp.set_attribute(
-        "style",
-        "position:absolute;top:0;left:0;width:100%;height:100%;",
-    );
-    root.append_child(&vp);
-
     // Build the control panel with rsx
     let panel = rsx! {
         div {
@@ -357,8 +344,17 @@ fn game_ui() -> NodeHandle {
             }
         }
     };
-    root.append_child(&panel);
-    root
+
+    rsx! {
+        div {
+            style: "width:100%;height:100%;position:relative;",
+            div {
+                data-viewport: "main",
+                style: "position:absolute;top:0;left:0;width:100%;height:100%;",
+            }
+            {panel}
+        }
+    }
 }
 
 // ── Key translation (winit → platform) ──────────────────────────────────────

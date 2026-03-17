@@ -462,31 +462,37 @@ fn custom_render_demo(tree: UseTreeReturn) -> NodeHandle {
 
     // Custom render function to show file info
     let render_node: RenderTreeNode = Rc::new(|payload, scope| {
-        let label_wrapper = scope.create_element("div");
-        label_wrapper.set_attribute("class", "rinch-tree__custom-label");
-        label_wrapper.set_attribute("style", "display: flex; justify-content: space-between; align-items: center; width: 100%; gap: 16px;");
+        let __scope = scope;
+        let label_text = payload.node.label.clone();
+        let has_children = payload.has_children;
+        let meta_text = if !has_children {
+            payload
+                .node
+                .downcast_payload::<FileInfo>()
+                .map(|info| format!("{} - {}", info.size, info.modified))
+        } else {
+            None
+        };
 
-        let label = scope.create_element("span");
-        label.set_attribute("class", "rinch-tree__label");
-        let label_text = scope.create_text(&payload.node.label);
-        label.append_child(&label_text);
-        label_wrapper.append_child(&label);
+        let meta_node = if let Some(text) = meta_text {
+            rsx! {
+                span {
+                    style: "color: var(--rinch-color-dimmed); font-size: var(--rinch-font-size-xs);",
+                    {text.as_str()}
+                }
+            }
+        } else {
+            rsx! { span {} }
+        };
 
-        // Show file info if available (only for leaf nodes)
-        if !payload.has_children
-            && let Some(info) = payload.node.downcast_payload::<FileInfo>()
-        {
-            let meta = scope.create_element("span");
-            meta.set_attribute(
-                "style",
-                "color: var(--rinch-color-dimmed); font-size: var(--rinch-font-size-xs);",
-            );
-            let meta_text = scope.create_text(&format!("{} - {}", info.size, info.modified));
-            meta.append_child(&meta_text);
-            label_wrapper.append_child(&meta);
+        rsx! {
+            div {
+                class: "rinch-tree__custom-label",
+                style: "display: flex; justify-content: space-between; align-items: center; width: 100%; gap: 16px;",
+                span { class: "rinch-tree__label", {label_text.as_str()} }
+                {meta_node}
+            }
         }
-
-        label_wrapper
     });
 
     rsx! {

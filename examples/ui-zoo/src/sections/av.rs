@@ -552,44 +552,43 @@ fn toolbar_button(
     toggled: Signal<bool>,
     active_color: &'static str,
 ) -> NodeHandle {
-    let btn = __scope.create_element("button");
-    btn.set_attribute("type", "button");
-    let handler_id = __scope.register_handler(move || toggled.update(|v| *v = !*v));
-    btn.set_attribute("data-rid", &handler_id.0.to_string());
-
     let on_icon = render_tabler_icon(__scope, icon_on, TablerIconStyle::Outline);
     let off_icon = render_tabler_icon(__scope, icon_off, TablerIconStyle::Outline);
-    btn.append_child(&on_icon);
-    btn.append_child(&off_icon);
 
-    __scope.create_effect({
-        let btn = btn.clone();
-        let on_icon = on_icon.clone();
-        let off_icon = off_icon.clone();
-        let active_color = active_color.to_string();
-        move || {
-            if toggled.get() {
-                btn.set_attribute(
-                    "class",
-                    "rinch-action-icon rinch-action-icon--filled rinch-action-icon--xl rinch-action-icon--radius-xl",
-                );
-                btn.set_attribute("style", &format!(
-                    "--rinch-action-icon-color: var(--rinch-color-{}-6)", active_color
-                ));
-                on_icon.set_attribute("style", "display: none");
-                off_icon.set_attribute("style", "");
-            } else {
-                btn.set_attribute("class",
-                    "rinch-action-icon rinch-action-icon--default rinch-action-icon--xl rinch-action-icon--radius-xl"
-                );
-                btn.set_attribute("style", "");
-                on_icon.set_attribute("style", "");
-                off_icon.set_attribute("style", "display: none");
-            }
+    // Reactive icon visibility via effects on the pre-rendered icon handles
+    let on_clone = on_icon.clone();
+    let off_clone = off_icon.clone();
+    __scope.create_effect(move || {
+        if toggled.get() {
+            on_clone.set_attribute("style", "display: none");
+            off_clone.set_attribute("style", "");
+        } else {
+            on_clone.set_attribute("style", "");
+            off_clone.set_attribute("style", "display: none");
         }
     });
 
-    btn
+    rsx! {
+        button {
+            r#type: "button",
+            class: {|| if toggled.get() {
+                "rinch-action-icon rinch-action-icon--filled rinch-action-icon--xl rinch-action-icon--radius-xl"
+            } else {
+                "rinch-action-icon rinch-action-icon--default rinch-action-icon--xl rinch-action-icon--radius-xl"
+            }},
+            style: {
+                let active_color = active_color.to_string();
+                move || if toggled.get() {
+                    format!("--rinch-action-icon-color: var(--rinch-color-{}-6)", active_color)
+                } else {
+                    String::new()
+                }
+            },
+            onclick: move || toggled.update(|v| *v = !*v),
+            {on_icon}
+            {off_icon}
+        }
+    }
 }
 
 // ── Helper: mic test record/play controls ──
@@ -605,83 +604,57 @@ fn mic_test_controls(
     playing: Signal<bool>,
     has_clip: Signal<bool>,
 ) -> NodeHandle {
-    // Dispatch record/stop/play based on state — all in one onclick per button
-    // to avoid reactive component re-render + FnOnce issues with Callback.
-    let record_btn = __scope.create_element("button");
-    record_btn.set_attribute("class", "rinch-Button rinch-Button--light rinch-Button--xs");
-    let record_text = __scope.create_text("Record");
-    record_btn.append_child(&record_text);
-
-    // Reactive text + style for record button
-    __scope.create_effect({
-        let btn = record_btn.clone();
-        let text = record_text.clone();
-        move || {
-            if recording.get() {
-                btn.set_attribute(
-                    "class",
-                    "rinch-Button rinch-Button--filled rinch-Button--xs rinch-Button--red",
-                );
-                text.set_text("Stop");
+    // Build record button with reactive class/text via effects on handles
+    let record_btn = rsx! {
+        button {
+            class: {|| if recording.get() {
+                "rinch-Button rinch-Button--filled rinch-Button--xs rinch-Button--red"
             } else {
-                btn.set_attribute("class", "rinch-Button rinch-Button--light rinch-Button--xs");
-                text.set_text("Record");
-            }
-            if playing.get() {
-                btn.set_attribute("data-disabled", "true");
-            } else {
-                btn.remove_attribute("data-disabled");
-            }
-        }
-    });
-
-    // Record button click handler
-    let handler_id = __scope.register_handler({
-        let start = start_recording;
-        let stop = stop_recording;
-        move || {
-            if recording.get() {
-                stop.invoke();
-            } else {
-                start.invoke();
-            }
-        }
-    });
-    record_btn.set_attribute("data-rid", &handler_id.0.to_string());
-
-    // Play button
-    let play_btn = __scope.create_element("button");
-    play_btn.set_attribute("class", "rinch-Button rinch-Button--light rinch-Button--xs");
-    let play_text = __scope.create_text("Play");
-    play_btn.append_child(&play_text);
-
-    __scope.create_effect({
-        let btn = play_btn.clone();
-        let text = play_text.clone();
-        move || {
-            if playing.get() {
-                text.set_text("Playing…");
-                btn.set_attribute("data-disabled", "true");
-            } else {
-                text.set_text("Play");
-                if !has_clip.get() || recording.get() {
-                    btn.set_attribute("data-disabled", "true");
-                } else {
-                    btn.remove_attribute("data-disabled");
+                "rinch-Button rinch-Button--light rinch-Button--xs"
+            }},
+            onclick: {
+                let start = start_recording;
+                let stop = stop_recording;
+                move || {
+                    if recording.get() {
+                        stop.invoke();
+                    } else {
+                        start.invoke();
+                    }
                 }
-            }
-        }
-    });
-
-    let play_handler_id = __scope.register_handler(move || play_recording.invoke());
-    play_btn.set_attribute("data-rid", &play_handler_id.0.to_string());
-
-    // Recording status text
-    let status = rsx! {
-        if recording.get() {
-            Text { size: "xs", color: "red", "Recording… (max 5s)" }
+            },
+            {|| if recording.get() { "Stop" } else { "Record" }}
         }
     };
+
+    // Reactive disabled state for record button
+    let record_clone = record_btn.clone();
+    __scope.create_effect(move || {
+        if playing.get() {
+            record_clone.set_attribute("data-disabled", "true");
+        } else {
+            record_clone.remove_attribute("data-disabled");
+        }
+    });
+
+    // Build play button with reactive class/text via effects on handles
+    let play_btn = rsx! {
+        button {
+            class: "rinch-Button rinch-Button--light rinch-Button--xs",
+            onclick: move || play_recording.invoke(),
+            {|| if playing.get() { "Playing\u{2026}" } else { "Play" }}
+        }
+    };
+
+    // Reactive disabled state for play button
+    let play_clone = play_btn.clone();
+    __scope.create_effect(move || {
+        if playing.get() || !has_clip.get() || recording.get() {
+            play_clone.set_attribute("data-disabled", "true");
+        } else {
+            play_clone.remove_attribute("data-disabled");
+        }
+    });
 
     rsx! {
         Fragment {
@@ -689,7 +662,9 @@ fn mic_test_controls(
                 {record_btn}
                 {play_btn}
             }
-            {status}
+            if recording.get() {
+                Text { size: "xs", color: "red", "Recording\u{2026} (max 5s)" }
+            }
         }
     }
 }
@@ -723,19 +698,20 @@ fn device_selector(
     selected: Signal<String>,
     devices: Signal<Vec<DeviceInfo>>,
 ) -> NodeHandle {
-    let container = __scope.create_element("div");
-    container.set_attribute("style", "display: flex; flex-direction: column; gap: 4px;");
-
     let device_list = devices.get();
     if device_list.is_empty() {
-        let empty = rsx! {
-            Text { size: "sm", color: "dimmed", style: "padding: 8px 12px;",
-                "No devices found"
+        return rsx! {
+            div { style: "display: flex; flex-direction: column; gap: 4px;",
+                Text { size: "sm", color: "dimmed", style: "padding: 8px 12px;",
+                    "No devices found"
+                }
             }
         };
-        container.append_child(&empty);
-        return container;
     }
+
+    let container = rsx! {
+        div { style: "display: flex; flex-direction: column; gap: 4px;" }
+    };
 
     for device in device_list {
         let dev_name = device.name.clone();

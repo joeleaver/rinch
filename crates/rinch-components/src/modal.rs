@@ -306,9 +306,8 @@ impl Component for Modal {
         if !self.title.is_empty() {
             let header = rinch_macros::rsx! { div { class: "rinch-modal__header" } };
 
-            let title_el = rinch_macros::rsx! { h2 { class: "rinch-modal__title" } };
-            let title_text = __scope.create_text(&self.title);
-            title_el.append_child(&title_text);
+            let title_el =
+                rinch_macros::rsx! { h2 { class: "rinch-modal__title", {self.title.clone()} } };
             header.append_child(&title_el);
 
             modal_div.append_child(&header);

@@ -31,6 +31,8 @@ pub fn render_toolbar(
     config: &ToolbarConfig,
     on_change: Rc<dyn Fn()>,
 ) -> NodeHandle {
+    let __scope = scope;
+
     // Dropdown open/close state (replaces thread_local).
     let ds = DropdownState {
         heading_open: Rc::new(RefCell::new(false)),
@@ -39,26 +41,26 @@ pub fn render_toolbar(
         link_url: Rc::new(RefCell::new(String::from("https://"))),
     };
 
-    let toolbar = scope.create_element("div");
-    toolbar.set_attribute("class", "editor-toolbar");
-    toolbar.set_attribute(
-        "style",
-        "display: flex; flex-wrap: wrap; gap: 8px; align-items: center; \
-         padding: 8px 12px; border-bottom: 1px solid var(--rinch-color-gray-3); \
-         background: var(--rinch-color-gray-0);",
-    );
+    let toolbar = rinch_macros::rsx! {
+        div {
+            class: "editor-toolbar",
+            style: "display: flex; flex-wrap: wrap; gap: 8px; align-items: center; \
+                    padding: 8px 12px; border-bottom: 1px solid var(--rinch-color-gray-3); \
+                    background: var(--rinch-color-gray-0);",
+        }
+    };
 
     for (i, group) in config.groups.iter().enumerate() {
         if i > 0 {
-            let divider = scope.create_element("div");
-            divider.set_attribute(
-                "style",
-                "width: 1px; height: 24px; background: var(--rinch-color-gray-3); margin: 0 4px;",
-            );
+            let divider = rinch_macros::rsx! {
+                div {
+                    style: "width: 1px; height: 24px; background: var(--rinch-color-gray-3); margin: 0 4px;",
+                }
+            };
             toolbar.append_child(&divider);
         }
 
-        let group_node = render_toolbar_group(scope, group, on_change.clone(), ds.clone());
+        let group_node = render_toolbar_group(__scope, group, on_change.clone(), ds.clone());
         toolbar.append_child(&group_node);
     }
 
@@ -67,24 +69,22 @@ pub fn render_toolbar(
     let any_open =
         *ds.heading_open.borrow() || *ds.color_open.borrow() || *ds.link_input_open.borrow();
     if any_open {
-        let backdrop = scope.create_element("div");
-        backdrop.set_attribute(
-            "style",
-            "position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; \
-             z-index: 999; background: transparent;",
-        );
-
         let h = ds.heading_open.clone();
         let c = ds.color_open.clone();
         let l = ds.link_input_open.clone();
         let on_change_clone = on_change.clone();
-        let handler = scope.register_handler(move || {
-            *h.borrow_mut() = false;
-            *c.borrow_mut() = false;
-            *l.borrow_mut() = false;
-            on_change_clone();
-        });
-        backdrop.set_attribute("data-rid", &handler.to_string());
+        let backdrop = rinch_macros::rsx! {
+            div {
+                style: "position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; \
+                        z-index: 999; background: transparent;",
+                onclick: move || {
+                    *h.borrow_mut() = false;
+                    *c.borrow_mut() = false;
+                    *l.borrow_mut() = false;
+                    on_change_clone();
+                },
+            }
+        };
         toolbar.append_child(&backdrop);
     }
 
@@ -98,11 +98,13 @@ fn render_toolbar_group(
     on_change: Rc<dyn Fn()>,
     ds: DropdownState,
 ) -> NodeHandle {
-    let group_div = scope.create_element("div");
-    group_div.set_attribute("style", "display: flex; gap: 2px; align-items: center;");
+    let __scope = scope;
+    let group_div = rinch_macros::rsx! {
+        div { style: "display: flex; gap: 2px; align-items: center;" }
+    };
 
     for control in &group.controls {
-        let btn_node = render_toolbar_button(scope, control, on_change.clone(), ds.clone());
+        let btn_node = render_toolbar_button(__scope, control, on_change.clone(), ds.clone());
         group_div.append_child(&btn_node);
     }
 
@@ -116,23 +118,23 @@ fn render_toolbar_button(
     on_change: Rc<dyn Fn()>,
     ds: DropdownState,
 ) -> NodeHandle {
+    let __scope = scope;
+
     // Dispatch to specialized renderers for dropdown controls.
     match control {
         ToolbarControl::HeadingDropdown => {
-            return render_heading_dropdown(scope, on_change, ds);
+            return render_heading_dropdown(__scope, on_change, ds);
         }
         ToolbarControl::TextColorPicker => {
-            return render_color_picker(scope, on_change, ds);
+            return render_color_picker(__scope, on_change, ds);
         }
         ToolbarControl::Link => {
-            return render_link_popover(scope, on_change, ds);
+            return render_link_popover(__scope, on_change, ds);
         }
         _ => {}
     }
 
     let meta = ControlButton::from_control(control.clone());
-
-    let btn = scope.create_element("div");
 
     // Check active state via CE API
     let is_active = is_control_active(control);
@@ -150,7 +152,6 @@ fn render_toolbar_button(
          border: 1px solid transparent; \
          transition: background 0.15s;"
     };
-    btn.set_attribute("style", style);
 
     // Tooltip with shortcut hint
     let title = if let Some(shortcut) = meta.shortcut_hint() {
@@ -158,28 +159,43 @@ fn render_toolbar_button(
     } else {
         meta.tooltip().to_string()
     };
-    btn.set_attribute("title", &title);
 
     // Try to render a Tabler icon; fall back to text label
-    if let Some(icon) = control_to_tabler_icon(control) {
-        let icon_node = render_tabler_icon(scope, icon, TablerIconStyle::Outline);
-        btn.append_child(&icon_node);
+    if let Some(tabler_icon) = control_to_tabler_icon(control) {
+        let icon_node = render_tabler_icon(__scope, tabler_icon, TablerIconStyle::Outline);
+        let cc = control.clone();
+        let oc = on_change.clone();
+        let el = rinch_macros::rsx! {
+            div {
+                onclick: move || {
+                    execute_toolbar_command(&cc, &*oc);
+                },
+                {icon_node}
+            }
+        };
+        el.set_attribute("style", style);
+        el.set_attribute("title", &title);
+        el
     } else {
-        let label_node = scope.create_element("span");
-        label_node.set_attribute("style", "font-size: 12px; font-weight: 600;");
-        label_node.set_text(meta.label());
-        btn.append_child(&label_node);
+        let label_text = meta.label().to_string();
+        let cc = control.clone();
+        let oc = on_change.clone();
+        let label_span = rinch_macros::rsx! {
+            span { style: "font-size: 12px; font-weight: 600;" }
+        };
+        label_span.set_text(&label_text);
+        let el = rinch_macros::rsx! {
+            div {
+                onclick: move || {
+                    execute_toolbar_command(&cc, &*oc);
+                },
+                {label_span}
+            }
+        };
+        el.set_attribute("style", style);
+        el.set_attribute("title", &title);
+        el
     }
-
-    // Register click handler
-    let control_clone = control.clone();
-    let on_change_clone = on_change.clone();
-    let handler_id = scope.register_handler(move || {
-        execute_toolbar_command(&control_clone, &*on_change_clone);
-    });
-    btn.set_attribute("data-rid", &handler_id.to_string());
-
-    btn
 }
 
 /// Get the current block type label for the heading dropdown via CE API.
@@ -206,59 +222,51 @@ fn render_heading_dropdown(
     on_change: Rc<dyn Fn()>,
     ds: DropdownState,
 ) -> NodeHandle {
+    let __scope = scope;
     let is_open = *ds.heading_open.borrow();
 
-    let container = scope.create_element("div");
-    container.set_attribute(
-        "style",
-        "position: relative; display: inline-flex; align-items: center;",
-    );
-
-    // Button showing current block type + chevron
-    let btn = scope.create_element("div");
-    btn.set_attribute(
-        "style",
-        "display: inline-flex; align-items: center; gap: 4px; \
-         padding: 4px 8px; border-radius: 4px; cursor: pointer; \
-         border: 1px solid transparent; font-size: 13px; \
-         transition: background 0.15s; min-width: 90px;",
-    );
-    btn.set_attribute("title", "Block type");
-
     let label = current_block_label_from_ce();
-    let label_span = scope.create_element("span");
-    label_span.set_text(label);
-    btn.append_child(&label_span);
-
-    let chevron = render_tabler_icon(scope, TablerIcon::ChevronDown, TablerIconStyle::Outline);
-    btn.append_child(&chevron);
+    let chevron = render_tabler_icon(__scope, TablerIcon::ChevronDown, TablerIconStyle::Outline);
 
     // Toggle dropdown on click
     let on_change_toggle = on_change.clone();
     let ds_toggle = ds.clone();
-    let toggle_handler = scope.register_handler(move || {
-        let mut v = ds_toggle.heading_open.borrow_mut();
-        *v = !*v;
-        drop(v);
-        // Close other dropdowns if open
-        *ds_toggle.color_open.borrow_mut() = false;
-        *ds_toggle.link_input_open.borrow_mut() = false;
-        on_change_toggle();
-    });
-    btn.set_attribute("data-rid", &toggle_handler.to_string());
-    container.append_child(&btn);
+
+    let container = rinch_macros::rsx! {
+        div {
+            style: "position: relative; display: inline-flex; align-items: center;",
+            div {
+                style: "display: inline-flex; align-items: center; gap: 4px; \
+                        padding: 4px 8px; border-radius: 4px; cursor: pointer; \
+                        border: 1px solid transparent; font-size: 13px; \
+                        transition: background 0.15s; min-width: 90px;",
+                title: "Block type",
+                onclick: move || {
+                    let mut v = ds_toggle.heading_open.borrow_mut();
+                    *v = !*v;
+                    drop(v);
+                    // Close other dropdowns if open
+                    *ds_toggle.color_open.borrow_mut() = false;
+                    *ds_toggle.link_input_open.borrow_mut() = false;
+                    on_change_toggle();
+                },
+                span { {label} }
+                {chevron}
+            }
+        }
+    };
 
     // Dropdown menu
     if is_open {
-        let dropdown = scope.create_element("div");
-        dropdown.set_attribute(
-            "style",
-            "position: absolute; top: 100%; left: 0; z-index: 1000; \
-             background: var(--rinch-color-body, #fff); \
-             border: 1px solid var(--rinch-color-gray-3); \
-             border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.12); \
-             padding: 4px 0; min-width: 150px;",
-        );
+        let dropdown = rinch_macros::rsx! {
+            div {
+                style: "position: absolute; top: 100%; left: 0; z-index: 1000; \
+                        background: var(--rinch-color-body, #fff); \
+                        border: 1px solid var(--rinch-color-gray-3); \
+                        border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.12); \
+                        padding: 4px 0; min-width: 150px;",
+            }
+        };
 
         let items: &[(&str, Option<&str>)] = &[
             ("Paragraph", Some("p")),
@@ -271,8 +279,6 @@ fn render_heading_dropdown(
         ];
 
         for &(item_label, target_tag) in items {
-            let item = scope.create_element("div");
-
             let font_size = match target_tag {
                 Some("h1") => "18px",
                 Some("h2") => "16px",
@@ -290,22 +296,23 @@ fn render_heading_dropdown(
                  transition: background 0.1s;",
                 font_size, font_weight,
             );
-            item.set_attribute("style", &item_style);
-            item.set_text(item_label);
 
             let on_change_clone = on_change.clone();
             let ho_clone = ds.heading_open.clone();
             let tag = target_tag.unwrap_or("p").to_string();
-            let item_handler = scope.register_handler(move || {
-                // Close dropdown
-                *ho_clone.borrow_mut() = false;
-
-                with_active_ce_api(|api| {
-                    api.borrow_mut().set_block_type(&tag);
-                });
-                on_change_clone();
-            });
-            item.set_attribute("data-rid", &item_handler.to_string());
+            let item = rinch_macros::rsx! {
+                div {
+                    onclick: move || {
+                        *ho_clone.borrow_mut() = false;
+                        with_active_ce_api(|api| {
+                            api.borrow_mut().set_block_type(&tag);
+                        });
+                        on_change_clone();
+                    },
+                }
+            };
+            item.set_attribute("style", &item_style);
+            item.set_text(item_label);
 
             dropdown.append_child(&item);
         }
@@ -339,84 +346,77 @@ fn render_color_picker(
     on_change: Rc<dyn Fn()>,
     ds: DropdownState,
 ) -> NodeHandle {
+    let __scope = scope;
     let is_open = *ds.color_open.borrow();
 
-    let container = scope.create_element("div");
-    container.set_attribute(
-        "style",
-        "position: relative; display: inline-flex; align-items: center;",
-    );
-
-    // Button with palette icon and colored underline
-    let btn = scope.create_element("div");
-    btn.set_attribute(
-        "style",
-        "display: inline-flex; align-items: center; justify-content: center; \
-         flex-direction: column; width: 32px; height: 32px; \
-         border-radius: 4px; cursor: pointer; border: 1px solid transparent; \
-         transition: background 0.15s;",
-    );
-    btn.set_attribute("title", "Text color");
-
-    let icon_node = render_tabler_icon(scope, TablerIcon::Palette, TablerIconStyle::Outline);
-    btn.append_child(&icon_node);
-
-    // Colored underline indicator
-    let underline = scope.create_element("div");
-    underline.set_attribute(
-        "style",
-        "width: 16px; height: 3px; border-radius: 1px; \
-         background: var(--rinch-primary-color, #1971c2); margin-top: -2px;",
-    );
-    btn.append_child(&underline);
+    let icon_node = render_tabler_icon(__scope, TablerIcon::Palette, TablerIconStyle::Outline);
 
     // Toggle dropdown on click
     let on_change_toggle = on_change.clone();
     let ds_toggle = ds.clone();
-    let toggle_handler = scope.register_handler(move || {
-        let mut v = ds_toggle.color_open.borrow_mut();
-        *v = !*v;
-        drop(v);
-        // Close other dropdowns if open
-        *ds_toggle.heading_open.borrow_mut() = false;
-        *ds_toggle.link_input_open.borrow_mut() = false;
-        on_change_toggle();
-    });
-    btn.set_attribute("data-rid", &toggle_handler.to_string());
-    container.append_child(&btn);
+
+    let container = rinch_macros::rsx! {
+        div {
+            style: "position: relative; display: inline-flex; align-items: center;",
+            div {
+                style: "display: inline-flex; align-items: center; justify-content: center; \
+                        flex-direction: column; width: 32px; height: 32px; \
+                        border-radius: 4px; cursor: pointer; border: 1px solid transparent; \
+                        transition: background 0.15s;",
+                title: "Text color",
+                onclick: move || {
+                    let mut v = ds_toggle.color_open.borrow_mut();
+                    *v = !*v;
+                    drop(v);
+                    // Close other dropdowns if open
+                    *ds_toggle.heading_open.borrow_mut() = false;
+                    *ds_toggle.link_input_open.borrow_mut() = false;
+                    on_change_toggle();
+                },
+                {icon_node}
+                div {
+                    style: "width: 16px; height: 3px; border-radius: 1px; \
+                            background: var(--rinch-primary-color, #1971c2); margin-top: -2px;",
+                }
+            }
+        }
+    };
 
     // Dropdown color grid
     if is_open {
-        let dropdown = scope.create_element("div");
-        dropdown.set_attribute(
-            "style",
-            "position: absolute; top: 100%; left: 0; z-index: 1000; \
-             background: var(--rinch-color-body, #fff); \
-             border: 1px solid var(--rinch-color-gray-3); \
-             border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.12); \
-             padding: 8px; display: flex; flex-wrap: wrap; gap: 4px; width: 140px;",
-        );
+        let dropdown = rinch_macros::rsx! {
+            div {
+                style: "position: absolute; top: 100%; left: 0; z-index: 1000; \
+                        background: var(--rinch-color-body, #fff); \
+                        border: 1px solid var(--rinch-color-gray-3); \
+                        border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.12); \
+                        padding: 8px; display: flex; flex-wrap: wrap; gap: 4px; width: 140px;",
+            }
+        };
 
         for &(color_name, color_hex) in COLOR_PALETTE {
-            let swatch = scope.create_element("div");
             let swatch_style = format!(
                 "width: 24px; height: 24px; border-radius: 4px; cursor: pointer; \
                  background: {}; border: 1px solid var(--rinch-color-gray-3); \
                  transition: transform 0.1s;",
                 color_hex,
             );
-            swatch.set_attribute("style", &swatch_style);
-            swatch.set_attribute("title", color_name);
 
             let on_change_clone = on_change.clone();
             let co_clone = ds.color_open.clone();
-            let swatch_handler = scope.register_handler(move || {
-                // Close dropdown
-                *co_clone.borrow_mut() = false;
-                // TODO: Text color needs wrap_selection_with_attrs() — deferred
-                on_change_clone();
-            });
-            swatch.set_attribute("data-rid", &swatch_handler.to_string());
+            let color_name_str = color_name.to_string();
+            let swatch = rinch_macros::rsx! {
+                div {
+                    onclick: move || {
+                        // Close dropdown
+                        *co_clone.borrow_mut() = false;
+                        // TODO: Text color needs wrap_selection_with_attrs() — deferred
+                        on_change_clone();
+                    },
+                }
+            };
+            swatch.set_attribute("style", &swatch_style);
+            swatch.set_attribute("title", &color_name_str);
 
             dropdown.append_child(&swatch);
         }
@@ -436,20 +436,13 @@ fn render_link_popover(
     on_change: Rc<dyn Fn()>,
     ds: DropdownState,
 ) -> NodeHandle {
+    let __scope = scope;
     let is_open = *ds.link_input_open.borrow();
     let link_url = ds.link_url.clone();
-
-    let container = scope.create_element("div");
-    container.set_attribute(
-        "style",
-        "position: relative; display: inline-flex; align-items: center;",
-    );
 
     // Check active state — link is a formatting ancestor in the DOM
     let is_active = with_active_ce_api(|api| api.borrow().has_active_mark("a")).unwrap_or(false);
 
-    // Link button
-    let btn = scope.create_element("div");
     let style = if is_active {
         "display: inline-flex; align-items: center; justify-content: center; \
          width: 32px; height: 32px; border-radius: 4px; cursor: pointer; \
@@ -463,77 +456,70 @@ fn render_link_popover(
          border: 1px solid transparent; \
          transition: background 0.15s;"
     };
-    btn.set_attribute("style", style);
-    btn.set_attribute("title", "Insert link");
 
-    let icon_node = render_tabler_icon(scope, TablerIcon::Link, TablerIconStyle::Outline);
-    btn.append_child(&icon_node);
+    let icon_node = render_tabler_icon(__scope, TablerIcon::Link, TablerIconStyle::Outline);
 
     // Toggle popover on click
     let on_change_toggle = on_change.clone();
     let ds_toggle = ds.clone();
-    let toggle_handler = scope.register_handler(move || {
-        let mut v = ds_toggle.link_input_open.borrow_mut();
-        *v = !*v;
-        drop(v);
-        // Close other dropdowns if open
-        *ds_toggle.heading_open.borrow_mut() = false;
-        *ds_toggle.color_open.borrow_mut() = false;
-        on_change_toggle();
-    });
-    btn.set_attribute("data-rid", &toggle_handler.to_string());
-    container.append_child(&btn);
+
+    let container = rinch_macros::rsx! {
+        div {
+            style: "position: relative; display: inline-flex; align-items: center;",
+            div {
+                style: {style},
+                title: "Insert link",
+                onclick: move || {
+                    let mut v = ds_toggle.link_input_open.borrow_mut();
+                    *v = !*v;
+                    drop(v);
+                    // Close other dropdowns if open
+                    *ds_toggle.heading_open.borrow_mut() = false;
+                    *ds_toggle.color_open.borrow_mut() = false;
+                    on_change_toggle();
+                },
+                {icon_node}
+            }
+        }
+    };
 
     // URL input popover
     if is_open {
-        let popover = scope.create_element("div");
-        popover.set_attribute(
-            "style",
-            "position: absolute; top: 100%; left: 0; z-index: 1000; \
-             background: var(--rinch-color-body, #fff); \
-             border: 1px solid var(--rinch-color-gray-3); \
-             border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.12); \
-             padding: 8px; display: flex; gap: 4px; align-items: center;",
-        );
-
-        // URL text input
-        let input = scope.create_element("input");
-        input.set_attribute("type", "text");
-        input.set_attribute("value", &link_url.borrow());
-        input.set_attribute("placeholder", "Enter URL...");
-        input.set_attribute(
-            "style",
-            "width: 200px; padding: 4px 8px; \
-             border: 1px solid var(--rinch-color-gray-4); \
-             border-radius: 4px; font-size: 13px;",
-        );
-
         let url_state = link_url.clone();
-        let input_handler = scope.register_input_handler(move |value: String| {
-            *url_state.borrow_mut() = value;
-        });
-        input.set_attribute("data-oninput", &input_handler.to_string());
-        popover.append_child(&input);
-
-        // "Apply" button
-        let apply_btn = scope.create_element("div");
-        apply_btn.set_attribute(
-            "style",
-            "padding: 4px 12px; border-radius: 4px; cursor: pointer; \
-             background: var(--rinch-primary-color, #1971c2); color: #fff; \
-             font-size: 13px; font-weight: 500; white-space: nowrap;",
-        );
-        apply_btn.set_text("Apply");
-
+        let url_value = link_url.borrow().clone();
         let link_open_clone = ds.link_input_open.clone();
         let on_change_clone = on_change.clone();
-        let apply_handler = scope.register_handler(move || {
-            *link_open_clone.borrow_mut() = false;
-            // TODO: Link insertion needs wrap_selection_with_attrs() — deferred
-            on_change_clone();
-        });
-        apply_btn.set_attribute("data-rid", &apply_handler.to_string());
-        popover.append_child(&apply_btn);
+        let popover = rinch_macros::rsx! {
+            div {
+                style: "position: absolute; top: 100%; left: 0; z-index: 1000; \
+                        background: var(--rinch-color-body, #fff); \
+                        border: 1px solid var(--rinch-color-gray-3); \
+                        border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.12); \
+                        padding: 8px; display: flex; gap: 4px; align-items: center;",
+                input {
+                    r#type: "text",
+                    value: {url_value.as_str()},
+                    placeholder: "Enter URL...",
+                    style: "width: 200px; padding: 4px 8px; \
+                            border: 1px solid var(--rinch-color-gray-4); \
+                            border-radius: 4px; font-size: 13px;",
+                    oninput: move |value: String| {
+                        *url_state.borrow_mut() = value;
+                    },
+                }
+                div {
+                    style: "padding: 4px 12px; border-radius: 4px; cursor: pointer; \
+                            background: var(--rinch-primary-color, #1971c2); color: #fff; \
+                            font-size: 13px; font-weight: 500; white-space: nowrap;",
+                    onclick: move || {
+                        *link_open_clone.borrow_mut() = false;
+                        // TODO: Link insertion needs wrap_selection_with_attrs() — deferred
+                        on_change_clone();
+                    },
+                    "Apply"
+                }
+            }
+        };
 
         container.append_child(&popover);
     }

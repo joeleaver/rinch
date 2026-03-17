@@ -186,7 +186,7 @@ pub fn node_to_dom(node: &RsxNode, ctx: &mut DomCodegenContext) -> TokenStream2 
                 // Non-closure expression - evaluate once and convert to NodeHandle via IntoNode
                 // This handles both NodeHandle returns (from component functions) and text values
                 quote! {
-                    ::rinch::core::IntoNode::into_node(#expr, __scope)
+                    rinch::core::IntoNode::into_node(#expr, __scope)
                 }
             }
         }

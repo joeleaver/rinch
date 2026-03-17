@@ -100,7 +100,7 @@ impl Checkbox {
 }
 
 impl Component for Checkbox {
-    fn render(&self, scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
+    fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
         let base_class = self.base_class_string();
 
         // Determine if we have a reactive checked state
@@ -118,12 +118,12 @@ impl Component for Checkbox {
         };
 
         // Create label container
-        let label_node = scope.create_element("label");
+        let label_node = rinch_macros::rsx! { label {} };
         label_node.set_attribute("class", &class);
 
         // Register handler
         if let Some(cb) = &self.onchange {
-            let handler_id = scope.register_handler({
+            let handler_id = __scope.register_handler({
                 let cb = cb.clone();
                 move || cb.invoke()
             });
@@ -131,7 +131,7 @@ impl Component for Checkbox {
         }
 
         // Input element (hidden, used for accessibility)
-        let input = scope.create_element("input");
+        let input = rinch_macros::rsx! { input {} };
         input.set_attribute("type", "checkbox");
         input.set_attribute("class", "rinch-checkbox__input");
 
@@ -146,17 +146,15 @@ impl Component for Checkbox {
 
         // Checkbox icon (checkmark or indeterminate line)
         let icon = if self.indeterminate {
-            crate::icons::indeterminate_dom(scope)
+            crate::icons::indeterminate_dom(__scope)
         } else {
-            crate::icons::checkmark_dom(scope)
+            crate::icons::checkmark_dom(__scope)
         };
 
         // Box with icon
-        let box_node = scope.create_element("span");
-        box_node.set_attribute("class", "rinch-checkbox__box");
+        let box_node = rinch_macros::rsx! { span { class: "rinch-checkbox__box" } };
 
-        let icon_span = scope.create_element("span");
-        icon_span.set_attribute("class", "rinch-checkbox__icon");
+        let icon_span = rinch_macros::rsx! { span { class: "rinch-checkbox__icon" } };
         icon_span.append_child(&icon);
 
         box_node.append_child(&icon_span);
@@ -165,10 +163,8 @@ impl Component for Checkbox {
         // Label text
         if !self.label.is_empty() {
             let label_text = &self.label;
-            let label_span = scope.create_element("span");
-            label_span.set_attribute("class", "rinch-checkbox__label");
-            let label_text_node = scope.create_text(label_text);
-            label_span.append_child(&label_text_node);
+            let label_span =
+                rinch_macros::rsx! { span { class: "rinch-checkbox__label", {label_text} } };
             label_node.append_child(&label_span);
         }
 
@@ -178,7 +174,7 @@ impl Component for Checkbox {
             let label_clone = label_node.clone();
             let base_class = self.base_class_string();
 
-            scope.create_effect(move || {
+            __scope.create_effect(move || {
                 let is_checked = checked_fn();
                 if is_checked {
                     label_clone

@@ -159,7 +159,7 @@ impl Radio {
 }
 
 impl Component for Radio {
-    fn render(&self, scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
+    fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
         let base_class = self.base_class_string();
 
         // Determine if we have a reactive checked state
@@ -177,7 +177,7 @@ impl Component for Radio {
         };
 
         // Create label container
-        let label_node = scope.create_element("label");
+        let label_node = rinch_macros::rsx! { label {} };
         label_node.set_attribute("class", &class);
 
         // Color style
@@ -193,7 +193,7 @@ impl Component for Radio {
 
         // Register handler
         if let Some(cb) = &self.onchange {
-            let handler_id = scope.register_handler({
+            let handler_id = __scope.register_handler({
                 let cb = cb.clone();
                 move || cb.invoke()
             });
@@ -207,8 +207,7 @@ impl Component for Radio {
         } else {
             &self.name
         };
-        let input = scope.create_element("input");
-        input.set_attribute("class", "rinch-radio__input");
+        let input = rinch_macros::rsx! { input { class: "rinch-radio__input" } };
         input.set_attribute("type", "radio");
         input.set_attribute("name", name);
 
@@ -225,35 +224,28 @@ impl Component for Radio {
         label_node.append_child(&input);
 
         // Custom radio indicator
-        let indicator = scope.create_element("span");
-        indicator.set_attribute("class", "rinch-radio__indicator");
+        let indicator = rinch_macros::rsx! { span { class: "rinch-radio__indicator" } };
 
-        let dot = scope.create_element("span");
-        dot.set_attribute("class", "rinch-radio__dot");
+        let dot = rinch_macros::rsx! { span { class: "rinch-radio__dot" } };
         indicator.append_child(&dot);
 
         label_node.append_child(&indicator);
 
         // Label and description
         if !self.label.is_empty() || !self.description.is_empty() {
-            let body = scope.create_element("div");
-            body.set_attribute("class", "rinch-radio__body");
+            let body = rinch_macros::rsx! { div { class: "rinch-radio__body" } };
 
             if !self.label.is_empty() {
                 let label_text = &self.label;
-                let label_span = scope.create_element("span");
-                label_span.set_attribute("class", "rinch-radio__label");
-                let label_text_node = scope.create_text(label_text);
-                label_span.append_child(&label_text_node);
+                let label_span =
+                    rinch_macros::rsx! { span { class: "rinch-radio__label", {label_text} } };
                 body.append_child(&label_span);
             }
 
             if !self.description.is_empty() {
                 let desc = &self.description;
-                let desc_span = scope.create_element("span");
-                desc_span.set_attribute("class", "rinch-radio__description");
-                let desc_text = scope.create_text(desc);
-                desc_span.append_child(&desc_text);
+                let desc_span =
+                    rinch_macros::rsx! { span { class: "rinch-radio__description", {desc} } };
                 body.append_child(&desc_span);
             }
 
@@ -266,7 +258,7 @@ impl Component for Radio {
             let label_clone = label_node.clone();
             let base_class = self.base_class_string();
 
-            scope.create_effect(move || {
+            __scope.create_effect(move || {
                 let is_checked = checked_fn();
                 if is_checked {
                     label_clone
@@ -327,37 +319,32 @@ impl RadioGroup {
 }
 
 impl Component for RadioGroup {
-    fn render(&self, scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
+    fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         let class = self.class_string();
 
         // Create container
-        let container = scope.create_element("div");
+        let container = rinch_macros::rsx! { div {} };
         container.set_attribute("class", &class);
         container.set_attribute("role", "radiogroup");
 
         // Label
         if !self.label.is_empty() {
             let label_text = &self.label;
-            let label_div = scope.create_element("div");
-            label_div.set_attribute("class", "rinch-radio-group__label");
-            let label_text_node = scope.create_text(label_text);
-            label_div.append_child(&label_text_node);
+            let label_div =
+                rinch_macros::rsx! { div { class: "rinch-radio-group__label", {label_text} } };
             container.append_child(&label_div);
         }
 
         // Description
         if !self.description.is_empty() {
             let desc = &self.description;
-            let desc_div = scope.create_element("div");
-            desc_div.set_attribute("class", "rinch-radio-group__description");
-            let desc_text = scope.create_text(desc);
-            desc_div.append_child(&desc_text);
+            let desc_div =
+                rinch_macros::rsx! { div { class: "rinch-radio-group__description", {desc} } };
             container.append_child(&desc_div);
         }
 
         // Radios wrapper
-        let radios = scope.create_element("div");
-        radios.set_attribute("class", "rinch-radio-group__radios");
+        let radios = rinch_macros::rsx! { div { class: "rinch-radio-group__radios" } };
 
         // Append children
         for child in children {
@@ -369,10 +356,7 @@ impl Component for RadioGroup {
         // Error message
         if !self.error.is_empty() {
             let err = &self.error;
-            let err_div = scope.create_element("div");
-            err_div.set_attribute("class", "rinch-radio-group__error");
-            let err_text = scope.create_text(err);
-            err_div.append_child(&err_text);
+            let err_div = rinch_macros::rsx! { div { class: "rinch-radio-group__error", {err} } };
             container.append_child(&err_div);
         }
 

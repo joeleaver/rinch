@@ -183,15 +183,13 @@ impl Component for BorderlessWindow {
             .unwrap_or(false);
 
         // Create titlebar (draggable for window movement)
-        let titlebar = __scope.create_element("div");
-        titlebar.set_attribute("class", "rinch-borderlesswindow__titlebar");
+        let titlebar = rinch_macros::rsx! { div { class: "rinch-borderlesswindow__titlebar" } };
         titlebar.set_attribute("data-drag-window", "true");
 
         // Left section — only render in titlebar when NOT inline
         // (inline layout moves it to the menu layer)
         if !is_inline {
-            let left = __scope.create_element("div");
-            left.set_attribute("class", "rinch-borderlesswindow__left");
+            let left = rinch_macros::rsx! { div { class: "rinch-borderlesswindow__left" } };
             if let Some(ref render_left) = self.left_section {
                 let content = render_left(__scope);
                 left.append_child(&content);
@@ -200,8 +198,8 @@ impl Component for BorderlessWindow {
         } else {
             // Inline mode: add a spacer to reserve titlebar space for the
             // absolutely-positioned menu items that overlay the titlebar.
-            let spacer = __scope.create_element("div");
-            spacer.set_attribute("class", "rinch-borderlesswindow__menu-spacer");
+            let spacer =
+                rinch_macros::rsx! { div { class: "rinch-borderlesswindow__menu-spacer" } };
             if let Some(ref ctx) = menu_ctx {
                 spacer.set_attribute("style", &format!("width: {}px;", ctx.spacer_width));
             }
@@ -209,22 +207,21 @@ impl Component for BorderlessWindow {
         }
 
         // Title — hidden in inline mode (title is rendered in the inline menu row instead)
-        let title_el = __scope.create_element("div");
+        let title_el = rinch_macros::rsx! { div {} };
         if is_inline {
             title_el.set_attribute("class", "rinch-borderlesswindow__title");
             // Empty spacer — title lives in the inline row
         } else {
             title_el.set_attribute("class", "rinch-borderlesswindow__title");
             if !self.title.is_empty() {
-                let title_text = __scope.create_text(&self.title);
+                let title_text = rinch_core::IntoNode::into_node(self.title.clone(), __scope);
                 title_el.append_child(&title_text);
             }
         }
         titlebar.append_child(&title_el);
 
         // Right section (custom content before controls)
-        let right = __scope.create_element("div");
-        right.set_attribute("class", "rinch-borderlesswindow__right");
+        let right = rinch_macros::rsx! { div { class: "rinch-borderlesswindow__right" } };
         if let Some(ref render_right) = self.right_section {
             let content = render_right(__scope);
             right.append_child(&content);
@@ -232,12 +229,11 @@ impl Component for BorderlessWindow {
         titlebar.append_child(&right);
 
         // Window controls
-        let controls = __scope.create_element("div");
-        controls.set_attribute("class", "rinch-borderlesswindow__controls");
+        let controls = rinch_macros::rsx! { div { class: "rinch-borderlesswindow__controls" } };
 
         // Minimize button
         if self.show_minimize {
-            let min_btn = __scope.create_element("button");
+            let min_btn = rinch_macros::rsx! { button {} };
             min_btn.set_attribute(
                 "class",
                 "rinch-borderlesswindow__control rinch-borderlesswindow__control--minimize",
@@ -245,11 +241,11 @@ impl Component for BorderlessWindow {
             min_btn.set_attribute("aria-label", "Minimize");
 
             // Create minimize icon (horizontal line)
-            let min_icon = __scope.create_element("svg");
+            let min_icon = rinch_macros::rsx! { svg {} };
             min_icon.set_attribute("width", "10");
             min_icon.set_attribute("height", "10");
             min_icon.set_attribute("viewBox", "0 0 10 10");
-            let min_line = __scope.create_element("path");
+            let min_line = rinch_macros::rsx! { path {} };
             min_line.set_attribute("d", "M0 5h10");
             min_line.set_attribute("stroke", "currentColor");
             min_line.set_attribute("stroke-width", "1");
@@ -270,7 +266,7 @@ impl Component for BorderlessWindow {
 
         // Maximize button
         if self.show_maximize {
-            let max_btn = __scope.create_element("button");
+            let max_btn = rinch_macros::rsx! { button {} };
             max_btn.set_attribute(
                 "class",
                 "rinch-borderlesswindow__control rinch-borderlesswindow__control--maximize",
@@ -278,11 +274,11 @@ impl Component for BorderlessWindow {
             max_btn.set_attribute("aria-label", "Maximize");
 
             // Create maximize icon (square)
-            let max_icon = __scope.create_element("svg");
+            let max_icon = rinch_macros::rsx! { svg {} };
             max_icon.set_attribute("width", "10");
             max_icon.set_attribute("height", "10");
             max_icon.set_attribute("viewBox", "0 0 10 10");
-            let max_rect = __scope.create_element("rect");
+            let max_rect = rinch_macros::rsx! { rect {} };
             max_rect.set_attribute("x", "1");
             max_rect.set_attribute("y", "1");
             max_rect.set_attribute("width", "8");
@@ -307,7 +303,7 @@ impl Component for BorderlessWindow {
 
         // Close button
         if self.show_close {
-            let close_btn = __scope.create_element("button");
+            let close_btn = rinch_macros::rsx! { button {} };
             close_btn.set_attribute(
                 "class",
                 "rinch-borderlesswindow__control rinch-borderlesswindow__control--close",
@@ -315,11 +311,11 @@ impl Component for BorderlessWindow {
             close_btn.set_attribute("aria-label", "Close");
 
             // Create close icon (X)
-            let close_icon = __scope.create_element("svg");
+            let close_icon = rinch_macros::rsx! { svg {} };
             close_icon.set_attribute("width", "10");
             close_icon.set_attribute("height", "10");
             close_icon.set_attribute("viewBox", "0 0 10 10");
-            let close_path = __scope.create_element("path");
+            let close_path = rinch_macros::rsx! { path {} };
             close_path.set_attribute("d", "M1 1l8 8M9 1l-8 8");
             close_path.set_attribute("stroke", "currentColor");
             close_path.set_attribute("stroke-width", "1.5");
@@ -342,8 +338,7 @@ impl Component for BorderlessWindow {
         container.append_child(&titlebar);
 
         // Content area
-        let content = __scope.create_element("div");
-        content.set_attribute("class", "rinch-borderlesswindow__content");
+        let content = rinch_macros::rsx! { div { class: "rinch-borderlesswindow__content" } };
         if let Some(ref ctx) = menu_ctx {
             if ctx.bar_height > 0 {
                 // Leave space for the absolutely-positioned menu bar (BelowTitlebar)
@@ -363,8 +358,8 @@ impl Component for BorderlessWindow {
             let menu_ctx = menu_ctx.unwrap();
             container.set_attribute("style", "position: relative;");
 
-            let menu_layer = __scope.create_element("div");
-            menu_layer.set_attribute("class", "rinch-app-menu-bar__inline-layer");
+            let menu_layer =
+                rinch_macros::rsx! { div { class: "rinch-app-menu-bar__inline-layer" } };
 
             // Overlay first in DOM (hit-tested last within layer)
             if let Some(ref overlay_renderer) = menu_ctx.overlay_renderer {
@@ -373,8 +368,7 @@ impl Component for BorderlessWindow {
             }
 
             // Items-row last in DOM (hit-tested first within layer)
-            let items_row = __scope.create_element("div");
-            items_row.set_attribute("class", "rinch-app-menu-bar__inline-row");
+            let items_row = rinch_macros::rsx! { div { class: "rinch-app-menu-bar__inline-row" } };
             // Render left_section into the items-row (hamburger button)
             if let Some(ref render_left) = self.left_section {
                 let left_content = render_left(__scope);
@@ -382,23 +376,22 @@ impl Component for BorderlessWindow {
             }
             // Render title as branded text with multi-color gradient effect
             if !self.title.is_empty() {
-                let brand = __scope.create_element("div");
-                brand.set_attribute("class", "rinch-borderlesswindow__brand");
+                let brand = rinch_macros::rsx! { div { class: "rinch-borderlesswindow__brand", {"\u{00A0}"} } };
                 // Cycle through gradient colors for each character
                 let colors = [
                     "#ff6b6b", "#feca57", "#48dbfb", "#ff9ff3", "#54a0ff", "#5f27cd",
                 ];
                 for (i, ch) in self.title.chars().enumerate() {
                     if ch == ' ' {
-                        let space = __scope.create_text("\u{00A0}");
+                        let space = rinch_core::IntoNode::into_node("\u{00A0}", __scope);
                         brand.append_child(&space);
                     } else {
-                        let span = __scope.create_element("span");
+                        let span = rinch_macros::rsx! { span {} };
                         span.set_attribute(
                             "style",
                             &format!("color: {};", colors[i % colors.len()]),
                         );
-                        let ch_text = __scope.create_text(&ch.to_string());
+                        let ch_text = rinch_core::IntoNode::into_node(ch.to_string(), __scope);
                         span.append_child(&ch_text);
                         brand.append_child(&span);
                     }

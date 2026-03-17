@@ -32,6 +32,13 @@ impl IntoNode for &str {
     }
 }
 
+impl IntoNode for &String {
+    #[inline]
+    fn into_node(self, scope: &mut RenderScope) -> NodeHandle {
+        scope.create_text(self.as_str())
+    }
+}
+
 impl IntoNode for std::borrow::Cow<'_, str> {
     #[inline]
     fn into_node(self, scope: &mut RenderScope) -> NodeHandle {
