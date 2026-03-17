@@ -1,31 +1,14 @@
 # Theming
 
-Rinch includes a powerful theme system inspired by [Mantine](https://mantine.dev/). Enable it with the `theme` feature:
+Rinch's theme system is CSS-variable-based, Mantine-inspired, and designed to be extended rather than fought against. Enable it with the `theme` feature (auto-enabled by `components`):
 
 ```toml
-[dependencies]
-rinch = { path = "...", features = ["theme"] }
+rinch = { git = "...", features = ["desktop", "theme"] }
 ```
 
-## Theme Configuration
-
-Configure the theme at the runtime level using `ThemeProviderProps`:
+## Quick Start
 
 ```rust
-use rinch::prelude::*;
-
-#[component]
-fn app() -> NodeHandle {
-    rsx! {
-        div {
-            h1 { "Themed Application" }
-            p { style: "color: var(--rinch-primary-color);",
-                "This text uses the primary color."
-            }
-        }
-    }
-}
-
 fn main() {
     let theme = ThemeProviderProps {
         primary_color: Some("cyan".into()),
@@ -33,57 +16,196 @@ fn main() {
         dark_mode: false,
         ..Default::default()
     };
-
-    run_with_theme("Themed App", 800, 600, app, theme);
+    run_with_theme("My App", 800, 600, app, theme);
 }
 ```
 
-### ThemeProviderProps
+That's it. Every component picks up your colors, radius, and spacing through CSS variables. Toggle `dark_mode: true` and the whole UI flips. All semantic colors — body background, text, borders, placeholders — adjust automatically.
+
+Use `run()` instead of `run_with_theme()` to get the default theme (blue primary, light mode, small radius).
+
+## ThemeProviderProps
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `primary_color` | `Option<String>` | `"blue"` | Primary color name (blue, cyan, red, etc.) |
-| `default_radius` | `Option<String>` | `"sm"` | Default border radius (xs, sm, md, lg, xl) |
-| `font_family` | `Option<String>` | System fonts | Primary font family |
-| `font_family_monospace` | `Option<String>` | System mono | Monospace font family |
-| `dark_mode` | `bool` | `false` | Enable dark mode |
-| `primary_shade` | `Option<u8>` | `6` | Primary color shade index (0-9) |
+| `primary_color` | `Option<String>` | `"blue"` | Primary color name |
+| `primary_shade` | `Option<u8>` | `6` | Shade index (0-9) |
+| `default_radius` | `Option<String>` | `"sm"` | Border radius (xs, sm, md, lg, xl) |
+| `font_family` | `Option<String>` | System fonts | Primary font stack |
+| `font_family_monospace` | `Option<String>` | System mono | Monospace font stack |
+| `dark_mode` | `bool` | `false` | Dark mode |
 
 ## CSS Variables
 
-The theme generates CSS custom properties that you can use in your styles:
+The theme generates CSS custom properties you can use anywhere in your styles.
 
 ### Colors
 
-Each color has 10 shades (0 = lightest, 9 = darkest):
+14 named palettes, each with 10 shades (0 = lightest, 9 = darkest):
 
 ```css
-/* Color palettes */
-var(--rinch-color-blue-0)    /* Lightest blue */
-var(--rinch-color-blue-5)    /* Mid blue */
-var(--rinch-color-blue-9)    /* Darkest blue */
+var(--rinch-color-blue-0)     /* Lightest blue */
+var(--rinch-color-blue-5)     /* Mid blue */
+var(--rinch-color-blue-9)     /* Darkest blue */
 
-/* Primary color aliases */
-var(--rinch-primary-color)   /* Primary at shade index */
-var(--rinch-primary-color-0) /* Lightest primary */
-var(--rinch-primary-color-9) /* Darkest primary */
-
-/* Semantic colors */
-var(--rinch-color-body)        /* Background */
-var(--rinch-color-text)        /* Text */
-var(--rinch-color-dimmed)      /* Secondary text */
-var(--rinch-color-border)      /* Borders */
-var(--rinch-color-placeholder) /* Placeholder text */
+var(--rinch-primary-color)    /* Primary at your chosen shade */
+var(--rinch-primary-color-0)  /* Lightest primary */
+var(--rinch-primary-color-9)  /* Darkest primary */
 ```
 
-### Color Palette Reference
+**Available palettes:** dark, gray, red, pink, grape, violet, indigo, blue, cyan, teal, green, lime, yellow, orange.
 
-All 14 named colors, each with 10 shades (0 = lightest, 9 = darkest):
+### Semantic Colors
 
-| Color | Shade 0 | Shade 6 | Notes |
-|-------|---------|---------|-------|
+These flip automatically in dark mode:
+
+```css
+var(--rinch-color-body)        /* Background (#f8f9fa light, dark gray dark) */
+var(--rinch-color-text)        /* Primary text */
+var(--rinch-color-dimmed)      /* Secondary text */
+var(--rinch-color-border)      /* Borders */
+var(--rinch-color-placeholder) /* Input placeholders */
+```
+
+### Spacing
+
+```css
+var(--rinch-spacing-xs)   /* 10px */
+var(--rinch-spacing-sm)   /* 12px */
+var(--rinch-spacing-md)   /* 16px */
+var(--rinch-spacing-lg)   /* 20px */
+var(--rinch-spacing-xl)   /* 32px */
+```
+
+### Border Radius
+
+```css
+var(--rinch-radius-xs)       /* 2px */
+var(--rinch-radius-sm)       /* 4px */
+var(--rinch-radius-md)       /* 8px */
+var(--rinch-radius-lg)       /* 16px */
+var(--rinch-radius-xl)       /* 32px */
+var(--rinch-radius-default)  /* Whatever you set in ThemeProviderProps */
+```
+
+### Typography
+
+```css
+var(--rinch-font-size-xs)   /* 12px */
+var(--rinch-font-size-sm)   /* 14px */
+var(--rinch-font-size-md)   /* 16px */
+var(--rinch-font-size-lg)   /* 18px */
+var(--rinch-font-size-xl)   /* 20px */
+
+var(--rinch-line-height-xs) /* 1.4 */
+var(--rinch-line-height-md) /* 1.55 */
+
+var(--rinch-font-family)
+var(--rinch-font-family-monospace)
+
+/* Heading sizes (h1-h6) */
+var(--rinch-h1-font-size)
+var(--rinch-h1-line-height)
+var(--rinch-h1-font-weight)
+```
+
+### Shadows
+
+```css
+var(--rinch-shadow-xs)
+var(--rinch-shadow-sm)
+var(--rinch-shadow-md)
+var(--rinch-shadow-lg)
+var(--rinch-shadow-xl)
+```
+
+## Using Theme Variables in Your Styles
+
+```rust
+rsx! {
+    div { style: "
+        background: var(--rinch-color-body);
+        padding: var(--rinch-spacing-md);
+        border-radius: var(--rinch-radius-default);
+        box-shadow: var(--rinch-shadow-sm);
+    ",
+        h1 { style: "color: var(--rinch-primary-color);", "Themed!" }
+        p { style: "color: var(--rinch-color-dimmed);", "Using theme variables." }
+    }
+}
+```
+
+Or use CSS shorthand props, which resolve scale values automatically:
+
+```rust
+rsx! {
+    div { p: "md", m: "sm",  // -> var(--rinch-spacing-md), var(--rinch-spacing-sm)
+        "Shorthand is nicer"
+    }
+}
+```
+
+## Extending the Theme
+
+### Scoped Overrides
+
+CSS variables cascade. Override them on a container div and everything inside picks up the change:
+
+```rust
+rsx! {
+    div { style: "
+        --rinch-primary-color: #ff6b6b;
+        --rinch-radius-default: 0px;
+    ",
+        // Red primary, sharp corners — only inside this div
+        Button { "I'm red and sharp" }
+        TextInput { placeholder: "Me too" }
+    }
+}
+```
+
+This is how you create themed sections, cards with different accent colors, or "danger zone" areas with red buttons — without changing the global theme.
+
+### Replacing the Theme Entirely
+
+The theme is just CSS. If you hate it, replace it:
+
+```rust
+use rinch::theme::{Theme, ColorName};
+
+let theme = Theme::builder()
+    .primary_color(ColorName::Cyan)
+    .dark_mode(true)
+    .build();
+
+// Generate the CSS string and do whatever you want with it
+let css = rinch_theme::generate_theme_css(&theme);
+```
+
+Or ignore the theme system entirely and write your own CSS variables, your own classes, your own inline styles. Rinch components read from `--rinch-*` variables. If those variables exist, components use them. If they don't, components fall back to hardcoded defaults. You're never locked in.
+
+## Dark Mode
+
+```rust
+let theme = ThemeProviderProps {
+    dark_mode: true,
+    ..Default::default()
+};
+```
+
+In dark mode, semantic colors flip:
+- `--rinch-color-body` becomes dark gray
+- `--rinch-color-text` becomes light
+- Component backgrounds, borders, and hover states all adjust
+
+For dynamic dark mode toggling (e.g., a switch in your app), use `dark_mode_fn` on WASM or re-create the theme and call `update_theme()` on desktop.
+
+## Color Palette Reference
+
+| Color | Shade 0 (lightest) | Shade 6 (primary) | Notes |
+|-------|-------------------|-------------------|-------|
 | `dark` | `#C1C2C5` | `#1A1B1E` | Dark grays |
-| `gray` | `#f8f9fa` | `#868e96` | **gray-0 matches default body background** — use gray-1+ for visible backgrounds |
+| `gray` | `#f8f9fa` | `#868e96` | gray-0 = default body background |
 | `red` | `#fff5f5` | `#fa5252` | |
 | `pink` | `#fff0f6` | `#e64980` | |
 | `grape` | `#f8f0fc` | `#be4bdb` | |
@@ -97,175 +219,4 @@ All 14 named colors, each with 10 shades (0 = lightest, 9 = darkest):
 | `yellow` | `#fff9db` | `#fab005` | |
 | `orange` | `#fff4e6` | `#fd7e14` | |
 
-> **Tip:** `--rinch-color-body` defaults to `#f8f9fa` (gray-0) in light mode. If you use `background: var(--rinch-color-gray-0)`, it will be invisible against the default body. Use `gray-1` (`#f1f3f5`) or higher for visible card/section backgrounds.
-
-### Spacing
-
-```css
-var(--rinch-spacing-xs)  /* 10px */
-var(--rinch-spacing-sm)  /* 12px */
-var(--rinch-spacing-md)  /* 16px */
-var(--rinch-spacing-lg)  /* 20px */
-var(--rinch-spacing-xl)  /* 32px */
-```
-
-### Border Radius
-
-```css
-var(--rinch-radius-xs)      /* 2px */
-var(--rinch-radius-sm)      /* 4px */
-var(--rinch-radius-md)      /* 8px */
-var(--rinch-radius-lg)      /* 16px */
-var(--rinch-radius-xl)      /* 32px */
-var(--rinch-radius-default) /* Theme default */
-```
-
-### Font Sizes
-
-```css
-var(--rinch-font-size-xs) /* 12px */
-var(--rinch-font-size-sm) /* 14px */
-var(--rinch-font-size-md) /* 16px */
-var(--rinch-font-size-lg) /* 18px */
-var(--rinch-font-size-xl) /* 20px */
-```
-
-### Line Heights
-
-```css
-var(--rinch-line-height-xs) /* 1.4 */
-var(--rinch-line-height-sm) /* 1.45 */
-var(--rinch-line-height-md) /* 1.55 */
-var(--rinch-line-height-lg) /* 1.6 */
-var(--rinch-line-height-xl) /* 1.65 */
-```
-
-### Shadows
-
-```css
-var(--rinch-shadow-xs)
-var(--rinch-shadow-sm)
-var(--rinch-shadow-md)
-var(--rinch-shadow-lg)
-var(--rinch-shadow-xl)
-```
-
-### Font Families
-
-```css
-var(--rinch-font-family)           /* Primary font */
-var(--rinch-font-family-monospace) /* Monospace font */
-```
-
-### Headings
-
-```css
-/* For each level (h1-h6) */
-var(--rinch-h1-font-size)
-var(--rinch-h1-line-height)
-var(--rinch-h1-font-weight)
-```
-
-## Example: Custom Styled Component
-
-```rust
-use rinch::prelude::*;
-
-#[component]
-fn app() -> NodeHandle {
-    rsx! {
-        div { style: "
-            background: var(--rinch-color-body);
-            padding: var(--rinch-spacing-md);
-            border-radius: var(--rinch-radius-default);
-            box-shadow: var(--rinch-shadow-sm);
-        ",
-            h1 { style: "
-                color: var(--rinch-primary-color);
-                margin-bottom: var(--rinch-spacing-sm);
-            ",
-                "Welcome!"
-            }
-            p { style: "
-                color: var(--rinch-color-dimmed);
-                font-size: var(--rinch-font-size-sm);
-            ",
-                "This text uses theme variables."
-            }
-        }
-    }
-}
-
-fn main() {
-    let theme = ThemeProviderProps {
-        primary_color: Some("violet".into()),
-        ..Default::default()
-    };
-
-    run_with_theme("Custom Styles", 800, 600, app, theme);
-}
-```
-
-## Dark Mode
-
-Enable dark mode to automatically adjust semantic colors:
-
-```rust
-let theme = ThemeProviderProps {
-    dark_mode: true,
-    ..Default::default()
-};
-```
-
-In dark mode:
-- `--rinch-color-body` becomes dark gray
-- `--rinch-color-text` becomes light
-- Other semantic colors adjust accordingly
-
-## Programmatic Theme Access
-
-When the `theme` feature is enabled, you can access theme utilities:
-
-```rust
-use rinch::theme::{Theme, ColorName, generate_theme_css};
-
-// Create a custom theme
-let theme = Theme::builder()
-    .primary_color(ColorName::Cyan)
-    .dark_mode(true)
-    .build();
-
-// Generate CSS
-let css = generate_theme_css(&theme);
-```
-
-## Component Integration
-
-When using the `components` feature, all components automatically use theme CSS variables:
-
-```rust
-use rinch::prelude::*;
-
-#[component]
-fn app() -> NodeHandle {
-    rsx! {
-        Stack { gap: "md",
-            // These components automatically use theme colors
-            Button { "Primary Button" }
-            Badge { variant: "light", "Status" }
-            Alert { color: "blue", "Info message" }
-        }
-    }
-}
-
-fn main() {
-    let theme = ThemeProviderProps {
-        primary_color: Some("cyan".into()),
-        ..Default::default()
-    };
-
-    run_with_theme("Themed Components", 800, 600, app, theme);
-}
-```
-
-See the [Components Guide](./components.md) for the complete list of available components.
+> **Gotcha:** `--rinch-color-gray-0` is `#f8f9fa`, which matches the default body background. If you use it as a card background, it'll be invisible. Use `gray-1` or higher for visible backgrounds.

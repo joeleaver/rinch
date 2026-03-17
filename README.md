@@ -39,13 +39,13 @@ That `{|| ...}` closure is doing all the work. It creates an Effect that tracks 
 
 | Complaint | Rinch's answer |
 |-----------|---------------|
-| "I have to learn a custom layout system" | It's CSS. You already mass it. Flexbox via Taffy, style resolution via Servo's Stylo engine. |
-| "Reactivity requires re-rendering the whole component" | Signals → Effects → surgical node updates. Component runs once. |
+| "I have to learn a custom layout system" | It's CSS. You already know it. Flexbox via Taffy, style resolution via Servo's Stylo engine. |
+| "Reactivity requires re-rendering the whole component" | Signals -> Effects -> surgical node updates. Component runs once. |
 | "No component library" | 60+ components. Buttons, inputs, modals, tabs, accordions, color pickers, rich text editors. |
-| "Styling is painful" | Theme system with CSS variables, 20 color palettes, dark mode, spacing scales. Write `p: "md"` instead of `padding: var(--rinch-spacing-md)`. |
+| "Styling is painful" | Theme system with CSS variables, 14 color palettes, dark mode, spacing scales. Write `p: "md"` instead of `padding: var(--rinch-spacing-md)`. |
 | "I can't inspect anything" | F12 opens DevTools. Alt+I for inspect mode. There's an MCP server so Claude can screenshot your app and fix your CSS. |
 | "Text rendering is bad" | Parley for shaping, HarfBuzz under the hood. Ligatures, BiDi, the works. |
-| "No web target" | Compiles to WASM. Browser-native DOM backend — no canvas, just real DOM nodes. 3MB binary. |
+| "No web target" | Compiles to WASM with a browser-native DOM backend — no canvas, just real DOM nodes. 3MB binary. |
 
 ## What's In The Box
 
@@ -84,7 +84,7 @@ rsx! {
 }
 ```
 
-**Platform Integration.** Native menus via muda. File dialogs. Clipboard. System tray with minimize-to-tray. Transparent borderless windows with custom chrome (Windows). Keyboard shortcuts.
+**Platform Integration.** Native menus via muda. File dialogs. Clipboard. System tray with minimize-to-tray. Transparent borderless windows with custom chrome. Keyboard shortcuts.
 
 **Rich Text Editing.** CRDT-backed editor (Automerge), 22 formatting extensions, markdown input rules, syntax highlighting, find & replace. Not a toy.
 
@@ -96,10 +96,10 @@ rsx! {
 
 ```toml
 [dependencies]
-rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["desktop", "gpu", "components", "theme"] }
+rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["desktop", "components", "theme"] }
 ```
 
-Drop the `"gpu"` feature for software rendering (no GPU required — works in CI, containers, SSH sessions, your grandma's laptop).
+Add `"gpu"` for GPU rendering, or leave it off for software rendering (no GPU required — works in CI, containers, SSH sessions, your grandma's laptop).
 
 ```bash
 # Run the component showcase
@@ -114,6 +114,244 @@ cargo run --release
 
 > **Use `--release`.** Debug mode is noticeably slow because Stylo and Parley do a lot of work. Release builds are fast.
 
+## Writing Your Own Components
+
+There are two ways to make components in Rinch, and both of them are less painful than you'd expect.
+
+### The Easy Way: PascalCase Functions
+
+Write a function with a PascalCase name and `#[component]`, and Rinch generates a struct, a `Default` impl, and a `Component` trait impl for you. Parameters become props. That's it.
+
+```rust
+use rinch::prelude::*;
+
+#[component]
+pub fn StatusCard(
+    title: String,
+    count: i32,
+    color: String,
+    onclick: Option<Callback>,
+) -> NodeHandle {
+    rsx! {
+        div { class: "status-card", style: {format!("border-left: 3px solid {color}")},
+            h3 { {title.clone()} }
+            span { class: "count", {count.to_string()} }
+        }
+    }
+}
+```
+
+Now use it like any built-in component:
+
+```rust
+rsx! {
+    StatusCard {
+        title: "Active Users",
+        count: 42,
+        color: "var(--rinch-primary-color)",
+        onclick: || println!("clicked!"),
+    }
+}
+```
+
+**The rules:**
+- PascalCase name -> struct generation. Lowercase name -> just injects `__scope`.
+- Props must be owned types (`String`, not `&str`). The macro tells you if you get this wrong.
+- `children: &[NodeHandle]` is magic — it's not a struct field, it captures child elements from RSX.
+- `onclick` and `oninput` closures are auto-wrapped into `Callback`/`InputCallback`. Don't manually wrap them.
+- String literals become `String::from(...)`. Numbers get `Some(...)`. The macro handles the boring conversions.
+
+### The Manual Way: Component Trait
+
+For when you need more control — implement `Component` directly:
+
+```rust
+use rinch::prelude::*;
+
+#[derive(Debug, Default)]
+pub struct IconButton {
+    pub icon: String,
+    pub label: String,
+    pub onclick: Option<Callback>,
+}
+
+impl Component for IconButton {
+    fn render(&self, scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
+        let btn = scope.create_element("button");
+        btn.set_attribute("class", "icon-button");
+
+        if let Some(cb) = &self.onclick {
+            let handler_id = scope.register_handler({
+                let cb = cb.clone();
+                move || cb.invoke()
+            });
+            btn.set_attribute("data-rid", &handler_id.0.to_string());
+        }
+
+        // Create icon element, append children, etc.
+        btn
+    }
+}
+```
+
+You probably don't need this. The PascalCase function handles 95% of cases. But it's there when the macro isn't enough.
+
+### Making Components Reactive
+
+Any prop accepts a closure `{|| expr}` to make it reactive:
+
+```rust
+let active = Signal::new(false);
+rsx! {
+    Button {
+        variant: {|| if active.get() { "filled" } else { "outline" }},
+        onclick: move || active.update(|v| *v = !*v),
+        "Toggle Me"
+    }
+}
+```
+
+For surgical updates without re-rendering the whole component, use `_fn` props where available:
+
+```rust
+let text = Signal::new(String::new());
+rsx! {
+    TextInput {
+        value_fn: move || text.get(),           // Surgical DOM update
+        oninput: move |v: String| text.set(v),  // Update signal from input
+    }
+}
+```
+
+## Theming
+
+Rinch's theme system is CSS-variable-based, Mantine-inspired, and designed to be extended rather than fought against.
+
+### Quick Start
+
+```rust
+fn main() {
+    let theme = ThemeProviderProps {
+        primary_color: Some("cyan".into()),
+        default_radius: Some("md".into()),
+        dark_mode: false,
+        ..Default::default()
+    };
+    run_with_theme("My App", 800, 600, app, theme);
+}
+```
+
+That's it. Every component automatically picks up your colors, radius, and spacing through CSS variables. Toggle `dark_mode: true` and the whole UI flips.
+
+### What You Get
+
+14 color palettes with 10 shades each, spacing scales (xs through xl), border radius scales, shadow scales, font size scales, and semantic color tokens that flip automatically in dark mode.
+
+```css
+/* Use these anywhere in your styles */
+var(--rinch-primary-color)     /* Your chosen primary */
+var(--rinch-color-blue-5)      /* Any palette, any shade */
+var(--rinch-spacing-md)        /* 16px */
+var(--rinch-radius-default)    /* Theme default radius */
+var(--rinch-color-body)        /* Background (adapts to dark mode) */
+var(--rinch-color-dimmed)      /* Secondary text */
+```
+
+### Extending the Theme
+
+The theme generates CSS variables, and CSS variables are just strings. Override them with regular inline styles or class-based CSS, and Rinch won't even notice:
+
+```rust
+rsx! {
+    div { style: "
+        --rinch-primary-color: #ff6b6b;
+        --rinch-radius-default: 0px;
+    ",
+        // Everything inside this div now has red primary and sharp corners
+        Button { "I'm red and sharp" }
+    }
+}
+```
+
+For global customization, use `ThemeProviderProps`. For scoped overrides, just reassign the CSS variables on a container div.
+
+### Programmatic Access
+
+```rust
+use rinch::theme::{Theme, ColorName};
+
+let theme = Theme::builder()
+    .primary_color(ColorName::Cyan)
+    .dark_mode(true)
+    .build();
+
+let css = rinch_theme::generate_theme_css(&theme);
+```
+
+## WASM: Running in the Browser
+
+Rinch compiles to WebAssembly with a browser-native DOM backend. Instead of painting pixels to a canvas, the WASM build creates real `<div>`, `<span>`, and `<button>` elements. The browser handles layout, CSS, text rendering, and painting. Your components, signals, and effects work exactly the same way — just pointed at `web_sys` instead of tiny-skia.
+
+The result: ~3MB binary, no JavaScript framework, real DOM elements you can inspect in Chrome DevTools.
+
+### Setup
+
+The WASM target lives outside the main workspace (fontconfig dependency doesn't cross-compile):
+
+```toml
+# my-app-web/Cargo.toml
+[dependencies]
+rinch = { git = "...", default-features = false, features = ["web", "components", "theme"] }
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
+```
+
+```rust
+// my-app-web/src/main.rs
+use wasm_bindgen::prelude::*;
+use rinch::prelude::*;
+
+#[wasm_bindgen(start)]
+pub fn main() {
+    console_error_panic_hook::set_once();
+    // Mount your app to the browser DOM
+    // See examples/ui-zoo-web for the full pattern
+}
+```
+
+### Building
+
+```bash
+# Install trunk (WASM build tool)
+cargo install trunk
+
+# Build and serve
+cd my-app-web
+trunk serve --release --port 8080
+```
+
+Or use `wasm-pack` / `cargo build --target wasm32-unknown-unknown` if you prefer.
+
+### What Works
+
+Everything that goes through `NodeHandle` and `DomDocument` works automatically: signals, effects, memos, stores, contexts, components, the theme system, event handling. The abstraction boundary is clean — your app code doesn't know or care whether it's running on desktop or in Firefox.
+
+### What Doesn't (Yet)
+
+The browser backend doesn't support Rinch's custom painting features (Vello/tiny-skia), game engine embedding, or native menus. It's for standard UI — which is probably what you're building anyway.
+
+### Code Sharing
+
+Structure your app as a library crate with the UI logic, and two thin entry points:
+
+```
+my-app/          # Shared components, stores, logic
+my-app-desktop/  # cargo run --release
+my-app-web/      # trunk serve --release
+```
+
+The `ui-zoo` / `ui-zoo-desktop` / `ui-zoo-web` examples in the repo do exactly this.
+
 ## Project Status
 
 Rinch is pre-1.0, under active development, and used by its author to build real applications. The API is stabilizing but not yet stable. Things that work well: layout, rendering, reactivity, the component library, text editing. Things that are still evolving: documentation, web target polish, test coverage.
@@ -125,14 +363,14 @@ If you want a GUI framework that's been blessed by a foundation and has a 200-pa
 | Example | What it is |
 |---------|-----------|
 | `ui-zoo-desktop` | Component showcase — every widget, interactive |
-| `todo-app` | Classic todo app |
+| `todo-app` | Classic todo app with stores, filtering, reactive lists |
 | `markdown-editor` | Rich text editor with CRDT backing |
 | `drag-and-drop-demo` | Drag and drop between lists |
 | `game-embed` | Game engine integration demo |
 | `video-call` | WebRTC video calling |
 | `paint-desktop` | Drawing application |
 
-[**Live web demo**](https://joeleaver.github.io/rinch/ui-zoo/) (requires WebGPU)
+[**Live web demo**](https://joeleaver.github.io/rinch/ui-zoo/) (WASM, works in all modern browsers)
 
 ## Who's Using Rinch
 
@@ -149,16 +387,16 @@ Using rinch? [Open an issue](https://github.com/joeleaver/rinch/issues) or send 
 ## Architecture, Briefly
 
 ```
-rinch              ← Facade crate. This is what you depend on.
-rinch-core         ← Signal, Effect, Memo, NodeHandle, RenderScope
-rinch-macros       ← rsx! macro, #[component] attribute
-rinch-dom          ← Stylo + Taffy + Parley. The "browser engine" bits.
-rinch-components   ← 60+ UI components
-rinch-theme        ← CSS variable generation, color palettes
-rinch-tabler-icons ← 5000+ icons, downloaded at build time
-rinch-editor       ← Rich text editor core
-rinch-debug        ← TCP IPC server for tooling
-rinch-mcp-server   ← MCP server for Claude Code integration
+rinch              <- Facade crate. This is what you depend on.
+rinch-core         <- Signal, Effect, Memo, NodeHandle, RenderScope
+rinch-macros       <- rsx! macro, #[component] attribute
+rinch-dom          <- Stylo + Taffy + Parley. The "browser engine" bits.
+rinch-components   <- 60+ UI components
+rinch-theme        <- CSS variable generation, color palettes
+rinch-tabler-icons <- 5000+ icons, downloaded at build time
+rinch-editor       <- Rich text editor core
+rinch-debug        <- TCP IPC server for tooling
+rinch-mcp-server   <- MCP server for Claude Code integration
 ```
 
 The full layout is in `CLAUDE.md` if you want the gory details.

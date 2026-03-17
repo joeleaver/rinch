@@ -1,68 +1,92 @@
 # Getting Started
 
-This guide will walk you through creating your first rinch application.
+From zero to window in about ninety seconds.
 
 ## Prerequisites
 
-- Rust 1.75 or later
-- A C++ compiler (for native dependencies)
+- **Rust nightly** (Rinch uses a few unstable features — `let_chains`, etc.)
+- A C/C++ compiler (Stylo has native dependencies)
+- On Linux: `libfontconfig-dev` and `pkg-config` (for font discovery)
 
-## Create a New Project
+## Create a Project
 
 ```bash
 cargo new my-app
 cd my-app
 ```
 
-## Add Dependencies
-
-Add rinch to your `Cargo.toml`:
+## Add Rinch
 
 ```toml
+# Cargo.toml
 [dependencies]
-rinch = { path = "../path/to/rinch", features = ["desktop"] }
+rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["desktop", "components", "theme"] }
 ```
 
-The `"desktop"` feature is required for windowing and rendering. Add `"components"` and `"theme"` for the full component library and theme system:
+**What the features do:**
+- `"desktop"` — windowing, event loop, software renderer. Required for desktop apps.
+- `"components"` — the 60+ component library (Button, TextInput, Modal, etc.).
+- `"theme"` — CSS variable generation, color palettes, dark mode. Auto-enabled by `"components"`.
+- `"gpu"` — GPU rendering via Vello/wgpu instead of the software renderer. Optional.
+- `"clipboard"` — clipboard read/write. Optional.
+- `"file-dialogs"` — native open/save dialogs. Optional.
 
-```toml
-[dependencies]
-rinch = { path = "../path/to/rinch", features = ["desktop", "components", "theme"] }
-```
-
-## Write Your First App
-
-Replace the contents of `src/main.rs`:
+## Write Your App
 
 ```rust
 use rinch::prelude::*;
 
 #[component]
 fn app() -> NodeHandle {
+    let count = Signal::new(0);
+
     rsx! {
-        div {
-            h1 { "Hello, Rinch!" }
-            p { "Welcome to your first rinch application." }
+        Stack { gap: "md", p: "xl",
+            Title { order: 1, "Hello, Rinch!" }
+            Text { color: "dimmed", "Your first app. It only goes up from here." }
+
+            Group { gap: "sm",
+                Button { onclick: move || count.update(|n| *n += 1), "+" }
+                Button { variant: "outline", onclick: move || count.set(0), "Reset" }
+            }
+
+            Text { size: "xl", {|| format!("Count: {}", count.get())} }
         }
     }
 }
 
 fn main() {
-    run("My First App", 800, 600, app);
+    run_with_theme("My App", 800, 600, app, ThemeProviderProps {
+        primary_color: Some("cyan".into()),
+        ..Default::default()
+    });
 }
 ```
 
-## Run Your App
+## Run It
 
 ```bash
-cargo run
+cargo run --release
 ```
 
-You should see a window appear with your content rendered inside.
+> **Always use `--release`** for running apps. Debug mode is slow because Stylo and Parley do serious work. Release builds are fast.
 
-## What's Next?
+You should see a window with a title, description, two buttons, and a count that updates when you click "+".
 
-- Learn about [RSX Syntax](./rsx-syntax.md) for building UI
-- Explore [Windows](./windows.md) for multi-window support
-- Add [Menus](./menus.md) to your application
-- Understand [Reactivity](./reactivity.md) for dynamic state
+## What Just Happened
+
+1. `#[component]` injected a `__scope: &mut RenderScope` parameter. You never see it, but `rsx!` needs it.
+2. `rsx!` built a DOM tree: created elements, set attributes, wired event handlers.
+3. `{|| format!("Count: {}", count.get())}` created an Effect that reads `count` and updates a text node. When `count` changes, that closure re-runs and updates *only that text node*.
+4. `run_with_theme` opened a window, loaded theme CSS, mounted the component, and started the event loop.
+
+Your `app` function ran exactly once. It will never run again. The closures handle everything from here.
+
+## What's Next
+
+- [RSX Syntax](./rsx-syntax.md) — The full macro syntax: elements, attributes, events, control flow.
+- [State Management](./hooks.md) — Signals, Memos, Stores, Context.
+- [Components](./components.md) — The full component library.
+- [Theming](./theming.md) — Colors, dark mode, CSS variables.
+- [Writing Components](./writing-components.md) — Build your own.
+- [WASM](./wasm.md) — Run in the browser.

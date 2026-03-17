@@ -65,12 +65,9 @@ let count = Signal::new(0);
 let node = __scope.create_element("span");
 
 // This Effect will re-run whenever count changes
-__scope.create_effect({
-    let count = count.clone();
-    let node = node.clone();
-    move || {
-        node.set_text(&count.get().to_string());
-    }
+// Signal and NodeHandle are both Copy — no .clone() needed
+__scope.create_effect(move || {
+    node.set_text(&count.get().to_string());
 });
 ```
 
@@ -88,10 +85,8 @@ A cached computed value that only recomputes when dependencies change.
 let items = Signal::new(vec![1, 2, 3, 4, 5]);
 
 // Only recomputes when items changes
-let sum = Memo::new({
-    let items = items.clone();
-    move || items.get().iter().sum::<i32>()
-});
+// Signal is Copy — no .clone() needed
+let sum = Memo::new(move || items.get().iter().sum::<i32>());
 
 // Reading sum.get() returns cached value if items hasn't changed
 ```
@@ -203,21 +198,14 @@ div.append_child(&text1);
 // Reactive text - creates Effect
 let text2 = __scope.create_text(&name.get().to_string());
 div.append_child(&text2);
-__scope.create_effect({
-    let name = name.clone();
-    let text2 = text2.clone();
-    move || {
-        text2.set_text(&name.get().to_string());
-    }
+// Signal and NodeHandle are Copy — no .clone() needed
+__scope.create_effect(move || {
+    text2.set_text(&name.get().to_string());
 });
 
 // Reactive style - creates Effect
-__scope.create_effect({
-    let color = color.clone();
-    let div = div.clone();
-    move || {
-        div.set_style("color", &color.get());
-    }
+__scope.create_effect(move || {
+    div.set_style("color", &color.get());
 });
 ```
 

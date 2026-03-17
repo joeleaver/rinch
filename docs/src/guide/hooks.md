@@ -1,211 +1,136 @@
 # State Management
 
-Rinch uses **fine-grained reactive primitives** for managing state in your components. Components run once to build the DOM, and reactive closures (`{|| expr}`) handle all subsequent updates surgically.
+There are no hooks. There is no re-rendering. Your component function runs once, builds the DOM, and closures keep it updated forever. Here's how you manage state.
 
 ## Core Primitives
 
-| Primitive | Purpose |
-|-----------|---------|
-| [`Signal::new()`](#signal) | Reactive state that triggers updates |
-| [`Memo::new()`](#memo) | Cached computed values |
-| [`create_store()`](./stores.md) | Share state across components (recommended) |
-| [`use_store::<T>()`](./stores.md) | Access a shared store |
-| [`create_context()`](#context) | Low-level shared state (framework internals) |
+| Primitive | What it does |
+|-----------|-------------|
+| `Signal::new(value)` | Reactive state. Read it, write it, closures that read it re-run when it changes. |
+| `Memo::new(closure)` | Cached derived state. Like a Signal you can't write to. |
+| `create_store(value)` | Share a store struct across components. |
+| `use_store::<T>()` | Access a shared store from any descendant. |
+| `create_context(value)` | Low-level shared state (mostly for framework internals). |
 
-> **Recommended:** For shared state, use the [store pattern](./stores.md) — a struct with Signal fields and action methods, shared via `create_store()` / `use_store()`.
-
-
-```rust
-use rinch::prelude::*;
-
-#[component]
-fn counter() -> NodeHandle {
-    let count = Signal::new(0);
-
-    rsx! {
-        button { onclick: move || count.update(|n| *n += 1),
-            "Count: " {|| count.get().to_string()}
-        }
-    }
-}
-```
-
-> **Note:** The `#[component]` attribute macro is the recommended way to define components. It automatically injects the `__scope: &mut RenderScope` parameter needed by `rsx!`.
-
----
+> **For shared state, use [stores](./stores.md).** A store is a struct with Signal fields and methods that mutate them. Clean, testable, no prop drilling.
 
 ## Signal
 
-The primary state primitive. Creates a reactive value that notifies subscribers when it changes.
+The foundational reactive primitive. Create one, read it in closures, and those closures re-run when the value changes.
 
 ```rust
 let count = Signal::new(0);
 
-count.get();              // Read value
-count.set(5);             // Set new value
-count.update(|n| *n += 1); // Update with function
+count.get();                 // Read
+count.set(5);                // Write
+count.update(|n| *n += 1);  // Read-modify-write
 ```
 
-`Signal<T>` implements `Copy`, so you can use it in multiple closures without `.clone()`.
-
-### Example: Toggle
+`Signal<T>` is `Copy`. Use it in as many closures as you want — no `.clone()` needed.
 
 ```rust
 #[component]
 fn toggle() -> NodeHandle {
-    let enabled = Signal::new(false);
+    let on = Signal::new(false);
 
     rsx! {
-        button { onclick: move || enabled.update(|b| *b = !*b),
-            {|| if enabled.get() { "ON" } else { "OFF" }}
+        button { onclick: move || on.update(|b| *b = !*b),
+            {|| if on.get() { "ON" } else { "OFF" }}
         }
     }
 }
 ```
 
+### Cross-Thread Dispatch
+
+`Signal::set()` and `Signal::update()` must be called from the main thread. From a background thread, use `send()` and `update_send()`:
+
+```rust
+let progress = Signal::new(0);
+
+std::thread::spawn(move || {
+    for i in 0..100 {
+        std::thread::sleep(Duration::from_millis(50));
+        progress.send(i);  // Dispatches to main thread automatically
+    }
+});
+```
+
 For more details, see [Signals](./signals.md).
 
----
+## Memo
+
+Cached derived state that recomputes only when its dependencies change.
+
+```rust
+let first = Signal::new("Alice".to_string());
+let last = Signal::new("Smith".to_string());
+
+let full = Memo::new(move || format!("{} {}", first.get(), last.get()));
+// full.get() recomputes only when first or last change
+```
+
+`Memo<T>` is also `Copy`. Dependencies are tracked automatically — no dependency arrays.
+
+For more details, see [Memos](./memos.md).
 
 ## Effect (Advanced)
 
-Most reactive DOM updates use `{|| expr}` closures in rsx. For rare cases like syncing to external systems, use `Effect` — import it explicitly since it's not in the prelude:
+Most reactive DOM updates happen through `{|| expr}` closures in RSX. For the rare case where you need to react to signal changes outside of the DOM (logging, syncing to an external system), use `Effect`:
 
 ```rust
 use rinch::reactive::Effect;
 
 let count = Signal::new(0);
 
-// Auto-tracks count — re-runs when count changes
 Effect::new(move || {
-    println!("Count changed to: {}", count.get());
+    println!("Count is now: {}", count.get());
 });
 ```
 
-No dependency arrays needed — dependencies are discovered automatically at runtime. For more details, see [Effects](./effects.md).
+Effect is intentionally excluded from the prelude. If you're reaching for it, ask yourself: can this be a closure in RSX, or a method on a store? Usually the answer is yes.
 
-> **Tip:** If you're updating the DOM, use `{|| expr}` in rsx. If you're updating state, put logic in a [store method](./stores.md). Effect is for the rare case where you need to react to signal changes outside of both.
-
----
-
-## Memo
-
-Create cached computed values that only recompute when dependencies change.
-
-```rust
-let first_name = Signal::new("Alice".to_string());
-let last_name = Signal::new("Smith".to_string());
-
-// Automatically updates when first_name or last_name change
-let full_name = Memo::new(move || {
-    format!("{} {}", first_name.get(), last_name.get())
-});
-
-println!("Full name: {}", full_name.get());
-```
-
-`Memo<T>` implements `Copy` just like `Signal<T>` — use it in multiple closures without `.clone()`.
-
-For more details, see [Memos](./memos.md).
-
----
+For more details, see [Effects](./effects.md).
 
 ## Context
 
-Share state across components without prop drilling. Call `create_context()` in an ancestor component, then `use_context::<T>()` in any descendant.
-
-### Creating Context
+Share state across components without prop drilling. The ancestor creates it, any descendant reads it.
 
 ```rust
 #[derive(Clone)]
-struct Theme {
-    primary: String,
-    background: String,
+struct AppConfig {
+    api_url: String,
 }
 
 #[component]
 fn app() -> NodeHandle {
-    create_context(Theme {
-        primary: "#007bff".into(),
-        background: "#ffffff".into(),
-    });
-
-    rsx! {
-        div {
-            // ... child components can access Theme
-        }
-    }
+    create_context(AppConfig { api_url: "https://api.example.com".into() });
+    rsx! { div { ChildComponent {} } }
 }
-```
 
-### Consuming Context
-
-`use_context::<T>()` returns `T` directly. It **panics** with a helpful message if the context was not found:
-
-```
-Context not found: TypeName
-Did you forget to call create_context() in a parent component?
-```
-
-```rust
 #[component]
-fn themed_button() -> NodeHandle {
-    let theme = use_context::<Theme>();
-
-    rsx! {
-        button { style: {|| format!("background: {}", theme.primary)},
-            "Click me"
-        }
-    }
+fn ChildComponent() -> NodeHandle {
+    let config = use_context::<AppConfig>();
+    rsx! { Text { {config.api_url.clone()} } }
 }
 ```
 
-### Fallible Access
+`use_context::<T>()` panics if the context is missing (with a helpful message). Use `try_use_context::<T>()` for an `Option<T>` instead.
 
-Use `try_use_context::<T>()` when a context may legitimately be absent — it returns `Option<T>` instead of panicking:
+For reactive shared state, use [stores](./stores.md) — they're contexts with Signal fields and methods.
 
-```rust
-#[component]
-fn themed_button() -> NodeHandle {
-    let theme = try_use_context::<Theme>();
-    let bg = theme.map(|t| t.primary).unwrap_or("#ccc".into());
-
-    rsx! {
-        button { style: {|| format!("background: {}", bg)},
-            "Click me"
-        }
-    }
-}
-```
-
-For more details, see [Sharing State](./sharing-state.md).
-
----
-
-## Complete Example
+## Putting It Together
 
 ```rust
 use rinch::prelude::*;
 
-#[derive(Clone)]
-struct AppSettings {
-    dark_mode: bool,
-}
-
 #[component]
 fn app() -> NodeHandle {
-    // Create shared settings context
-    create_context(AppSettings { dark_mode: false });
-
-    let todos = Signal::new(vec!["Learn Rust".to_string()]);
+    let todos = Signal::new(vec!["Learn Rinch".to_string()]);
     let input = Signal::new(String::new());
-
-    // Derived state
     let count = Memo::new(move || todos.get().len());
 
-    // Extract shared handler — both Enter key and button click add a todo.
-    // Signal is Copy, so no .clone() needed before closures.
-    let add_todo = move || {
+    let add = move || {
         let text = input.get();
         if !text.is_empty() {
             todos.update(|t| t.push(text.clone()));
@@ -214,25 +139,25 @@ fn app() -> NodeHandle {
     };
 
     rsx! {
-        div {
-            h1 { "Todos (" {|| count.get().to_string()} ")" }
+        Stack { gap: "md", p: "xl",
+            Title { order: 1, "Todos (" {|| count.get().to_string()} ")" }
 
-            input {
-                value: {|| input.get()},
-                oninput: move |value: String| input.set(value),
-                onsubmit: add_todo,
+            Group { gap: "sm",
+                TextInput {
+                    placeholder: "What needs doing?",
+                    value_fn: move || input.get(),
+                    oninput: move |v: String| input.set(v),
+                    onsubmit: add,
+                }
+                Button { onclick: add, "Add" }
             }
 
-            button { onclick: add_todo, "Add" }
-
             for todo in todos.get() {
-                li { {todo.clone()} }
+                div { key: todo.clone(), {todo.clone()} }
             }
         }
     }
 }
-
-fn main() {
-    run("Todo App", 400, 300, app);
-}
 ```
+
+Signal is `Copy`, so `add` captures `todos` and `input` without ceremony. `count` is a Memo that recomputes when `todos` changes. The `for` loop is reactive — add or remove a todo and only the affected DOM nodes change.

@@ -1,6 +1,6 @@
 # Components
 
-Rinch provides a comprehensive component library with 51 styled, themeable UI components inspired by [Mantine](https://mantine.dev/). Enable with the `components` feature (which also enables `theme`):
+Rinch provides a comprehensive component library with 60+ styled, themeable UI components inspired by [Mantine](https://mantine.dev/). Enable with the `components` feature (which also enables `theme`):
 
 ```toml
 [dependencies]
@@ -643,9 +643,13 @@ The component provides:
 - Left/right custom sections for menu buttons or additional controls
 - Proper theming via CSS variables
 
-## Building Custom Component Crates
+## Building Custom Components
 
-You can create your own component library that integrates with Rinch's theme system. Here's how to build a custom component crate like `rinch-bootstrap` or `rinch-material`.
+> **See the dedicated [Writing Components](./writing-components.md) guide** for the recommended approach using `#[component]` PascalCase functions. The manual `Component` trait approach below is only needed for advanced use cases.
+
+## Building Custom Component Crates (Advanced)
+
+You can create your own component library crate that integrates with Rinch's theme system.
 
 ### 1. Create the Crate
 

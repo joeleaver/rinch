@@ -59,12 +59,9 @@ fn counter(__scope: &mut RenderScope) -> NodeHandle {
     let span = __scope.create_element("span");
 
     // Create an Effect that updates the span when count changes
-    __scope.create_effect({
-        let count = count.clone();
-        let span = span.clone();
-        move || {
-            span.set_text(&count.get().to_string());
-        }
+    // Signal and NodeHandle are Copy — no .clone() needed
+    __scope.create_effect(move || {
+        span.set_text(&count.get().to_string());
     });
 
     span

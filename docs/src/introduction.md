@@ -1,16 +1,16 @@
 # Rinch
 
-Rinch is a lightweight, cross-platform GUI library for Rust that combines the power of web technologies with native performance.
+A GUI framework for Rust that uses HTML and CSS for layout, renders natively, and won't make you mass a single `.clone()` at a signal.
 
-> **[UI Zoo Live Demo](https://joeleaver.github.io/rinch/ui-zoo/)** — Try all Rinch components in your browser (works in all modern browsers). Or run locally: `cargo run -p ui-zoo-desktop`
+> **[Live Demo](https://joeleaver.github.io/rinch/ui-zoo/)** — All Rinch components, running in your browser via WASM. Or run locally: `cargo run --release -p ui-zoo-desktop`
 
 ## Philosophy
 
-- **Declarative UI** - Define your UI as a function of state using RSX syntax
-- **Fine-grained Reactivity** - Only update what changed, not the entire UI
-- **Web Standards** - Use HTML/CSS for layout, familiar to web developers
-- **Native Performance** - GPU rendering via Vello/wgpu, or software rendering via tiny-skia — your choice
-- **Cross-platform** - Windows, macOS, and Linux from a single codebase
+- **HTML/CSS layout** — The layout system that billions of people have already debugged for you, powered by Servo's Stylo and Taffy's flexbox.
+- **Fine-grained reactivity** — Signal changes update *one DOM node*, not a component tree. No virtual DOM. No diffing.
+- **Components run once** — Your function builds the DOM, closures keep it updated. That's the whole model.
+- **Native performance** — GPU rendering via Vello/wgpu, or software rendering via tiny-skia. Pick at compile time.
+- **WASM too** — Same components, same signals, browser-native DOM. ~3MB binary, zero JavaScript.
 
 ## Quick Example
 
@@ -20,12 +20,11 @@ use rinch::prelude::*;
 #[component]
 fn app() -> NodeHandle {
     let count = Signal::new(0);
-    let count_inc = count.clone();
 
     rsx! {
         div {
             p { "Count: " {|| count.get().to_string()} }
-            button { onclick: move || count_inc.update(|n| *n += 1), "+" }
+            button { onclick: move || count.update(|n| *n += 1), "+" }
         }
     }
 }
@@ -35,26 +34,13 @@ fn main() {
 }
 ```
 
-## Features
+`Signal` is `Copy`. No `.clone()` before closures. The `{|| ...}` closure creates an Effect that tracks its dependencies and surgically updates that text node when `count` changes. The `app` function runs once, builds the DOM, and never runs again.
 
-- **RSX Macro** - JSX-like syntax for building UI
-- **Reactive Primitives** - Signal, Effect, Memo, and more
-- **Fine-grained Reactivity** - Surgical DOM updates with signals and effects
-- **Theme System (Mantine-inspired)** - CSS variables, color palettes, spacing scales
-- **80+ Components** - Buttons, inputs, modals, dropdowns, and more
-- **Rich-Text Editor** - Full-featured text editing with selections and formatting
-- **5000+ Tabler Icons** - Type-safe SVG icons from tabler.io
-- **Native Menus** - Platform-native menu bars via muda
-- **Dual Rendering Backends** - GPU (Vello/wgpu) or software (tiny-skia/softbuffer), selected via Cargo features
+## What's Included
 
-## Architecture
-
-Rinch is built on top of several excellent Rust crates:
-
-- [rinch-dom](https://github.com/joeleaver/rinch/tree/main/crates/rinch-dom) - Custom HTML/CSS DOM implementation
-- [Stylo](https://github.com/servo/stylo) - CSS parsing and computed styles (from Servo/Firefox)
-- [Parley](https://github.com/linebender/parley) - Text layout and shaping
-- [Vello](https://github.com/linebender/vello) - GPU 2D rendering
-- [tiny-skia](https://github.com/nickel-org/tiny-skia) - Software 2D rendering
-- [winit](https://github.com/rust-windowing/winit) - Cross-platform windowing
-- [muda](https://github.com/tauri-apps/muda) - Native menu support
+- **60+ Components** — Buttons, inputs, modals, tabs, accordions, color pickers, trees, a rich text editor, and more.
+- **Theme System** — 14 color palettes, dark mode, CSS variables for everything. Mantine-inspired.
+- **5,000+ Icons** — Tabler Icons with a type-safe enum. Dead code elimination drops the ones you don't use.
+- **Native Platform** — Menus, file dialogs, clipboard, system tray, transparent windows.
+- **Developer Tools** — F12 DevTools, inspect mode, MCP server for Claude Code integration.
+- **Game Engine Embedding** — Submit GPU textures or CPU pixels into a Rinch UI, or embed Rinch into your own render loop.
