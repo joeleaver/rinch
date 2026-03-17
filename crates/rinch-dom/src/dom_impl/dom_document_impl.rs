@@ -484,8 +484,8 @@ impl DomDocument for RinchDocument {
         // ── Fast path: inset-only changes on absolute/fixed elements ─────
         // Changing left/top/right/bottom on an out-of-flow element only moves
         // it within its containing block — children and siblings are unaffected.
-        // Skip Stylo re-parse and style resolution; update ComputedStyle and
-        // Taffy directly.
+        // Skip Stylo, Taffy, and relayout entirely. Update the node's layout
+        // position directly and repaint.
         if matches!(property, "left" | "top" | "right" | "bottom")
             && matches!(
                 self.tree.nodes[node.0].computed_style.position,
@@ -520,27 +520,42 @@ impl DomDocument for RinchDocument {
                 _ => unreachable!(),
             }
 
-            // Update Taffy inset directly (skip full style resolution)
-            if let Some(taffy_id) = self.tree.nodes[node.0].taffy_id {
-                if let Ok(mut taffy_style) = self.tree.taffy.style(taffy_id).cloned() {
-                    let taffy_val = new_val.to_taffy();
-                    match property {
-                        "left" => taffy_style.inset.left = taffy_val,
-                        "top" => taffy_style.inset.top = taffy_val,
-                        "right" => taffy_style.inset.right = taffy_val,
-                        "bottom" => taffy_style.inset.bottom = taffy_val,
-                        _ => unreachable!(),
+            // Update node.layout position directly — skip Taffy entirely.
+            // Taffy's set_style() calls mark_dirty() which invalidates the
+            // node's cache and forces re-measurement of all children. For an
+            // inset-only change the children's sizes are unchanged, so we
+            // bypass Taffy and write the position ourselves.
+            //
+            // The Taffy style is intentionally left stale. It will be synced
+            // on the next real layout change (via apply_stylo_styles_to_taffy).
+            // The ComputedStyle is authoritative and to_taffy_style() reads
+            // from it, so the next full sync will produce the correct inset.
+            let px = new_val.to_px();
+            match property {
+                "left" => self.tree.nodes[node.0].layout.x = px,
+                "top" => self.tree.nodes[node.0].layout.y = px,
+                // right/bottom affect position via containing block size;
+                // computing the exact x/y requires knowing the parent size.
+                // Fall through to Taffy for these (less common for dragging).
+                "right" | "bottom" => {
+                    if let Some(taffy_id) = self.tree.nodes[node.0].taffy_id {
+                        if let Ok(mut taffy_style) = self.tree.taffy.style(taffy_id).cloned() {
+                            let taffy_val = new_val.to_taffy();
+                            match property {
+                                "right" => taffy_style.inset.right = taffy_val,
+                                "bottom" => taffy_style.inset.bottom = taffy_val,
+                                _ => unreachable!(),
+                            }
+                            let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
+                            self.tree.layout_dirty = true;
+                        }
                     }
-                    let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
-                    self.tree.layout_dirty = true;
                 }
+                _ => unreachable!(),
             }
 
-            // Mark paint dirty (position changed, need repaint) but skip STYLE
-            // flag — no Stylo re-resolution needed.
-            self.tree.nodes[node.0]
-                .dirty
-                .insert(DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+            // Paint-only dirty — no Stylo, no Taffy, no relayout.
+            self.tree.nodes[node.0].dirty.insert(DirtyFlags::PAINT);
             self.tree.dirty_nodes.insert(node.0);
             return;
         }
@@ -632,51 +647,53 @@ impl DomDocument for RinchDocument {
                 .attributes
                 .insert("style".to_string(), style_str);
 
-            // Update ComputedStyle + Taffy directly
+            // Update ComputedStyle + node.layout directly, skip Taffy.
             let vp = &crate::layout::Viewport::default();
-            let mut taffy_style = self.tree.nodes[node.0]
-                .taffy_id
-                .and_then(|id| self.tree.taffy.style(id).cloned().ok());
+            let mut needs_taffy = false;
 
             for &(property, value) in properties {
                 let new_val = crate::computed_style::LengthPercentageAutoValue::parse(value, vp);
                 match property {
                     "left" => {
                         self.tree.nodes[node.0].computed_style.left = new_val;
-                        if let Some(ref mut ts) = taffy_style {
-                            ts.inset.left = new_val.to_taffy();
-                        }
+                        self.tree.nodes[node.0].layout.x = new_val.to_px();
                     }
                     "top" => {
                         self.tree.nodes[node.0].computed_style.top = new_val;
-                        if let Some(ref mut ts) = taffy_style {
-                            ts.inset.top = new_val.to_taffy();
-                        }
+                        self.tree.nodes[node.0].layout.y = new_val.to_px();
                     }
-                    "right" => {
-                        self.tree.nodes[node.0].computed_style.right = new_val;
-                        if let Some(ref mut ts) = taffy_style {
-                            ts.inset.right = new_val.to_taffy();
+                    "right" | "bottom" => {
+                        // right/bottom need containing block size to resolve position
+                        match property {
+                            "right" => self.tree.nodes[node.0].computed_style.right = new_val,
+                            "bottom" => self.tree.nodes[node.0].computed_style.bottom = new_val,
+                            _ => unreachable!(),
                         }
-                    }
-                    "bottom" => {
-                        self.tree.nodes[node.0].computed_style.bottom = new_val;
-                        if let Some(ref mut ts) = taffy_style {
-                            ts.inset.bottom = new_val.to_taffy();
-                        }
+                        needs_taffy = true;
                     }
                     _ => unreachable!(),
                 }
             }
 
-            if let (Some(taffy_id), Some(ts)) = (self.tree.nodes[node.0].taffy_id, taffy_style) {
-                let _ = self.tree.taffy.set_style(taffy_id, ts);
-                self.tree.layout_dirty = true;
+            if needs_taffy {
+                if let Some(taffy_id) = self.tree.nodes[node.0].taffy_id {
+                    if let Ok(mut ts) = self.tree.taffy.style(taffy_id).cloned() {
+                        for &(property, value) in properties {
+                            let new_val =
+                                crate::computed_style::LengthPercentageAutoValue::parse(value, vp);
+                            match property {
+                                "right" => ts.inset.right = new_val.to_taffy(),
+                                "bottom" => ts.inset.bottom = new_val.to_taffy(),
+                                _ => {}
+                            }
+                        }
+                        let _ = self.tree.taffy.set_style(taffy_id, ts);
+                        self.tree.layout_dirty = true;
+                    }
+                }
             }
 
-            self.tree.nodes[node.0]
-                .dirty
-                .insert(DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+            self.tree.nodes[node.0].dirty.insert(DirtyFlags::PAINT);
             self.tree.dirty_nodes.insert(node.0);
             return;
         }
