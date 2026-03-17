@@ -34,7 +34,7 @@ pub fn nav_links<F: Fn() + 'static>(
     nav: impl Fn(usize) -> F,
 ) -> NodeHandle {
     rsx! {
-        Stack { gap: "0", style: "overflow-y: auto; flex: 1;",
+        Stack { gap: "0", style: "flex: 1;",
             NavLink {
                 label: "Overview",
                 active_fn: move || current_section.get() == 0,

@@ -339,6 +339,10 @@ pub(super) fn cursor_value_to_style(
 }
 
 /// Find the nearest ancestor (or self) that is a scroll container.
+///
+/// Only `overflow: scroll` and `overflow: auto` are considered scrollable.
+/// `overflow: hidden` clips content but should NOT consume mousewheel events —
+/// the wheel should bubble up to the nearest actual scroll container.
 pub(crate) fn find_scroll_container(tree: &rinch_dom::NodeTree, start: usize) -> Option<usize> {
     use rinch_dom::computed_style::OverflowValue;
 
@@ -347,7 +351,7 @@ pub(crate) fn find_scroll_container(tree: &rinch_dom::NodeTree, start: usize) ->
         let node = tree.get(node_id)?;
         let overflow_y = &node.computed_style.overflow_y;
         match overflow_y {
-            OverflowValue::Scroll | OverflowValue::Auto | OverflowValue::Hidden => {
+            OverflowValue::Scroll | OverflowValue::Auto => {
                 let content_h = compute_content_height(tree, node_id);
                 if content_h > node.layout.height as f64 {
                     return Some(node_id);
@@ -415,7 +419,7 @@ pub(crate) fn find_horizontal_scroll_container(
         let node = tree.get(node_id)?;
         let overflow_x = &node.computed_style.overflow_x;
         match overflow_x {
-            OverflowValue::Scroll | OverflowValue::Auto | OverflowValue::Hidden => {
+            OverflowValue::Scroll | OverflowValue::Auto => {
                 let content_w = compute_content_width(tree, node_id);
                 if content_w > node.layout.width as f64 {
                     return Some(node_id);
@@ -431,6 +435,118 @@ pub(crate) fn find_horizontal_scroll_container(
     if content_w > body.layout.width as f64 {
         return Some(tree.body_id);
     }
+    None
+}
+
+/// Find a vertical scroll container at (x, y) by geometric search.
+///
+/// When the hit-tested node lives in a different DOM branch from the scroll
+/// container (e.g., an absolutely-positioned overlay sibling), the parent-chain
+/// walk in `find_scroll_container` fails. This function walks the tree from the
+/// body, looking for the deepest scroll container whose layout bounds contain
+/// the point.
+pub(crate) fn find_scroll_container_at_point(
+    tree: &rinch_dom::NodeTree,
+    x: f32,
+    y: f32,
+) -> Option<usize> {
+    find_scroll_container_at_point_recursive(tree, tree.body_id, 0.0, 0.0, x, y)
+}
+
+fn find_scroll_container_at_point_recursive(
+    tree: &rinch_dom::NodeTree,
+    node_id: usize,
+    offset_x: f32,
+    offset_y: f32,
+    x: f32,
+    y: f32,
+) -> Option<usize> {
+    use rinch_dom::computed_style::OverflowValue;
+
+    let node = tree.get(node_id)?;
+    let nx = offset_x + node.layout.x;
+    let ny = offset_y + node.layout.y;
+    let nw = node.layout.width;
+    let nh = node.layout.height;
+
+    let in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
+    if !in_bounds {
+        return None;
+    }
+
+    let sx = node.scroll_offset.0 as f32;
+    let sy = node.scroll_offset.1 as f32;
+
+    // Check children first (deepest match wins)
+    for &child_id in node.children.iter().rev() {
+        if let Some(found) =
+            find_scroll_container_at_point_recursive(tree, child_id, nx - sx, ny - sy, x, y)
+        {
+            return Some(found);
+        }
+    }
+
+    // Check this node
+    let overflow_y = &node.computed_style.overflow_y;
+    if matches!(overflow_y, OverflowValue::Scroll | OverflowValue::Auto) {
+        let content_h = compute_content_height(tree, node_id);
+        if content_h > node.layout.height as f64 {
+            return Some(node_id);
+        }
+    }
+
+    None
+}
+
+/// Find a horizontal scroll container at (x, y) by geometric search.
+pub(crate) fn find_horizontal_scroll_container_at_point(
+    tree: &rinch_dom::NodeTree,
+    x: f32,
+    y: f32,
+) -> Option<usize> {
+    find_hscroll_container_at_point_recursive(tree, tree.body_id, 0.0, 0.0, x, y)
+}
+
+fn find_hscroll_container_at_point_recursive(
+    tree: &rinch_dom::NodeTree,
+    node_id: usize,
+    offset_x: f32,
+    offset_y: f32,
+    x: f32,
+    y: f32,
+) -> Option<usize> {
+    use rinch_dom::computed_style::OverflowValue;
+
+    let node = tree.get(node_id)?;
+    let nx = offset_x + node.layout.x;
+    let ny = offset_y + node.layout.y;
+    let nw = node.layout.width;
+    let nh = node.layout.height;
+
+    let in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
+    if !in_bounds {
+        return None;
+    }
+
+    let sx = node.scroll_offset.0 as f32;
+    let sy = node.scroll_offset.1 as f32;
+
+    for &child_id in node.children.iter().rev() {
+        if let Some(found) =
+            find_hscroll_container_at_point_recursive(tree, child_id, nx - sx, ny - sy, x, y)
+        {
+            return Some(found);
+        }
+    }
+
+    let overflow_x = &node.computed_style.overflow_x;
+    if matches!(overflow_x, OverflowValue::Scroll | OverflowValue::Auto) {
+        let content_w = compute_content_width(tree, node_id);
+        if content_w > node.layout.width as f64 {
+            return Some(node_id);
+        }
+    }
+
     None
 }
 

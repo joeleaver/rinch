@@ -446,6 +446,7 @@ impl RinchApp {
                     if let Some(hit_node) = hit_node {
                         let mut doc_mut = doc.borrow_mut();
                         if let Some(scroll_node_id) = find_scroll_container(&doc_mut.tree, hit_node)
+                            .or_else(|| find_scroll_container_at_point(&doc_mut.tree, x, y))
                         {
                             let content_height =
                                 compute_content_height(&doc_mut.tree, scroll_node_id);

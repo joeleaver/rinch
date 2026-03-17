@@ -543,9 +543,13 @@ impl RinchApp {
                         let mut scroll_handler_to_fire: Option<(usize, f64)> = None;
 
                         // Vertical scrolling
+                        // First try the hit node's ancestor chain. If the hit node is in
+                        // a different DOM branch (e.g., an absolutely-positioned overlay),
+                        // fall back to finding the scroll container geometrically at (x, y).
                         if delta_y.abs() > 0.0
                             && let Some(scroll_node_id) =
                                 find_scroll_container(&doc_mut.tree, hit_node)
+                                    .or_else(|| find_scroll_container_at_point(&doc_mut.tree, x, y))
                         {
                             let content_height =
                                 compute_content_height(&doc_mut.tree, scroll_node_id);
@@ -583,8 +587,13 @@ impl RinchApp {
 
                         // Horizontal scrolling
                         if delta_x.abs() > 0.0
-                            && let Some(scroll_node_id) =
-                                find_horizontal_scroll_container(&doc_mut.tree, hit_node)
+                            && let Some(scroll_node_id) = find_horizontal_scroll_container(
+                                &doc_mut.tree,
+                                hit_node,
+                            )
+                            .or_else(|| {
+                                find_horizontal_scroll_container_at_point(&doc_mut.tree, x, y)
+                            })
                         {
                             let content_width =
                                 compute_content_width(&doc_mut.tree, scroll_node_id);
