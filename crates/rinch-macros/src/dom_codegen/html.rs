@@ -114,13 +114,17 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                 // walk-up dispatch.
                 let data_attr = match event_name.as_str() {
                     "ondragstart" => "data-ondragstart",
+                    "ondragmove" => "data-ondragmove",
                     "ondragend" => "data-ondragend",
                     "ondrop" => "data-ondrop",
                     "ondragenter" => "data-ondragenter",
+                    "ondragover" => "data-ondragover",
                     "ondragleave" => "data-ondragleave",
                     "onfiledragenter" => "data-onfiledragenter",
                     "onfiledragleave" => "data-onfiledragleave",
                     "oncontextmenu" => "data-oncontextmenu",
+                    "onmouseenter" => "data-onenter",
+                    "onmouseleave" => "data-onleave",
                     _ => "data-rid", // onclick and all other events
                 };
                 quote! {
