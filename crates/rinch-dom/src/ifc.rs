@@ -515,7 +515,7 @@ impl RinchDocument {
                 self.tree
                     .nodes
                     .get(c)
-                    .map(|n| n.is_inline())
+                    .map(|n| n.is_inline() && !n.is_comment())
                     .unwrap_or(false)
             });
             let has_block = node.children.iter().any(|&c| {
@@ -535,12 +535,14 @@ impl RinchDocument {
             let mut current_run: Vec<usize> = Vec::new();
 
             for &child_id in &node.children {
-                let is_inline = self
-                    .tree
-                    .nodes
-                    .get(child_id)
-                    .map(|c| c.is_inline())
-                    .unwrap_or(false);
+                let child = self.tree.nodes.get(child_id);
+                let is_comment = child.map(|c| c.is_comment()).unwrap_or(false);
+                // Skip comments — they have no Taffy node and should not
+                // trigger anonymous block box creation.
+                if is_comment {
+                    continue;
+                }
+                let is_inline = child.map(|c| c.is_inline()).unwrap_or(false);
                 if is_inline {
                     current_run.push(child_id);
                 } else if !current_run.is_empty() {

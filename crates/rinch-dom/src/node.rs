@@ -552,6 +552,11 @@ impl Node {
             _ => false,
         }
     }
+
+    /// Whether this node is a comment node.
+    pub fn is_comment(&self) -> bool {
+        matches!(&self.kind, NodeKind::Comment(_))
+    }
 }
 
 /// Default display mode based on HTML tag name.
