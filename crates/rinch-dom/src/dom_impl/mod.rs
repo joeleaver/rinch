@@ -233,6 +233,20 @@ impl RinchDocument {
         }
     }
 
+    /// Mark a node and its entire subtree as paint-dirty.
+    ///
+    /// Used before removing nodes so the dirty region includes the old layout
+    /// positions, ensuring borders, backgrounds, and other visuals are cleared.
+    pub(crate) fn mark_subtree_paint_dirty(&mut self, node_id: usize) {
+        if self.tree.contains(node_id) {
+            self.tree.paint_dirty_nodes.push(node_id);
+            let children = self.tree.nodes[node_id].children.clone();
+            for child_id in children {
+                self.mark_subtree_paint_dirty(child_id);
+            }
+        }
+    }
+
     /// Invalidate cached Stylo element data for all descendants of `node_id`.
     /// Used when a parent's class or interaction state changes, since descendant
     /// selectors (e.g. `.parent--active .child`) require descendants to be

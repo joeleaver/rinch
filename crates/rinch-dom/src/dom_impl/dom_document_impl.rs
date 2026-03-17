@@ -259,6 +259,11 @@ impl DomDocument for RinchDocument {
     }
 
     fn remove_node(&mut self, node: NodeId) {
+        // Mark the removed subtree as paint-dirty so the dirty region
+        // includes the old layout positions (e.g., borders, backgrounds).
+        // Without this, the old pixels aren't cleared on repaint.
+        self.mark_subtree_paint_dirty(node.0);
+
         self.clear_ifc_root_recursive(node.0);
         if let Some(parent_id) = self.tree.nodes[node.0].parent {
             self.tree.nodes[parent_id].children.retain(|&x| x != node.0);
