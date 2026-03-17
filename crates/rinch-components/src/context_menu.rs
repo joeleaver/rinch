@@ -73,8 +73,15 @@ impl Component for ContextMenu {
         overlay.set_attribute("data-rid", &close_handler_id.0.to_string());
 
         // Dropdown container — sibling of overlay so clicks inside it
-        // don't bubble to the overlay's close handler
+        // don't bubble to the overlay's close handler.
+        // Has its own close handler so the menu dismisses when an item is clicked.
         let dropdown = rinch_macros::rsx! { div { class: "rinch-context-menu__dropdown" } };
+        let dropdown_close_id = __scope.register_handler({
+            move || {
+                opened.set(false);
+            }
+        });
+        dropdown.set_attribute("data-rid", &dropdown_close_id.0.to_string());
 
         // Append remaining children (ContextMenuDropdown contents) into the dropdown
         for child in children.iter().skip(1) {
