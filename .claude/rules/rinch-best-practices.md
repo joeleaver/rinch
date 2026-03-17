@@ -38,7 +38,7 @@ Applies to text, attributes, styles, classes — anything with `.get()` in rsx n
 
 ### 2. Don't manually wrap rsx props
 
-The `rsx!` macro auto-wraps. Manual wrapping double-wraps and causes confusing type errors.
+The `rsx!` macro auto-wraps. Manual wrapping double-wraps and causes confusing type errors. The fallback codegen uses `.into()`, so bare values auto-wrap into `Option<T>` fields.
 
 ```rust
 // WRONG                                    // CORRECT
@@ -47,6 +47,8 @@ Alert { icon: Some(Icon::Check) }           // Alert { icon: Icon::Check }
 TextInput { value_fn: Some(Rc::new(..)) }   // TextInput { value_fn: move || text.get() }
 Button { variant: Some("filled".into()) }   // Button { variant: "filled" }
 ```
+
+**Exception:** `Option<Rc<dyn Fn(...)>>` props (e.g., `data_source`, `render_node`) still need `Some(Rc::new(...))` because `.into()` can't trigger Rust's unsizing coercion.
 
 ### 3. Signal and Memo are Copy — don't clone
 
@@ -95,7 +97,7 @@ input { oninput: move |value: String| name.set(value) }
 
 Before finishing any rinch code change, verify:
 - Every `.get()` in rsx is inside `{|| ...}` (unless intentionally static)
-- No `Some()`, `Rc::new()`, `Callback::new()` wrapping in rsx props
+- No `Some()`, `Rc::new()`, `Callback::new()` wrapping in rsx props (except `Option<Rc<dyn Fn(...)>>` which needs `Some(Rc::new(...))`)
 - No `.clone()` on Signals/Memos
 - String literals for text props, not `Some(String::from(...))`
 - Controlled inputs have both `value_fn` and `oninput`
