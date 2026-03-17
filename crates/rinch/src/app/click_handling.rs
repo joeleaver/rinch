@@ -17,9 +17,10 @@ impl RinchApp {
         button: MouseButton,
     ) -> Vec<AppAction> {
         let mut actions = Vec::new();
-        let Some(doc) = &self.doc else {
+        let Some(doc) = self.doc.clone() else {
             return actions;
         };
+        let doc = &doc;
 
         // ── Phase 0: render surface detection ────────────────────────
         // Check if the click lands on a render surface. If so, dispatch
@@ -284,6 +285,53 @@ impl RinchApp {
             }
             CeAction::NoHit => {
                 return actions;
+            }
+        }
+
+        // ── Phase 2.5: selectable text detection ─────────────────────
+        // If we didn't land on a CE element, check if we hit selectable text.
+        // Gather data from the doc borrow, then mutate after dropping the borrow.
+        enum TextSelAction {
+            StartSelection { ifc_node_id: usize, offset: usize },
+            Clear,
+        }
+        let text_sel_action = {
+            let d = doc.borrow();
+            if let Some(hit_id) = hit_test(&d.tree, x, y) {
+                if let Some(ifc_node_id) = Self::find_selectable_ifc(&d.tree, hit_id) {
+                    let offset = Self::compute_ifc_offset_from_click(&d.tree, ifc_node_id, x, y);
+                    TextSelAction::StartSelection {
+                        ifc_node_id,
+                        offset,
+                    }
+                } else {
+                    TextSelAction::Clear
+                }
+            } else {
+                TextSelAction::Clear
+            }
+        };
+        match text_sel_action {
+            TextSelAction::StartSelection {
+                ifc_node_id,
+                offset,
+            } => {
+                let prev_ifc = self.text_selection.as_ref().map(|s| s.ifc_node_id);
+                if prev_ifc.is_some() && prev_ifc != Some(ifc_node_id) {
+                    self.clear_text_selection();
+                }
+                self.text_selection = Some(TextSelection {
+                    ifc_node_id,
+                    anchor_offset: offset,
+                    focus_offset: offset,
+                });
+                self.text_selecting = true;
+                self.set_text_selection_attributes(ifc_node_id, offset, offset);
+                self.scene_dirty = true;
+                actions.push(AppAction::RequestRedraw);
+            }
+            TextSelAction::Clear => {
+                self.clear_text_selection();
             }
         }
 

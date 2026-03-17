@@ -4,7 +4,7 @@ impl RinchApp {
     // ── Cursor / position helpers ────────────────────────────────────────
 
     /// Compute the absolute position of a node by walking up through parents.
-    pub(super) fn compute_absolute_position(
+    pub(in crate::app) fn compute_absolute_position(
         tree: &rinch_dom::NodeTree,
         node_id: usize,
     ) -> (f32, f32) {

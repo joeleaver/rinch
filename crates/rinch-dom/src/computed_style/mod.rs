@@ -136,6 +136,9 @@ pub struct ComputedStyle {
     // Pointer events
     pub pointer_events: PointerEventsValue,
 
+    // User select
+    pub user_select: UserSelectValue,
+
     // Typography
     pub font_size: f32,
     pub font_weight: f32,
@@ -256,6 +259,7 @@ impl Default for ComputedStyle {
 
             cursor: CursorValue::default(),
             pointer_events: PointerEventsValue::default(),
+            user_select: UserSelectValue::default(),
 
             font_size: 16.0,
             font_weight: 400.0,

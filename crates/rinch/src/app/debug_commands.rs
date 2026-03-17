@@ -254,6 +254,7 @@ impl RinchApp {
                 rinch_core::finish_drag(x, y);
                 self.scrollbar_drag = None;
                 self.ce_selecting = false;
+                self.text_selecting = false;
                 actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
             }
@@ -355,6 +356,29 @@ impl RinchApp {
                             ce_node_id, true, new_cursor, anchor,
                         );
                         self.scene_dirty = true;
+                        actions.push(AppAction::RequestRedraw);
+                        return DebugResult::Json { data: json!(null) };
+                    }
+                }
+
+                // Handle read-only text selection drag
+                if self.text_selecting {
+                    if let Some(sel) = &self.text_selection {
+                        let ifc_node_id = sel.ifc_node_id;
+                        let anchor = sel.anchor_offset;
+                        let new_offset = if let Some(doc) = &self.doc {
+                            let d = doc.borrow();
+                            Self::compute_ifc_offset_from_click(&d.tree, ifc_node_id, x, y)
+                        } else {
+                            anchor
+                        };
+                        if let Some(sel) = &mut self.text_selection {
+                            sel.focus_offset = new_offset;
+                        }
+                        self.set_text_selection_attributes(ifc_node_id, anchor, new_offset);
+                        self.scene_dirty = true;
+                        let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+                        self.resolve_and_repaint(w, h);
                         actions.push(AppAction::RequestRedraw);
                         return DebugResult::Json { data: json!(null) };
                     }

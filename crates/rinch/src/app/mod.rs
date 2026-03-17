@@ -13,6 +13,7 @@ mod debug_commands;
 mod event_dispatch;
 pub(crate) mod hit_testing;
 mod html_parser;
+mod text_selection;
 
 use contenteditable::*;
 pub(crate) use hit_testing::*;
@@ -83,6 +84,18 @@ pub(crate) struct ActiveDrag {
 
 /// Movement threshold in physical pixels before a drag activates.
 const DRAG_THRESHOLD: f32 = 5.0;
+
+// ── Read-only text selection ────────────────────────────────────────────────
+
+/// State for read-only text selection (non-contenteditable).
+pub(crate) struct TextSelection {
+    /// The IFC root node where the selection lives (the block element containing the text).
+    pub(crate) ifc_node_id: usize,
+    /// Selection anchor (byte offset in IFC flat text, set on mousedown).
+    pub(crate) anchor_offset: usize,
+    /// Selection focus/cursor (byte offset, updated on mousemove).
+    pub(crate) focus_offset: usize,
+}
 
 // ── ScrollbarDrag ────────────────────────────────────────────────────────────
 
@@ -175,6 +188,10 @@ pub struct RinchApp {
     pub(crate) ce_scroll_pending: Cell<bool>,
     /// The render surface ID currently under the mouse cursor (for enter/leave events).
     pub(crate) hovered_surface: Option<usize>,
+    /// State for read-only text selection (non-contenteditable).
+    pub(crate) text_selection: Option<TextSelection>,
+    /// Whether we're currently mouse-drag selecting text (read-only, non-CE).
+    pub(crate) text_selecting: bool,
     /// Node ID of the current file-drop hover target (for enter/leave during OS drag).
     pub(crate) file_hover_target: Option<usize>,
     /// Inspect highlight rectangle (absolute x, y, w, h in logical pixels).
@@ -225,6 +242,8 @@ impl RinchApp {
             ce_selecting: false,
             ce_scroll_pending: Cell::new(false),
             hovered_surface: None,
+            text_selection: None,
+            text_selecting: false,
             file_hover_target: None,
             inspect_highlight: None,
             pending_fonts: Vec::new(),
@@ -938,6 +957,15 @@ impl RinchApp {
         self.handle_input_edit_command(EditCommand::SelectAll);
     }
     fn handle_copy(&mut self) {
+        // Check for read-only text selection first
+        if self
+            .text_selection
+            .as_ref()
+            .is_some_and(|s| s.anchor_offset != s.focus_offset)
+        {
+            self.copy_text_selection();
+            return;
+        }
         self.handle_input_edit_command(EditCommand::Copy);
     }
     fn handle_paste(&mut self) {

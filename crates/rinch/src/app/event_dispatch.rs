@@ -211,15 +211,43 @@ impl RinchApp {
                     }
                 }
 
+                // Handle read-only text selection drag
+                if self.text_selecting {
+                    if let Some(sel) = &self.text_selection {
+                        let ifc_node_id = sel.ifc_node_id;
+                        let anchor = sel.anchor_offset;
+                        let new_offset = if let Some(doc) = &self.doc {
+                            let d = doc.borrow();
+                            Self::compute_ifc_offset_from_click(&d.tree, ifc_node_id, x, y)
+                        } else {
+                            anchor
+                        };
+                        if let Some(sel) = &mut self.text_selection {
+                            sel.focus_offset = new_offset;
+                        }
+                        self.set_text_selection_attributes(ifc_node_id, anchor, new_offset);
+                        self.scene_dirty = true;
+                        actions.push(AppAction::SetCursor(rinch_platform::CursorStyle::Text));
+                        actions.push(AppAction::RequestRedraw);
+                        return actions;
+                    }
+                }
+
                 // Update hover state and cursor
                 if let Some(doc) = &self.doc {
                     let (hovered, cursor_style, old_hovered) = {
                         let d = doc.borrow();
                         let h = hit_test(&d.tree, x, y);
-                        let cs = h
+                        let mut cs = h
                             .and_then(|id| d.tree.get(id))
                             .map(|n| cursor_value_to_style(&n.computed_style.cursor))
                             .unwrap_or(rinch_platform::CursorStyle::Default);
+                        // Override cursor to I-beam when hovering over selectable text
+                        if let Some(hit_id) = h {
+                            if Self::find_selectable_ifc(&d.tree, hit_id).is_some() {
+                                cs = rinch_platform::CursorStyle::Text;
+                            }
+                        }
                         (h, cs, d.tree.hovered_node)
                     };
                     let mut hovered_changed = false;
@@ -493,6 +521,7 @@ impl RinchApp {
                 rinch_core::finish_drag(x, y);
                 self.scrollbar_drag = None;
                 self.ce_selecting = false;
+                self.text_selecting = false;
 
                 // Clear :active pseudo-class state on mouse release.
                 // Don't request redraw — AboutToWait batches dirty state.

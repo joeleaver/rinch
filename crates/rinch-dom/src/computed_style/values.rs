@@ -926,6 +926,36 @@ impl ObjectFitValue {
     }
 }
 
+/// CSS `user-select` property values.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub enum UserSelectValue {
+    #[default]
+    Auto,
+    Text,
+    None,
+    All,
+    Contain,
+}
+
+impl UserSelectValue {
+    /// Parse from CSS string value.
+    pub fn parse(value: &str) -> Self {
+        match value.trim() {
+            "text" => Self::Text,
+            "none" => Self::None,
+            "all" => Self::All,
+            "contain" => Self::Contain,
+            _ => Self::Auto,
+        }
+    }
+
+    /// Whether text is selectable (resolves `auto` as `none` —
+    /// UA stylesheet sets `text` on code/pre explicitly).
+    pub fn is_selectable(&self) -> bool {
+        matches!(self, Self::Text | Self::All | Self::Contain)
+    }
+}
+
 /// CSS background value — solid color, gradient, or image URL.
 #[derive(Debug, Clone, Default, Serialize)]
 pub enum BackgroundValue {

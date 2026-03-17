@@ -1290,6 +1290,54 @@ fn paint_node(
                 }
             }
 
+            // Render read-only text selection highlight (user-select: text)
+            if node
+                .attributes
+                .get("data-text-sel")
+                .map(|s| s == "true")
+                .unwrap_or(false)
+            {
+                let sel_start = node
+                    .attributes
+                    .get("data-text-sel-start")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let sel_end = node
+                    .attributes
+                    .get("data-text-sel-end")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(0);
+
+                if sel_start != sel_end {
+                    if let Some(ref inline_layout) = node.text_layout {
+                        let cs = &node.computed_style;
+                        let pad_x =
+                            (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64 * scale;
+                        let pad_y =
+                            (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64 * scale;
+                        let text_x = x + pad_x;
+                        let text_y = y + pad_y;
+                        let text_len = inline_layout.text_content.len();
+                        let content_width = node.layout.width as f64 * scale
+                            - (cs.padding_left.to_px() + cs.padding_right.to_px()) as f64 * scale;
+                        paint_contenteditable_cursor(
+                            node,
+                            painter,
+                            scale,
+                            text_x,
+                            text_y,
+                            &inline_layout.layout,
+                            text_len,
+                            sel_start,
+                            sel_end,
+                            None, // no caret for read-only selection
+                            content_width,
+                            node_transform,
+                        );
+                    }
+                }
+            }
+
             // Check if this is an IFC root with a cached inline layout
             if let Some(inline_layout) = &node.text_layout {
                 // Paint inline content at the content-box origin (inside padding+border),

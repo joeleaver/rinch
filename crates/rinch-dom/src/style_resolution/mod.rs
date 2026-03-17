@@ -376,7 +376,24 @@ impl RinchDocument {
                 }
                 Some("u" | "ins") => new_style.text_decoration.underline = true,
                 Some("s" | "strike" | "del") => new_style.text_decoration.strikethrough = true,
+                Some("code" | "pre" | "kbd" | "samp") => {
+                    new_style.user_select = crate::computed_style::UserSelectValue::Text;
+                }
                 _ => {}
+            }
+
+            // Check inline style for user-select override (Stylo servo build
+            // doesn't handle this property).
+            if let Some(style_str) = node.attributes.get("style") {
+                for part in style_str.split(';') {
+                    let part = part.trim();
+                    if let Some((key, value)) = part.split_once(':') {
+                        if key.trim() == "user-select" {
+                            new_style.user_select =
+                                crate::computed_style::UserSelectValue::parse(value);
+                        }
+                    }
+                }
             }
 
             // Extract transition specs from Stylo
