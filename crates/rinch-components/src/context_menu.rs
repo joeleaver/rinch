@@ -19,6 +19,7 @@
 //! ```
 
 use rinch_core::dom::{NodeHandle, RenderScope};
+use rinch_core::events::{EventHandlerId, dispatch_event};
 use rinch_core::{Component, Signal};
 
 /// A context menu component that shows on right-click.
@@ -74,19 +75,18 @@ impl Component for ContextMenu {
 
         // Dropdown container — sibling of overlay so clicks inside it
         // don't bubble to the overlay's close handler.
-        // Has its own close handler so the menu dismisses when an item is clicked.
         let dropdown = rinch_macros::rsx! { div { class: "rinch-context-menu__dropdown" } };
-        let dropdown_close_id = __scope.register_handler({
-            move || {
-                opened.set(false);
-            }
-        });
-        dropdown.set_attribute("data-rid", &dropdown_close_id.0.to_string());
 
         // Append remaining children (ContextMenuDropdown contents) into the dropdown
         for child in children.iter().skip(1) {
             dropdown.append_child(child);
         }
+
+        // Wrap every data-rid handler inside the dropdown so that clicking
+        // a menu item also closes the context menu. Rinch's data-rid dispatch
+        // only fires the nearest handler (no bubbling), so we intercept each
+        // item's handler and chain our close logic onto it.
+        wrap_handlers_recursive(__scope, &dropdown, opened);
 
         portal.append_child(&overlay);
         portal.append_child(&dropdown);
@@ -183,5 +183,23 @@ impl Component for ContextMenuDropdown {
         }
 
         dropdown
+    }
+}
+
+/// Recursively walk the DOM subtree and wrap every `data-rid` handler so that
+/// it also sets `opened` to false — closing the context menu on item click.
+fn wrap_handlers_recursive(scope: &mut RenderScope, node: &NodeHandle, opened: Signal<bool>) {
+    if let Some(rid_str) = node.get_attribute("data-rid") {
+        if let Ok(original_id) = rid_str.parse::<usize>() {
+            let original = EventHandlerId(original_id);
+            let new_id = scope.register_handler(move || {
+                dispatch_event(original);
+                opened.set(false);
+            });
+            node.set_attribute("data-rid", &new_id.0.to_string());
+        }
+    }
+    for child in node.children() {
+        wrap_handlers_recursive(scope, &child, opened);
     }
 }
