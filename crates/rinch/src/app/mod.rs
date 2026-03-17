@@ -396,8 +396,43 @@ impl RinchApp {
         }
 
         self.scene_dirty = true;
-        self.doc = Some(doc);
+        self.doc = Some(doc.clone());
         self._render_scope = Some(scope);
+
+        // Register CE API factory so contenteditable elements can be
+        // accessed via NodeHandle::with_ce_api() before they gain focus.
+        let weak_doc = Rc::downgrade(&doc);
+        rinch_core::set_ce_api_factory(move |node_id: usize| {
+            let doc = weak_doc.upgrade()?;
+            // Verify this node has contenteditable="true"
+            let is_ce = {
+                let d = doc.borrow();
+                d.tree
+                    .get(node_id)
+                    .and_then(|n| n.attributes.get("contenteditable"))
+                    .map(|v| v == "true" || v.is_empty())
+                    .unwrap_or(false)
+            };
+            if !is_ce {
+                return None;
+            }
+            // Create CeOps with cursor at first text node (or element root)
+            let cursor = {
+                let d = doc.borrow();
+                Self::first_text_cursor(&d.tree, node_id)
+                    .map(|c| rinch_core::ce::DomCursor {
+                        node_id: c.node_id,
+                        offset: c.offset,
+                    })
+                    .unwrap_or(rinch_core::ce::DomCursor { node_id, offset: 0 })
+            };
+            let ops = Rc::new(RefCell::new(crate::ce_ops::CeOps::new(
+                doc.clone(),
+                node_id,
+                cursor,
+            )));
+            Some(ops as Rc<RefCell<dyn rinch_core::ContentEditableApi>>)
+        });
     }
 
     // ── Layout / repaint ─────────────────────────────────────────────────
@@ -1275,6 +1310,7 @@ impl RinchApp {
             };
             let ops = Rc::new(RefCell::new(CeOps::new(doc.clone(), ce_node_id, ce_cursor)));
             ce::set_active_ce_api(ops.clone());
+            ce::register_ce_api(ce_node_id, ops.clone());
             self.ce_ops = Some(ops);
         }
     }

@@ -422,6 +422,12 @@ pub trait ContentEditableApi {
     /// The HTML is parsed and inserted as proper CE content with cursor reset.
     ///
     /// ```ignore
+    /// // Via NodeHandle (works before focus — recommended):
+    /// editor_div.with_ce_api(|api| {
+    ///     api.borrow_mut().load_html("<p>Hello <strong>world</strong></p>");
+    /// });
+    ///
+    /// // Via active CE API (requires focus):
     /// ce_do(|api| api.load_html("<p>Hello <strong>world</strong></p>"));
     /// ```
     fn load_html(&mut self, _html: &str) {}
@@ -511,6 +517,83 @@ where
         let borrow = a.borrow();
         borrow.as_ref().map(f)
     })
+}
+
+// ============================================================================
+// Per-Element CE API Registry
+// ============================================================================
+
+type CeApiFactory = Box<dyn Fn(usize) -> Option<Rc<RefCell<dyn ContentEditableApi>>>>;
+
+thread_local! {
+    /// Per-element CE API instances, keyed by node ID.
+    static CE_API_REGISTRY: RefCell<HashMap<usize, Rc<RefCell<dyn ContentEditableApi>>>> =
+        RefCell::new(HashMap::new());
+
+    /// Factory for lazily creating CE API instances.
+    ///
+    /// Registered by the rinch runtime at startup. Creates a CeOps for a
+    /// contenteditable element that hasn't been focused yet.
+    static CE_API_FACTORY: RefCell<Option<CeApiFactory>> = RefCell::new(None);
+}
+
+/// Register a factory for creating CE API instances on demand.
+///
+/// Called by the rinch runtime at startup. The factory receives a node ID
+/// and returns a CeOps if that node is a contenteditable element.
+pub fn set_ce_api_factory(
+    factory: impl Fn(usize) -> Option<Rc<RefCell<dyn ContentEditableApi>>> + 'static,
+) {
+    CE_API_FACTORY.with(|f| {
+        *f.borrow_mut() = Some(Box::new(factory));
+    });
+}
+
+/// Register a CE API instance for a specific element.
+///
+/// Called when a contenteditable element gains focus (to cache the CeOps)
+/// or by the factory on first access.
+pub fn register_ce_api(node_id: usize, api: Rc<RefCell<dyn ContentEditableApi>>) {
+    CE_API_REGISTRY.with(|r| {
+        r.borrow_mut().insert(node_id, api);
+    });
+}
+
+/// Remove a CE API instance for an element (e.g., when the element is removed from the DOM).
+pub fn unregister_ce_api(node_id: usize) {
+    CE_API_REGISTRY.with(|r| {
+        r.borrow_mut().remove(&node_id);
+    });
+}
+
+/// Execute a closure with the CE API for a specific element.
+///
+/// If no CeOps exists yet for this element, the factory creates one lazily.
+/// Returns `Some(result)` if a CE API was available or could be created.
+pub fn with_ce_api_for_node<F, R>(node_id: usize, f: F) -> Option<R>
+where
+    F: FnOnce(&Rc<RefCell<dyn ContentEditableApi>>) -> R,
+{
+    // Check registry first
+    let existing = CE_API_REGISTRY.with(|r| r.borrow().get(&node_id).cloned());
+    if let Some(api) = existing {
+        return Some(f(&api));
+    }
+
+    // Try factory for lazy creation
+    let created = CE_API_FACTORY.with(|fac| {
+        let borrow = fac.borrow();
+        borrow.as_ref().and_then(|factory| factory(node_id))
+    });
+
+    if let Some(api) = created {
+        CE_API_REGISTRY.with(|r| {
+            r.borrow_mut().insert(node_id, api.clone());
+        });
+        Some(f(&api))
+    } else {
+        None
+    }
 }
 
 // ============================================================================

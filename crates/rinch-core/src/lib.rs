@@ -73,7 +73,8 @@ pub use dom::{
 pub use ce::{
     CeEvent, CeEventCallback, CeEventDispatcher, CeSelection, ContentEditableApi, DomCursor,
     ce_event_listener_count, clear_active_ce_api, clear_ce_event_listeners, dispatch_ce_event,
-    set_active_ce_api, subscribe_ce_events, with_active_ce_api,
+    register_ce_api, set_active_ce_api, set_ce_api_factory, subscribe_ce_events, unregister_ce_api,
+    with_active_ce_api, with_ce_api_for_node,
 };
 
 use std::cell::RefCell;
