@@ -481,6 +481,71 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_style(&mut self, node: NodeId, property: &str, value: &str) {
+        // ── Fast path: inset-only changes on absolute/fixed elements ─────
+        // Changing left/top/right/bottom on an out-of-flow element only moves
+        // it within its containing block — children and siblings are unaffected.
+        // Skip Stylo re-parse and style resolution; update ComputedStyle and
+        // Taffy directly.
+        if matches!(property, "left" | "top" | "right" | "bottom")
+            && matches!(
+                self.tree.nodes[node.0].computed_style.position,
+                crate::computed_style::PositionValue::Absolute
+                    | crate::computed_style::PositionValue::Fixed
+            )
+        {
+            // Update the style attribute string (for consistency / serialization)
+            let mut styles: HashMap<String, String> = self.tree.nodes[node.0]
+                .attributes
+                .get("style")
+                .map(|s| parse_style_string(s))
+                .unwrap_or_default();
+            styles.insert(property.to_string(), value.to_string());
+            let style_str = styles
+                .iter()
+                .map(|(k, v)| format!("{}: {}", k, v))
+                .collect::<Vec<_>>()
+                .join("; ");
+            self.tree.nodes[node.0]
+                .attributes
+                .insert("style".to_string(), style_str);
+
+            // Update ComputedStyle directly
+            let vp = &crate::layout::Viewport::default();
+            let new_val = crate::computed_style::LengthPercentageAutoValue::parse(value, vp);
+            match property {
+                "left" => self.tree.nodes[node.0].computed_style.left = new_val,
+                "top" => self.tree.nodes[node.0].computed_style.top = new_val,
+                "right" => self.tree.nodes[node.0].computed_style.right = new_val,
+                "bottom" => self.tree.nodes[node.0].computed_style.bottom = new_val,
+                _ => unreachable!(),
+            }
+
+            // Update Taffy inset directly (skip full style resolution)
+            if let Some(taffy_id) = self.tree.nodes[node.0].taffy_id {
+                if let Ok(mut taffy_style) = self.tree.taffy.style(taffy_id).cloned() {
+                    let taffy_val = new_val.to_taffy();
+                    match property {
+                        "left" => taffy_style.inset.left = taffy_val,
+                        "top" => taffy_style.inset.top = taffy_val,
+                        "right" => taffy_style.inset.right = taffy_val,
+                        "bottom" => taffy_style.inset.bottom = taffy_val,
+                        _ => unreachable!(),
+                    }
+                    let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
+                    self.tree.layout_dirty = true;
+                }
+            }
+
+            // Mark paint dirty (position changed, need repaint) but skip STYLE
+            // flag — no Stylo re-resolution needed.
+            self.tree.nodes[node.0]
+                .dirty
+                .insert(DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+            self.tree.dirty_nodes.insert(node.0);
+            return;
+        }
+
+        // ── Normal path: full Stylo re-parse ─────────────────────────────
         let mut styles: HashMap<String, String> = self.tree.nodes[node.0]
             .attributes
             .get("style")
@@ -537,6 +602,86 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_styles(&mut self, node: NodeId, properties: &[(&str, &str)]) {
+        // ── Fast path: inset-only batch on absolute/fixed elements ────────
+        let all_inset = !properties.is_empty()
+            && properties
+                .iter()
+                .all(|(p, _)| matches!(*p, "left" | "top" | "right" | "bottom"));
+        let is_out_of_flow = matches!(
+            self.tree.nodes[node.0].computed_style.position,
+            crate::computed_style::PositionValue::Absolute
+                | crate::computed_style::PositionValue::Fixed
+        );
+
+        if all_inset && is_out_of_flow {
+            // Update style attribute string
+            let mut styles: HashMap<String, String> = self.tree.nodes[node.0]
+                .attributes
+                .get("style")
+                .map(|s| parse_style_string(s))
+                .unwrap_or_default();
+            for &(property, value) in properties {
+                styles.insert(property.to_string(), value.to_string());
+            }
+            let style_str = styles
+                .iter()
+                .map(|(k, v)| format!("{}: {}", k, v))
+                .collect::<Vec<_>>()
+                .join("; ");
+            self.tree.nodes[node.0]
+                .attributes
+                .insert("style".to_string(), style_str);
+
+            // Update ComputedStyle + Taffy directly
+            let vp = &crate::layout::Viewport::default();
+            let mut taffy_style = self.tree.nodes[node.0]
+                .taffy_id
+                .and_then(|id| self.tree.taffy.style(id).cloned().ok());
+
+            for &(property, value) in properties {
+                let new_val = crate::computed_style::LengthPercentageAutoValue::parse(value, vp);
+                match property {
+                    "left" => {
+                        self.tree.nodes[node.0].computed_style.left = new_val;
+                        if let Some(ref mut ts) = taffy_style {
+                            ts.inset.left = new_val.to_taffy();
+                        }
+                    }
+                    "top" => {
+                        self.tree.nodes[node.0].computed_style.top = new_val;
+                        if let Some(ref mut ts) = taffy_style {
+                            ts.inset.top = new_val.to_taffy();
+                        }
+                    }
+                    "right" => {
+                        self.tree.nodes[node.0].computed_style.right = new_val;
+                        if let Some(ref mut ts) = taffy_style {
+                            ts.inset.right = new_val.to_taffy();
+                        }
+                    }
+                    "bottom" => {
+                        self.tree.nodes[node.0].computed_style.bottom = new_val;
+                        if let Some(ref mut ts) = taffy_style {
+                            ts.inset.bottom = new_val.to_taffy();
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+
+            if let (Some(taffy_id), Some(ts)) = (self.tree.nodes[node.0].taffy_id, taffy_style) {
+                let _ = self.tree.taffy.set_style(taffy_id, ts);
+                self.tree.layout_dirty = true;
+            }
+
+            self.tree.nodes[node.0]
+                .dirty
+                .insert(DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+            self.tree.dirty_nodes.insert(node.0);
+            return;
+        }
+
+        // ── Normal path ──────────────────────────────────────────────────
         let mut styles: HashMap<String, String> = self.tree.nodes[node.0]
             .attributes
             .get("style")
