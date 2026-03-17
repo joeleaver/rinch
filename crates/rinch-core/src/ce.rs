@@ -416,6 +416,16 @@ pub trait ContentEditableApi {
     /// Replace CE content with structured blocks.
     fn load_content(&mut self, _blocks: &[BlockData]) {}
 
+    /// Replace CE content by parsing an HTML string.
+    ///
+    /// This is the simplest way to load content into a contentEditable element.
+    /// The HTML is parsed and inserted as proper CE content with cursor reset.
+    ///
+    /// ```ignore
+    /// ce_do(|api| api.load_html("<p>Hello <strong>world</strong></p>"));
+    /// ```
+    fn load_html(&mut self, _html: &str) {}
+
     // ── Formatting ────────────────────────────────────────────────────
 
     /// Remove all inline formatting from the current selection.

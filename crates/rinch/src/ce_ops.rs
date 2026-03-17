@@ -3876,6 +3876,34 @@ impl ContentEditableApi for CeOps {
         self.anchor = self.cursor;
     }
 
+    fn load_html(&mut self, html: &str) {
+        let ce_root = self.ce_node_id;
+        {
+            let mut d = self.doc.borrow_mut();
+            d.set_inner_html(rinch_core::dom::NodeId(ce_root), html);
+
+            // If the HTML was empty or produced no children, ensure at least
+            // one empty paragraph so the CE element remains editable.
+            if d.tree.nodes[ce_root].children.is_empty() {
+                let p = d.create_element("p");
+                d.append_child(rinch_core::dom::NodeId(ce_root), p);
+                let text = d.create_text("");
+                d.append_child(p, text);
+                self.cursor = DomCursor::new(text.0, 0);
+                self.anchor = self.cursor;
+                return;
+            }
+        }
+        // Set cursor to start of first text node
+        let d = self.doc.borrow();
+        if let Some(cursor) = RinchApp::first_text_cursor(&d.tree, ce_root) {
+            self.cursor = cursor;
+        } else {
+            self.cursor = DomCursor::new(ce_root, 0);
+        }
+        self.anchor = self.cursor;
+    }
+
     fn clear_formatting(&mut self) {
         if self.cursor == self.anchor {
             return;
