@@ -1,8 +1,9 @@
 //! Audio output (speaker playback).
 //!
 //! Open an output stream with a callback that fills sample buffers.
-//! The callback runs on cpal's audio thread — avoid blocking, allocations,
-//! or locking inside it. Use lock-free data structures to feed audio data.
+//! The callback runs on cpal's audio thread (desktop) or ScriptProcessorNode
+//! handler (WASM) — avoid blocking, allocations, or locking inside it.
+//! Use lock-free data structures to feed audio data.
 //!
 //! # Example
 //!
@@ -49,13 +50,28 @@ impl Default for AudioOutputConfig {
 
 /// An active audio output stream.
 ///
-/// Dropping this stops playback. The underlying cpal stream is kept alive
-/// as long as this struct exists.
+/// Dropping this stops playback.
 pub struct AudioOutputStream {
-    // The cpal stream — must be kept alive for audio to play.
     #[cfg(all(not(target_arch = "wasm32"), feature = "audio"))]
     _stream: cpal::Stream,
+    #[cfg(target_arch = "wasm32")]
+    _wasm_state: Option<WasmAudioOutputState>,
     config: AudioOutputConfig,
+}
+
+#[cfg(target_arch = "wasm32")]
+struct WasmAudioOutputState {
+    audio_ctx: web_sys::AudioContext,
+    processor: web_sys::ScriptProcessorNode,
+    _closure: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::AudioProcessingEvent)>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Drop for WasmAudioOutputState {
+    fn drop(&mut self) {
+        let _ = self.processor.disconnect();
+        let _ = self.audio_ctx.close();
+    }
 }
 
 impl AudioOutputStream {
@@ -72,22 +88,72 @@ pub fn audio_output_devices() -> Result<Vec<DeviceInfo>, AvError> {
         crate::native::cpal_audio::enumerate_output_devices()
     }
 
-    #[cfg(not(all(not(target_arch = "wasm32"), feature = "audio")))]
+    #[cfg(target_arch = "wasm32")]
+    {
+        // Sync API returns empty on WASM. Use audio_output_devices_async() for full list.
+        Ok(Vec::new())
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), not(feature = "audio")))]
     {
         Err(AvError::Backend("audio feature not enabled".into()))
     }
 }
 
+/// Async version of audio output device enumeration for WASM.
+#[cfg(target_arch = "wasm32")]
+pub async fn audio_output_devices_async() -> Result<Vec<DeviceInfo>, AvError> {
+    use crate::device::DeviceKind;
+    use wasm_bindgen_futures::JsFuture;
+
+    let md = web_sys::window()
+        .ok_or_else(|| AvError::Backend("no window".into()))?
+        .navigator()
+        .media_devices()
+        .map_err(|_| AvError::Backend("mediaDevices not available".into()))?;
+
+    let promise = md
+        .enumerate_devices()
+        .map_err(|e| AvError::Backend(format!("enumerateDevices failed: {:?}", e)))?;
+    let result = JsFuture::from(promise)
+        .await
+        .map_err(|e| AvError::Backend(format!("enumerateDevices rejected: {:?}", e)))?;
+
+    let array: js_sys::Array = result.into();
+    let mut devices = Vec::new();
+    let mut idx = 0u32;
+    for item in array.iter() {
+        let info: web_sys::MediaDeviceInfo = item.into();
+        if info.kind() == web_sys::MediaDeviceKind::Audiooutput {
+            let device_id = info.device_id();
+            let label = info.label();
+            devices.push(DeviceInfo {
+                id: DeviceId(if device_id.is_empty() {
+                    format!("audiooutput-{}", idx)
+                } else {
+                    device_id
+                }),
+                name: if label.is_empty() {
+                    format!("Speaker {}", idx)
+                } else {
+                    label
+                },
+                kind: DeviceKind::AudioOutput,
+                is_default: idx == 0,
+            });
+            idx += 1;
+        }
+    }
+    Ok(devices)
+}
+
 /// Open the default audio output device.
 ///
-/// `fill` is called on the audio thread to fill each buffer with interleaved
-/// f32 samples in the range [-1.0, 1.0]. The buffer length depends on the
-/// configured buffer size and channel count.
+/// `fill` is called to fill each buffer with interleaved f32 samples
+/// in the range [-1.0, 1.0].
 ///
-/// **Audio thread safety:** The `fill` callback runs on a dedicated audio
-/// thread. Avoid blocking, heap allocation, or mutex locking inside it.
-/// Use lock-free structures (atomic, ring buffer) to communicate with the
-/// main thread.
+/// On WASM, this creates an `AudioContext` with a `ScriptProcessorNode`.
+/// Must be called from a user gesture context (the AudioContext requires it).
 pub fn open_audio_output(
     config: AudioOutputConfig,
     fill: impl FnMut(&mut [f32]) + Send + 'static,
@@ -108,7 +174,12 @@ pub fn open_audio_output(
         })
     }
 
-    #[cfg(not(all(not(target_arch = "wasm32"), feature = "audio")))]
+    #[cfg(target_arch = "wasm32")]
+    {
+        open_audio_output_wasm(config, fill)
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), not(feature = "audio")))]
     {
         let _ = (config, fill);
         Err(AvError::Backend("audio feature not enabled".into()))
@@ -139,9 +210,100 @@ pub fn open_audio_output_on(
         })
     }
 
-    #[cfg(not(all(not(target_arch = "wasm32"), feature = "audio")))]
+    #[cfg(target_arch = "wasm32")]
+    {
+        // On WASM, device selection for output is not well-supported by browsers.
+        // We ignore the device ID and use the default output.
+        let _ = device;
+        open_audio_output_wasm(config, fill)
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), not(feature = "audio")))]
     {
         let _ = (device, config, fill);
         Err(AvError::Backend("audio feature not enabled".into()))
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn open_audio_output_wasm(
+    config: AudioOutputConfig,
+    fill: impl FnMut(&mut [f32]) + Send + 'static,
+) -> Result<AudioOutputStream, AvError> {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::prelude::*;
+
+    let buffer_size = if config.buffer_size == 0 {
+        4096
+    } else {
+        config.buffer_size
+    };
+
+    // Create AudioContext
+    let ctx_opts = web_sys::AudioContextOptions::new();
+    ctx_opts.set_sample_rate(config.sample_rate as f32);
+    let audio_ctx = web_sys::AudioContext::new_with_context_options(&ctx_opts)
+        .map_err(|e| AvError::Backend(format!("Failed to create AudioContext: {:?}", e)))?;
+
+    let channels = config.channels as u32;
+
+    // Create ScriptProcessorNode for output
+    let processor = audio_ctx
+        .create_script_processor_with_buffer_size_and_number_of_input_channels_and_number_of_output_channels(
+            buffer_size,
+            0,        // no input channels
+            channels, // output channels
+        )
+        .map_err(|e| {
+            AvError::Backend(format!("Failed to create ScriptProcessorNode: {:?}", e))
+        })?;
+
+    // Set up the onaudioprocess handler
+    let fill = Rc::new(RefCell::new(fill));
+    let closure = Closure::<dyn FnMut(web_sys::AudioProcessingEvent)>::new({
+        let fill = fill.clone();
+        move |event: web_sys::AudioProcessingEvent| {
+            let output_buffer = match event.output_buffer() {
+                Ok(buf) => buf,
+                Err(_) => return,
+            };
+
+            let length = output_buffer.length() as usize;
+            let num_channels = output_buffer.number_of_channels() as usize;
+
+            // Create interleaved buffer for the fill callback
+            let total_samples = length * num_channels;
+            let mut interleaved = vec![0.0f32; total_samples];
+
+            (fill.borrow_mut())(&mut interleaved);
+
+            // De-interleave into per-channel output buffers
+            for ch in 0..num_channels {
+                if let Ok(mut channel_data) = output_buffer.get_channel_data(ch as u32) {
+                    for i in 0..length {
+                        channel_data[i] = interleaved[i * num_channels + ch];
+                    }
+                    let _ = output_buffer.copy_to_channel(&channel_data, ch as i32);
+                }
+            }
+        }
+    });
+
+    processor.set_onaudioprocess(Some(closure.as_ref().unchecked_ref()));
+
+    // Connect processor to destination (speakers)
+    let _ = processor.connect_with_audio_node(&audio_ctx.destination());
+
+    let state = WasmAudioOutputState {
+        audio_ctx,
+        processor,
+        _closure: closure,
+    };
+
+    Ok(AudioOutputStream {
+        _wasm_state: Some(state),
+        config,
+    })
 }

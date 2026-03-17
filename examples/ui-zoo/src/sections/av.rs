@@ -819,25 +819,30 @@ fn ScreenShareDemo() -> NodeHandle {
             let capture_ref = capture_ref.clone();
             let pipe_ref = pipe_ref.clone();
 
-            std::thread::spawn(
-                move || match ScreenCapture::start(CaptureConfig::default()) {
-                    Ok(capture) => {
-                        let pipe = capture.video_track().pipe_to(move |frame| {
-                            writer.submit_frame(&frame.data, frame.width, frame.height);
-                        });
-                        *pipe_ref.lock().unwrap() = Some(pipe);
-                        *capture_ref.lock().unwrap() = Some(capture);
-                        sharing_sig.send(true);
-                        status_sig.send("Sharing".into());
-                    }
-                    Err(rinch_screen_capture::CaptureError::Cancelled) => {
-                        status_sig.send("Cancelled".into());
-                    }
-                    Err(e) => {
-                        status_sig.send(format!("Error: {e}"));
-                    }
-                },
-            );
+            // On WASM, ScreenCapture::start() handles async internally,
+            // so no thread spawn needed. On desktop, use a thread to avoid
+            // blocking the UI while the portal dialog is open.
+            let start_capture = move || match ScreenCapture::start(CaptureConfig::default()) {
+                Ok(capture) => {
+                    let pipe = capture.video_track().pipe_to(move |frame| {
+                        writer.submit_frame(&frame.data, frame.width, frame.height);
+                    });
+                    *pipe_ref.lock().unwrap() = Some(pipe);
+                    *capture_ref.lock().unwrap() = Some(capture);
+                    sharing_sig.send(true);
+                    status_sig.send("Sharing".into());
+                }
+                Err(rinch_screen_capture::CaptureError::Cancelled) => {
+                    status_sig.send("Cancelled".into());
+                }
+                Err(e) => {
+                    status_sig.send(format!("Error: {e}"));
+                }
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            std::thread::spawn(start_capture);
+            #[cfg(target_arch = "wasm32")]
+            start_capture();
         }
     });
 

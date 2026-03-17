@@ -27,8 +27,11 @@ web-sys = { version = "0.3", features = [
     "DisplayMediaStreamConstraints",
     "HtmlVideoElement",
     "HtmlCanvasElement",
+    "HtmlElement",
+    "CssStyleDeclaration",
     "CanvasRenderingContext2d",
     "ImageData",
     "Document",
     "Window",
+    "Performance",
 ] }

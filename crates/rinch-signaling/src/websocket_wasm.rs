@@ -62,6 +62,20 @@ impl WebSocketSignaling {
     }
 }
 
+impl rinch_webrtc::SignalingIO for WebSocketSignaling {
+    fn send_msg(&self, msg: SignalingMessage) -> Result<(), String> {
+        SignalingChannel::send(self, msg).map_err(|e| e.to_string())
+    }
+
+    fn recv_msg(&self) -> Result<SignalingMessage, String> {
+        SignalingChannel::recv(self).map_err(|e| e.to_string())
+    }
+
+    fn clone_box(&self) -> Box<dyn rinch_webrtc::SignalingIO> {
+        unimplemented!("WebSocketSignaling::clone_box not yet supported on WASM")
+    }
+}
+
 impl SignalingChannel for WebSocketSignaling {
     fn send(&self, msg: SignalingMessage) -> Result<(), SignalingError> {
         let json = serde_json::to_string(&msg)

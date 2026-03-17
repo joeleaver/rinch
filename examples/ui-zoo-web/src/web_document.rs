@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 
 use rinch_core::dom::{DomDocument, GlyphBounds, NodeId};
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 
 /// A `DomDocument` backed by real browser DOM elements.
 ///
@@ -213,9 +213,10 @@ fn find_text_node_recursive(
     let children = node.child_nodes();
     for i in 0..children.length() {
         if let Some(child) = children.item(i)
-            && let Some(result) = find_text_node_recursive(&child, remaining) {
-                return Some(result);
-            }
+            && let Some(result) = find_text_node_recursive(&child, remaining)
+        {
+            return Some(result);
+        }
     }
     None
 }
@@ -289,18 +290,19 @@ impl DomDocument for WebDocument {
     }
 
     fn replace_node(&mut self, old: NodeId, new: NodeId) {
-        if let (Some(old_node), Some(new_node)) =
-            (self.nodes.get(&old.0), self.nodes.get(&new.0))
-            && let Some(parent) = old_node.parent_node() {
-                parent.replace_child(new_node, old_node).ok();
-            }
+        if let (Some(old_node), Some(new_node)) = (self.nodes.get(&old.0), self.nodes.get(&new.0))
+            && let Some(parent) = old_node.parent_node()
+        {
+            parent.replace_child(new_node, old_node).ok();
+        }
     }
 
     fn remove_node(&mut self, node: NodeId) {
         if let Some(n) = self.nodes.get(&node.0)
-            && let Some(parent) = n.parent_node() {
-                parent.remove_child(n).ok();
-            }
+            && let Some(parent) = n.parent_node()
+        {
+            parent.remove_child(n).ok();
+        }
     }
 
     fn set_text_content(&mut self, node: NodeId, text: &str) {
@@ -311,16 +313,18 @@ impl DomDocument for WebDocument {
 
     fn set_attribute(&mut self, node: NodeId, name: &str, value: &str) {
         if let Some(n) = self.nodes.get(&node.0)
-            && let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
-                el.set_attribute(name, value).ok();
-            }
+            && let Ok(el) = n.clone().dyn_into::<web_sys::Element>()
+        {
+            el.set_attribute(name, value).ok();
+        }
     }
 
     fn remove_attribute(&mut self, node: NodeId, name: &str) {
         if let Some(n) = self.nodes.get(&node.0)
-            && let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
-                el.remove_attribute(name).ok();
-            }
+            && let Ok(el) = n.clone().dyn_into::<web_sys::Element>()
+        {
+            el.remove_attribute(name).ok();
+        }
     }
 
     fn get_attribute(&self, node: NodeId, name: &str) -> Option<String> {
@@ -331,9 +335,10 @@ impl DomDocument for WebDocument {
 
     fn set_style(&mut self, node: NodeId, property: &str, value: &str) {
         if let Some(n) = self.nodes.get(&node.0)
-            && let Ok(el) = n.clone().dyn_into::<web_sys::HtmlElement>() {
-                el.style().set_property(property, value).ok();
-            }
+            && let Ok(el) = n.clone().dyn_into::<web_sys::HtmlElement>()
+        {
+            el.style().set_property(property, value).ok();
+        }
     }
 
     fn mark_dirty(&mut self, _node: NodeId) {
@@ -364,9 +369,10 @@ impl DomDocument for WebDocument {
         if let Ok(node_list) = self.browser_doc.query_selector_all(selector) {
             for i in 0..node_list.length() {
                 if let Some(node) = node_list.item(i)
-                    && let Some(nid) = get_nid(&node) {
-                        result.push(nid);
-                    }
+                    && let Some(nid) = get_nid(&node)
+                {
+                    result.push(nid);
+                }
             }
         }
         result
@@ -378,9 +384,10 @@ impl DomDocument for WebDocument {
             let children = n.child_nodes();
             for i in 0..children.length() {
                 if let Some(child) = children.item(i)
-                    && let Some(nid) = get_nid(&child) {
-                        result.push(nid);
-                    }
+                    && let Some(nid) = get_nid(&child)
+                {
+                    result.push(nid);
+                }
             }
         }
         result
@@ -424,23 +431,25 @@ impl DomDocument for WebDocument {
 
     fn set_scroll_top(&mut self, node: NodeId, scroll_top: f64) {
         if let Some(n) = self.nodes.get(&node.0)
-            && let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
-                el.set_scroll_top(scroll_top as i32);
-            }
+            && let Ok(el) = n.clone().dyn_into::<web_sys::Element>()
+        {
+            el.set_scroll_top(scroll_top as i32);
+        }
     }
 
     fn set_inner_html(&mut self, node: NodeId, html: &str) {
         if let Some(n) = self.nodes.get(&node.0)
-            && let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
-                el.set_inner_html(html);
-                // Walk all new child nodes and register them
-                let children = el.child_nodes();
-                for i in 0..children.length() {
-                    if let Some(child) = children.item(i) {
-                        self.register_subtree(&child);
-                    }
+            && let Ok(el) = n.clone().dyn_into::<web_sys::Element>()
+        {
+            el.set_inner_html(html);
+            // Walk all new child nodes and register them
+            let children = el.child_nodes();
+            for i in 0..children.length() {
+                if let Some(child) = children.item(i) {
+                    self.register_subtree(&child);
                 }
             }
+        }
     }
 
     fn query_caret_position(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32)> {
@@ -494,9 +503,10 @@ impl DomDocument for WebDocument {
 
     fn focus_element(&mut self, node_id: NodeId) {
         if let Some(n) = self.nodes.get(&node_id.0)
-            && let Ok(el) = n.clone().dyn_into::<web_sys::HtmlElement>() {
-                el.focus().ok();
-            }
+            && let Ok(el) = n.clone().dyn_into::<web_sys::HtmlElement>()
+        {
+            el.focus().ok();
+        }
     }
 
     fn resolve_layout(&mut self, _width: f32, _height: f32) {

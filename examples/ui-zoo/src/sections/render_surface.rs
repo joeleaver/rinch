@@ -829,7 +829,7 @@ pub fn render_surface_section() -> NodeHandle {
     {
         let state = cube_state.clone();
 
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", feature = "gpu"))]
         {
             use std::cell::RefCell;
 

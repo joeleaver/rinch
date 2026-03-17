@@ -10,7 +10,7 @@ pub mod types;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub mod web;
 
 pub use call::{SignalingIO, VideoCall};
@@ -20,5 +20,5 @@ pub use types::{
     AudioCodec, ConnectionState, IceCandidate, IceServer, RtcConfig, RtcError, SdpType,
     SessionDescription, SignalingMessage, VideoCodec,
 };
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use web::{WebPeerConnection, WebRemoteTrack};

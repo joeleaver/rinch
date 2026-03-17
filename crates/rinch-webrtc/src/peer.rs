@@ -17,8 +17,10 @@ pub struct PeerConnection {
     inner: crate::native::NativePeerConnection,
     #[cfg(all(not(target_arch = "wasm32"), not(feature = "native")))]
     _config: RtcConfig,
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", feature = "web"))]
     web: crate::web::WebPeerConnection,
+    #[cfg(all(target_arch = "wasm32", not(feature = "web")))]
+    _config: RtcConfig,
 }
 
 impl PeerConnection {
@@ -34,10 +36,14 @@ impl PeerConnection {
         {
             Ok(Self { _config: config })
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", feature = "web"))]
         {
             let web = crate::web::WebPeerConnection::new(&config)?;
             Ok(Self { web })
+        }
+        #[cfg(all(target_arch = "wasm32", not(feature = "web")))]
+        {
+            Ok(Self { _config: config })
         }
     }
 
@@ -68,11 +74,18 @@ impl PeerConnection {
                 "native WebRTC not enabled — add features = [\"native\"]".into(),
             ))
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", feature = "web"))]
         {
             let _ = (send_audio, send_video);
             Err(RtcError::Internal(
                 "use create_offer_async() on WASM".into(),
+            ))
+        }
+        #[cfg(all(target_arch = "wasm32", not(feature = "web")))]
+        {
+            let _ = (send_audio, send_video);
+            Err(RtcError::Internal(
+                "WASM WebRTC not enabled — add features = [\"web\"]".into(),
             ))
         }
     }
@@ -94,12 +107,17 @@ impl PeerConnection {
             let _ = offer;
             Err(RtcError::Internal("not implemented".into()))
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", feature = "web"))]
         {
             let _ = offer;
             Err(RtcError::Internal(
                 "use create_answer_async() on WASM".into(),
             ))
+        }
+        #[cfg(all(target_arch = "wasm32", not(feature = "web")))]
+        {
+            let _ = offer;
+            Err(RtcError::Internal("not implemented".into()))
         }
     }
 
@@ -115,11 +133,15 @@ impl PeerConnection {
         {
             Err(RtcError::Internal("not implemented".into()))
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", feature = "web"))]
         {
             Err(RtcError::Internal(
                 "use set_local_description_async() on WASM".into(),
             ))
+        }
+        #[cfg(all(target_arch = "wasm32", not(feature = "web")))]
+        {
+            Err(RtcError::Internal("not implemented".into()))
         }
     }
 
@@ -134,12 +156,17 @@ impl PeerConnection {
             let _ = desc;
             Err(RtcError::Internal("not implemented".into()))
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", feature = "web"))]
         {
             let _ = desc;
             Err(RtcError::Internal(
                 "use set_remote_description_async() on WASM".into(),
             ))
+        }
+        #[cfg(all(target_arch = "wasm32", not(feature = "web")))]
+        {
+            let _ = desc;
+            Err(RtcError::Internal("not implemented".into()))
         }
     }
 
@@ -154,12 +181,17 @@ impl PeerConnection {
             let _ = candidate;
             Err(RtcError::Internal("not implemented".into()))
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", feature = "web"))]
         {
             let _ = candidate;
             Err(RtcError::Internal(
                 "use add_ice_candidate_async() on WASM".into(),
             ))
+        }
+        #[cfg(all(target_arch = "wasm32", not(feature = "web")))]
+        {
+            let _ = candidate;
+            Err(RtcError::Internal("not implemented".into()))
         }
     }
 
@@ -173,9 +205,13 @@ impl PeerConnection {
         {
             let _ = cb;
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", feature = "web"))]
         {
             self.web.on_ice_candidate(cb);
+        }
+        #[cfg(all(target_arch = "wasm32", not(feature = "web")))]
+        {
+            let _ = cb;
         }
     }
 
@@ -198,9 +234,13 @@ impl PeerConnection {
         {
             let _ = cb;
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", feature = "web"))]
         {
             self.web.on_connection_state_change(cb);
+        }
+        #[cfg(all(target_arch = "wasm32", not(feature = "web")))]
+        {
+            let _ = cb;
         }
     }
 
@@ -226,7 +266,7 @@ impl PeerConnection {
         {
             self.inner.close();
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", feature = "web"))]
         {
             self.web.close();
         }
@@ -235,7 +275,7 @@ impl PeerConnection {
 
 // --- WASM-specific async API ---
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
 impl PeerConnection {
     /// Get a reference to the underlying `WebPeerConnection`.
     pub fn web(&self) -> &crate::web::WebPeerConnection {

@@ -21,7 +21,6 @@ pub fn init_all_sections() {
     init_feedback_state();
     init_icons_state();
     init_tree_state();
-    #[cfg(feature = "desktop")]
     init_av_state();
 }
 
@@ -192,32 +191,15 @@ pub fn section_content(__scope: &mut RenderScope, current_section: Signal<usize>
                 10 => { tree_section(__scope) },
                 11 => { editor_section(__scope) },
                 12 => { css_features_section(__scope) },
-                13 | 14 | 16 | 17 | 18 => { desktop_section(__scope, current_section.get()) },
+                13 => { video_section(__scope) },
+                14 => { render_surface_section(__scope) },
                 15 => { context_menus_section(__scope) },
+                16 => { file_drop_section(__scope) },
+                17 => { av_section(__scope) },
+                18 => { webrtc_section(__scope) },
                 _ => div { },
             }
         }
-    }
-}
-
-/// Render desktop-only sections (video, render surface, file drop, av, webrtc).
-/// On non-desktop builds, shows a placeholder.
-fn desktop_section(__scope: &mut RenderScope, section: usize) -> NodeHandle {
-    #[cfg(feature = "desktop")]
-    {
-        match section {
-            13 => video_section(__scope),
-            14 => render_surface_section(__scope),
-            16 => file_drop_section(__scope),
-            17 => av_section(__scope),
-            18 => webrtc_section(__scope),
-            _ => rsx! { div { "Unknown section" } },
-        }
-    }
-    #[cfg(not(feature = "desktop"))]
-    {
-        let _ = section;
-        rsx! { div { "This section requires desktop mode." } }
     }
 }
 

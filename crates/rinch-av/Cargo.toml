@@ -18,8 +18,39 @@ cpal = { version = "0.15", optional = true }
 nokhwa = { version = "0.10", features = ["input-native"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = { version = "0.2", optional = true }
-js-sys = { version = "0.3", optional = true }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Navigator",
+    "MediaDevices",
+    "MediaDeviceInfo",
+    "MediaDeviceKind",
+    "MediaStream",
+    "MediaStreamTrack",
+    "MediaStreamConstraints",
+    "MediaTrackConstraints",
+    "MediaTrackConstraintSet",
+    "HtmlVideoElement",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "CssStyleDeclaration",
+    "CanvasRenderingContext2d",
+    "ImageData",
+    "Document",
+    "Element",
+    "Window",
+    "AudioContext",
+    "AudioContextOptions",
+    "AudioNode",
+    "AudioDestinationNode",
+    "MediaStreamAudioSourceNode",
+    "ScriptProcessorNode",
+    "AudioProcessingEvent",
+    "AudioBuffer",
+    "GainNode",
+    "GainOptions",
+] }
 
 [features]
 default = []

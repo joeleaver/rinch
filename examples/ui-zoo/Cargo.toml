@@ -10,7 +10,7 @@ name = "ui_zoo"
 path = "src/lib.rs"
 
 [features]
-desktop = ["rinch/desktop", "dep:rinch-video", "dep:rinch-av", "dep:rinch-webrtc", "dep:rinch-signaling", "dep:rinch-screen-capture", "dep:wgpu"]
+desktop = ["rinch/desktop", "dep:wgpu"]
 gpu = ["desktop", "rinch/gpu"]
 
 [dependencies]
@@ -19,11 +19,11 @@ rinch-core = { workspace = true }
 rinch-macros = { workspace = true }
 rinch-platform = { workspace = true }
 rinch-tabler-icons.workspace = true
-rinch-video = { workspace = true, optional = true }
-rinch-av = { workspace = true, features = ["audio", "camera"], optional = true }
-rinch-webrtc = { workspace = true, features = ["native"], optional = true }
-rinch-signaling = { workspace = true, optional = true }
-rinch-screen-capture = { workspace = true, optional = true }
+rinch-video = { workspace = true }
+rinch-av = { workspace = true, features = ["audio", "camera"] }
+rinch-webrtc = { workspace = true }
+rinch-signaling = { workspace = true }
+rinch-screen-capture = { workspace = true }
 wgpu = { workspace = true, features = ["webgl"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

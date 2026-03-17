@@ -11,14 +11,16 @@ pub mod web_document;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 
 use rinch::prelude::*;
 use rinch_core::dom::*;
 use rinch_core::element::ThemeProviderProps;
 use rinch_core::events;
-use ui_zoo::{init_all_sections, nav_links, overlays_demo_overlays, section_content, theme_controls};
+use ui_zoo::{
+    init_all_sections, nav_links, overlays_demo_overlays, section_content, theme_controls,
+};
 
 /// Global CSS for the web app layout with sidebar.
 const CSS_WEB: &str = r#"
@@ -124,7 +126,11 @@ fn utf16_offset_to_utf8_bytes(text: &str, utf16_offset: u32) -> usize {
 
 /// Use `document.caretRangeFromPoint` to resolve a click position to a text hit.
 /// Returns `Some(TextHitInfo)` if the click resolved to a text position inside a block.
-fn resolve_text_hit(browser_doc: &web_sys::Document, client_x: f32, client_y: f32) -> Option<events::TextHitInfo> {
+fn resolve_text_hit(
+    browser_doc: &web_sys::Document,
+    client_x: f32,
+    client_y: f32,
+) -> Option<events::TextHitInfo> {
     // caretRangeFromPoint is non-standard but available in Chrome/Safari/Edge
     let func = js_sys::Reflect::get(browser_doc, &"caretRangeFromPoint".into()).ok()?;
     let func: js_sys::Function = func.dyn_into().ok()?;
@@ -147,10 +153,11 @@ fn resolve_text_hit(browser_doc: &web_sys::Document, client_x: f32, client_y: f3
     let mut block_el: Option<web_sys::Element> = None;
     while let Some(node) = current {
         if let Ok(el) = node.clone().dyn_into::<web_sys::Element>()
-            && el.has_attribute("data-block-index") {
-                block_el = Some(el);
-                break;
-            }
+            && el.has_attribute("data-block-index")
+        {
+            block_el = Some(el);
+            break;
+        }
         current = node.parent_node();
     }
     let block_el = block_el?;
@@ -207,9 +214,10 @@ fn walk_text_nodes_for_offset(
     let children = node.child_nodes();
     for i in 0..children.length() {
         if let Some(child) = children.item(i)
-            && walk_text_nodes_for_offset(&child, target, utf16_offset, byte_offset) {
-                return true;
-            }
+            && walk_text_nodes_for_offset(&child, target, utf16_offset, byte_offset)
+        {
+            return true;
+        }
     }
     false
 }
@@ -224,45 +232,47 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
     // can begin tracking mouse movement immediately.
     let mousedown_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
         if let Some(target) = event.target()
-            && let Ok(el) = target.dyn_into::<web_sys::Element>() {
-                // Clear render surface focus if click is outside any surface
-                if rinch::render_surface::focused_surface_id().is_some() {
-                    if el.closest("[data-render-surface]").ok().flatten().is_none() {
-                        rinch::render_surface::set_focused_surface(None);
-                    }
+            && let Ok(el) = target.dyn_into::<web_sys::Element>()
+        {
+            // Clear render surface focus if click is outside any surface
+            if rinch::render_surface::focused_surface_id().is_some() {
+                if el.closest("[data-render-surface]").ok().flatten().is_none() {
+                    rinch::render_surface::set_focused_surface(None);
                 }
-
-                // Walk up from target to find nearest [data-rid]
-                if let Ok(Some(rid_el)) = el.closest("[data-rid]")
-                    && let Some(rid_str) = rid_el.get_attribute("data-rid")
-                        && let Ok(rid) = rid_str.parse::<usize>() {
-                            // Set click context with mouse position and element bounds
-                            let rect = rid_el.get_bounding_client_rect();
-                            let text_hit = resolve_text_hit(
-                                &browser_doc_for_click,
-                                event.client_x() as f32,
-                                event.client_y() as f32,
-                            )
-                            .unwrap_or_default();
-
-                            events::set_click_context(events::ClickContext {
-                                mouse_x: event.client_x() as f32,
-                                mouse_y: event.client_y() as f32,
-                                element_x: rect.x() as f32,
-                                element_y: rect.y() as f32,
-                                element_width: rect.width() as f32,
-                                element_height: rect.height() as f32,
-                                text_hit,
-                                viewport_width: 0.0,
-                                viewport_height: 0.0,
-                            });
-
-                            // Prevent browser default behavior (e.g. text selection
-                            // during slider drag, <label> synthesizing extra events).
-                            event.prevent_default();
-                            events::dispatch_event(events::EventHandlerId(rid));
-                        }
             }
+
+            // Walk up from target to find nearest [data-rid]
+            if let Ok(Some(rid_el)) = el.closest("[data-rid]")
+                && let Some(rid_str) = rid_el.get_attribute("data-rid")
+                && let Ok(rid) = rid_str.parse::<usize>()
+            {
+                // Set click context with mouse position and element bounds
+                let rect = rid_el.get_bounding_client_rect();
+                let text_hit = resolve_text_hit(
+                    &browser_doc_for_click,
+                    event.client_x() as f32,
+                    event.client_y() as f32,
+                )
+                .unwrap_or_default();
+
+                events::set_click_context(events::ClickContext {
+                    mouse_x: event.client_x() as f32,
+                    mouse_y: event.client_y() as f32,
+                    element_x: rect.x() as f32,
+                    element_y: rect.y() as f32,
+                    element_width: rect.width() as f32,
+                    element_height: rect.height() as f32,
+                    text_hit,
+                    viewport_width: 0.0,
+                    viewport_height: 0.0,
+                });
+
+                // Prevent browser default behavior (e.g. text selection
+                // during slider drag, <label> synthesizing extra events).
+                event.prevent_default();
+                events::dispatch_event(events::EventHandlerId(rid));
+            }
+        }
     }) as Box<dyn FnMut(_)>);
     browser_doc
         .add_event_listener_with_callback("mousedown", mousedown_closure.as_ref().unchecked_ref())
@@ -332,17 +342,19 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
         } else if event.key() == "Enter" {
             // Check if the target element (or ancestor) has data-onsubmit
             if let Some(target) = event.target()
-                && let Ok(el) = target.dyn_into::<web_sys::Element>() {
-                    let mut current: Option<web_sys::Element> = Some(el);
-                    while let Some(el) = current {
-                        if let Some(handler_str) = el.get_attribute("data-onsubmit")
-                            && let Ok(handler_id) = handler_str.parse::<usize>() {
-                                events::dispatch_event(events::EventHandlerId(handler_id));
-                                break;
-                            }
-                        current = el.parent_element();
+                && let Ok(el) = target.dyn_into::<web_sys::Element>()
+            {
+                let mut current: Option<web_sys::Element> = Some(el);
+                while let Some(el) = current {
+                    if let Some(handler_str) = el.get_attribute("data-onsubmit")
+                        && let Ok(handler_id) = handler_str.parse::<usize>()
+                    {
+                        events::dispatch_event(events::EventHandlerId(handler_id));
+                        break;
                     }
+                    current = el.parent_element();
                 }
+            }
         }
     }) as Box<dyn FnMut(_)>);
     browser_doc
@@ -369,13 +381,11 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
                     let mut current: Option<web_sys::Element> = Some(el);
                     while let Some(el) = current {
                         if let Some(handler_str) = el.get_attribute("data-oninput")
-                            && let Ok(handler_id) = handler_str.parse::<usize>() {
-                                events::dispatch_input_event(
-                                    events::EventHandlerId(handler_id),
-                                    value,
-                                );
-                                break;
-                            }
+                            && let Ok(handler_id) = handler_str.parse::<usize>()
+                        {
+                            events::dispatch_input_event(events::EventHandlerId(handler_id), value);
+                            break;
+                        }
                         current = el.parent_element();
                     }
                 }
@@ -427,9 +437,7 @@ pub fn start() {
         app(&mut scope_ref)
     };
 
-    web_doc
-        .borrow_mut()
-        .append_child(body_id, root.node_id());
+    web_doc.borrow_mut().append_child(body_id, root.node_id());
 
     clear_render_scope();
 

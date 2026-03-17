@@ -4607,6 +4607,8 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -6230,6 +6232,7 @@ dependencies = [
  "rinch",
  "rinch-core",
  "rinch-tabler-icons",
+ "rinch-webrtc",
  "tokio",
  "tracing",
  "ui-zoo",
