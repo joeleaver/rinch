@@ -52,6 +52,30 @@ pub fn get_closure_expr(expr: &Expr) -> Option<&Expr> {
     }
 }
 
+/// Check if an expression is already wrapped in `Some(...)` or is `None`.
+///
+/// These expressions must pass through without `.into()` to preserve
+/// Rust's unsizing coercion (e.g., `Some(Rc::new(|| ...))` for `Option<Rc<dyn Fn()>>`).
+pub fn is_option_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Call(call) => {
+            // Check for `Some(...)` — path with single segment "Some"
+            if let Expr::Path(p) = &*call.func
+                && p.qself.is_none()
+                && p.path.segments.len() == 1
+            {
+                return p.path.segments[0].ident == "Some";
+            }
+            false
+        }
+        Expr::Path(p) => {
+            // Check for bare `None`
+            p.qself.is_none() && p.path.segments.len() == 1 && p.path.segments[0].ident == "None"
+        }
+        _ => false,
+    }
+}
+
 /// Check if an expression is a boolean literal.
 pub fn is_literal_bool(expr: &Expr) -> bool {
     matches!(expr, Expr::Lit(lit) if matches!(lit.lit, syn::Lit::Bool(_)))

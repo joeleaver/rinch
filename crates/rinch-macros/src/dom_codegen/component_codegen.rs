@@ -379,16 +379,24 @@ pub fn generate_component_field_assignments(
                 quote! { #name: Some(#value) }
             } else if crate::helpers::is_literal_string(value) {
                 quote! { #name: String::from(#value) }
+            } else if crate::helpers::is_option_expr(value) {
+                // Some(...) and None pass through directly to preserve
+                // unsizing coercion (e.g. Some(Rc::new(|| ...)) for Option<Rc<dyn Fn()>>).
+                quote! { #name: #value }
             } else if invoke_closures {
                 if let Some(closure) = get_closure_expr(value) {
                     // Invoke the closure to get current value, using .into() so
                     // &str → String, bool → bool, etc. all work correctly.
                     quote! { #name: ((#closure)()).into() }
                 } else {
-                    quote! { #name: #value }
+                    // Use .into() so T auto-wraps into Option<T> via From<T>,
+                    // while same-type assignments stay identity conversions.
+                    quote! { #name: (#value).into() }
                 }
             } else {
-                quote! { #name: #value }
+                // Use .into() so T auto-wraps into Option<T> via From<T>,
+                // while same-type assignments stay identity conversions.
+                quote! { #name: (#value).into() }
             }
         })
         .collect()

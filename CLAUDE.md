@@ -1390,7 +1390,8 @@ The `rsx!` macro **automatically wraps** component prop values. You must NOT man
 | int literal | `size: 42` | `Some(42)` |
 | float literal | `value: 30.0` | `Some(30.0)` |
 | string literal | `variant: "filled"` | `String::from("filled")` |
-| any other expr | `variant: my_var` | `my_var` (pass-through) |
+| `Some(...)` or `None` | `tree: Some(state)` | `Some(state)` (pass-through, preserves unsizing coercion) |
+| any other expr | `variant: my_var` | `(my_var).into()` (auto-wraps `T` → `Option<T>` via `From`) |
 
 **Common mistakes (DO NOT do these):**
 
