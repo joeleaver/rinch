@@ -73,8 +73,16 @@ pub(crate) struct ActiveDrag {
     /// Captured painting of the source element's subtree (at origin).
     #[cfg(feature = "gpu")]
     pub snapshot: VelloPainter,
+    /// Captured RGBA pixels of the source element's subtree (software backend).
+    #[cfg(not(feature = "gpu"))]
+    pub snapshot_pixels: Vec<u8>,
+    /// Width of the snapshot pixmap in physical pixels.
+    #[cfg(not(feature = "gpu"))]
+    pub snapshot_width: u32,
+    /// Height of the snapshot pixmap in physical pixels.
+    #[cfg(not(feature = "gpu"))]
+    pub snapshot_height: u32,
     /// Offset within element where the grab happened (physical px, relative to element top-left).
-    #[cfg(feature = "gpu")]
     pub anchor: (f32, f32),
     /// Current cursor position (physical pixels).
     pub cursor: (f32, f32),
@@ -671,9 +679,10 @@ impl RinchApp {
 
             // Check if dirty region is small enough to benefit from caching
             // (less than 50% of viewport area)
-            // Disable dirty region when inspect highlight is active (highlight
-            // is painted as an overlay and dirty tracking doesn't cover it).
+            // Disable dirty region when inspect highlight or drag overlay is active
+            // (overlays are painted after document and dirty tracking doesn't cover them).
             let use_dirty_region = self.inspect_highlight.is_none()
+                && self.active_dnd.is_none()
                 && dirty_region.is_some_and(|r| {
                     let region_area = r.width() * r.height();
                     let viewport_area = w as f64 * h as f64;
@@ -748,6 +757,22 @@ impl RinchApp {
                 }
             }
 
+            // Paint drag-and-drop snapshot overlay
+            if let Some(ref drag) = self.active_dnd {
+                let dx = (drag.cursor.0 - drag.anchor.0) as i32;
+                let dy = (drag.cursor.1 - drag.anchor.1) as i32;
+                Self::blit_drag_overlay(
+                    painter.pixels_mut(),
+                    w,
+                    h,
+                    &drag.snapshot_pixels,
+                    drag.snapshot_width,
+                    drag.snapshot_height,
+                    dx,
+                    dy,
+                );
+            }
+
             // Paint inspect mode highlight overlay (after all document painting)
             if let Some((x, y, w_r, h_r)) = self.inspect_highlight {
                 Self::paint_inspect_overlay(painter, scale, x, y, w_r, h_r);
@@ -779,6 +804,62 @@ impl RinchApp {
         }
 
         (self.skia_painter.as_ref().unwrap().pixels(), w, h)
+    }
+
+    /// Blit premultiplied RGBA source pixels onto a destination buffer with
+    /// alpha compositing (source-over). `dx`/`dy` can be negative for partially
+    /// off-screen overlays.
+    #[cfg(not(feature = "gpu"))]
+    #[allow(clippy::too_many_arguments)]
+    fn blit_drag_overlay(
+        dst: &mut [u8],
+        dst_w: u32,
+        dst_h: u32,
+        src: &[u8],
+        src_w: u32,
+        src_h: u32,
+        dx: i32,
+        dy: i32,
+    ) {
+        let dst_w = dst_w as i32;
+        let dst_h = dst_h as i32;
+        let src_w_i = src_w as i32;
+        let src_h_i = src_h as i32;
+
+        // Compute visible rectangle in source coordinates
+        let sx0 = 0i32.max(-dx);
+        let sy0 = 0i32.max(-dy);
+        let sx1 = src_w_i.min(dst_w - dx);
+        let sy1 = src_h_i.min(dst_h - dy);
+        if sx0 >= sx1 || sy0 >= sy1 {
+            return;
+        }
+
+        for sy in sy0..sy1 {
+            let dest_y = (sy + dy) as u32;
+            let src_row = (sy as u32 * src_w * 4) as usize;
+            let dst_row = (dest_y * dst_w as u32 * 4) as usize;
+            for sx in sx0..sx1 {
+                let si = src_row + (sx as usize) * 4;
+                let di = dst_row + ((sx + dx) as usize) * 4;
+                let sa = src[si + 3] as u32;
+                if sa == 0 {
+                    continue;
+                }
+                if sa == 255 {
+                    dst[di..di + 4].copy_from_slice(&src[si..si + 4]);
+                } else {
+                    // Source-over compositing (premultiplied alpha)
+                    let inv_a = 255 - sa;
+                    dst[di] = (src[si] as u32 + (dst[di] as u32 * inv_a + 127) / 255) as u8;
+                    dst[di + 1] =
+                        (src[si + 1] as u32 + (dst[di + 1] as u32 * inv_a + 127) / 255) as u8;
+                    dst[di + 2] =
+                        (src[si + 2] as u32 + (dst[di + 2] as u32 * inv_a + 127) / 255) as u8;
+                    dst[di + 3] = (sa + (dst[di + 3] as u32 * inv_a + 127) / 255) as u8;
+                }
+            }
+        }
     }
 
     /// Mark the scene as needing a repaint on the next frame.

@@ -44,12 +44,10 @@ impl RinchApp {
                     let dist = (dx * dx + dy * dy).sqrt();
                     if dist >= DRAG_THRESHOLD {
                         let node_id = pending.node_id;
-                        #[cfg(feature = "gpu")]
                         let mousedown_pos = pending.mousedown_pos;
                         self.pending_drag = None;
 
-                        // Capture snapshot and compute anchor (GPU only — needs VelloPainter)
-                        #[cfg(feature = "gpu")]
+                        // Capture snapshot and compute anchor
                         self.activate_drag(node_id, mousedown_pos, (x, y), scale_factor);
 
                         // Fire ondragstart handler
@@ -1302,7 +1300,6 @@ impl RinchApp {
 
     /// Transition from pending drag to active drag: capture snapshot and set
     /// up the active drag state.
-    #[cfg(feature = "gpu")]
     pub(crate) fn activate_drag(
         &mut self,
         node_id: usize,
@@ -1312,14 +1309,14 @@ impl RinchApp {
     ) {
         let Some(doc) = &self.doc else { return };
 
-        let mut snapshot = VelloPainter::new();
         let anchor;
 
-        {
+        #[cfg(feature = "gpu")]
+        let snapshot = {
+            let mut painter = VelloPainter::new();
             let mut d = doc.borrow_mut();
             let d = &mut *d;
 
-            // Compute the element's absolute position for the anchor
             let (abs_x, abs_y) =
                 rinch_dom::paint::compute_absolute_position(&d.tree, node_id, scale_factor);
             anchor = (
@@ -1327,20 +1324,63 @@ impl RinchApp {
                 mousedown_pos.1 - abs_y as f32,
             );
 
-            // Paint the subtree into the snapshot scene at (0, 0)
             rinch_dom::paint::paint_subtree(
                 &d.tree,
-                &mut snapshot,
+                &mut painter,
                 node_id,
                 scale_factor,
                 &mut d.font_cx,
                 &mut d.layout_cx,
             );
-        }
+            painter
+        };
+
+        #[cfg(not(feature = "gpu"))]
+        let (snapshot_pixels, snapshot_width, snapshot_height) = {
+            let mut d = doc.borrow_mut();
+            let d = &mut *d;
+
+            let (abs_x, abs_y) =
+                rinch_dom::paint::compute_absolute_position(&d.tree, node_id, scale_factor);
+            anchor = (
+                mousedown_pos.0 - abs_x as f32,
+                mousedown_pos.1 - abs_y as f32,
+            );
+
+            // Compute the element's size in physical pixels for the snapshot pixmap
+            let node = d.tree.get(node_id);
+            let (sw, sh) = node
+                .map(|n| {
+                    let w = (n.layout.width as f64 * scale_factor).ceil() as u32;
+                    let h = (n.layout.height as f64 * scale_factor).ceil() as u32;
+                    (w.max(1), h.max(1))
+                })
+                .unwrap_or((1, 1));
+
+            let mut painter = TinySkiaPainter::new(sw, sh);
+            painter.fill_transparent();
+
+            rinch_dom::paint::paint_subtree(
+                &d.tree,
+                &mut painter,
+                node_id,
+                scale_factor,
+                &mut d.font_cx,
+                &mut d.layout_cx,
+            );
+            (painter.pixels().to_vec(), sw, sh)
+        };
 
         self.active_dnd = Some(ActiveDrag {
             node_id,
+            #[cfg(feature = "gpu")]
             snapshot,
+            #[cfg(not(feature = "gpu"))]
+            snapshot_pixels,
+            #[cfg(not(feature = "gpu"))]
+            snapshot_width,
+            #[cfg(not(feature = "gpu"))]
+            snapshot_height,
             anchor,
             cursor,
             over_target: None,
