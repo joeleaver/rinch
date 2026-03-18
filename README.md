@@ -114,6 +114,8 @@ cargo run --release
 
 > **Use `--release`.** Debug mode is noticeably slow because Stylo and Parley do a lot of work. Release builds are fast.
 
+**[Full documentation](docs/src/SUMMARY.md)** — Getting started, RSX syntax, state management, components, theming, WASM, and more. Run `mdbook serve docs` locally, or just read the markdown files in `docs/src/`.
+
 ## Writing Your Own Components
 
 There are two ways to make components in Rinch, and both of them are less painful than you'd expect.
