@@ -9,3 +9,6 @@ rinch = { path = "../../crates/rinch", features = ["desktop", "components", "the
 rinch-core = { path = "../../crates/rinch-core" }
 rinch-tabler-icons = { path = "../../crates/rinch-tabler-icons" }
 tracing-subscriber = "0.3"
+
+[features]
+gpu = ["rinch/gpu"]

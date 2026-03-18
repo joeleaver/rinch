@@ -43,6 +43,17 @@ fn app() -> NodeHandle {
     let ed_h = Signal::new(500.0f32);
     let ed_visible = Signal::new(true);
 
+    // Stress test panel state
+    let stress_x = Signal::new(350.0f32);
+    let stress_y = Signal::new(50.0f32);
+    let stress_w = Signal::new(340.0f32);
+    let stress_h = Signal::new(650.0f32);
+    let stress_visible = Signal::new(true);
+
+    // Slider signals for stress test
+    let sliders: Vec<Signal<f64>> = (0..12).map(|i| Signal::new(i as f64 * 8.0)).collect();
+    let checks: Vec<Signal<bool>> = (0..8).map(|i| Signal::new(i % 2 == 0)).collect();
+
     // Canvas state
     let active_tool = Signal::new("select");
     let canvas_color = Signal::new("#e7f5ff");
@@ -148,6 +159,45 @@ fn app() -> NodeHandle {
                             " mixed with "
                             span { style: "color: #e64980; font-weight: bold;", "bold pink" }
                             " text."
+                        }
+                    }
+                }
+            }
+
+            // === Stress Test Panel (heavy!) ===
+            if stress_visible.get() {
+                FloatingPanel {
+                    title: "Stress Test (heavy panel)",
+                    x: Some(stress_x),
+                    y: Some(stress_y),
+                    width: Some(stress_w),
+                    height: Some(stress_h),
+                    on_close: move || stress_visible.set(false),
+
+                    Stack { gap: "xs", p: "xs",
+                        Text { size: "xs", color: "dimmed", weight: "bold", "12 Sliders" }
+                        {stress_sliders(__scope, &sliders)}
+
+                        Divider {}
+                        Text { size: "xs", color: "dimmed", weight: "bold", "8 Checkboxes" }
+                        {stress_checks(__scope, &checks)}
+
+                        Divider {}
+                        Text { size: "xs", color: "dimmed", weight: "bold", "Nested Components" }
+
+                        Paper { p: "sm", radius: "sm", with_border: true,
+                            Stack { gap: "xs",
+                                Alert { color: "blue", "This panel has 12 sliders, 8 checkboxes, badges, alerts, and nested papers. Drag it around — it should be smooth." }
+                                Group { gap: "xs",
+                                    Badge { color: "green", variant: "filled", "Fast" }
+                                    Badge { color: "blue", variant: "light", "Optimized" }
+                                    Badge { color: "grape", variant: "outline", "No Stylo" }
+                                    Badge { color: "orange", variant: "dot", "No IFC" }
+                                }
+                                Progress { value: 73.0, color: "teal" }
+                                TextInput { size: "xs", placeholder: "Type something..." }
+                                TextInput { size: "xs", placeholder: "Another input..." }
+                            }
                         }
                     }
                 }
@@ -259,6 +309,60 @@ fn tool_icon(
             {icon_node}
         }
     }
+}
+
+/// Render 12 sliders with colored badges for the stress test panel.
+fn stress_sliders(__scope: &mut RenderScope, sliders: &[Signal<f64>]) -> NodeHandle {
+    let colors = ["blue", "teal", "violet", "orange", "pink"];
+    let container = __scope.create_element("div");
+    for (i, &sig) in sliders.iter().enumerate() {
+        let color = colors[i % colors.len()];
+        let row = rsx! {
+            Stack { gap: "2",
+                Group { gap: "xs", justify: "between",
+                    Text { size: "xs", {format!("Param {}", i + 1)} }
+                    Badge { size: "xs", color: {color},
+                        {move || format!("{:.0}", sig.get())}
+                    }
+                }
+                Slider {
+                    color: {color},
+                    value_signal: Some(sig),
+                    onchange: move |v| sig.set(v),
+                }
+            }
+        };
+        container.append_child(&row);
+    }
+    container
+}
+
+/// Render 8 checkboxes for the stress test panel.
+fn stress_checks(__scope: &mut RenderScope, checks: &[Signal<bool>]) -> NodeHandle {
+    let labels = [
+        "Enable feature",
+        "Show preview",
+        "Auto-save",
+        "Notify on change",
+        "Debug mode",
+        "Cache results",
+        "Lazy loading",
+        "Animations",
+    ];
+    let container = __scope.create_element("div");
+    for (i, &sig) in checks.iter().enumerate() {
+        let label = labels[i % labels.len()];
+        let row = rsx! {
+            Checkbox {
+                label: {format!("Option {} — {}", i + 1, label)},
+                size: "sm",
+                checked_fn: move || sig.get(),
+                onchange: move || sig.update(|v| *v = !*v),
+            }
+        };
+        container.append_child(&row);
+    }
+    container
 }
 
 /// A color swatch button with a check overlay when selected.
