@@ -596,6 +596,9 @@ pub struct NodeTree {
     /// True if any layout-affecting Taffy style changed since last compute.
     /// When false, `resolve_layout()` can skip Taffy compute + IFC rebuild.
     pub layout_dirty: bool,
+    /// True when an absolute/fixed element moved via the inset fast path.
+    /// The app checks this to force a full scene repaint (clearing old position).
+    pub full_repaint_needed: bool,
     /// True if the tree structure changed (node insert/remove) or display mode
     /// changed since last IFC setup. When false, IFC rebuild is skipped and
     /// Taffy's internal cache is preserved — only dirty nodes get re-measured.
@@ -724,7 +727,8 @@ impl NodeTree {
             style_roots: Vec::new(),
             styles_dirty: true, // Initial render needs styles
             layout_dirty: true, // Initial render needs layout
-            ifc_dirty: true,    // Initial render needs IFC setup
+            full_repaint_needed: false,
+            ifc_dirty: true, // Initial render needs IFC setup
             taffy,
             taffy_map,
             viewport: crate::layout::Viewport::default(),

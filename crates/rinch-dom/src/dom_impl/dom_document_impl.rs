@@ -484,8 +484,14 @@ impl DomDocument for RinchDocument {
         // ── Fast path: inset-only changes on absolute/fixed elements ─────
         // Changing left/top/right/bottom on an out-of-flow element only moves
         // it within its containing block — children and siblings are unaffected.
-        // Skip Stylo, Taffy, and relayout entirely. Update the node's layout
-        // position directly and repaint.
+        // Skip Stylo re-parse and style resolution entirely. Update
+        // ComputedStyle and Taffy inset directly.
+        //
+        // Taffy's set_style calls mark_dirty which clears this node's cache,
+        // but children's caches are preserved. On next compute_layout, Taffy
+        // recomputes this node's position (cheap) and children hit their cache
+        // (free). The expensive part we skip is Stylo parse_style_attribute +
+        // style resolution + IFC invalidation.
         if matches!(property, "left" | "top" | "right" | "bottom")
             && matches!(
                 self.tree.nodes[node.0].computed_style.position,
@@ -507,9 +513,28 @@ impl DomDocument for RinchDocument {
                 .join("; ");
             self.tree.nodes[node.0]
                 .attributes
-                .insert("style".to_string(), style_str);
+                .insert("style".to_string(), style_str.clone());
 
-            // Update ComputedStyle directly
+            // Re-parse PDB so Stylo stays consistent for future full re-resolutions.
+            // This is cheap — it's the cascade/resolution we're skipping.
+            {
+                use style::properties::parse_style_attribute;
+                use style::stylesheets::CssRuleType;
+                use url::Url;
+                let url = Url::parse("about:blank").unwrap();
+                let extra_data = style::stylesheets::UrlExtraData::from(url);
+                let pdb = parse_style_attribute(
+                    &style_str,
+                    &extra_data,
+                    None,
+                    QuirksMode::NoQuirks,
+                    CssRuleType::Style,
+                );
+                self.tree.nodes[node.0].style_attribute_cache =
+                    Some(ServoArc::new(self.tree.guard.wrap(pdb)));
+            }
+
+            // Update ComputedStyle directly (skip Stylo)
             let vp = &crate::layout::Viewport::default();
             let new_val = crate::computed_style::LengthPercentageAutoValue::parse(value, vp);
             match property {
@@ -520,43 +545,30 @@ impl DomDocument for RinchDocument {
                 _ => unreachable!(),
             }
 
-            // Update node.layout position directly — skip Taffy entirely.
-            // Taffy's set_style() calls mark_dirty() which invalidates the
-            // node's cache and forces re-measurement of all children. For an
-            // inset-only change the children's sizes are unchanged, so we
-            // bypass Taffy and write the position ourselves.
-            //
-            // The Taffy style is intentionally left stale. It will be synced
-            // on the next real layout change (via apply_stylo_styles_to_taffy).
-            // The ComputedStyle is authoritative and to_taffy_style() reads
-            // from it, so the next full sync will produce the correct inset.
-            let px = new_val.to_px();
-            match property {
-                "left" => self.tree.nodes[node.0].layout.x = px,
-                "top" => self.tree.nodes[node.0].layout.y = px,
-                // right/bottom affect position via containing block size;
-                // computing the exact x/y requires knowing the parent size.
-                // Fall through to Taffy for these (less common for dragging).
-                "right" | "bottom" => {
-                    if let Some(taffy_id) = self.tree.nodes[node.0].taffy_id {
-                        if let Ok(mut taffy_style) = self.tree.taffy.style(taffy_id).cloned() {
-                            let taffy_val = new_val.to_taffy();
-                            match property {
-                                "right" => taffy_style.inset.right = taffy_val,
-                                "bottom" => taffy_style.inset.bottom = taffy_val,
-                                _ => unreachable!(),
-                            }
-                            let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
-                            self.tree.layout_dirty = true;
-                        }
+            // Update Taffy inset directly (skip full style resolution).
+            // mark_dirty clears this node's cache but NOT children's caches,
+            // so children won't be re-measured.
+            if let Some(taffy_id) = self.tree.nodes[node.0].taffy_id {
+                if let Ok(mut taffy_style) = self.tree.taffy.style(taffy_id).cloned() {
+                    let taffy_val = new_val.to_taffy();
+                    match property {
+                        "left" => taffy_style.inset.left = taffy_val,
+                        "top" => taffy_style.inset.top = taffy_val,
+                        "right" => taffy_style.inset.right = taffy_val,
+                        "bottom" => taffy_style.inset.bottom = taffy_val,
+                        _ => unreachable!(),
                     }
+                    let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
+                    self.tree.layout_dirty = true;
                 }
-                _ => unreachable!(),
             }
 
-            // Paint-only dirty — no Stylo, no Taffy, no relayout.
-            self.tree.nodes[node.0].dirty.insert(DirtyFlags::PAINT);
+            // Mark dirty and request full repaint so the old position gets cleared.
+            self.tree.nodes[node.0]
+                .dirty
+                .insert(DirtyFlags::LAYOUT | DirtyFlags::PAINT);
             self.tree.dirty_nodes.insert(node.0);
+            self.tree.full_repaint_needed = true;
             return;
         }
 
@@ -645,56 +657,64 @@ impl DomDocument for RinchDocument {
                 .join("; ");
             self.tree.nodes[node.0]
                 .attributes
-                .insert("style".to_string(), style_str);
+                .insert("style".to_string(), style_str.clone());
 
-            // Update ComputedStyle + node.layout directly, skip Taffy.
+            // Re-parse PDB for Stylo consistency
+            {
+                use style::properties::parse_style_attribute;
+                use style::stylesheets::CssRuleType;
+                use url::Url;
+                let url = Url::parse("about:blank").unwrap();
+                let extra_data = style::stylesheets::UrlExtraData::from(url);
+                let pdb = parse_style_attribute(
+                    &style_str,
+                    &extra_data,
+                    None,
+                    QuirksMode::NoQuirks,
+                    CssRuleType::Style,
+                );
+                self.tree.nodes[node.0].style_attribute_cache =
+                    Some(ServoArc::new(self.tree.guard.wrap(pdb)));
+            }
+
+            // Update ComputedStyle + Taffy inset directly (skip style resolution)
             let vp = &crate::layout::Viewport::default();
-            let mut needs_taffy = false;
 
-            for &(property, value) in properties {
-                let new_val = crate::computed_style::LengthPercentageAutoValue::parse(value, vp);
-                match property {
-                    "left" => {
-                        self.tree.nodes[node.0].computed_style.left = new_val;
-                        self.tree.nodes[node.0].layout.x = new_val.to_px();
-                    }
-                    "top" => {
-                        self.tree.nodes[node.0].computed_style.top = new_val;
-                        self.tree.nodes[node.0].layout.y = new_val.to_px();
-                    }
-                    "right" | "bottom" => {
-                        // right/bottom need containing block size to resolve position
+            if let Some(taffy_id) = self.tree.nodes[node.0].taffy_id {
+                if let Ok(mut ts) = self.tree.taffy.style(taffy_id).cloned() {
+                    for &(property, value) in properties {
+                        let new_val =
+                            crate::computed_style::LengthPercentageAutoValue::parse(value, vp);
                         match property {
-                            "right" => self.tree.nodes[node.0].computed_style.right = new_val,
-                            "bottom" => self.tree.nodes[node.0].computed_style.bottom = new_val,
+                            "left" => {
+                                self.tree.nodes[node.0].computed_style.left = new_val;
+                                ts.inset.left = new_val.to_taffy();
+                            }
+                            "top" => {
+                                self.tree.nodes[node.0].computed_style.top = new_val;
+                                ts.inset.top = new_val.to_taffy();
+                            }
+                            "right" => {
+                                self.tree.nodes[node.0].computed_style.right = new_val;
+                                ts.inset.right = new_val.to_taffy();
+                            }
+                            "bottom" => {
+                                self.tree.nodes[node.0].computed_style.bottom = new_val;
+                                ts.inset.bottom = new_val.to_taffy();
+                            }
                             _ => unreachable!(),
                         }
-                        needs_taffy = true;
                     }
-                    _ => unreachable!(),
+                    let _ = self.tree.taffy.set_style(taffy_id, ts);
+                    self.tree.layout_dirty = true;
                 }
             }
 
-            if needs_taffy {
-                if let Some(taffy_id) = self.tree.nodes[node.0].taffy_id {
-                    if let Ok(mut ts) = self.tree.taffy.style(taffy_id).cloned() {
-                        for &(property, value) in properties {
-                            let new_val =
-                                crate::computed_style::LengthPercentageAutoValue::parse(value, vp);
-                            match property {
-                                "right" => ts.inset.right = new_val.to_taffy(),
-                                "bottom" => ts.inset.bottom = new_val.to_taffy(),
-                                _ => {}
-                            }
-                        }
-                        let _ = self.tree.taffy.set_style(taffy_id, ts);
-                        self.tree.layout_dirty = true;
-                    }
-                }
-            }
-
-            self.tree.nodes[node.0].dirty.insert(DirtyFlags::PAINT);
+            self.tree.nodes[node.0]
+                .dirty
+                .insert(DirtyFlags::LAYOUT | DirtyFlags::PAINT);
             self.tree.dirty_nodes.insert(node.0);
+            self.tree.full_repaint_needed = true;
             return;
         }
 

@@ -504,6 +504,18 @@ impl RinchApp {
             let mut d = doc.borrow_mut();
             let _ = d.take_dirty_nodes();
             d.resolve_layout(viewport_width, viewport_height);
+
+            // Check if the inset fast path requested a full repaint
+            // (absolute element moved — dirty region caching can't track the
+            // old position reliably, so force full scene rebuild).
+            if d.tree.full_repaint_needed {
+                d.tree.full_repaint_needed = false;
+                self.scene_dirty = true;
+                #[cfg(not(feature = "gpu"))]
+                {
+                    self.has_previous_frame = false;
+                }
+            }
         }
 
         // Apply deferred scroll-into-view now that layout is fresh
