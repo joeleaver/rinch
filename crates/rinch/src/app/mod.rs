@@ -1128,6 +1128,162 @@ impl RinchApp {
         d.tree.dirty_nodes.insert(node_id);
     }
 
+    // ── Tab navigation ─────────────────────────────────────────────────
+
+    /// Handle Tab/Shift+Tab key to navigate between focusable elements.
+    fn handle_tab(&mut self, shift: bool) {
+        let focusable = self.collect_focusable_nodes();
+        if focusable.is_empty() {
+            return;
+        }
+
+        // Find current focused element
+        let current = self
+            .focused_input_node_id
+            .or(self.focused_contenteditable.as_ref().map(|c| c.ce_node_id));
+
+        let current_idx = current.and_then(|id| focusable.iter().position(|&fid| fid == id));
+
+        let target_idx = match (current_idx, shift) {
+            (Some(idx), false) => (idx + 1) % focusable.len(),
+            (Some(idx), true) => idx.checked_sub(1).unwrap_or(focusable.len() - 1),
+            (None, false) => 0,
+            (None, true) => focusable.len() - 1,
+        };
+
+        self.focus_element(focusable[target_idx]);
+    }
+
+    /// Collect all focusable node IDs in DOM pre-order (natural tab order).
+    fn collect_focusable_nodes(&self) -> Vec<usize> {
+        let Some(doc) = &self.doc else {
+            return Vec::new();
+        };
+        let d = doc.borrow();
+        let mut result = Vec::new();
+
+        // Walk DOM tree depth-first from root (node 0)
+        let mut stack: Vec<usize> = vec![0];
+        while let Some(nid) = stack.pop() {
+            let Some(node) = d.tree.get(nid) else {
+                continue;
+            };
+
+            // Skip disabled nodes
+            if node
+                .attributes
+                .get("data-disabled")
+                .is_some_and(|v| v == "true")
+            {
+                continue;
+            }
+
+            // Skip nodes with tabindex="-1"
+            if node.attributes.get("tabindex").is_some_and(|v| v == "-1") {
+                continue;
+            }
+
+            // Skip zero-size nodes (not visible)
+            if node.layout.width <= 0.0 || node.layout.height <= 0.0 {
+                // Still push children — a zero-size parent can have visible children
+            } else {
+                // Check if focusable
+                let has_oninput = node.attributes.contains_key("data-oninput");
+                let is_contenteditable = node
+                    .attributes
+                    .get("contenteditable")
+                    .is_some_and(|v| matches!(v.as_str(), "true" | "plaintext-only" | ""));
+                let has_tabindex = node
+                    .attributes
+                    .get("tabindex")
+                    .and_then(|v| v.parse::<i32>().ok())
+                    .is_some_and(|v| v >= 0);
+
+                if has_oninput || is_contenteditable || has_tabindex {
+                    result.push(nid);
+                }
+            }
+
+            // Push children in reverse order so first child is processed first
+            for &child_id in node.children.iter().rev() {
+                stack.push(child_id);
+            }
+        }
+
+        result
+    }
+
+    /// Focus a specific element by node ID (input or contenteditable).
+    fn focus_element(&mut self, node_id: usize) {
+        // Determine element type
+        let (has_oninput, is_contenteditable) = {
+            let Some(doc) = &self.doc else { return };
+            let d = doc.borrow();
+            let Some(node) = d.tree.get(node_id) else {
+                return;
+            };
+            let has_oninput = node.attributes.contains_key("data-oninput");
+            let is_ce = node
+                .attributes
+                .get("contenteditable")
+                .is_some_and(|v| matches!(v.as_str(), "true" | "plaintext-only" | ""));
+            (has_oninput, is_ce)
+        };
+
+        if has_oninput {
+            // Clear any CE focus first
+            if let Some(prev_ce) = self.focused_contenteditable.take() {
+                ce::clear_active_ce_api();
+                self.ce_ops = None;
+                self.set_contenteditable_attributes(prev_ce.ce_node_id, false, 0, 0);
+            }
+            self.try_focus_input(node_id);
+            // Update DOM focus state
+            if let Some(doc) = &self.doc {
+                let mut d = doc.borrow_mut();
+                d.update_focus(Some(node_id));
+            }
+        } else if is_contenteditable {
+            // Clear any input focus first
+            self.clear_input_focus_attrs();
+            self.focused_input_handler_id = None;
+            self.focused_input_value.clear();
+            self.focused_input_state = None;
+            self.focused_input_node_id = None;
+
+            // Set up CE focus with cursor at position 0
+            let input_handler = InputHandler::new()
+                .with_multiline(true)
+                .with_macos(cfg!(target_os = "macos"));
+
+            let dom_cursor = {
+                let doc = self.doc.as_ref().unwrap();
+                let d = doc.borrow();
+                Self::first_text_cursor(&d.tree, node_id)
+                    .unwrap_or(DomCursor { node_id, offset: 0 })
+            };
+
+            self.focused_contenteditable = Some(ContentEditableFocus {
+                ce_node_id: node_id,
+                cursor: dom_cursor,
+                anchor: dom_cursor,
+                input_handler,
+                undo_stack: std::collections::VecDeque::new(),
+                redo_stack: std::collections::VecDeque::new(),
+            });
+            self.register_ce_ops(node_id, dom_cursor);
+            self.set_contenteditable_attributes_dom(node_id, true, dom_cursor, dom_cursor);
+
+            // Update DOM focus state
+            if let Some(doc) = &self.doc {
+                let mut d = doc.borrow_mut();
+                d.update_focus(Some(node_id));
+            }
+        }
+
+        self.scene_dirty = true;
+    }
+
     /// Programmatically focus an input element by node ID.
     ///
     /// Looks up the node in the DOM, checks for `data-oninput`, and sets up

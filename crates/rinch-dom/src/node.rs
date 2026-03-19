@@ -158,6 +158,12 @@ pub struct IfcTextRange {
     pub node_offset: usize,
     /// True for `<br>` entries (which map to `"\n"` in the flat text).
     pub is_br: bool,
+    /// Length of the original DOM text content (before tab expansion).
+    /// When equal to `flat_end - flat_start`, no tabs were expanded.
+    pub dom_text_len: usize,
+    /// Original DOM text content (before tab expansion). Only set when
+    /// tabs were expanded; empty string when no tabs are present.
+    pub dom_text: String,
 }
 
 /// A background span for inline elements within an IFC.

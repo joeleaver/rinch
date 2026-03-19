@@ -793,6 +793,7 @@ impl RinchApp {
                     }
 
                     match key {
+                        KeyCode::Tab => self.handle_tab(shift),
                         KeyCode::Backspace => self.handle_backspace(),
                         KeyCode::Delete => self.handle_delete(),
                         KeyCode::ArrowLeft => self.handle_arrow_left(shift, ctrl),

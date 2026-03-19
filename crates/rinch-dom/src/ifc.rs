@@ -1116,19 +1116,34 @@ impl RinchDocument {
                         let start = *flat_pos;
                         // Apply text-transform from parent's computed style
                         let parent_transform = &nodes[parent_id].computed_style.text_transform;
-                        if let Some(transformed) = parent_transform.apply(&text_data.content) {
-                            builder.push_text(&transformed);
-                            *flat_pos += transformed.len();
+                        let raw =
+                            if let Some(transformed) = parent_transform.apply(&text_data.content) {
+                                transformed
+                            } else {
+                                text_data.content.clone()
+                            };
+                        let dom_text_len = raw.len();
+                        // Expand tabs to 4 spaces for Parley (which has no tab stop support)
+                        let has_tabs = raw.contains('\t');
+                        let display = if has_tabs {
+                            raw.replace('\t', "    ")
                         } else {
-                            builder.push_text(&text_data.content);
-                            *flat_pos += text_data.content.len();
-                        }
+                            raw
+                        };
+                        builder.push_text(&display);
+                        *flat_pos += display.len();
                         text_ranges.push(crate::node::IfcTextRange {
                             flat_start: start,
                             flat_end: *flat_pos,
                             node_id: child_id,
                             node_offset: 0,
                             is_br: false,
+                            dom_text_len,
+                            dom_text: if has_tabs {
+                                text_data.content.clone()
+                            } else {
+                                String::new()
+                            },
                         });
                         // Record position placeholder — actual position comes from layout
                         child_positions.push((child_id, LayoutResult::default()));
@@ -1152,6 +1167,8 @@ impl RinchDocument {
                         node_id: child_id,
                         node_offset: 0,
                         is_br: true,
+                        dom_text_len: 1,
+                        dom_text: String::new(),
                     });
                     child_positions.push((child_id, LayoutResult::default()));
                 }

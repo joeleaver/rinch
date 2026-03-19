@@ -3605,6 +3605,9 @@ impl ContentEditableApi for CeOps {
                 )
             };
             let Some((real_li_id, real_list_id, real_list_tag)) = resolved else {
+                // Not in a list — drop borrow and insert a tab character
+                drop(d);
+                self.insert_text("\t");
                 return;
             };
 

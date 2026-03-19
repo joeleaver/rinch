@@ -212,7 +212,7 @@ pub fn ifc_offset_to_dom_cursor(
                 // Prefer end of previous text range
                 for prev in ranges[..i].iter().rev() {
                     if !prev.is_br {
-                        let local = prev.flat_end - prev.flat_start + prev.node_offset;
+                        let local = prev.dom_text_len + prev.node_offset;
                         return Some((prev.node_id, local));
                     }
                 }
@@ -224,20 +224,35 @@ pub fn ifc_offset_to_dom_cursor(
                 }
                 // All ranges are <br> — return it as last resort
             }
-            let local = ifc_offset - r.flat_start + r.node_offset;
-            return Some((r.node_id, local));
+            let flat_len = r.flat_end - r.flat_start;
+            if flat_len == r.dom_text_len {
+                // No tab expansion — fast path
+                let local = ifc_offset - r.flat_start + r.node_offset;
+                return Some((r.node_id, local));
+            }
+            // Tab expansion — walk original DOM text to find the DOM offset
+            // corresponding to this flat offset
+            let target_flat = ifc_offset - r.flat_start;
+            let mut flat = 0usize;
+            for (i, ch) in r.dom_text.char_indices() {
+                if flat >= target_flat {
+                    return Some((r.node_id, i + r.node_offset));
+                }
+                flat += if ch == '\t' { 4 } else { ch.len_utf8() };
+            }
+            return Some((r.node_id, r.dom_text.len() + r.node_offset));
         }
     }
 
     // Offset is at or past the end — prefer last non-br range (unless allow_br)
     for r in ranges.iter().rev() {
         if allow_br || !r.is_br {
-            let local = r.flat_end - r.flat_start + r.node_offset;
+            let local = r.dom_text_len + r.node_offset;
             return Some((r.node_id, local));
         }
     }
     let last = ranges.last().unwrap();
-    let local = last.flat_end - last.flat_start + last.node_offset;
+    let local = last.dom_text_len + last.node_offset;
     Some((last.node_id, local))
 }
 
@@ -251,10 +266,22 @@ pub fn dom_cursor_to_ifc_offset(
 ) -> Option<usize> {
     for r in ranges {
         if r.node_id == node_id {
-            // Clamp node_offset to the range length
-            let range_len = r.flat_end - r.flat_start;
-            let clamped = node_offset.saturating_sub(r.node_offset).min(range_len);
-            return Some(r.flat_start + clamped);
+            let flat_len = r.flat_end - r.flat_start;
+            if flat_len == r.dom_text_len {
+                // No tab expansion — fast path (existing logic)
+                let clamped = node_offset.saturating_sub(r.node_offset).min(flat_len);
+                return Some(r.flat_start + clamped);
+            }
+            // Tab expansion — walk original DOM text to compute flat offset
+            let local_offset = node_offset.saturating_sub(r.node_offset);
+            let mut flat = 0usize;
+            for (i, ch) in r.dom_text.char_indices() {
+                if i >= local_offset {
+                    break;
+                }
+                flat += if ch == '\t' { 4 } else { ch.len_utf8() };
+            }
+            return Some(r.flat_start + flat.min(flat_len));
         }
     }
     None
