@@ -437,6 +437,62 @@ impl DomDocument for WebDocument {
         }
     }
 
+    fn scroll_top(&self, node: NodeId) -> f64 {
+        self.nodes
+            .get(&node.0)
+            .and_then(|n| n.clone().dyn_into::<web_sys::Element>().ok())
+            .map(|el| el.scroll_top() as f64)
+            .unwrap_or(0.0)
+    }
+
+    fn scroll_left(&self, node: NodeId) -> f64 {
+        self.nodes
+            .get(&node.0)
+            .and_then(|n| n.clone().dyn_into::<web_sys::Element>().ok())
+            .map(|el| el.scroll_left() as f64)
+            .unwrap_or(0.0)
+    }
+
+    fn set_scroll_left(&mut self, node: NodeId, scroll_left: f64) {
+        if let Some(n) = self.nodes.get(&node.0)
+            && let Ok(el) = n.clone().dyn_into::<web_sys::Element>()
+        {
+            el.set_scroll_left(scroll_left as i32);
+        }
+    }
+
+    fn scroll_height(&self, node: NodeId) -> f64 {
+        self.nodes
+            .get(&node.0)
+            .and_then(|n| n.clone().dyn_into::<web_sys::Element>().ok())
+            .map(|el| el.scroll_height() as f64)
+            .unwrap_or(0.0)
+    }
+
+    fn scroll_width(&self, node: NodeId) -> f64 {
+        self.nodes
+            .get(&node.0)
+            .and_then(|n| n.clone().dyn_into::<web_sys::Element>().ok())
+            .map(|el| el.scroll_width() as f64)
+            .unwrap_or(0.0)
+    }
+
+    fn client_height(&self, node: NodeId) -> f64 {
+        self.nodes
+            .get(&node.0)
+            .and_then(|n| n.clone().dyn_into::<web_sys::Element>().ok())
+            .map(|el| el.client_height() as f64)
+            .unwrap_or(0.0)
+    }
+
+    fn client_width(&self, node: NodeId) -> f64 {
+        self.nodes
+            .get(&node.0)
+            .and_then(|n| n.clone().dyn_into::<web_sys::Element>().ok())
+            .map(|el| el.client_width() as f64)
+            .unwrap_or(0.0)
+    }
+
     fn set_inner_html(&mut self, node: NodeId, html: &str) {
         if let Some(n) = self.nodes.get(&node.0)
             && let Ok(el) = n.clone().dyn_into::<web_sys::Element>()

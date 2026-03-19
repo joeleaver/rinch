@@ -643,6 +643,8 @@ pub struct NodeTree {
     /// Key: (ifc_root_node_id, wrap_width_bits) → (width, height).
     /// Invalidated per-root when text content changes.
     pub ifc_measure_cache: HashMap<(RawNodeId, u32), (f32, f32)>,
+    /// Nodes that have requested scroll-into-view (deferred until after layout).
+    pub scroll_into_view_requests: Vec<RawNodeId>,
 }
 
 impl Default for NodeTree {
@@ -750,6 +752,7 @@ impl NodeTree {
             image_loader: None,
             dirty_ifc_text_roots: HashSet::new(),
             ifc_measure_cache: HashMap::new(),
+            scroll_into_view_requests: Vec::new(),
         }
     }
 

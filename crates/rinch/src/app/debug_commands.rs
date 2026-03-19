@@ -470,10 +470,9 @@ impl RinchApp {
                         if let Some(scroll_node_id) = find_scroll_container(&doc_mut.tree, hit_node)
                             .or_else(|| find_scroll_container_at_point(&doc_mut.tree, x, y))
                         {
-                            let content_height =
-                                compute_content_height(&doc_mut.tree, scroll_node_id);
-                            let visible_height =
-                                compute_visible_content_area_height(&doc_mut.tree, scroll_node_id);
+                            let nid = rinch_core::dom::NodeId(scroll_node_id);
+                            let content_height = doc_mut.scroll_height(nid);
+                            let visible_height = doc_mut.client_height(nid);
                             let max_scroll = (content_height - visible_height).max(0.0);
 
                             if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {

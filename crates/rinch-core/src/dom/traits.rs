@@ -269,4 +269,59 @@ pub trait DomDocument {
     fn text_content(&self, _node: NodeId) -> Option<String> {
         None
     }
+
+    // ── Scroll query API ─────────────────────────────────────────────────
+
+    /// Get the vertical scroll position of an element.
+    /// Equivalent to `element.scrollTop` in the web DOM.
+    fn scroll_top(&self, _node: NodeId) -> f64 {
+        0.0
+    }
+
+    /// Get the horizontal scroll position of an element.
+    /// Equivalent to `element.scrollLeft` in the web DOM.
+    fn scroll_left(&self, _node: NodeId) -> f64 {
+        0.0
+    }
+
+    /// Set the horizontal scroll position of an element.
+    /// Equivalent to `element.scrollLeft = value` in the web DOM.
+    fn set_scroll_left(&mut self, _node: NodeId, _scroll_left: f64) {}
+
+    /// Get the total scrollable content height of an element.
+    /// Equivalent to `element.scrollHeight` in the web DOM.
+    fn scroll_height(&self, _node: NodeId) -> f64 {
+        0.0
+    }
+
+    /// Get the total scrollable content width of an element.
+    /// Equivalent to `element.scrollWidth` in the web DOM.
+    fn scroll_width(&self, _node: NodeId) -> f64 {
+        0.0
+    }
+
+    /// Get the visible content area height (layout height minus padding and border).
+    /// Equivalent to `element.clientHeight` in the web DOM.
+    fn client_height(&self, _node: NodeId) -> f64 {
+        0.0
+    }
+
+    /// Get the visible content area width (layout width minus padding and border).
+    /// Equivalent to `element.clientWidth` in the web DOM.
+    fn client_width(&self, _node: NodeId) -> f64 {
+        0.0
+    }
+
+    /// Request that the given node be scrolled into view after the next layout.
+    ///
+    /// The scroll is deferred because layout must be resolved first to know
+    /// the element's position relative to its scroll container.
+    fn request_scroll_into_view(&mut self, _node: NodeId) {}
+
+    /// Drain all pending scroll-into-view requests.
+    ///
+    /// Called by the runtime after `resolve_layout()` to apply deferred scrolls.
+    fn drain_scroll_into_view_requests(&mut self) -> Vec<NodeId> {
+        Vec::new()
+    }
 }

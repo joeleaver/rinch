@@ -578,10 +578,9 @@ impl RinchApp {
                                 find_scroll_container(&doc_mut.tree, hit_node)
                                     .or_else(|| find_scroll_container_at_point(&doc_mut.tree, x, y))
                         {
-                            let content_height =
-                                compute_content_height(&doc_mut.tree, scroll_node_id);
-                            let visible_height =
-                                compute_visible_content_area_height(&doc_mut.tree, scroll_node_id);
+                            let nid = rinch_core::dom::NodeId(scroll_node_id);
+                            let content_height = doc_mut.scroll_height(nid);
+                            let visible_height = doc_mut.client_height(nid);
                             let max_scroll = (content_height - visible_height).max(0.0);
 
                             // Read handler ID before mutable borrow
@@ -591,12 +590,7 @@ impl RinchApp {
                                 .get(scroll_node_id)
                                 .and_then(|n| n.attributes.get("data-onscroll"))
                                 .and_then(|s| s.parse::<usize>().ok());
-                            let old_y = doc_mut
-                                .tree
-                                .nodes
-                                .get(scroll_node_id)
-                                .map(|n| n.scroll_offset.1)
-                                .unwrap_or(0.0);
+                            let old_y = doc_mut.scroll_top(nid);
                             let new_y = (old_y - delta_y).clamp(0.0, max_scroll);
                             if new_y != old_y {
                                 if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
@@ -622,10 +616,9 @@ impl RinchApp {
                                 find_horizontal_scroll_container_at_point(&doc_mut.tree, x, y)
                             })
                         {
-                            let content_width =
-                                compute_content_width(&doc_mut.tree, scroll_node_id);
-                            let visible_width =
-                                compute_visible_content_area_width(&doc_mut.tree, scroll_node_id);
+                            let nid = rinch_core::dom::NodeId(scroll_node_id);
+                            let content_width = doc_mut.scroll_width(nid);
+                            let visible_width = doc_mut.client_width(nid);
                             let max_scroll = (content_width - visible_width).max(0.0);
 
                             if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {

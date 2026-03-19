@@ -528,6 +528,7 @@ impl RinchApp {
 
         // Apply deferred scroll-into-view now that layout is fresh
         self.apply_ce_scroll_into_view();
+        self.apply_scroll_into_view();
 
         self.scene_dirty = true;
 
@@ -543,6 +544,104 @@ impl RinchApp {
         }
 
         true
+    }
+
+    /// Apply deferred scroll-into-view requests.
+    ///
+    /// Must be called AFTER `resolve_layout` so node positions are valid.
+    /// Walks ancestors to find the nearest scroll container and adjusts its
+    /// scroll offset to make the target element visible.
+    fn apply_scroll_into_view(&mut self) {
+        let Some(doc) = &self.doc else { return };
+        let requests = doc.borrow_mut().drain_scroll_into_view_requests();
+        if requests.is_empty() {
+            return;
+        }
+
+        for target_nid in requests {
+            let mut d = doc.borrow_mut();
+
+            // Walk ancestors to find nearest scroll container
+            let target_id = target_nid.0;
+            let scroll_container = {
+                let mut current = d.tree.nodes.get(target_id).and_then(|n| n.parent);
+                let mut found = None;
+                while let Some(ancestor_id) = current {
+                    if let Some(ancestor) = d.tree.nodes.get(ancestor_id) {
+                        use rinch_dom::computed_style::OverflowValue;
+                        if matches!(
+                            ancestor.computed_style.overflow_y,
+                            OverflowValue::Auto | OverflowValue::Scroll
+                        ) {
+                            found = Some(ancestor_id);
+                            break;
+                        }
+                        current = ancestor.parent;
+                    } else {
+                        break;
+                    }
+                }
+                found
+            };
+
+            let Some(container_id) = scroll_container else {
+                continue;
+            };
+
+            // Compute element's Y position relative to the scroll container
+            let mut rel_y = 0.0_f32;
+            let mut current = target_id;
+            while current != container_id {
+                if let Some(node) = d.tree.nodes.get(current) {
+                    rel_y += node.layout.y;
+                    if let Some(parent_id) = node.parent {
+                        if parent_id != container_id {
+                            if let Some(parent) = d.tree.nodes.get(parent_id) {
+                                rel_y -= parent.scroll_offset.1 as f32;
+                            }
+                        }
+                    }
+                    current = node.parent.unwrap_or(container_id);
+                } else {
+                    break;
+                }
+            }
+
+            let target_height = d
+                .tree
+                .nodes
+                .get(target_id)
+                .map(|n| n.layout.height)
+                .unwrap_or(0.0);
+
+            let container_nid = rinch_core::dom::NodeId(container_id);
+            let visible_height = d.client_height(container_nid);
+            let current_scroll = d.scroll_top(container_nid);
+            let content_height = d.scroll_height(container_nid);
+            let max_scroll = (content_height - visible_height).max(0.0);
+
+            // Determine if element is outside the visible area
+            let elem_top = rel_y as f64;
+            let elem_bottom = elem_top + target_height as f64;
+
+            let new_scroll = if elem_top < current_scroll {
+                // Element is above visible area — scroll up
+                elem_top
+            } else if elem_bottom > current_scroll + visible_height {
+                // Element is below visible area — scroll down
+                elem_bottom - visible_height
+            } else {
+                continue; // already visible
+            };
+
+            let clamped = new_scroll.clamp(0.0, max_scroll);
+            if let Some(node) = d.tree.nodes.get_mut(container_id) {
+                node.scroll_offset.1 = clamped;
+                node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+            }
+            d.tree.dirty_nodes.insert(container_id);
+            self.scene_dirty = true;
+        }
     }
 
     /// Resize the document layout.

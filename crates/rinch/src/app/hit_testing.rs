@@ -568,25 +568,6 @@ pub(crate) fn compute_content_width(tree: &rinch_dom::NodeTree, node_id: usize) 
     max_right
 }
 
-/// The visible content area width: layout.width minus padding and border.
-/// Children are positioned relative to the content box, so this is the actual
-/// viewport width for scroll calculations.
-pub(crate) fn compute_visible_content_area_width(
-    tree: &rinch_dom::NodeTree,
-    node_id: usize,
-) -> f64 {
-    let node = match tree.get(node_id) {
-        Some(n) => n,
-        None => return 0.0,
-    };
-    let cs = &node.computed_style;
-    let pad_left = cs.padding_left.to_px() as f64;
-    let pad_right = cs.padding_right.to_px() as f64;
-    let border_left = cs.border_left_width.to_px() as f64;
-    let border_right = cs.border_right_width.to_px() as f64;
-    (node.layout.width as f64 - pad_left - pad_right - border_left - border_right).max(0.0)
-}
-
 /// Check if a point (x, y) hits a scrollbar.
 pub(crate) fn find_scrollbar_hit(
     tree: &rinch_dom::NodeTree,

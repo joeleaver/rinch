@@ -979,4 +979,100 @@ impl DomDocument for RinchDocument {
             _ => None,
         }
     }
+
+    // ── Scroll query API ─────────────────────────────────────────────────
+
+    fn scroll_top(&self, node: NodeId) -> f64 {
+        self.tree
+            .nodes
+            .get(node.0)
+            .map(|n| n.scroll_offset.1)
+            .unwrap_or(0.0)
+    }
+
+    fn scroll_left(&self, node: NodeId) -> f64 {
+        self.tree
+            .nodes
+            .get(node.0)
+            .map(|n| n.scroll_offset.0)
+            .unwrap_or(0.0)
+    }
+
+    fn set_scroll_left(&mut self, node: NodeId, scroll_left: f64) {
+        if let Some(n) = self.tree.nodes.get_mut(node.0) {
+            n.scroll_offset.0 = scroll_left;
+        }
+        self.push_dirty_flags(node.0, DirtyFlags::PAINT);
+    }
+
+    fn scroll_height(&self, node: NodeId) -> f64 {
+        let node = match self.tree.nodes.get(node.0) {
+            Some(n) => n,
+            None => return 0.0,
+        };
+        let mut max_bottom: f64 = 0.0;
+        for &child_id in &node.children {
+            if let Some(child) = self.tree.nodes.get(child_id) {
+                let bottom = (child.layout.y + child.layout.height) as f64;
+                if bottom > max_bottom {
+                    max_bottom = bottom;
+                }
+            }
+        }
+        max_bottom
+    }
+
+    fn scroll_width(&self, node: NodeId) -> f64 {
+        let node = match self.tree.nodes.get(node.0) {
+            Some(n) => n,
+            None => return 0.0,
+        };
+        let mut max_right: f64 = 0.0;
+        for &child_id in &node.children {
+            if let Some(child) = self.tree.nodes.get(child_id) {
+                let right = (child.layout.x + child.layout.width) as f64;
+                if right > max_right {
+                    max_right = right;
+                }
+            }
+        }
+        max_right
+    }
+
+    fn client_height(&self, node: NodeId) -> f64 {
+        let node = match self.tree.nodes.get(node.0) {
+            Some(n) => n,
+            None => return 0.0,
+        };
+        let cs = &node.computed_style;
+        let pad_top = cs.padding_top.to_px() as f64;
+        let pad_bottom = cs.padding_bottom.to_px() as f64;
+        let border_top = cs.border_top_width.to_px() as f64;
+        let border_bottom = cs.border_bottom_width.to_px() as f64;
+        (node.layout.height as f64 - pad_top - pad_bottom - border_top - border_bottom).max(0.0)
+    }
+
+    fn client_width(&self, node: NodeId) -> f64 {
+        let node = match self.tree.nodes.get(node.0) {
+            Some(n) => n,
+            None => return 0.0,
+        };
+        let cs = &node.computed_style;
+        let pad_left = cs.padding_left.to_px() as f64;
+        let pad_right = cs.padding_right.to_px() as f64;
+        let border_left = cs.border_left_width.to_px() as f64;
+        let border_right = cs.border_right_width.to_px() as f64;
+        (node.layout.width as f64 - pad_left - pad_right - border_left - border_right).max(0.0)
+    }
+
+    fn request_scroll_into_view(&mut self, node: NodeId) {
+        self.tree.scroll_into_view_requests.push(node.0);
+    }
+
+    fn drain_scroll_into_view_requests(&mut self) -> Vec<NodeId> {
+        std::mem::take(&mut self.tree.scroll_into_view_requests)
+            .into_iter()
+            .map(NodeId)
+            .collect()
+    }
 }

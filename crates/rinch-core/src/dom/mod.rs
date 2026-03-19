@@ -436,11 +436,94 @@ impl NodeHandle {
         }
     }
 
-    /// Set the scroll position of this element.
+    /// Set the vertical scroll position of this element.
     /// For elements with overflow: auto/scroll, this sets the vertical scroll offset.
     pub fn set_scroll_top(&self, scroll_top: f64) {
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut().set_scroll_top(self.node_id, scroll_top);
+        }
+    }
+
+    /// Get the vertical scroll position of this element.
+    /// Equivalent to `element.scrollTop` in the web DOM.
+    pub fn scroll_top(&self) -> f64 {
+        self.doc
+            .upgrade()
+            .map(|doc| doc.borrow().scroll_top(self.node_id))
+            .unwrap_or(0.0)
+    }
+
+    /// Get the horizontal scroll position of this element.
+    /// Equivalent to `element.scrollLeft` in the web DOM.
+    pub fn scroll_left(&self) -> f64 {
+        self.doc
+            .upgrade()
+            .map(|doc| doc.borrow().scroll_left(self.node_id))
+            .unwrap_or(0.0)
+    }
+
+    /// Set the horizontal scroll position of this element.
+    /// Equivalent to `element.scrollLeft = value` in the web DOM.
+    pub fn set_scroll_left(&self, scroll_left: f64) {
+        if let Some(doc) = self.doc.upgrade() {
+            doc.borrow_mut().set_scroll_left(self.node_id, scroll_left);
+        }
+    }
+
+    /// Get the total scrollable content height.
+    /// Equivalent to `element.scrollHeight` in the web DOM.
+    pub fn scroll_height(&self) -> f64 {
+        self.doc
+            .upgrade()
+            .map(|doc| doc.borrow().scroll_height(self.node_id))
+            .unwrap_or(0.0)
+    }
+
+    /// Get the total scrollable content width.
+    /// Equivalent to `element.scrollWidth` in the web DOM.
+    pub fn scroll_width(&self) -> f64 {
+        self.doc
+            .upgrade()
+            .map(|doc| doc.borrow().scroll_width(self.node_id))
+            .unwrap_or(0.0)
+    }
+
+    /// Get the visible content area height (layout height minus padding and border).
+    /// Equivalent to `element.clientHeight` in the web DOM.
+    pub fn client_height(&self) -> f64 {
+        self.doc
+            .upgrade()
+            .map(|doc| doc.borrow().client_height(self.node_id))
+            .unwrap_or(0.0)
+    }
+
+    /// Get the visible content area width (layout width minus padding and border).
+    /// Equivalent to `element.clientWidth` in the web DOM.
+    pub fn client_width(&self) -> f64 {
+        self.doc
+            .upgrade()
+            .map(|doc| doc.borrow().client_width(self.node_id))
+            .unwrap_or(0.0)
+    }
+
+    /// Scroll this element so its bottom content is visible.
+    /// Convenience method: sets `scroll_top` to `scroll_height - client_height`.
+    pub fn scroll_to_bottom(&self) {
+        if let Some(doc) = self.doc.upgrade() {
+            let sh = doc.borrow().scroll_height(self.node_id);
+            let ch = doc.borrow().client_height(self.node_id);
+            let max = (sh - ch).max(0.0);
+            doc.borrow_mut().set_scroll_top(self.node_id, max);
+        }
+    }
+
+    /// Request that this element be scrolled into view.
+    ///
+    /// The scroll is deferred until after the next layout pass, since the
+    /// element's position must be known relative to its scroll container.
+    pub fn scroll_into_view(&self) {
+        if let Some(doc) = self.doc.upgrade() {
+            doc.borrow_mut().request_scroll_into_view(self.node_id);
         }
     }
 
