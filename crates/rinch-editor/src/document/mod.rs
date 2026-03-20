@@ -7,3 +7,6 @@ mod position;
 pub use fragment::{Fragment, FragmentBlock, FragmentInline};
 pub use model::{EditorDocument, InlineRun, MarkData};
 pub use position::{Position, Range, ResolvedPosition};
+
+#[cfg(feature = "collaboration")]
+pub use model::sync;

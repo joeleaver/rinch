@@ -5,6 +5,8 @@ mod queries;
 #[cfg(test)]
 mod roundtrip_tests;
 pub(crate) mod serialization;
+#[cfg(feature = "collaboration")]
+pub mod sync;
 
 use std::collections::HashMap;
 

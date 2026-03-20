@@ -37,6 +37,12 @@ pub use error::EditorError;
 pub use extensions::CommandRegistration;
 pub use schema::Schema;
 
+/// Sync protocol types for collaborative editing.
+///
+/// Gated behind the `collaboration` feature flag.
+#[cfg(feature = "collaboration")]
+pub use document::sync;
+
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::document::{EditorDocument, MarkData, Position, Range};
@@ -44,4 +50,7 @@ pub mod prelude {
     pub use crate::error::EditorError;
     pub use crate::extensions::{Extension, StarterKit};
     pub use crate::schema::Schema;
+
+    #[cfg(feature = "collaboration")]
+    pub use crate::document::sync::{ChangeHash, SyncMessage, SyncState};
 }
