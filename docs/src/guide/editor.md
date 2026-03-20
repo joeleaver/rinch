@@ -2,6 +2,8 @@
 
 Rinch provides a comprehensive rich-text editor with collaborative editing support through Automerge CRDT, a schema-driven document model, and a powerful extension system.
 
+> **Looking for the ContentEditable API?** This guide covers the high-level `rinch-editor` crate (schemas, extensions, document model). For the lower-level DOM editing API (`ContentEditableApi`, `CeEvent`, `DomCursor`), see the [ContentEditable API](./contenteditable.md) guide. The editor uses the CE API internally — the CE layer handles DOM mutations while this layer handles document structure and serialization.
+
 ## Quick Start
 
 Create a new editor with the StarterKit (22 default extensions):

@@ -614,6 +614,81 @@ let count = Signal::new(0);
 MenuItem::new("Reset Counter").on_click(move || count.set(0))
 ```
 
+## ContentEditable (Rich-Text Editing)
+
+Rinch has a built-in contenteditable system for rich-text editing. Set `contenteditable: "true"` on a `<div>` to activate cursor rendering, text selection, keyboard input, clipboard, and undo/redo.
+
+**Full guide:** `docs/src/guide/contenteditable.md`
+
+### Key Types (all in `rinch_core::ce`)
+
+| Type | Purpose |
+|------|---------|
+| `ContentEditableApi` | Trait — single mutation interface for all CE operations |
+| `CeOps` | Runtime implementation of `ContentEditableApi` (`rinch/src/ce_ops.rs`) |
+| `CeEvent` | Enum — events dispatched after each DOM mutation |
+| `DomCursor` | Position: `{ node_id: usize, offset: usize }` |
+| `CeSelection` | Selection: `{ anchor: DomCursor, head: DomCursor }` |
+| `BlockData` | Structured content for interchange |
+
+### Accessing the CE API
+
+```rust
+use rinch_core::ce::with_active_ce_api;
+
+// Helper: operate on the focused CE element
+fn ce_do(f: impl FnOnce(&mut dyn ContentEditableApi) + 'static) {
+    with_active_ce_api(|api| f(&mut *api.borrow_mut()));
+}
+
+// Toolbar buttons:
+button { onclick: move || ce_do(|api| api.toggle_wrap("strong")), "Bold" }
+
+// Load content into a specific CE element (works before focus):
+editor_div.with_ce_api(|api| {
+    api.borrow_mut().load_html("<p>Hello <strong>world</strong></p>");
+});
+```
+
+### ContentEditableApi Methods
+
+| Category | Methods |
+|----------|---------|
+| **Text** | `insert_text(&str)`, `delete_backward()`, `delete_forward()`, `delete_selection()` |
+| **Block** | `split_block()`, `set_block_type(&str)` |
+| **Formatting** | `wrap_selection(&str)`, `unwrap_selection(&str)`, `toggle_wrap(&str)` |
+| **Lists** | `indent()`, `outdent()` |
+| **Selection** | `get_selection()`, `set_selection(CeSelection)` |
+| **History** | `undo()`, `redo()` |
+| **Query** | `has_active_mark(&str)`, `cursor_block_tag()` |
+| **Content** | `extract_content()`, `load_content(&[BlockData])`, `load_html(&str)`, `clear_formatting()` |
+
+### CeEvent Variants
+
+Every `ContentEditableApi` method dispatches a `CeEvent`. Key variants:
+
+- **Text:** `TextInserted { node_id, offset, text }`, `TextDeleted { node_id, offset, length }`, `TextNodeCreated`, `NodeRemoved`
+- **Selection:** `SelectionChanged { selection }`
+- **Block:** `BlockSplit`, `BlockJoined`, `BlockTypeChanged`
+- **Formatting:** `SelectionWrapped`, `SelectionUnwrapped`
+- **Lists:** `ListItemOutdented`, `BlockIndented`
+- **History:** `UndoApplied`, `RedoApplied`
+- **Clipboard:** `HtmlPasted`
+
+Subscribe: `subscribe_ce_events(Rc::new(|event| { ... }))`. Dispatch: `dispatch_ce_event(&event)`.
+
+### Key Source Files
+
+| File | Purpose |
+|------|---------|
+| `crates/rinch-core/src/ce.rs` | Core types, trait, events, dispatchers |
+| `crates/rinch/src/ce_ops.rs` | `CeOps` impl of `ContentEditableApi` |
+| `crates/rinch/src/app/contenteditable/mod.rs` | Keyboard handler, cursor management |
+| `crates/rinch/src/app/contenteditable/ce_selection.rs` | Selection, copy/cut |
+| `crates/rinch/src/app/contenteditable/ce_paste.rs` | HTML paste |
+| `crates/rinch/src/app/contenteditable/ce_blocks.rs` | Block operations |
+| `crates/rinch-editable/src/` | Generic editing primitives (`EditCommand`, `InputHandler`) |
+
 ## Drag and Drop
 
 Rinch has two drag systems: **DOM drag attributes** for element-to-element DnD, and the **`Drag` builder** for pointer capture (sliders, panel dragging, resize handles).
@@ -1571,6 +1646,8 @@ Documentation locations:
 - `docs/src/guide/game-engine.md` - Game engine integration (embed API)
 - `docs/src/guide/theming.md` - Theme system and CSS variables
 - `docs/src/guide/components.md` - Component library
+- `docs/src/guide/contenteditable.md` - ContentEditable API and CE events
+- `docs/src/guide/editor.md` - Rich-text editor (schemas, extensions, document model)
 - `docs/src/SUMMARY.md` - Table of contents (update when adding new pages)
 
 Architecture documentation:
