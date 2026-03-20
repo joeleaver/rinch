@@ -597,6 +597,9 @@ pub struct CeOps {
     anchor: DomCursor,
     /// Per-instance event dispatcher.
     dispatcher: CeEventDispatcher,
+    /// Block virtualization window for large documents.
+    pub(crate) virtual_window:
+        Option<crate::app::contenteditable::ce_virtualization::CeVirtualWindow>,
 }
 
 impl CeOps {
@@ -608,6 +611,7 @@ impl CeOps {
             cursor,
             anchor: cursor,
             dispatcher: CeEventDispatcher::new(),
+            virtual_window: None,
         }
     }
 
@@ -623,6 +627,16 @@ impl CeOps {
     pub fn sync_cursor(&mut self, cursor: DomCursor, anchor: DomCursor) {
         self.cursor = cursor;
         self.anchor = anchor;
+    }
+
+    /// Notify the virtual window that the block structure changed.
+    /// Call after split_block, join_block, delete_selection, or any operation
+    /// that adds/removes direct children of the CE root.
+    pub fn notify_blocks_changed(&mut self) {
+        if let Some(vw) = &mut self.virtual_window {
+            let mut d = self.doc.borrow_mut();
+            vw.on_blocks_changed(&mut d);
+        }
     }
 
     /// Handle `set_block_type` when the selection spans blocks with different parents.
@@ -2387,6 +2401,7 @@ impl ContentEditableApi for CeOps {
         }
         // Clean up empty text nodes (they break IFC navigation)
         self.cleanup_empty_cursor_node_internal();
+        self.notify_blocks_changed();
     }
 
     // ── Block Structure ──────────────────────────────────────────────
@@ -2950,6 +2965,8 @@ impl ContentEditableApi for CeOps {
                 });
             }
         }
+
+        self.notify_blocks_changed();
     }
 
     fn set_block_type(&mut self, tag: &str) {
@@ -3868,6 +3885,13 @@ impl ContentEditableApi for CeOps {
             for block in blocks {
                 load_block(&mut d, ce_root, block);
             }
+
+            // Initialize block virtualization for large documents.
+            self.virtual_window = Some(
+                crate::app::contenteditable::ce_virtualization::CeVirtualWindow::new(
+                    ce_root, &mut d,
+                ),
+            );
         }
         // Set cursor to start of first text node
         let d = self.doc.borrow();
@@ -3894,8 +3918,18 @@ impl ContentEditableApi for CeOps {
                 d.append_child(p, text);
                 self.cursor = DomCursor::new(text.0, 0);
                 self.anchor = self.cursor;
+                self.virtual_window = None;
                 return;
             }
+
+            // Initialize block virtualization for large documents.
+            // Collapses off-screen blocks immediately so the first layout
+            // only measures blocks in the initial viewport.
+            self.virtual_window = Some(
+                crate::app::contenteditable::ce_virtualization::CeVirtualWindow::new(
+                    ce_root, &mut d,
+                ),
+            );
         }
         // Set cursor to start of first text node
         let d = self.doc.borrow();

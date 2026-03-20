@@ -4,6 +4,7 @@ mod ce_helpers;
 mod ce_navigation;
 mod ce_paste;
 mod ce_selection;
+pub(crate) mod ce_virtualization;
 
 use super::*;
 use ce_selection::compute_ce_scroll_target;
@@ -95,6 +96,168 @@ impl RinchApp {
 
             d.tree.dirty_nodes.insert(ce_node_id);
         }
+    }
+
+    /// Handle PageUp/PageDown in a contenteditable: scroll by one viewport
+    /// height and move the cursor to a visible position.
+    fn handle_ce_page_scroll(
+        &mut self,
+        ce_node_id: usize,
+        cursor: DomCursor,
+        direction: f32, // 1.0 = down, -1.0 = up
+        select: bool,
+    ) {
+        let Some(doc) = &self.doc else { return };
+
+        // Scroll the CE root by one viewport height
+        {
+            let mut d = doc.borrow_mut();
+            let viewport_h = d.tree.nodes[ce_node_id].layout.height;
+            let scroll_y = d.tree.nodes[ce_node_id].scroll_offset.1 as f32;
+            let nid = rinch_core::dom::NodeId(ce_node_id);
+            let content_h = d.scroll_height(nid);
+            let max_scroll = (content_h - viewport_h as f64).max(0.0);
+            let new_scroll = (scroll_y + direction * viewport_h)
+                .max(0.0)
+                .min(max_scroll as f32);
+            d.tree.nodes[ce_node_id].scroll_offset.1 = new_scroll as f64;
+            d.tree.nodes[ce_node_id]
+                .dirty
+                .insert(rinch_dom::DirtyFlags::PAINT);
+            d.tree.dirty_nodes.insert(ce_node_id);
+        }
+
+        // Move cursor to approximately the same x position on the first/last
+        // visible line after scroll. Use a vertical move repeated enough times.
+        // Simpler approach: just move cursor by ~viewport_height worth of lines.
+        {
+            let d = doc.borrow();
+            let viewport_h = d.tree.nodes[ce_node_id].layout.height;
+            // Estimate line count: ~25px per line
+            let line_count = (viewport_h / 25.0).max(1.0) as i32;
+            let dir = if direction > 0.0 { 1 } else { -1 };
+            let mut cur = cursor;
+            for _ in 0..line_count {
+                let new_cur = Self::move_dom_cursor(
+                    &d.tree,
+                    ce_node_id,
+                    cur,
+                    &if dir > 0 {
+                        rinch_editable::EditCommand::MoveDown
+                    } else {
+                        rinch_editable::EditCommand::MoveUp
+                    },
+                );
+                if new_cur == cur {
+                    break; // Hit boundary
+                }
+                cur = new_cur;
+            }
+            let ce = self.focused_contenteditable.as_mut().unwrap();
+            ce.cursor = cur;
+            if !select {
+                ce.anchor = cur;
+            }
+        }
+
+        // Materialize blocks around the new cursor position
+        self.materialize_for_navigation(
+            ce_node_id,
+            self.focused_contenteditable.as_ref().unwrap().cursor,
+            &if direction > 0.0 {
+                rinch_editable::EditCommand::MoveDown
+            } else {
+                rinch_editable::EditCommand::MoveUp
+            },
+        );
+
+        // Update DOM attributes
+        let ce = self.focused_contenteditable.as_ref().unwrap();
+        let final_cursor = ce.cursor;
+        let final_anchor = ce.anchor;
+        self.set_contenteditable_attributes_dom(ce_node_id, true, final_cursor, final_anchor);
+        self.sync_ce_ops_cursor();
+    }
+
+    /// Before cursor navigation, ensure the cursor's current block and
+    /// the adjacent block in the movement direction are both materialized
+    /// so navigation can read their text_layout.
+    fn materialize_for_navigation(
+        &mut self,
+        ce_node_id: usize,
+        cursor: DomCursor,
+        cmd: &rinch_editable::EditCommand,
+    ) {
+        use rinch_editable::EditCommand;
+        let direction: Option<i32> = match cmd {
+            EditCommand::MoveUp | EditCommand::SelectUp => Some(-1),
+            EditCommand::MoveDown | EditCommand::SelectDown => Some(1),
+            EditCommand::MoveLeft
+            | EditCommand::SelectLeft
+            | EditCommand::MoveWordLeft
+            | EditCommand::SelectWordLeft => Some(-1),
+            EditCommand::MoveRight
+            | EditCommand::SelectRight
+            | EditCommand::MoveWordRight
+            | EditCommand::SelectWordRight => Some(1),
+            _ => None,
+        };
+
+        let Some(ce_ops) = &self.ce_ops else { return };
+        let mut ops = ce_ops.borrow_mut();
+        let Some(vw) = &mut ops.virtual_window else {
+            return;
+        };
+        if !vw.is_active() {
+            return;
+        }
+        let Some(doc) = &self.doc else { return };
+
+        let mut d = doc.borrow_mut();
+        let mut changed = false;
+
+        // Find the block containing the cursor
+        let block_info = Self::find_block_and_parent(&d.tree, cursor.node_id, ce_node_id);
+        let Some((block_id, parent_id)) = block_info else {
+            return;
+        };
+
+        // Clear pending from previous key press
+        vw.pending_nav_blocks.clear();
+
+        // Always ensure the CURRENT block is materialized (cursor may have
+        // landed here from a previous navigation into a collapsed block)
+        if d.tree.nodes[block_id].estimated_height.is_some() {
+            vw.ensure_materialized(&mut d, block_id);
+            vw.pending_nav_blocks.push(block_id);
+            changed = true;
+        }
+
+        // Also materialize the adjacent block in the movement direction
+        if let Some(dir) = direction {
+            let siblings = d.tree.nodes[parent_id].children.clone();
+            if let Some(pos) = siblings.iter().position(|&id| id == block_id) {
+                let adj_id = if dir < 0 {
+                    pos.checked_sub(1).map(|p| siblings[p])
+                } else {
+                    siblings.get(pos + 1).copied()
+                };
+                if let Some(adj_id) = adj_id {
+                    if d.tree.nodes[adj_id].estimated_height.is_some() {
+                        vw.ensure_materialized(&mut d, adj_id);
+                        vw.pending_nav_blocks.push(adj_id);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        // Don't call resolve_layout here. The caller (event_dispatch.rs)
+        // calls resolve_and_repaint after handle_contenteditable_key, which
+        // runs pre_layout_update + resolve_layout + post_layout_cache.
+        // The cursor block is protected from collapsing by cursor_block_id.
+        // The blocks we just materialized will be laid out in that pass.
+        let _ = changed;
     }
 
     /// Apply deferred scroll-into-view for the focused contenteditable.
@@ -225,6 +388,16 @@ impl RinchApp {
                 None
             }
         });
+
+        // PageUp/PageDown: scroll by viewport height and move cursor
+        if key == KeyCode::PageUp || key == KeyCode::PageDown {
+            let direction = if key == KeyCode::PageDown { 1.0 } else { -1.0 };
+            let ce = self.focused_contenteditable.as_ref().unwrap();
+            let cur = ce.cursor;
+            let ce_nid = ce.ce_node_id;
+            self.handle_ce_page_scroll(ce_nid, cur, direction, shift);
+            return true;
+        }
 
         // Special handling for paste (Ctrl+V)
         // Try HTML paste first for rich content, fall back to plain text
@@ -389,6 +562,10 @@ impl RinchApp {
                         | EditCommand::SelectToLineStart
                         | EditCommand::SelectToLineEnd
                 );
+
+                // Materialize adjacent block if needed so navigation
+                // can read its text_layout.
+                self.materialize_for_navigation(ce_node_id, cursor, &cmd);
 
                 if let Some(doc) = &self.doc {
                     let d = doc.borrow();

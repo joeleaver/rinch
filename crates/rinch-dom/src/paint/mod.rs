@@ -483,6 +483,12 @@ fn paint_node(
     {
         return;
     }
+
+    // Skip collapsed blocks (virtualized contenteditable) — they have
+    // estimated heights for layout but no Parley text layout for painting.
+    if node.estimated_height.is_some() {
+        return;
+    }
     let layout = &node.layout;
 
     // Skip zero-size elements (display: none produces 0x0 layout).

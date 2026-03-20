@@ -734,6 +734,19 @@ impl RinchApp {
             return Some(DomCursor { node_id, offset: 0 });
         }
 
+        // Bare text node (no cached layout — e.g. in a collapsed/virtualized block)
+        if node.text_content().is_some() {
+            let off = if upward {
+                node.text_content().map(|t| t.len()).unwrap_or(0)
+            } else {
+                0
+            };
+            return Some(DomCursor {
+                node_id,
+                offset: off,
+            });
+        }
+
         // Recurse into children (last-to-first for upward, first-to-last for downward)
         let children = &node.children;
         if upward {

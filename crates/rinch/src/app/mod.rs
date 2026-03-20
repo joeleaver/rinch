@@ -7,7 +7,7 @@
 //! [`AppAction`]s.
 
 mod click_handling;
-mod contenteditable;
+pub(crate) mod contenteditable;
 #[cfg(feature = "debug")]
 mod debug_commands;
 mod event_dispatch;
@@ -467,9 +467,10 @@ impl RinchApp {
     /// Re-resolve layout after signal changes. Returns `true` if a redraw
     /// is needed.
     pub fn resolve_and_repaint(&mut self, viewport_width: f32, viewport_height: f32) -> bool {
-        let Some(doc) = &self.doc else {
+        let Some(doc) = self.doc.clone() else {
             return false;
         };
+        let doc = &doc;
 
         // Check if theme CSS has changed (e.g. primary color or dark mode toggled)
         #[allow(unused_assignments, unused_mut)]
@@ -507,6 +508,31 @@ impl RinchApp {
 
         let frame_start = Instant::now();
 
+        // Pre-layout: update CE virtualization using previous frame's layout
+        // positions so newly materialized blocks get measured in this pass.
+        if let Some(ce_ops) = self.ce_ops.clone() {
+            let mut ops = ce_ops.borrow_mut();
+            if let Some(vw) = &mut ops.virtual_window {
+                if vw.is_active() {
+                    // Build protected list: cursor block + pending nav blocks
+                    let mut protected: Vec<usize> = vw.pending_nav_blocks.clone();
+                    if let Some(ce) = &self.focused_contenteditable {
+                        let d = doc.borrow();
+                        if let Some((block_id, _)) =
+                            Self::find_block_and_parent(&d.tree, ce.cursor.node_id, ce.ce_node_id)
+                        {
+                            if !protected.contains(&block_id) {
+                                protected.push(block_id);
+                            }
+                        }
+                    }
+                    let mut d = doc.borrow_mut();
+                    vw.pre_layout_update(&mut d, &protected);
+                    vw.pending_nav_blocks.clear();
+                }
+            }
+        }
+
         // Resolve layout
         {
             let mut d = doc.borrow_mut();
@@ -529,6 +555,34 @@ impl RinchApp {
         // Apply deferred scroll-into-view now that layout is fresh
         self.apply_ce_scroll_into_view();
         self.apply_scroll_into_view();
+
+        // Post-layout: cache heights, then verify materialized range with
+        // fresh positions. If the range changed (big scroll jump), re-layout.
+        if let Some(ce_ops) = self.ce_ops.clone() {
+            let mut ops = ce_ops.borrow_mut();
+            if let Some(vw) = &mut ops.virtual_window {
+                if vw.is_active() {
+                    let mut protected = Vec::new();
+                    if let Some(ce) = &self.focused_contenteditable {
+                        let d = doc.borrow();
+                        if let Some((block_id, _)) =
+                            Self::find_block_and_parent(&d.tree, ce.cursor.node_id, ce.ce_node_id)
+                        {
+                            protected.push(block_id);
+                        }
+                    }
+                    let mut d = doc.borrow_mut();
+                    vw.post_layout_cache(&mut d);
+                    // Re-check with fresh positions — if pre_layout_update used
+                    // stale positions, the range may be wrong after layout.
+                    if vw.pre_layout_update(&mut d, &protected) {
+                        let _ = d.take_dirty_nodes();
+                        d.resolve_layout(viewport_width, viewport_height);
+                        vw.post_layout_cache(&mut d);
+                    }
+                }
+            }
+        }
 
         self.scene_dirty = true;
 
@@ -1684,7 +1738,16 @@ impl RinchApp {
                 node_id: cursor.node_id,
                 offset: cursor.offset,
             };
-            let ops = Rc::new(RefCell::new(CeOps::new(doc.clone(), ce_node_id, ce_cursor)));
+            let mut new_ops = CeOps::new(doc.clone(), ce_node_id, ce_cursor);
+            // Transfer virtual_window from the old CeOps if it exists
+            // and belongs to the same CE root (click re-focus shouldn't lose it)
+            if let Some(old_ops) = &self.ce_ops {
+                let mut old = old_ops.borrow_mut();
+                if old.ce_node_id() == ce_node_id {
+                    new_ops.virtual_window = old.virtual_window.take();
+                }
+            }
+            let ops = Rc::new(RefCell::new(new_ops));
             ce::set_active_ce_api(ops.clone());
             ce::register_ce_api(ce_node_id, ops.clone());
             self.ce_ops = Some(ops);

@@ -302,6 +302,11 @@ pub struct Node {
     pub active_sensitive: Cell<bool>,
     /// Set by Stylo when `:focus` is evaluated during selector matching.
     pub focus_sensitive: Cell<bool>,
+
+    /// When set, this block uses a fixed estimated height in Taffy instead of
+    /// measuring via Parley. Used by contenteditable block virtualization to
+    /// collapse off-screen blocks. IFC building and painting are skipped.
+    pub estimated_height: Option<f32>,
 }
 
 impl std::fmt::Debug for Node {
@@ -360,6 +365,7 @@ impl Node {
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
+            estimated_height: None,
         }
     }
 
@@ -403,6 +409,7 @@ impl Node {
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
+            estimated_height: None,
         }
     }
 
@@ -445,6 +452,7 @@ impl Node {
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
+            estimated_height: None,
         }
     }
 
@@ -485,6 +493,7 @@ impl Node {
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
+            estimated_height: None,
         }
     }
 

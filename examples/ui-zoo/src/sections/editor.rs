@@ -115,6 +115,32 @@ pub fn editor_section() -> NodeHandle {
                         onclick: move || ce_do(|api| api.redo()),
                         span { style: "font-size: 16px;", "\u{21AA}" }
                     }
+
+                    // Separator
+                    div { style: "width: 1px; height: 20px; background: var(--rinch-color-border); margin: 0 4px;" }
+
+                    // Stress test: load 1000 paragraphs
+                    Button { variant: "light", size: "xs",
+                        onclick: move || {
+                            ce_do(|api| {
+                                let mut html = String::new();
+                                for ch in 0..50 {
+                                    html.push_str(&format!("<h2>Chapter {}</h2>", ch + 1));
+                                    for p in 0..20 {
+                                        html.push_str(&format!(
+                                            "<p>Chapter {} paragraph {}. Lorem ipsum dolor sit amet, \
+                                            consectetur adipiscing elit. Sed do eiusmod tempor incididunt \
+                                            ut labore et dolore magna aliqua. Ut enim ad minim veniam, \
+                                            quis nostrud exercitation ullamco laboris.</p>",
+                                            ch + 1, p + 1
+                                        ));
+                                    }
+                                }
+                                api.load_html(&html);
+                            });
+                        },
+                        "Load 1000p stress test"
+                    }
                 }
             }
 
@@ -124,7 +150,7 @@ pub fn editor_section() -> NodeHandle {
                 div {
                     contenteditable: "true",
                     class: "editor-content",
-                    style: "min-height: 300px; padding: 16px 24px; background: var(--rinch-color-body); \
+                    style: "min-height: 300px; max-height: 500px; overflow-y: auto; padding: 16px 24px; background: var(--rinch-color-body); \
                             font-size: 16px; line-height: 1.6; color: var(--rinch-color-text); \
                             outline: none; cursor: text;",
                     p { "Start typing here. Select text and use the toolbar buttons or keyboard shortcuts to format." }

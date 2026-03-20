@@ -203,6 +203,15 @@ impl RinchDocument {
                                 };
                             }
 
+                            // Skip Parley measurement for text in collapsed blocks
+                            if nodes[text.node_id].estimated_height.is_some()
+                                || nodes[text.node_id]
+                                    .parent
+                                    .is_some_and(|p| nodes[p].estimated_height.is_some())
+                            {
+                                return taffy::Size::ZERO;
+                            }
+
                             let mut builder =
                                 layout_cx.ranged_builder(font_cx, &text.content, 1.0, true);
                             builder.push_default(parley::style::StyleProperty::FontSize(
@@ -295,6 +304,15 @@ impl RinchDocument {
                         }
                         Some(NodeContext::InlineRoot(root_id)) => {
                             let root_id = *root_id;
+
+                            // Collapsed block (virtualized) — return estimated size
+                            // without doing any Parley work.
+                            if let Some(est_h) = nodes[root_id].estimated_height {
+                                return taffy::Size {
+                                    width: known_dims.width.unwrap_or(0.0),
+                                    height: known_dims.height.unwrap_or(est_h),
+                                };
+                            }
 
                             // Use wrap_width bits as cache key
                             let wrap_bits = max_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);

@@ -39,7 +39,15 @@ impl RinchDocument {
         }
 
         for root_id in ifc_roots {
+            // Skip collapsed blocks (virtualized) — no Parley work needed.
+            // Drop any existing text_layout to free memory.
+            if self.tree.nodes[root_id].estimated_height.is_some() {
+                self.tree.nodes[root_id].text_layout = None;
+                continue;
+            }
+
             let node = &self.tree.nodes[root_id];
+
             // Use content-box width (subtract padding+border) for line breaking.
             // For auto-width elements, don't re-constrain text to measured width
             // as floating-point precision can cause unwanted line breaks.

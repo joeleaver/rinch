@@ -570,6 +570,12 @@ impl RinchDocument {
                 }
             }
 
+            // Collapsed block (virtualized contenteditable): override height
+            // to the estimated value so Taffy doesn't need a measure callback.
+            if let Some(est_h) = self.tree.nodes[node_id].estimated_height {
+                taffy_style.size.height = taffy::Dimension::length(est_h);
+            }
+
             // Only call set_style if the Taffy style actually changed.
             // This avoids marking the Taffy tree dirty for paint-only changes
             // (e.g. background-color on hover) which don't affect layout.
