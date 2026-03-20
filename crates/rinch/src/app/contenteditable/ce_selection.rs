@@ -4,6 +4,7 @@ impl RinchApp {
     // ── Selection helpers ────────────────────────────────────────────────
 
     /// Delete the current selection, updating the CE cursor.
+    /// Fires `TextDeleted` / `NodeRemoved` CE events for each mutation.
     pub(crate) fn ce_delete_selection(&mut self) {
         let ce = match self.focused_contenteditable.as_mut() {
             Some(ce) => ce,
@@ -22,16 +23,29 @@ impl RinchApp {
 
             if start.node_id == end.node_id {
                 // Same node — simple substring removal
-                let mut d = doc.borrow_mut();
-                if let Some(node) = d.tree.get(start.node_id)
-                    && let Some(text) = node.text_content().map(|s| s.to_string())
+                let delete_len;
                 {
-                    let s = start.offset.min(text.len());
-                    let e = end.offset.min(text.len());
-                    let mut new_text = String::with_capacity(text.len() - (e - s));
-                    new_text.push_str(&text[..s]);
-                    new_text.push_str(&text[e..]);
-                    d.set_text_content(rinch_core::dom::NodeId(start.node_id), &new_text);
+                    let mut d = doc.borrow_mut();
+                    if let Some(node) = d.tree.get(start.node_id)
+                        && let Some(text) = node.text_content().map(|s| s.to_string())
+                    {
+                        let s = start.offset.min(text.len());
+                        let e = end.offset.min(text.len());
+                        delete_len = e - s;
+                        let mut new_text = String::with_capacity(text.len() - delete_len);
+                        new_text.push_str(&text[..s]);
+                        new_text.push_str(&text[e..]);
+                        d.set_text_content(rinch_core::dom::NodeId(start.node_id), &new_text);
+                    } else {
+                        delete_len = 0;
+                    }
+                }
+                if delete_len > 0 {
+                    rinch_core::ce::dispatch_ce_event(&rinch_core::ce::CeEvent::TextDeleted {
+                        node_id: start.node_id,
+                        offset: start.offset,
+                        length: delete_len,
+                    });
                 }
                 let ce = self.focused_contenteditable.as_mut().unwrap();
                 ce.cursor = start;
@@ -44,6 +58,7 @@ impl RinchApp {
                 let end_is_text;
                 let start_remaining;
                 let end_remaining;
+                let start_orig_len;
                 {
                     let d = doc.borrow();
                     Self::collect_text_node_ids(&d.tree, ce_node_id, &mut all_text);
@@ -57,6 +72,15 @@ impl RinchApp {
                         .get(end.node_id)
                         .and_then(|n| n.text_content())
                         .is_some();
+                    start_orig_len = if start_is_text {
+                        d.tree
+                            .get(start.node_id)
+                            .and_then(|n| n.text_content())
+                            .map(|t| t.len())
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    };
                     start_remaining = if start_is_text {
                         d.tree
                             .get(start.node_id)
@@ -87,6 +111,8 @@ impl RinchApp {
 
                 let merged = format!("{}{}", start_remaining, end_remaining);
                 let new_cursor;
+                // Collect removed node IDs and parent for NodeRemoved events
+                let mut removed_ids: Vec<(usize, usize)> = Vec::new();
 
                 {
                     let mut d = doc.borrow_mut();
@@ -94,7 +120,9 @@ impl RinchApp {
                         // Start is a text node — merge into it, remove middle + end
                         d.set_text_content(rinch_core::dom::NodeId(start.node_id), &merged);
                         for &mid_id in &all_text[start_pos + 1..=end_pos] {
+                            let parent = d.tree.get(mid_id).and_then(|n| n.parent).unwrap_or(0);
                             d.remove_node(rinch_core::dom::NodeId(mid_id));
+                            removed_ids.push((mid_id, parent));
                         }
                         new_cursor = DomCursor {
                             node_id: start.node_id,
@@ -104,7 +132,9 @@ impl RinchApp {
                         // Start is element cursor, end is text — remove start + middle, truncate end
                         d.set_text_content(rinch_core::dom::NodeId(end.node_id), &end_remaining);
                         for &mid_id in &all_text[start_pos..end_pos] {
+                            let parent = d.tree.get(mid_id).and_then(|n| n.parent).unwrap_or(0);
                             d.remove_node(rinch_core::dom::NodeId(mid_id));
+                            removed_ids.push((mid_id, parent));
                         }
                         new_cursor = DomCursor {
                             node_id: end.node_id,
@@ -113,7 +143,9 @@ impl RinchApp {
                     } else {
                         // Both are element cursors — remove everything between them
                         for &mid_id in &all_text[start_pos..=end_pos] {
+                            let parent = d.tree.get(mid_id).and_then(|n| n.parent).unwrap_or(0);
                             d.remove_node(rinch_core::dom::NodeId(mid_id));
+                            removed_ids.push((mid_id, parent));
                         }
                         // Find a valid cursor: previous text node or first in CE
                         let prev_target = if start_pos > 0 {
@@ -136,6 +168,29 @@ impl RinchApp {
                             offset: 0,
                         });
                     }
+                }
+
+                // Fire CE events for the mutations
+                use rinch_core::ce::{CeEvent, dispatch_ce_event};
+                if start_is_text {
+                    // Text deleted from start node: from start.offset to original end
+                    let deleted_from_start = start_orig_len - start_remaining.len();
+                    if deleted_from_start > 0 {
+                        dispatch_ce_event(&CeEvent::TextDeleted {
+                            node_id: start.node_id,
+                            offset: start.offset,
+                            length: deleted_from_start,
+                        });
+                    }
+                } else if end_is_text {
+                    dispatch_ce_event(&CeEvent::TextDeleted {
+                        node_id: end.node_id,
+                        offset: 0,
+                        length: end.offset,
+                    });
+                }
+                for (node_id, parent_id) in removed_ids {
+                    dispatch_ce_event(&CeEvent::NodeRemoved { node_id, parent_id });
                 }
 
                 let ce = self.focused_contenteditable.as_mut().unwrap();

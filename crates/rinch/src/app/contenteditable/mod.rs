@@ -408,6 +408,56 @@ impl RinchApp {
                     && !html.is_empty()
                 {
                     self.paste_html_into_ce(&html);
+
+                    // Fire CE events that the normal path would emit
+                    let ce = self.focused_contenteditable.as_ref().unwrap();
+                    let final_cursor = ce.cursor;
+                    let final_anchor = ce.anchor;
+                    let ce_nid = ce.ce_node_id;
+                    self.set_contenteditable_attributes_dom(
+                        ce_nid,
+                        true,
+                        final_cursor,
+                        final_anchor,
+                    );
+                    {
+                        use rinch_core::ce::{self, CeEvent, CeSelection};
+                        let anchor = rinch_core::ce::DomCursor {
+                            node_id: final_anchor.node_id,
+                            offset: final_anchor.offset,
+                        };
+                        let head = rinch_core::ce::DomCursor {
+                            node_id: final_cursor.node_id,
+                            offset: final_cursor.offset,
+                        };
+                        ce::dispatch_ce_event(&CeEvent::HtmlPasted {
+                            created_node_ids: Vec::new(),
+                        });
+                        ce::dispatch_ce_event(&CeEvent::SelectionChanged {
+                            selection: CeSelection::range(anchor, head),
+                        });
+                    }
+                    // Fire oninput
+                    if let Some(doc) = &self.doc {
+                        let handler_id = {
+                            let d = doc.borrow();
+                            d.tree
+                                .get(ce_nid)
+                                .and_then(|n| n.attributes.get("data-oninput"))
+                                .and_then(|s| s.parse::<usize>().ok())
+                        };
+                        if let Some(hid) = handler_id {
+                            let dispatch_text = {
+                                let d = doc.borrow();
+                                Self::extract_text_content(&d.tree, ce_nid)
+                            };
+                            events::dispatch_input_event(
+                                events::EventHandlerId(hid),
+                                dispatch_text,
+                            );
+                        }
+                    }
+                    self.scene_dirty = true;
                     return true;
                 }
             }
@@ -667,6 +717,7 @@ impl RinchApp {
                     let ce = self.focused_contenteditable.as_mut().unwrap();
                     ce.cursor = restore_cursor;
                     ce.anchor = restore_anchor;
+                    rinch_core::ce::dispatch_ce_event(&rinch_core::ce::CeEvent::UndoApplied);
                     text_changed = true;
                 }
             }
@@ -763,6 +814,7 @@ impl RinchApp {
                     let ce = self.focused_contenteditable.as_mut().unwrap();
                     ce.cursor = restore_cursor;
                     ce.anchor = restore_anchor;
+                    rinch_core::ce::dispatch_ce_event(&rinch_core::ce::CeEvent::RedoApplied);
                     text_changed = true;
                 }
             }
