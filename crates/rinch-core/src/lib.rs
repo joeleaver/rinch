@@ -12,6 +12,7 @@ pub mod match_dom;
 pub mod reactive;
 pub mod reconcile;
 pub mod show;
+pub mod virtual_list;
 
 // Re-export image loading types
 pub use image::{ImageLoadResult, ImageLoader};
@@ -27,6 +28,7 @@ pub use element::{
 pub use for_loop::{FineForBuilder, for_each_dom, for_each_dom_typed, to_for_items};
 pub use match_dom::match_dom;
 pub use show::{FineShowBuilder, show_dom};
+pub use virtual_list::virtual_list;
 
 // Re-export reconciliation types
 pub use reconcile::{ListOp, diff_keyed};

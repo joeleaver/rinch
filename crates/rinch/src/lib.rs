@@ -137,6 +137,8 @@ pub mod prelude {
     pub use rinch_core::{FineShowBuilder, show_dom};
     // For for reactive list rendering
     pub use rinch_core::{FineForBuilder, ForItem, for_each_dom, to_for_items};
+    // Virtual list for large datasets
+    pub use rinch_core::virtual_list;
 
     // Embed API for game engine integration
     #[cfg(feature = "gpu")]
