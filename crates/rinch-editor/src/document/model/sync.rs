@@ -76,6 +76,39 @@ impl EditorDocument {
         self.doc.get_heads()
     }
 
+    /// Save only the changes since the last call to `save_incremental` (or `to_bytes`).
+    ///
+    /// This is the broadcast primitive: call after each local edit, send the
+    /// returned bytes to all peers. No per-peer `SyncState` needed — simpler
+    /// than the full sync protocol but without deduplication or state negotiation.
+    ///
+    /// ```rust,ignore
+    /// // After local edits:
+    /// let delta = doc.save_incremental();
+    /// broadcast_to_all_peers(&delta);
+    /// ```
+    pub fn save_incremental(&mut self) -> Vec<u8> {
+        self.doc.save_incremental()
+    }
+
+    /// Apply changes received from another peer (broadcast model).
+    ///
+    /// Counterpart to [`save_incremental`](Self::save_incremental). Applies
+    /// the raw change bytes produced by a remote peer.
+    ///
+    /// ```rust,ignore
+    /// // When receiving from a peer:
+    /// doc.load_incremental(&received_bytes)?;
+    /// let blocks = doc.to_block_data();
+    /// ce_api.load_content(&blocks);
+    /// ```
+    pub fn load_incremental(&mut self, changes: &[u8]) -> Result<(), crate::error::EditorError> {
+        self.doc
+            .load_incremental(changes)
+            .map(|_| ())
+            .map_err(|e| crate::error::EditorError::Automerge(e.to_string()))
+    }
+
     /// Merge all changes from another document into this one.
     pub fn merge(&mut self, other: &mut EditorDocument) -> Result<(), crate::error::EditorError> {
         self.doc
@@ -189,6 +222,28 @@ mod tests {
         doc1.merge(&mut doc2).unwrap();
 
         assert_eq!(doc1.to_text(), "Hello World");
+    }
+
+    #[test]
+    fn incremental_broadcast_roundtrip() {
+        let mut peer1 = EditorDocument::new();
+        peer1.insert_text(Position(0), "Hello").unwrap();
+
+        // Fork so peer2 shares the same origin
+        let mut peer2 = fork(&mut peer1);
+
+        // peer1 makes a new edit
+        peer1
+            .insert_text(Position(peer1.text_length()), " World")
+            .unwrap();
+
+        // Broadcast: save only the new changes, apply on peer2
+        let delta = peer1.save_incremental();
+        assert!(!delta.is_empty());
+        peer2.load_incremental(&delta).unwrap();
+
+        assert_eq!(peer1.to_text(), peer2.to_text());
+        assert_eq!(peer2.to_text(), "Hello World");
     }
 
     #[test]
