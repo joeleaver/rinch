@@ -663,7 +663,7 @@ pub struct CeOps {
     /// Set when the editor_doc is known to already match the DOM (e.g.,
     /// loaded from the same content via `set_pending_editor_doc`).
     #[cfg(feature = "collaboration")]
-    skip_next_sync: bool,
+    pub(crate) skip_next_sync: bool,
 }
 
 impl CeOps {

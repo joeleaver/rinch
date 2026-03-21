@@ -1739,17 +1739,36 @@ impl RinchApp {
                 offset: cursor.offset,
             };
             let mut new_ops = CeOps::new(doc.clone(), ce_node_id, ce_cursor);
+
             // Transfer state from the old CeOps if it exists and belongs
-            // to the same CE root (click re-focus shouldn't lose it)
-            if let Some(old_ops) = &self.ce_ops {
-                let mut old = old_ops.borrow_mut();
-                if old.ce_node_id() == ce_node_id {
-                    new_ops.virtual_window = old.virtual_window.take();
-                    // Preserve CRDT document across re-creation so click
-                    // re-focus doesn't break collaboration history.
+            // to the same CE root (click re-focus shouldn't lose it).
+            // Check both self.ce_ops AND the CE_API_REGISTRY — the factory
+            // path creates CeOps in the registry but not in self.ce_ops.
+            let old_ops_rc: Option<Rc<RefCell<dyn rinch_core::ContentEditableApi>>> = self
+                .ce_ops
+                .as_ref()
+                .and_then(|ops| {
+                    let borrow = ops.borrow();
+                    if borrow.ce_node_id() == ce_node_id {
+                        Some(ops.clone() as Rc<RefCell<dyn rinch_core::ContentEditableApi>>)
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| ce::with_ce_api_for_node(ce_node_id, |api| api.clone()));
+
+            if let Some(old_rc) = old_ops_rc {
+                let mut old = old_rc.borrow_mut();
+                if let Some(old_ce_ops) = old.as_any_mut().downcast_mut::<CeOps>() {
+                    new_ops.virtual_window = old_ce_ops.virtual_window.take();
                     #[cfg(feature = "collaboration")]
                     {
-                        new_ops.editor_doc = old.editor_doc.take();
+                        // Preserve CRDT document across re-creation so click
+                        // re-focus doesn't break collaboration history.
+                        new_ops.editor_doc = old_ce_ops.editor_doc.take();
+                        if new_ops.editor_doc.is_some() {
+                            new_ops.skip_next_sync = true;
+                        }
                     }
                 }
             }
