@@ -9,4 +9,6 @@ pub use model::{EditorDocument, InlineRun, MarkData};
 pub use position::{Position, Range, ResolvedPosition};
 
 #[cfg(feature = "collaboration")]
+pub use model::bridge;
+#[cfg(feature = "collaboration")]
 pub use model::sync;

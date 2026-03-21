@@ -37,6 +37,12 @@ pub use error::EditorError;
 pub use extensions::CommandRegistration;
 pub use schema::Schema;
 
+/// CE-to-document bridge for real-time collaboration.
+///
+/// Gated behind the `collaboration` feature flag.
+#[cfg(feature = "collaboration")]
+pub use document::bridge;
+
 /// Sync protocol types for collaborative editing.
 ///
 /// Gated behind the `collaboration` feature flag.
@@ -51,6 +57,8 @@ pub mod prelude {
     pub use crate::extensions::{Extension, StarterKit};
     pub use crate::schema::Schema;
 
+    #[cfg(feature = "collaboration")]
+    pub use crate::document::bridge::CeDocBridge;
     #[cfg(feature = "collaboration")]
     pub use crate::document::sync::{ChangeHash, SyncMessage, SyncState};
 }

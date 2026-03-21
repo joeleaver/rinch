@@ -1,5 +1,7 @@
 //! Core document model using Automerge CRDT for collaboration.
 
+#[cfg(feature = "collaboration")]
+pub mod bridge;
 mod mutations;
 mod queries;
 #[cfg(test)]

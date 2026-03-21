@@ -282,7 +282,7 @@ impl std::fmt::Debug for CeEventDispatcher {
 // ============================================================================
 
 /// A block of content (paragraph, heading, list item, etc.) for save/load.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockData {
     /// Block type: "paragraph", "heading", "bullet_list", "ordered_list",
     /// "blockquote", "code_block", "horizontal_rule", etc.
@@ -294,7 +294,7 @@ pub struct BlockData {
 }
 
 /// A run of text with inline marks (bold, italic, etc.).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InlineRunData {
     /// The text content of this run.
     pub text: String,

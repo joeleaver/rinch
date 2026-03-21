@@ -10,34 +10,32 @@
 //! use rinch_editor::prelude::*;
 //! use rinch_editor::sync::{SyncState, SyncMessage};
 //!
-//! // Create two peers with independent documents
+//! // Create a document and edit it
 //! let mut peer1 = EditorDocument::new();
-//! let mut peer2 = EditorDocument::new();
+//! peer1.insert_text(Position(0), "Hello from peer1").unwrap();
+//!
+//! // Fork to create a second peer (shared origin)
+//! let mut peer2 = EditorDocument::from_bytes(&peer1.to_bytes()).unwrap();
 //!
 //! // Each peer maintains a SyncState for the other
 //! let mut state1 = SyncState::new();
 //! let mut state2 = SyncState::new();
 //!
-//! // Edit peer1
-//! peer1.insert_text(Position(0), "Hello from peer1").unwrap();
+//! // peer1 makes another edit
+//! peer1.insert_text(Position(peer1.text_length()), " - updated").unwrap();
 //!
-//! // Sync loop: exchange messages until both are in sync
-//! loop {
+//! // Sync loop: exchange messages until both converge
+//! for _ in 0..100 {
 //!     let msg1 = peer1.generate_sync_message(&mut state1);
 //!     let msg2 = peer2.generate_sync_message(&mut state2);
-//!
+//!     let done = msg1.is_none() && msg2.is_none();
 //!     if let Some(msg) = msg1 {
 //!         peer2.receive_sync_message(&mut state2, msg).unwrap();
 //!     }
 //!     if let Some(msg) = msg2 {
 //!         peer1.receive_sync_message(&mut state1, msg).unwrap();
 //!     }
-//!
-//!     if peer1.generate_sync_message(&mut state1).is_none()
-//!         && peer2.generate_sync_message(&mut state2).is_none()
-//!     {
-//!         break;
-//!     }
+//!     if done { break; }
 //! }
 //!
 //! assert_eq!(peer1.to_text(), peer2.to_text());
