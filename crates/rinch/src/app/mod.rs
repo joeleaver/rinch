@@ -1760,14 +1760,18 @@ impl RinchApp {
             if let Some(old_rc) = old_ops_rc {
                 let mut old = old_rc.borrow_mut();
                 if let Some(old_ce_ops) = old.as_any_mut().downcast_mut::<CeOps>() {
-                    new_ops.virtual_window = old_ce_ops.virtual_window.take();
+                    if new_ops.virtual_window.is_none() {
+                        new_ops.virtual_window = old_ce_ops.virtual_window.take();
+                    }
                     #[cfg(feature = "collaboration")]
                     {
-                        // Preserve CRDT document across re-creation so click
-                        // re-focus doesn't break collaboration history.
-                        new_ops.editor_doc = old_ce_ops.editor_doc.take();
-                        if new_ops.editor_doc.is_some() {
-                            new_ops.skip_next_sync = true;
+                        // Only transfer editor_doc from old if new doesn't
+                        // already have one (e.g., from set_pending_editor_doc).
+                        if new_ops.editor_doc.is_none() {
+                            new_ops.editor_doc = old_ce_ops.editor_doc.take();
+                            if new_ops.editor_doc.is_some() {
+                                new_ops.skip_next_sync = true;
+                            }
                         }
                     }
                 }
