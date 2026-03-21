@@ -27,6 +27,57 @@ use rinch_editor::{EditorDocument, Position as EditorPosition, Range as EditorRa
 use crate::app::RinchApp;
 
 // ============================================================================
+// Pending EditorDocument Registry (collaboration)
+// ============================================================================
+
+#[cfg(feature = "collaboration")]
+thread_local! {
+    /// Pre-registered EditorDocuments for CE elements, keyed by node ID.
+    ///
+    /// Users call `set_pending_editor_doc(node_id, doc)` to associate an
+    /// EditorDocument with a CE element *before* it gains focus. When CeOps
+    /// is created for that element (via factory or register_ce_ops), it
+    /// automatically takes the pending doc and enables collaboration.
+    ///
+    /// This solves the chicken-and-egg problem: the EditorDocument with shared
+    /// CRDT history must exist before the first keystroke, but CeOps is created
+    /// lazily on focus.
+    static PENDING_EDITOR_DOCS: RefCell<HashMap<usize, EditorDocument>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Pre-register an EditorDocument for a contenteditable element.
+///
+/// Call this before the element gains focus to ensure the CeOps created
+/// for it will have collaboration enabled with shared CRDT history from
+/// the start.
+///
+/// ```ignore
+/// // Load document from server bytes (shared history)
+/// let doc = EditorDocument::from_bytes(&server_bytes).unwrap();
+///
+/// // Pre-register for the CE element
+/// set_pending_editor_doc(ce_node_id, doc);
+///
+/// // Later, when user clicks the CE element, CeOps is created with
+/// // collaboration already enabled — no race condition.
+/// ```
+#[cfg(feature = "collaboration")]
+pub fn set_pending_editor_doc(node_id: usize, doc: EditorDocument) {
+    PENDING_EDITOR_DOCS.with(|m| {
+        m.borrow_mut().insert(node_id, doc);
+    });
+}
+
+/// Take a pending EditorDocument for a node (if one was pre-registered).
+///
+/// Called internally by CeOps::new to auto-enable collaboration.
+#[cfg(feature = "collaboration")]
+fn take_pending_editor_doc(node_id: usize) -> Option<EditorDocument> {
+    PENDING_EDITOR_DOCS.with(|m| m.borrow_mut().remove(&node_id))
+}
+
+// ============================================================================
 // DOM Helpers for Inline Formatting
 // ============================================================================
 
@@ -612,6 +663,9 @@ pub struct CeOps {
 
 impl CeOps {
     /// Create a new CeOps for a focused contentEditable element.
+    ///
+    /// If a pending EditorDocument was pre-registered for this node via
+    /// [`set_pending_editor_doc`], collaboration is automatically enabled.
     pub fn new(doc: Rc<RefCell<RinchDocument>>, ce_node_id: usize, cursor: DomCursor) -> Self {
         Self {
             doc,
@@ -621,7 +675,7 @@ impl CeOps {
             dispatcher: CeEventDispatcher::new(),
             virtual_window: None,
             #[cfg(feature = "collaboration")]
-            editor_doc: None,
+            editor_doc: take_pending_editor_doc(ce_node_id),
         }
     }
 
