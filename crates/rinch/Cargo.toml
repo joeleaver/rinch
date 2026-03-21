@@ -45,6 +45,7 @@ tray-icon = { workspace = true, optional = true }
 rinch-theme = { workspace = true, optional = true }
 rinch-components = { workspace = true, optional = true }
 rinch-debug = { path = "../rinch-debug", optional = true }
+rinch-editor = { workspace = true, optional = true }
 rinch-web = { workspace = true, optional = true }
 rinch-video = { workspace = true, optional = true }
 ureq = { version = "3", optional = true }
@@ -97,3 +98,4 @@ debug = ["dep:rinch-debug"]
 web = ["dep:rinch-web"]
 video = ["dep:rinch-video"]
 image-network = ["dep:ureq"]
+collaboration = ["dep:rinch-editor", "rinch-editor/collaboration"]

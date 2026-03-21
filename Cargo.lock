@@ -4566,6 +4566,7 @@ dependencies = [
  "rinch-debug",
  "rinch-dom",
  "rinch-editable",
+ "rinch-editor",
  "rinch-macros",
  "rinch-platform",
  "rinch-renderer",

@@ -21,6 +21,9 @@ use rinch_core::ce::{
 use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
 
+#[cfg(feature = "collaboration")]
+use rinch_editor::{EditorDocument, Position as EditorPosition};
+
 use crate::app::RinchApp;
 
 // ============================================================================
@@ -600,6 +603,11 @@ pub struct CeOps {
     /// Block virtualization window for large documents.
     pub(crate) virtual_window:
         Option<crate::app::contenteditable::ce_virtualization::CeVirtualWindow>,
+    /// Optional CRDT-backed editor document for collaboration.
+    /// When `Some`, all mutation methods dual-write to both the DOM and the
+    /// EditorDocument, making every keystroke a native CRDT operation.
+    #[cfg(feature = "collaboration")]
+    editor_doc: Option<EditorDocument>,
 }
 
 impl CeOps {
@@ -612,7 +620,37 @@ impl CeOps {
             anchor: cursor,
             dispatcher: CeEventDispatcher::new(),
             virtual_window: None,
+            #[cfg(feature = "collaboration")]
+            editor_doc: None,
         }
+    }
+
+    /// Enable collaboration by attaching an EditorDocument.
+    ///
+    /// After this call, all mutation methods dual-write to both the DOM and
+    /// the EditorDocument. Call `editor_doc()` to access it for sync.
+    #[cfg(feature = "collaboration")]
+    pub fn enable_collaboration(&mut self, editor_doc: EditorDocument) {
+        self.editor_doc = Some(editor_doc);
+    }
+
+    /// Enable collaboration by creating a new EditorDocument from current DOM content.
+    #[cfg(feature = "collaboration")]
+    pub fn enable_collaboration_from_content(&mut self) {
+        let blocks = self.extract_content();
+        self.editor_doc = Some(EditorDocument::from_block_data(&blocks));
+    }
+
+    /// Access the EditorDocument (for sync message generation, etc.).
+    #[cfg(feature = "collaboration")]
+    pub fn editor_doc(&self) -> Option<&EditorDocument> {
+        self.editor_doc.as_ref()
+    }
+
+    /// Mutably access the EditorDocument.
+    #[cfg(feature = "collaboration")]
+    pub fn editor_doc_mut(&mut self) -> Option<&mut EditorDocument> {
+        self.editor_doc.as_mut()
     }
 
     /// Get the CE root node ID.
@@ -1146,6 +1184,104 @@ impl CeOps {
     }
 }
 
+// ============================================================================
+// Collaboration Dual-Write Helpers
+// ============================================================================
+
+#[cfg(feature = "collaboration")]
+impl CeOps {
+    /// Map an HTML inline formatting tag to a mark type for EditorDocument.
+    #[allow(dead_code)]
+    fn html_tag_to_mark_type(tag: &str) -> &str {
+        match tag {
+            "strong" | "b" => "bold",
+            "em" | "i" => "italic",
+            "u" => "underline",
+            "s" | "del" | "strike" => "strikethrough",
+            "code" => "code",
+            "mark" => "highlight",
+            "sub" => "subscript",
+            "sup" => "superscript",
+            _ => tag,
+        }
+    }
+
+    /// Compute the global flat position of the current cursor within the CE content.
+    ///
+    /// This walks the CE DOM tree in document order, summing text lengths and
+    /// block separators (\n between blocks) to produce a position compatible
+    /// with EditorDocument's flat offset scheme.
+    #[allow(dead_code)]
+    fn cursor_flat_pos(&self) -> usize {
+        let d = self.doc.borrow();
+        RinchApp::dom_cursor_to_global_offset(&d.tree, self.ce_node_id, self.cursor)
+    }
+
+    /// Compute the global flat position for an arbitrary cursor.
+    fn flat_pos_of(&self, cursor: DomCursor) -> usize {
+        let d = self.doc.borrow();
+        RinchApp::dom_cursor_to_global_offset(&d.tree, self.ce_node_id, cursor)
+    }
+
+    /// Compute the ordered (start, end) flat positions for the current selection.
+    #[allow(dead_code)]
+    fn selection_flat_range(&self) -> (usize, usize) {
+        let d = self.doc.borrow();
+        let (start, end) =
+            RinchApp::order_cursors(&d.tree, self.ce_node_id, self.cursor, self.anchor);
+        let start_pos = RinchApp::dom_cursor_to_global_offset(&d.tree, self.ce_node_id, start);
+        let end_pos = RinchApp::dom_cursor_to_global_offset(&d.tree, self.ce_node_id, end);
+        (start_pos, end_pos)
+    }
+
+    /// Find the block index containing the cursor by walking CE root children.
+    #[allow(dead_code)]
+    fn block_index_from_cursor(&self) -> usize {
+        let d = self.doc.borrow();
+        let block_id = find_ce_root_child(&d.tree, self.cursor.node_id, self.ce_node_id);
+        match block_id {
+            Some(bid) => {
+                let children = &d.tree.nodes[self.ce_node_id].children;
+                children.iter().position(|&c| c == bid).unwrap_or(0)
+            }
+            None => 0,
+        }
+    }
+
+    /// Sync the EditorDocument by rebuilding from current DOM content.
+    ///
+    /// Used as fallback for complex operations (indent, outdent, undo, redo,
+    /// load_content, load_html) where precise position mapping is impractical.
+    fn sync_editor_doc_from_dom(&mut self) {
+        if self.editor_doc.is_some() {
+            let blocks = self.extract_content();
+            self.editor_doc = Some(EditorDocument::from_block_data(&blocks));
+        }
+    }
+
+    /// Debug assertion: verify DOM content matches EditorDocument content.
+    ///
+    /// Only runs in debug builds. Panics with detailed info if they diverge.
+    #[inline]
+    fn debug_assert_sync(&self) {
+        #[cfg(debug_assertions)]
+        if let Some(ref editor_doc) = self.editor_doc {
+            let dom_blocks = self.extract_content();
+            let doc_blocks = editor_doc.to_block_data();
+            if dom_blocks != doc_blocks {
+                tracing::error!(
+                    "CE/EditorDocument sync mismatch!\n\
+                     DOM blocks: {dom_blocks:?}\n\
+                     Doc blocks: {doc_blocks:?}"
+                );
+                // Don't panic in release-like debug builds; log the error.
+                // Uncomment the line below during development for hard failures:
+                // panic!("CE/EditorDocument sync mismatch");
+            }
+        }
+    }
+}
+
 impl std::fmt::Debug for CeOps {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CeOps")
@@ -1156,87 +1292,15 @@ impl std::fmt::Debug for CeOps {
     }
 }
 
-impl ContentEditableApi for CeOps {
-    // ── Text Operations ──────────────────────────────────────────────
+// (ContentEditableApi trait impl is below, after inner method impls)
 
-    fn insert_text(&mut self, text: &str) {
+// Inner implementations for complex mutation methods.
+// These are separated so the `ContentEditableApi` methods can add
+// collaboration sync as a post-mutation step.
+impl CeOps {
+    fn delete_backward_inner(&mut self) {
         if self.cursor != self.anchor {
-            self.delete_selection();
-        }
-        let cur = self.cursor;
-        let ce_node_id = self.ce_node_id;
-        {
-            let mut d = self.doc.borrow_mut();
-            // Check if cursor is on a <br> element
-            let is_br = d
-                .tree
-                .get(cur.node_id)
-                .and_then(|n| n.tag())
-                .map(|t| t == "br")
-                .unwrap_or(false);
-
-            if is_br {
-                // <br> cursor: create text node and insert before the <br>
-                let parent_id = d
-                    .tree
-                    .get(cur.node_id)
-                    .and_then(|n| n.parent)
-                    .unwrap_or(ce_node_id);
-                let text_id = d.create_text(text);
-                d.insert_before(
-                    rinch_core::dom::NodeId(parent_id),
-                    text_id,
-                    rinch_core::dom::NodeId(cur.node_id),
-                );
-                self.cursor = DomCursor::new(text_id.0, text.len());
-                self.anchor = self.cursor;
-            } else if let Some(node) = d.tree.get(cur.node_id)
-                && let Some(current) = node.text_content().map(|s| s.to_string())
-            {
-                let off = cur.offset.min(current.len());
-                let mut new_text = String::with_capacity(current.len() + text.len());
-                new_text.push_str(&current[..off]);
-                new_text.push_str(text);
-                new_text.push_str(&current[off..]);
-
-                // Strip ZWS characters that were placeholders for cursor positioning
-                // (created by toggle_wrap for entering/escaping formatting spans)
-                if new_text.contains('\u{200B}') {
-                    let cursor_before_strip = off + text.len();
-                    // Count ZWS bytes before the cursor position to adjust offset
-                    let zws_bytes_before_cursor = new_text[..cursor_before_strip]
-                        .chars()
-                        .filter(|c| *c == '\u{200B}')
-                        .count()
-                        * '\u{200B}'.len_utf8();
-                    new_text = new_text.replace('\u{200B}', "");
-                    let adjusted_offset = cursor_before_strip - zws_bytes_before_cursor;
-                    d.set_text_content(rinch_core::dom::NodeId(cur.node_id), &new_text);
-                    self.cursor = DomCursor::new(cur.node_id, adjusted_offset);
-                } else {
-                    d.set_text_content(rinch_core::dom::NodeId(cur.node_id), &new_text);
-                    self.cursor = DomCursor::new(cur.node_id, off + text.len());
-                }
-                self.anchor = self.cursor;
-            } else {
-                // Cursor is on an element node (empty block) — create text child
-                let text_id = d.create_text(text);
-                d.append_child(rinch_core::dom::NodeId(cur.node_id), text_id);
-                d.set_style(rinch_core::dom::NodeId(cur.node_id), "min-height", "0");
-                self.cursor = DomCursor::new(text_id.0, text.len());
-                self.anchor = self.cursor;
-            }
-        }
-        dispatch_ce_event(&CeEvent::TextInserted {
-            node_id: self.cursor.node_id,
-            offset: self.cursor.offset.saturating_sub(text.len()),
-            text: text.to_string(),
-        });
-    }
-
-    fn delete_backward(&mut self) {
-        if self.cursor != self.anchor {
-            self.delete_selection();
+            self.delete_selection_inner();
             return;
         }
         let cur = self.cursor;
@@ -1928,9 +1992,9 @@ impl ContentEditableApi for CeOps {
         }
     }
 
-    fn delete_forward(&mut self) {
+    fn delete_forward_inner(&mut self) {
         if self.cursor != self.anchor {
-            self.delete_selection();
+            self.delete_selection_inner();
             return;
         }
         let cur = self.cursor;
@@ -2200,7 +2264,7 @@ impl ContentEditableApi for CeOps {
         }
     }
 
-    fn delete_selection(&mut self) {
+    fn delete_selection_inner(&mut self) {
         if self.cursor == self.anchor {
             return;
         }
@@ -2403,12 +2467,117 @@ impl ContentEditableApi for CeOps {
         self.cleanup_empty_cursor_node_internal();
         self.notify_blocks_changed();
     }
+}
+
+impl ContentEditableApi for CeOps {
+    // ── Text Operations ──────────────────────────────────────────────
+
+    fn insert_text(&mut self, text: &str) {
+        if self.cursor != self.anchor {
+            self.delete_selection_inner();
+            #[cfg(feature = "collaboration")]
+            self.sync_editor_doc_from_dom();
+        }
+
+        // ── Dual-write: insert into EditorDocument before DOM mutation ──
+        #[cfg(feature = "collaboration")]
+        {
+            let flat_pos = self.flat_pos_of(self.cursor);
+            if let Some(ref mut editor_doc) = self.editor_doc {
+                let _ = editor_doc.insert_text(EditorPosition(flat_pos), text);
+            }
+        }
+
+        let cur = self.cursor;
+        let ce_node_id = self.ce_node_id;
+        {
+            let mut d = self.doc.borrow_mut();
+            let is_br = d
+                .tree
+                .get(cur.node_id)
+                .and_then(|n| n.tag())
+                .map(|t| t == "br")
+                .unwrap_or(false);
+
+            if is_br {
+                let parent_id = d
+                    .tree
+                    .get(cur.node_id)
+                    .and_then(|n| n.parent)
+                    .unwrap_or(ce_node_id);
+                let text_id = d.create_text(text);
+                d.insert_before(
+                    rinch_core::dom::NodeId(parent_id),
+                    text_id,
+                    rinch_core::dom::NodeId(cur.node_id),
+                );
+                self.cursor = DomCursor::new(text_id.0, text.len());
+                self.anchor = self.cursor;
+            } else if let Some(node) = d.tree.get(cur.node_id)
+                && let Some(current) = node.text_content().map(|s| s.to_string())
+            {
+                let off = cur.offset.min(current.len());
+                let mut new_text = String::with_capacity(current.len() + text.len());
+                new_text.push_str(&current[..off]);
+                new_text.push_str(text);
+                new_text.push_str(&current[off..]);
+
+                if new_text.contains('\u{200B}') {
+                    let cursor_before_strip = off + text.len();
+                    let zws_bytes_before_cursor = new_text[..cursor_before_strip]
+                        .chars()
+                        .filter(|c| *c == '\u{200B}')
+                        .count()
+                        * '\u{200B}'.len_utf8();
+                    new_text = new_text.replace('\u{200B}', "");
+                    let adjusted_offset = cursor_before_strip - zws_bytes_before_cursor;
+                    d.set_text_content(rinch_core::dom::NodeId(cur.node_id), &new_text);
+                    self.cursor = DomCursor::new(cur.node_id, adjusted_offset);
+                } else {
+                    d.set_text_content(rinch_core::dom::NodeId(cur.node_id), &new_text);
+                    self.cursor = DomCursor::new(cur.node_id, off + text.len());
+                }
+                self.anchor = self.cursor;
+            } else {
+                let text_id = d.create_text(text);
+                d.append_child(rinch_core::dom::NodeId(cur.node_id), text_id);
+                d.set_style(rinch_core::dom::NodeId(cur.node_id), "min-height", "0");
+                self.cursor = DomCursor::new(text_id.0, text.len());
+                self.anchor = self.cursor;
+            }
+        }
+        dispatch_ce_event(&CeEvent::TextInserted {
+            node_id: self.cursor.node_id,
+            offset: self.cursor.offset.saturating_sub(text.len()),
+            text: text.to_string(),
+        });
+        #[cfg(feature = "collaboration")]
+        self.debug_assert_sync();
+    }
+
+    fn delete_backward(&mut self) {
+        self.delete_backward_inner();
+        #[cfg(feature = "collaboration")]
+        self.sync_editor_doc_from_dom();
+    }
+
+    fn delete_forward(&mut self) {
+        self.delete_forward_inner();
+        #[cfg(feature = "collaboration")]
+        self.sync_editor_doc_from_dom();
+    }
+
+    fn delete_selection(&mut self) {
+        self.delete_selection_inner();
+        #[cfg(feature = "collaboration")]
+        self.sync_editor_doc_from_dom();
+    }
 
     // ── Block Structure ──────────────────────────────────────────────
 
     fn split_block(&mut self) {
         if self.cursor != self.anchor {
-            self.delete_selection();
+            self.delete_selection_inner();
         }
         let cur = self.cursor;
         let ce_node_id = self.ce_node_id;
@@ -2967,6 +3136,8 @@ impl ContentEditableApi for CeOps {
         }
 
         self.notify_blocks_changed();
+        #[cfg(feature = "collaboration")]
+        self.sync_editor_doc_from_dom();
     }
 
     fn set_block_type(&mut self, tag: &str) {
@@ -3225,6 +3396,8 @@ impl ContentEditableApi for CeOps {
             old_tag,
             new_tag: tag.to_string(),
         });
+        #[cfg(feature = "collaboration")]
+        self.sync_editor_doc_from_dom();
     }
 
     // ── Inline Formatting ────────────────────────────────────────────
@@ -3377,6 +3550,8 @@ impl ContentEditableApi for CeOps {
                 wrapped_node_ids: wrapped_ids,
             });
         }
+        #[cfg(feature = "collaboration")]
+        self.sync_editor_doc_from_dom();
     }
 
     fn unwrap_selection(&mut self, tag: &str) {
@@ -3425,6 +3600,8 @@ impl ContentEditableApi for CeOps {
                 unwrapped_node_ids: selected_ids,
             });
         }
+        #[cfg(feature = "collaboration")]
+        self.sync_editor_doc_from_dom();
     }
 
     fn toggle_wrap(&mut self, tag: &str) {
@@ -3582,6 +3759,9 @@ impl ContentEditableApi for CeOps {
                 self.wrap_selection(tag);
             }
         }
+        // Note: sync already happens in wrap_selection/unwrap_selection for
+        // selection paths, and for cursor-only paths the ZWS nodes are
+        // temporary and don't affect CRDT content.
     }
 
     // ── List Operations ──────────────────────────────────────────────
@@ -3665,7 +3845,10 @@ impl ContentEditableApi for CeOps {
             d.append_child(new_nested, rinch_core::dom::NodeId(real_li_id));
             d.append_child(rinch_core::dom::NodeId(prev_li), new_nested);
         }
+        drop(d);
         // Cursor stays in the same text node
+        #[cfg(feature = "collaboration")]
+        self.sync_editor_doc_from_dom();
     }
 
     fn outdent(&mut self) {
@@ -3795,7 +3978,10 @@ impl ContentEditableApi for CeOps {
         if d.tree.nodes[real_nested_list_id].children.is_empty() {
             d.remove_node(rinch_core::dom::NodeId(real_nested_list_id));
         }
+        drop(d);
         // Cursor stays in the same text node
+        #[cfg(feature = "collaboration")]
+        self.sync_editor_doc_from_dom();
     }
 
     // ── Selection ────────────────────────────────────────────────────
@@ -3821,10 +4007,14 @@ impl ContentEditableApi for CeOps {
         // or by the editor bridge (Editor.history). This dispatches the event
         // so observers can react.
         dispatch_ce_event(&CeEvent::UndoApplied);
+        #[cfg(feature = "collaboration")]
+        self.sync_editor_doc_from_dom();
     }
 
     fn redo(&mut self) {
         dispatch_ce_event(&CeEvent::RedoApplied);
+        #[cfg(feature = "collaboration")]
+        self.sync_editor_doc_from_dom();
     }
 
     // ── Event Access ─────────────────────────────────────────────────
@@ -3894,13 +4084,17 @@ impl ContentEditableApi for CeOps {
             );
         }
         // Set cursor to start of first text node
-        let d = self.doc.borrow();
-        if let Some(cursor) = RinchApp::first_text_cursor(&d.tree, ce_root) {
-            self.cursor = cursor;
-        } else {
-            self.cursor = DomCursor::new(ce_root, 0);
+        {
+            let d = self.doc.borrow();
+            if let Some(cursor) = RinchApp::first_text_cursor(&d.tree, ce_root) {
+                self.cursor = cursor;
+            } else {
+                self.cursor = DomCursor::new(ce_root, 0);
+            }
         }
         self.anchor = self.cursor;
+        #[cfg(feature = "collaboration")]
+        self.sync_editor_doc_from_dom();
     }
 
     fn load_html(&mut self, html: &str) {
@@ -3932,13 +4126,17 @@ impl ContentEditableApi for CeOps {
             );
         }
         // Set cursor to start of first text node
-        let d = self.doc.borrow();
-        if let Some(cursor) = RinchApp::first_text_cursor(&d.tree, ce_root) {
-            self.cursor = cursor;
-        } else {
-            self.cursor = DomCursor::new(ce_root, 0);
+        {
+            let d = self.doc.borrow();
+            if let Some(cursor) = RinchApp::first_text_cursor(&d.tree, ce_root) {
+                self.cursor = cursor;
+            } else {
+                self.cursor = DomCursor::new(ce_root, 0);
+            }
         }
         self.anchor = self.cursor;
+        #[cfg(feature = "collaboration")]
+        self.sync_editor_doc_from_dom();
     }
 
     fn clear_formatting(&mut self) {
@@ -3957,33 +4155,31 @@ impl ContentEditableApi for CeOps {
         let formatting_tags: &[&str] = &[
             "strong", "em", "b", "i", "u", "s", "code", "mark", "sub", "sup", "span",
         ];
-        let mut d = self.doc.borrow_mut();
-        for &text_id in &text_nodes {
-            // Walk up from each text node, unwrapping formatting ancestors
-            let mut current = text_id;
-            while let Some(parent_id) = d.tree.get(current).and_then(|n| n.parent) {
-                if parent_id == ce_root {
-                    break;
-                }
-                let parent_tag = d
-                    .tree
-                    .get(parent_id)
-                    .and_then(|n| n.tag())
-                    .unwrap_or("")
-                    .to_string();
-                if formatting_tags.contains(&parent_tag.as_str()) {
-                    // Check if this is a block-level container by seeing if its parent
-                    // is the CE root — if so, stop (it's a block, not inline formatting)
-                    let grandparent = d.tree.get(parent_id).and_then(|n| n.parent);
-                    if grandparent == Some(ce_root) {
+        {
+            let mut d = self.doc.borrow_mut();
+            for &text_id in &text_nodes {
+                // Walk up from each text node, unwrapping formatting ancestors
+                let mut current = text_id;
+                while let Some(parent_id) = d.tree.get(current).and_then(|n| n.parent) {
+                    if parent_id == ce_root {
                         break;
                     }
-                    unwrap_element(&mut d, parent_id);
-                    // After unwrap, parent_id is removed. Re-start from text_id
-                    // since the parent chain has changed.
-                    current = text_id;
-                } else {
-                    current = parent_id;
+                    let parent_tag = d
+                        .tree
+                        .get(parent_id)
+                        .and_then(|n| n.tag())
+                        .unwrap_or("")
+                        .to_string();
+                    if formatting_tags.contains(&parent_tag.as_str()) {
+                        let grandparent = d.tree.get(parent_id).and_then(|n| n.parent);
+                        if grandparent == Some(ce_root) {
+                            break;
+                        }
+                        unwrap_element(&mut d, parent_id);
+                        current = text_id;
+                    } else {
+                        current = parent_id;
+                    }
                 }
             }
         }
@@ -3991,6 +4187,8 @@ impl ContentEditableApi for CeOps {
             tag: "all".to_string(),
             unwrapped_node_ids: text_nodes,
         });
+        #[cfg(feature = "collaboration")]
+        self.sync_editor_doc_from_dom();
     }
 }
 

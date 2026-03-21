@@ -34,7 +34,7 @@ impl RinchApp {
     /// Walks the DOM tree depth-first from `ce_root`, accumulating text lengths
     /// and block separators until reaching `cursor.node_id`, then adds
     /// `cursor.offset`.  Used only for writing paint attributes.
-    pub(super) fn dom_cursor_to_global_offset(
+    pub(crate) fn dom_cursor_to_global_offset(
         tree: &rinch_dom::NodeTree,
         ce_root: usize,
         cursor: DomCursor,
