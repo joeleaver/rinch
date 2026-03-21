@@ -5,6 +5,7 @@
 //! editor bridge (formatting commands) call the same API surface. The CE
 //! component owns the DOM, performs all mutations, and broadcasts events.
 
+use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -436,6 +437,27 @@ pub trait ContentEditableApi {
 
     /// Remove all inline formatting from the current selection.
     fn clear_formatting(&mut self) {}
+
+    // ── Downcasting ────────────────────────────────────────────────────
+
+    /// Downcast to a concrete type via `Any`.
+    ///
+    /// Enables callers with `dyn ContentEditableApi` (e.g., from
+    /// [`with_ce_api_for_node`]) to access implementation-specific methods
+    /// like collaboration APIs on `CeOps`.
+    ///
+    /// ```ignore
+    /// with_ce_api_for_node(node_id, |api| {
+    ///     let mut api = api.borrow_mut();
+    ///     if let Some(ce_ops) = api.as_any_mut().downcast_mut::<CeOps>() {
+    ///         ce_ops.enable_collaboration_from_content();
+    ///     }
+    /// });
+    /// ```
+    fn as_any(&self) -> &dyn Any;
+
+    /// Mutable downcast to a concrete type via `Any`.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 // ============================================================================
