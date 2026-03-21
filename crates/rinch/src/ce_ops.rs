@@ -659,6 +659,11 @@ pub struct CeOps {
     /// EditorDocument, making every keystroke a native CRDT operation.
     #[cfg(feature = "collaboration")]
     pub(crate) editor_doc: Option<EditorDocument>,
+    /// When true, skip the next `sync_editor_doc_from_dom` call.
+    /// Set when the editor_doc is known to already match the DOM (e.g.,
+    /// loaded from the same content via `set_pending_editor_doc`).
+    #[cfg(feature = "collaboration")]
+    skip_next_sync: bool,
 }
 
 impl CeOps {
@@ -667,6 +672,11 @@ impl CeOps {
     /// If a pending EditorDocument was pre-registered for this node via
     /// [`set_pending_editor_doc`], collaboration is automatically enabled.
     pub fn new(doc: Rc<RefCell<RinchDocument>>, ce_node_id: usize, cursor: DomCursor) -> Self {
+        #[cfg(feature = "collaboration")]
+        let pending_doc = take_pending_editor_doc(ce_node_id);
+        #[cfg(feature = "collaboration")]
+        let has_pending = pending_doc.is_some();
+
         Self {
             doc,
             ce_node_id,
@@ -675,7 +685,9 @@ impl CeOps {
             dispatcher: CeEventDispatcher::new(),
             virtual_window: None,
             #[cfg(feature = "collaboration")]
-            editor_doc: take_pending_editor_doc(ce_node_id),
+            editor_doc: pending_doc,
+            #[cfg(feature = "collaboration")]
+            skip_next_sync: has_pending,
         }
     }
 
@@ -686,6 +698,7 @@ impl CeOps {
     #[cfg(feature = "collaboration")]
     pub fn enable_collaboration(&mut self, editor_doc: EditorDocument) {
         self.editor_doc = Some(editor_doc);
+        self.skip_next_sync = true;
     }
 
     /// Enable collaboration by creating a new EditorDocument from current DOM content.
@@ -693,6 +706,7 @@ impl CeOps {
     pub fn enable_collaboration_from_content(&mut self) {
         let blocks = self.extract_content();
         self.editor_doc = Some(EditorDocument::from_block_data(&blocks));
+        self.skip_next_sync = true;
     }
 
     /// Access the EditorDocument (for sync message generation, etc.).
@@ -1314,6 +1328,14 @@ impl CeOps {
     /// position mapping is impractical.
     fn sync_editor_doc_from_dom(&mut self) {
         if self.editor_doc.is_none() {
+            return;
+        }
+
+        // Skip if the doc is known to already match the DOM (e.g., just
+        // loaded from pending). This avoids duplicate CRDT operations that
+        // would pollute save_incremental().
+        if self.skip_next_sync {
+            self.skip_next_sync = false;
             return;
         }
 
