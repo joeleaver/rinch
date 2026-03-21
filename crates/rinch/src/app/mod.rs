@@ -1739,12 +1739,18 @@ impl RinchApp {
                 offset: cursor.offset,
             };
             let mut new_ops = CeOps::new(doc.clone(), ce_node_id, ce_cursor);
-            // Transfer virtual_window from the old CeOps if it exists
-            // and belongs to the same CE root (click re-focus shouldn't lose it)
+            // Transfer state from the old CeOps if it exists and belongs
+            // to the same CE root (click re-focus shouldn't lose it)
             if let Some(old_ops) = &self.ce_ops {
                 let mut old = old_ops.borrow_mut();
                 if old.ce_node_id() == ce_node_id {
                     new_ops.virtual_window = old.virtual_window.take();
+                    // Preserve CRDT document across re-creation so click
+                    // re-focus doesn't break collaboration history.
+                    #[cfg(feature = "collaboration")]
+                    {
+                        new_ops.editor_doc = old.editor_doc.take();
+                    }
                 }
             }
             let ops = Rc::new(RefCell::new(new_ops));

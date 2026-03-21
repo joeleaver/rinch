@@ -607,7 +607,7 @@ pub struct CeOps {
     /// When `Some`, all mutation methods dual-write to both the DOM and the
     /// EditorDocument, making every keystroke a native CRDT operation.
     #[cfg(feature = "collaboration")]
-    editor_doc: Option<EditorDocument>,
+    pub(crate) editor_doc: Option<EditorDocument>,
 }
 
 impl CeOps {
