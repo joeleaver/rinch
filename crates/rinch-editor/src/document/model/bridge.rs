@@ -35,10 +35,11 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use rinch_core::ce::{subscribe_ce_events, with_ce_api_for_node};
+use rinch_core::ce::{BlockData, InlineMarkData, subscribe_ce_events, with_ce_api_for_node};
 
-use super::EditorDocument;
 use super::sync::{SyncMessage, SyncState};
+use super::{EditorDocument, MarkData};
+use crate::document::{Position, Range};
 use crate::error::EditorError;
 
 /// Bridge between a contenteditable element and an Automerge-backed document.
@@ -98,18 +99,22 @@ impl CeDocBridge {
     /// Sync local CE DOM changes into the [`EditorDocument`].
     ///
     /// With the CRDT-native dual-write architecture, CeOps keeps the
-    /// EditorDocument in sync automatically. This method rebuilds from
-    /// DOM content as a safety net / compatibility shim.
+    /// EditorDocument in sync automatically. This method rebuilds content
+    /// in-place as a safety net — preserving the Automerge document identity
+    /// and change history (unlike `from_block_data` which creates a fresh doc).
     pub fn flush(&mut self) {
-        // Rebuild EditorDocument from current DOM content to ensure sync.
-        // With dual-write in CeOps this is typically a no-op in terms of
-        // content change, but ensures consistency.
         let new_blocks =
             match with_ce_api_for_node(self.ce_node_id, |api| api.borrow().extract_content()) {
                 Some(blocks) => blocks,
                 None => return,
             };
-        self.doc = EditorDocument::from_block_data(&new_blocks);
+
+        let old_blocks = self.doc.to_block_data();
+        if new_blocks == old_blocks {
+            return;
+        }
+
+        rebuild_doc_from_blocks(&mut self.doc, &new_blocks);
     }
 
     /// Generate a sync message to send to a remote peer.
@@ -161,6 +166,88 @@ impl CeDocBridge {
     /// The CE element node ID this bridge is attached to.
     pub fn ce_node_id(&self) -> usize {
         self.ce_node_id
+    }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+
+/// Clear an EditorDocument and repopulate from blocks, preserving identity.
+///
+/// Unlike `EditorDocument::from_block_data()` which creates a fresh Automerge
+/// document, this mutates the existing one — preserving actor ID and change
+/// history for collaboration.
+fn rebuild_doc_from_blocks(doc: &mut EditorDocument, new_blocks: &[BlockData]) {
+    // Clear all existing content
+    let total_len = doc.text_length();
+    if total_len > 0 {
+        let _ = doc.delete_range(Range::new(0usize, total_len));
+    }
+    while doc.block_count() > 1 {
+        let _ = doc.delete_block(doc.block_count() - 1);
+    }
+
+    if new_blocks.is_empty() {
+        return;
+    }
+
+    // First block
+    let first = &new_blocks[0];
+    let attrs = if first.attrs.is_empty() {
+        None
+    } else {
+        Some(first.attrs.clone())
+    };
+    let _ = doc.set_block_type(0, &first.block_type, attrs);
+
+    let first_text = flatten_block_text(first);
+    if !first_text.is_empty() {
+        let _ = doc.insert_text(Position(0), &first_text);
+    }
+    apply_block_marks(doc, 0, first);
+
+    let mut pos = first_text.len();
+
+    // Remaining blocks
+    for (i, block) in new_blocks.iter().enumerate().skip(1) {
+        let _ = doc.split_block(Position(pos));
+        pos += 1;
+
+        let attrs = if block.attrs.is_empty() {
+            None
+        } else {
+            Some(block.attrs.clone())
+        };
+        let _ = doc.set_block_type(i, &block.block_type, attrs);
+
+        let text = flatten_block_text(block);
+        if !text.is_empty() {
+            let _ = doc.insert_text(Position(pos), &text);
+        }
+        apply_block_marks(doc, pos, block);
+
+        pos += text.len();
+    }
+}
+
+/// Concatenate all inline run text in a block.
+fn flatten_block_text(block: &BlockData) -> String {
+    block.content.iter().map(|r| r.text.as_str()).collect()
+}
+
+/// Apply marks for a single block.
+fn apply_block_marks(doc: &mut EditorDocument, block_start: usize, block: &BlockData) {
+    let mut offset = 0;
+    for run in &block.content {
+        if !run.marks.is_empty() && !run.text.is_empty() {
+            let run_start = block_start + offset;
+            let run_end = run_start + run.text.len();
+            let run_range = Range::new(run_start, run_end);
+            for mark in &run.marks {
+                let mark_data = MarkData::with_attrs(&mark.mark_type, mark.attrs.clone());
+                let _ = doc.add_mark(run_range, mark_data);
+            }
+        }
+        offset += run.text.len();
     }
 }
 

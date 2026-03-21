@@ -22,7 +22,7 @@ use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
 
 #[cfg(feature = "collaboration")]
-use rinch_editor::{EditorDocument, Position as EditorPosition};
+use rinch_editor::{EditorDocument, Position as EditorPosition, Range as EditorRange};
 
 use crate::app::RinchApp;
 
@@ -1248,14 +1248,106 @@ impl CeOps {
         }
     }
 
-    /// Sync the EditorDocument by rebuilding from current DOM content.
+    /// Sync the EditorDocument by rebuilding its content from the current DOM.
     ///
-    /// Used as fallback for complex operations (indent, outdent, undo, redo,
-    /// load_content, load_html) where precise position mapping is impractical.
+    /// Unlike `EditorDocument::from_block_data()` which creates a fresh document,
+    /// this clears and repopulates the *existing* document, preserving the
+    /// Automerge actor ID and change history. This is critical for collaboration —
+    /// replacing the document would break shared CRDT history.
+    ///
+    /// Used as fallback for complex operations (delete, split_block, formatting,
+    /// indent, outdent, undo, redo, load_content, load_html) where precise
+    /// position mapping is impractical.
     fn sync_editor_doc_from_dom(&mut self) {
-        if self.editor_doc.is_some() {
-            let blocks = self.extract_content();
-            self.editor_doc = Some(EditorDocument::from_block_data(&blocks));
+        if self.editor_doc.is_none() {
+            return;
+        }
+
+        // Extract DOM content first (borrows self immutably via extract_content)
+        let new_blocks = self.extract_content();
+
+        let editor_doc = self.editor_doc.as_mut().unwrap();
+        let old_blocks = editor_doc.to_block_data();
+
+        // Skip if already in sync
+        if new_blocks == old_blocks {
+            return;
+        }
+
+        // Clear all existing content
+        let total_len = editor_doc.text_length();
+        if total_len > 0 {
+            let _ = editor_doc.delete_range(EditorRange::new(0usize, total_len));
+        }
+
+        // Remove extra blocks (after delete, we have 1 empty block)
+        while editor_doc.block_count() > 1 {
+            let _ = editor_doc.delete_block(editor_doc.block_count() - 1);
+        }
+
+        if new_blocks.is_empty() {
+            return;
+        }
+
+        // Rebuild: first block
+        let first = &new_blocks[0];
+        let attrs = if first.attrs.is_empty() {
+            None
+        } else {
+            Some(first.attrs.clone())
+        };
+        let _ = editor_doc.set_block_type(0, &first.block_type, attrs);
+
+        let first_text = Self::flatten_block_text(first);
+        if !first_text.is_empty() {
+            let _ = editor_doc.insert_text(EditorPosition(0), &first_text);
+        }
+        Self::apply_block_marks(editor_doc, 0, first);
+
+        let mut pos = first_text.len();
+
+        // Remaining blocks: split, set type, insert text, apply marks
+        for (i, block) in new_blocks.iter().enumerate().skip(1) {
+            let _ = editor_doc.split_block(EditorPosition(pos));
+            pos += 1; // block separator
+
+            let attrs = if block.attrs.is_empty() {
+                None
+            } else {
+                Some(block.attrs.clone())
+            };
+            let _ = editor_doc.set_block_type(i, &block.block_type, attrs);
+
+            let text = Self::flatten_block_text(block);
+            if !text.is_empty() {
+                let _ = editor_doc.insert_text(EditorPosition(pos), &text);
+            }
+            Self::apply_block_marks(editor_doc, pos, block);
+
+            pos += text.len();
+        }
+    }
+
+    /// Concatenate all inline run text in a block.
+    fn flatten_block_text(block: &BlockData) -> String {
+        block.content.iter().map(|r| r.text.as_str()).collect()
+    }
+
+    /// Apply marks for a single block to the EditorDocument.
+    fn apply_block_marks(editor_doc: &mut EditorDocument, block_start: usize, block: &BlockData) {
+        let mut offset = 0;
+        for run in &block.content {
+            if !run.marks.is_empty() && !run.text.is_empty() {
+                let run_start = block_start + offset;
+                let run_end = run_start + run.text.len();
+                let run_range = EditorRange::new(run_start, run_end);
+                for mark in &run.marks {
+                    let mark_data =
+                        rinch_editor::MarkData::with_attrs(&mark.mark_type, mark.attrs.clone());
+                    let _ = editor_doc.add_mark(run_range, mark_data);
+                }
+            }
+            offset += run.text.len();
         }
     }
 
