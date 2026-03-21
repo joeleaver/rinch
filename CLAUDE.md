@@ -575,6 +575,41 @@ fn child_component() -> NodeHandle {
 }
 ```
 
+## Threading Model
+
+Rinch **owns the main thread**. `run()` calls winit's event loop, which takes over and never returns. All UI state (`Signal`, `Effect`, `NodeHandle`, `RenderScope`) is `!Send` — the reactive system is thread-local.
+
+**Async / tokio:** A tokio runtime can coexist but only on a **separate background thread**. You cannot run `#[tokio::main]` and `rinch::run()` on the same thread.
+
+```rust
+fn main() {
+    // Spawn tokio on a background thread
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    std::thread::spawn(move || {
+        rt.block_on(async {
+            // networking, file I/O, etc.
+        });
+    });
+
+    // Main thread — rinch owns it
+    run("My App", 800, 600, app);
+}
+```
+
+**Sending results back to the UI thread:** Use `Signal::send()` and `Signal::update_send()`, which auto-dispatch to the main thread from any thread. The `T` must be `Send`.
+
+```rust
+let data = Signal::new(Vec::new());
+
+std::thread::spawn(move || {
+    let result = fetch_data();     // blocking work
+    data.send(result);             // dispatches to main thread
+    data.update_send(|v| v.sort());// closure runs on main thread
+});
+```
+
+**Key constraint:** Never call `Signal::set()` or `Signal::update()` from a background thread — they panic. Always use the `_send` variants for cross-thread updates.
+
 ## Native Menus
 
 Native menus use a unified `Menu`/`MenuItem` builder API shared between window menu bars and tray context menus. Use `run_with_menu` to add a menu bar:
