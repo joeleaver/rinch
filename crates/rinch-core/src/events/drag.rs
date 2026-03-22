@@ -5,7 +5,7 @@
 
 use std::cell::RefCell;
 
-use crate::events::get_click_context;
+use crate::events::{ClickContext, get_click_context};
 
 /// How coordinates are delivered to the `on_move` callback.
 enum DragMode {
@@ -25,6 +25,10 @@ struct ActiveDrag {
     mode: DragMode,
     on_move: Box<dyn Fn(f32, f32) + 'static>,
     on_end: Option<Box<dyn FnOnce(f32, f32) + 'static>>,
+    /// The ClickContext captured at drag start.
+    start_context: ClickContext,
+    /// Whether to continue dispatching surface events during this drag.
+    forward_surface_events: bool,
 }
 
 thread_local! {
@@ -48,11 +52,16 @@ thread_local! {
 /// Drag::percent()
 ///     .on_move(move |px, _| slider.set(px * 100.0))
 ///     .start();
+///
+/// // Access element position at drag start
+/// let start = Drag::start_context().unwrap();
+/// println!("Drag started on element at ({}, {})", start.element_x, start.element_y);
 /// ```
 pub struct Drag {
     mode: DragMode,
     on_move: Option<Box<dyn Fn(f32, f32) + 'static>>,
     on_end: Option<Box<dyn FnOnce(f32, f32) + 'static>>,
+    forward_surface_events: bool,
 }
 
 impl Drag {
@@ -62,6 +71,7 @@ impl Drag {
             mode: DragMode::Absolute,
             on_move: None,
             on_end: None,
+            forward_surface_events: false,
         }
     }
 
@@ -79,6 +89,7 @@ impl Drag {
             },
             on_move: None,
             on_end: None,
+            forward_surface_events: false,
         }
     }
 
@@ -94,14 +105,27 @@ impl Drag {
         self
     }
 
+    /// Allow surface events to continue dispatching during this drag.
+    ///
+    /// By default, active drags suppress all other event handling (hover,
+    /// surface events, etc.). Set this to `true` if a `RenderSurface` needs
+    /// to receive `MouseMove` events alongside the drag callback.
+    pub fn forward_surface_events(mut self, forward: bool) -> Self {
+        self.forward_surface_events = forward;
+        self
+    }
+
     /// Activate the drag. Call from a mousedown/click handler.
     pub fn start(self) {
         let on_move = self.on_move.unwrap_or_else(|| Box::new(|_, _| {}));
+        let start_context = get_click_context();
         ACTIVE_DRAG.with(|drag| {
             *drag.borrow_mut() = Some(ActiveDrag {
                 mode: self.mode,
                 on_move,
                 on_end: self.on_end,
+                start_context,
+                forward_surface_events: self.forward_surface_events,
             });
         });
     }
@@ -117,11 +141,30 @@ impl Drag {
     pub fn is_active() -> bool {
         ACTIVE_DRAG.with(|drag| drag.borrow().is_some())
     }
+
+    /// Get the [`ClickContext`] captured when the active drag started.
+    ///
+    /// Returns `None` if no drag is active. The context contains the element
+    /// bounds and mouse position at the moment `start()` was called, which is
+    /// useful for computing offsets in `Drag::absolute()` mode.
+    ///
+    /// ```ignore
+    /// // In an on_move callback or elsewhere while drag is active:
+    /// if let Some(ctx) = Drag::start_context() {
+    ///     let elem_x = ctx.element_x;
+    ///     let elem_y = ctx.element_y;
+    /// }
+    /// ```
+    pub fn start_context() -> Option<ClickContext> {
+        ACTIVE_DRAG.with(|drag| drag.borrow().as_ref().map(|d| d.start_context))
+    }
 }
 
 /// Update the drag position. Called by the runtime on mouse move.
-/// Returns true if a drag callback was invoked.
-pub fn update_drag(mouse_x: f32, mouse_y: f32) -> bool {
+/// Returns `(handled, forward_surface_events)`:
+/// - `handled`: true if a drag callback was invoked
+/// - `forward_surface_events`: true if surface events should still be dispatched
+pub fn update_drag(mouse_x: f32, mouse_y: f32) -> (bool, bool) {
     ACTIVE_DRAG.with(|drag| {
         if let Some(ref state) = *drag.borrow() {
             let (x, y) = match &state.mode {
@@ -145,10 +188,11 @@ pub fn update_drag(mouse_x: f32, mouse_y: f32) -> bool {
                     (px, py)
                 }
             };
+            let forward = state.forward_surface_events;
             (state.on_move)(x, y);
-            true
+            (true, forward)
         } else {
-            false
+            (false, false)
         }
     })
 }

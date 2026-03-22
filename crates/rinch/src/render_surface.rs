@@ -291,6 +291,8 @@ pub struct RenderSurfaceHandle {
     pub(crate) viewport_name: String,
     /// Layout size in physical pixels, updated by the compositor each frame.
     pub(crate) layout_size: Arc<Mutex<(u32, u32)>>,
+    /// Layout position in logical pixels (window coordinates), updated each frame.
+    pub(crate) layout_position: Arc<Mutex<(f32, f32)>>,
     /// The underlying canvas element (web only).
     #[cfg(target_arch = "wasm32")]
     pub(crate) canvas: std::rc::Rc<RefCell<Option<web_sys::HtmlCanvasElement>>>,
@@ -369,6 +371,17 @@ impl RenderSurfaceHandle {
     /// first paint.
     pub fn layout_size(&self) -> (u32, u32) {
         *self.layout_size.lock().unwrap()
+    }
+
+    /// Get the surface position and size in window coordinates.
+    ///
+    /// Returns `(x, y, width, height)` where `(x, y)` is the top-left corner
+    /// in logical pixels relative to the window, and `(width, height)` is in
+    /// physical pixels. Returns `(0.0, 0.0, 0, 0)` before the first paint.
+    pub fn layout_rect(&self) -> (f32, f32, u32, u32) {
+        let (x, y) = *self.layout_position.lock().unwrap();
+        let (w, h) = *self.layout_size.lock().unwrap();
+        (x, y, w, h)
     }
 
     /// Get a `Send + Sync` handle for registering GPU textures from background threads.
@@ -521,6 +534,7 @@ pub fn create_render_surface() -> RenderSurfaceHandle {
         event_handler: std::rc::Rc::new(RefCell::new(None)),
         viewport_name: format!("__render_surface_{id}"),
         layout_size: Arc::new(Mutex::new((0, 0))),
+        layout_position: Arc::new(Mutex::new((0.0, 0.0))),
         #[cfg(target_arch = "wasm32")]
         canvas: std::rc::Rc::new(RefCell::new(None)),
         #[cfg(target_arch = "wasm32")]
@@ -553,6 +567,7 @@ pub fn create_render_surface_with_name(viewport_name: &str) -> RenderSurfaceHand
         event_handler: std::rc::Rc::new(RefCell::new(None)),
         viewport_name: viewport_name.to_string(),
         layout_size: Arc::new(Mutex::new((0, 0))),
+        layout_position: Arc::new(Mutex::new((0.0, 0.0))),
         #[cfg(target_arch = "wasm32")]
         canvas: std::rc::Rc::new(RefCell::new(None)),
         #[cfg(target_arch = "wasm32")]
@@ -864,6 +879,22 @@ pub fn update_layout_size(viewport_name: &str, width: u32, height: u32) {
         for surface in reg.iter() {
             if surface.viewport_name == viewport_name {
                 *surface.layout_size.lock().unwrap() = (width, height);
+                return;
+            }
+        }
+    });
+}
+
+/// Update the layout position for a render surface by viewport name.
+///
+/// Called by the compositor each frame. Position is in logical pixels
+/// relative to the window.
+pub fn update_layout_position(viewport_name: &str, x: f32, y: f32) {
+    SURFACE_REGISTRY.with(|reg| {
+        let reg = reg.borrow();
+        for surface in reg.iter() {
+            if surface.viewport_name == viewport_name {
+                *surface.layout_position.lock().unwrap() = (x, y);
                 return;
             }
         }

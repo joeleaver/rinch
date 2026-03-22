@@ -744,6 +744,11 @@ impl RinchRuntime {
                 let phys_w = (viewport.2 * s) as u32;
                 let phys_h = (viewport.3 * s) as u32;
                 crate::render_surface::update_layout_size(viewport_name, phys_w, phys_h);
+                crate::render_surface::update_layout_position(
+                    viewport_name,
+                    viewport.0,
+                    viewport.1,
+                );
             }
         }
 
@@ -870,6 +875,11 @@ impl RinchRuntime {
                 let phys_w = (viewport.2 * s) as u32;
                 let phys_h = (viewport.3 * s) as u32;
                 crate::render_surface::update_layout_size(viewport_name, phys_w, phys_h);
+                crate::render_surface::update_layout_position(
+                    viewport_name,
+                    viewport.0,
+                    viewport.1,
+                );
             }
         }
 

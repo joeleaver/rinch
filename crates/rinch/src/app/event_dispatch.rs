@@ -143,7 +143,8 @@ impl RinchApp {
                 }
 
                 // Handle component drag (sliders, floating panels, etc.)
-                if rinch_core::update_drag(x, y) {
+                let (drag_active, drag_forward_surface) = rinch_core::update_drag(x, y);
+                if drag_active && !drag_forward_surface {
                     let (w, h) = (window_size.0 as f32, window_size.1 as f32);
                     self.resolve_and_repaint(w, h);
                     actions.push(AppAction::RequestRedraw);
