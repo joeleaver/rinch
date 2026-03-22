@@ -281,7 +281,8 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
 
     // Mousemove delegation: feed active drag operations.
     let mousemove_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
-        if rinch_core::update_drag(event.client_x() as f32, event.client_y() as f32) {
+        let (drag_active, _) = rinch_core::update_drag(event.client_x() as f32, event.client_y() as f32);
+        if drag_active {
             event.prevent_default();
         }
     }) as Box<dyn FnMut(_)>);
