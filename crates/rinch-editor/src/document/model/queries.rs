@@ -87,7 +87,7 @@ impl EditorDocument {
                 let inline_type = self.get_str(&inline_id, "type").unwrap_or_default();
                 match inline_type.as_str() {
                     "text" => {
-                        let text = self.get_str(&inline_id, "text").unwrap_or_default();
+                        let text = self.inline_text(&inline_id);
                         let marks = self.read_marks(&inline_id);
                         runs.push(InlineRun {
                             text,
@@ -120,7 +120,8 @@ impl EditorDocument {
                 let inline_type = self.get_str(&inline_id, "type").unwrap_or_default();
                 match inline_type.as_str() {
                     "text" => {
-                        if let Some(t) = self.get_str(&inline_id, "text") {
+                        let t = self.inline_text(&inline_id);
+                        if !t.is_empty() {
                             text.push_str(&t);
                         }
                     }
@@ -203,10 +204,7 @@ impl EditorDocument {
             if let Some((_, inline_id)) = self.doc.get(&content_id, i).ok().flatten() {
                 let inline_type = self.get_str(&inline_id, "type").unwrap_or_default();
                 let inline_len = match inline_type.as_str() {
-                    "text" => self
-                        .get_str(&inline_id, "text")
-                        .map(|t| t.len())
-                        .unwrap_or(0),
+                    "text" => self.inline_text(&inline_id).len(),
                     "hard_break" => 1,
                     _ => 0,
                 };

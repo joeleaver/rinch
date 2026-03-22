@@ -100,7 +100,7 @@ impl EditorDocument {
         let inline_content = doc.put_object(&block, "content", ObjType::List).unwrap();
         let text_node = doc.insert_object(&inline_content, 0, ObjType::Map).unwrap();
         doc.put(&text_node, "type", "text").unwrap();
-        doc.put(&text_node, "text", "").unwrap();
+        doc.put_object(&text_node, "text", ObjType::Text).unwrap();
         doc.put_object(&text_node, "marks", ObjType::List).unwrap();
 
         Self { doc, content_id }
@@ -184,6 +184,33 @@ impl EditorDocument {
             }
             None
         })
+    }
+
+    /// Get the ObjId of the "text" Text object on an inline node.
+    pub(crate) fn inline_text_obj(&self, inline_id: &ObjId) -> Option<ObjId> {
+        self.doc
+            .get(inline_id, "text")
+            .ok()
+            .flatten()
+            .and_then(|(val, id)| {
+                if matches!(val, automerge::Value::Object(ObjType::Text)) {
+                    Some(id)
+                } else {
+                    None
+                }
+            })
+    }
+
+    /// Read the text content of an inline node.
+    ///
+    /// Supports both the new Text CRDT format and the legacy scalar string format.
+    pub(crate) fn inline_text(&self, inline_id: &ObjId) -> String {
+        // Try Text object first (new format)
+        if let Some(text_id) = self.inline_text_obj(inline_id) {
+            return self.doc.text(&text_id).unwrap_or_default();
+        }
+        // Fall back to scalar string (legacy format)
+        self.get_str(inline_id, "text").unwrap_or_default()
     }
 }
 

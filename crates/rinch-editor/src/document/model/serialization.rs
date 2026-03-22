@@ -214,7 +214,7 @@ impl EditorDocument {
                 let inline_type = self.get_str(&inline_id, "type").unwrap_or_default();
                 match inline_type.as_str() {
                     "text" => {
-                        let text = self.get_str(&inline_id, "text").unwrap_or_default();
+                        let text = self.inline_text(&inline_id);
                         let marks = self.read_marks(&inline_id);
                         let mut result = html_escape(&text);
                         // Wrap in mark tags (innermost first)

@@ -30,14 +30,13 @@ impl EditorDocument {
             .map(|(_, id)| id)
             .ok_or_else(|| EditorError::InvalidPosition(pos.0, self.text_length()))?;
 
-        let existing = self.get_str(&inline_id, "text").unwrap_or_default();
+        let text_id = self
+            .inline_text_obj(&inline_id)
+            .ok_or_else(|| EditorError::Automerge("inline text is not a Text object".into()))?;
+        let existing = self.doc.text(&text_id).unwrap_or_default();
         let offset = resolved.text_offset.min(existing.len());
-        let mut new_text = String::with_capacity(existing.len() + text.len());
-        new_text.push_str(&existing[..offset]);
-        new_text.push_str(text);
-        new_text.push_str(&existing[offset..]);
         self.doc
-            .put(&inline_id, "text", new_text.as_str())
+            .splice_text(&text_id, offset, 0, text)
             .map_err(|e| EditorError::Automerge(e.to_string()))?;
 
         Ok(())
@@ -75,7 +74,7 @@ impl EditorDocument {
             .ok_or_else(|| EditorError::InvalidPosition(pos.0, self.text_length()))?;
 
         let existing_marks = self.read_marks(&inline_id);
-        let existing_text = self.get_str(&inline_id, "text").unwrap_or_default();
+        let existing_text = self.inline_text(&inline_id);
         let offset = resolved.text_offset.min(existing_text.len());
 
         // Check if marks match — if so, insert in-place (fast path)
@@ -85,13 +84,12 @@ impl EditorDocument {
                 .all(|m| existing_marks.iter().any(|em| em.mark_type == m.mark_type));
 
         if marks_match {
-            // Same marks: insert into existing inline
-            let mut new_text = String::with_capacity(existing_text.len() + text.len());
-            new_text.push_str(&existing_text[..offset]);
-            new_text.push_str(text);
-            new_text.push_str(&existing_text[offset..]);
+            // Same marks: splice into existing inline's Text object
+            let text_id = self
+                .inline_text_obj(&inline_id)
+                .ok_or_else(|| EditorError::Automerge("inline text is not a Text object".into()))?;
             self.doc
-                .put(&inline_id, "text", new_text.as_str())
+                .splice_text(&text_id, offset, 0, text)
                 .map_err(|e| EditorError::Automerge(e.to_string()))?;
         } else if offset == existing_text.len() {
             // At end of inline: insert new inline after
@@ -101,12 +99,15 @@ impl EditorDocument {
             self.insert_text_inline(&content_id, resolved.inline_index, text, marks)?;
         } else {
             // In middle: split current inline, insert new inline between
-            let before = &existing_text[..offset];
             let after = &existing_text[offset..];
 
-            // Truncate current inline to "before" text
+            // Truncate current inline's Text object to "before" text
+            let text_id = self
+                .inline_text_obj(&inline_id)
+                .ok_or_else(|| EditorError::Automerge("inline text is not a Text object".into()))?;
+            let del_len = existing_text.len() - offset;
             self.doc
-                .put(&inline_id, "text", before)
+                .splice_text(&text_id, offset, del_len as isize, "")
                 .map_err(|e| EditorError::Automerge(e.to_string()))?;
 
             // Insert "after" part as new inline (preserves original marks)
@@ -136,7 +137,7 @@ impl EditorDocument {
             if let Some((_, inline_id)) = self.doc.get(content_id, i).ok().flatten() {
                 let inline_type = self.get_str(&inline_id, "type").unwrap_or_default();
                 if inline_type == "text" {
-                    let text = self.get_str(&inline_id, "text").unwrap_or_default();
+                    let text = self.inline_text(&inline_id);
                     let marks = self.read_marks(&inline_id);
                     result.push((text, marks));
                 }
@@ -168,21 +169,22 @@ impl EditorDocument {
                 .map(|(_, id)| id)
                 .unwrap();
 
-            let existing = self.get_str(&inline_id, "text").unwrap_or_default();
+            let existing = self.inline_text(&inline_id);
             let start_off = start_resolved.text_offset.min(existing.len());
             let end_off = end_resolved.text_offset.min(existing.len());
-            let mut new_text = String::new();
-            new_text.push_str(&existing[..start_off]);
-            new_text.push_str(&existing[end_off..]);
+            let del_len = end_off - start_off;
 
-            if new_text.is_empty() && self.doc.length(&content_id) > 1 {
+            if start_off == 0 && end_off >= existing.len() && self.doc.length(&content_id) > 1 {
                 // Remove empty inline node (but keep at least one)
                 self.doc
                     .delete(&content_id, start_resolved.inline_index)
                     .map_err(|e| EditorError::Automerge(e.to_string()))?;
-            } else {
+            } else if del_len > 0 {
+                let text_id = self.inline_text_obj(&inline_id).ok_or_else(|| {
+                    EditorError::Automerge("inline text is not a Text object".into())
+                })?;
                 self.doc
-                    .put(&inline_id, "text", new_text.as_str())
+                    .splice_text(&text_id, start_off, del_len as isize, "")
                     .map_err(|e| EditorError::Automerge(e.to_string()))?;
             }
             return Ok(());
@@ -212,11 +214,16 @@ impl EditorDocument {
                 .ok()
                 .flatten()
             {
-                let text = self.get_str(&start_inline_id, "text").unwrap_or_default();
-                let keep = &text[..start_resolved.text_offset.min(text.len())];
-                self.doc
-                    .put(&start_inline_id, "text", keep)
-                    .map_err(|e| EditorError::Automerge(e.to_string()))?;
+                let text = self.inline_text(&start_inline_id);
+                let keep_len = start_resolved.text_offset.min(text.len());
+                let del = text.len() - keep_len;
+                if del > 0
+                    && let Some(text_id) = self.inline_text_obj(&start_inline_id)
+                {
+                    self.doc
+                        .splice_text(&text_id, keep_len, del as isize, "")
+                        .map_err(|e| EditorError::Automerge(e.to_string()))?;
+                }
             }
 
             // Remove all inlines in start block after start_inline_index
@@ -237,7 +244,7 @@ impl EditorDocument {
                 .ok()
                 .flatten()
             {
-                let text = self.get_str(&end_inline_id, "text").unwrap_or_default();
+                let text = self.inline_text(&end_inline_id);
                 let keep = text[end_resolved.text_offset.min(text.len())..].to_string();
                 let marks = self.read_marks(&end_inline_id);
                 if !keep.is_empty() {
@@ -257,7 +264,7 @@ impl EditorDocument {
                 .ok()
                 .flatten()
             {
-                self.get_str(&sid, "text").unwrap_or_default()
+                self.inline_text(&sid)
             } else {
                 String::new()
             };
@@ -314,20 +321,29 @@ impl EditorDocument {
 
         // Truncate start inline node
         if let Some((_, start_id)) = self.doc.get(&content_id, start_inline).ok().flatten() {
-            let text = self.get_str(&start_id, "text").unwrap_or_default();
-            let keep = &text[..start_offset.min(text.len())];
-            self.doc
-                .put(&start_id, "text", keep)
-                .map_err(|e| EditorError::Automerge(e.to_string()))?;
+            let text = self.inline_text(&start_id);
+            let keep_len = start_offset.min(text.len());
+            let del = text.len() - keep_len;
+            if del > 0
+                && let Some(text_id) = self.inline_text_obj(&start_id)
+            {
+                self.doc
+                    .splice_text(&text_id, keep_len, del as isize, "")
+                    .map_err(|e| EditorError::Automerge(e.to_string()))?;
+            }
         }
 
         // Truncate end inline node
         if let Some((_, end_id)) = self.doc.get(&content_id, end_inline).ok().flatten() {
-            let text = self.get_str(&end_id, "text").unwrap_or_default();
-            let keep = text[end_offset.min(text.len())..].to_string();
-            self.doc
-                .put(&end_id, "text", &keep)
-                .map_err(|e| EditorError::Automerge(e.to_string()))?;
+            let text = self.inline_text(&end_id);
+            let del = end_offset.min(text.len());
+            if del > 0
+                && let Some(text_id) = self.inline_text_obj(&end_id)
+            {
+                self.doc
+                    .splice_text(&text_id, 0, del as isize, "")
+                    .map_err(|e| EditorError::Automerge(e.to_string()))?;
+            }
         }
 
         // Remove intermediate inline nodes (between start+1 and end-1)
@@ -347,14 +363,14 @@ impl EditorDocument {
         // Check end node (check it first since removing start would shift it)
         let end_empty =
             if let Some((_, eid)) = self.doc.get(&content_id, end_new_idx).ok().flatten() {
-                self.get_str(&eid, "text").unwrap_or_default().is_empty()
+                self.inline_text(&eid).is_empty()
             } else {
                 false
             };
 
         let start_empty =
             if let Some((_, sid)) = self.doc.get(&content_id, start_inline).ok().flatten() {
-                self.get_str(&sid, "text").unwrap_or_default().is_empty()
+                self.inline_text(&sid).is_empty()
             } else {
                 false
             };
@@ -402,9 +418,15 @@ impl EditorDocument {
         self.doc
             .put(&text_node, "type", "text")
             .map_err(|e| EditorError::Automerge(e.to_string()))?;
-        self.doc
-            .put(&text_node, "text", text)
+        let text_obj = self
+            .doc
+            .put_object(&text_node, "text", ObjType::Text)
             .map_err(|e| EditorError::Automerge(e.to_string()))?;
+        if !text.is_empty() {
+            self.doc
+                .splice_text(&text_obj, 0, 0, text)
+                .map_err(|e| EditorError::Automerge(e.to_string()))?;
+        }
         self.doc
             .put_object(&text_node, "marks", ObjType::List)
             .map_err(|e| EditorError::Automerge(e.to_string()))?;
@@ -434,7 +456,7 @@ impl EditorDocument {
                 .flatten()
                 .unwrap();
 
-            let text = self.get_str(&inline_id, "text").unwrap_or_default();
+            let text = self.inline_text(&inline_id);
 
             if start.text_offset == 0 && end.text_offset >= text.len() {
                 // Covers entire node - add mark directly
@@ -571,7 +593,7 @@ impl EditorDocument {
             .flatten()
             .ok_or_else(|| EditorError::CommandFailed("Inline node not found".into()))?;
 
-        let text = self.get_str(&inline_id, "text").unwrap_or_default();
+        let text = self.inline_text(&inline_id);
         let existing_marks = self.read_marks(&inline_id);
 
         let before = &text[..start_offset];
@@ -624,9 +646,15 @@ impl EditorDocument {
         self.doc
             .put(&node, "type", "text")
             .map_err(|e| EditorError::Automerge(e.to_string()))?;
-        self.doc
-            .put(&node, "text", text)
+        let text_obj = self
+            .doc
+            .put_object(&node, "text", ObjType::Text)
             .map_err(|e| EditorError::Automerge(e.to_string()))?;
+        if !text.is_empty() {
+            self.doc
+                .splice_text(&text_obj, 0, 0, text)
+                .map_err(|e| EditorError::Automerge(e.to_string()))?;
+        }
         let marks_list = self
             .doc
             .put_object(&node, "marks", ObjType::List)
@@ -730,7 +758,7 @@ impl EditorDocument {
         // Read the split inline node's text and marks
         let (split_text, split_marks) =
             if let Some((_, inline_id)) = self.doc.get(&content_id, split_inline).ok().flatten() {
-                let text = self.get_str(&inline_id, "text").unwrap_or_default();
+                let text = self.inline_text(&inline_id);
                 let marks = self.read_marks(&inline_id);
                 (text, marks)
             } else {
@@ -765,10 +793,14 @@ impl EditorDocument {
         if !split_at_start_of_inline && !split_at_end_of_inline {
             // Truncate to before text
             if let Some((_, inline_id)) = self.doc.get(&content_id, split_inline).ok().flatten() {
-                let before_text = &split_text[..split_offset];
-                self.doc
-                    .put(&inline_id, "text", before_text)
-                    .map_err(|e| EditorError::Automerge(e.to_string()))?;
+                let del = split_text.len() - split_offset;
+                if del > 0
+                    && let Some(text_id) = self.inline_text_obj(&inline_id)
+                {
+                    self.doc
+                        .splice_text(&text_id, split_offset, del as isize, "")
+                        .map_err(|e| EditorError::Automerge(e.to_string()))?;
+                }
             }
             // Remove all inlines after split_inline
             let total = self.doc.length(&content_id);
