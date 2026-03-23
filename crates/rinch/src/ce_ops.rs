@@ -865,6 +865,58 @@ impl CeOps {
         }
     }
 
+    /// Ensure the CE root always has at least one block-level child.
+    ///
+    /// After deletions, the CE root could end up with no children or only
+    /// inline text nodes. This breaks the block model (split_block falls
+    /// back to `<br>` insertion, CRDT can't represent the structure).
+    ///
+    /// Call after any operation that might remove all blocks.
+    fn ensure_block_structure(&mut self) {
+        let needs_fix = {
+            let d = self.doc.borrow();
+            let children = &d.tree.nodes[self.ce_node_id].children;
+            if children.is_empty() {
+                true
+            } else {
+                // Check if all children are non-block (inline text, br, etc.)
+                children.iter().all(|&child_id| {
+                    d.tree
+                        .get(child_id)
+                        .and_then(|n| n.tag())
+                        .map(|t| !RinchApp::is_block_element(t))
+                        .unwrap_or(true) // text nodes are non-block
+                })
+            }
+        };
+
+        if needs_fix {
+            let mut d = self.doc.borrow_mut();
+            // Wrap all existing inline children in a <p>
+            let children: Vec<usize> = d.tree.nodes[self.ce_node_id].children.clone();
+            let p = d.create_element("p");
+            d.append_child(rinch_core::dom::NodeId(self.ce_node_id), p);
+            for &child_id in &children {
+                d.remove_node(rinch_core::dom::NodeId(child_id));
+                d.append_child(p, rinch_core::dom::NodeId(child_id));
+            }
+
+            // If the <p> is empty, add an empty text node
+            if d.tree.nodes[p.0].children.is_empty() {
+                let text = d.create_text("");
+                d.append_child(p, text);
+                self.cursor = DomCursor::new(text.0, 0);
+                self.anchor = self.cursor;
+            } else {
+                // Position cursor in the first text node of the new <p>
+                if let Some(cursor) = RinchApp::first_text_cursor(&d.tree, p.0) {
+                    self.cursor = cursor;
+                    self.anchor = cursor;
+                }
+            }
+        }
+    }
+
     // ── Position helpers ──────────────────────────────────────────────
 
     /// Compute the global flat position for an arbitrary cursor.
@@ -1246,8 +1298,16 @@ impl CeOps {
             for &child_id in &children {
                 d.remove_node(rinch_core::dom::NodeId(child_id));
             }
-            for block in blocks {
-                load_block(&mut d, ce_root, block);
+            if blocks.is_empty() {
+                // Ensure at least one block
+                let p = d.create_element("p");
+                d.append_child(rinch_core::dom::NodeId(ce_root), p);
+                let text = d.create_text("");
+                d.append_child(p, text);
+            } else {
+                for block in blocks {
+                    load_block(&mut d, ce_root, block);
+                }
             }
         }
         // Set cursor to start
@@ -3464,6 +3524,7 @@ impl ContentEditableApi for CeOps {
             let pre_sel = self.should_dual_write().then_some((sel_start, sel_end));
 
             self.delete_selection_inner();
+            self.ensure_block_structure();
 
             #[cfg(feature = "collaboration")]
             if let Some((start, end)) = pre_sel {
@@ -3575,6 +3636,7 @@ impl ContentEditableApi for CeOps {
         });
 
         self.delete_backward_inner();
+        self.ensure_block_structure();
 
         // Record undo op: restore pre-mutation content
         self.push_undo_op(UndoOp::Snapshot {
@@ -3634,6 +3696,7 @@ impl ContentEditableApi for CeOps {
         });
 
         self.delete_forward_inner();
+        self.ensure_block_structure();
 
         self.push_undo_op(UndoOp::Snapshot {
             blocks: pre_snapshot,
@@ -3698,6 +3761,7 @@ impl ContentEditableApi for CeOps {
             .then(|| self.selection_flat_range());
 
         self.delete_selection_inner();
+        self.ensure_block_structure();
 
         self.push_undo_op(UndoOp::Snapshot {
             blocks: pre_snapshot,
@@ -3739,6 +3803,11 @@ impl ContentEditableApi for CeOps {
                 }
             }
         }
+
+        // Ensure we have block structure before splitting — if the CE
+        // degraded to inline-only mode (e.g., after deleting all blocks),
+        // wrap inline content in a <p> first so split creates proper blocks.
+        self.ensure_block_structure();
 
         #[cfg(feature = "collaboration")]
         let pre_pos = if self.should_dual_write() {
