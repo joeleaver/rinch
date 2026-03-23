@@ -34,9 +34,11 @@ impl EditorDocument {
             .inline_text_obj(&inline_id)
             .ok_or_else(|| EditorError::Automerge("inline text is not a Text object".into()))?;
         let existing = self.doc.text(&text_id).unwrap_or_default();
-        let offset = resolved.text_offset.min(existing.len());
+        let byte_offset = resolved.text_offset.min(existing.len());
+        // Automerge splice_text uses character (Unicode scalar) positions, not bytes.
+        let char_offset = existing[..byte_offset].chars().count();
         self.doc
-            .splice_text(&text_id, offset, 0, text)
+            .splice_text(&text_id, char_offset, 0, text)
             .map_err(|e| EditorError::Automerge(e.to_string()))?;
 
         Ok(())
@@ -88,8 +90,9 @@ impl EditorDocument {
             let text_id = self
                 .inline_text_obj(&inline_id)
                 .ok_or_else(|| EditorError::Automerge("inline text is not a Text object".into()))?;
+            let char_offset = Self::byte_offset_to_char_offset(&existing_text, offset);
             self.doc
-                .splice_text(&text_id, offset, 0, text)
+                .splice_text(&text_id, char_offset, 0, text)
                 .map_err(|e| EditorError::Automerge(e.to_string()))?;
         } else if offset == existing_text.len() {
             // At end of inline: insert new inline after
@@ -105,9 +108,13 @@ impl EditorDocument {
             let text_id = self
                 .inline_text_obj(&inline_id)
                 .ok_or_else(|| EditorError::Automerge("inline text is not a Text object".into()))?;
-            let del_len = existing_text.len() - offset;
+            let char_offset = Self::byte_offset_to_char_offset(&existing_text, offset);
+            let char_del = Self::byte_offset_to_char_offset(
+                &existing_text[offset..],
+                existing_text.len() - offset,
+            );
             self.doc
-                .splice_text(&text_id, offset, del_len as isize, "")
+                .splice_text(&text_id, char_offset, char_del as isize, "")
                 .map_err(|e| EditorError::Automerge(e.to_string()))?;
 
             // Insert "after" part as new inline (preserves original marks)
@@ -183,8 +190,10 @@ impl EditorDocument {
                 let text_id = self.inline_text_obj(&inline_id).ok_or_else(|| {
                     EditorError::Automerge("inline text is not a Text object".into())
                 })?;
+                let char_start = Self::byte_offset_to_char_offset(&existing, start_off);
+                let char_del = Self::byte_offset_to_char_offset(&existing[start_off..], del_len);
                 self.doc
-                    .splice_text(&text_id, start_off, del_len as isize, "")
+                    .splice_text(&text_id, char_start, char_del as isize, "")
                     .map_err(|e| EditorError::Automerge(e.to_string()))?;
             }
             return Ok(());
@@ -220,8 +229,10 @@ impl EditorDocument {
                 if del > 0
                     && let Some(text_id) = self.inline_text_obj(&start_inline_id)
                 {
+                    let char_keep = Self::byte_offset_to_char_offset(&text, keep_len);
+                    let char_del = Self::byte_offset_to_char_offset(&text[keep_len..], del);
                     self.doc
-                        .splice_text(&text_id, keep_len, del as isize, "")
+                        .splice_text(&text_id, char_keep, char_del as isize, "")
                         .map_err(|e| EditorError::Automerge(e.to_string()))?;
                 }
             }
@@ -298,6 +309,73 @@ impl EditorDocument {
                     .delete(&self.content_id, start_resolved.block_index + 1)
                     .map_err(|e| EditorError::Automerge(e.to_string()))?;
             }
+
+            // Merge adjacent inlines with matching marks in the surviving block.
+            // Cross-block delete appends the end block's inlines, which may be
+            // mergeable with the start block's last inline.
+            self.merge_adjacent_inlines(start_resolved.block_index)?;
+        }
+
+        Ok(())
+    }
+
+    /// Merge adjacent text inline nodes that have the same marks.
+    ///
+    /// After cross-block delete, the surviving block may have two adjacent
+    /// text inlines with identical marks (e.g., "Hello" + "World" both unmarked).
+    /// The DOM merges these into one text node, so the CRDT must do the same.
+    fn merge_adjacent_inlines(&mut self, block_index: usize) -> Result<(), EditorError> {
+        let block_id = self
+            .block_obj(block_index)
+            .ok_or_else(|| EditorError::CommandFailed("Block not found for merge".into()))?;
+        let content_id = self.block_content_obj(&block_id).ok_or_else(|| {
+            EditorError::CommandFailed("Block content not found for merge".into())
+        })?;
+
+        let mut i = 0;
+        while i + 1 < self.doc.length(&content_id) {
+            let (_, id_a) = self
+                .doc
+                .get(&content_id, i)
+                .ok()
+                .flatten()
+                .ok_or_else(|| EditorError::CommandFailed("Inline not found".into()))?;
+            let (_, id_b) = self
+                .doc
+                .get(&content_id, i + 1)
+                .ok()
+                .flatten()
+                .ok_or_else(|| EditorError::CommandFailed("Inline not found".into()))?;
+
+            let type_a = self.get_str(&id_a, "type").unwrap_or_default();
+            let type_b = self.get_str(&id_b, "type").unwrap_or_default();
+
+            if type_a != "text" || type_b != "text" {
+                i += 1;
+                continue;
+            }
+
+            let marks_a = self.read_marks(&id_a);
+            let marks_b = self.read_marks(&id_b);
+
+            if marks_a == marks_b {
+                // Merge: append b's text to a, then remove b
+                let text_b = self.inline_text(&id_b);
+                if !text_b.is_empty()
+                    && let Some(text_id_a) = self.inline_text_obj(&id_a)
+                {
+                    let char_len_a = self.doc.length(&text_id_a);
+                    self.doc
+                        .splice_text(&text_id_a, char_len_a, 0, &text_b)
+                        .map_err(|e| EditorError::Automerge(e.to_string()))?;
+                }
+                self.doc
+                    .delete(&content_id, i + 1)
+                    .map_err(|e| EditorError::Automerge(e.to_string()))?;
+                // Don't increment i — check if merged node can merge with next
+            } else {
+                i += 1;
+            }
         }
 
         Ok(())
@@ -327,8 +405,10 @@ impl EditorDocument {
             if del > 0
                 && let Some(text_id) = self.inline_text_obj(&start_id)
             {
+                let char_keep = Self::byte_offset_to_char_offset(&text, keep_len);
+                let char_del = Self::byte_offset_to_char_offset(&text[keep_len..], del);
                 self.doc
-                    .splice_text(&text_id, keep_len, del as isize, "")
+                    .splice_text(&text_id, char_keep, char_del as isize, "")
                     .map_err(|e| EditorError::Automerge(e.to_string()))?;
             }
         }
@@ -340,8 +420,9 @@ impl EditorDocument {
             if del > 0
                 && let Some(text_id) = self.inline_text_obj(&end_id)
             {
+                let char_del = Self::byte_offset_to_char_offset(&text, del);
                 self.doc
-                    .splice_text(&text_id, 0, del as isize, "")
+                    .splice_text(&text_id, 0, char_del as isize, "")
                     .map_err(|e| EditorError::Automerge(e.to_string()))?;
             }
         }
@@ -797,8 +878,11 @@ impl EditorDocument {
                 if del > 0
                     && let Some(text_id) = self.inline_text_obj(&inline_id)
                 {
+                    let char_split = Self::byte_offset_to_char_offset(&split_text, split_offset);
+                    let char_del =
+                        Self::byte_offset_to_char_offset(&split_text[split_offset..], del);
                     self.doc
-                        .splice_text(&text_id, split_offset, del as isize, "")
+                        .splice_text(&text_id, char_split, char_del as isize, "")
                         .map_err(|e| EditorError::Automerge(e.to_string()))?;
                 }
             }

@@ -3009,7 +3009,7 @@ impl CeOps {
         };
 
         if is_element {
-            // ── Element cursor (empty block) — remove, cursor to start of next ──
+            // ── Element cursor (empty block) — remove, cursor to next or prev ──
             let info = {
                 let d = self.doc.borrow();
                 RinchApp::find_block_and_parent(&d.tree, cur.node_id, ce_node_id).map(
@@ -3019,11 +3019,31 @@ impl CeOps {
                         let next_block_id = pos.and_then(|p| siblings.get(p + 1).copied());
                         let next_cursor =
                             next_block_id.and_then(|nb| RinchApp::first_text_cursor(&d.tree, nb));
-                        (cur_block_id, block_parent_id, next_cursor, next_block_id)
+                        // Fall back to previous block if no next
+                        let prev_block_id =
+                            pos.and_then(|p| if p > 0 { Some(siblings[p - 1]) } else { None });
+                        let prev_cursor =
+                            prev_block_id.and_then(|pb| RinchApp::last_text_cursor(&d.tree, pb));
+                        (
+                            cur_block_id,
+                            block_parent_id,
+                            next_cursor,
+                            next_block_id,
+                            prev_cursor,
+                            prev_block_id,
+                        )
                     },
                 )
             };
-            if let Some((cur_block_id, block_parent_id, next_cursor, next_block_id)) = info {
+            if let Some((
+                cur_block_id,
+                block_parent_id,
+                next_cursor,
+                next_block_id,
+                prev_cursor,
+                prev_block_id,
+            )) = info
+            {
                 {
                     let mut d = self.doc.borrow_mut();
                     d.remove_node(rinch_core::dom::NodeId(cur_block_id));
@@ -3032,6 +3052,10 @@ impl CeOps {
                     self.cursor = nc;
                 } else if let Some(nb) = next_block_id {
                     self.cursor = DomCursor::new(nb, 0);
+                } else if let Some(pc) = prev_cursor {
+                    self.cursor = pc;
+                } else if let Some(pb) = prev_block_id {
+                    self.cursor = DomCursor::new(pb, 0);
                 }
                 self.anchor = self.cursor;
                 dispatch_ce_event(&CeEvent::NodeRemoved {
@@ -3567,13 +3591,21 @@ impl ContentEditableApi for CeOps {
                 } else {
                     let post_pos = self.flat_pos_of(self.cursor);
                     let post_blocks = self.ce_block_count();
-                    if post_pos < pre_start || post_blocks < pre_blocks {
-                        let blocks_removed = pre_blocks.saturating_sub(post_blocks);
-                        let chars_deleted = pre_start.saturating_sub(post_pos);
-                        let total = chars_deleted + blocks_removed;
-                        if total > 0 {
+                    if post_blocks < pre_blocks {
+                        // Block join: delete the block separator(s) at the merge point.
+                        // The cursor position shifts by the number of removed separators,
+                        // not by characters deleted from text.
+                        let blocks_removed = pre_blocks - post_blocks;
+                        let doc = self.editor_doc.as_mut().unwrap();
+                        let _ =
+                            doc.delete_range(EditorRange::new(post_pos, post_pos + blocks_removed));
+                    } else if post_pos < pre_start {
+                        // Character(s) deleted (no block structure change)
+                        let chars_deleted = pre_start - post_pos;
+                        if chars_deleted > 0 {
                             let doc = self.editor_doc.as_mut().unwrap();
-                            let _ = doc.delete_range(EditorRange::new(post_pos, post_pos + total));
+                            let _ = doc
+                                .delete_range(EditorRange::new(post_pos, post_pos + chars_deleted));
                         }
                     } else if post_pos == pre_start && post_blocks == pre_blocks {
                         self.sync_block_type_if_changed();
@@ -3616,15 +3648,21 @@ impl ContentEditableApi for CeOps {
                 } else {
                     let post_blocks = self.ce_block_count();
                     let post_pos = self.flat_pos_of(self.cursor);
-                    let blocks_removed = pre_blocks.saturating_sub(post_blocks);
 
-                    if blocks_removed > 0 || post_pos < pre_start {
-                        // Block merge or structural change
-                        let total = pre_start.saturating_sub(post_pos) + blocks_removed;
-                        if total > 0 {
-                            let doc = self.editor_doc.as_mut().unwrap();
-                            let _ = doc.delete_range(EditorRange::new(post_pos, post_pos + total));
-                        }
+                    if post_blocks < pre_blocks {
+                        // Block removal/merge: the separator(s) at the merge point
+                        // need to be deleted. Use the smaller of pre/post pos to
+                        // target the separator correctly.
+                        let blocks_removed = pre_blocks - post_blocks;
+                        let del_start = post_pos.min(pre_start);
+                        let doc = self.editor_doc.as_mut().unwrap();
+                        let _ = doc
+                            .delete_range(EditorRange::new(del_start, del_start + blocks_removed));
+                    } else if post_pos < pre_start {
+                        // Structural change that moved cursor backward
+                        let diff = pre_start - post_pos;
+                        let doc = self.editor_doc.as_mut().unwrap();
+                        let _ = doc.delete_range(EditorRange::new(post_pos, post_pos + diff));
                     } else {
                         // Character delete forward: cursor stays put, content after shrinks.
                         // Compare EditorDocument text_length with DOM to find the diff.

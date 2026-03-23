@@ -203,6 +203,23 @@ impl EditorDocument {
             })
     }
 
+    /// Convert a byte offset within a string to a character (Unicode scalar) offset.
+    ///
+    /// Automerge's `splice_text` uses character positions, but the DOM and
+    /// EditorDocument Position system use byte offsets. This bridges the gap.
+    pub(crate) fn byte_offset_to_char_offset(s: &str, byte_offset: usize) -> usize {
+        s[..byte_offset.min(s.len())].chars().count()
+    }
+
+    /// Convert a character offset to a byte offset within a string.
+    #[allow(dead_code)]
+    pub(crate) fn char_offset_to_byte_offset(s: &str, char_offset: usize) -> usize {
+        s.char_indices()
+            .nth(char_offset)
+            .map(|(i, _)| i)
+            .unwrap_or(s.len())
+    }
+
     /// Read the text content of an inline node.
     ///
     /// Supports both the new Text CRDT format and the legacy scalar string format.

@@ -259,7 +259,20 @@ fn split_block_then_type() {
 }
 
 #[test]
-#[ignore = "block join causes inline node fragmentation in CRDT — needs merge_adjacent_inlines"]
+fn delete_forward_removes_empty_block() {
+    let mut ce = TestCe::with_text("Hello");
+    ce.ops.split_block();
+    ce.assert_sync();
+    // Now: "Hello" | "" (empty second block), cursor in empty block
+    // Delete forward on empty block — should remove the empty block
+    // (delete_forward on element cursor removes current block)
+    ce.ops.delete_forward();
+    ce.assert_sync();
+    // Should be back to 1 block
+    assert_eq!(ce.ops.extract_content().len(), 1);
+}
+
+#[test]
 fn delete_backward_joins_blocks() {
     let mut ce = TestCe::with_blocks(&["Hello", "World"]);
     // Cursor should be at start of second block after with_blocks
@@ -621,46 +634,32 @@ fn run_fuzz(seed: u64, op_count: usize) {
     }
 }
 
-// Fuzz tests exercise random operation sequences. Some currently fail due to
-// known issues:
-// - Block joins leave fragmented inline nodes in the CRDT (needs merge_adjacent_inlines)
-// - Empty block handling differs between DOM and CRDT after certain delete sequences
-// - Undo of complex multi-step operations can leave CRDT out of sync
-//
-// Run with: cargo test -p rinch --features collaboration --test ce_crdt_sync fuzz -- --ignored
-
 #[test]
-#[ignore = "fuzz — run manually to find sync issues"]
 fn fuzz_seed_0() {
     run_fuzz(0, 200);
 }
 
 #[test]
-#[ignore = "fuzz — run manually to find sync issues"]
 fn fuzz_seed_1() {
     run_fuzz(1, 200);
 }
 
 #[test]
-#[ignore = "fuzz — run manually to find sync issues"]
 fn fuzz_seed_42() {
     run_fuzz(42, 200);
 }
 
 #[test]
-#[ignore = "fuzz — run manually to find sync issues"]
 fn fuzz_seed_1337() {
     run_fuzz(1337, 200);
 }
 
 #[test]
-#[ignore = "fuzz — run manually to find sync issues"]
 fn fuzz_seed_9999() {
     run_fuzz(9999, 200);
 }
 
 #[test]
-#[ignore = "fuzz — run manually to find sync issues"]
 fn fuzz_many_seeds() {
     for seed in 100..120 {
         run_fuzz(seed, 100);
