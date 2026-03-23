@@ -46,7 +46,9 @@ Keyboard Event
     ↓
 InputHandler maps key → EditCommand
     ↓
-CeOps (ContentEditableApi impl) performs DOM mutation
+CeOps mutates EditorDocument (CRDT, source of truth)
+    ↓
+Affected DOM blocks re-rendered from EditorDocument state
     ↓
 CeEvent dispatched to all listeners
     ↓
@@ -57,9 +59,12 @@ Scene marked dirty → repaint
 
 1. The rinch runtime captures keyboard events on the focused CE element
 2. Keys are mapped to `EditCommand`s (InsertText, DeleteBackward, ToggleBold, etc.)
-3. `CeOps` — the runtime's implementation of `ContentEditableApi` — mutates the DOM
-4. Each mutation dispatches a `CeEvent` so observers (like the editor bridge) can react
-5. The cursor/selection is updated and the scene is repainted
+3. `CeOps` — the runtime's implementation of `ContentEditableApi` — mutates the `EditorDocument` (Automerge CRDT)
+4. Only the affected block(s) are re-rendered in the DOM from EditorDocument state
+5. Each mutation dispatches a `CeEvent` so observers can react
+6. The cursor/selection is updated and the scene is repainted
+
+> **CRDT-first architecture:** Every mutation flows through `EditorDocument` first, then the DOM is updated as a view. This ensures the CRDT and DOM never diverge, and makes collaboration work automatically — remote changes just load into EditorDocument, then re-render.
 
 ## ContentEditableApi Trait
 
@@ -478,11 +483,113 @@ All are `thread_local!` — safe for single-threaded GUI but not shareable acros
 | File | Purpose |
 |------|---------|
 | `crates/rinch-core/src/ce.rs` | Core types: `CeEvent`, `ContentEditableApi`, `DomCursor`, `CeSelection`, dispatchers |
-| `crates/rinch/src/ce_ops.rs` | `CeOps` — runtime implementation of `ContentEditableApi` |
+| `crates/rinch/src/ce_ops.rs` | `CeOps` — runtime implementation of `ContentEditableApi` (CRDT-first mutations) |
+| `crates/rinch/src/ce_render.rs` | Block rendering, `BlockMap`, position conversion (`EditorPosition ↔ DomCursor`) |
 | `crates/rinch/src/app/contenteditable/mod.rs` | Keyboard input handler, cursor management |
 | `crates/rinch/src/app/contenteditable/ce_selection.rs` | Selection, copy/cut, HTML extraction |
 | `crates/rinch/src/app/contenteditable/ce_paste.rs` | HTML paste handling |
-| `crates/rinch/src/app/contenteditable/ce_blocks.rs` | Block-level operations |
 | `crates/rinch/src/app/contenteditable/ce_navigation.rs` | Cursor navigation |
 | `crates/rinch/src/app/contenteditable/ce_virtualization.rs` | Large document virtualization |
 | `crates/rinch-editable/src/` | Generic editing primitives (`EditCommand`, `InputHandler`) |
+
+## Migration Guide: CRDT-First Architecture
+
+If you were using the `collaboration` feature to opt into CRDT sync, the architecture has changed. EditorDocument is now **always present** — every CE element gets one. The `collaboration` feature now only gates the sync methods (`save_incremental`, `load_incremental`).
+
+### What changed
+
+**EditorDocument is always present.** Previously, `CeOps` had an `Option<EditorDocument>` that was `None` unless you called `enable_collaboration()`. Now it's always `EditorDocument` — created automatically from DOM content when the CE element gains focus.
+
+**All mutations are CRDT-first.** Every `ContentEditableApi` method (insert_text, delete_backward, split_block, etc.) mutates the EditorDocument first, then re-renders the affected DOM blocks. The old dual-write path (DOM first, CRDT mirror after) is gone.
+
+**`rinch-editor` is a hard dependency.** It's no longer behind `dep:rinch-editor`. Automerge is pulled in for all desktop builds. This adds ~1MB to binary size but eliminates an entire class of sync bugs.
+
+### API changes
+
+#### `editor_doc()` returns `&EditorDocument`, not `Option`
+
+```rust
+// Before:
+let doc = ops.editor_doc().unwrap();
+let text = ops.editor_doc().map(|d| d.to_text()).unwrap_or_default();
+
+// After:
+let doc = ops.editor_doc();
+let text = ops.editor_doc().to_text();
+```
+
+#### `editor_doc_mut()` returns `&mut EditorDocument`, not `Option`
+
+```rust
+// Before:
+if let Some(doc) = ops.editor_doc_mut() {
+    let bytes = doc.save_incremental();
+    send_to_peer(bytes);
+}
+
+// After:
+let doc = ops.editor_doc_mut();
+let bytes = doc.save_incremental();
+send_to_peer(bytes);
+```
+
+#### `enable_collaboration()` replaces the document (not enables it)
+
+The method still exists but its semantics changed. Previously it turned on CRDT sync. Now it replaces the auto-created EditorDocument with one loaded from shared CRDT history:
+
+```rust
+// Before: "turn on collaboration"
+ops.enable_collaboration(doc_from_server);
+
+// After: "replace with shared document"
+// Same call, same signature — just different mental model.
+// The CE element already had an EditorDocument; this swaps it.
+ops.enable_collaboration(doc_from_server);
+```
+
+#### `enable_collaboration_from_content()` is rarely needed
+
+Previously this created an EditorDocument from DOM content. Now that's done automatically in `CeOps::new()`. The method still works (it re-creates the EditorDocument from current DOM content) but you shouldn't need it.
+
+#### New: `apply_remote_changes()` for peer sync
+
+Instead of manually calling `load_incremental` + `applying_remote` + re-rendering, use the new single method:
+
+```rust
+// Before:
+let ops_list = ops.editor_doc_mut().load_incremental_with_ops(&bytes)?;
+ops.applying_remote(|ops| {
+    for op in &ops_list {
+        // manually re-render each affected block...
+    }
+});
+
+// After:
+ops.apply_remote_changes(&bytes)?;
+// Done. DOM is automatically re-rendered from EditorDocument state.
+```
+
+> **Note:** `apply_remote_changes` requires `features = ["collaboration"]`.
+
+#### `applying_remote()` is still available but rarely needed
+
+The old `applying_remote()` closure wrapper still exists for advanced use cases where you need to suppress undo recording while making CE API calls. For normal peer sync, use `apply_remote_changes()` instead.
+
+### Indent/outdent are now CRDT operations
+
+List nesting is represented as an `indent` attribute on list blocks:
+
+```rust
+// EditorDocument block representation:
+BlockData { block_type: "bullet_list", attrs: {}, content: [...] }           // indent 0
+BlockData { block_type: "bullet_list", attrs: {"indent": "1"}, content: [...] } // indent 1
+```
+
+`indent()` increments the indent attr via `set_block_type`. `outdent()` decrements it (or converts to paragraph at level 0). This means indent/outdent operations are proper CRDT mutations that replicate correctly to peers.
+
+### What you can remove
+
+- `#[cfg(feature = "collaboration")]` guards around `editor_doc` access — it's always there now
+- `should_dual_write()` checks — removed from the codebase
+- `sync_editor_doc_from_dom()` calls — no longer exists; EditorDocument is the source of truth
+- Manual DOM-to-CRDT position mapping (`crdt_flat_pos_of`, etc.) — handled internally by `BlockMap`

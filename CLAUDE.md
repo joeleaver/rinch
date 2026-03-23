@@ -653,6 +653,8 @@ MenuItem::new("Reset Counter").on_click(move || count.set(0))
 
 Rinch has a built-in contenteditable system for rich-text editing. Set `contenteditable: "true"` on a `<div>` to activate cursor rendering, text selection, keyboard input, clipboard, and undo/redo.
 
+**Architecture:** CRDT-first. Every mutation flows through `EditorDocument` (Automerge CRDT) first, then the DOM is re-rendered as a view. The `EditorDocument` is always present on every CE element — no opt-in required. The `collaboration` feature only gates sync methods (`save_incremental`, `load_incremental`, `apply_remote_changes`).
+
 **Full guide:** `docs/src/guide/contenteditable.md`
 
 ### Key Types (all in `rinch_core::ce`)
@@ -717,11 +719,11 @@ Subscribe: `subscribe_ce_events(Rc::new(|event| { ... }))`. Dispatch: `dispatch_
 | File | Purpose |
 |------|---------|
 | `crates/rinch-core/src/ce.rs` | Core types, trait, events, dispatchers |
-| `crates/rinch/src/ce_ops.rs` | `CeOps` impl of `ContentEditableApi` |
+| `crates/rinch/src/ce_ops.rs` | `CeOps` impl of `ContentEditableApi` (CRDT-first mutations) |
+| `crates/rinch/src/ce_render.rs` | Block rendering, `BlockMap`, position conversion (`EditorPosition ↔ DomCursor`) |
 | `crates/rinch/src/app/contenteditable/mod.rs` | Keyboard handler, cursor management |
 | `crates/rinch/src/app/contenteditable/ce_selection.rs` | Selection, copy/cut |
 | `crates/rinch/src/app/contenteditable/ce_paste.rs` | HTML paste |
-| `crates/rinch/src/app/contenteditable/ce_blocks.rs` | Block operations |
 | `crates/rinch-editable/src/` | Generic editing primitives (`EditCommand`, `InputHandler`) |
 
 ## Drag and Drop
