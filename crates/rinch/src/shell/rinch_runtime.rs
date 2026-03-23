@@ -131,6 +131,36 @@ pub enum RinchNativeEvent {
     ShowWindow,
     /// Hide the window.
     HideWindow,
+    /// An injected platform event (e.g. synthetic gamepad input).
+    InjectedPlatformEvent(PlatformEvent),
+}
+
+/// Inject a synthetic [`PlatformEvent`] into the rinch event loop.
+///
+/// The event is queued and processed on the next event loop tick, just like
+/// real platform events from winit. The runtime uses the current window size
+/// and scale factor when dispatching.
+///
+/// This is useful for translating gamepad input or other external input
+/// sources into rinch UI events (e.g. arrow key presses for focus navigation).
+///
+/// Must be called from the main thread or any thread — the event is queued
+/// behind a `Mutex` and the event loop proxy is woken.
+///
+/// # Example
+///
+/// ```ignore
+/// use rinch_platform::{PlatformEvent, KeyCode, Modifiers};
+///
+/// // Simulate a down-arrow key press for gamepad D-pad
+/// rinch::inject_platform_event(PlatformEvent::KeyDown {
+///     key: KeyCode::ArrowDown,
+///     text: None,
+///     modifiers: Modifiers::default(),
+/// });
+/// ```
+pub fn inject_platform_event(event: PlatformEvent) {
+    send_native_event(RinchNativeEvent::InjectedPlatformEvent(event));
 }
 
 // ── RinchRuntime ─────────────────────────────────────────────────────────────
@@ -1682,6 +1712,7 @@ impl RinchRuntime {
             }
             RinchNativeEvent::ShowWindow => PlatformEvent::UserEvent(UserEvent::ShowWindow),
             RinchNativeEvent::HideWindow => PlatformEvent::UserEvent(UserEvent::HideWindow),
+            RinchNativeEvent::InjectedPlatformEvent(pe) => pe,
         };
         let size = self.window_size();
         let scale = self.scale_factor();
