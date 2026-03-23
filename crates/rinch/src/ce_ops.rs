@@ -730,8 +730,14 @@ pub struct CeOps {
     /// Accumulator for the current undo group being built.
     /// Flushed to `undo_stack` by `push_undo_group()`.
     pending_undo_ops: Vec<UndoOp>,
-    /// When true, mutations are replaying undo/redo ops — don't record new undo entries.
-    replaying: bool,
+    /// When true, suppress both undo recording and CRDT dual-writes.
+    ///
+    /// Set during:
+    /// - Undo/redo replay (ops go through CeOps methods but shouldn't
+    ///   double-write to EditorDocument since undo replay handles CRDT itself)
+    /// - Applying remote CRDT operations (the EditorDocument already has the
+    ///   change from `load_incremental`; we're just updating the DOM to match)
+    suppress_side_effects: bool,
 }
 
 impl CeOps {
@@ -759,7 +765,7 @@ impl CeOps {
             undo_stack: std::collections::VecDeque::new(),
             redo_stack: std::collections::VecDeque::new(),
             pending_undo_ops: Vec::new(),
-            replaying: false,
+            suppress_side_effects: false,
         }
     }
 
@@ -796,6 +802,47 @@ impl CeOps {
     /// Get the CE root node ID.
     pub fn ce_node_id(&self) -> usize {
         self.ce_node_id
+    }
+
+    /// Suppress CRDT dual-writes and undo recording for the duration of a closure.
+    ///
+    /// Use this when applying remote CRDT operations to the DOM. The
+    /// EditorDocument already has the changes (from `load_incremental`),
+    /// so CeOps methods should only update the DOM without writing back
+    /// to the CRDT or recording undo entries.
+    ///
+    /// ```ignore
+    /// ops.applying_remote(|ops| {
+    ///     for remote_op in &ce_remote_ops {
+    ///         match remote_op {
+    ///             CeRemoteOp::InsertText { pos, text } => {
+    ///                 // Sets cursor to pos, calls insert_text — DOM only
+    ///             }
+    ///             // ...
+    ///         }
+    ///     }
+    /// });
+    /// ```
+    pub fn applying_remote<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        let was = self.suppress_side_effects;
+        self.suppress_side_effects = true;
+        let result = f(self);
+        self.suppress_side_effects = was;
+        result
+    }
+
+    /// Returns true if currently suppressing CRDT writes and undo recording.
+    pub fn is_suppressing_side_effects(&self) -> bool {
+        self.suppress_side_effects
+    }
+
+    /// Returns true if CRDT dual-writes should happen (editor_doc exists and not suppressed).
+    #[cfg(feature = "collaboration")]
+    fn should_dual_write(&self) -> bool {
+        self.editor_doc.is_some() && !self.suppress_side_effects
     }
 
     /// Update cursor/anchor from app.rs after it handles input directly.
@@ -839,7 +886,7 @@ impl CeOps {
 
     /// Record an inverse operation for undo. No-op when replaying.
     fn push_undo_op(&mut self, op: UndoOp) {
-        if !self.replaying {
+        if !self.suppress_side_effects {
             self.pending_undo_ops.push(op);
         }
     }
@@ -847,7 +894,7 @@ impl CeOps {
     /// Start a new undo group: saves cursor position before mutation.
     /// Called at the start of each `ContentEditableApi` method.
     pub(crate) fn begin_undo_group(&mut self) {
-        if self.replaying {
+        if self.suppress_side_effects {
             return;
         }
         self.pending_undo_ops.clear();
@@ -861,7 +908,7 @@ impl CeOps {
     /// Flush the pending undo ops as a group onto the undo stack.
     /// Called at the end of each `ContentEditableApi` method.
     pub(crate) fn commit_undo_group(&mut self) {
-        if self.replaying || self.pending_undo_ops.len() <= 1 {
+        if self.suppress_side_effects || self.pending_undo_ops.len() <= 1 {
             // Only the RestoreCursor — nothing actually happened
             self.pending_undo_ops.clear();
             return;
@@ -891,7 +938,7 @@ impl CeOps {
 
         let mut restore_cursor = None;
 
-        self.replaying = true;
+        self.suppress_side_effects = true;
         // Replay in reverse order (most recent change undone first)
         for op in group.ops.iter().rev() {
             match op {
@@ -901,7 +948,7 @@ impl CeOps {
                 _ => self.apply_undo_op(op),
             }
         }
-        self.replaying = false;
+        self.suppress_side_effects = false;
 
         self.redo_stack.push_back(UndoGroup { ops: redo_ops });
 
@@ -922,7 +969,7 @@ impl CeOps {
 
         let mut restore_cursor = None;
 
-        self.replaying = true;
+        self.suppress_side_effects = true;
         for op in group.ops.iter().rev() {
             match op {
                 UndoOp::RestoreCursor { cursor, anchor } => {
@@ -931,7 +978,7 @@ impl CeOps {
                 _ => self.apply_undo_op(op),
             }
         }
-        self.replaying = false;
+        self.suppress_side_effects = false;
 
         self.undo_stack.push_back(UndoGroup { ops: undo_ops });
 
@@ -1075,7 +1122,7 @@ impl CeOps {
     }
 
     /// Insert text at a flat position in the CE DOM.
-    /// Used for undo replay. `self.replaying` must be true so the trait
+    /// Used for undo replay. `self.suppress_side_effects` must be true so the trait
     /// method skips undo recording.
     fn insert_text_at_flat_pos(&mut self, flat_pos: usize, text: &str) {
         if let Some(cursor) = self.flat_pos_to_dom_cursor(flat_pos) {
@@ -1086,7 +1133,7 @@ impl CeOps {
     }
 
     /// Delete a flat range in the CE DOM.
-    /// Used for undo replay. `self.replaying` must be true so the trait
+    /// Used for undo replay. `self.suppress_side_effects` must be true so the trait
     /// method skips undo recording.
     fn delete_flat_range(&mut self, start: usize, end: usize) {
         if let Some(start_cursor) = self.flat_pos_to_dom_cursor(start) {
@@ -1099,7 +1146,7 @@ impl CeOps {
     }
 
     /// Split a block at a flat position.
-    /// Used for undo replay. `self.replaying` must be true so the trait
+    /// Used for undo replay. `self.suppress_side_effects` must be true so the trait
     /// method skips undo recording.
     fn split_block_at_flat_pos(&mut self, flat_pos: usize) {
         if let Some(cursor) = self.flat_pos_to_dom_cursor(flat_pos) {
@@ -1155,7 +1202,7 @@ impl CeOps {
     }
 
     /// Add a mark at a flat range.
-    /// Used for undo replay. `self.replaying` must be true.
+    /// Used for undo replay. `self.suppress_side_effects` must be true.
     fn add_mark_at_range(&mut self, start: usize, end: usize, mark_type: &str) {
         let tag = mark_type_to_tag(mark_type);
         if let Some(start_cursor) = self.flat_pos_to_dom_cursor(start) {
@@ -1168,7 +1215,7 @@ impl CeOps {
     }
 
     /// Remove a mark at a flat range.
-    /// Used for undo replay. `self.replaying` must be true.
+    /// Used for undo replay. `self.suppress_side_effects` must be true.
     fn remove_mark_at_range(&mut self, start: usize, end: usize, mark_type: &str) {
         let tag = mark_type_to_tag(mark_type);
         if let Some(start_cursor) = self.flat_pos_to_dom_cursor(start) {
@@ -3380,7 +3427,7 @@ impl ContentEditableApi for CeOps {
             });
 
             #[cfg(feature = "collaboration")]
-            let pre_sel = self.editor_doc.is_some().then_some((sel_start, sel_end));
+            let pre_sel = self.should_dual_write().then_some((sel_start, sel_end));
 
             self.delete_selection_inner();
 
@@ -3401,7 +3448,7 @@ impl ContentEditableApi for CeOps {
 
         // ── Dual-write: insert into EditorDocument before DOM mutation ──
         #[cfg(feature = "collaboration")]
-        {
+        if self.should_dual_write() {
             if let Some(ref mut editor_doc) = self.editor_doc {
                 let _ = editor_doc.insert_text(EditorPosition(insert_pos), text);
             }
@@ -3483,7 +3530,7 @@ impl ContentEditableApi for CeOps {
 
         // Capture pre-mutation state for CRDT
         #[cfg(feature = "collaboration")]
-        let pre = self.editor_doc.is_some().then(|| {
+        let pre = self.should_dual_write().then(|| {
             if self.cursor != self.anchor {
                 let (start, end) = self.selection_flat_range();
                 (start, end, self.ce_block_count())
@@ -3503,7 +3550,7 @@ impl ContentEditableApi for CeOps {
         // CRDT dual-write
         #[cfg(feature = "collaboration")]
         if let Some((pre_start, pre_end, pre_blocks)) = pre {
-            if self.editor_doc.is_some() {
+            if self.should_dual_write() {
                 if pre_start != pre_end {
                     let doc = self.editor_doc.as_mut().unwrap();
                     let _ = doc.delete_range(EditorRange::new(pre_start, pre_end));
@@ -3534,7 +3581,7 @@ impl ContentEditableApi for CeOps {
         let pre_snapshot = self.extract_content();
 
         #[cfg(feature = "collaboration")]
-        let pre = self.editor_doc.is_some().then(|| {
+        let pre = self.should_dual_write().then(|| {
             if self.cursor != self.anchor {
                 let (start, end) = self.selection_flat_range();
                 (start, end, self.ce_block_count())
@@ -3552,7 +3599,7 @@ impl ContentEditableApi for CeOps {
 
         #[cfg(feature = "collaboration")]
         if let Some((pre_start, pre_end, pre_blocks)) = pre {
-            if self.editor_doc.is_some() {
+            if self.should_dual_write() {
                 if pre_start != pre_end {
                     let doc = self.editor_doc.as_mut().unwrap();
                     let _ = doc.delete_range(EditorRange::new(pre_start, pre_end));
@@ -3628,7 +3675,7 @@ impl ContentEditableApi for CeOps {
         let pre_snapshot = self.extract_content();
 
         #[cfg(feature = "collaboration")]
-        let pre_sel = if self.editor_doc.is_some() && self.cursor != self.anchor {
+        let pre_sel = if self.should_dual_write() && self.cursor != self.anchor {
             Some(self.selection_flat_range())
         } else {
             None
@@ -3646,7 +3693,7 @@ impl ContentEditableApi for CeOps {
         }
 
         #[cfg(feature = "collaboration")]
-        let pre_pos = if self.editor_doc.is_some() {
+        let pre_pos = if self.should_dual_write() {
             Some((self.flat_pos_of(self.cursor), self.ce_block_count()))
         } else {
             None
@@ -4661,7 +4708,7 @@ impl ContentEditableApi for CeOps {
         }
         #[cfg(feature = "collaboration")]
         if let Some(mark_type) = tag_to_mark_type(tag) {
-            if self.editor_doc.is_some() {
+            if self.should_dual_write() {
                 let (start, end) = self.selection_flat_range();
                 if start != end {
                     let mark = EditorMarkData::new(mark_type);
@@ -4733,7 +4780,7 @@ impl ContentEditableApi for CeOps {
         }
         #[cfg(feature = "collaboration")]
         if let Some(mark_type) = tag_to_mark_type(tag) {
-            if self.editor_doc.is_some() {
+            if self.should_dual_write() {
                 let (start, end) = self.selection_flat_range();
                 if start != end {
                     let doc = self.editor_doc.as_mut().unwrap();
@@ -5352,7 +5399,7 @@ impl ContentEditableApi for CeOps {
             unwrapped_node_ids: text_nodes,
         });
         #[cfg(feature = "collaboration")]
-        if self.editor_doc.is_some() {
+        if self.should_dual_write() {
             let (start, end) = self.selection_flat_range();
             if start != end {
                 let mark_types = [
