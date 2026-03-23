@@ -730,14 +730,14 @@ pub struct CeOps {
     /// Accumulator for the current undo group being built.
     /// Flushed to `undo_stack` by `push_undo_group()`.
     pending_undo_ops: Vec<UndoOp>,
-    /// When true, suppress both undo recording and CRDT dual-writes.
-    ///
-    /// Set during:
-    /// - Undo/redo replay (ops go through CeOps methods but shouldn't
-    ///   double-write to EditorDocument since undo replay handles CRDT itself)
-    /// - Applying remote CRDT operations (the EditorDocument already has the
-    ///   change from `load_incremental`; we're just updating the DOM to match)
-    suppress_side_effects: bool,
+    /// When true, suppress undo recording only.
+    /// Set during undo/redo replay — CeOps methods still dual-write to CRDT
+    /// so the document stays in sync.
+    suppress_undo_recording: bool,
+    /// When true, suppress CRDT dual-writes (and undo recording).
+    /// Set during `applying_remote()` — the EditorDocument already has the
+    /// changes from `load_incremental`, so CeOps only updates the DOM.
+    suppress_crdt_writes: bool,
 }
 
 impl CeOps {
@@ -765,7 +765,8 @@ impl CeOps {
             undo_stack: std::collections::VecDeque::new(),
             redo_stack: std::collections::VecDeque::new(),
             pending_undo_ops: Vec::new(),
-            suppress_side_effects: false,
+            suppress_undo_recording: false,
+            suppress_crdt_writes: false,
         }
     }
 
@@ -827,22 +828,22 @@ impl CeOps {
     where
         F: FnOnce(&mut Self) -> R,
     {
-        let was = self.suppress_side_effects;
-        self.suppress_side_effects = true;
+        let was = self.suppress_crdt_writes;
+        self.suppress_crdt_writes = true;
         let result = f(self);
-        self.suppress_side_effects = was;
+        self.suppress_crdt_writes = was;
         result
     }
 
-    /// Returns true if currently suppressing CRDT writes and undo recording.
-    pub fn is_suppressing_side_effects(&self) -> bool {
-        self.suppress_side_effects
+    /// Returns true if currently suppressing CRDT writes.
+    pub fn is_applying_remote(&self) -> bool {
+        self.suppress_crdt_writes
     }
 
     /// Returns true if CRDT dual-writes should happen (editor_doc exists and not suppressed).
     #[cfg(feature = "collaboration")]
     fn should_dual_write(&self) -> bool {
-        self.editor_doc.is_some() && !self.suppress_side_effects
+        self.editor_doc.is_some() && !self.suppress_crdt_writes
     }
 
     /// Update cursor/anchor from app.rs after it handles input directly.
@@ -884,9 +885,9 @@ impl CeOps {
 
     // ── Undo infrastructure ───────────────────────────────────────────
 
-    /// Record an inverse operation for undo. No-op when replaying.
+    /// Record an inverse operation for undo. No-op when replaying or applying remote.
     fn push_undo_op(&mut self, op: UndoOp) {
-        if !self.suppress_side_effects {
+        if !self.suppress_undo_recording && !self.suppress_crdt_writes {
             self.pending_undo_ops.push(op);
         }
     }
@@ -894,8 +895,14 @@ impl CeOps {
     /// Start a new undo group: saves cursor position before mutation.
     /// Called at the start of each `ContentEditableApi` method.
     pub(crate) fn begin_undo_group(&mut self) {
-        if self.suppress_side_effects {
+        if self.suppress_undo_recording || self.suppress_crdt_writes {
             return;
+        }
+        // Consume skip_next_sync on first mutation — it was only meant to
+        // prevent the initial sync after pre-loading an EditorDocument.
+        #[cfg(feature = "collaboration")]
+        {
+            self.skip_next_sync = false;
         }
         self.pending_undo_ops.clear();
         // Always record cursor restore as first op (replayed last during undo)
@@ -908,7 +915,10 @@ impl CeOps {
     /// Flush the pending undo ops as a group onto the undo stack.
     /// Called at the end of each `ContentEditableApi` method.
     pub(crate) fn commit_undo_group(&mut self) {
-        if self.suppress_side_effects || self.pending_undo_ops.len() <= 1 {
+        if self.suppress_undo_recording
+            || self.suppress_crdt_writes
+            || self.pending_undo_ops.len() <= 1
+        {
             // Only the RestoreCursor — nothing actually happened
             self.pending_undo_ops.clear();
             return;
@@ -938,7 +948,7 @@ impl CeOps {
 
         let mut restore_cursor = None;
 
-        self.suppress_side_effects = true;
+        self.suppress_undo_recording = true;
         // Replay in reverse order (most recent change undone first)
         for op in group.ops.iter().rev() {
             match op {
@@ -948,7 +958,7 @@ impl CeOps {
                 _ => self.apply_undo_op(op),
             }
         }
-        self.suppress_side_effects = false;
+        self.suppress_undo_recording = false;
 
         self.redo_stack.push_back(UndoGroup { ops: redo_ops });
 
@@ -969,7 +979,7 @@ impl CeOps {
 
         let mut restore_cursor = None;
 
-        self.suppress_side_effects = true;
+        self.suppress_undo_recording = true;
         for op in group.ops.iter().rev() {
             match op {
                 UndoOp::RestoreCursor { cursor, anchor } => {
@@ -978,7 +988,7 @@ impl CeOps {
                 _ => self.apply_undo_op(op),
             }
         }
-        self.suppress_side_effects = false;
+        self.suppress_undo_recording = false;
 
         self.undo_stack.push_back(UndoGroup { ops: undo_ops });
 
@@ -1122,8 +1132,8 @@ impl CeOps {
     }
 
     /// Insert text at a flat position in the CE DOM.
-    /// Used for undo replay. `self.suppress_side_effects` must be true so the trait
-    /// method skips undo recording.
+    /// Used for undo replay. `self.suppress_undo_recording` must be true so the
+    /// trait method skips undo recording (but CRDT writes still happen).
     fn insert_text_at_flat_pos(&mut self, flat_pos: usize, text: &str) {
         if let Some(cursor) = self.flat_pos_to_dom_cursor(flat_pos) {
             self.cursor = cursor;
@@ -1133,8 +1143,8 @@ impl CeOps {
     }
 
     /// Delete a flat range in the CE DOM.
-    /// Used for undo replay. `self.suppress_side_effects` must be true so the trait
-    /// method skips undo recording.
+    /// Used for undo replay. `self.suppress_undo_recording` must be true so the
+    /// trait method skips undo recording (but CRDT writes still happen).
     fn delete_flat_range(&mut self, start: usize, end: usize) {
         if let Some(start_cursor) = self.flat_pos_to_dom_cursor(start) {
             if let Some(end_cursor) = self.flat_pos_to_dom_cursor(end) {
@@ -1146,8 +1156,8 @@ impl CeOps {
     }
 
     /// Split a block at a flat position.
-    /// Used for undo replay. `self.suppress_side_effects` must be true so the trait
-    /// method skips undo recording.
+    /// Used for undo replay. `self.suppress_undo_recording` must be true so the
+    /// trait method skips undo recording (but CRDT writes still happen).
     fn split_block_at_flat_pos(&mut self, flat_pos: usize) {
         if let Some(cursor) = self.flat_pos_to_dom_cursor(flat_pos) {
             self.cursor = cursor;
@@ -1202,7 +1212,7 @@ impl CeOps {
     }
 
     /// Add a mark at a flat range.
-    /// Used for undo replay. `self.suppress_side_effects` must be true.
+    /// Used for undo replay. `self.suppress_undo_recording` must be true.
     fn add_mark_at_range(&mut self, start: usize, end: usize, mark_type: &str) {
         let tag = mark_type_to_tag(mark_type);
         if let Some(start_cursor) = self.flat_pos_to_dom_cursor(start) {
@@ -1215,7 +1225,7 @@ impl CeOps {
     }
 
     /// Remove a mark at a flat range.
-    /// Used for undo replay. `self.suppress_side_effects` must be true.
+    /// Used for undo replay. `self.suppress_undo_recording` must be true.
     fn remove_mark_at_range(&mut self, start: usize, end: usize, mark_type: &str) {
         let tag = mark_type_to_tag(mark_type);
         if let Some(start_cursor) = self.flat_pos_to_dom_cursor(start) {

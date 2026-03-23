@@ -132,6 +132,7 @@ impl EditorDocument {
             let runs = self.block_inline_runs(i);
             let content: Vec<InlineRunData> = runs
                 .into_iter()
+                .filter(|run| !run.text.is_empty() || run.inline_type != "text")
                 .map(|run| InlineRunData {
                     text: run.text,
                     marks: run
