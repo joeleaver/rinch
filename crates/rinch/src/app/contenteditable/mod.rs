@@ -14,16 +14,9 @@ use ce_selection::compute_ce_scroll_target;
 /// Re-use the public DomCursor from rinch_core::ce.
 pub(crate) use rinch_core::ce::DomCursor;
 
-/// A snapshot of text node contents for undo.
-#[derive(Debug, Clone)]
-pub(in crate::app) struct UndoEntry {
-    pub(in crate::app) cursor: DomCursor,
-    pub(in crate::app) anchor: DomCursor,
-    pub(in crate::app) text_snapshots: Vec<(usize, String)>, // (node_id, old_text_content)
-    pub(in crate::app) created_nodes: Vec<usize>, // nodes created during the edit (removed on undo)
-}
-
 /// State for a focused contenteditable element.
+///
+/// Undo/redo stacks are now managed by CeOps (via `UndoGroup`/`UndoOp`).
 pub(crate) struct ContentEditableFocus {
     /// The node ID of the focused contenteditable root element.
     pub(in crate::app) ce_node_id: usize,
@@ -33,10 +26,6 @@ pub(crate) struct ContentEditableFocus {
     pub(in crate::app) anchor: DomCursor,
     /// Input handler for mapping keys to edit commands (from rinch_editable).
     pub(in crate::app) input_handler: InputHandler,
-    /// Undo stack for text changes.
-    pub(in crate::app) undo_stack: std::collections::VecDeque<UndoEntry>,
-    /// Redo stack for undone changes.
-    pub(in crate::app) redo_stack: std::collections::VecDeque<UndoEntry>,
 }
 
 impl std::fmt::Debug for ContentEditableFocus {
@@ -490,38 +479,8 @@ impl RinchApp {
         use rinch_editable::EditCommand;
         let mut text_changed = false;
 
-        // Push undo snapshot before any mutating command
-        let is_mutating = matches!(
-            cmd,
-            EditCommand::InsertText(_)
-                | EditCommand::Paste(_)
-                | EditCommand::DeleteBackward
-                | EditCommand::DeleteForward
-                | EditCommand::InsertNewline
-                | EditCommand::Cut
-                | EditCommand::Indent
-                | EditCommand::Outdent
-        );
-        let mut pre_edit_ids: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        if is_mutating && let Some(doc) = &self.doc {
-            let d = doc.borrow();
-            let snapshots = Self::snapshot_text_nodes(&d.tree, ce_node_id);
-            pre_edit_ids = Self::collect_subtree_ids(&d.tree, ce_node_id)
-                .into_iter()
-                .collect();
-            let ce = self.focused_contenteditable.as_mut().unwrap();
-            ce.undo_stack.push_back(UndoEntry {
-                cursor,
-                anchor,
-                text_snapshots: snapshots,
-                created_nodes: Vec::new(),
-            });
-            // Cap undo stack at 100 entries
-            if ce.undo_stack.len() > 100 {
-                ce.undo_stack.pop_front();
-            }
-            ce.redo_stack.clear();
-        }
+        // Undo recording is now handled inside CeOps methods via
+        // begin_undo_group() / push_undo_op() / commit_undo_group().
 
         match cmd {
             // ── Character insertion / paste ──────────────────────────
@@ -685,39 +644,15 @@ impl RinchApp {
 
             // ── Undo ──────────────────────────────────────────────────
             EditCommand::Undo => {
-                let ce = self.focused_contenteditable.as_mut().unwrap();
-                if let Some(entry) = ce.undo_stack.pop_back() {
-                    // Snapshot current state for redo before restoring
-                    if let Some(doc) = &self.doc {
-                        let d = doc.borrow();
-                        let current_snapshots = Self::snapshot_text_nodes(&d.tree, ce_node_id);
-                        ce.redo_stack.push_back(UndoEntry {
-                            cursor: ce.cursor,
-                            anchor: ce.anchor,
-                            text_snapshots: current_snapshots,
-                            created_nodes: entry.created_nodes.clone(),
-                        });
-                    }
-
-                    let restore_cursor = entry.cursor;
-                    let restore_anchor = entry.anchor;
-                    if let Some(doc) = &self.doc {
-                        let mut d = doc.borrow_mut();
-                        for &node_id in &entry.created_nodes {
-                            if d.tree.get(node_id).is_some() {
-                                d.remove_node(rinch_core::dom::NodeId(node_id));
-                            }
-                        }
-                        for (node_id, old_text) in &entry.text_snapshots {
-                            if d.tree.get(*node_id).is_some() {
-                                d.set_text_content(rinch_core::dom::NodeId(*node_id), old_text);
-                            }
-                        }
-                    }
+                self.sync_ce_ops_cursor();
+                if let Some(ops) = &self.ce_ops
+                    && let Ok(mut ops) = ops.try_borrow_mut()
+                {
+                    ops.undo();
+                    let sel = ops.get_selection();
                     let ce = self.focused_contenteditable.as_mut().unwrap();
-                    ce.cursor = restore_cursor;
-                    ce.anchor = restore_anchor;
-                    rinch_core::ce::dispatch_ce_event(&rinch_core::ce::CeEvent::UndoApplied);
+                    ce.cursor = sel.head;
+                    ce.anchor = sel.anchor;
                     text_changed = true;
                 }
             }
@@ -782,39 +717,15 @@ impl RinchApp {
 
             // ── Redo ──────────────────────────────────────────────────
             EditCommand::Redo => {
-                let ce = self.focused_contenteditable.as_mut().unwrap();
-                if let Some(entry) = ce.redo_stack.pop_back() {
-                    // Snapshot current state for undo before restoring
-                    if let Some(doc) = &self.doc {
-                        let d = doc.borrow();
-                        let current_snapshots = Self::snapshot_text_nodes(&d.tree, ce_node_id);
-                        ce.undo_stack.push_back(UndoEntry {
-                            cursor: ce.cursor,
-                            anchor: ce.anchor,
-                            text_snapshots: current_snapshots,
-                            created_nodes: entry.created_nodes.clone(),
-                        });
-                    }
-
-                    let restore_cursor = entry.cursor;
-                    let restore_anchor = entry.anchor;
-                    if let Some(doc) = &self.doc {
-                        let mut d = doc.borrow_mut();
-                        for &node_id in &entry.created_nodes {
-                            if d.tree.get(node_id).is_some() {
-                                d.remove_node(rinch_core::dom::NodeId(node_id));
-                            }
-                        }
-                        for (node_id, old_text) in &entry.text_snapshots {
-                            if d.tree.get(*node_id).is_some() {
-                                d.set_text_content(rinch_core::dom::NodeId(*node_id), old_text);
-                            }
-                        }
-                    }
+                self.sync_ce_ops_cursor();
+                if let Some(ops) = &self.ce_ops
+                    && let Ok(mut ops) = ops.try_borrow_mut()
+                {
+                    ops.redo();
+                    let sel = ops.get_selection();
                     let ce = self.focused_contenteditable.as_mut().unwrap();
-                    ce.cursor = restore_cursor;
-                    ce.anchor = restore_anchor;
-                    rinch_core::ce::dispatch_ce_event(&rinch_core::ce::CeEvent::RedoApplied);
+                    ce.cursor = sel.head;
+                    ce.anchor = sel.anchor;
                     text_changed = true;
                 }
             }
@@ -822,27 +733,6 @@ impl RinchApp {
             // ── Unhandled commands (Escape, etc.) ───────────────
             _ => {
                 return false;
-            }
-        }
-
-        // Record any newly created nodes in the undo entry
-        if is_mutating
-            && !pre_edit_ids.is_empty()
-            && let Some(doc) = &self.doc
-        {
-            let d = doc.borrow();
-            let post_edit_ids = Self::collect_subtree_ids(&d.tree, ce_node_id);
-            let mut created = Vec::new();
-            for &id in &post_edit_ids {
-                if !pre_edit_ids.contains(&id) {
-                    created.push(id);
-                }
-            }
-            if !created.is_empty() {
-                let ce = self.focused_contenteditable.as_mut().unwrap();
-                if let Some(entry) = ce.undo_stack.back_mut() {
-                    entry.created_nodes = created;
-                }
             }
         }
 

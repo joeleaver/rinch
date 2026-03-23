@@ -243,8 +243,6 @@ impl RinchApp {
                     cursor: dom_cursor,
                     anchor,
                     input_handler,
-                    undo_stack: std::collections::VecDeque::new(),
-                    redo_stack: std::collections::VecDeque::new(),
                 });
                 self.register_ce_ops(ce_node_id, dom_cursor);
 

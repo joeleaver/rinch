@@ -1421,8 +1421,6 @@ impl RinchApp {
                 cursor: dom_cursor,
                 anchor: dom_cursor,
                 input_handler,
-                undo_stack: std::collections::VecDeque::new(),
-                redo_stack: std::collections::VecDeque::new(),
             });
             self.register_ce_ops(node_id, dom_cursor);
             self.set_contenteditable_attributes_dom(node_id, true, dom_cursor, dom_cursor);

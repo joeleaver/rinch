@@ -75,11 +75,18 @@ impl RinchApp {
 
         if let Some(text) = node.text_content() {
             if node_id == cursor.node_id {
-                *offset += cursor.offset.min(text.len());
+                // Strip ZWS bytes before cursor offset so positions match EditorDocument
+                let off = cursor.offset.min(text.len());
+                let zws_before = text[..off].chars().filter(|c| *c == '\u{200B}').count()
+                    * '\u{200B}'.len_utf8();
+                *offset += off - zws_before;
                 *found = true;
                 return;
             }
-            *offset += text.len();
+            // Strip ZWS from full text length
+            let zws_count =
+                text.chars().filter(|c| *c == '\u{200B}').count() * '\u{200B}'.len_utf8();
+            *offset += text.len() - zws_count;
             *ends_with_newline = text.ends_with('\n');
             return;
         }

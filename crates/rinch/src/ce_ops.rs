@@ -22,7 +22,9 @@ use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
 
 #[cfg(feature = "collaboration")]
-use rinch_editor::{EditorDocument, Position as EditorPosition, Range as EditorRange};
+use rinch_editor::{
+    EditorDocument, MarkData as EditorMarkData, Position as EditorPosition, Range as EditorRange,
+};
 
 use crate::app::RinchApp;
 
@@ -490,9 +492,12 @@ fn extract_inline_runs(
     };
 
     if let Some(text) = node.text_content() {
-        if !text.is_empty() {
+        // Strip ZWS (\u{200B}) — these are DOM-level cursor aids that don't
+        // exist in the EditorDocument's position space.
+        let clean = text.replace('\u{200B}', "");
+        if !clean.is_empty() {
             out.push(InlineRunData {
-                text: text.to_string(),
+                text: clean,
                 marks: active_marks.to_vec(),
             });
         }
@@ -632,6 +637,60 @@ fn render_inline_content(d: &mut RinchDocument, parent_id: usize, runs: &[Inline
 }
 
 // ============================================================================
+// Undo / Redo
+// ============================================================================
+
+/// A structured inverse operation for undo/redo.
+///
+/// Each forward CeOps mutation pushes one or more `UndoOp`s describing how to
+/// reverse the operation. Undo pops and replays these through CeOps methods so
+/// both the DOM **and** the CRDT see the inverse operation.
+#[derive(Debug, Clone)]
+pub(crate) enum UndoOp {
+    /// Undo an insert: delete the inserted range.
+    DeleteRange { start: usize, end: usize },
+    /// Undo a delete: re-insert the deleted text at position.
+    InsertText { pos: usize, text: String },
+    /// Undo a block split: join blocks by deleting the block separator.
+    JoinBlock { pos: usize },
+    /// Undo a block join: split at position.
+    SplitBlock { pos: usize },
+    /// Undo a block type change.
+    #[allow(dead_code)]
+    SetBlockType {
+        block_idx: usize,
+        block_type: String,
+        attrs: HashMap<String, String>,
+    },
+    /// Undo a mark add: remove the mark.
+    RemoveMark {
+        start: usize,
+        end: usize,
+        mark_type: String,
+    },
+    /// Undo a mark remove: add the mark back.
+    AddMark {
+        start: usize,
+        end: usize,
+        mark_type: String,
+    },
+    /// Restore cursor/anchor after replaying ops.
+    RestoreCursor {
+        cursor: DomCursor,
+        anchor: DomCursor,
+    },
+    /// Full content snapshot for operations too complex to express as ops
+    /// (e.g., indent/outdent which restructure lists).
+    Snapshot { blocks: Vec<BlockData> },
+}
+
+/// A group of undo ops that should be replayed together atomically.
+#[derive(Debug, Clone)]
+pub(crate) struct UndoGroup {
+    pub(crate) ops: Vec<UndoOp>,
+}
+
+// ============================================================================
 // CeOps
 // ============================================================================
 
@@ -664,6 +723,15 @@ pub struct CeOps {
     /// loaded from the same content via `set_pending_editor_doc`).
     #[cfg(feature = "collaboration")]
     pub(crate) skip_next_sync: bool,
+    /// Undo stack: groups of inverse operations, most recent at back.
+    pub(crate) undo_stack: std::collections::VecDeque<UndoGroup>,
+    /// Redo stack: groups of forward operations from undone edits.
+    pub(crate) redo_stack: std::collections::VecDeque<UndoGroup>,
+    /// Accumulator for the current undo group being built.
+    /// Flushed to `undo_stack` by `push_undo_group()`.
+    pending_undo_ops: Vec<UndoOp>,
+    /// When true, mutations are replaying undo/redo ops — don't record new undo entries.
+    replaying: bool,
 }
 
 impl CeOps {
@@ -688,6 +756,10 @@ impl CeOps {
             editor_doc: pending_doc,
             #[cfg(feature = "collaboration")]
             skip_next_sync: has_pending,
+            undo_stack: std::collections::VecDeque::new(),
+            redo_stack: std::collections::VecDeque::new(),
+            pending_undo_ops: Vec::new(),
+            replaying: false,
         }
     }
 
@@ -743,6 +815,530 @@ impl CeOps {
             let mut d = self.doc.borrow_mut();
             vw.on_blocks_changed(&mut d);
         }
+    }
+
+    // ── Position helpers ──────────────────────────────────────────────
+
+    /// Compute the global flat position for an arbitrary cursor.
+    fn flat_pos_of(&self, cursor: DomCursor) -> usize {
+        let d = self.doc.borrow();
+        RinchApp::dom_cursor_to_global_offset(&d.tree, self.ce_node_id, cursor)
+    }
+
+    /// Compute the ordered (start, end) flat positions for the current selection.
+    fn selection_flat_range(&self) -> (usize, usize) {
+        let d = self.doc.borrow();
+        let (start, end) =
+            RinchApp::order_cursors(&d.tree, self.ce_node_id, self.cursor, self.anchor);
+        let start_pos = RinchApp::dom_cursor_to_global_offset(&d.tree, self.ce_node_id, start);
+        let end_pos = RinchApp::dom_cursor_to_global_offset(&d.tree, self.ce_node_id, end);
+        (start_pos, end_pos)
+    }
+
+    // ── Undo infrastructure ───────────────────────────────────────────
+
+    /// Record an inverse operation for undo. No-op when replaying.
+    fn push_undo_op(&mut self, op: UndoOp) {
+        if !self.replaying {
+            self.pending_undo_ops.push(op);
+        }
+    }
+
+    /// Start a new undo group: saves cursor position before mutation.
+    /// Called at the start of each `ContentEditableApi` method.
+    pub(crate) fn begin_undo_group(&mut self) {
+        if self.replaying {
+            return;
+        }
+        self.pending_undo_ops.clear();
+        // Always record cursor restore as first op (replayed last during undo)
+        self.pending_undo_ops.push(UndoOp::RestoreCursor {
+            cursor: self.cursor,
+            anchor: self.anchor,
+        });
+    }
+
+    /// Flush the pending undo ops as a group onto the undo stack.
+    /// Called at the end of each `ContentEditableApi` method.
+    pub(crate) fn commit_undo_group(&mut self) {
+        if self.replaying || self.pending_undo_ops.len() <= 1 {
+            // Only the RestoreCursor — nothing actually happened
+            self.pending_undo_ops.clear();
+            return;
+        }
+        let ops = std::mem::take(&mut self.pending_undo_ops);
+        self.undo_stack.push_back(UndoGroup { ops });
+        if self.undo_stack.len() > 100 {
+            self.undo_stack.pop_front();
+        }
+        self.redo_stack.clear();
+    }
+
+    /// Replay an undo group. Executes ops in reverse order.
+    ///
+    /// Returns the cursor/anchor to restore (from the `RestoreCursor` op).
+    pub(crate) fn replay_undo(&mut self) -> Option<(DomCursor, DomCursor)> {
+        let group = self.undo_stack.pop_back()?;
+
+        // Build the redo group: snapshot current state before replaying
+        let mut redo_ops = Vec::new();
+        redo_ops.push(UndoOp::RestoreCursor {
+            cursor: self.cursor,
+            anchor: self.anchor,
+        });
+        // Capture current content for redo's inverse
+        self.capture_inverse_ops(&group.ops, &mut redo_ops);
+
+        let mut restore_cursor = None;
+
+        self.replaying = true;
+        // Replay in reverse order (most recent change undone first)
+        for op in group.ops.iter().rev() {
+            match op {
+                UndoOp::RestoreCursor { cursor, anchor } => {
+                    restore_cursor = Some((*cursor, *anchor));
+                }
+                _ => self.apply_undo_op(op),
+            }
+        }
+        self.replaying = false;
+
+        self.redo_stack.push_back(UndoGroup { ops: redo_ops });
+
+        restore_cursor
+    }
+
+    /// Replay a redo group. Executes ops in reverse order.
+    pub(crate) fn replay_redo(&mut self) -> Option<(DomCursor, DomCursor)> {
+        let group = self.redo_stack.pop_back()?;
+
+        // Build the undo group from current state
+        let mut undo_ops = Vec::new();
+        undo_ops.push(UndoOp::RestoreCursor {
+            cursor: self.cursor,
+            anchor: self.anchor,
+        });
+        self.capture_inverse_ops(&group.ops, &mut undo_ops);
+
+        let mut restore_cursor = None;
+
+        self.replaying = true;
+        for op in group.ops.iter().rev() {
+            match op {
+                UndoOp::RestoreCursor { cursor, anchor } => {
+                    restore_cursor = Some((*cursor, *anchor));
+                }
+                _ => self.apply_undo_op(op),
+            }
+        }
+        self.replaying = false;
+
+        self.undo_stack.push_back(UndoGroup { ops: undo_ops });
+
+        restore_cursor
+    }
+
+    /// Apply a single undo op by mutating both DOM and EditorDocument.
+    fn apply_undo_op(&mut self, op: &UndoOp) {
+        match op {
+            UndoOp::InsertText { pos, text } => {
+                // Re-insert text at the given flat position
+                self.insert_text_at_flat_pos(*pos, text);
+            }
+            UndoOp::DeleteRange { start, end } => {
+                self.delete_flat_range(*start, *end);
+            }
+            UndoOp::SplitBlock { pos } => {
+                self.split_block_at_flat_pos(*pos);
+            }
+            UndoOp::JoinBlock { pos } => {
+                // Join = delete the block separator at `pos`
+                self.delete_flat_range(*pos, *pos + 1);
+            }
+            UndoOp::SetBlockType {
+                block_idx,
+                block_type,
+                attrs,
+            } => {
+                self.set_block_type_by_index(*block_idx, block_type, attrs);
+            }
+            UndoOp::AddMark {
+                start,
+                end,
+                mark_type,
+            } => {
+                self.add_mark_at_range(*start, *end, mark_type);
+            }
+            UndoOp::RemoveMark {
+                start,
+                end,
+                mark_type,
+            } => {
+                self.remove_mark_at_range(*start, *end, mark_type);
+            }
+            UndoOp::Snapshot { blocks } => {
+                self.restore_from_snapshot(blocks);
+            }
+            UndoOp::RestoreCursor { .. } => {
+                // Handled by caller
+            }
+        }
+    }
+
+    /// Capture inverse operations for a group of ops.
+    /// Used to build redo from undo (and vice versa).
+    fn capture_inverse_ops(&self, ops: &[UndoOp], out: &mut Vec<UndoOp>) {
+        for op in ops {
+            match op {
+                UndoOp::InsertText { pos, text } => {
+                    out.push(UndoOp::DeleteRange {
+                        start: *pos,
+                        end: *pos + text.len(),
+                    });
+                }
+                UndoOp::DeleteRange { start, end } => {
+                    // We need the text that will be deleted. Extract it from DOM.
+                    let text = self.extract_flat_text(*start, *end);
+                    out.push(UndoOp::InsertText { pos: *start, text });
+                }
+                UndoOp::SplitBlock { pos } => {
+                    out.push(UndoOp::JoinBlock { pos: *pos });
+                }
+                UndoOp::JoinBlock { pos } => {
+                    out.push(UndoOp::SplitBlock { pos: *pos });
+                }
+                UndoOp::SetBlockType {
+                    block_idx,
+                    block_type: _,
+                    attrs: _,
+                } => {
+                    // Capture current block type before it changes
+                    let blocks = self.extract_content();
+                    if let Some(block) = blocks.get(*block_idx) {
+                        out.push(UndoOp::SetBlockType {
+                            block_idx: *block_idx,
+                            block_type: block.block_type.clone(),
+                            attrs: block.attrs.clone(),
+                        });
+                    }
+                }
+                UndoOp::AddMark {
+                    start,
+                    end,
+                    mark_type,
+                } => {
+                    out.push(UndoOp::RemoveMark {
+                        start: *start,
+                        end: *end,
+                        mark_type: mark_type.clone(),
+                    });
+                }
+                UndoOp::RemoveMark {
+                    start,
+                    end,
+                    mark_type,
+                } => {
+                    out.push(UndoOp::AddMark {
+                        start: *start,
+                        end: *end,
+                        mark_type: mark_type.clone(),
+                    });
+                }
+                UndoOp::Snapshot { .. } => {
+                    // Snapshot redo = snapshot of current state
+                    out.push(UndoOp::Snapshot {
+                        blocks: self.extract_content(),
+                    });
+                }
+                UndoOp::RestoreCursor { .. } => {
+                    // Handled separately
+                }
+            }
+        }
+    }
+
+    /// Extract text from a flat offset range in the CE element.
+    fn extract_flat_text(&self, start: usize, end: usize) -> String {
+        let blocks = self.extract_content();
+        let mut full_text = String::new();
+        for (i, block) in blocks.iter().enumerate() {
+            if i > 0 {
+                full_text.push('\n'); // block separator
+            }
+            for run in &block.content {
+                full_text.push_str(&run.text);
+            }
+        }
+        let start = start.min(full_text.len());
+        let end = end.min(full_text.len());
+        full_text[start..end].to_string()
+    }
+
+    /// Insert text at a flat position in the CE DOM.
+    /// Used for undo replay. `self.replaying` must be true so the trait
+    /// method skips undo recording.
+    fn insert_text_at_flat_pos(&mut self, flat_pos: usize, text: &str) {
+        if let Some(cursor) = self.flat_pos_to_dom_cursor(flat_pos) {
+            self.cursor = cursor;
+            self.anchor = cursor;
+            ContentEditableApi::insert_text(self, text);
+        }
+    }
+
+    /// Delete a flat range in the CE DOM.
+    /// Used for undo replay. `self.replaying` must be true so the trait
+    /// method skips undo recording.
+    fn delete_flat_range(&mut self, start: usize, end: usize) {
+        if let Some(start_cursor) = self.flat_pos_to_dom_cursor(start) {
+            if let Some(end_cursor) = self.flat_pos_to_dom_cursor(end) {
+                self.anchor = start_cursor;
+                self.cursor = end_cursor;
+                ContentEditableApi::delete_selection(self);
+            }
+        }
+    }
+
+    /// Split a block at a flat position.
+    /// Used for undo replay. `self.replaying` must be true so the trait
+    /// method skips undo recording.
+    fn split_block_at_flat_pos(&mut self, flat_pos: usize) {
+        if let Some(cursor) = self.flat_pos_to_dom_cursor(flat_pos) {
+            self.cursor = cursor;
+            self.anchor = cursor;
+            ContentEditableApi::split_block(self);
+        }
+    }
+
+    /// Set block type by index.
+    fn set_block_type_by_index(
+        &mut self,
+        block_idx: usize,
+        block_type: &str,
+        attrs: &HashMap<String, String>,
+    ) {
+        // Find the DOM node for this block index and change its tag
+        let blocks = self.extract_content();
+        if block_idx >= blocks.len() {
+            return;
+        }
+
+        // Map block_idx to DOM node
+        let block_node_id = self.block_idx_to_dom_node(block_idx);
+        let Some(block_node_id) = block_node_id else {
+            return;
+        };
+
+        let target_tag = block_type_to_tag(block_type, attrs);
+        let current_tag = {
+            let d = self.doc.borrow();
+            d.tree
+                .get(block_node_id)
+                .and_then(|n| n.tag())
+                .unwrap_or("")
+                .to_string()
+        };
+
+        if current_tag != target_tag {
+            let mut d = self.doc.borrow_mut();
+            crate::app::RinchApp::convert_block_tag(&mut d, block_node_id, target_tag);
+        }
+
+        #[cfg(feature = "collaboration")]
+        if let Some(ref mut doc) = self.editor_doc {
+            let attrs_opt = if attrs.is_empty() {
+                None
+            } else {
+                Some(attrs.clone())
+            };
+            let _ = doc.set_block_type(block_idx, block_type, attrs_opt);
+        }
+    }
+
+    /// Add a mark at a flat range.
+    /// Used for undo replay. `self.replaying` must be true.
+    fn add_mark_at_range(&mut self, start: usize, end: usize, mark_type: &str) {
+        let tag = mark_type_to_tag(mark_type);
+        if let Some(start_cursor) = self.flat_pos_to_dom_cursor(start) {
+            if let Some(end_cursor) = self.flat_pos_to_dom_cursor(end) {
+                self.anchor = start_cursor;
+                self.cursor = end_cursor;
+                ContentEditableApi::wrap_selection(self, tag);
+            }
+        }
+    }
+
+    /// Remove a mark at a flat range.
+    /// Used for undo replay. `self.replaying` must be true.
+    fn remove_mark_at_range(&mut self, start: usize, end: usize, mark_type: &str) {
+        let tag = mark_type_to_tag(mark_type);
+        if let Some(start_cursor) = self.flat_pos_to_dom_cursor(start) {
+            if let Some(end_cursor) = self.flat_pos_to_dom_cursor(end) {
+                self.anchor = start_cursor;
+                self.cursor = end_cursor;
+                ContentEditableApi::unwrap_selection(self, tag);
+            }
+        }
+    }
+
+    /// Restore content from a snapshot (for complex undo/redo).
+    fn restore_from_snapshot(&mut self, blocks: &[BlockData]) {
+        let ce_root = self.ce_node_id;
+        {
+            let mut d = self.doc.borrow_mut();
+            let children: Vec<usize> = d.tree.nodes[ce_root].children.clone();
+            for &child_id in &children {
+                d.remove_node(rinch_core::dom::NodeId(child_id));
+            }
+            for block in blocks {
+                load_block(&mut d, ce_root, block);
+            }
+        }
+        // Set cursor to start
+        {
+            let d = self.doc.borrow();
+            if let Some(cursor) = crate::app::RinchApp::first_text_cursor(&d.tree, ce_root) {
+                self.cursor = cursor;
+            }
+        }
+        self.anchor = self.cursor;
+        self.notify_blocks_changed();
+
+        #[cfg(feature = "collaboration")]
+        self.sync_editor_doc_from_dom();
+    }
+
+    /// Convert a flat position to a DomCursor.
+    fn flat_pos_to_dom_cursor(&self, flat_pos: usize) -> Option<DomCursor> {
+        let d = self.doc.borrow();
+        Self::flat_pos_to_cursor_recursive(&d.tree, self.ce_node_id, flat_pos)
+    }
+
+    /// Recursively find the DomCursor for a flat position.
+    fn flat_pos_to_cursor_recursive(
+        tree: &rinch_dom::NodeTree,
+        node_id: usize,
+        target_pos: usize,
+    ) -> Option<DomCursor> {
+        let mut offset = 0usize;
+        let mut ends_with_newline = false;
+        Self::walk_for_flat_pos(
+            tree,
+            node_id,
+            target_pos,
+            &mut offset,
+            &mut ends_with_newline,
+        )
+    }
+
+    /// Walk the DOM tree to find the DomCursor at a given flat position.
+    fn walk_for_flat_pos(
+        tree: &rinch_dom::NodeTree,
+        node_id: usize,
+        target: usize,
+        offset: &mut usize,
+        ends_with_newline: &mut bool,
+    ) -> Option<DomCursor> {
+        let node = tree.get(node_id)?;
+
+        if let Some(text) = node.text_content() {
+            // Strip ZWS for position computation
+            let zws_count =
+                text.chars().filter(|c| *c == '\u{200B}').count() * '\u{200B}'.len_utf8();
+            let clean_len = text.len() - zws_count;
+
+            if *offset + clean_len >= target {
+                // Target is within this text node
+                let remaining = target - *offset;
+                // Map clean offset back to raw offset (accounting for ZWS)
+                let mut raw_offset = 0;
+                let mut clean_offset = 0;
+                for ch in text.chars() {
+                    if clean_offset >= remaining {
+                        break;
+                    }
+                    raw_offset += ch.len_utf8();
+                    if ch != '\u{200B}' {
+                        clean_offset += ch.len_utf8();
+                    }
+                }
+                return Some(DomCursor::new(node_id, raw_offset));
+            }
+            *offset += clean_len;
+            *ends_with_newline = text.ends_with('\n');
+            return None;
+        }
+
+        if node.tag() == Some("br") {
+            if *offset == target {
+                return Some(DomCursor::new(node_id, 0));
+            }
+            *offset += 1;
+            *ends_with_newline = true;
+            return None;
+        }
+
+        let is_block = node
+            .tag()
+            .map(crate::app::RinchApp::is_block_element)
+            .unwrap_or(false);
+        if is_block && *offset > 0 && !*ends_with_newline {
+            if *offset == target {
+                // Target is at the block separator — position at start of this block
+                // Find first text node in this block
+                if let Some(cursor) = crate::app::RinchApp::first_text_cursor(tree, node_id) {
+                    return Some(cursor);
+                }
+                return Some(DomCursor::new(node_id, 0));
+            }
+            *offset += 1; // block separator
+            *ends_with_newline = true;
+        }
+
+        // Element cursor (empty block)
+        if node.is_element() && node.children.is_empty() {
+            if *offset == target {
+                return Some(DomCursor::new(node_id, 0));
+            }
+        }
+
+        for &child_id in &node.children {
+            if let Some(cursor) =
+                Self::walk_for_flat_pos(tree, child_id, target, offset, ends_with_newline)
+            {
+                return Some(cursor);
+            }
+        }
+
+        if is_block && node.children.is_empty() {
+            *ends_with_newline = false;
+        }
+
+        None
+    }
+
+    /// Map a block index to its DOM node ID.
+    fn block_idx_to_dom_node(&self, target_idx: usize) -> Option<usize> {
+        let d = self.doc.borrow();
+        let children = &d.tree.nodes[self.ce_node_id].children;
+        let mut idx = 0;
+        for &child_id in children {
+            let tag = d.tree.get(child_id).and_then(|n| n.tag()).unwrap_or("");
+            if tag == "ul" || tag == "ol" {
+                let li_children = &d.tree.nodes[child_id].children;
+                for &li_id in li_children {
+                    if idx == target_idx {
+                        return Some(li_id);
+                    }
+                    idx += 1;
+                }
+            } else {
+                if idx == target_idx {
+                    return Some(child_id);
+                }
+                idx += 1;
+            }
+        }
+        None
     }
 
     /// Handle `set_block_type` when the selection spans blocks with different parents.
@@ -1279,30 +1875,15 @@ impl CeOps {
     /// This walks the CE DOM tree in document order, summing text lengths and
     /// block separators (\n between blocks) to produce a position compatible
     /// with EditorDocument's flat offset scheme.
+    #[cfg(feature = "collaboration")]
     #[allow(dead_code)]
     fn cursor_flat_pos(&self) -> usize {
         let d = self.doc.borrow();
         RinchApp::dom_cursor_to_global_offset(&d.tree, self.ce_node_id, self.cursor)
     }
 
-    /// Compute the global flat position for an arbitrary cursor.
-    fn flat_pos_of(&self, cursor: DomCursor) -> usize {
-        let d = self.doc.borrow();
-        RinchApp::dom_cursor_to_global_offset(&d.tree, self.ce_node_id, cursor)
-    }
-
-    /// Compute the ordered (start, end) flat positions for the current selection.
-    #[allow(dead_code)]
-    fn selection_flat_range(&self) -> (usize, usize) {
-        let d = self.doc.borrow();
-        let (start, end) =
-            RinchApp::order_cursors(&d.tree, self.ce_node_id, self.cursor, self.anchor);
-        let start_pos = RinchApp::dom_cursor_to_global_offset(&d.tree, self.ce_node_id, start);
-        let end_pos = RinchApp::dom_cursor_to_global_offset(&d.tree, self.ce_node_id, end);
-        (start_pos, end_pos)
-    }
-
     /// Find the block index containing the cursor by walking CE root children.
+    #[cfg(feature = "collaboration")]
     #[allow(dead_code)]
     fn block_index_from_cursor(&self) -> usize {
         let d = self.doc.borrow();
@@ -1314,6 +1895,102 @@ impl CeOps {
             }
             None => 0,
         }
+    }
+
+    /// Count the number of logical blocks in the CE DOM.
+    ///
+    /// Direct children of the CE root that are lists (ul/ol) contribute one
+    /// block per `<li>` child. All other direct children count as one block.
+    #[cfg(feature = "collaboration")]
+    fn ce_block_count(&self) -> usize {
+        let d = self.doc.borrow();
+        let children = &d.tree.nodes[self.ce_node_id].children;
+        let mut count = 0;
+        for &child_id in children {
+            let tag = d.tree.get(child_id).and_then(|n| n.tag()).unwrap_or("");
+            if tag == "ul" || tag == "ol" {
+                count += d.tree.nodes[child_id].children.len();
+            } else {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Detect if the cursor's block type changed and sync to EditorDocument.
+    ///
+    /// Compares the current block's tag against what EditorDocument thinks
+    /// the block type is. If they differ, updates the EditorDocument.
+    #[cfg(feature = "collaboration")]
+    fn sync_block_type_if_changed(&mut self) {
+        if self.editor_doc.is_none() {
+            return;
+        }
+        let (block_type, attrs, block_idx) = {
+            let d = self.doc.borrow();
+            let block_id = find_ce_root_child(&d.tree, self.cursor.node_id, self.ce_node_id);
+            let Some(block_id) = block_id else { return };
+            let block_tag = d.tree.get(block_id).and_then(|n| n.tag()).unwrap_or("");
+            let (block_type, attrs) = tag_to_block_type(block_tag);
+
+            // Determine which block index this is
+            let children = &d.tree.nodes[self.ce_node_id].children;
+            let mut idx = 0;
+            for &child_id in children {
+                if child_id == block_id {
+                    break;
+                }
+                let tag = d.tree.get(child_id).and_then(|n| n.tag()).unwrap_or("");
+                if tag == "ul" || tag == "ol" {
+                    idx += d.tree.nodes[child_id].children.len();
+                } else {
+                    idx += 1;
+                }
+            }
+            (block_type.to_string(), attrs, idx)
+        };
+
+        let attrs_opt = if attrs.is_empty() { None } else { Some(attrs) };
+        let doc = self.editor_doc.as_mut().unwrap();
+        let _ = doc.set_block_type(block_idx, &block_type, attrs_opt);
+    }
+
+    /// Compute block index for an arbitrary DOM node within the CE element.
+    #[cfg(feature = "collaboration")]
+    #[allow(dead_code)]
+    fn block_index_of_node(&self, node_id: usize) -> usize {
+        let d = self.doc.borrow();
+        let block_id = find_ce_root_child(&d.tree, node_id, self.ce_node_id);
+        let Some(block_id) = block_id else { return 0 };
+        let children = &d.tree.nodes[self.ce_node_id].children;
+        let mut idx = 0;
+        for &child_id in children {
+            if child_id == block_id {
+                // Check if this block_id is inside a list
+                let tag = d.tree.get(child_id).and_then(|n| n.tag()).unwrap_or("");
+                if tag == "ul" || tag == "ol" {
+                    // Find which li within the list
+                    let li_id = find_child_in(&d.tree, node_id, child_id);
+                    if let Some(li_id) = li_id {
+                        let li_children = &d.tree.nodes[child_id].children;
+                        for &li_child in li_children {
+                            if li_child == li_id {
+                                break;
+                            }
+                            idx += 1;
+                        }
+                    }
+                }
+                return idx;
+            }
+            let tag = d.tree.get(child_id).and_then(|n| n.tag()).unwrap_or("");
+            if tag == "ul" || tag == "ol" {
+                idx += d.tree.nodes[child_id].children.len();
+            } else {
+                idx += 1;
+            }
+        }
+        idx
     }
 
     /// Sync the EditorDocument by rebuilding its content from the current DOM.
@@ -1425,6 +2102,52 @@ impl CeOps {
             }
             offset += run.text.len();
         }
+    }
+
+    /// Sync EditorDocument by comparing old block data with current DOM.
+    ///
+    /// Issues precise `set_block_type` calls for blocks whose types changed,
+    /// and handles block count changes (splits/merges). Falls back to full
+    /// sync only if the diff is too complex.
+    #[cfg(feature = "collaboration")]
+    fn sync_precise_block_types(&mut self, old_blocks: &[BlockData]) {
+        if self.editor_doc.is_none() {
+            return;
+        }
+        if self.skip_next_sync {
+            self.skip_next_sync = false;
+            return;
+        }
+
+        let new_blocks = self.extract_content();
+        if *old_blocks == new_blocks {
+            return;
+        }
+
+        let doc = self.editor_doc.as_ref().unwrap();
+        let doc_blocks = doc.to_block_data();
+        if doc_blocks == new_blocks {
+            return; // Already in sync
+        }
+
+        // Same block count: just update types
+        if old_blocks.len() == new_blocks.len() {
+            let doc = self.editor_doc.as_mut().unwrap();
+            for (i, (old, new)) in old_blocks.iter().zip(new_blocks.iter()).enumerate() {
+                if old.block_type != new.block_type || old.attrs != new.attrs {
+                    let attrs = if new.attrs.is_empty() {
+                        None
+                    } else {
+                        Some(new.attrs.clone())
+                    };
+                    let _ = doc.set_block_type(i, &new.block_type, attrs);
+                }
+            }
+            return;
+        }
+
+        // Block count changed: fall back to full sync for correctness
+        self.sync_editor_doc_from_dom();
     }
 
     /// Debug assertion: verify DOM content matches EditorDocument content.
@@ -2637,22 +3360,50 @@ impl CeOps {
     }
 }
 
+// The collaboration dual-write code uses `is_some()` + `as_mut().unwrap()` instead of
+// `if let Some(ref mut doc)` to avoid holding a mutable borrow on `self.editor_doc`
+// while also calling `self.flat_pos_of()` etc. which need `&self`.
+#[allow(clippy::unnecessary_unwrap)]
 impl ContentEditableApi for CeOps {
     // ── Text Operations ──────────────────────────────────────────────
 
     fn insert_text(&mut self, text: &str) {
+        self.begin_undo_group();
+
         if self.cursor != self.anchor {
-            self.delete_selection_inner();
+            // Record undo for selection deletion: re-insert the deleted text
+            let (sel_start, sel_end) = self.selection_flat_range();
+            let sel_text = self.extract_flat_text(sel_start, sel_end);
+            self.push_undo_op(UndoOp::InsertText {
+                pos: sel_start,
+                text: sel_text,
+            });
+
             #[cfg(feature = "collaboration")]
-            self.sync_editor_doc_from_dom();
+            let pre_sel = self.editor_doc.is_some().then_some((sel_start, sel_end));
+
+            self.delete_selection_inner();
+
+            #[cfg(feature = "collaboration")]
+            if let Some((start, end)) = pre_sel {
+                if let Some(ref mut doc) = self.editor_doc {
+                    let _ = doc.delete_range(EditorRange::new(start, end));
+                }
+            }
         }
+
+        // Record undo for the insertion: delete the inserted range
+        let insert_pos = self.flat_pos_of(self.cursor);
+        self.push_undo_op(UndoOp::DeleteRange {
+            start: insert_pos,
+            end: insert_pos + text.len(),
+        });
 
         // ── Dual-write: insert into EditorDocument before DOM mutation ──
         #[cfg(feature = "collaboration")]
         {
-            let flat_pos = self.flat_pos_of(self.cursor);
             if let Some(ref mut editor_doc) = self.editor_doc {
-                let _ = editor_doc.insert_text(EditorPosition(flat_pos), text);
+                let _ = editor_doc.insert_text(EditorPosition(insert_pos), text);
             }
         }
 
@@ -2721,32 +3472,186 @@ impl ContentEditableApi for CeOps {
         });
         #[cfg(feature = "collaboration")]
         self.debug_assert_sync();
+        self.commit_undo_group();
     }
 
     fn delete_backward(&mut self) {
-        self.delete_backward_inner();
+        self.begin_undo_group();
+
+        // Snapshot before mutation for undo (delete has many complex branches)
+        let pre_snapshot = self.extract_content();
+
+        // Capture pre-mutation state for CRDT
         #[cfg(feature = "collaboration")]
-        self.sync_editor_doc_from_dom();
+        let pre = self.editor_doc.is_some().then(|| {
+            if self.cursor != self.anchor {
+                let (start, end) = self.selection_flat_range();
+                (start, end, self.ce_block_count())
+            } else {
+                let pos = self.flat_pos_of(self.cursor);
+                (pos, pos, self.ce_block_count())
+            }
+        });
+
+        self.delete_backward_inner();
+
+        // Record undo op: restore pre-mutation content
+        self.push_undo_op(UndoOp::Snapshot {
+            blocks: pre_snapshot,
+        });
+
+        // CRDT dual-write
+        #[cfg(feature = "collaboration")]
+        if let Some((pre_start, pre_end, pre_blocks)) = pre {
+            if self.editor_doc.is_some() {
+                if pre_start != pre_end {
+                    let doc = self.editor_doc.as_mut().unwrap();
+                    let _ = doc.delete_range(EditorRange::new(pre_start, pre_end));
+                } else {
+                    let post_pos = self.flat_pos_of(self.cursor);
+                    let post_blocks = self.ce_block_count();
+                    if post_pos < pre_start || post_blocks < pre_blocks {
+                        let blocks_removed = pre_blocks.saturating_sub(post_blocks);
+                        let chars_deleted = pre_start.saturating_sub(post_pos);
+                        let total = chars_deleted + blocks_removed;
+                        if total > 0 {
+                            let doc = self.editor_doc.as_mut().unwrap();
+                            let _ = doc.delete_range(EditorRange::new(post_pos, post_pos + total));
+                        }
+                    } else if post_pos == pre_start && post_blocks == pre_blocks {
+                        self.sync_block_type_if_changed();
+                    }
+                }
+            }
+        }
+        #[cfg(feature = "collaboration")]
+        self.debug_assert_sync();
+        self.commit_undo_group();
     }
 
     fn delete_forward(&mut self) {
-        self.delete_forward_inner();
+        self.begin_undo_group();
+        let pre_snapshot = self.extract_content();
+
         #[cfg(feature = "collaboration")]
-        self.sync_editor_doc_from_dom();
+        let pre = self.editor_doc.is_some().then(|| {
+            if self.cursor != self.anchor {
+                let (start, end) = self.selection_flat_range();
+                (start, end, self.ce_block_count())
+            } else {
+                let pos = self.flat_pos_of(self.cursor);
+                (pos, pos, self.ce_block_count())
+            }
+        });
+
+        self.delete_forward_inner();
+
+        self.push_undo_op(UndoOp::Snapshot {
+            blocks: pre_snapshot,
+        });
+
+        #[cfg(feature = "collaboration")]
+        if let Some((pre_start, pre_end, pre_blocks)) = pre {
+            if self.editor_doc.is_some() {
+                if pre_start != pre_end {
+                    let doc = self.editor_doc.as_mut().unwrap();
+                    let _ = doc.delete_range(EditorRange::new(pre_start, pre_end));
+                } else {
+                    let post_blocks = self.ce_block_count();
+                    let post_pos = self.flat_pos_of(self.cursor);
+                    let blocks_removed = pre_blocks.saturating_sub(post_blocks);
+
+                    if blocks_removed > 0 || post_pos < pre_start {
+                        // Block merge or structural change
+                        let total = pre_start.saturating_sub(post_pos) + blocks_removed;
+                        if total > 0 {
+                            let doc = self.editor_doc.as_mut().unwrap();
+                            let _ = doc.delete_range(EditorRange::new(post_pos, post_pos + total));
+                        }
+                    } else {
+                        // Character delete forward: cursor stays put, content after shrinks.
+                        // Compare EditorDocument text_length with DOM to find the diff.
+                        let dom_blocks = self.extract_content();
+                        let dom_len: usize = dom_blocks
+                            .iter()
+                            .map(|b| b.content.iter().map(|r| r.text.len()).sum::<usize>())
+                            .sum::<usize>()
+                            + dom_blocks.len().saturating_sub(1);
+                        let doc_len = self.editor_doc.as_ref().unwrap().text_length();
+                        if doc_len > dom_len {
+                            let diff = doc_len - dom_len;
+                            let doc = self.editor_doc.as_mut().unwrap();
+                            let _ = doc.delete_range(EditorRange::new(pre_start, pre_start + diff));
+                        }
+                    }
+                }
+            }
+        }
+        #[cfg(feature = "collaboration")]
+        self.debug_assert_sync();
+        self.commit_undo_group();
     }
 
     fn delete_selection(&mut self) {
-        self.delete_selection_inner();
+        self.begin_undo_group();
+        let pre_snapshot = self.extract_content();
+
         #[cfg(feature = "collaboration")]
-        self.sync_editor_doc_from_dom();
+        let pre = self
+            .editor_doc
+            .is_some()
+            .then(|| self.selection_flat_range());
+
+        self.delete_selection_inner();
+
+        self.push_undo_op(UndoOp::Snapshot {
+            blocks: pre_snapshot,
+        });
+
+        #[cfg(feature = "collaboration")]
+        if let Some((start, end)) = pre {
+            if start != end {
+                if let Some(ref mut doc) = self.editor_doc {
+                    let _ = doc.delete_range(EditorRange::new(start, end));
+                }
+            }
+        }
+        #[cfg(feature = "collaboration")]
+        self.debug_assert_sync();
+        self.commit_undo_group();
     }
 
     // ── Block Structure ──────────────────────────────────────────────
 
     fn split_block(&mut self) {
+        self.begin_undo_group();
+        let pre_snapshot = self.extract_content();
+
+        #[cfg(feature = "collaboration")]
+        let pre_sel = if self.editor_doc.is_some() && self.cursor != self.anchor {
+            Some(self.selection_flat_range())
+        } else {
+            None
+        };
+
         if self.cursor != self.anchor {
             self.delete_selection_inner();
+
+            #[cfg(feature = "collaboration")]
+            if let Some((start, end)) = pre_sel {
+                if let Some(ref mut doc) = self.editor_doc {
+                    let _ = doc.delete_range(EditorRange::new(start, end));
+                }
+            }
         }
+
+        #[cfg(feature = "collaboration")]
+        let pre_pos = if self.editor_doc.is_some() {
+            Some((self.flat_pos_of(self.cursor), self.ce_block_count()))
+        } else {
+            None
+        };
+
         let cur = self.cursor;
         let ce_node_id = self.ce_node_id;
 
@@ -3305,10 +4210,30 @@ impl ContentEditableApi for CeOps {
 
         self.notify_blocks_changed();
         #[cfg(feature = "collaboration")]
-        self.sync_editor_doc_from_dom();
+        if let Some((pre_flat_pos, pre_block_count)) = pre_pos {
+            let post_block_count = self.ce_block_count();
+            if post_block_count > pre_block_count {
+                // A real split happened
+                if let Some(ref mut doc) = self.editor_doc {
+                    let _ = doc.split_block(EditorPosition(pre_flat_pos));
+                }
+            } else {
+                // Block count didn't increase — this was a list exit (empty li → div)
+                // which changes block type rather than splitting
+                self.sync_block_type_if_changed();
+            }
+        }
+        self.push_undo_op(UndoOp::Snapshot {
+            blocks: pre_snapshot,
+        });
+        #[cfg(feature = "collaboration")]
+        self.debug_assert_sync();
+        self.commit_undo_group();
     }
 
     fn set_block_type(&mut self, tag: &str) {
+        self.begin_undo_group();
+        let pre_snapshot = self.extract_content();
         let ce_node_id = self.ce_node_id;
 
         // ── Check for multi-block selection ──
@@ -3565,7 +4490,13 @@ impl ContentEditableApi for CeOps {
             new_tag: tag.to_string(),
         });
         #[cfg(feature = "collaboration")]
-        self.sync_editor_doc_from_dom();
+        self.sync_precise_block_types(&pre_snapshot);
+        self.push_undo_op(UndoOp::Snapshot {
+            blocks: pre_snapshot,
+        });
+        #[cfg(feature = "collaboration")]
+        self.debug_assert_sync();
+        self.commit_undo_group();
     }
 
     // ── Inline Formatting ────────────────────────────────────────────
@@ -3573,6 +4504,16 @@ impl ContentEditableApi for CeOps {
     fn wrap_selection(&mut self, tag: &str) {
         if self.cursor == self.anchor {
             return;
+        }
+        self.begin_undo_group();
+        // Record undo: remove the mark that's about to be added
+        if let Some(mark_type) = tag_to_mark_type(tag) {
+            let (start, end) = self.selection_flat_range();
+            self.push_undo_op(UndoOp::RemoveMark {
+                start,
+                end,
+                mark_type: mark_type.to_string(),
+            });
         }
         let (start, end) = order_cursors(
             &self.doc.borrow().tree,
@@ -3719,12 +4660,34 @@ impl ContentEditableApi for CeOps {
             });
         }
         #[cfg(feature = "collaboration")]
-        self.sync_editor_doc_from_dom();
+        if let Some(mark_type) = tag_to_mark_type(tag) {
+            if self.editor_doc.is_some() {
+                let (start, end) = self.selection_flat_range();
+                if start != end {
+                    let mark = EditorMarkData::new(mark_type);
+                    let doc = self.editor_doc.as_mut().unwrap();
+                    let _ = doc.add_mark(EditorRange::new(start, end), mark);
+                }
+            }
+        }
+        #[cfg(feature = "collaboration")]
+        self.debug_assert_sync();
+        self.commit_undo_group();
     }
 
     fn unwrap_selection(&mut self, tag: &str) {
         if self.cursor == self.anchor {
             return;
+        }
+        self.begin_undo_group();
+        // Record undo: re-add the mark that's about to be removed
+        if let Some(mark_type) = tag_to_mark_type(tag) {
+            let (start, end) = self.selection_flat_range();
+            self.push_undo_op(UndoOp::AddMark {
+                start,
+                end,
+                mark_type: mark_type.to_string(),
+            });
         }
         let (start, end) = order_cursors(
             &self.doc.borrow().tree,
@@ -3769,7 +4732,18 @@ impl ContentEditableApi for CeOps {
             });
         }
         #[cfg(feature = "collaboration")]
-        self.sync_editor_doc_from_dom();
+        if let Some(mark_type) = tag_to_mark_type(tag) {
+            if self.editor_doc.is_some() {
+                let (start, end) = self.selection_flat_range();
+                if start != end {
+                    let doc = self.editor_doc.as_mut().unwrap();
+                    let _ = doc.remove_mark(EditorRange::new(start, end), mark_type);
+                }
+            }
+        }
+        #[cfg(feature = "collaboration")]
+        self.debug_assert_sync();
+        self.commit_undo_group();
     }
 
     fn toggle_wrap(&mut self, tag: &str) {
@@ -3935,6 +4909,8 @@ impl ContentEditableApi for CeOps {
     // ── List Operations ──────────────────────────────────────────────
 
     fn indent(&mut self) {
+        self.begin_undo_group();
+        let pre_snapshot = self.extract_content();
         let cur = self.cursor;
         let ce_node_id = self.ce_node_id;
 
@@ -4014,12 +4990,19 @@ impl ContentEditableApi for CeOps {
             d.append_child(rinch_core::dom::NodeId(prev_li), new_nested);
         }
         drop(d);
-        // Cursor stays in the same text node
         #[cfg(feature = "collaboration")]
-        self.sync_editor_doc_from_dom();
+        self.sync_precise_block_types(&pre_snapshot);
+        self.push_undo_op(UndoOp::Snapshot {
+            blocks: pre_snapshot,
+        });
+        #[cfg(feature = "collaboration")]
+        self.debug_assert_sync();
+        self.commit_undo_group();
     }
 
     fn outdent(&mut self) {
+        self.begin_undo_group();
+        let pre_snapshot = self.extract_content();
         let cur = self.cursor;
         let ce_node_id = self.ce_node_id;
 
@@ -4147,9 +5130,14 @@ impl ContentEditableApi for CeOps {
             d.remove_node(rinch_core::dom::NodeId(real_nested_list_id));
         }
         drop(d);
-        // Cursor stays in the same text node
         #[cfg(feature = "collaboration")]
-        self.sync_editor_doc_from_dom();
+        self.sync_precise_block_types(&pre_snapshot);
+        self.push_undo_op(UndoOp::Snapshot {
+            blocks: pre_snapshot,
+        });
+        #[cfg(feature = "collaboration")]
+        self.debug_assert_sync();
+        self.commit_undo_group();
     }
 
     // ── Selection ────────────────────────────────────────────────────
@@ -4171,18 +5159,23 @@ impl ContentEditableApi for CeOps {
     // ── Undo/Redo ────────────────────────────────────────────────────
 
     fn undo(&mut self) {
-        // Undo stack is managed by app.rs (ContentEditableFocus.undo_stack)
-        // or by the editor bridge (Editor.history). This dispatches the event
-        // so observers can react.
+        if let Some((cursor, anchor)) = self.replay_undo() {
+            self.cursor = cursor;
+            self.anchor = anchor;
+        }
         dispatch_ce_event(&CeEvent::UndoApplied);
         #[cfg(feature = "collaboration")]
-        self.sync_editor_doc_from_dom();
+        self.debug_assert_sync();
     }
 
     fn redo(&mut self) {
+        if let Some((cursor, anchor)) = self.replay_redo() {
+            self.cursor = cursor;
+            self.anchor = anchor;
+        }
         dispatch_ce_event(&CeEvent::RedoApplied);
         #[cfg(feature = "collaboration")]
-        self.sync_editor_doc_from_dom();
+        self.debug_assert_sync();
     }
 
     // ── Event Access ─────────────────────────────────────────────────
@@ -4311,6 +5304,9 @@ impl ContentEditableApi for CeOps {
         if self.cursor == self.anchor {
             return;
         }
+        self.begin_undo_group();
+        // Use snapshot for undo since clear_formatting removes many marks
+        let pre_snapshot = self.extract_content();
         let ce_root = self.ce_node_id;
         let (start, end) = {
             let d = self.doc.borrow();
@@ -4356,7 +5352,31 @@ impl ContentEditableApi for CeOps {
             unwrapped_node_ids: text_nodes,
         });
         #[cfg(feature = "collaboration")]
-        self.sync_editor_doc_from_dom();
+        if self.editor_doc.is_some() {
+            let (start, end) = self.selection_flat_range();
+            if start != end {
+                let mark_types = [
+                    "bold",
+                    "italic",
+                    "underline",
+                    "strike",
+                    "code",
+                    "highlight",
+                    "subscript",
+                    "superscript",
+                ];
+                let doc = self.editor_doc.as_mut().unwrap();
+                for mark_type in mark_types {
+                    let _ = doc.remove_mark(EditorRange::new(start, end), mark_type);
+                }
+            }
+        }
+        self.push_undo_op(UndoOp::Snapshot {
+            blocks: pre_snapshot,
+        });
+        #[cfg(feature = "collaboration")]
+        self.debug_assert_sync();
+        self.commit_undo_group();
     }
 
     // ── Downcasting ────────────────────────────────────────────────────

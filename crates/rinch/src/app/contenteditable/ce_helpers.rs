@@ -166,6 +166,8 @@ impl RinchApp {
     }
 
     /// Snapshot all text nodes under `root` for undo.
+    /// Kept for debugging; undo now uses CeOps structured ops.
+    #[allow(dead_code)]
     pub(crate) fn snapshot_text_nodes(
         tree: &rinch_dom::NodeTree,
         root: usize,
@@ -191,6 +193,8 @@ impl RinchApp {
     }
 
     /// Collect all node IDs in a subtree (for undo diffing).
+    /// Kept for debugging; undo now uses CeOps structured ops.
+    #[allow(dead_code)]
     pub(crate) fn collect_subtree_ids(tree: &rinch_dom::NodeTree, root: usize) -> Vec<usize> {
         let mut ids = Vec::new();
         Self::collect_subtree_ids_recursive(tree, root, &mut ids);
