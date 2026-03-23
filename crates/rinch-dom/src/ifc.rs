@@ -705,6 +705,26 @@ impl RinchDocument {
             // and the sync bugs that arise when elements transition between them.
             if !inline_children.is_empty() {
                 ifc_roots.push(id);
+            } else if node.children.is_empty() {
+                // CSS spec: an empty block container that would establish an IFC
+                // has height equal to its line-height. Without this, empty <p></p>
+                // elements collapse to zero height.
+                if let Some(taffy_id) = node.taffy_id {
+                    let line_h = match node.computed_style.line_height {
+                        crate::computed_style::LineHeightValue::Normal => {
+                            node.computed_style.font_size * 1.2
+                        }
+                        crate::computed_style::LineHeightValue::Relative(r) => {
+                            node.computed_style.font_size * r
+                        }
+                        crate::computed_style::LineHeightValue::Absolute(px) => px,
+                    };
+                    if let Ok(style) = self.tree.taffy.style(taffy_id) {
+                        let mut style = style.clone();
+                        style.min_size.height = taffy::Dimension::length(line_h);
+                        let _ = self.tree.taffy.set_style(taffy_id, style);
+                    }
+                }
             }
         }
 

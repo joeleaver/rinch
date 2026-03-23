@@ -358,10 +358,9 @@ pub(crate) fn render_inline_content(
     runs: &[InlineRunData],
 ) {
     if runs.is_empty() || runs.iter().all(|r| r.text.is_empty()) {
-        // Empty block: create a <br> so the block has one line of height.
-        // An empty text node "" would collapse to zero height in the IFC.
-        let br = d.create_element("br");
-        d.append_child(rinch_core::dom::NodeId(parent_id), br);
+        // Empty block: no children needed. The layout engine gives empty
+        // block containers min-height of one line-height (CSS spec behavior),
+        // so they render with correct height even without content.
         return;
     }
 
@@ -828,6 +827,12 @@ fn offset_within_block(
     block_dom_id: usize,
     cursor: DomCursor,
 ) -> usize {
+    // If cursor is on the block element itself (e.g., empty block),
+    // the offset within the block is 0 (start of block).
+    if cursor.node_id == block_dom_id {
+        return 0;
+    }
+
     let mut text_nodes = Vec::new();
     collect_text_nodes_with_lengths(tree, block_dom_id, &mut text_nodes);
 

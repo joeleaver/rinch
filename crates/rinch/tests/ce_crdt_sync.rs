@@ -902,6 +902,37 @@ fn split_type_split_type_pattern() {
 }
 
 #[test]
+fn split_then_insert_cursor_roundtrip() {
+    // Simulates the app flow: split_block, read cursor, sync cursor back, insert
+    let mut ce = TestCe::with_text("Hello");
+    ce.assert_sync();
+
+    // Step 1: split_block (like pressing Enter)
+    ce.ops.split_block();
+    ce.assert_sync();
+
+    // Step 2: read cursor back (like the app does after split_block)
+    let sel = ce.ops.get_selection();
+    let saved_cursor = sel.head;
+    let saved_anchor = sel.anchor;
+
+    // Step 3: sync cursor back (like sync_ce_ops_cursor on next keystroke)
+    ce.ops.sync_cursor(saved_cursor, saved_anchor);
+
+    // Step 4: verify cursor is at start of block 2
+    assert_eq!(
+        ce.ops.extract_content().len(),
+        2,
+        "should have 2 blocks after split"
+    );
+
+    // Step 5: insert_text should go into block 2
+    ce.ops.insert_text("World");
+    ce.assert_sync();
+    assert_eq!(ce.crdt_text(), "Hello\nWorld");
+}
+
+#[test]
 fn consecutive_splits_on_empty_doc() {
     let mut ce = TestCe::new();
 
