@@ -357,10 +357,11 @@ pub(crate) fn render_inline_content(
     parent_id: usize,
     runs: &[InlineRunData],
 ) {
-    if runs.is_empty() {
-        // Empty block: create empty text node
-        let text = d.create_text("");
-        d.append_child(rinch_core::dom::NodeId(parent_id), text);
+    if runs.is_empty() || runs.iter().all(|r| r.text.is_empty()) {
+        // Empty block: create a <br> so the block has one line of height.
+        // An empty text node "" would collapse to zero height in the IFC.
+        let br = d.create_element("br");
+        d.append_child(rinch_core::dom::NodeId(parent_id), br);
         return;
     }
 
