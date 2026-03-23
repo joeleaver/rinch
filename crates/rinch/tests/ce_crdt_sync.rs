@@ -851,6 +851,88 @@ fn empty_document_operations() {
 }
 
 #[test]
+fn multiple_enter_creates_empty_blocks() {
+    let mut ce = TestCe::with_text("Hello");
+    ce.assert_sync();
+    assert_eq!(ce.ops.extract_content().len(), 1);
+
+    // Press Enter 3 times
+    ce.ops.split_block();
+    ce.assert_sync();
+    assert_eq!(ce.ops.extract_content().len(), 2);
+
+    ce.ops.split_block();
+    ce.assert_sync();
+    assert_eq!(ce.ops.extract_content().len(), 3);
+
+    ce.ops.split_block();
+    ce.assert_sync();
+    assert_eq!(ce.ops.extract_content().len(), 4);
+
+    // Cursor should be in 4th block. Type text.
+    ce.ops.insert_text("World");
+    ce.assert_sync();
+    assert_eq!(ce.ops.extract_content().len(), 4);
+    assert_eq!(ce.crdt_text(), "Hello\n\n\nWorld");
+
+    // The middle blocks should be empty
+    let blocks = ce.ops.extract_content();
+    assert!(blocks[1].content.is_empty() || blocks[1].content.iter().all(|r| r.text.is_empty()));
+    assert!(blocks[2].content.is_empty() || blocks[2].content.iter().all(|r| r.text.is_empty()));
+}
+
+#[test]
+fn split_type_split_type_pattern() {
+    let mut ce = TestCe::new();
+    ce.ops.insert_text("Line 1");
+    ce.assert_sync();
+
+    ce.ops.split_block();
+    ce.assert_sync();
+    ce.ops.insert_text("Line 2");
+    ce.assert_sync();
+
+    ce.ops.split_block();
+    ce.assert_sync();
+    ce.ops.insert_text("Line 3");
+    ce.assert_sync();
+
+    assert_eq!(ce.ops.extract_content().len(), 3);
+    assert_eq!(ce.crdt_text(), "Line 1\nLine 2\nLine 3");
+}
+
+#[test]
+fn consecutive_splits_on_empty_doc() {
+    let mut ce = TestCe::new();
+
+    // Enter on empty doc: should create 2 blocks
+    ce.ops.split_block();
+    ce.assert_sync();
+    assert_eq!(ce.ops.extract_content().len(), 2);
+
+    // Enter again on empty second block: 3 blocks
+    ce.ops.split_block();
+    ce.assert_sync();
+    assert_eq!(ce.ops.extract_content().len(), 3);
+
+    // Type in 3rd block
+    ce.ops.insert_text("abc");
+    ce.assert_sync();
+    assert_eq!(ce.crdt_text(), "\n\nabc");
+
+    // Backspace to join 3rd into 2nd
+    // Move to start of "abc" first
+    ce.ops.delete_backward();
+    ce.ops.delete_backward();
+    ce.ops.delete_backward();
+    ce.assert_sync();
+    // Now at start of empty 3rd block, delete backward joins
+    ce.ops.delete_backward();
+    ce.assert_sync();
+    assert_eq!(ce.ops.extract_content().len(), 2);
+}
+
+#[test]
 fn delete_everything_and_retype() {
     let mut ce = TestCe::with_blocks(&["Hello", "World", "Foo"]);
     // Select all and delete
@@ -1000,6 +1082,7 @@ fn run_fuzz(seed: u64, op_count: usize) {
         //     let sel = ce.ops.get_selection();
         //     eprintln!("BEFORE op {i}: cursor={:?}, blocks={}", sel.head, ce.ops.extract_content().len());
         // }
+        let pre_block_count = ce.ops.extract_content().len();
         match op {
             FuzzOp::InsertText(text) => ce.ops.insert_text(text),
             FuzzOp::DeleteBackward => ce.ops.delete_backward(),
@@ -1016,6 +1099,16 @@ fn run_fuzz(seed: u64, op_count: usize) {
             "Sync mismatch at op {i} ({op:?}), seed={seed}\n\
              DOM: {dom_blocks:#?}\nCRDT: {doc_blocks:#?}"
         );
+        // After SplitBlock, block count must increase by exactly 1
+        if matches!(op, FuzzOp::SplitBlock) {
+            assert_eq!(
+                dom_blocks.len(),
+                pre_block_count + 1,
+                "SplitBlock did not create a new block at op {i}, seed={seed}\n\
+                 pre={pre_block_count}, post={}",
+                dom_blocks.len()
+            );
+        }
     }
 }
 
