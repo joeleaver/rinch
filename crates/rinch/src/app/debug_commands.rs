@@ -533,13 +533,16 @@ impl RinchApp {
                                 _ => KeyCode::Space, // Use Space as a safe unmapped key
                             };
                             let text_str = ch.to_string();
-                            self.handle_contenteditable_key(
+                            if self.handle_contenteditable_key(
                                 key_code,
                                 Some(&text_str),
                                 false,
                                 false,
                                 false,
-                            );
+                            ) {
+                                let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+                                self.resolve_and_repaint(w, h);
+                            }
                         } else {
                             // Fallback to handle_text_input for non-intercepted chars
                             self.handle_text_input(&ch.to_string());
@@ -681,13 +684,16 @@ impl RinchApp {
                             k if k.len() == 1 => Some(k.to_string()),
                             _ => None,
                         };
-                        self.handle_contenteditable_key(
+                        if self.handle_contenteditable_key(
                             key_code,
                             text.as_deref(),
                             shift,
                             ctrl,
                             alt,
-                        );
+                        ) {
+                            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+                            self.resolve_and_repaint(w, h);
+                        }
                     } else {
                         match key.as_str() {
                             "ArrowUp" => self.handle_arrow_up(shift),
