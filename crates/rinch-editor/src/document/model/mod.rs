@@ -4,6 +4,8 @@
 pub mod bridge;
 mod mutations;
 mod queries;
+#[cfg(feature = "collaboration")]
+pub mod remote_ops;
 #[cfg(test)]
 mod roundtrip_tests;
 pub(crate) mod serialization;

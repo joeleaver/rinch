@@ -109,6 +109,65 @@ impl EditorDocument {
             .map_err(|e| crate::error::EditorError::Automerge(e.to_string()))
     }
 
+    /// Apply incremental changes and return CE-level operations describing what changed.
+    ///
+    /// This is the primary method for applying remote peer changes in a
+    /// collaboration session. It applies the raw bytes, then uses Automerge's
+    /// diff to produce precise CE operations — no block-data diffing needed.
+    ///
+    /// ```rust,ignore
+    /// // When receiving from a peer:
+    /// let ops = doc.load_incremental_with_ops(&received_bytes)?;
+    /// for op in &ops {
+    ///     match op {
+    ///         CeRemoteOp::InsertText { pos, text } => ce_api.insert_text_at(pos, text),
+    ///         CeRemoteOp::DeleteRange { start, end } => ce_api.delete_range(start, end),
+    ///         // ...
+    ///     }
+    /// }
+    /// ```
+    pub fn load_incremental_with_ops(
+        &mut self,
+        changes: &[u8],
+    ) -> Result<Vec<super::remote_ops::CeRemoteOp>, crate::error::EditorError> {
+        let heads_before = self.doc.get_heads();
+
+        self.doc
+            .load_incremental(changes)
+            .map_err(|e| crate::error::EditorError::Automerge(e.to_string()))?;
+
+        let heads_after = self.doc.get_heads();
+        let patches = self.doc.diff(&heads_before, &heads_after);
+        Ok(self.patches_to_ce_ops(&patches))
+    }
+
+    /// Apply a sync message and return CE-level operations describing what changed.
+    ///
+    /// Like [`load_incremental_with_ops`](Self::load_incremental_with_ops) but
+    /// for the full sync protocol.
+    pub fn receive_sync_message_with_ops(
+        &mut self,
+        sync_state: &mut SyncState,
+        message: SyncMessage,
+    ) -> Result<Vec<super::remote_ops::CeRemoteOp>, crate::error::EditorError> {
+        use automerge::sync::SyncDoc;
+
+        let heads_before = self.doc.get_heads();
+
+        self.doc
+            .sync()
+            .receive_sync_message(sync_state, message)
+            .map_err(|e| crate::error::EditorError::Automerge(e.to_string()))?;
+
+        let heads_after = self.doc.get_heads();
+        if heads_before == heads_after {
+            return Ok(Vec::new());
+        }
+
+        let patches = self.doc.diff(&heads_before, &heads_after);
+        Ok(self.patches_to_ce_ops(&patches))
+    }
+
     /// Merge all changes from another document into this one.
     pub fn merge(&mut self, other: &mut EditorDocument) -> Result<(), crate::error::EditorError> {
         self.doc

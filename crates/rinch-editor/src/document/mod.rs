@@ -11,4 +11,6 @@ pub use position::{Position, Range, ResolvedPosition};
 #[cfg(feature = "collaboration")]
 pub use model::bridge;
 #[cfg(feature = "collaboration")]
+pub use model::remote_ops;
+#[cfg(feature = "collaboration")]
 pub use model::sync;

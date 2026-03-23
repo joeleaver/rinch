@@ -43,6 +43,12 @@ pub use schema::Schema;
 #[cfg(feature = "collaboration")]
 pub use document::bridge;
 
+/// Remote operation types for applying peer changes to the CE DOM.
+///
+/// Gated behind the `collaboration` feature flag.
+#[cfg(feature = "collaboration")]
+pub use document::remote_ops::{self, CeRemoteOp};
+
 /// Sync protocol types for collaborative editing.
 ///
 /// Gated behind the `collaboration` feature flag.
@@ -59,6 +65,8 @@ pub mod prelude {
 
     #[cfg(feature = "collaboration")]
     pub use crate::document::bridge::CeDocBridge;
+    #[cfg(feature = "collaboration")]
+    pub use crate::document::remote_ops::CeRemoteOp;
     #[cfg(feature = "collaboration")]
     pub use crate::document::sync::{ChangeHash, SyncMessage, SyncState};
 }
