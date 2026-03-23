@@ -873,47 +873,70 @@ impl CeOps {
     ///
     /// Call after any operation that might remove all blocks.
     fn ensure_block_structure(&mut self) {
-        let needs_fix = {
+        let ce_root = self.ce_node_id;
+
+        // Collect orphaned inline children (text nodes, <br>, inline elements)
+        // that are direct children of CE root but should be inside a block.
+        let orphans: Vec<usize> = {
             let d = self.doc.borrow();
-            let children = &d.tree.nodes[self.ce_node_id].children;
+            let children = &d.tree.nodes[ce_root].children;
             if children.is_empty() {
-                true
+                // No children at all — need to create an empty <p>
+                Vec::new()
             } else {
-                // Check if all children are non-block (inline text, br, etc.)
-                children.iter().all(|&child_id| {
-                    d.tree
-                        .get(child_id)
-                        .and_then(|n| n.tag())
-                        .map(|t| !RinchApp::is_block_element(t))
-                        .unwrap_or(true) // text nodes are non-block
-                })
+                children
+                    .iter()
+                    .copied()
+                    .filter(|&child_id| {
+                        d.tree
+                            .get(child_id)
+                            .and_then(|n| n.tag())
+                            .map(|t| !RinchApp::is_block_element(t))
+                            .unwrap_or(true) // text nodes are non-block
+                    })
+                    .collect()
             }
         };
 
-        if needs_fix {
+        let is_empty = {
+            let d = self.doc.borrow();
+            d.tree.nodes[ce_root].children.is_empty()
+        };
+
+        if !orphans.is_empty() {
+            // Wrap orphaned inline nodes in a <p>, inserting it where
+            // the first orphan was (to preserve document order).
             let mut d = self.doc.borrow_mut();
-            // Wrap all existing inline children in a <p>
-            let children: Vec<usize> = d.tree.nodes[self.ce_node_id].children.clone();
             let p = d.create_element("p");
-            d.append_child(rinch_core::dom::NodeId(self.ce_node_id), p);
-            for &child_id in &children {
-                d.remove_node(rinch_core::dom::NodeId(child_id));
-                d.append_child(p, rinch_core::dom::NodeId(child_id));
+
+            // Insert <p> before the first orphan's position
+            let first_orphan = orphans[0];
+            d.insert_before(
+                rinch_core::dom::NodeId(ce_root),
+                p,
+                rinch_core::dom::NodeId(first_orphan),
+            );
+
+            for &orphan_id in &orphans {
+                d.remove_node(rinch_core::dom::NodeId(orphan_id));
+                d.append_child(p, rinch_core::dom::NodeId(orphan_id));
             }
 
-            // If the <p> is empty, add an empty text node
-            if d.tree.nodes[p.0].children.is_empty() {
-                let text = d.create_text("");
-                d.append_child(p, text);
-                self.cursor = DomCursor::new(text.0, 0);
-                self.anchor = self.cursor;
-            } else {
-                // Position cursor in the first text node of the new <p>
-                if let Some(cursor) = RinchApp::first_text_cursor(&d.tree, p.0) {
-                    self.cursor = cursor;
-                    self.anchor = cursor;
-                }
+            // Update cursor if it was on an orphaned node
+            let cursor_was_orphan = orphans.contains(&self.cursor.node_id);
+            if cursor_was_orphan {
+                // Cursor stays valid — node moved into <p> but ID unchanged
+                // No action needed
             }
+        } else if is_empty {
+            // No children at all — create empty <p>
+            let mut d = self.doc.borrow_mut();
+            let p = d.create_element("p");
+            d.append_child(rinch_core::dom::NodeId(ce_root), p);
+            let text = d.create_text("");
+            d.append_child(p, text);
+            self.cursor = DomCursor::new(text.0, 0);
+            self.anchor = self.cursor;
         }
     }
 
@@ -933,6 +956,156 @@ impl CeOps {
         let start_pos = RinchApp::dom_cursor_to_global_offset(&d.tree, self.ce_node_id, start);
         let end_pos = RinchApp::dom_cursor_to_global_offset(&d.tree, self.ce_node_id, end);
         (start_pos, end_pos)
+    }
+
+    /// Compute a CRDT-compatible flat position for the cursor.
+    ///
+    /// Unlike `flat_pos_of` (used for paint/rendering), this correctly counts
+    /// block separators even between consecutive empty blocks. The rendering
+    /// system skips separators when offset==0 (empty blocks), but the CRDT
+    /// needs separators to distinguish "in block 0" from "in block 1".
+    #[cfg(feature = "collaboration")]
+    fn crdt_flat_pos_of(&self, cursor: DomCursor) -> usize {
+        let d = self.doc.borrow();
+        let ce_root = self.ce_node_id;
+
+        // Find which CE-root-child block the cursor is in
+        let cursor_block = find_ce_root_child(&d.tree, cursor.node_id, ce_root);
+
+        let children = &d.tree.nodes[ce_root].children;
+        let mut pos = 0usize;
+
+        for (i, &child_id) in children.iter().enumerate() {
+            if i > 0 {
+                pos += 1; // block separator
+            }
+
+            let is_cursor_block = cursor_block == Some(child_id) || cursor.node_id == child_id;
+
+            if is_cursor_block {
+                // Cursor is in this block — compute offset within it
+                if cursor.node_id == child_id {
+                    // Element cursor (empty block) — at block start
+                    return pos;
+                }
+                // Walk text nodes in this block to find cursor position
+                let within = Self::cursor_offset_within_block(&d.tree, child_id, cursor);
+                return pos + within;
+            }
+
+            // Accumulate text length of this block
+            let tag = d.tree.get(child_id).and_then(|n| n.tag()).unwrap_or("");
+            if tag == "ul" || tag == "ol" {
+                for (j, &li_id) in d.tree.nodes[child_id].children.iter().enumerate() {
+                    if j > 0 {
+                        pos += 1;
+                    }
+                    pos += Self::node_text_len(&d.tree, li_id);
+                }
+            } else {
+                pos += Self::node_text_len(&d.tree, child_id);
+            }
+        }
+
+        // Fallback: cursor not found in any block, use original method
+        drop(d);
+        self.flat_pos_of(cursor)
+    }
+
+    /// Compute the cursor's byte offset within a block, ZWS-stripped.
+    #[cfg(feature = "collaboration")]
+    fn cursor_offset_within_block(
+        tree: &rinch_dom::NodeTree,
+        block_id: usize,
+        cursor: DomCursor,
+    ) -> usize {
+        let mut offset = 0;
+        let mut found = false;
+        Self::walk_block_for_offset(tree, block_id, cursor, &mut offset, &mut found);
+        offset
+    }
+
+    #[cfg(feature = "collaboration")]
+    fn walk_block_for_offset(
+        tree: &rinch_dom::NodeTree,
+        node_id: usize,
+        cursor: DomCursor,
+        offset: &mut usize,
+        found: &mut bool,
+    ) {
+        if *found {
+            return;
+        }
+        let Some(node) = tree.get(node_id) else {
+            return;
+        };
+        if let Some(text) = node.text_content() {
+            if node_id == cursor.node_id {
+                let off = cursor.offset.min(text.len());
+                let zws = text[..off].chars().filter(|c| *c == '\u{200B}').count()
+                    * '\u{200B}'.len_utf8();
+                *offset += off - zws;
+                *found = true;
+                return;
+            }
+            let zws = text.chars().filter(|c| *c == '\u{200B}').count() * '\u{200B}'.len_utf8();
+            *offset += text.len() - zws;
+            return;
+        }
+        if node.tag() == Some("br") {
+            if node_id == cursor.node_id {
+                *found = true;
+                return;
+            }
+            *offset += 1;
+            return;
+        }
+        for &child_id in &node.children {
+            Self::walk_block_for_offset(tree, child_id, cursor, offset, found);
+            if *found {
+                return;
+            }
+        }
+    }
+
+    /// Compute the ordered (start, end) flat positions for the current selection,
+    /// using CRDT-compatible position computation.
+    #[cfg(feature = "collaboration")]
+    fn crdt_selection_flat_range(&self) -> (usize, usize) {
+        let d = self.doc.borrow();
+        let (start, end) =
+            RinchApp::order_cursors(&d.tree, self.ce_node_id, self.cursor, self.anchor);
+        drop(d);
+        let start_pos = self.crdt_flat_pos_of(start);
+        let end_pos = self.crdt_flat_pos_of(end);
+        (start_pos, end_pos)
+    }
+
+    /// Total text length of a node subtree, ZWS-stripped.
+    #[cfg(feature = "collaboration")]
+    fn node_text_len(tree: &rinch_dom::NodeTree, node_id: usize) -> usize {
+        let mut len = 0;
+        Self::node_text_len_recursive(tree, node_id, &mut len);
+        len
+    }
+
+    #[cfg(feature = "collaboration")]
+    fn node_text_len_recursive(tree: &rinch_dom::NodeTree, node_id: usize, len: &mut usize) {
+        let Some(node) = tree.get(node_id) else {
+            return;
+        };
+        if let Some(text) = node.text_content() {
+            let zws = text.chars().filter(|c| *c == '\u{200B}').count() * '\u{200B}'.len_utf8();
+            *len += text.len() - zws;
+            return;
+        }
+        if node.tag() == Some("br") {
+            *len += 1;
+            return;
+        }
+        for &child_id in &node.children {
+            Self::node_text_len_recursive(tree, child_id, len);
+        }
     }
 
     // ── Undo infrastructure ───────────────────────────────────────────
@@ -1001,11 +1174,22 @@ impl CeOps {
         let mut restore_cursor = None;
 
         self.suppress_undo_recording = true;
+        let mut had_snapshot = false;
         // Replay in reverse order (most recent change undone first)
         for op in group.ops.iter().rev() {
             match op {
                 UndoOp::RestoreCursor { cursor, anchor } => {
-                    restore_cursor = Some((*cursor, *anchor));
+                    // Only restore cursor if no Snapshot was applied.
+                    // After Snapshot restore, the cursor from the old DOM is
+                    // invalid (node IDs changed). restore_from_snapshot already
+                    // set the cursor to a valid position.
+                    if !had_snapshot {
+                        restore_cursor = Some((*cursor, *anchor));
+                    }
+                }
+                UndoOp::Snapshot { .. } => {
+                    had_snapshot = true;
+                    self.apply_undo_op(op);
                 }
                 _ => self.apply_undo_op(op),
             }
@@ -1032,10 +1216,17 @@ impl CeOps {
         let mut restore_cursor = None;
 
         self.suppress_undo_recording = true;
+        let mut had_snapshot = false;
         for op in group.ops.iter().rev() {
             match op {
                 UndoOp::RestoreCursor { cursor, anchor } => {
-                    restore_cursor = Some((*cursor, *anchor));
+                    if !had_snapshot {
+                        restore_cursor = Some((*cursor, *anchor));
+                    }
+                }
+                UndoOp::Snapshot { .. } => {
+                    had_snapshot = true;
+                    self.apply_undo_op(op);
                 }
                 _ => self.apply_undo_op(op),
             }
@@ -1310,12 +1501,18 @@ impl CeOps {
                 }
             }
         }
-        // Set cursor to start
+
+        // Guarantee block structure after restore — snapshot might predate
+        // the ensure_block_structure invariant.
+        self.ensure_block_structure();
+
+        // Set cursor to first text node, with fallback to element cursor.
+        // MUST set cursor unconditionally — the old cursor points to nodes
+        // that were removed above.
         {
             let d = self.doc.borrow();
-            if let Some(cursor) = crate::app::RinchApp::first_text_cursor(&d.tree, ce_root) {
-                self.cursor = cursor;
-            }
+            self.cursor = crate::app::RinchApp::first_text_cursor(&d.tree, ce_root)
+                .unwrap_or(DomCursor::new(ce_root, 0));
         }
         self.anchor = self.cursor;
         self.notify_blocks_changed();
@@ -2445,8 +2642,9 @@ impl CeOps {
                         new_tag: "p".to_string(),
                     });
                 } else {
-                    // Default: remove the empty block, cursor to end of previous block
-                    let (prev_cursor, prev_block_id) = {
+                    // Default: remove the empty block, cursor to end of previous block.
+                    // But never remove the LAST block — keep it as an empty editable area.
+                    let (prev_cursor, prev_block_id, is_last_block) = {
                         let d = self.doc.borrow();
                         let siblings = &d.tree.nodes[block_parent_id].children;
                         let pos = siblings.iter().position(|&c| c == cur_block_id);
@@ -2454,8 +2652,13 @@ impl CeOps {
                             pos.and_then(|p| if p > 0 { Some(siblings[p - 1]) } else { None });
                         let prev_cursor =
                             prev_block_id.and_then(|pb| RinchApp::last_text_cursor(&d.tree, pb));
-                        (prev_cursor, prev_block_id)
+                        let is_last = siblings.len() <= 1;
+                        (prev_cursor, prev_block_id, is_last)
                     };
+                    if is_last_block {
+                        // Can't remove the last block — just stay in the empty block
+                        return;
+                    }
                     {
                         let mut d = self.doc.borrow_mut();
                         d.remove_node(rinch_core::dom::NodeId(cur_block_id));
@@ -3104,6 +3307,14 @@ impl CeOps {
                 prev_block_id,
             )) = info
             {
+                // Don't remove the last block
+                let is_last = {
+                    let d = self.doc.borrow();
+                    d.tree.nodes[block_parent_id].children.len() <= 1
+                };
+                if is_last {
+                    return;
+                }
                 {
                     let mut d = self.doc.borrow_mut();
                     d.remove_node(rinch_core::dom::NodeId(cur_block_id));
@@ -3521,7 +3732,9 @@ impl ContentEditableApi for CeOps {
             });
 
             #[cfg(feature = "collaboration")]
-            let pre_sel = self.should_dual_write().then_some((sel_start, sel_end));
+            let pre_sel = self
+                .should_dual_write()
+                .then(|| self.crdt_selection_flat_range());
 
             self.delete_selection_inner();
             self.ensure_block_structure();
@@ -3544,8 +3757,9 @@ impl ContentEditableApi for CeOps {
         // ── Dual-write: insert into EditorDocument before DOM mutation ──
         #[cfg(feature = "collaboration")]
         if self.should_dual_write() {
+            let crdt_pos = self.crdt_flat_pos_of(self.cursor);
             if let Some(ref mut editor_doc) = self.editor_doc {
-                let _ = editor_doc.insert_text(EditorPosition(insert_pos), text);
+                let _ = editor_doc.insert_text(EditorPosition(crdt_pos), text);
             }
         }
 
@@ -3627,10 +3841,10 @@ impl ContentEditableApi for CeOps {
         #[cfg(feature = "collaboration")]
         let pre = self.should_dual_write().then(|| {
             if self.cursor != self.anchor {
-                let (start, end) = self.selection_flat_range();
+                let (start, end) = self.crdt_selection_flat_range();
                 (start, end, self.ce_block_count())
             } else {
-                let pos = self.flat_pos_of(self.cursor);
+                let pos = self.crdt_flat_pos_of(self.cursor);
                 (pos, pos, self.ce_block_count())
             }
         });
@@ -3651,7 +3865,7 @@ impl ContentEditableApi for CeOps {
                     let doc = self.editor_doc.as_mut().unwrap();
                     let _ = doc.delete_range(EditorRange::new(pre_start, pre_end));
                 } else {
-                    let post_pos = self.flat_pos_of(self.cursor);
+                    let post_pos = self.crdt_flat_pos_of(self.cursor);
                     let post_blocks = self.ce_block_count();
                     if post_blocks < pre_blocks {
                         // Block join: delete the block separator(s) at the merge point.
@@ -3687,10 +3901,10 @@ impl ContentEditableApi for CeOps {
         #[cfg(feature = "collaboration")]
         let pre = self.should_dual_write().then(|| {
             if self.cursor != self.anchor {
-                let (start, end) = self.selection_flat_range();
+                let (start, end) = self.crdt_selection_flat_range();
                 (start, end, self.ce_block_count())
             } else {
-                let pos = self.flat_pos_of(self.cursor);
+                let pos = self.crdt_flat_pos_of(self.cursor);
                 (pos, pos, self.ce_block_count())
             }
         });
@@ -3710,7 +3924,7 @@ impl ContentEditableApi for CeOps {
                     let _ = doc.delete_range(EditorRange::new(pre_start, pre_end));
                 } else {
                     let post_blocks = self.ce_block_count();
-                    let post_pos = self.flat_pos_of(self.cursor);
+                    let post_pos = self.crdt_flat_pos_of(self.cursor);
 
                     if post_blocks < pre_blocks {
                         // Block removal/merge: the separator(s) at the merge point
@@ -3758,7 +3972,7 @@ impl ContentEditableApi for CeOps {
         let pre = self
             .editor_doc
             .is_some()
-            .then(|| self.selection_flat_range());
+            .then(|| self.crdt_selection_flat_range());
 
         self.delete_selection_inner();
         self.ensure_block_structure();
@@ -3788,7 +4002,7 @@ impl ContentEditableApi for CeOps {
 
         #[cfg(feature = "collaboration")]
         let pre_sel = if self.should_dual_write() && self.cursor != self.anchor {
-            Some(self.selection_flat_range())
+            Some(self.crdt_selection_flat_range())
         } else {
             None
         };
@@ -3811,7 +4025,7 @@ impl ContentEditableApi for CeOps {
 
         #[cfg(feature = "collaboration")]
         let pre_pos = if self.should_dual_write() {
-            Some((self.flat_pos_of(self.cursor), self.ce_block_count()))
+            Some((self.crdt_flat_pos_of(self.cursor), self.ce_block_count()))
         } else {
             None
         };
@@ -4826,7 +5040,7 @@ impl ContentEditableApi for CeOps {
         #[cfg(feature = "collaboration")]
         if let Some(mark_type) = tag_to_mark_type(tag) {
             if self.should_dual_write() {
-                let (start, end) = self.selection_flat_range();
+                let (start, end) = self.crdt_selection_flat_range();
                 if start != end {
                     let mark = EditorMarkData::new(mark_type);
                     let doc = self.editor_doc.as_mut().unwrap();
@@ -4898,7 +5112,7 @@ impl ContentEditableApi for CeOps {
         #[cfg(feature = "collaboration")]
         if let Some(mark_type) = tag_to_mark_type(tag) {
             if self.should_dual_write() {
-                let (start, end) = self.selection_flat_range();
+                let (start, end) = self.crdt_selection_flat_range();
                 if start != end {
                     let doc = self.editor_doc.as_mut().unwrap();
                     let _ = doc.remove_mark(EditorRange::new(start, end), mark_type);
@@ -5517,7 +5731,7 @@ impl ContentEditableApi for CeOps {
         });
         #[cfg(feature = "collaboration")]
         if self.should_dual_write() {
-            let (start, end) = self.selection_flat_range();
+            let (start, end) = self.crdt_selection_flat_range();
             if start != end {
                 let mark_types = [
                     "bold",
