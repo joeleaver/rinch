@@ -46,6 +46,8 @@
 pub mod app;
 #[cfg(feature = "desktop")]
 pub mod ce_ops;
+#[cfg(feature = "desktop")]
+pub(crate) mod ce_render;
 #[cfg(feature = "gpu")]
 pub mod embed;
 #[cfg(feature = "desktop")]

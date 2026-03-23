@@ -1,5 +1,6 @@
 use super::*;
 
+#[allow(dead_code)]
 impl RinchApp {
     // ── Text helpers ─────────────────────────────────────────────────────
 

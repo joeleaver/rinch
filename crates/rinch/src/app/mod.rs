@@ -1761,15 +1761,18 @@ impl RinchApp {
                     if new_ops.virtual_window.is_none() {
                         new_ops.virtual_window = old_ce_ops.virtual_window.take();
                     }
-                    #[cfg(feature = "collaboration")]
+                    // Transfer editor_doc from old ops to preserve CRDT history.
+                    // Use std::mem::swap to move the document efficiently.
                     {
-                        // Only transfer editor_doc from old if new doesn't
-                        // already have one (e.g., from set_pending_editor_doc).
-                        if new_ops.editor_doc.is_none() {
-                            new_ops.editor_doc = old_ce_ops.editor_doc.take();
-                            if new_ops.editor_doc.is_some() {
-                                new_ops.skip_next_sync = true;
-                            }
+                        let old_doc = std::mem::replace(
+                            &mut old_ce_ops.editor_doc,
+                            rinch_editor::EditorDocument::new(),
+                        );
+                        // Only transfer if the new ops were created from DOM content
+                        // (not from a pre-registered pending doc).
+                        if !new_ops.skip_next_sync {
+                            new_ops.editor_doc = old_doc;
+                            new_ops.skip_next_sync = true;
                         }
                     }
                 }

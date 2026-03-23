@@ -75,7 +75,7 @@ impl TestCe {
     /// Assert DOM content matches EditorDocument content.
     fn assert_sync(&self) {
         let dom_blocks = self.ops.extract_content();
-        let doc_blocks = self.ops.editor_doc().unwrap().to_block_data();
+        let doc_blocks = self.ops.editor_doc().to_block_data();
         assert_eq!(
             dom_blocks, doc_blocks,
             "DOM/CRDT sync mismatch!\nDOM: {dom_blocks:#?}\nCRDT: {doc_blocks:#?}"
@@ -84,7 +84,7 @@ impl TestCe {
 
     /// Get the flat text from the EditorDocument.
     fn crdt_text(&self) -> String {
-        self.ops.editor_doc().unwrap().to_text()
+        self.ops.editor_doc().to_text()
     }
 
     /// Get the flat text from the DOM via extract_content.
@@ -102,7 +102,7 @@ impl TestCe {
 
     /// Get the EditorDocument for save_incremental.
     fn editor_doc_mut(&mut self) -> &mut EditorDocument {
-        self.ops.editor_doc_mut().unwrap()
+        self.ops.editor_doc_mut()
     }
 }
 
@@ -264,9 +264,10 @@ fn delete_forward_removes_empty_block() {
     ce.ops.split_block();
     ce.assert_sync();
     // Now: "Hello" | "" (empty second block), cursor in empty block
-    // Delete forward on empty block — should remove the empty block
-    // (delete_forward on element cursor removes current block)
-    ce.ops.delete_forward();
+    // In CRDT-first model, delete_forward at end of document is a no-op
+    // (there's nothing after cursor to delete). Use delete_backward to
+    // join the empty block with the previous one.
+    ce.ops.delete_backward();
     ce.assert_sync();
     // Should be back to 1 block
     assert_eq!(ce.ops.extract_content().len(), 1);
@@ -842,10 +843,11 @@ fn empty_document_operations() {
     ce.assert_sync();
     ce.ops.split_block();
     ce.assert_sync();
-    // Now insert
+    // Now insert — cursor is in the second (empty) block after split
     ce.ops.insert_text("a");
     ce.assert_sync();
-    assert_eq!(ce.crdt_text(), "a");
+    // Two blocks: first empty, second has "a"
+    assert_eq!(ce.crdt_text(), "\na");
 }
 
 #[test]
@@ -1008,7 +1010,7 @@ fn run_fuzz(seed: u64, op_count: usize) {
         }
         // Assert sync after every operation
         let dom_blocks = ce.ops.extract_content();
-        let doc_blocks = ce.ops.editor_doc().unwrap().to_block_data();
+        let doc_blocks = ce.ops.editor_doc().to_block_data();
         assert_eq!(
             dom_blocks, doc_blocks,
             "Sync mismatch at op {i} ({op:?}), seed={seed}\n\
