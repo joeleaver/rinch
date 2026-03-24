@@ -155,12 +155,6 @@ pub fn styles() -> String {
     display: none;
 }
 
-/* Inner scroll wrapper for dropdown content (avoids overflow bugs on abs-pos elements) */
-.rinch-app-menu-dropdown__scroll {
-    max-height: 88vh;
-    overflow-y: auto;
-}
-
 .rinch-app-menu-submenu:hover > .rinch-app-menu-submenu__dropdown {
     display: block;
 }

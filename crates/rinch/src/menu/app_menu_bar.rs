@@ -388,13 +388,10 @@ fn build_menu_entries(
 
                 submenu_node.append_child(&trigger);
 
-                // Nested dropdown with inner scroll wrapper
+                // Nested dropdown
                 let nested_dropdown = scope.create_element("div");
                 nested_dropdown.set_attribute("class", "rinch-app-menu-submenu__dropdown");
-                let nested_scroll = scope.create_element("div");
-                nested_scroll.set_attribute("class", "rinch-app-menu-dropdown__scroll");
-                build_menu_entries(scope, &nested_scroll, menu, active_menu);
-                nested_dropdown.append_child(&nested_scroll);
+                build_menu_entries(scope, &nested_dropdown, menu, active_menu);
                 submenu_node.append_child(&nested_dropdown);
 
                 container.append_child(&submenu_node);
