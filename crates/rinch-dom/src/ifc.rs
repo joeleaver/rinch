@@ -13,7 +13,7 @@ impl RinchDocument {
     ///
     /// Uses the computed width from Taffy as the available width for Parley line breaking.
     pub(crate) fn build_ifc_layouts(&mut self, paint_layout_cx: &mut parley::LayoutContext<Brush>) {
-        // Collect IFC roots (elements that have inline children with ifc_root set)
+        // Discover all IFC roots (cheap O(n) walk — just checks a field per node).
         let mut ifc_roots: Vec<usize> = Vec::new();
         for (id, node) in &self.tree.nodes {
             if !node.is_element() {
@@ -25,7 +25,6 @@ impl RinchDocument {
             ) {
                 continue;
             }
-            // Check if any child has ifc_root pointing to this node
             let is_ifc = node.children.iter().any(|&child_id| {
                 self.tree
                     .nodes
@@ -38,11 +37,21 @@ impl RinchDocument {
             }
         }
 
+        // Only rebuild Parley TextLayouts for dirty IFC roots (the expensive part).
+        // When dirty_ifc_text_roots is empty, rebuild all (structural IFC change).
+        let rebuild_all = self.tree.dirty_ifc_text_roots.is_empty();
+
         for root_id in ifc_roots {
             // Skip collapsed blocks (virtualized) — no Parley work needed.
             // Drop any existing text_layout to free memory.
             if self.tree.nodes[root_id].estimated_height.is_some() {
                 self.tree.nodes[root_id].text_layout = None;
+                continue;
+            }
+
+            // Skip IFC roots that aren't dirty (scoped rebuild).
+            // This turns O(all_roots) Parley work into O(dirty_roots).
+            if !rebuild_all && !self.tree.dirty_ifc_text_roots.contains(&root_id) {
                 continue;
             }
 

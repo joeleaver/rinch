@@ -131,8 +131,11 @@ impl DomDocument for RinchDocument {
         self.tree.ifc_dirty = true; // Tree structure changed
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
 
-        // Recompute styles for the inserted subtree to pick up ancestor-based selectors
-        self.recompute_node_styles_recursive(c);
+        // Recompute styles for the inserted subtree to pick up ancestor-based selectors.
+        // Suppressed during bulk DOM operations (render_block_at) to batch into one pass.
+        if !self.tree.suppress_inline_restyle {
+            self.recompute_node_styles_recursive(c);
+        }
 
         // If a text node is appended to a <style> element, load its content as CSS
         self.maybe_load_style_css(p);
@@ -285,6 +288,23 @@ impl DomDocument for RinchDocument {
 
     fn set_text_content(&mut self, node: NodeId, text: &str) {
         let n = node.0;
+
+        // Fast path: skip if content is already identical.
+        match &self.tree.nodes[n].kind {
+            NodeKind::Text(t) if t.content == text => return,
+            NodeKind::Element(_) => {
+                let children = &self.tree.nodes[n].children;
+                if children.len() == 1 {
+                    if let NodeKind::Text(t) = &self.tree.nodes[children[0]].kind {
+                        if t.content == text {
+                            return;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
         // Invalidate IFC if this node belongs to one
         self.invalidate_ifc_for_node(n);
         // Also invalidate parent's IFC
@@ -546,8 +566,6 @@ impl DomDocument for RinchDocument {
             }
 
             // Update Taffy inset directly (skip full style resolution).
-            // mark_dirty clears this node's cache but NOT children's caches,
-            // so children won't be re-measured.
             if let Some(taffy_id) = self.tree.nodes[node.0].taffy_id {
                 if let Ok(mut taffy_style) = self.tree.taffy.style(taffy_id).cloned() {
                     let taffy_val = new_val.to_taffy();
@@ -559,14 +577,31 @@ impl DomDocument for RinchDocument {
                         _ => unreachable!(),
                     }
                     let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
-                    self.tree.layout_dirty = true;
                 }
             }
 
-            // Mark dirty and request full repaint so the old position gets cleared.
-            self.tree.nodes[node.0]
-                .dirty
-                .insert(DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+            // For left/top with pixel values, compute the layout position directly
+            // instead of triggering a full Taffy compute_layout (which walks the
+            // entire tree). Account for margin so the position is correct even on
+            // elements with non-zero margins.
+            match property {
+                "left" => {
+                    let margin = self.tree.nodes[node.0].computed_style.margin_left.to_px();
+                    self.tree.nodes[node.0].layout.x = new_val.to_px() + margin;
+                }
+                "top" => {
+                    let margin = self.tree.nodes[node.0].computed_style.margin_top.to_px();
+                    self.tree.nodes[node.0].layout.y = new_val.to_px() + margin;
+                }
+                // right/bottom need containing block size — fall back to full layout
+                "right" | "bottom" => {
+                    self.tree.layout_dirty = true;
+                }
+                _ => unreachable!(),
+            }
+
+            // Mark paint dirty (not layout dirty for left/top — we computed it above).
+            self.tree.nodes[node.0].dirty.insert(DirtyFlags::PAINT);
             self.tree.dirty_nodes.insert(node.0);
             self.tree.full_repaint_needed = true;
             return;

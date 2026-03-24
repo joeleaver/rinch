@@ -611,6 +611,10 @@ pub struct NodeTree {
     /// True if any layout-affecting Taffy style changed since last compute.
     /// When false, `resolve_layout()` can skip Taffy compute + IFC rebuild.
     pub layout_dirty: bool,
+    /// When true, `append_child` skips inline `recompute_node_styles_recursive`.
+    /// Used during bulk DOM operations (block re-render) to batch style resolution
+    /// into a single pass instead of one per child.
+    pub suppress_inline_restyle: bool,
     /// True when an absolute/fixed element moved via the inset fast path.
     /// The app checks this to force a full scene repaint (clearing old position).
     pub full_repaint_needed: bool,
@@ -744,6 +748,7 @@ impl NodeTree {
             style_roots: Vec::new(),
             styles_dirty: true, // Initial render needs styles
             layout_dirty: true, // Initial render needs layout
+            suppress_inline_restyle: false,
             full_repaint_needed: false,
             ifc_dirty: true, // Initial render needs IFC setup
             taffy,

@@ -516,9 +516,15 @@ pub(crate) fn render_block_at(
     let desired_tag = block_data_to_dom_tag(block_data);
 
     if current_tag == desired_tag {
-        // Same tag: just clear children and re-render inline content
+        // Same tag: just clear children and re-render inline content.
+        // Suppress per-child style resolution during the re-render —
+        // batch into one pass at the end. This turns N resolve_styles()
+        // calls (one per append_child) into 1.
         clear_children(d, existing_dom_node);
+        d.tree.suppress_inline_restyle = true;
         render_inline_content(d, existing_dom_node, &block_data.content);
+        d.tree.suppress_inline_restyle = false;
+        d.recompute_node_styles_recursive(existing_dom_node);
         existing_dom_node
     } else {
         // Tag changed: create new element, insert before old, remove old
