@@ -157,6 +157,9 @@ pub struct RinchApp {
     pub(crate) pending_drag: Option<PendingDrag>,
     /// Active drag-and-drop: threshold crossed, snapshot captured.
     pub(crate) active_dnd: Option<ActiveDrag>,
+    /// Surface currently being dragged over (for DragEnter/DragLeave dispatch).
+    /// Stores (surface_id, dom_node_id).
+    pub(crate) drag_over_surface: Option<(usize, usize)>,
     /// Last theme CSS loaded into the document (for change detection).
     pub(crate) last_theme_css: Option<String>,
     /// Timestamp of last mouse click (for multi-click detection).
@@ -232,6 +235,7 @@ impl RinchApp {
             scrollbar_drag: None,
             pending_drag: None,
             active_dnd: None,
+            drag_over_surface: None,
             last_theme_css: None,
             last_click_time: Instant::now(),
             last_click_pos: (0.0, 0.0),

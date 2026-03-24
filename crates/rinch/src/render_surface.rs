@@ -164,6 +164,18 @@ pub enum SurfaceEvent {
     FocusGained,
     /// The surface lost keyboard focus.
     FocusLost,
+
+    // ── Drag-and-drop events ─────────────────────────────────────────
+    // Fired when a DOM drag (from a `draggable="true"` element) interacts
+    // with this surface. Access the dragged data via your `DragContext<T>`.
+    /// A drag entered the surface bounds.
+    DragEnter { x: f32, y: f32 },
+    /// A drag is moving over the surface (fires every mouse move).
+    DragOver { x: f32, y: f32 },
+    /// A drag left the surface bounds.
+    DragLeave,
+    /// A drag was dropped on the surface.
+    Drop { x: f32, y: f32 },
 }
 
 /// Mouse button identifier.

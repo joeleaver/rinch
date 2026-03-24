@@ -67,40 +67,93 @@ impl RinchApp {
                 if let Some(ref mut drag) = self.active_dnd {
                     drag.cursor = (x, y);
 
-                    // Hit test for drop targets
-                    let new_target = if let Some(doc) = &self.doc {
+                    // Hit test for drop targets — check both DOM elements and surfaces
+                    let hit_id = if let Some(doc) = &self.doc {
                         let d = doc.borrow();
                         hit_test(&d.tree, x, y)
-                            .and_then(|hit_id| Self::find_drop_target(&d.tree, hit_id))
                     } else {
                         None
                     };
 
-                    let old_target = drag.over_target;
-                    if new_target != old_target {
-                        drag.over_target = new_target;
-                        // Fire leave/enter events
+                    // Check if mouse is over a render surface
+                    let surface_target = if let Some(doc) = &self.doc {
+                        hit_id.and_then(|hid| {
+                            let d = doc.borrow();
+                            Self::find_render_surface_at_full(&d.tree, hid, x, y)
+                        })
+                    } else {
+                        None
+                    };
+
+                    let new_surface = surface_target.as_ref().map(|(sid, nid, _, _)| (*sid, *nid));
+
+                    // Handle surface drag enter/leave transitions
+                    if new_surface != self.drag_over_surface {
+                        // Leave old surface
+                        if let Some((old_sid, _)) = self.drag_over_surface {
+                            crate::render_surface::dispatch_surface_event(
+                                old_sid,
+                                crate::render_surface::SurfaceEvent::DragLeave,
+                            );
+                        }
+                        // Enter new surface
+                        if let Some((sid, _, lx, ly)) = &surface_target {
+                            crate::render_surface::dispatch_surface_event(
+                                *sid,
+                                crate::render_surface::SurfaceEvent::DragEnter { x: *lx, y: *ly },
+                            );
+                        }
+                        self.drag_over_surface = new_surface;
+                    }
+
+                    // Dispatch DragOver to current surface, or DOM drag events
+                    if let Some((sid, _, lx, ly)) = surface_target {
+                        // Mouse is over a surface — dispatch DragOver
+                        crate::render_surface::dispatch_surface_event(
+                            sid,
+                            crate::render_surface::SurfaceEvent::DragOver { x: lx, y: ly },
+                        );
+
+                        // Clear DOM drop target since we're over a surface
+                        let old_target = drag.over_target.take();
                         if let Some(doc) = &self.doc {
                             if let Some(old_id) = old_target {
                                 Self::dispatch_drag_attr(doc, old_id, "data-ondragleave");
                             }
-                            if let Some(new_id) = new_target {
-                                Self::dispatch_drag_attr(doc, new_id, "data-ondragenter");
+                        }
+                    } else {
+                        // Not over a surface — use DOM drop target system
+                        let new_target = hit_id.and_then(|hid| {
+                            self.doc.as_ref().and_then(|doc| {
+                                let d = doc.borrow();
+                                Self::find_drop_target(&d.tree, hid)
+                            })
+                        });
+
+                        let old_target = drag.over_target;
+                        if new_target != old_target {
+                            drag.over_target = new_target;
+                            if let Some(doc) = &self.doc {
+                                if let Some(old_id) = old_target {
+                                    Self::dispatch_drag_attr(doc, old_id, "data-ondragleave");
+                                }
+                                if let Some(new_id) = new_target {
+                                    Self::dispatch_drag_attr(doc, new_id, "data-ondragenter");
+                                }
                             }
                         }
-                    }
 
-                    // Fire ondragover on current drop target so it can track cursor position.
-                    if let Some(target_id) = drag.over_target {
-                        if let Some(doc) = &self.doc {
-                            let (cx, cy) = drag.cursor;
-                            Self::dispatch_drag_attr_with_context(
-                                doc,
-                                target_id,
-                                "data-ondragover",
-                                cx,
-                                cy,
-                            );
+                        if let Some(target_id) = drag.over_target {
+                            if let Some(doc) = &self.doc {
+                                let (cx, cy) = drag.cursor;
+                                Self::dispatch_drag_attr_with_context(
+                                    doc,
+                                    target_id,
+                                    "data-ondragover",
+                                    cx,
+                                    cy,
+                                );
+                            }
                         }
                     }
 
@@ -491,14 +544,31 @@ impl RinchApp {
                     let click_actions = self.handle_click(px, py, scale_factor);
                     actions.extend(click_actions);
                 } else if let Some(drag) = self.active_dnd.take() {
-                    // Fire ondrop on target if present
-                    if let Some(target_id) = drag.over_target {
+                    // Check if dropping on a surface
+                    if let Some((surface_sid, surface_nid)) = self.drag_over_surface.take() {
+                        // Dispatch Drop to the surface
+                        if let Some(doc) = &self.doc {
+                            let d = doc.borrow();
+                            let (lx, ly) = Self::surface_local_coords(&d.tree, surface_nid, x, y);
+                            drop(d);
+                            crate::render_surface::dispatch_surface_event(
+                                surface_sid,
+                                crate::render_surface::SurfaceEvent::Drop { x: lx, y: ly },
+                            );
+                            // Also send DragLeave after Drop (cleanup)
+                            crate::render_surface::dispatch_surface_event(
+                                surface_sid,
+                                crate::render_surface::SurfaceEvent::DragLeave,
+                            );
+                        }
+                    } else if let Some(target_id) = drag.over_target {
+                        // Dropping on a DOM element
                         if let Some(doc) = &self.doc {
                             Self::dispatch_drag_attr(doc, target_id, "data-ondrop");
                             Self::dispatch_drag_attr(doc, target_id, "data-ondragleave");
                         }
                     }
-                    // Fire ondragend on source — set click context so handler can read cursor pos.
+                    // Fire ondragend on source
                     if let Some(doc) = &self.doc {
                         let (cx, cy) = drag.cursor;
                         events::set_click_context(events::ClickContext {
