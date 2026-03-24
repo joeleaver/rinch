@@ -677,29 +677,25 @@ impl RinchApp {
         screen_x: f32,
         screen_y: f32,
     ) -> Option<(usize, f32, f32)> {
+        Self::find_render_surface_at_full(tree, hit_id, screen_x, screen_y)
+            .map(|(sid, _nid, lx, ly)| (sid, lx, ly))
+    }
+
+    /// Like `find_render_surface_at` but also returns the surface's DOM node ID.
+    pub(crate) fn find_render_surface_at_full(
+        tree: &rinch_dom::NodeTree,
+        hit_id: usize,
+        screen_x: f32,
+        screen_y: f32,
+    ) -> Option<(usize, usize, f32, f32)> {
         let mut current = Some(hit_id);
         while let Some(nid) = current {
             if let Some(node) = tree.get(nid) {
                 if let Some(id_str) = node.attributes.get("data-render-surface") {
                     if let Ok(surface_id) = id_str.parse::<usize>() {
-                        // Compute absolute position of the surface element
-                        let mut abs_x = node.layout.x;
-                        let mut abs_y = node.layout.y;
-                        let mut pid = node.parent;
-                        while let Some(p) = pid {
-                            if let Some(pn) = tree.get(p) {
-                                abs_x += pn.layout.x;
-                                abs_y += pn.layout.y;
-                                abs_x -= pn.scroll_offset.0 as f32;
-                                abs_y -= pn.scroll_offset.1 as f32;
-                                pid = pn.parent;
-                            } else {
-                                break;
-                            }
-                        }
-                        let local_x = screen_x - abs_x;
-                        let local_y = screen_y - abs_y;
-                        return Some((surface_id, local_x, local_y));
+                        let (local_x, local_y) =
+                            Self::surface_local_coords(tree, nid, screen_x, screen_y);
+                        return Some((surface_id, nid, local_x, local_y));
                     }
                 }
                 current = node.parent;
@@ -708,5 +704,33 @@ impl RinchApp {
             }
         }
         None
+    }
+
+    /// Compute screen-to-local coordinates for a surface DOM node.
+    pub(crate) fn surface_local_coords(
+        tree: &rinch_dom::NodeTree,
+        surface_dom_node: usize,
+        screen_x: f32,
+        screen_y: f32,
+    ) -> (f32, f32) {
+        let node = match tree.get(surface_dom_node) {
+            Some(n) => n,
+            None => return (screen_x, screen_y),
+        };
+        let mut abs_x = node.layout.x;
+        let mut abs_y = node.layout.y;
+        let mut pid = node.parent;
+        while let Some(p) = pid {
+            if let Some(pn) = tree.get(p) {
+                abs_x += pn.layout.x;
+                abs_y += pn.layout.y;
+                abs_x -= pn.scroll_offset.0 as f32;
+                abs_y -= pn.scroll_offset.1 as f32;
+                pid = pn.parent;
+            } else {
+                break;
+            }
+        }
+        (screen_x - abs_x, screen_y - abs_y)
     }
 }

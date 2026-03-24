@@ -262,34 +262,45 @@ impl RinchApp {
                     // Don't request redraw — AboutToWait batches dirty state.
                     actions.push(AppAction::SetCursor(cursor_style));
 
-                    // Dispatch MouseMove + MouseEnter/MouseLeave to render surfaces
+                    // Dispatch MouseMove + MouseEnter/MouseLeave to render surfaces.
+                    // During an active drag with forward_surface_events, dispatch MouseMove
+                    // to the captured surface even when the mouse is outside its bounds
+                    // (pointer capture semantics).
                     let new_surface = if let Some(hit_id) = hovered {
                         let d = doc.borrow();
-                        Self::find_render_surface_at(&d.tree, hit_id, x, y)
+                        Self::find_render_surface_at_full(&d.tree, hit_id, x, y)
                     } else {
                         None
                     };
 
-                    let new_surface_id = new_surface.as_ref().map(|(id, _, _)| *id);
-                    if new_surface_id != self.hovered_surface {
-                        // Dispatch MouseLeave to old surface
-                        if let Some(old_id) = self.hovered_surface {
-                            crate::render_surface::dispatch_surface_event(
-                                old_id,
-                                crate::render_surface::SurfaceEvent::MouseLeave,
-                            );
+                    let new_surface_entry = new_surface.as_ref().map(|(id, nid, _, _)| (*id, *nid));
+
+                    if new_surface_entry != self.hovered_surface {
+                        if !drag_active {
+                            // Normal (non-drag) path: dispatch enter/leave
+                            if let Some((old_id, _)) = self.hovered_surface {
+                                crate::render_surface::dispatch_surface_event(
+                                    old_id,
+                                    crate::render_surface::SurfaceEvent::MouseLeave,
+                                );
+                            }
+                            if let Some((sid, _, lx, ly)) = &new_surface {
+                                crate::render_surface::dispatch_surface_event(
+                                    *sid,
+                                    crate::render_surface::SurfaceEvent::MouseEnter {
+                                        x: *lx,
+                                        y: *ly,
+                                    },
+                                );
+                            }
+                            self.hovered_surface = new_surface_entry;
                         }
-                        // Dispatch MouseEnter to new surface
-                        if let Some((sid, lx, ly)) = &new_surface {
-                            crate::render_surface::dispatch_surface_event(
-                                *sid,
-                                crate::render_surface::SurfaceEvent::MouseEnter { x: *lx, y: *ly },
-                            );
-                        }
-                        self.hovered_surface = new_surface_id;
+                        // During drag: don't update hovered_surface or send
+                        // enter/leave — the captured surface keeps getting events.
                     }
 
-                    if let Some((surface_id, local_x, local_y)) = new_surface {
+                    if let Some((surface_id, _, local_x, local_y)) = new_surface {
+                        // Mouse is over a surface — dispatch with hit-tested coords
                         crate::render_surface::dispatch_surface_event(
                             surface_id,
                             crate::render_surface::SurfaceEvent::MouseMove {
@@ -297,6 +308,24 @@ impl RinchApp {
                                 y: local_y,
                             },
                         );
+                    } else if drag_active && drag_forward_surface {
+                        // Mouse is OFF any surface during a drag with forwarding.
+                        // Pointer capture: dispatch to the captured surface with
+                        // coordinates relative to its bounds (may be negative or
+                        // beyond width/height).
+                        if let Some((captured_sid, captured_nid)) = self.hovered_surface {
+                            let d = doc.borrow();
+                            let (local_x, local_y) =
+                                Self::surface_local_coords(&d.tree, captured_nid, x, y);
+                            drop(d);
+                            crate::render_surface::dispatch_surface_event(
+                                captured_sid,
+                                crate::render_surface::SurfaceEvent::MouseMove {
+                                    x: local_x,
+                                    y: local_y,
+                                },
+                            );
+                        }
                     }
                 }
             }

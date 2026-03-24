@@ -194,8 +194,9 @@ pub struct RinchApp {
     /// Set when cursor changes; applied after the next layout resolve.
     /// Uses `Cell` for interior mutability (set from `&self` methods).
     pub(crate) ce_scroll_pending: Cell<bool>,
-    /// The render surface ID currently under the mouse cursor (for enter/leave events).
-    pub(crate) hovered_surface: Option<usize>,
+    /// The render surface currently under the mouse cursor (for enter/leave events).
+    /// Stores (surface_id, dom_node_id) so we can compute local coords during drags.
+    pub(crate) hovered_surface: Option<(usize, usize)>,
     /// State for read-only text selection (non-contenteditable).
     pub(crate) text_selection: Option<TextSelection>,
     /// Whether we're currently mouse-drag selecting text (read-only, non-CE).
