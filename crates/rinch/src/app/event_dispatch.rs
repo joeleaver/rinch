@@ -584,6 +584,8 @@ impl RinchApp {
                         });
                         Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragend");
                     }
+                    // Reset ghost visibility for next drag
+                    events::reset_drag_ghost_visibility();
                     self.scene_dirty = true;
                     actions.push(AppAction::RequestRedraw);
                 }

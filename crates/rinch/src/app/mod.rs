@@ -739,14 +739,16 @@ impl RinchApp {
             );
         }
 
-        // Render drag-and-drop snapshot overlay
+        // Render drag-and-drop snapshot overlay (if not suppressed by drop target)
         if let Some(ref drag) = self.active_dnd {
-            use peniko::kurbo::Affine;
-            let tx = (drag.cursor.0 - drag.anchor.0) as f64;
-            let ty = (drag.cursor.1 - drag.anchor.1) as f64;
-            self.painter
-                .scene_mut()
-                .append(drag.snapshot.scene(), Some(Affine::translate((tx, ty))));
+            if rinch_core::events::is_drag_ghost_visible() {
+                use peniko::kurbo::Affine;
+                let tx = (drag.cursor.0 - drag.anchor.0) as f64;
+                let ty = (drag.cursor.1 - drag.anchor.1) as f64;
+                self.painter
+                    .scene_mut()
+                    .append(drag.snapshot.scene(), Some(Affine::translate((tx, ty))));
+            }
         }
 
         // Paint inspect mode highlight overlay
@@ -915,20 +917,22 @@ impl RinchApp {
                 }
             }
 
-            // Paint drag-and-drop snapshot overlay
+            // Paint drag-and-drop snapshot overlay (if not suppressed by drop target)
             if let Some(ref drag) = self.active_dnd {
-                let dx = (drag.cursor.0 - drag.anchor.0) as i32;
-                let dy = (drag.cursor.1 - drag.anchor.1) as i32;
-                Self::blit_drag_overlay(
-                    painter.pixels_mut(),
-                    w,
-                    h,
-                    &drag.snapshot_pixels,
-                    drag.snapshot_width,
-                    drag.snapshot_height,
-                    dx,
-                    dy,
-                );
+                if rinch_core::events::is_drag_ghost_visible() {
+                    let dx = (drag.cursor.0 - drag.anchor.0) as i32;
+                    let dy = (drag.cursor.1 - drag.anchor.1) as i32;
+                    Self::blit_drag_overlay(
+                        painter.pixels_mut(),
+                        w,
+                        h,
+                        &drag.snapshot_pixels,
+                        drag.snapshot_width,
+                        drag.snapshot_height,
+                        dx,
+                        dy,
+                    );
+                }
             }
 
             // Paint inspect mode highlight overlay (after all document painting)

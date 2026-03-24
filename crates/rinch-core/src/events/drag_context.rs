@@ -80,3 +80,57 @@ impl<T: Clone + 'static> Default for DragContext<T> {
         Self::new()
     }
 }
+
+// ============================================================================
+// Drag ghost visibility
+// ============================================================================
+
+use std::cell::Cell;
+
+thread_local! {
+    /// When false, the framework's built-in drag ghost (element snapshot) is hidden.
+    /// Drop targets and surfaces can suppress the ghost when they provide their own
+    /// visual feedback (e.g., a 3D preview in a game viewport).
+    static DRAG_GHOST_VISIBLE: Cell<bool> = const { Cell::new(true) };
+}
+
+/// Hide the framework's built-in drag ghost.
+///
+/// Call this from `ondragstart`, `ondragenter`, `DragEnter`, or `DragOver`
+/// handlers when the drop target provides its own visual feedback. The ghost
+/// remains hidden until `restore_drag_ghost()` is called or the drag ends.
+///
+/// ```ignore
+/// // In a surface event handler:
+/// SurfaceEvent::DragEnter { x, y } => {
+///     suppress_drag_ghost();
+///     spawn_3d_preview(x, y);
+/// }
+/// SurfaceEvent::DragLeave => {
+///     restore_drag_ghost();
+///     despawn_3d_preview();
+/// }
+/// ```
+pub fn suppress_drag_ghost() {
+    DRAG_GHOST_VISIBLE.with(|v| v.set(false));
+}
+
+/// Show the framework's built-in drag ghost again.
+///
+/// Call this from `ondragleave` or `DragLeave` when the cursor leaves a
+/// drop target that was providing its own visual feedback.
+pub fn restore_drag_ghost() {
+    DRAG_GHOST_VISIBLE.with(|v| v.set(true));
+}
+
+/// Check whether the drag ghost should be rendered.
+/// Called by the paint system.
+pub fn is_drag_ghost_visible() -> bool {
+    DRAG_GHOST_VISIBLE.with(|v| v.get())
+}
+
+/// Reset ghost visibility to default (visible). Called by the runtime
+/// when a drag ends.
+pub fn reset_drag_ghost_visibility() {
+    DRAG_GHOST_VISIBLE.with(|v| v.set(true));
+}
