@@ -63,13 +63,6 @@ impl RinchDocument {
         self.request_background_image_loads();
 
         // Skip full layout recompute when no layout-affecting properties changed.
-        // Paint-only changes (background-color, opacity, cursor on hover) set
-        // styles_dirty but NOT layout_dirty, so we resolve styles above but
-        // skip the expensive Taffy compute + IFC rebuild below.
-        //
-        // However, text-affecting style changes (font-size, font-weight, font-style,
-        // text-decoration) don't change Taffy styles so layout_dirty won't be set.
-        // For these, skip Taffy but still rebuild the affected IFC text layouts.
         if !self.tree.layout_dirty {
             if !self.tree.dirty_ifc_text_roots.is_empty() {
                 let t = std::time::Instant::now();

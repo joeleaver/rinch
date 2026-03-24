@@ -233,7 +233,7 @@ impl RinchDocument {
         // Also set layout_dirty so resolve_layout doesn't early-return before
         // reaching the ifc_dirty branch.
         self.tree.ifc_dirty = true;
-        self.tree.layout_dirty = true;
+        self.tree.layout_dirty = true; eprintln!("[layout_dirty] {}:{}", file!(), line!());
     }
 
     /// Recompute taffy styles for all element nodes.
@@ -588,12 +588,12 @@ impl RinchDocument {
                         self.tree.ifc_dirty = true;
                     }
                     let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
-                    self.tree.layout_dirty = true;
+                    self.tree.layout_dirty = true; eprintln!("[layout_dirty] {}:{}", file!(), line!());
                     taffy_style_changed_count.set(taffy_style_changed_count.get() + 1);
                 }
             } else {
                 let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
-                self.tree.layout_dirty = true;
+                self.tree.layout_dirty = true; eprintln!("[layout_dirty] {}:{}", file!(), line!());
                 self.tree.ifc_dirty = true;
                 taffy_style_changed_count.set(taffy_style_changed_count.get() + 1);
             }

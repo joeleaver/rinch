@@ -127,7 +127,7 @@ impl DomDocument for RinchDocument {
         }
         // Invalidate parent's IFC (structure changed)
         self.invalidate_parent_ifc(p);
-        self.tree.layout_dirty = true; // Structural change needs full layout
+        self.tree.layout_dirty = true; eprintln!("[layout_dirty] {}:{}", file!(), line!());
         self.tree.ifc_dirty = true; // Tree structure changed
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
 
@@ -153,7 +153,7 @@ impl DomDocument for RinchDocument {
         }
         // Invalidate parent's IFC
         self.invalidate_parent_ifc(p);
-        self.tree.layout_dirty = true; // Structural change needs full layout
+        self.tree.layout_dirty = true; eprintln!("[layout_dirty] {}:{}", file!(), line!());
         self.tree.ifc_dirty = true; // Tree structure changed
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
     }
@@ -200,7 +200,7 @@ impl DomDocument for RinchDocument {
             }
         }
         self.invalidate_parent_ifc(p);
-        self.tree.layout_dirty = true; // Structural change needs full layout
+        self.tree.layout_dirty = true; eprintln!("[layout_dirty] {}:{}", file!(), line!());
         self.tree.ifc_dirty = true; // Tree structure changed
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
 
@@ -249,7 +249,7 @@ impl DomDocument for RinchDocument {
             self.tree.nodes[new.0].parent = Some(parent_id);
             self.tree.nodes[old.0].parent = None;
             self.invalidate_parent_ifc(parent_id);
-            self.tree.layout_dirty = true; // Structural change needs full layout
+            self.tree.layout_dirty = true; eprintln!("[layout_dirty] {}:{}", file!(), line!());
             self.tree.ifc_dirty = true; // Tree structure changed
             self.push_dirty_flags(parent_id, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
 
@@ -275,7 +275,7 @@ impl DomDocument for RinchDocument {
                 self.taffy_remove_child_safe(parent_taffy, node_taffy);
             }
             self.invalidate_parent_ifc(parent_id);
-            self.tree.layout_dirty = true; // Structural change needs full layout
+            self.tree.layout_dirty = true; eprintln!("[layout_dirty] {}:{}", file!(), line!());
             self.tree.ifc_dirty = true; // Tree structure changed
             self.push_dirty_flags(parent_id, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
         }
@@ -285,6 +285,27 @@ impl DomDocument for RinchDocument {
 
     fn set_text_content(&mut self, node: NodeId, text: &str) {
         let n = node.0;
+
+        // Fast path: if this element already has exactly one text child with
+        // the same content, skip the expensive teardown + rebuild entirely.
+        match &self.tree.nodes[n].kind {
+            NodeKind::Text(t) => {
+                if t.content == text {
+                    return;
+                }
+            }
+            _ => {
+                let children = &self.tree.nodes[n].children;
+                if children.len() == 1 {
+                    if let NodeKind::Text(t) = &self.tree.nodes[children[0]].kind {
+                        if t.content == text {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
         // Invalidate IFC if this node belongs to one
         self.invalidate_ifc_for_node(n);
         // Also invalidate parent's IFC
@@ -305,6 +326,7 @@ impl DomDocument for RinchDocument {
                     .retain(|&(rid, _), _| rid != root_id);
             }
         }
+        let is_text_node = matches!(self.tree.nodes[n].kind, NodeKind::Text(_));
         match &mut self.tree.nodes[n].kind {
             NodeKind::Text(t) => {
                 t.content = text.to_string();
@@ -368,7 +390,13 @@ impl DomDocument for RinchDocument {
                 self.tree.ifc_dirty = true; // Structural change (children replaced)
             }
         }
-        self.tree.layout_dirty = true; // Text content change affects layout
+        // Text-only changes use the IFC text root fast path (dirty_ifc_text_roots)
+        // and don't need a full Taffy compute_layout. Only structural changes
+        // (element case: children replaced) need layout_dirty.
+        if !is_text_node {
+            self.tree.layout_dirty = true;
+            eprintln!("[layout_dirty] set_text_content(element) {}:{}", file!(), line!());
+        }
         self.push_dirty(n);
 
         // If this node is a <style> element, reload its CSS
@@ -499,42 +527,11 @@ impl DomDocument for RinchDocument {
                     | crate::computed_style::PositionValue::Fixed
             )
         {
-            // Update the style attribute string (for consistency / serialization)
-            let mut styles: HashMap<String, String> = self.tree.nodes[node.0]
-                .attributes
-                .get("style")
-                .map(|s| parse_style_string(s))
-                .unwrap_or_default();
-            styles.insert(property.to_string(), value.to_string());
-            let style_str = styles
-                .iter()
-                .map(|(k, v)| format!("{}: {}", k, v))
-                .collect::<Vec<_>>()
-                .join("; ");
-            self.tree.nodes[node.0]
-                .attributes
-                .insert("style".to_string(), style_str.clone());
-
-            // Re-parse PDB so Stylo stays consistent for future full re-resolutions.
-            // This is cheap — it's the cascade/resolution we're skipping.
-            {
-                use style::properties::parse_style_attribute;
-                use style::stylesheets::CssRuleType;
-                use url::Url;
-                let url = Url::parse("about:blank").unwrap();
-                let extra_data = style::stylesheets::UrlExtraData::from(url);
-                let pdb = parse_style_attribute(
-                    &style_str,
-                    &extra_data,
-                    None,
-                    QuirksMode::NoQuirks,
-                    CssRuleType::Style,
-                );
-                self.tree.nodes[node.0].style_attribute_cache =
-                    Some(ServoArc::new(self.tree.guard.wrap(pdb)));
-            }
-
-            // Update ComputedStyle directly (skip Stylo)
+            // Ultra-fast inset path: update ONLY the computed style + Taffy inset.
+            // Skip style attribute string rebuild, Stylo re-parse, layout_dirty,
+            // and full_repaint_needed. The style attribute will be stale until the
+            // next full style resolution, but that's fine — inset values are
+            // authoritative in computed_style + Taffy.
             let vp = &crate::layout::Viewport::default();
             let new_val = crate::computed_style::LengthPercentageAutoValue::parse(value, vp);
             match property {
@@ -545,9 +542,6 @@ impl DomDocument for RinchDocument {
                 _ => unreachable!(),
             }
 
-            // Update Taffy inset directly (skip full style resolution).
-            // mark_dirty clears this node's cache but NOT children's caches,
-            // so children won't be re-measured.
             if let Some(taffy_id) = self.tree.nodes[node.0].taffy_id {
                 if let Ok(mut taffy_style) = self.tree.taffy.style(taffy_id).cloned() {
                     let taffy_val = new_val.to_taffy();
@@ -559,14 +553,27 @@ impl DomDocument for RinchDocument {
                         _ => unreachable!(),
                     }
                     let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
-                    self.tree.layout_dirty = true;
                 }
             }
 
-            // Mark dirty and request full repaint so the old position gets cleared.
+            // Directly update the node's layout position from the new inset,
+            // bypassing Taffy compute_layout entirely (which walks the full tree).
+            // For absolute/fixed elements, left/top directly set the position
+            // relative to the containing block.
+            match property {
+                "left" => self.tree.nodes[node.0].layout.x = new_val.to_px(),
+                "top" => self.tree.nodes[node.0].layout.y = new_val.to_px(),
+                // right/bottom are more complex (need containing block size) —
+                // fall through to layout_dirty for those.
+                "right" | "bottom" => {
+                    self.tree.layout_dirty = true;
+                }
+                _ => unreachable!(),
+            }
+
             self.tree.nodes[node.0]
                 .dirty
-                .insert(DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+                .insert(DirtyFlags::PAINT);
             self.tree.dirty_nodes.insert(node.0);
             self.tree.full_repaint_needed = true;
             return;
@@ -707,6 +714,7 @@ impl DomDocument for RinchDocument {
                     }
                     let _ = self.tree.taffy.set_style(taffy_id, ts);
                     self.tree.layout_dirty = true;
+eprintln!("[layout_dirty] {}:{}", file!(), line!());
                 }
             }
 
@@ -846,7 +854,7 @@ impl DomDocument for RinchDocument {
                 .insert_child_at_index(parent_taffy, taffy_idx, child_taffy);
         }
         self.invalidate_parent_ifc(p);
-        self.tree.layout_dirty = true; // Structural change needs full layout
+        self.tree.layout_dirty = true; eprintln!("[layout_dirty] {}:{}", file!(), line!());
         self.tree.ifc_dirty = true; // Tree structure changed
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
 

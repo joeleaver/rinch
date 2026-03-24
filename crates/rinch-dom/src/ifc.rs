@@ -13,30 +13,37 @@ impl RinchDocument {
     ///
     /// Uses the computed width from Taffy as the available width for Parley line breaking.
     pub(crate) fn build_ifc_layouts(&mut self, paint_layout_cx: &mut parley::LayoutContext<Brush>) {
-        // Collect IFC roots (elements that have inline children with ifc_root set)
-        let mut ifc_roots: Vec<usize> = Vec::new();
-        for (id, node) in &self.tree.nodes {
-            if !node.is_element() {
-                continue;
+        // Only rebuild IFC roots that are actually dirty (text content changed).
+        // Previously this discovered ALL IFC roots by walking the entire tree,
+        // which was O(n) and expensive for large DOMs.
+        let ifc_roots: Vec<usize> = if !self.tree.dirty_ifc_text_roots.is_empty() {
+            self.tree.dirty_ifc_text_roots.iter().copied().collect()
+        } else {
+            // Full rebuild path (structural IFC changes) — discover all roots.
+            let mut roots = Vec::new();
+            for (id, node) in &self.tree.nodes {
+                if !node.is_element() {
+                    continue;
+                }
+                if matches!(
+                    node.display_mode,
+                    DisplayMode::Inline | DisplayMode::InlineBlock | DisplayMode::Flex
+                ) {
+                    continue;
+                }
+                let is_ifc = node.children.iter().any(|&child_id| {
+                    self.tree
+                        .nodes
+                        .get(child_id)
+                        .map(|c| c.ifc_root == Some(id))
+                        .unwrap_or(false)
+                });
+                if is_ifc {
+                    roots.push(id);
+                }
             }
-            if matches!(
-                node.display_mode,
-                DisplayMode::Inline | DisplayMode::InlineBlock | DisplayMode::Flex
-            ) {
-                continue;
-            }
-            // Check if any child has ifc_root pointing to this node
-            let is_ifc = node.children.iter().any(|&child_id| {
-                self.tree
-                    .nodes
-                    .get(child_id)
-                    .map(|c| c.ifc_root == Some(id))
-                    .unwrap_or(false)
-            });
-            if is_ifc {
-                ifc_roots.push(id);
-            }
-        }
+            roots
+        };
 
         for root_id in ifc_roots {
             // Skip collapsed blocks (virtualized) — no Parley work needed.
