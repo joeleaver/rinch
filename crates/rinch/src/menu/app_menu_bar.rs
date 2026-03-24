@@ -303,7 +303,11 @@ fn build_top_level_item(
         });
     }
 
-    build_menu_entries(scope, &dropdown, menu, active_menu);
+    // Inner scroll wrapper — avoids overflow bugs on abs-pos dropdowns
+    let scroll = scope.create_element("div");
+    scroll.set_attribute("class", "rinch-app-menu-dropdown__scroll");
+    build_menu_entries(scope, &scroll, menu, active_menu);
+    dropdown.append_child(&scroll);
     item.append_child(&dropdown);
 
     item
@@ -388,10 +392,13 @@ fn build_menu_entries(
 
                 submenu_node.append_child(&trigger);
 
-                // Nested dropdown
+                // Nested dropdown with inner scroll wrapper
                 let nested_dropdown = scope.create_element("div");
                 nested_dropdown.set_attribute("class", "rinch-app-menu-submenu__dropdown");
-                build_menu_entries(scope, &nested_dropdown, menu, active_menu);
+                let nested_scroll = scope.create_element("div");
+                nested_scroll.set_attribute("class", "rinch-app-menu-dropdown__scroll");
+                build_menu_entries(scope, &nested_scroll, menu, active_menu);
+                nested_dropdown.append_child(&nested_scroll);
                 submenu_node.append_child(&nested_dropdown);
 
                 container.append_child(&submenu_node);

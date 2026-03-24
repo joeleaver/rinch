@@ -36,7 +36,7 @@ pub fn styles() -> String {
     background: var(--rinch-color-default);
 }
 
-/* Dropdown panel (hidden by default) */
+/* Dropdown panel (hidden by default, overflow visible so submenus aren't clipped) */
 .rinch-app-menu-item__dropdown {
     position: absolute;
     top: 100%;
@@ -153,6 +153,12 @@ pub fn styles() -> String {
     padding: 4px;
     z-index: 200;
     display: none;
+}
+
+/* Inner scroll wrapper for dropdown content (avoids overflow bugs on abs-pos elements) */
+.rinch-app-menu-dropdown__scroll {
+    max-height: 88vh;
+    overflow-y: auto;
 }
 
 .rinch-app-menu-submenu:hover > .rinch-app-menu-submenu__dropdown {
