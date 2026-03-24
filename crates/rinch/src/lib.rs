@@ -194,7 +194,6 @@ pub use shell::{
 };
 
 pub use rinch_core as core;
-pub use rinch_platform as platform;
 /// Reactive primitives (Signal, Effect, Memo, Scope).
 ///
 /// Most reactive types are re-exported in the prelude. `Effect` is intentionally
@@ -205,6 +204,7 @@ pub use rinch_platform as platform;
 /// use rinch::reactive::Effect;
 /// ```
 pub use rinch_core::reactive;
+pub use rinch_platform as platform;
 #[cfg(feature = "gpu")]
 pub use rinch_renderer as renderer;
 

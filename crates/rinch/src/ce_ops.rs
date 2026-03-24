@@ -597,6 +597,51 @@ impl CeOps {
         })
     }
 
+    /// Try to surgically update a single text node instead of full block re-render.
+    ///
+    /// Returns true if the surgical update was performed. Only works when the
+    /// block has a single unmarked text run and a single text node child in DOM.
+    fn try_surgical_text_update(&mut self, pos: usize) -> bool {
+        let resolved = self
+            .editor_doc
+            .resolve_position(rinch_editor::Position::new(pos));
+        let block_idx = match resolved {
+            Ok(r) => r.block_index,
+            Err(_) => return false,
+        };
+        let runs = self.editor_doc.block_inline_runs(block_idx);
+        // Only handle single unmarked text run
+        if runs.len() != 1 || !runs[0].marks.is_empty() {
+            return false;
+        }
+        let new_text = &runs[0].text;
+        let dom_node = match self.block_map.dom_node(block_idx) {
+            Some(n) => n,
+            None => return false,
+        };
+        // Check DOM has a single text child
+        let d = self.doc.borrow();
+        let children = &d.tree.nodes[dom_node].children;
+        if children.len() != 1 {
+            return false;
+        }
+        let text_node_id = children[0];
+        let is_text = d
+            .tree
+            .get(text_node_id)
+            .and_then(|n| n.text_content())
+            .is_some();
+        if !is_text {
+            return false;
+        }
+        drop(d);
+
+        // Surgical update: just change the text content
+        let mut d = self.doc.borrow_mut();
+        d.set_text_content(rinch_core::dom::NodeId(text_node_id), new_text);
+        true
+    }
+
     /// Rebuild the BlockMap from the current DOM state.
     pub(crate) fn rebuild_block_map(&mut self) {
         let d = self.doc.borrow();
@@ -1188,11 +1233,19 @@ impl ContentEditableApi for CeOps {
         // 4. Mutate EditorDocument (source of truth)
         let _ = self.editor_doc.insert_text(EditorPosition(pos), text);
 
-        // 5. Re-render the affected block from EditorDocument state
-        self.render_block_containing(pos);
+        // 5. Update DOM to match EditorDocument.
+        // Fast path: for a single unmarked text run, surgically update the
+        // existing text node via set_text_content (O(1), triggers only IFC
+        // text root rebuild). This avoids clearing + re-creating all children
+        // (O(N) with N style resolution passes per child).
+        let new_pos = pos + text.len();
+        let did_surgical = self.try_surgical_text_update(pos);
+        if !did_surgical {
+            // Full block re-render (marks changed, multiple runs, etc.)
+            self.render_block_containing(pos);
+        }
 
         // 6. Update cursor to after inserted text
-        let new_pos = pos + text.len();
         self.set_cursor_from_editor_pos(new_pos);
 
         // 7. Dispatch event and commit

@@ -250,7 +250,10 @@ impl RinchDocument {
     /// Recompute styles recursively for a node and all its descendants.
     /// This is needed when a node is inserted into a new parent, as ancestor-based
     /// CSS selectors (like `.parent .child`) need to be re-evaluated with the new ancestor chain.
-    pub(crate) fn recompute_node_styles_recursive(&mut self, node_id: usize) {
+    /// Recompute Stylo styles for a node and all its descendants, then apply
+    /// to Taffy. Called after bulk DOM operations to batch style resolution
+    /// into a single pass.
+    pub fn recompute_node_styles_recursive(&mut self, node_id: usize) {
         if !self.tree.nodes[node_id].is_element() {
             return;
         }
