@@ -303,11 +303,7 @@ fn build_top_level_item(
         });
     }
 
-    // Inner scroll wrapper — avoids overflow bugs on abs-pos dropdowns
-    let scroll = scope.create_element("div");
-    scroll.set_attribute("class", "rinch-app-menu-dropdown__scroll");
-    build_menu_entries(scope, &scroll, menu, active_menu);
-    dropdown.append_child(&scroll);
+    build_menu_entries(scope, &dropdown, menu, active_menu);
     item.append_child(&dropdown);
 
     item
