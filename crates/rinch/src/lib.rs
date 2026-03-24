@@ -189,11 +189,12 @@ pub use rinch_macros::{component, rsx};
 #[cfg(feature = "desktop")]
 #[allow(deprecated)]
 pub use shell::{
-    run, run_on_main_thread, run_rinch, run_rinch_with_window_props, run_with_menu, run_with_theme,
-    run_with_window_props, run_with_window_props_and_menu,
+    inject_platform_event, run, run_on_main_thread, run_rinch, run_rinch_with_window_props,
+    run_with_menu, run_with_theme, run_with_window_props, run_with_window_props_and_menu,
 };
 
 pub use rinch_core as core;
+pub use rinch_platform as platform;
 /// Reactive primitives (Signal, Effect, Memo, Scope).
 ///
 /// Most reactive types are re-exported in the prelude. `Effect` is intentionally

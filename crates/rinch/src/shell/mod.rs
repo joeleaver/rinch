@@ -20,6 +20,7 @@ pub mod types;
 pub mod window;
 
 pub use devtools_store::DevToolsStore;
+pub use rinch_runtime::inject_platform_event;
 #[allow(deprecated)]
 pub use rinch_runtime::{run_on_main_thread, run_rinch, run_rinch_with_window_props};
 pub use types::{ElementLayout, HoveredElementInfo, RinchEvent};
