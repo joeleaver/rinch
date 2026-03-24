@@ -42,6 +42,7 @@ body {
 fn build_app(
     current_section: Signal<usize>,
     primary_color: Signal<&'static str>,
+    default_radius: Signal<&'static str>,
     dark_mode: Signal<bool>,
     __scope: &mut RenderScope,
 ) -> NodeHandle {
@@ -83,6 +84,7 @@ fn build_app(
     rsx! {
         ThemeProvider {
             primary_color_fn: Rc::new(move || primary_color.get()),
+            default_radius_fn: Rc::new(move || default_radius.get()),
             dark_mode_fn: Rc::new(move || dark_mode.get()),
 
             style { {CSS_DESKTOP} }
@@ -128,6 +130,7 @@ fn main() {
     // Signal is Copy, so these can be captured by both menus and the app closure.
     let current_section = Signal::new(0_usize);
     let primary_color = Signal::new("blue");
+    let default_radius = Signal::new("md");
     let dark_mode = Signal::new(false);
 
     // ── System tray ──────────────────────────────────────────────────────
@@ -198,23 +201,14 @@ fn main() {
                         }
                     });
                 }),
-        )
-        .separator()
-        .item(
-            MenuItem::new("Toggle Dark Mode")
-                .shortcut("Ctrl+D")
-                .on_click(move || {
-                    dark_mode.update(|v| *v = !*v);
-                }),
         );
 
-    // Theme > color submenu
+    // Theme > Primary Color submenu
     let colors: &[&str] = &[
         "blue", "cyan", "teal", "green", "orange", "red", "pink", "grape", "violet", "indigo",
     ];
-    let mut theme_menu = Menu::new();
+    let mut color_menu = Menu::new();
     for &color in colors {
-        // Capitalize first letter for the menu label
         let label = {
             let mut c = color.chars();
             match c.next() {
@@ -223,9 +217,37 @@ fn main() {
             }
         };
         let color_static: &'static str = color;
-        theme_menu =
-            theme_menu.item(MenuItem::new(label).on_click(move || primary_color.set(color_static)));
+        color_menu =
+            color_menu.item(MenuItem::new(label).on_click(move || primary_color.set(color_static)));
     }
+
+    // Theme > Border Radius submenu
+    let radii: &[(&str, &str)] = &[
+        ("None", "0"),
+        ("Extra Small", "xs"),
+        ("Small", "sm"),
+        ("Medium", "md"),
+        ("Large", "lg"),
+        ("Extra Large", "xl"),
+    ];
+    let mut radius_menu = Menu::new();
+    for &(label, value) in radii {
+        let value_static: &'static str = value;
+        radius_menu = radius_menu
+            .item(MenuItem::new(label).on_click(move || default_radius.set(value_static)));
+    }
+
+    let theme_menu = Menu::new()
+        .submenu("Primary Color", color_menu)
+        .submenu("Border Radius", radius_menu)
+        .separator()
+        .item(
+            MenuItem::new("Toggle Dark Mode")
+                .shortcut("Ctrl+D")
+                .on_click(move || {
+                    dark_mode.update(|v| *v = !*v);
+                }),
+        );
 
     let menus = vec![("View", view_menu), ("Theme", theme_menu)];
 
@@ -259,7 +281,15 @@ fn main() {
     rinch::setup_theme_css(&theme);
 
     run_with_window_props_and_menu(
-        move |scope| build_app(current_section, primary_color, dark_mode, scope),
+        move |scope| {
+            build_app(
+                current_section,
+                primary_color,
+                default_radius,
+                dark_mode,
+                scope,
+            )
+        },
         window_props,
         Some(theme),
         Some(menus),

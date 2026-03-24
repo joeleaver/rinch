@@ -52,12 +52,17 @@ pub fn element_to_dom_theme_provider(
     let primary_color_fn = element.props.iter().find(|p| p.name == "primary_color_fn");
     let dark_mode_fn = element.props.iter().find(|p| p.name == "dark_mode_fn");
     let default_radius = element.props.iter().find(|p| p.name == "default_radius");
+    let default_radius_fn = element.props.iter().find(|p| p.name == "default_radius_fn");
 
     // Generate Effect for theme updates
-    let effect_code = if primary_color_fn.is_some() || dark_mode_fn.is_some() {
+    let effect_code = if primary_color_fn.is_some()
+        || dark_mode_fn.is_some()
+        || default_radius_fn.is_some()
+    {
         let pc_expr = primary_color_fn.map(|p| &p.value);
         let dm_expr = dark_mode_fn.map(|p| &p.value);
-        let radius_expr = default_radius.map(|p| &p.value);
+        let radius_fn_expr = default_radius_fn.map(|p| &p.value);
+        let radius_static_expr = default_radius.map(|p| &p.value);
 
         let pc_let = if let Some(expr) = pc_expr {
             quote! { let __pc_fn: ::std::rc::Rc<dyn Fn() -> &'static str> = #expr; }
@@ -71,23 +76,27 @@ pub fn element_to_dom_theme_provider(
             quote! { let __dm_fn: ::std::rc::Rc<dyn Fn() -> bool> = ::std::rc::Rc::new(|| false); }
         };
 
-        let radius_value = if let Some(expr) = radius_expr {
-            quote! { Some((#expr).to_string()) }
+        let radius_let = if let Some(expr) = radius_fn_expr {
+            quote! { let __radius_fn: ::std::rc::Rc<dyn Fn() -> &'static str> = #expr; }
+        } else if let Some(expr) = radius_static_expr {
+            quote! { let __radius_fn: ::std::rc::Rc<dyn Fn() -> &'static str> = ::std::rc::Rc::new(move || #expr); }
         } else {
-            quote! { Some("md".to_string()) }
+            quote! { let __radius_fn: ::std::rc::Rc<dyn Fn() -> &'static str> = ::std::rc::Rc::new(|| "md"); }
         };
 
         quote! {
             {
                 #pc_let
                 #dm_let
+                #radius_let
                 rinch::core::Effect::new(move || {
                     let __color = (__pc_fn)();
                     let __dark = (__dm_fn)();
+                    let __radius = (__radius_fn)();
                     rinch::fine_grained::update_theme(&rinch::core::element::ThemeProviderProps {
                         primary_color: Some(__color.to_string()),
                         dark_mode: __dark,
-                        default_radius: #radius_value,
+                        default_radius: Some(__radius.to_string()),
                         ..Default::default()
                     });
                 });

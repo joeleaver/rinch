@@ -718,20 +718,25 @@ impl RinchDocument {
                 // CSS spec: an empty block container that would establish an IFC
                 // has height equal to its line-height. Without this, empty <p></p>
                 // elements collapse to zero height.
+                // Skip elements that already have an explicit height — e.g. separators
+                // with `height: 1px` should not be inflated to line-height.
                 if let Some(taffy_id) = node.taffy_id {
-                    let line_h = match node.computed_style.line_height {
-                        crate::computed_style::LineHeightValue::Normal => {
-                            node.computed_style.font_size * 1.2
-                        }
-                        crate::computed_style::LineHeightValue::Relative(r) => {
-                            node.computed_style.font_size * r
-                        }
-                        crate::computed_style::LineHeightValue::Absolute(px) => px,
-                    };
                     if let Ok(style) = self.tree.taffy.style(taffy_id) {
-                        let mut style = style.clone();
-                        style.min_size.height = taffy::Dimension::length(line_h);
-                        let _ = self.tree.taffy.set_style(taffy_id, style);
+                        let has_explicit_height = !style.size.height.is_auto();
+                        if !has_explicit_height {
+                            let line_h = match node.computed_style.line_height {
+                                crate::computed_style::LineHeightValue::Normal => {
+                                    node.computed_style.font_size * 1.2
+                                }
+                                crate::computed_style::LineHeightValue::Relative(r) => {
+                                    node.computed_style.font_size * r
+                                }
+                                crate::computed_style::LineHeightValue::Absolute(px) => px,
+                            };
+                            let mut style = style.clone();
+                            style.min_size.height = taffy::Dimension::length(line_h);
+                            let _ = self.tree.taffy.set_style(taffy_id, style);
+                        }
                     }
                 }
             }
