@@ -36,12 +36,15 @@ pub fn styles() -> String {
     background: var(--rinch-color-default);
 }
 
-/* Dropdown panel (hidden by default, overflow visible so submenus aren't clipped) */
+/* Dropdown panel (hidden by default). Submenus are rendered as sibling flyouts
+   so overflow-y here does NOT clip them. */
 .rinch-app-menu-item__dropdown {
     position: absolute;
     top: 100%;
     left: 0;
     min-width: 220px;
+    max-height: 95vh;
+    overflow-y: auto;
     background: var(--rinch-color-body);
     border: 1px solid var(--rinch-color-border, var(--rinch-color-gray-3));
     border-radius: var(--rinch-radius-md);
@@ -141,6 +144,7 @@ pub fn styles() -> String {
     font-size: var(--rinch-font-size-xs);
 }
 
+/* Legacy nested submenu dropdown (kept for backwards compatibility) */
 .rinch-app-menu-submenu__dropdown {
     position: absolute;
     left: 100%;
@@ -157,6 +161,22 @@ pub fn styles() -> String {
 
 .rinch-app-menu-submenu:hover > .rinch-app-menu-submenu__dropdown {
     display: block;
+}
+
+/* Flyout panel — rendered as sibling of dropdown to escape overflow clip.
+   Visibility and position controlled via inline style + signals. */
+.rinch-app-menu-submenu__flyout {
+    position: absolute;
+    min-width: 200px;
+    max-height: 95vh;
+    overflow-y: auto;
+    background: var(--rinch-color-body);
+    border: 1px solid var(--rinch-color-border, var(--rinch-color-gray-3));
+    border-radius: var(--rinch-radius-md);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    padding: 4px;
+    z-index: 200;
+    display: none;
 }
 
 /* Content padding-top is set via inline style (varies by window type) */

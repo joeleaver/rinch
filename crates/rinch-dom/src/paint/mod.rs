@@ -1409,17 +1409,23 @@ fn paint_node(
             // Paint scrollbar overlay for scroll containers
             if matches!(overflow_y, OverflowValue::Scroll | OverflowValue::Auto) {
                 let node = tree.get(node_id).unwrap(); // re-borrow after children done
+                let cs = &node.computed_style;
+                // Taffy child.layout.y is relative to the parent's border box,
+                // so content_height includes the top padding+border offset.
+                // Subtract it to get content-relative height.
+                let content_top =
+                    (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64 * scale;
                 let mut content_height: f64 = 0.0;
                 for &child_id in &node.children {
                     if let Some(child) = tree.get(child_id) {
-                        let bottom = (child.layout.y + child.layout.height) as f64 * scale;
+                        let bottom =
+                            (child.layout.y + child.layout.height) as f64 * scale - content_top;
                         if bottom > content_height {
                             content_height = bottom;
                         }
                     }
                 }
                 // Visible content area = layout height minus padding and border
-                let cs = &node.computed_style;
                 let pad_v = (cs.padding_top.to_px() + cs.padding_bottom.to_px()) as f64 * scale;
                 let border_v =
                     (cs.border_top_width.to_px() + cs.border_bottom_width.to_px()) as f64 * scale;

@@ -1045,10 +1045,15 @@ impl DomDocument for RinchDocument {
             Some(n) => n,
             None => return 0.0,
         };
+        // Taffy child.layout.y is relative to the parent's border box,
+        // so it includes padding-top + border-top. Subtract that offset
+        // to get the content-relative height (consistent with client_height).
+        let content_top = (node.computed_style.padding_top.to_px()
+            + node.computed_style.border_top_width.to_px()) as f64;
         let mut max_bottom: f64 = 0.0;
         for &child_id in &node.children {
             if let Some(child) = self.tree.nodes.get(child_id) {
-                let bottom = (child.layout.y + child.layout.height) as f64;
+                let bottom = (child.layout.y + child.layout.height) as f64 - content_top;
                 if bottom > max_bottom {
                     max_bottom = bottom;
                 }
@@ -1062,10 +1067,12 @@ impl DomDocument for RinchDocument {
             Some(n) => n,
             None => return 0.0,
         };
+        let content_left = (node.computed_style.padding_left.to_px()
+            + node.computed_style.border_left_width.to_px()) as f64;
         let mut max_right: f64 = 0.0;
         for &child_id in &node.children {
             if let Some(child) = self.tree.nodes.get(child_id) {
-                let right = (child.layout.x + child.layout.width) as f64;
+                let right = (child.layout.x + child.layout.width) as f64 - content_left;
                 if right > max_right {
                     max_right = right;
                 }

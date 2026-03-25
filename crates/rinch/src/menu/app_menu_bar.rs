@@ -236,7 +236,18 @@ pub(crate) fn render_inline_overlay(
     overlay
 }
 
-/// Build a single top-level menu item (label + dropdown).
+/// Approximate height of a menu entry for flyout positioning.
+const ENTRY_HEIGHT: f32 = 30.0;
+/// Approximate height of a separator.
+const SEPARATOR_HEIGHT: f32 = 9.0;
+/// Approximate height of the menu label row (the dropdown starts below this).
+const LABEL_HEIGHT: f32 = 30.0;
+
+/// Build a single top-level menu item (label + dropdown + flyouts).
+///
+/// Flyouts are rendered as siblings of the dropdown (children of the menu-item)
+/// so they are NOT clipped by the dropdown's overflow-y. Flyout visibility is
+/// controlled by an `active_flyout` signal set via `data-onenter` on triggers.
 fn build_top_level_item(
     scope: &mut RenderScope,
     label: &str,
@@ -286,8 +297,18 @@ fn build_top_level_item(
 
     item.append_child(&label_node);
 
+    // -1 = no flyout, 0..N = index of the visible flyout
+    let active_flyout: Signal<i32> = Signal::new(-1);
+    // Close flyouts when this menu closes
+    {
+        Effect::new(move || {
+            if active_menu.get() != index {
+                active_flyout.set(-1);
+            }
+        });
+    }
+
     // Dropdown panel — visibility controlled by the active_menu signal.
-    // The data-onenter handler on each item switches active_menu on hover.
     let dropdown = scope.create_element("div");
     {
         let dropdown_handle = dropdown.clone();
@@ -303,19 +324,82 @@ fn build_top_level_item(
         });
     }
 
-    build_menu_entries(scope, &dropdown, menu, active_menu);
+    // Build entries into the dropdown and collect flyout data.
+    let mut flyouts: Vec<FlyoutData> = Vec::new();
+    build_menu_entries_with_flyouts(
+        scope,
+        &dropdown,
+        menu,
+        active_menu,
+        active_flyout,
+        &mut flyouts,
+    );
+
     item.append_child(&dropdown);
+
+    // Render flyouts as siblings of the dropdown (children of menu-item).
+    // They escape the dropdown's overflow clip because they're outside it.
+    // Position: right of dropdown, vertically aligned with the trigger row.
+    // The dropdown starts at top: 100% of menu-item (≈ LABEL_HEIGHT).
+    for (flyout_idx, flyout_data) in flyouts.into_iter().enumerate() {
+        let flyout_idx = flyout_idx as i32;
+        let flyout = scope.create_element("div");
+        flyout.set_attribute("class", "rinch-app-menu-submenu__flyout");
+
+        let top_px = LABEL_HEIGHT + flyout_data.trigger_y;
+        let pos_style = format!("left: 220px; top: {top_px}px;");
+
+        // Reactive visibility: show when this flyout is active AND menu is open
+        {
+            let flyout_handle = flyout.clone();
+            let pos = pos_style.clone();
+            Effect::new(move || {
+                if active_flyout.get() == flyout_idx && active_menu.get() == index {
+                    flyout_handle.set_attribute("style", &format!("{pos} display: block;"));
+                } else {
+                    flyout_handle.set_attribute("style", &format!("{pos} display: none;"));
+                }
+            });
+        }
+
+        // Build the flyout's menu entries
+        build_menu_entries_with_flyouts(
+            scope,
+            &flyout,
+            &flyout_data.menu_snapshot,
+            active_menu,
+            active_flyout,
+            &mut Vec::new(),
+        );
+
+        item.append_child(&flyout);
+    }
 
     item
 }
 
-/// Recursively build menu entries inside a dropdown container.
-fn build_menu_entries(
+/// Data collected for each submenu that needs a flyout.
+struct FlyoutData {
+    /// Vertical offset of the trigger within the dropdown (px).
+    trigger_y: f32,
+    /// Snapshot of the submenu's Menu for rendering.
+    menu_snapshot: Menu,
+}
+
+/// Build menu entries into a container, collecting flyout data for submenus.
+///
+/// Submenu triggers go into the container. Flyout panels are NOT created here —
+/// the caller renders them as siblings of the container so they escape overflow.
+fn build_menu_entries_with_flyouts(
     scope: &mut RenderScope,
     container: &NodeHandle,
     menu: &Menu,
     active_menu: Signal<i32>,
+    active_flyout: Signal<i32>,
+    flyouts: &mut Vec<FlyoutData>,
 ) {
+    let mut y_offset: f32 = 4.0; // dropdown padding-top
+
     for entry in menu.iter_entries() {
         match entry {
             MenuEntryRef::Item {
@@ -331,14 +415,12 @@ fn build_menu_entries(
                 }
                 entry_node.set_attribute("class", &cls);
 
-                // Label
                 let label_span = scope.create_element("span");
                 label_span.set_attribute("class", "rinch-app-menu-entry__label");
                 let text = scope.create_text(label);
                 label_span.append_child(&text);
                 entry_node.append_child(&label_span);
 
-                // Shortcut hint
                 if let Some(shortcut) = shortcut {
                     let shortcut_span = scope.create_element("span");
                     shortcut_span.set_attribute("class", "rinch-app-menu-entry__shortcut");
@@ -347,7 +429,6 @@ fn build_menu_entries(
                     entry_node.append_child(&shortcut_span);
                 }
 
-                // Click handler: invoke callback and close menu
                 if enabled {
                     if let Some(cb) = callback {
                         let cb = Rc::clone(cb);
@@ -360,17 +441,23 @@ fn build_menu_entries(
                 }
 
                 container.append_child(&entry_node);
+                y_offset += ENTRY_HEIGHT;
             }
             MenuEntryRef::Separator => {
                 let sep = scope.create_element("div");
                 sep.set_attribute("class", "rinch-app-menu-separator");
                 container.append_child(&sep);
+                y_offset += SEPARATOR_HEIGHT;
             }
             MenuEntryRef::Submenu { label, menu } => {
-                let submenu_node = scope.create_element("div");
-                submenu_node.set_attribute("class", "rinch-app-menu-submenu");
+                // Record flyout data — the flyout itself is rendered by the caller
+                let flyout_idx = flyouts.len() as i32;
+                flyouts.push(FlyoutData {
+                    trigger_y: y_offset,
+                    menu_snapshot: menu.clone(),
+                });
 
-                // Trigger row (label + arrow)
+                // Build just the trigger row (no nested dropdown)
                 let trigger = scope.create_element("div");
                 trigger.set_attribute("class", "rinch-app-menu-submenu__trigger");
 
@@ -382,19 +469,18 @@ fn build_menu_entries(
 
                 let arrow = scope.create_element("span");
                 arrow.set_attribute("class", "rinch-app-menu-submenu__arrow");
-                let arrow_text = scope.create_text("\u{203A}"); // › character
+                let arrow_text = scope.create_text("\u{203A}");
                 arrow.append_child(&arrow_text);
                 trigger.append_child(&arrow);
 
-                submenu_node.append_child(&trigger);
+                // Hover shows the flyout
+                let enter_id = scope.register_handler(move || {
+                    active_flyout.set(flyout_idx);
+                });
+                trigger.set_attribute("data-onenter", &enter_id.0.to_string());
 
-                // Nested dropdown
-                let nested_dropdown = scope.create_element("div");
-                nested_dropdown.set_attribute("class", "rinch-app-menu-submenu__dropdown");
-                build_menu_entries(scope, &nested_dropdown, menu, active_menu);
-                submenu_node.append_child(&nested_dropdown);
-
-                container.append_child(&submenu_node);
+                container.append_child(&trigger);
+                y_offset += ENTRY_HEIGHT;
             }
         }
     }

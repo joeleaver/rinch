@@ -721,22 +721,25 @@ impl RinchDocument {
                 // Skip elements that already have an explicit height — e.g. separators
                 // with `height: 1px` should not be inflated to line-height.
                 if let Some(taffy_id) = node.taffy_id {
-                    if let Ok(style) = self.tree.taffy.style(taffy_id) {
-                        let has_explicit_height = !style.size.height.is_auto();
-                        if !has_explicit_height {
-                            let line_h = match node.computed_style.line_height {
-                                crate::computed_style::LineHeightValue::Normal => {
-                                    node.computed_style.font_size * 1.2
-                                }
-                                crate::computed_style::LineHeightValue::Relative(r) => {
-                                    node.computed_style.font_size * r
-                                }
-                                crate::computed_style::LineHeightValue::Absolute(px) => px,
-                            };
-                            let mut style = style.clone();
-                            style.min_size.height = taffy::Dimension::length(line_h);
-                            let _ = self.tree.taffy.set_style(taffy_id, style);
+                    let line_h = match node.computed_style.line_height {
+                        crate::computed_style::LineHeightValue::Normal => {
+                            node.computed_style.font_size * 1.2
                         }
+                        crate::computed_style::LineHeightValue::Relative(r) => {
+                            node.computed_style.font_size * r
+                        }
+                        crate::computed_style::LineHeightValue::Absolute(px) => px,
+                    };
+                    if let Ok(style) = self.tree.taffy.style(taffy_id) {
+                        let mut style = style.clone();
+                        // Only inflate to line-height for auto-height elements.
+                        // Elements with explicit height (e.g. separators with
+                        // height: 1px) keep their size. Always call set_style
+                        // for consistent Taffy invalidation.
+                        if style.size.height.is_auto() {
+                            style.min_size.height = taffy::Dimension::length(line_h);
+                        }
+                        let _ = self.tree.taffy.set_style(taffy_id, style);
                     }
                 }
             }

@@ -376,10 +376,16 @@ pub(crate) fn compute_content_height(tree: &rinch_dom::NodeTree, node_id: usize)
         Some(n) => n,
         None => return 0.0,
     };
+    // Taffy child.layout.y is relative to the parent's border box,
+    // so it includes padding-top + border-top. Subtract that offset
+    // to get the content-relative height (consistent with
+    // compute_visible_content_area_height).
+    let content_top = (node.computed_style.padding_top.to_px()
+        + node.computed_style.border_top_width.to_px()) as f64;
     let mut max_bottom: f64 = 0.0;
     for &child_id in &node.children {
         if let Some(child) = tree.get(child_id) {
-            let bottom = (child.layout.y + child.layout.height) as f64;
+            let bottom = (child.layout.y + child.layout.height) as f64 - content_top;
             if bottom > max_bottom {
                 max_bottom = bottom;
             }
