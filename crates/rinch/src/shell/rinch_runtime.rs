@@ -744,14 +744,14 @@ impl RinchRuntime {
         let transparent = self.app.is_transparent();
         let s = scale as f32;
 
-        // Update layout sizes for render surfaces so callbacks get correct dimensions
-        let surface_ids = crate::render_surface::registered_surface_ids();
-        for &surface_id in &surface_ids {
-            if let Some(rect) = self.app.surface_layout_rect(surface_id) {
-                let phys_w = (rect.2 * s) as u32;
-                let phys_h = (rect.3 * s) as u32;
-                crate::render_surface::update_layout_size_by_id(surface_id, phys_w, phys_h);
-            }
+        // Update layout sizes for render surfaces. Scans the DOM for
+        // data-render-surface attributes rather than relying on the registry,
+        // so surfaces survive reactive scope rebuilds (where unregister runs
+        // after re-mount, temporarily removing the surface from the registry).
+        for (surface_id, rect) in self.app.all_surface_layout_rects() {
+            let phys_w = (rect.2 * s) as u32;
+            let phys_h = (rect.3 * s) as u32;
+            crate::render_surface::update_layout_size_by_id(surface_id, phys_w, phys_h);
         }
 
         // Invoke per-frame render callbacks before collecting frames.
@@ -886,15 +886,12 @@ impl RinchRuntime {
         let transparent = self.app.is_transparent();
         let s = scale as f32;
 
-        // Update layout sizes for all render surfaces so render callbacks
-        // receive correct dimensions.
-        let surface_ids = crate::render_surface::registered_surface_ids();
-        for &surface_id in &surface_ids {
-            if let Some(rect) = self.app.surface_layout_rect(surface_id) {
-                let phys_w = (rect.2 * s) as u32;
-                let phys_h = (rect.3 * s) as u32;
-                crate::render_surface::update_layout_size_by_id(surface_id, phys_w, phys_h);
-            }
+        // Update layout sizes for all render surfaces. DOM-based scan
+        // so surfaces survive reactive scope rebuilds.
+        for (surface_id, rect) in self.app.all_surface_layout_rects() {
+            let phys_w = (rect.2 * s) as u32;
+            let phys_h = (rect.3 * s) as u32;
+            crate::render_surface::update_layout_size_by_id(surface_id, phys_w, phys_h);
         }
 
         // Also update layout sizes for video/GameViewport surfaces that still

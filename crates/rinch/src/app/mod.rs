@@ -1692,6 +1692,53 @@ impl RinchApp {
     ///
     /// Searches for a DOM element with `data-render-surface={id}` and returns
     /// its absolute position and size in logical pixels.
+    /// Find all DOM nodes with `data-render-surface` and return their surface
+    /// IDs and layout rects. This is independent of the surface registry —
+    /// surfaces that are still in the DOM get layout updates even if the
+    /// registry was temporarily cleared by a reactive scope rebuild.
+    pub fn all_surface_layout_rects(&self) -> Vec<(usize, ViewportRect)> {
+        let doc = match self.doc.as_ref() {
+            Some(d) => d,
+            None => return Vec::new(),
+        };
+        let d = doc.borrow();
+        let mut results = Vec::new();
+        for (node_id, node) in &d.tree.nodes {
+            if node.parent.is_none() {
+                continue;
+            }
+            if let Some(id_str) = node.attributes.get("data-render-surface") {
+                let surface_id: usize = match id_str.parse() {
+                    Ok(id) => id,
+                    Err(_) => continue,
+                };
+                let mut abs_x = 0.0_f32;
+                let mut abs_y = 0.0_f32;
+                let mut current = Some(node_id);
+                while let Some(id) = current {
+                    if let Some(n) = d.tree.get(id) {
+                        abs_x += n.layout.x;
+                        abs_y += n.layout.y;
+                        if let Some(parent_id) = n.parent
+                            && let Some(parent) = d.tree.get(parent_id)
+                        {
+                            abs_x -= parent.scroll_offset.0 as f32;
+                            abs_y -= parent.scroll_offset.1 as f32;
+                        }
+                        current = n.parent;
+                    } else {
+                        break;
+                    }
+                }
+                results.push((
+                    surface_id,
+                    (abs_x, abs_y, node.layout.width, node.layout.height),
+                ));
+            }
+        }
+        results
+    }
+
     pub fn surface_layout_rect(&self, surface_id: usize) -> Option<ViewportRect> {
         let doc = self.doc.as_ref()?;
         let d = doc.borrow();
