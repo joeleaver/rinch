@@ -374,6 +374,12 @@ impl RinchDocument {
             );
         }
 
+        // Clamp scroll offsets to valid range after layout.
+        // When a scroll container shrinks (e.g., window resize makes max-height
+        // smaller) or grows (content now fits), the old scroll offset may exceed
+        // the new max. Clamping here ensures paint and hit-testing use valid values.
+        self.clamp_scroll_offsets();
+
         // Build inline layouts for IFC roots (rebuild with final widths and store)
         // Temporarily take layout_cx out to avoid borrow conflict
         let t = std::time::Instant::now();
@@ -696,6 +702,48 @@ impl RinchDocument {
                 tm.text_overflow = text_overflow;
                 tm.parent_overflow_hidden = parent_overflow_hidden;
             }
+        }
+    }
+
+    /// Clamp scroll offsets for all scroll containers to their valid range.
+    /// After layout changes (e.g., viewport resize), a container's content or
+    /// visible area may have changed, making the old scroll offset too large.
+    fn clamp_scroll_offsets(&mut self) {
+        use crate::computed_style::OverflowValue;
+        // Collect (node_id, max_scroll) for nodes that need clamping
+        let mut clamps: Vec<(usize, f64)> = Vec::new();
+        for (node_id, _) in self.tree.nodes.iter() {
+            let node = &self.tree.nodes[node_id];
+            if !matches!(
+                node.computed_style.overflow_y,
+                OverflowValue::Auto | OverflowValue::Scroll
+            ) {
+                continue;
+            }
+            if node.scroll_offset == (0.0, 0.0) {
+                continue;
+            }
+            let cs = &node.computed_style;
+            let content_top = (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64;
+            let mut content_height: f64 = 0.0;
+            for &child_id in &node.children {
+                if let Some(child) = self.tree.nodes.get(child_id) {
+                    let bottom = (child.layout.y + child.layout.height) as f64 - content_top;
+                    if bottom > content_height {
+                        content_height = bottom;
+                    }
+                }
+            }
+            let pad_v = (cs.padding_top.to_px() + cs.padding_bottom.to_px()) as f64;
+            let border_v = (cs.border_top_width.to_px() + cs.border_bottom_width.to_px()) as f64;
+            let visible_h = (node.layout.height as f64 - pad_v - border_v).max(0.0);
+            let max_scroll = (content_height - visible_h).max(0.0);
+            if node.scroll_offset.1 > max_scroll {
+                clamps.push((node_id, max_scroll));
+            }
+        }
+        for (node_id, max_scroll) in clamps {
+            self.tree.nodes[node_id].scroll_offset.1 = max_scroll;
         }
     }
 

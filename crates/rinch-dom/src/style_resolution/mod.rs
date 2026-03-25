@@ -399,6 +399,9 @@ impl RinchDocument {
                 }
             }
 
+            // Capture old display before transitions overwrite computed_style
+            let old_display = self.tree.nodes[node_id].computed_style.display;
+
             // Extract transition specs from Stylo
             let transition_specs = TransitionSpec::extract_from_stylo(&computed_values);
             self.tree.nodes[node_id].transition_specs = transition_specs;
@@ -490,6 +493,16 @@ impl RinchDocument {
             }
 
             // Mark node as styled so future changes can trigger transitions
+            // Reset scroll offset when an element transitions from display:none
+            // to visible. This prevents stale scroll positions from a previous
+            // display cycle (e.g., a menu flyout that was scrolled while the
+            // window was small, then the window grows and the flyout reopens).
+            if matches!(old_display, crate::computed_style::DisplayValue::None)
+                && !matches!(new_style.display, crate::computed_style::DisplayValue::None)
+            {
+                self.tree.nodes[node_id].scroll_offset = (0.0, 0.0);
+            }
+
             self.tree.nodes[node_id].has_been_styled = true;
 
             // Sync display_mode from computed style (always from new_style target)
