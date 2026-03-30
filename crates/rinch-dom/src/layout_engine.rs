@@ -931,19 +931,21 @@ impl RinchDocument {
 
             let new_children = Self::collect_effective_taffy_children(&self.tree.nodes, *parent_id);
             let _ = self.tree.taffy.set_children(parent_taffy, &new_children);
+
+            // Also mark each reparented child dirty so their own caches are
+            // cleared (they may have stale entries from their old position).
+            for &child_taffy in &new_children {
+                let _ = self.tree.taffy.mark_dirty(child_taffy);
+            }
         }
 
-        // Ensure the entire ancestor chain above each affected parent is marked
-        // dirty in Taffy. set_children marks the parent, but Taffy's dirty
-        // propagation may not fully invalidate the flex chain needed to resolve
-        // heights (e.g., flex:1 containers above a display:contents swap).
-        for parent_id in &affected_parents {
-            let mut ancestor = self.tree.nodes[*parent_id].parent;
-            while let Some(anc_id) = ancestor {
-                if let Some(taffy_id) = self.tree.nodes[anc_id].taffy_id {
-                    let _ = self.tree.taffy.mark_dirty(taffy_id);
-                }
-                ancestor = self.tree.nodes[anc_id].parent;
+        // Force the root Taffy node dirty to guarantee a full recompute.
+        // Taffy's mark_dirty propagation stops at already-empty ancestors,
+        // which can leave stale cached layouts when available space hasn't
+        // changed but children have been swapped.
+        if !affected_parents.is_empty() {
+            if let Some(root_taffy) = self.tree.nodes[self.tree.root_id].taffy_id {
+                let _ = self.tree.taffy.mark_dirty(root_taffy);
             }
         }
 
