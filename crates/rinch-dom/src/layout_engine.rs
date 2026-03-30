@@ -923,14 +923,28 @@ impl RinchDocument {
 
         // For each affected parent, rebuild its taffy children by flattening
         // display:contents nodes recursively.
-        for parent_id in affected_parents {
-            let parent_taffy = match self.tree.nodes[parent_id].taffy_id {
+        for parent_id in &affected_parents {
+            let parent_taffy = match self.tree.nodes[*parent_id].taffy_id {
                 Some(t) => t,
                 None => continue,
             };
 
-            let new_children = Self::collect_effective_taffy_children(&self.tree.nodes, parent_id);
+            let new_children = Self::collect_effective_taffy_children(&self.tree.nodes, *parent_id);
             let _ = self.tree.taffy.set_children(parent_taffy, &new_children);
+        }
+
+        // Ensure the entire ancestor chain above each affected parent is marked
+        // dirty in Taffy. set_children marks the parent, but Taffy's dirty
+        // propagation may not fully invalidate the flex chain needed to resolve
+        // heights (e.g., flex:1 containers above a display:contents swap).
+        for parent_id in &affected_parents {
+            let mut ancestor = self.tree.nodes[*parent_id].parent;
+            while let Some(anc_id) = ancestor {
+                if let Some(taffy_id) = self.tree.nodes[anc_id].taffy_id {
+                    let _ = self.tree.taffy.mark_dirty(taffy_id);
+                }
+                ancestor = self.tree.nodes[anc_id].parent;
+            }
         }
 
         // Set all display:contents nodes' taffy to display:none so they don't
