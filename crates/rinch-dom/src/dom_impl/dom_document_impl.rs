@@ -131,6 +131,10 @@ impl DomDocument for RinchDocument {
         self.tree.ifc_dirty = true; // Tree structure changed
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
 
+        // Mark inserted subtree as paint-dirty so the dirty region includes
+        // the new nodes' layout positions after layout runs.
+        self.mark_subtree_paint_dirty_ids(c);
+
         // Recompute styles for the inserted subtree to pick up ancestor-based selectors.
         // Suppressed during bulk DOM operations (render_block_at) to batch into one pass.
         if !self.tree.suppress_inline_restyle {
@@ -206,6 +210,10 @@ impl DomDocument for RinchDocument {
         self.tree.layout_dirty = true; // Structural change needs full layout
         self.tree.ifc_dirty = true; // Tree structure changed
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
+
+        // Mark inserted subtree as paint-dirty so the dirty region includes
+        // the new nodes' layout positions after layout runs.
+        self.mark_subtree_paint_dirty_ids(c);
 
         // Recompute styles for the inserted subtree to pick up ancestor-based selectors
         self.recompute_node_styles_recursive(c);

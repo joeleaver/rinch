@@ -233,7 +233,7 @@ impl RinchDocument {
         }
     }
 
-    /// Mark a node and its entire subtree as paint-dirty.
+    /// Mark a node and its entire subtree as paint-dirty for removal.
     ///
     /// Used before removing nodes so the dirty region includes the old layout
     /// positions, ensuring borders, backgrounds, and other visuals are cleared.
@@ -253,6 +253,21 @@ impl RinchDocument {
             let children = self.tree.nodes[node_id].children.clone();
             for child_id in children {
                 self.mark_subtree_paint_dirty(child_id);
+            }
+        }
+    }
+
+    /// Mark a node and its entire subtree as paint-dirty for insertion.
+    ///
+    /// Adds node IDs to `paint_dirty_nodes` so `compute_dirty_region` can
+    /// read their rects after layout. Unlike `mark_subtree_paint_dirty`,
+    /// this doesn't save absolute rects (the nodes haven't been laid out yet).
+    pub(crate) fn mark_subtree_paint_dirty_ids(&mut self, node_id: usize) {
+        if self.tree.contains(node_id) {
+            self.tree.paint_dirty_nodes.push(node_id);
+            let children = self.tree.nodes[node_id].children.clone();
+            for child_id in children {
+                self.mark_subtree_paint_dirty_ids(child_id);
             }
         }
     }
