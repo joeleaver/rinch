@@ -600,6 +600,10 @@ pub struct NodeTree {
     /// IDs of nodes that need repainting. Persists across layout resolve
     /// until consumed by the paint phase for dirty region computation.
     pub paint_dirty_nodes: Vec<RawNodeId>,
+    /// Absolute rects of removed nodes whose areas need repainting.
+    /// Stored at removal time because the nodes are deleted from the tree
+    /// before `compute_dirty_region` runs.
+    pub paint_dirty_removed_rects: Vec<(f64, f64, f64, f64)>,
     /// IDs of nodes whose styles were recomputed and need Taffy sync.
     pub style_dirty_nodes: Vec<RawNodeId>,
     /// Roots of subtrees needing style resolution. When non-empty,
@@ -744,6 +748,7 @@ impl NodeTree {
             body_id,
             dirty_nodes: HashSet::new(),
             paint_dirty_nodes: Vec::new(),
+            paint_dirty_removed_rects: Vec::new(),
             style_dirty_nodes: Vec::new(),
             style_roots: Vec::new(),
             styles_dirty: true, // Initial render needs styles

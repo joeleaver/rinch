@@ -834,7 +834,9 @@ impl RinchApp {
 
             // Drain paint_dirty_nodes now that we've computed the region
             if let Some(doc) = &self.doc {
-                doc.borrow_mut().tree.paint_dirty_nodes.clear();
+                let mut d = doc.borrow_mut();
+                d.tree.paint_dirty_nodes.clear();
+                d.tree.paint_dirty_removed_rects.clear();
             }
 
             // Check if dirty region is small enough to benefit from caching

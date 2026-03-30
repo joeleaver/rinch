@@ -237,9 +237,19 @@ impl RinchDocument {
     ///
     /// Used before removing nodes so the dirty region includes the old layout
     /// positions, ensuring borders, backgrounds, and other visuals are cleared.
+    /// Saves the absolute rect of each node because the nodes will be deleted
+    /// from the tree before `compute_dirty_region` runs.
     pub(crate) fn mark_subtree_paint_dirty(&mut self, node_id: usize) {
         if self.tree.contains(node_id) {
-            self.tree.paint_dirty_nodes.push(node_id);
+            // Save the node's absolute rect before it's removed from the tree.
+            // compute_dirty_region won't be able to look up deleted nodes.
+            let node = &self.tree.nodes[node_id];
+            let w = node.layout.width as f64;
+            let h = node.layout.height as f64;
+            if w > 0.0 && h > 0.0 {
+                let (ax, ay) = crate::paint::compute_absolute_position(&self.tree, node_id, 1.0);
+                self.tree.paint_dirty_removed_rects.push((ax, ay, w, h));
+            }
             let children = self.tree.nodes[node_id].children.clone();
             for child_id in children {
                 self.mark_subtree_paint_dirty(child_id);

@@ -87,6 +87,20 @@ pub fn compute_dirty_region(
         }
     }
 
+    // Include rects from removed nodes (saved before deletion).
+    for &(rx, ry, rw, rh) in &tree.paint_dirty_removed_rects {
+        if rw > 0.0 && rh > 0.0 {
+            // Rects stored at scale=1; apply current scale
+            let r = Rect::new(
+                rx * scale - margin,
+                ry * scale - margin,
+                (rx + rw) * scale + margin,
+                (ry + rh) * scale + margin,
+            );
+            region = Some(region.map_or(r, |prev| prev.union(r)));
+        }
+    }
+
     // Clamp to viewport bounds
     region.map(|r| {
         Rect::new(
