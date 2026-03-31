@@ -104,8 +104,14 @@ impl RinchDocument {
         // existing IFC structure and Taffy's internal cache — only the dirty text
         // node gets re-measured, avoiding the 80ms full-tree Parley rebuild.
         if self.tree.ifc_dirty {
-            // Structural change — invalidate all cached IFC measures
+            // Structural change — invalidate all cached IFC measures and
+            // clear dirty_ifc_text_roots so build_ifc_layouts rebuilds ALL
+            // IFC roots. Without this, stale entries from set_text_content
+            // calls during rendering (before setup_inline_formatting_contexts
+            // assigns correct ifc_root values) cause build_ifc_layouts to
+            // skip newly created IFC roots — making their text invisible.
             self.tree.ifc_measure_cache.clear();
+            self.tree.dirty_ifc_text_roots.clear();
 
             // Handle display:contents by rebuilding taffy children for affected nodes
             let t = std::time::Instant::now();
