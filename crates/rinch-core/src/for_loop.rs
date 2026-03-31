@@ -196,11 +196,6 @@ where
 
     let effect = Effect::new(move || {
         let new_items = each();
-        eprintln!(
-            "[rinch diag] for-loop effect: {} items, old_keys={}",
-            new_items.len(),
-            keys_order_clone.borrow().len()
-        );
 
         // Extract current and new keys
         let old_keys: Vec<String> = keys_order_clone.borrow().clone();
@@ -338,14 +333,6 @@ where
                     }
                 }
             }
-        }
-
-        if !inserted_keys.is_empty() {
-            eprintln!(
-                "[rinch diag] for-loop inserted {} items (total keys: {})",
-                inserted_keys.len(),
-                keys.len()
-            );
         }
 
         // Data comparison pass: re-render surviving items whose data changed.
