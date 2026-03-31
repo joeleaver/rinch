@@ -126,16 +126,19 @@ where
                 node.remove();
             }
 
-            // Render new branch
+            // Render new branch. Wrapped in untracked so signal reads
+            // during branch rendering don't subscribe the match Effect.
             if new_idx < branches_clone.len() {
-                render_branch(
-                    &doc_weak_clone,
-                    parent_id,
-                    &marker_effect,
-                    branches_clone[new_idx].as_ref(),
-                    &content_clone,
-                    &scope_clone,
-                );
+                crate::reactive::untracked(|| {
+                    render_branch(
+                        &doc_weak_clone,
+                        parent_id,
+                        &marker_effect,
+                        branches_clone[new_idx].as_ref(),
+                        &content_clone,
+                        &scope_clone,
+                    );
+                });
             }
         }
     });

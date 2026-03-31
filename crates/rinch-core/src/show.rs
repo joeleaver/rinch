@@ -187,25 +187,32 @@ where
                 node.remove();
             }
 
-            // Render new content after marker
+            // Render new content after marker. Wrapped in untracked so
+            // signal reads during branch rendering don't subscribe the
+            // Show's condition-watching Effect. Branch content creates
+            // its own effects for reactivity.
             if new_showing {
-                insert_content_after_marker(
-                    &doc_weak_clone,
-                    parent_id,
-                    &marker_effect,
-                    then_fn_clone.as_ref(),
-                    &current_content_clone,
-                    &current_scope_clone,
-                );
+                crate::reactive::untracked(|| {
+                    insert_content_after_marker(
+                        &doc_weak_clone,
+                        parent_id,
+                        &marker_effect,
+                        then_fn_clone.as_ref(),
+                        &current_content_clone,
+                        &current_scope_clone,
+                    );
+                });
             } else if let Some(ref else_fn) = else_fn_clone {
-                insert_content_after_marker(
-                    &doc_weak_clone,
-                    parent_id,
-                    &marker_effect,
-                    else_fn.as_ref(),
-                    &current_content_clone,
-                    &current_scope_clone,
-                );
+                crate::reactive::untracked(|| {
+                    insert_content_after_marker(
+                        &doc_weak_clone,
+                        parent_id,
+                        &marker_effect,
+                        else_fn.as_ref(),
+                        &current_content_clone,
+                        &current_scope_clone,
+                    );
+                });
             }
         }
     });
