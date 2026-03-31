@@ -239,7 +239,11 @@ where
                         && let Some(doc) = doc_weak_clone.upgrade()
                     {
                         let mut child_scope = RenderScope::new(doc, parent_id);
-                        let node = view_clone(item, &mut child_scope);
+                        // Wrap in untracked so signal reads during view rendering
+                        // don't subscribe the for-loop's parent effect. Items create
+                        // their own effects for reactivity via {|| expr} closures.
+                        let node =
+                            crate::reactive::untracked(|| view_clone(item, &mut child_scope));
 
                         // Insert at the correct position as sibling.
                         // Find the node to insert after: either the previous
@@ -349,7 +353,8 @@ where
                                 old_scope.dispose();
                             }
                             let mut child_scope = RenderScope::new(doc, parent_id);
-                            let new_node = view_clone(item, &mut child_scope);
+                            let new_node =
+                                crate::reactive::untracked(|| view_clone(item, &mut child_scope));
                             old_state.node.insert_after(&new_node);
                             old_state.node.remove();
                             old_state.node = new_node;
