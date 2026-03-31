@@ -900,6 +900,13 @@ impl RinchRuntime {
             self.app.resolve_and_repaint(sz.0 as f32, sz.1 as f32);
         }
 
+        // Diagnostic: log paint state
+        eprintln!(
+            "[rinch diag] paint_gpu: pending_layout={}, scene_dirty={}",
+            self.app.has_pending_layout(),
+            self.app.scene_dirty
+        );
+
         let scale = window.scale_factor();
         let size = window.inner_size();
         let transparent = self.app.is_transparent();

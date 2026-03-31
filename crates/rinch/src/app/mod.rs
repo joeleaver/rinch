@@ -427,6 +427,25 @@ impl RinchApp {
             let _ = d.take_dirty_nodes();
         }
 
+        // Diagnostic: log initial layout state
+        {
+            let d = doc.borrow();
+            let total = d.tree.nodes.len();
+            let zero_count = d
+                .tree
+                .nodes
+                .iter()
+                .filter(|(_, n)| {
+                    n.taffy_id.is_some() && n.layout.width == 0.0 && n.layout.height == 0.0
+                })
+                .count();
+            let paint_dirty = d.tree.paint_dirty_nodes.len();
+            eprintln!(
+                "[rinch diag] mount: {total} nodes, {zero_count} with zero layout, \
+                 {paint_dirty} paint_dirty, viewport={viewport_width}x{viewport_height}"
+            );
+        }
+
         self.scene_dirty = true;
         self.doc = Some(doc.clone());
         self._render_scope = Some(scope);
