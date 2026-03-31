@@ -1042,6 +1042,19 @@ impl RinchApp {
             .unwrap_or(false)
     }
 
+    /// Check if there are pending layout changes that need resolving
+    /// before the next paint. Covers DOM mutations, style changes, and
+    /// structural changes that set layout_dirty directly.
+    pub fn has_pending_layout(&self) -> bool {
+        self.doc
+            .as_ref()
+            .map(|doc| {
+                let d = doc.borrow();
+                !d.tree.dirty_nodes.is_empty() || d.tree.styles_dirty || d.tree.layout_dirty
+            })
+            .unwrap_or(false)
+    }
+
     /// Paint a semi-transparent inspect highlight overlay on the given painter.
     fn paint_inspect_overlay(
         painter: &mut dyn Painter,

@@ -739,6 +739,14 @@ impl RinchRuntime {
             return Ok(());
         };
 
+        // Ensure pending cross-thread closures are processed and layout
+        // is resolved before painting (same as paint_gpu).
+        drain_main_queue();
+        if self.app.has_pending_layout() {
+            let sz = window.inner_size();
+            self.app.resolve_and_repaint(sz.0 as f32, sz.1 as f32);
+        }
+
         let scale = window.scale_factor();
         let size = window.inner_size();
         let transparent = self.app.is_transparent();
@@ -880,6 +888,17 @@ impl RinchRuntime {
         let Some(window) = &self.window else {
             return Ok(());
         };
+
+        // Ensure pending cross-thread closures (run_on_main_thread) are
+        // processed and layout is resolved before painting. Without this,
+        // continuous RedrawRequested from render surfaces can paint with
+        // stale layout if the ReRender event from signal changes hasn't
+        // been processed yet.
+        drain_main_queue();
+        if self.app.has_pending_layout() {
+            let sz = window.inner_size();
+            self.app.resolve_and_repaint(sz.0 as f32, sz.1 as f32);
+        }
 
         let scale = window.scale_factor();
         let size = window.inner_size();
