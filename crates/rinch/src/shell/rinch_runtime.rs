@@ -92,8 +92,17 @@ static MAIN_QUEUE: Mutex<Vec<Box<dyn FnOnce() + Send>>> = Mutex::new(Vec::new())
 /// });
 /// ```
 pub fn run_on_main_thread(f: impl FnOnce() + Send + 'static) {
-    MAIN_QUEUE.lock().unwrap().push(Box::new(f));
-    send_native_event(RinchNativeEvent::ReRender);
+    let was_empty = {
+        let mut q = MAIN_QUEUE.lock().unwrap();
+        let empty = q.is_empty();
+        q.push(Box::new(f));
+        empty
+    };
+    // Only wake the event loop if the queue was empty — subsequent calls
+    // within the same batch coalesce into a single ReRender event.
+    if was_empty {
+        send_native_event(RinchNativeEvent::ReRender);
+    }
 }
 
 /// Dispatcher function for cross-thread signal updates.
@@ -101,8 +110,15 @@ pub fn run_on_main_thread(f: impl FnOnce() + Send + 'static) {
 /// Registered with `rinch_core::set_cross_thread_dispatcher()` so that
 /// `Signal::send()` can automatically route updates to the main thread.
 fn dispatch_to_main_thread(f: Box<dyn FnOnce() + Send>) {
-    MAIN_QUEUE.lock().unwrap().push(f);
-    send_native_event(RinchNativeEvent::ReRender);
+    let was_empty = {
+        let mut q = MAIN_QUEUE.lock().unwrap();
+        let empty = q.is_empty();
+        q.push(f);
+        empty
+    };
+    if was_empty {
+        send_native_event(RinchNativeEvent::ReRender);
+    }
 }
 
 /// Drain and execute all pending main-thread callbacks.
