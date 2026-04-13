@@ -12,6 +12,9 @@ impl RinchApp {
         scale_factor: f64,
     ) -> Vec<AppAction> {
         let mut actions = Vec::new();
+        // Logical viewport dimensions for ClickContext
+        let vp_w = window_size.0 as f32 / scale_factor as f32;
+        let vp_h = window_size.1 as f32 / scale_factor as f32;
 
         match event {
             PlatformEvent::Resumed => {
@@ -168,8 +171,8 @@ impl RinchApp {
                             element_width: 0.0,
                             element_height: 0.0,
                             text_hit: Default::default(),
-                            viewport_width: 0.0,
-                            viewport_height: 0.0,
+                            viewport_width: vp_w,
+                            viewport_height: vp_h,
                         });
                         Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragmove");
                     }
@@ -506,7 +509,7 @@ impl RinchApp {
                     }
                     actions.push(AppAction::RequestRedraw);
                 } else {
-                    let drag_action = self.handle_click(x, y, scale_factor);
+                    let drag_action = self.handle_click(x, y, scale_factor, vp_w, vp_h);
                     actions.extend(drag_action);
                 }
             }
@@ -532,7 +535,8 @@ impl RinchApp {
                 if !handled {
                     // Non-left button clicks (or right-click with no contextmenu handler):
                     // use handle_click_with_button so the surface gets focus.
-                    let click_actions = self.handle_click_with_button(x, y, scale_factor, button);
+                    let click_actions =
+                        self.handle_click_with_button(x, y, scale_factor, button, vp_w, vp_h);
                     actions.extend(click_actions);
                 }
             }
@@ -541,7 +545,7 @@ impl RinchApp {
                 if let Some(pending) = self.pending_drag.take() {
                     // Threshold was never crossed — fire normal click instead
                     let (px, py) = pending.mousedown_pos;
-                    let click_actions = self.handle_click(px, py, scale_factor);
+                    let click_actions = self.handle_click(px, py, scale_factor, vp_w, vp_h);
                     actions.extend(click_actions);
                 } else if let Some(drag) = self.active_dnd.take() {
                     // Check if dropping on a surface
@@ -579,8 +583,8 @@ impl RinchApp {
                             element_width: 0.0,
                             element_height: 0.0,
                             text_hit: Default::default(),
-                            viewport_width: 0.0,
-                            viewport_height: 0.0,
+                            viewport_width: vp_w,
+                            viewport_height: vp_h,
                         });
                         Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragend");
                     }

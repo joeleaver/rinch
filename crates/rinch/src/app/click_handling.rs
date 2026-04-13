@@ -5,8 +5,22 @@ use super::*;
 impl RinchApp {
     // ── Click handling ───────────────────────────────────────────────────
 
-    pub(super) fn handle_click(&mut self, x: f32, y: f32, scale_factor: f64) -> Vec<AppAction> {
-        self.handle_click_with_button(x, y, scale_factor, MouseButton::Left)
+    pub(super) fn handle_click(
+        &mut self,
+        x: f32,
+        y: f32,
+        scale_factor: f64,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> Vec<AppAction> {
+        self.handle_click_with_button(
+            x,
+            y,
+            scale_factor,
+            MouseButton::Left,
+            viewport_width,
+            viewport_height,
+        )
     }
 
     pub(super) fn handle_click_with_button(
@@ -15,6 +29,8 @@ impl RinchApp {
         y: f32,
         _scale_factor: f64,
         button: MouseButton,
+        viewport_width: f32,
+        viewport_height: f32,
     ) -> Vec<AppAction> {
         let mut actions = Vec::new();
         let Some(doc) = self.doc.clone() else {
@@ -435,8 +451,8 @@ impl RinchApp {
                         element_width: elem_w,
                         element_height: elem_h,
                         text_hit,
-                        viewport_width: 0.0,
-                        viewport_height: 0.0,
+                        viewport_width,
+                        viewport_height,
                     });
 
                     drop(d);

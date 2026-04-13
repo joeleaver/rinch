@@ -120,13 +120,25 @@ impl RinchApp {
                         }
                     }
                     if !handled {
-                        let click_actions =
-                            self.handle_click_with_button(x, y, scale_factor, mouse_button);
+                        let click_actions = self.handle_click_with_button(
+                            x,
+                            y,
+                            scale_factor,
+                            mouse_button,
+                            window_size.0 as f32 / scale_factor as f32,
+                            window_size.1 as f32 / scale_factor as f32,
+                        );
                         actions.extend(click_actions);
                     }
                 } else {
-                    let click_actions =
-                        self.handle_click_with_button(x, y, scale_factor, mouse_button);
+                    let click_actions = self.handle_click_with_button(
+                        x,
+                        y,
+                        scale_factor,
+                        mouse_button,
+                        window_size.0 as f32 / scale_factor as f32,
+                        window_size.1 as f32 / scale_factor as f32,
+                    );
                     actions.extend(click_actions);
                 }
                 self.ce_selecting = false;
@@ -155,8 +167,14 @@ impl RinchApp {
                         }
                     }
                     if !handled {
-                        let click_actions =
-                            self.handle_click_with_button(x, y, scale_factor, mouse_button);
+                        let click_actions = self.handle_click_with_button(
+                            x,
+                            y,
+                            scale_factor,
+                            mouse_button,
+                            window_size.0 as f32 / scale_factor as f32,
+                            window_size.1 as f32 / scale_factor as f32,
+                        );
                         actions.extend(click_actions);
                     }
                 } else {
@@ -191,8 +209,14 @@ impl RinchApp {
                             mousedown_pos: (x, y),
                         });
                     } else {
-                        let click_actions =
-                            self.handle_click_with_button(x, y, scale_factor, mouse_button);
+                        let click_actions = self.handle_click_with_button(
+                            x,
+                            y,
+                            scale_factor,
+                            mouse_button,
+                            window_size.0 as f32 / scale_factor as f32,
+                            window_size.1 as f32 / scale_factor as f32,
+                        );
                         actions.extend(click_actions);
                     }
                 }
@@ -234,7 +258,13 @@ impl RinchApp {
                 if let Some(pending) = self.pending_drag.take() {
                     // Threshold never crossed — fire normal click
                     let (px, py) = pending.mousedown_pos;
-                    let click_actions = self.handle_click(px, py, scale_factor);
+                    let click_actions = self.handle_click(
+                        px,
+                        py,
+                        scale_factor,
+                        window_size.0 as f32 / scale_factor as f32,
+                        window_size.1 as f32 / scale_factor as f32,
+                    );
                     actions.extend(click_actions);
                 } else if let Some(drag) = self.active_dnd.take() {
                     // Fire ondrop on target if present
