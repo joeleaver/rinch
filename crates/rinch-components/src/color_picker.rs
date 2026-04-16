@@ -360,8 +360,13 @@ impl Component for ColorPicker {
         }
 
         // === Coordinating effect: fire onchange when any signal changes ===
+        // Skip the initial run: onchange should report changes, not mount-time state
+        // (the caller already knows — they seeded `value:`). Firing on mount can
+        // re-enter `flush_effects` from inside `run_effect`'s borrow_mut and panic
+        // when the parent is mid-re-render. See GH #23.
         if let Some(ref onchange) = self.onchange {
             let onchange = onchange.clone();
+            let mut first_run = true;
             __scope.create_effect(move || {
                 let hsv = Hsva {
                     h: hue.get(),
@@ -369,6 +374,10 @@ impl Component for ColorPicker {
                     v: val.get(),
                     a: alpha.get(),
                 };
+                if first_run {
+                    first_run = false;
+                    return;
+                }
                 onchange.invoke(format_color(hsv, color_format));
             });
         }
