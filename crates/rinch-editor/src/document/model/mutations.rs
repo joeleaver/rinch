@@ -280,7 +280,7 @@ impl EditorDocument {
                 String::new()
             };
 
-            let mut insert_idx =
+            let base_insert_idx =
                 if start_inline_text.is_empty() && !end_inlines_to_append.is_empty() {
                     // Remove empty start inline, we'll replace with end inlines
                     if self.doc.length(&start_content_id) > 0 {
@@ -293,9 +293,8 @@ impl EditorDocument {
                     start_resolved.inline_index + 1
                 };
 
-            for (text, marks) in &end_inlines_to_append {
-                self.insert_text_inline(&start_content_id, insert_idx, text, marks)?;
-                insert_idx += 1;
+            for (offset, (text, marks)) in end_inlines_to_append.iter().enumerate() {
+                self.insert_text_inline(&start_content_id, base_insert_idx + offset, text, marks)?;
             }
 
             // Ensure block has at least one inline

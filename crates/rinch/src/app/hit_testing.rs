@@ -160,7 +160,7 @@ fn hit_test_node(
             // z-index 0 SCs (reverse DOM order)
             let mut zero: Vec<&HitTestScEntry> =
                 entries.iter().filter(|e| e.z_index == 0).collect();
-            zero.sort_by(|a, b| b.dom_order.cmp(&a.dom_order));
+            zero.sort_by_key(|e| std::cmp::Reverse(e.dom_order));
             for entry in &zero {
                 if let Some(hit) = hit_test_node(
                     tree,

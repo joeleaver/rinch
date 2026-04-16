@@ -192,85 +192,79 @@ impl Fragment {
                     _ => {}
                 },
                 Event::End(tag_end) => match tag_end {
-                    TagEnd::Paragraph => {
-                        if in_block {
-                            // Emit a block. Use the outermost container type.
-                            let (block_type, attrs) = container_stack
-                                .first()
-                                .cloned()
-                                .unwrap_or_else(|| ("paragraph".to_string(), HashMap::new()));
+                    TagEnd::Paragraph if in_block => {
+                        // Emit a block. Use the outermost container type.
+                        let (block_type, attrs) = container_stack
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| ("paragraph".to_string(), HashMap::new()));
 
-                            // Trim trailing newlines from code block text
-                            if block_type == "code_block" {
-                                trim_trailing_newline(&mut current_content);
-                            }
-
-                            if current_content.is_empty() {
-                                current_content.push(FragmentInline::Text {
-                                    text: String::new(),
-                                    marks: Vec::new(),
-                                });
-                            }
-                            blocks.push(FragmentBlock {
-                                block_type,
-                                attrs,
-                                content: std::mem::take(&mut current_content),
-                            });
-                            in_block = false;
-                            // Pop only if the outermost container is paragraph
-                            // (blockquote/item will be popped by their own End event)
-                            if container_stack.last().map(|(t, _)| t.as_str()) == Some("paragraph")
-                            {
-                                container_stack.pop();
-                            }
-                        }
-                    }
-                    TagEnd::Heading(_) => {
-                        if in_block {
-                            if current_content.is_empty() {
-                                current_content.push(FragmentInline::Text {
-                                    text: String::new(),
-                                    marks: Vec::new(),
-                                });
-                            }
-                            let (block_type, attrs) = container_stack
-                                .pop()
-                                .unwrap_or_else(|| ("heading".to_string(), HashMap::new()));
-                            blocks.push(FragmentBlock {
-                                block_type,
-                                attrs,
-                                content: std::mem::take(&mut current_content),
-                            });
-                            in_block = false;
-                        }
-                    }
-                    TagEnd::CodeBlock => {
-                        if in_block {
-                            // Trim trailing newlines from code block text
+                        // Trim trailing newlines from code block text
+                        if block_type == "code_block" {
                             trim_trailing_newline(&mut current_content);
-
-                            if current_content.is_empty() {
-                                current_content.push(FragmentInline::Text {
-                                    text: String::new(),
-                                    marks: Vec::new(),
-                                });
-                            }
-                            let (block_type, attrs) = container_stack
-                                .pop()
-                                .unwrap_or_else(|| ("code_block".to_string(), HashMap::new()));
-                            blocks.push(FragmentBlock {
-                                block_type,
-                                attrs,
-                                content: std::mem::take(&mut current_content),
-                            });
-                            in_block = false;
                         }
-                    }
-                    TagEnd::BlockQuote(_) => {
-                        // Pop the blockquote container
-                        if container_stack.last().map(|(t, _)| t.as_str()) == Some("blockquote") {
+
+                        if current_content.is_empty() {
+                            current_content.push(FragmentInline::Text {
+                                text: String::new(),
+                                marks: Vec::new(),
+                            });
+                        }
+                        blocks.push(FragmentBlock {
+                            block_type,
+                            attrs,
+                            content: std::mem::take(&mut current_content),
+                        });
+                        in_block = false;
+                        // Pop only if the outermost container is paragraph
+                        // (blockquote/item will be popped by their own End event)
+                        if container_stack.last().map(|(t, _)| t.as_str()) == Some("paragraph") {
                             container_stack.pop();
                         }
+                    }
+                    TagEnd::Heading(_) if in_block => {
+                        if current_content.is_empty() {
+                            current_content.push(FragmentInline::Text {
+                                text: String::new(),
+                                marks: Vec::new(),
+                            });
+                        }
+                        let (block_type, attrs) = container_stack
+                            .pop()
+                            .unwrap_or_else(|| ("heading".to_string(), HashMap::new()));
+                        blocks.push(FragmentBlock {
+                            block_type,
+                            attrs,
+                            content: std::mem::take(&mut current_content),
+                        });
+                        in_block = false;
+                    }
+                    TagEnd::CodeBlock if in_block => {
+                        // Trim trailing newlines from code block text
+                        trim_trailing_newline(&mut current_content);
+
+                        if current_content.is_empty() {
+                            current_content.push(FragmentInline::Text {
+                                text: String::new(),
+                                marks: Vec::new(),
+                            });
+                        }
+                        let (block_type, attrs) = container_stack
+                            .pop()
+                            .unwrap_or_else(|| ("code_block".to_string(), HashMap::new()));
+                        blocks.push(FragmentBlock {
+                            block_type,
+                            attrs,
+                            content: std::mem::take(&mut current_content),
+                        });
+                        in_block = false;
+                    }
+                    TagEnd::BlockQuote(_)
+                        if container_stack.last().map(|(t, _)| t.as_str())
+                            == Some("blockquote") =>
+                    {
+                        // Pop the blockquote container
+                        container_stack.pop();
                     }
                     TagEnd::Item => {
                         // If we still have content that wasn't flushed by a
@@ -307,34 +301,26 @@ impl Fragment {
                     }
                     _ => {}
                 },
-                Event::Text(text) => {
-                    if in_block {
-                        current_content.push(FragmentInline::Text {
-                            text: text.to_string(),
-                            marks: mark_stack.clone(),
-                        });
-                    }
+                Event::Text(text) if in_block => {
+                    current_content.push(FragmentInline::Text {
+                        text: text.to_string(),
+                        marks: mark_stack.clone(),
+                    });
                 }
-                Event::Code(code) => {
-                    if in_block {
-                        current_content.push(FragmentInline::Text {
-                            text: code.to_string(),
-                            marks: vec![MarkData::new("code")],
-                        });
-                    }
+                Event::Code(code) if in_block => {
+                    current_content.push(FragmentInline::Text {
+                        text: code.to_string(),
+                        marks: vec![MarkData::new("code")],
+                    });
                 }
-                Event::SoftBreak => {
-                    if in_block {
-                        current_content.push(FragmentInline::Text {
-                            text: " ".to_string(),
-                            marks: mark_stack.clone(),
-                        });
-                    }
+                Event::SoftBreak if in_block => {
+                    current_content.push(FragmentInline::Text {
+                        text: " ".to_string(),
+                        marks: mark_stack.clone(),
+                    });
                 }
-                Event::HardBreak => {
-                    if in_block {
-                        current_content.push(FragmentInline::HardBreak);
-                    }
+                Event::HardBreak if in_block => {
+                    current_content.push(FragmentInline::HardBreak);
                 }
                 Event::Rule => {
                     blocks.push(FragmentBlock {
