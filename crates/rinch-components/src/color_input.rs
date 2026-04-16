@@ -215,15 +215,23 @@ impl Component for ColorInput {
             });
         }
 
-        // value_fn binding
+        // value_fn binding.
+        //
+        // Intentionally does NOT read `current_value` — we only mirror from
+        // external to internal, never compare. Reading it would (a) subscribe
+        // this effect to its own write and cause a re-entrant `run_effect`
+        // panic (RefCell double borrow at effect.rs:144), and (b) silently
+        // undo user edits: between the picker's `current_value.set(new)` and
+        // the caller's signal catching up, the effect would see stale
+        // `external(old) != current(new)` and write the old value back.
+        // `set_if_changed` avoids notifying the display effect when the
+        // value is already up-to-date (e.g. after a user edit has already
+        // propagated current_value ← picker ← cb ← external).
         if let Some(ref value_fn) = self.value_fn {
             let value_fn = value_fn.clone();
             __scope.create_effect(move || {
                 let external = value_fn();
-                let current = current_value.get();
-                if external != current {
-                    current_value.set(external);
-                }
+                current_value.set_if_changed(external);
             });
         }
 
