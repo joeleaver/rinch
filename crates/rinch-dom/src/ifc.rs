@@ -811,6 +811,9 @@ impl RinchDocument {
                 width: taffy::AvailableSpace::MaxContent,
                 height: taffy::AvailableSpace::MaxContent,
             };
+            // Split-borrow so the closure captures only `self.tree.nodes`,
+            // leaving `self.tree.nodes.get_mut` free after the call returns.
+            let nodes = &self.tree.nodes;
             let _ = self.tree.taffy.compute_layout_with_measure(
                 taffy_id,
                 avail,
@@ -821,6 +824,22 @@ impl RinchDocument {
                         taffy::AvailableSpace::MinContent => Some(0.0),
                     };
                     match context {
+                        Some(NodeContext::InlineRoot(root_id)) => {
+                            let root_id = *root_id;
+                            if let Some(est_h) = nodes[root_id].estimated_height {
+                                return taffy::Size {
+                                    width: known_dims.width.unwrap_or(0.0),
+                                    height: known_dims.height.unwrap_or(est_h),
+                                };
+                            }
+                            let inline_layout = Self::build_inline_layout(
+                                nodes, root_id, max_width, 1.0, font_cx, layout_cx,
+                            );
+                            taffy::Size {
+                                width: known_dims.width.unwrap_or(inline_layout.layout.width()),
+                                height: known_dims.height.unwrap_or(inline_layout.layout.height()),
+                            }
+                        }
                         Some(NodeContext::Text(text)) => {
                             if text.content.is_empty() {
                                 return taffy::Size::ZERO;
@@ -887,14 +906,17 @@ impl RinchDocument {
                 },
             );
 
-            // Read the computed layout back into the node
+            // Read the computed layout back into the node.
+            // Re-borrow `self.tree` now that the closure (and its borrow of
+            // `self.tree.nodes` / `self.tree.taffy`) has been dropped.
             if let Ok(taffy_layout) = self.tree.taffy.layout(taffy_id) {
+                let layout_size = taffy_layout.size;
                 let node_id = self.tree.taffy_map.get(&taffy_id).copied();
                 if let Some(nid) = node_id
                     && let Some(node) = self.tree.nodes.get_mut(nid)
                 {
-                    node.layout.width = taffy_layout.size.width;
-                    node.layout.height = taffy_layout.size.height;
+                    node.layout.width = layout_size.width;
+                    node.layout.height = layout_size.height;
                 }
             }
         }

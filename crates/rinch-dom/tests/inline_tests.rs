@@ -726,3 +726,46 @@ fn test_inline_block_ifc_root_height_includes_block() {
         div_layout.height
     );
 }
+
+/// Regression for GH #21: when an IFC root lives inside an inline-block subtree
+/// (e.g. text inside a flex item inside an absolutely-positioned box inside an
+/// inline-block container), it was being measured via
+/// `compute_inline_block_layouts` whose closure had no `InlineRoot` arm and
+/// silently returned `Size::ZERO`. Popover children reproduced this via
+/// `display: inline-block` on `.rinch-popover`.
+#[test]
+fn test_ifc_inside_inline_block_subtree_measures_text() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    // Outer inline-block container (mirrors .rinch-popover's `display: inline-block`).
+    let outer = doc.create_element("div");
+    doc.set_attribute(outer, "style", "display: inline-block");
+    doc.append_child(body, outer);
+
+    // Flex row inside the inline-block — children become block-level flex items.
+    let flex = doc.create_element("div");
+    doc.set_attribute(flex, "style", "display: flex; font-size: 12px");
+    doc.append_child(outer, flex);
+
+    let span = doc.create_element("span");
+    let text = doc.create_text("Sphere");
+    doc.append_child(flex, span);
+    doc.append_child(span, text);
+
+    doc.resolve_layout(800.0, 600.0);
+
+    let span_layout = doc.tree.get(span.0).unwrap().layout;
+    assert!(
+        span_layout.width > 0.0,
+        "span containing text inside an inline-block ancestor should measure \
+         non-zero width, got {}",
+        span_layout.width
+    );
+    assert!(
+        span_layout.height > 0.0,
+        "span containing text inside an inline-block ancestor should measure \
+         non-zero height, got {}",
+        span_layout.height
+    );
+}
