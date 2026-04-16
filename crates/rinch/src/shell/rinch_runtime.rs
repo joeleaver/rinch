@@ -1946,16 +1946,15 @@ impl RinchRuntime {
             WindowEvent::KeyboardInput {
                 event:
                     winit::event::KeyEvent {
-                        physical_key: winit::keyboard::PhysicalKey::Code(key_code),
+                        physical_key:
+                            winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::F12),
                         state: ElementState::Pressed,
                         ..
                     },
                 ..
             } => {
                 // F12 in DevTools window also toggles
-                if key_code == winit::keyboard::KeyCode::F12 {
-                    self.close_devtools();
-                }
+                self.close_devtools();
             }
             _ => {}
         }

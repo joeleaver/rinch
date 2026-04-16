@@ -1,16 +1,20 @@
 #!/bin/sh
 #
-# Pre-commit hook: Runs the same checks as CI (fmt, clippy, test).
+# Pre-commit hook: Runs the same checks as CI (fmt, clippy, wasm, test).
 # Catches issues before they reach GitHub Actions.
 #
 # Install: ./scripts/setup-hooks.sh
+#
+# Toolchain: the repo pins `channel = "stable"` via rust-toolchain.toml,
+# so `cargo` below uses the same compiler CI uses. Run `rustup update stable`
+# periodically so your local toolchain picks up new lints before CI does.
 
 set -e
 
 echo "=== Pre-commit checks ==="
 
 # 1. Formatting
-echo "[1/3] Checking formatting..."
+echo "[1/4] Checking formatting..."
 if ! cargo fmt --all -- --check 2>&1; then
     echo ""
     echo "ERROR: Formatting check failed!"
@@ -21,7 +25,7 @@ fi
 echo "  OK"
 
 # 2. Clippy (warnings as errors, matching CI)
-echo "[2/3] Running clippy..."
+echo "[2/4] Running clippy..."
 if ! cargo clippy --workspace --all-targets -- -D warnings 2>&1; then
     echo ""
     echo "ERROR: Clippy found warnings/errors!"
@@ -31,8 +35,20 @@ if ! cargo clippy --workspace --all-targets -- -D warnings 2>&1; then
 fi
 echo "  OK"
 
-# 3. Tests
-echo "[3/3] Running tests..."
+# 3. WASM check (ui-zoo-web is excluded from the workspace, so it's not
+# covered by the workspace-wide clippy/test runs above).
+echo "[3/4] Checking WASM build (ui-zoo-web)..."
+if ! (cd examples/ui-zoo-web && cargo check --target wasm32-unknown-unknown) 2>&1; then
+    echo ""
+    echo "ERROR: WASM build check failed!"
+    echo "ui-zoo-web must compile for wasm32-unknown-unknown."
+    echo ""
+    exit 1
+fi
+echo "  OK"
+
+# 4. Tests
+echo "[4/4] Running tests..."
 if ! cargo test --workspace 2>&1; then
     echo ""
     echo "ERROR: Tests failed!"
