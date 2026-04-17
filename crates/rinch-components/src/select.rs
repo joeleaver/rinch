@@ -89,11 +89,14 @@ impl Component for Select {
         };
         let selected_value = Signal::new(current_value);
 
-        // If value_fn is provided, sync from it
+        // If value_fn is provided, sync from it.
+        // `set_if_changed` no-ops on the initial run (selected_value was just
+        // seeded from the same value_fn() above), which avoids re-entering
+        // `flush_effects` when mounted during a parent flush. See GH #24.
         if let Some(ref value_fn) = self.value_fn {
             let value_fn = value_fn.clone();
             __scope.create_effect(move || {
-                selected_value.set(value_fn());
+                selected_value.set_if_changed(value_fn());
             });
         }
 
