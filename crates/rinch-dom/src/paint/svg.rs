@@ -32,18 +32,22 @@ pub(super) fn paint_svg(
         .and_then(|v| parse_viewbox(v))
         .unwrap_or((0.0, 0.0, 24.0, 24.0));
 
-    let (vb_x, vb_y, vb_w, vb_h) = viewbox;
+    let (_, _, vb_w, vb_h) = viewbox;
     if vb_w <= 0.0 || vb_h <= 0.0 || w <= 0.0 || h <= 0.0 {
         return;
     }
 
-    // Compute transform: CSS transform composed with viewBox-to-layout scaling
-    let sx = w / vb_w;
-    let sy = h / vb_h;
-    let s = sx.min(sy); // uniform scale (preserveAspectRatio default)
-    let tx = x + (w - vb_w * s) * 0.5 - vb_x * s;
-    let ty = y + (h - vb_h * s) * 0.5 - vb_y * s;
-    let transform = css_transform * Affine::new([s, 0.0, 0.0, s, tx, ty]);
+    // Compute transform: CSS transform composed with viewBox-to-layout scaling.
+    // Honors `preserveAspectRatio="none"` (stretch x and y independently);
+    // any other value (including the SVG default `xMidYMid meet`) collapses
+    // to uniform scaling centered in the container.
+    let preserve_aspect = node
+        .attributes
+        .get("preserveAspectRatio")
+        .map(|v| v.as_str());
+    let (vb_sx, vb_sy, vb_tx, vb_ty) =
+        viewbox_to_box_transform(viewbox, (x, y, w, h), preserve_aspect);
+    let transform = css_transform * Affine::new([vb_sx, 0.0, 0.0, vb_sy, vb_tx, vb_ty]);
 
     // Resolve "currentColor" — walk up the tree to find a `color` CSS property
     let current_color = resolve_current_color(tree, node);
@@ -237,6 +241,38 @@ pub(super) fn parse_viewbox(s: &str) -> Option<(f64, f64, f64, f64)> {
     }
 }
 
+/// Compute the (sx, sy, tx, ty) affine coefficients that map a viewBox of
+/// (vb_x, vb_y, vb_w, vb_h) into a layout box of (x, y, w, h), honoring the
+/// `preserveAspectRatio` attribute.
+///
+/// The full SVG spec enumerates nine alignment modes plus `meet` / `slice`
+/// fitting. We support the two cases that matter in practice:
+///
+/// - `"none"` — stretch x and y independently to fill the layout box exactly.
+/// - anything else (including the SVG default `xMidYMid meet`) — uniform
+///   scale by `min(sx, sy)`, content centered in the layout box.
+pub(super) fn viewbox_to_box_transform(
+    viewbox: (f64, f64, f64, f64),
+    layout: (f64, f64, f64, f64),
+    preserve_aspect: Option<&str>,
+) -> (f64, f64, f64, f64) {
+    let (vb_x, vb_y, vb_w, vb_h) = viewbox;
+    let (x, y, w, h) = layout;
+    let sx = w / vb_w;
+    let sy = h / vb_h;
+    if preserve_aspect == Some("none") {
+        (sx, sy, x - vb_x * sx, y - vb_y * sy)
+    } else {
+        let s = sx.min(sy);
+        (
+            s,
+            s,
+            x + (w - vb_w * s) * 0.5 - vb_x * s,
+            y + (h - vb_h * s) * 0.5 - vb_y * s,
+        )
+    }
+}
+
 /// Resolve `currentColor` by walking up the DOM tree to find a CSS `color` property.
 pub(super) fn resolve_current_color(tree: &NodeTree, node: &Node) -> AlphaColor<Srgb> {
     let mut current = Some(node.id);
@@ -350,4 +386,76 @@ pub(super) fn build_radial_gradient_brush(
     let color_stops = gradient_color_stops(stops);
     let gradient = Gradient::new_radial(center, radius).with_stops(color_stops.as_slice());
     Brush::Gradient(gradient)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn approx(a: f64, b: f64) {
+        assert!((a - b).abs() < 1e-9, "expected {a} ≈ {b}");
+    }
+
+    #[test]
+    fn default_aspect_uniform_scales_and_centers() {
+        // Square viewBox in a wide container — content should fit by height
+        // and be centered horizontally.
+        let (sx, sy, tx, ty) =
+            viewbox_to_box_transform((0.0, 0.0, 100.0, 100.0), (0.0, 0.0, 400.0, 200.0), None);
+        approx(sx, 2.0); // min(400/100, 200/100) = 2.0
+        approx(sy, 2.0);
+        approx(tx, 100.0); // (400 - 200) / 2 = 100
+        approx(ty, 0.0);
+    }
+
+    #[test]
+    fn aspect_none_stretches_independently() {
+        // The use case in rawdaw's arrangement: a 24:100 viewBox painting a
+        // long horizontal gridline strip. Without "none" support, the lines
+        // bunch into the center; with it, they fill the full width.
+        let (sx, sy, tx, ty) = viewbox_to_box_transform(
+            (0.0, 0.0, 24.0, 100.0),
+            (0.0, 0.0, 1600.0, 150.0),
+            Some("none"),
+        );
+        approx(sx, 1600.0 / 24.0);
+        approx(sy, 1.5);
+        approx(tx, 0.0);
+        approx(ty, 0.0);
+    }
+
+    #[test]
+    fn aspect_none_honors_layout_origin_and_vb_offset() {
+        // Layout starts at (10, 20); viewBox starts at (5, 5). Both contribute
+        // to the translate.
+        let (sx, sy, tx, ty) = viewbox_to_box_transform(
+            (5.0, 5.0, 100.0, 100.0),
+            (10.0, 20.0, 400.0, 200.0),
+            Some("none"),
+        );
+        approx(sx, 4.0);
+        approx(sy, 2.0);
+        approx(tx, 10.0 - 5.0 * 4.0); // -10
+        approx(ty, 20.0 - 5.0 * 2.0); // 10
+    }
+
+    #[test]
+    fn unknown_aspect_string_falls_back_to_default() {
+        // Anything other than literal "none" — including the SVG default
+        // `xMidYMid meet` — uses uniform scale. The current implementation
+        // doesn't distinguish among the nine alignment modes; this test
+        // pins that behavior so future spec-completion changes have a
+        // baseline to update.
+        let (sx_a, sy_a, tx_a, ty_a) =
+            viewbox_to_box_transform((0.0, 0.0, 100.0, 100.0), (0.0, 0.0, 400.0, 200.0), None);
+        let (sx_b, sy_b, tx_b, ty_b) = viewbox_to_box_transform(
+            (0.0, 0.0, 100.0, 100.0),
+            (0.0, 0.0, 400.0, 200.0),
+            Some("xMidYMid meet"),
+        );
+        approx(sx_a, sx_b);
+        approx(sy_a, sy_b);
+        approx(tx_a, tx_b);
+        approx(ty_a, ty_b);
+    }
 }
