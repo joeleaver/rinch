@@ -4,7 +4,7 @@
 //! Renders a styled trigger button with a dropdown overlay — no native `<select>` element.
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Component, InputCallback, Signal};
+use rinch_core::{Component, InputCallback, Signal, events::get_click_context};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use std::rc::Rc;
 
@@ -80,6 +80,14 @@ impl std::fmt::Debug for Select {
 impl Component for Select {
     fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
         let opened = Signal::new(false);
+        // `flip_above` flips the dropdown to open upward when there isn't enough
+        // room below the trigger. Decided at click time using the cursor's y vs
+        // viewport height (the actual dropdown height isn't known until after
+        // layout). The estimate matches the dropdown's CSS `max-height: 200px`
+        // plus margin/border slop. Conservative — biases toward flipping rather
+        // than clipping.
+        let flip_above = Signal::new(false);
+        const DROPDOWN_RESERVE_PX: f32 = 220.0;
 
         // Determine the current value
         let current_value = if let Some(ref vf) = self.value_fn {
@@ -211,6 +219,15 @@ impl Component for Select {
         // Click handler on trigger
         if !self.disabled {
             let handler_id = __scope.register_handler(move || {
+                // Decide flip direction at toggle time using viewport bounds
+                // (we don't know the dropdown's actual size until after layout).
+                if !opened.get() {
+                    let ctx = get_click_context();
+                    let space_below = ctx.viewport_height - ctx.element_y - ctx.element_height;
+                    flip_above.set(
+                        space_below < DROPDOWN_RESERVE_PX && ctx.element_y > DROPDOWN_RESERVE_PX,
+                    );
+                }
                 opened.update(|v| *v = !*v);
             });
             trigger.set_attribute("data-rid", &handler_id.0.to_string());
@@ -229,6 +246,15 @@ impl Component for Select {
                 dropdown_c.set_style("display", "flex");
             } else {
                 dropdown_c.set_style("display", "none");
+            }
+        });
+
+        let dropdown_flip = dropdown.clone();
+        __scope.create_effect(move || {
+            if flip_above.get() {
+                dropdown_flip.add_class("rinch-select__dropdown--above");
+            } else {
+                dropdown_flip.remove_class("rinch-select__dropdown--above");
             }
         });
 

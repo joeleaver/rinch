@@ -127,6 +127,190 @@ impl std::fmt::Display for ColorName {
     }
 }
 
+/// Apply an alpha channel to a color expressed as a CSS color string.
+///
+/// Accepts any of:
+///
+/// - `#RGB` / `#RGBA` (CSS short form)
+/// - `#RRGGBB` / `#RRGGBBAA`
+/// - `rgb(r, g, b)` and `rgba(r, g, b, a)` (commas or whitespace, alpha optional)
+/// - Components may be `0–255` integer/decimal values or `0%–100%` percentages
+///
+/// Returns a canonical `rgba(r, g, b, a)` string. Any pre-existing alpha in the
+/// input is replaced by the supplied `alpha` (clamped to `0.0..=1.0`).
+///
+/// If the input cannot be parsed, the original string is returned unchanged —
+/// this lets the helper sit safely on theme tokens of mixed formats.
+///
+/// # Example
+///
+/// ```
+/// use rinch_theme::with_alpha;
+///
+/// assert_eq!(with_alpha("#228be6", 0.5), "rgba(34, 139, 230, 0.5)");
+/// assert_eq!(with_alpha("rgba(232, 234, 238, 0.92)", 0.4), "rgba(232, 234, 238, 0.4)");
+/// assert_eq!(with_alpha("#fff", 1.0), "rgba(255, 255, 255, 1)");
+/// ```
+pub fn with_alpha(color: &str, alpha: f32) -> String {
+    let alpha = alpha.clamp(0.0, 1.0);
+
+    let trimmed = color.trim();
+
+    if let Some(hex) = trimmed.strip_prefix('#')
+        && let Some((r, g, b)) = parse_hex(hex)
+    {
+        return format_rgba(r, g, b, alpha);
+    }
+
+    if let Some(inner) = strip_rgb_func(trimmed)
+        && let Some((r, g, b)) = parse_rgb_components(inner)
+    {
+        return format_rgba(r, g, b, alpha);
+    }
+
+    color.to_string()
+}
+
+fn parse_hex(hex: &str) -> Option<(u8, u8, u8)> {
+    fn nibble(c: u8) -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            b'A'..=b'F' => Some(c - b'A' + 10),
+            _ => None,
+        }
+    }
+    let bytes = hex.as_bytes();
+    match bytes.len() {
+        // #RGB / #RGBA — expand each nibble to a full byte
+        3 | 4 => Some((
+            nibble(bytes[0])? * 0x11,
+            nibble(bytes[1])? * 0x11,
+            nibble(bytes[2])? * 0x11,
+        )),
+        // #RRGGBB / #RRGGBBAA — alpha bytes (if any) are discarded
+        6 | 8 => Some((
+            (nibble(bytes[0])? << 4) | nibble(bytes[1])?,
+            (nibble(bytes[2])? << 4) | nibble(bytes[3])?,
+            (nibble(bytes[4])? << 4) | nibble(bytes[5])?,
+        )),
+        _ => None,
+    }
+}
+
+fn strip_rgb_func(s: &str) -> Option<&str> {
+    let s = s.trim();
+    s.strip_prefix("rgba(")
+        .or_else(|| s.strip_prefix("rgb("))
+        .and_then(|rest| rest.strip_suffix(')'))
+}
+
+fn parse_rgb_components(s: &str) -> Option<(u8, u8, u8)> {
+    // CSS function syntax permits commas, slashes (for alpha), and whitespace
+    // as separators — accept any. We only need the first three components.
+    let tokens: Vec<&str> = s
+        .split(|c: char| c == ',' || c == '/' || c.is_whitespace())
+        .filter(|t| !t.is_empty())
+        .collect();
+    if tokens.len() < 3 {
+        return None;
+    }
+    Some((
+        parse_component(tokens[0])?,
+        parse_component(tokens[1])?,
+        parse_component(tokens[2])?,
+    ))
+}
+
+fn parse_component(s: &str) -> Option<u8> {
+    if let Some(pct) = s.strip_suffix('%') {
+        let v: f32 = pct.parse().ok()?;
+        Some((v.clamp(0.0, 100.0) * 2.55).round() as u8)
+    } else {
+        let v: f32 = s.parse().ok()?;
+        Some(v.clamp(0.0, 255.0).round() as u8)
+    }
+}
+
+fn format_rgba(r: u8, g: u8, b: u8, alpha: f32) -> String {
+    format!("rgba({}, {}, {}, {})", r, g, b, format_alpha(alpha))
+}
+
+fn format_alpha(alpha: f32) -> String {
+    if alpha == 0.0 {
+        return "0".into();
+    }
+    if alpha == 1.0 {
+        return "1".into();
+    }
+    let s = format!("{:.4}", alpha);
+    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+    if trimmed.is_empty() {
+        "0".into()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_alpha;
+
+    #[test]
+    fn hex_six() {
+        assert_eq!(with_alpha("#228be6", 0.5), "rgba(34, 139, 230, 0.5)");
+    }
+
+    #[test]
+    fn hex_three() {
+        assert_eq!(with_alpha("#fff", 1.0), "rgba(255, 255, 255, 1)");
+        assert_eq!(with_alpha("#0af", 0.25), "rgba(0, 170, 255, 0.25)");
+    }
+
+    #[test]
+    fn hex_eight_drops_existing_alpha() {
+        assert_eq!(with_alpha("#228be680", 0.5), "rgba(34, 139, 230, 0.5)");
+    }
+
+    #[test]
+    fn rgba_replaces_alpha() {
+        assert_eq!(
+            with_alpha("rgba(232, 234, 238, 0.92)", 0.4),
+            "rgba(232, 234, 238, 0.4)"
+        );
+    }
+
+    #[test]
+    fn rgb_adds_alpha() {
+        assert_eq!(with_alpha("rgb(255, 0, 0)", 0.5), "rgba(255, 0, 0, 0.5)");
+    }
+
+    #[test]
+    fn modern_css_separator() {
+        assert_eq!(
+            with_alpha("rgb(255 0 0 / 0.8)", 0.3),
+            "rgba(255, 0, 0, 0.3)"
+        );
+    }
+
+    #[test]
+    fn percent_components() {
+        assert_eq!(with_alpha("rgb(100%, 0%, 0%)", 0.5), "rgba(255, 0, 0, 0.5)");
+    }
+
+    #[test]
+    fn clamps_alpha() {
+        assert_eq!(with_alpha("#000", -1.0), "rgba(0, 0, 0, 0)");
+        assert_eq!(with_alpha("#000", 5.0), "rgba(0, 0, 0, 1)");
+    }
+
+    #[test]
+    fn unparseable_returns_original() {
+        assert_eq!(with_alpha("nonsense", 0.5), "nonsense");
+        assert_eq!(with_alpha("var(--foo)", 0.5), "var(--foo)");
+    }
+}
+
 impl std::str::FromStr for ColorName {
     type Err = ();
 

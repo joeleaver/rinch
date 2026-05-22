@@ -128,12 +128,22 @@ pub fn generate_css_variables(theme: &Theme) -> String {
         css.push_str("  --rinch-color-text: var(--rinch-color-dark-0);\n");
         css.push_str("  --rinch-color-dimmed: var(--rinch-color-dark-2);\n");
         css.push_str("  --rinch-color-border: var(--rinch-color-dark-4);\n");
+        // Alias retained for components that reference `--rinch-color-default-border`
+        // (color picker, context menu, floating panel). Same value as `--rinch-color-border`.
+        css.push_str("  --rinch-color-default-border: var(--rinch-color-dark-4);\n");
         css.push_str("  --rinch-color-placeholder: var(--rinch-color-dark-3);\n");
         // Dark mode control colors
         css.push_str("  --rinch-color-default: var(--rinch-color-dark-5);\n");
         css.push_str("  --rinch-color-default-hover: var(--rinch-color-dark-4);\n");
         css.push_str("  --rinch-color-filled: var(--rinch-color-dark-6);\n");
         css.push_str("  --rinch-color-filled-hover: var(--rinch-color-dark-5);\n");
+        // Component-state tokens (used by Select/DropdownMenu/etc).
+        // In dark mode the primary-color-0 shade is near-white, so we substitute
+        // neutral dark shades; selected items still get the primary text color
+        // applied separately for an accent cue.
+        css.push_str("  --rinch-color-state-disabled: var(--rinch-color-dark-6);\n");
+        css.push_str("  --rinch-color-option-hover: var(--rinch-color-dark-5);\n");
+        css.push_str("  --rinch-color-option-selected: var(--rinch-color-dark-4);\n");
         // Dark mode titlebar: dark background with primary color text/icons
         css.push_str("  --rinch-titlebar-bg: var(--rinch-color-surface);\n");
         css.push_str("  --rinch-titlebar-text: var(--rinch-primary-color);\n");
@@ -149,12 +159,19 @@ pub fn generate_css_variables(theme: &Theme) -> String {
         css.push_str("  --rinch-color-text: var(--rinch-color-gray-9);\n");
         css.push_str("  --rinch-color-dimmed: var(--rinch-color-gray-6);\n");
         css.push_str("  --rinch-color-border: var(--rinch-color-gray-3);\n");
+        // Alias retained for components that reference `--rinch-color-default-border`.
+        css.push_str("  --rinch-color-default-border: var(--rinch-color-gray-3);\n");
         css.push_str("  --rinch-color-placeholder: var(--rinch-color-gray-5);\n");
         // Light mode control colors
         css.push_str("  --rinch-color-default: var(--rinch-color-gray-2);\n");
         css.push_str("  --rinch-color-default-hover: var(--rinch-color-gray-3);\n");
         css.push_str("  --rinch-color-filled: var(--rinch-color-gray-1);\n");
         css.push_str("  --rinch-color-filled-hover: var(--rinch-color-gray-2);\n");
+        // Component-state tokens (used by Select/DropdownMenu/etc).
+        // Light mode keeps the Mantine-style light-primary tint for hover/selected.
+        css.push_str("  --rinch-color-state-disabled: var(--rinch-color-gray-1);\n");
+        css.push_str("  --rinch-color-option-hover: var(--rinch-primary-color-0);\n");
+        css.push_str("  --rinch-color-option-selected: var(--rinch-primary-color-0);\n");
         // Light mode titlebar: primary color background with white text/icons
         css.push_str("  --rinch-titlebar-bg: var(--rinch-primary-color);\n");
         css.push_str("  --rinch-titlebar-text: white;\n");

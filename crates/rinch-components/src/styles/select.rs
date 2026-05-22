@@ -5,6 +5,11 @@ pub fn styles() -> String {
     display: flex;
     flex-direction: column;
     gap: 4px;
+    /* min-width: 0 lets the Select shrink below its intrinsic min-content
+       size when its parent is constrained (e.g., a 110px timeline cell).
+       Without this, flex containers/items default to min-width: auto,
+       which is the trigger's min-content width — typically ~75-150px. */
+    min-width: 0;
 }
 
 .rinch-select__label {
@@ -46,7 +51,7 @@ pub fn styles() -> String {
 }
 
 .rinch-select__input--disabled {
-    background-color: var(--rinch-color-gray-1);
+    background-color: var(--rinch-color-state-disabled);
     color: var(--rinch-color-dimmed);
     cursor: not-allowed;
     pointer-events: none;
@@ -54,6 +59,9 @@ pub fn styles() -> String {
 
 .rinch-select__display {
     flex: 1;
+    /* Pair with overflow: hidden + text-overflow: ellipsis to allow the
+       display label to shrink below its intrinsic content width. */
+    min-width: 0;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
@@ -90,6 +98,14 @@ pub fn styles() -> String {
     padding: 4px;
 }
 
+/* Flipped variant — opens above the trigger when below-space is too small. */
+.rinch-select__dropdown--above {
+    top: auto;
+    bottom: 100%;
+    margin-top: 0;
+    margin-bottom: 4px;
+}
+
 .rinch-select__option {
     padding: 8px var(--rinch-spacing-sm);
     font-size: var(--rinch-font-size-sm);
@@ -100,11 +116,11 @@ pub fn styles() -> String {
 }
 
 .rinch-select__option:hover {
-    background-color: var(--rinch-primary-color-0);
+    background-color: var(--rinch-color-option-hover);
 }
 
 .rinch-select__option--selected {
-    background-color: var(--rinch-primary-color-0);
+    background-color: var(--rinch-color-option-selected);
     color: var(--rinch-primary-color);
     font-weight: 500;
 }
@@ -137,7 +153,7 @@ pub fn styles() -> String {
 
 /* Disabled state */
 .rinch-select--disabled .rinch-select__input {
-    background-color: var(--rinch-color-gray-1);
+    background-color: var(--rinch-color-state-disabled);
     color: var(--rinch-color-dimmed);
     cursor: not-allowed;
 }
