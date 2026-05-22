@@ -25,6 +25,10 @@ use super::DomCodegenContext;
 ///   like `String`, `Vec`, user-defined `MyStruct`)
 /// - Excludes Rust keywords/literals (`self`, `true`, `false`)
 /// - Excludes macro-internal names (anything starting with `__`)
+/// - Excludes identifiers introduced by closure parameters or `let` bindings
+///   inside the expression itself (issue #32 — `.filter(|b| b % 4 == 0)` must
+///   not shadow a non-existent outer `b`). Scope-tracked via a stack pushed on
+///   `Closure` / `Block` entry and popped on exit.
 ///
 /// The collected list is used to emit `let #id = #id.clone();` shadow bindings
 /// before the inner `move ||` closure is constructed. Cloning Copy types via
@@ -35,6 +39,17 @@ fn collect_capture_idents(expr: &syn::Expr) -> Vec<syn::Ident> {
     struct Collector {
         idents: Vec<syn::Ident>,
         seen: HashSet<String>,
+        /// Stack of locally-bound identifier frames. Each frame holds names
+        /// introduced by a closure's params or by `let` bindings inside a block.
+        /// `is_locally_bound` checks every frame; frames pop in LIFO order on
+        /// scope exit.
+        locals: Vec<HashSet<String>>,
+    }
+
+    impl Collector {
+        fn is_locally_bound(&self, name: &str) -> bool {
+            self.locals.iter().any(|frame| frame.contains(name))
+        }
     }
 
     impl<'ast> Visit<'ast> for Collector {
@@ -57,7 +72,7 @@ fn collect_capture_idents(expr: &syn::Expr) -> Vec<syn::Ident> {
             let is_likely_local = first.is_ascii_lowercase()
                 && !name.starts_with("__")
                 && !matches!(name.as_str(), "self" | "true" | "false");
-            if is_likely_local && self.seen.insert(name) {
+            if is_likely_local && !self.is_locally_bound(&name) && self.seen.insert(name) {
                 self.idents.push(seg.ident.clone());
             }
             syn::visit::visit_expr_path(self, expr);
@@ -81,14 +96,100 @@ fn collect_capture_idents(expr: &syn::Expr) -> Vec<syn::Ident> {
                 self.visit_expr(arg);
             }
         }
+
+        fn visit_expr_closure(&mut self, closure: &'ast syn::ExprClosure) {
+            // Closure params bind names visible only inside the body — e.g. the
+            // `b` in `.filter(|b| b % 4 == 0)`. Push a frame for the duration of
+            // the closure so `visit_expr_path` skips them.
+            let mut frame = HashSet::new();
+            for input in &closure.inputs {
+                collect_pat_idents(input, &mut frame);
+            }
+            self.locals.push(frame);
+            syn::visit::visit_expr_closure(self, closure);
+            self.locals.pop();
+        }
+
+        fn visit_block(&mut self, block: &'ast syn::Block) {
+            // Each block introduces a scope for any `let` bindings within it.
+            self.locals.push(HashSet::new());
+            for stmt in &block.stmts {
+                self.visit_stmt(stmt);
+            }
+            self.locals.pop();
+        }
+
+        fn visit_local(&mut self, local: &'ast syn::Local) {
+            // Visit the init expression **first** — names in the RHS resolve
+            // against the *outer* scope (`let x = x + 1` reads outer `x`), so
+            // the new binding only enters scope after the init runs.
+            if let Some(init) = &local.init {
+                self.visit_expr(&init.expr);
+                if let Some((_, diverge)) = &init.diverge {
+                    self.visit_expr(diverge);
+                }
+            }
+            if let Some(frame) = self.locals.last_mut() {
+                collect_pat_idents(&local.pat, frame);
+            }
+        }
     }
 
     let mut collector = Collector {
         idents: Vec::new(),
         seen: HashSet::new(),
+        locals: Vec::new(),
     };
     collector.visit_expr(expr);
     collector.idents
+}
+
+/// Add every identifier *bound by* `pat` to `out`. Walks tuple/struct/tuple-struct
+/// and or-patterns; ignores paths/literals/wildcards/ranges (those don't bind).
+///
+/// Used to determine which names a closure's params or a `let` introduces, so the
+/// capture scanner can skip them.
+fn collect_pat_idents(pat: &syn::Pat, out: &mut HashSet<String>) {
+    use syn::Pat;
+    match pat {
+        Pat::Ident(pat_ident) => {
+            out.insert(pat_ident.ident.to_string());
+            if let Some((_, sub)) = &pat_ident.subpat {
+                collect_pat_idents(sub, out);
+            }
+        }
+        Pat::Tuple(t) => {
+            for p in &t.elems {
+                collect_pat_idents(p, out);
+            }
+        }
+        Pat::TupleStruct(t) => {
+            for p in &t.elems {
+                collect_pat_idents(p, out);
+            }
+        }
+        Pat::Struct(s) => {
+            for field in &s.fields {
+                collect_pat_idents(&field.pat, out);
+            }
+        }
+        Pat::Or(o) => {
+            for p in &o.cases {
+                collect_pat_idents(p, out);
+            }
+        }
+        Pat::Reference(r) => collect_pat_idents(&r.pat, out),
+        Pat::Paren(p) => collect_pat_idents(&p.pat, out),
+        Pat::Slice(s) => {
+            for p in &s.elems {
+                collect_pat_idents(p, out);
+            }
+        }
+        Pat::Type(t) => collect_pat_idents(&t.pat, out),
+        // No-binding patterns:
+        // - Wild, Lit, Range, Rest, Path, Const, Macro, Verbatim
+        _ => {}
+    }
 }
 
 /// Generate DOM code for a Fragment (just renders children in an invisible wrapper).
@@ -469,5 +570,72 @@ pub fn generate_match_block(
                 vec![#(#branch_closures),*]
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_capture_idents;
+
+    fn caps(src: &str) -> Vec<String> {
+        let expr: syn::Expr = syn::parse_str(src).expect("parse");
+        collect_capture_idents(&expr)
+            .iter()
+            .map(|i| i.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn closure_params_are_not_captures() {
+        // The #32 regression repro.
+        let captures = caps("(0..total_bars).filter(|b| b % 4 == 0).collect::<Vec<u32>>()");
+        assert!(captures.contains(&"total_bars".to_string()));
+        assert!(!captures.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn tuple_destructure_closure_params() {
+        let captures = caps("data.iter().filter(|(a, b)| a > b).collect::<Vec<_>>()");
+        assert!(captures.contains(&"data".to_string()));
+        assert!(!captures.contains(&"a".to_string()));
+        assert!(!captures.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn nested_closure_params() {
+        // Outer closure's `x` shouldn't leak into the outer scan, nor should inner's `y`.
+        let captures = caps(
+            "outer.iter().map(|x| inner.iter().map(|y| x + y).sum::<i32>()).collect::<Vec<_>>()",
+        );
+        assert!(captures.contains(&"outer".to_string()));
+        assert!(captures.contains(&"inner".to_string()));
+        assert!(!captures.contains(&"x".to_string()));
+        assert!(!captures.contains(&"y".to_string()));
+    }
+
+    #[test]
+    fn let_binding_inside_block_is_not_a_capture() {
+        let captures = caps(
+            "{ let extra = base.len(); items.iter().filter(|i| i.size > extra).collect::<Vec<_>>() }",
+        );
+        assert!(captures.contains(&"base".to_string()));
+        assert!(captures.contains(&"items".to_string()));
+        assert!(!captures.contains(&"extra".to_string()));
+        assert!(!captures.contains(&"i".to_string()));
+    }
+
+    #[test]
+    fn rhs_of_let_sees_outer_scope() {
+        // `x` in the RHS of `let x = x + 1` should refer to the outer binding,
+        // which IS a capture.
+        let captures = caps("{ let total = total + 1; vec![total] }");
+        assert!(captures.contains(&"total".to_string()));
+    }
+
+    #[test]
+    fn pre_regression_simple_capture_still_works() {
+        // The original #26 case — a non-Copy fn param used in the iter source.
+        let captures = caps("variant_options(default_variant.clone())");
+        assert!(captures.contains(&"default_variant".to_string()));
     }
 }
