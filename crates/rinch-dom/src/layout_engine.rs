@@ -897,25 +897,29 @@ impl RinchDocument {
     /// same result. Nested display:contents (e.g. from `else if` chains) are
     /// handled by recursively flattening.
     pub(crate) fn sync_display_contents(&mut self) {
+        use crate::computed_style::values::DisplayValue;
+
         // Find all display:contents nodes and their nearest non-contents ancestors.
         // We rebuild the taffy children of each affected ancestor from scratch.
+        //
+        // The check uses the resolved `computed_style.display`, not the raw inline
+        // `style` attribute, so that `display: contents` set via a CSS class (e.g.
+        // `.rinch-context-menu { display: contents }`) is treated the same as the
+        // inline form. Without this, class-based contents elements stay in the
+        // Taffy tree as ordinary boxes and trap their children inside a 0×0 (or
+        // 2×2 text-sized) parent — see issue #25.
         let mut affected_parents: Vec<usize> = Vec::new();
         let mut all_contents_nodes: Vec<usize> = Vec::new();
 
         for (id, node) in &self.tree.nodes {
-            if let Some(style_str) = node.attributes.get("style")
-                && layout::is_display_contents(style_str)
-            {
+            if node.computed_style.display == DisplayValue::Contents {
                 all_contents_nodes.push(id);
 
                 // Walk up to find nearest non-display-contents ancestor
                 let mut ancestor = node.parent;
                 while let Some(anc_id) = ancestor {
-                    let anc_is_contents = self.tree.nodes[anc_id]
-                        .attributes
-                        .get("style")
-                        .map(|s| layout::is_display_contents(s))
-                        .unwrap_or(false);
+                    let anc_is_contents =
+                        self.tree.nodes[anc_id].computed_style.display == DisplayValue::Contents;
                     if !anc_is_contents {
                         if !affected_parents.contains(&anc_id) {
                             affected_parents.push(anc_id);
@@ -977,13 +981,11 @@ impl RinchDocument {
         nodes: &slab::Slab<crate::node::Node>,
         node_id: usize,
     ) -> Vec<taffy::NodeId> {
+        use crate::computed_style::values::DisplayValue;
+
         let mut result = Vec::new();
         for &child_id in &nodes[node_id].children {
-            let is_contents = nodes[child_id]
-                .attributes
-                .get("style")
-                .map(|s| layout::is_display_contents(s))
-                .unwrap_or(false);
+            let is_contents = nodes[child_id].computed_style.display == DisplayValue::Contents;
 
             if is_contents {
                 // Recursively flatten: add grandchildren directly
