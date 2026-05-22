@@ -273,6 +273,18 @@ pub fn set_click_context(ctx: ClickContext) {
     });
 }
 
+/// Set the ancestor chain for the current click, used by [`click_ancestors`].
+///
+/// Called by the runtime before dispatching a click handler. Pass an empty
+/// `Vec` to clear the chain (e.g. for synthetic events without DOM ancestry).
+///
+/// [`click_ancestors`]: super::click_ancestors
+pub fn set_click_ancestors(ancestors: Vec<super::AncestorBounds>) {
+    super::CLICK_ANCESTORS.with(|c| {
+        *c.borrow_mut() = ancestors;
+    });
+}
+
 /// Get the current click context.
 ///
 /// This can be called from event handlers to access mouse position and

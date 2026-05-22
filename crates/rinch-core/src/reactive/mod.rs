@@ -22,13 +22,17 @@
 //! count.set(1); // Prints: "Count is: 1"
 //! ```
 
+mod bounds;
 mod effect;
 mod memo;
+mod poll;
 mod scope;
 mod signal;
 
+pub use bounds::{ElementBounds, register_bounds_signal, update_bounds_signals};
 pub use effect::Effect;
 pub use memo::Memo;
+pub use poll::{PollRate, drain_polls, poll_signal};
 pub use scope::Scope;
 pub use signal::Signal;
 

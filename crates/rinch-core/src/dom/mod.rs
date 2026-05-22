@@ -633,6 +633,36 @@ impl NodeHandle {
         doc.borrow().query_node_layout(self.node_id.0 as u64)
     }
 
+    /// Reactive bounds signal for this element, refreshed by the runtime after
+    /// each layout pass.
+    ///
+    /// The signal carries absolute viewport-relative pixel bounds — the same
+    /// frame [`crate::events::ClickContext::element_x`] uses, not the
+    /// parent-relative values from [`Self::get_layout_bounds`]. Subscribers
+    /// only re-run when the rect changes (uses `set_if_changed` internally).
+    ///
+    /// Initial value is `ElementBounds::default()` (zero rect). The first real
+    /// bounds arrive after the next layout pass.
+    ///
+    /// Typical use: derive zoom / scroll / domain-coordinate math from a
+    /// strip's measured pixel width without hand-rolling a polling thread.
+    ///
+    /// ```ignore
+    /// let strip = __scope.create_element("div");
+    /// // ... attach strip to DOM, etc.
+    /// let strip_bounds = strip.bounds_signal();
+    /// rsx! {
+    ///     // child positioned at `bar_index / total_bars` of strip width,
+    ///     // automatically updating when the strip resizes.
+    ///     div {
+    ///         style: {move || format!("left: {}px", bar_index as f32 / total_bars as f32 * strip_bounds.get().width)},
+    ///     }
+    /// }
+    /// ```
+    pub fn bounds_signal(&self) -> crate::reactive::Signal<crate::reactive::ElementBounds> {
+        crate::reactive::register_bounds_signal(self.node_id.0 as u64)
+    }
+
     /// Get the tag name of this node (if it's an element).
     pub fn tag_name(&self) -> Option<String> {
         let doc = self.doc.upgrade()?;

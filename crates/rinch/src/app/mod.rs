@@ -589,6 +589,35 @@ impl RinchApp {
             }
         }
 
+        // Refresh element-bounds signals against the freshly-computed layout.
+        // Subscribers (e.g. timeline-style widgets reading a strip's measured
+        // width) re-run inside this borrow, so the document RefCell must be
+        // borrowed read-only just for the lookup.
+        {
+            let d = doc.borrow();
+            rinch_core::reactive::update_bounds_signals(|node_id| {
+                let nid = node_id as usize;
+                let n = d.tree.nodes.get(nid)?;
+                // Walk to root accumulating parent-relative offsets — same
+                // convention as `dispatch_oncontextmenu` / `click_handling`.
+                let mut ax = n.layout.x;
+                let mut ay = n.layout.y;
+                let mut pid = n.parent;
+                while let Some(p) = pid {
+                    if let Some(pn) = d.tree.nodes.get(p) {
+                        ax += pn.layout.x;
+                        ay += pn.layout.y;
+                        ax -= pn.scroll_offset.0 as f32;
+                        ay -= pn.scroll_offset.1 as f32;
+                        pid = pn.parent;
+                    } else {
+                        break;
+                    }
+                }
+                Some((ax, ay, n.layout.width, n.layout.height))
+            });
+        }
+
         self.scene_dirty = true;
 
         // Log frame time if RINCH_PERF is set

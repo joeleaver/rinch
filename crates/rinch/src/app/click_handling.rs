@@ -454,6 +454,7 @@ impl RinchApp {
                         viewport_width,
                         viewport_height,
                     });
+                    events::set_click_ancestors(Self::collect_click_ancestors(&d.tree, node_id));
 
                     drop(d);
                     // Sync CE cursor before handler so toolbar buttons see current selection

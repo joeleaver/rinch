@@ -758,6 +758,7 @@ impl RinchRuntime {
         // Ensure pending cross-thread closures are processed and layout
         // is resolved before painting (same as paint_gpu).
         drain_main_queue();
+        rinch_core::reactive::drain_polls();
         if self.app.has_pending_layout() {
             let sz = window.inner_size();
             self.app.resolve_and_repaint(sz.0 as f32, sz.1 as f32);
@@ -911,6 +912,7 @@ impl RinchRuntime {
         // stale layout if the ReRender event from signal changes hasn't
         // been processed yet.
         drain_main_queue();
+        rinch_core::reactive::drain_polls();
         if self.app.has_pending_layout() {
             let sz = window.inner_size();
             self.app.resolve_and_repaint(sz.0 as f32, sz.1 as f32);

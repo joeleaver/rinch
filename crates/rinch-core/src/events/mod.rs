@@ -99,6 +99,72 @@ thread_local! {
     pub(crate) static CLICK_CONTEXT: RefCell<ClickContext> = RefCell::new(ClickContext::default());
 }
 
+/// Bounding box of an ancestor of the clicked element, captured at dispatch time.
+///
+/// Returned by [`click_ancestors`] / [`find_click_ancestor`] so handlers can do
+/// math in a *specific parent's* coordinate space — e.g. converting a click on a
+/// timeline block into "fraction of the strip's width" without depending on how
+/// many wrapper divs sit between them.
+///
+/// Positions are absolute (logical pixels relative to the viewport), like
+/// [`ClickContext::element_x`] / [`ClickContext::element_y`].
+#[derive(Debug, Clone, Default)]
+pub struct AncestorBounds {
+    /// Tag name (e.g. `"div"`).
+    pub tag: String,
+    /// `id` attribute; empty if unset.
+    pub id: String,
+    /// `class` attribute; empty if unset.
+    pub class: String,
+    /// Absolute X position of the element's top-left corner, in logical pixels.
+    pub x: f32,
+    /// Absolute Y position of the element's top-left corner.
+    pub y: f32,
+    /// Element width in logical pixels.
+    pub width: f32,
+    /// Element height in logical pixels.
+    pub height: f32,
+}
+
+impl AncestorBounds {
+    /// Whether `name` appears in the space-separated `class` attribute.
+    pub fn has_class(&self, name: &str) -> bool {
+        self.class.split_whitespace().any(|c| c == name)
+    }
+}
+
+// Thread-local storage for the ancestor chain of the current click target.
+// Kept separate from `CLICK_CONTEXT` so that struct can stay `Copy`.
+thread_local! {
+    pub(crate) static CLICK_ANCESTORS: RefCell<Vec<AncestorBounds>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Ancestors of the most recently dispatched click target, ordered from
+/// **immediate parent (index 0)** outward to the document root.
+///
+/// Returns an empty vector when no click is being dispatched, or when the
+/// dispatcher did not populate the chain (e.g. synthetic events). The chain
+/// is recomputed each click, so values from a previous click are *not* visible.
+pub fn click_ancestors() -> Vec<AncestorBounds> {
+    CLICK_ANCESTORS.with(|c| c.borrow().clone())
+}
+
+/// First ancestor of the click target for which `filter` returns `true`,
+/// starting from the immediate parent and walking outward.
+///
+/// ```ignore
+/// // Convert click X into a fraction of an arbitrary parent strip's width,
+/// // regardless of how many wrappers are between block and strip.
+/// if let Some(strip) = find_click_ancestor(|a| a.has_class("timeline-strip")) {
+///     let ctx = get_click_context();
+///     let frac = (ctx.mouse_x - strip.x) / strip.width.max(1.0);
+/// }
+/// ```
+pub fn find_click_ancestor(filter: impl Fn(&AncestorBounds) -> bool) -> Option<AncestorBounds> {
+    CLICK_ANCESTORS.with(|c| c.borrow().iter().find(|a| filter(a)).cloned())
+}
+
 /// Escape HTML special characters in a string.
 ///
 /// This is used at runtime for dynamic content in RSX.

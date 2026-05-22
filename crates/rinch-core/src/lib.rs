@@ -35,9 +35,10 @@ pub use reconcile::{ListOp, diff_keyed};
 
 // Re-export reactive types for convenience
 pub use reactive::{
-    Effect, Memo, Scope, Signal, batch, clear_on_signal_change, clear_signals_changed, derived,
+    Effect, ElementBounds, Memo, PollRate, Scope, Signal, batch, clear_on_signal_change,
+    clear_signals_changed, derived, drain_polls, poll_signal, register_bounds_signal,
     register_main_thread, set_cross_thread_dispatcher, set_on_signal_change, signals_changed,
-    untracked,
+    untracked, update_bounds_signals,
 };
 
 // Re-export context for sharing state across components
@@ -48,21 +49,21 @@ pub use context::{
 
 // Re-export event handling types
 pub use events::{
-    ClickContext, ContentEditableClickData, ContentEditableDragData, Drag, DragContext,
-    EventCallback, EventHandlerId, FileDropCallback, InputCallback, InputContext, KeyEventData,
-    ModifierState, SelectionAction, TextHitInfo, check_and_clear_input_handled,
+    AncestorBounds, ClickContext, ContentEditableClickData, ContentEditableDragData, Drag,
+    DragContext, EventCallback, EventHandlerId, FileDropCallback, InputCallback, InputContext,
+    KeyEventData, ModifierState, SelectionAction, TextHitInfo, check_and_clear_input_handled,
     clear_ce_click_interceptor, clear_ce_drag_interceptor, clear_handlers,
     clear_keyboard_interceptor, clear_selection_callback, clear_selection_snapshot,
-    clear_selection_sync_callback, dispatch_ce_click, dispatch_ce_drag, dispatch_event,
-    dispatch_file_drop_event, dispatch_input_event, dispatch_keyboard_event, dispatch_selection,
-    finish_drag, fire_selection_sync, get_click_context, get_input_context, get_modifier_state,
-    get_saved_selection, is_drag_ghost_visible, query_selection_ranges, register_file_drop_handler,
-    register_handler, register_input_handler, request_focus, request_selection_clear,
-    reset_drag_ghost_visibility, restore_drag_ghost, save_selection_snapshot,
-    set_ce_click_interceptor, set_ce_drag_interceptor, set_click_context, set_input_context,
-    set_keyboard_interceptor, set_modifier_state, set_selection_callback,
-    set_selection_sync_callback, suppress_drag_ghost, take_pending_focus_request,
-    take_pending_selection_clear, update_drag,
+    clear_selection_sync_callback, click_ancestors, dispatch_ce_click, dispatch_ce_drag,
+    dispatch_event, dispatch_file_drop_event, dispatch_input_event, dispatch_keyboard_event,
+    dispatch_selection, find_click_ancestor, finish_drag, fire_selection_sync, get_click_context,
+    get_input_context, get_modifier_state, get_saved_selection, is_drag_ghost_visible,
+    query_selection_ranges, register_file_drop_handler, register_handler, register_input_handler,
+    request_focus, request_selection_clear, reset_drag_ghost_visibility, restore_drag_ghost,
+    save_selection_snapshot, set_ce_click_interceptor, set_ce_drag_interceptor,
+    set_click_ancestors, set_click_context, set_input_context, set_keyboard_interceptor,
+    set_modifier_state, set_selection_callback, set_selection_sync_callback, suppress_drag_ghost,
+    take_pending_focus_request, take_pending_selection_clear, update_drag,
 };
 
 // Re-export DOM types for fine-grained rendering

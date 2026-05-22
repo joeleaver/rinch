@@ -1224,6 +1224,59 @@ impl RinchApp {
         }
     }
 
+    /// Build an absolute-positioned ancestor chain for `hit_id`, from immediate
+    /// parent (index 0) out to the document root.
+    ///
+    /// Used by [`events::set_click_ancestors`] before dispatching click handlers
+    /// so handlers can convert click coords into an arbitrary ancestor's frame
+    /// (see [`events::find_click_ancestor`]). One pass from root to hit so the
+    /// total cost is O(depth), not O(depth²) like a per-ancestor walk-up.
+    pub(crate) fn collect_click_ancestors(
+        tree: &rinch_dom::NodeTree,
+        hit_id: usize,
+    ) -> Vec<events::AncestorBounds> {
+        // Chain from hit upward: [hit, parent, grandparent, ..., root]
+        let mut chain: Vec<usize> = Vec::new();
+        let mut cur = Some(hit_id);
+        while let Some(nid) = cur {
+            chain.push(nid);
+            cur = tree.get(nid).and_then(|n| n.parent);
+        }
+        if chain.len() <= 1 {
+            return Vec::new();
+        }
+
+        // Walk root → hit, accumulating absolute (x, y). Each iteration records
+        // the *current* node's top-left, then offsets by its scroll so the next
+        // iteration (this node's child) sees the post-scroll content origin.
+        let mut abs: Vec<events::AncestorBounds> = Vec::with_capacity(chain.len());
+        let mut ax = 0.0_f32;
+        let mut ay = 0.0_f32;
+        for &nid in chain.iter().rev() {
+            if let Some(n) = tree.get(nid) {
+                ax += n.layout.x;
+                ay += n.layout.y;
+                abs.push(events::AncestorBounds {
+                    tag: n.tag().unwrap_or("").to_string(),
+                    id: n.attributes.get("id").cloned().unwrap_or_default(),
+                    class: n.attributes.get("class").cloned().unwrap_or_default(),
+                    x: ax,
+                    y: ay,
+                    width: n.layout.width,
+                    height: n.layout.height,
+                });
+                ax -= n.scroll_offset.0 as f32;
+                ay -= n.scroll_offset.1 as f32;
+            }
+        }
+
+        // `abs` is currently [root, ..., hit]. Drop the hit itself and reverse
+        // so index 0 is the immediate parent of the hit element.
+        abs.pop();
+        abs.reverse();
+        abs
+    }
+
     // ── Drag-and-drop helpers ─────────────────────────────────────────────
 
     /// Walk up from `hit_id` looking for a `draggable="true"` attribute.

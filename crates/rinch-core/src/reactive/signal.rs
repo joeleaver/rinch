@@ -5,6 +5,21 @@ use std::marker::PhantomData;
 
 use super::{ObserverId, RUNTIME, SIGNAL_STORE};
 
+/// Build the off-main-thread panic message used by `set`, `set_if_changed`, and `update`.
+///
+/// Names the offending method and the exact cross-thread alternative so the panic
+/// message itself documents the fix.
+#[cold]
+#[inline(never)]
+fn panic_off_main(called: &str, alt: &str) -> ! {
+    panic!(
+        "Signal::{called}() must run on the main thread. \
+         Replace `signal.{called}(...)` with `signal.{alt}(...)` to dispatch \
+         across threads, or wrap the call in `rinch::run_on_main_thread(...)` \
+         to schedule it manually."
+    );
+}
+
 /// A reactive container that holds a value and notifies subscribers when it changes.
 ///
 /// `Signal<T>` implements `Copy` — no `.clone()` needed before closures.
@@ -178,11 +193,7 @@ impl<T: 'static> Signal<T> {
     /// for automatic cross-thread dispatch.
     pub fn set(&self, value: T) {
         if !super::is_main_thread() {
-            panic!(
-                "Signal::set() called from a background thread. \
-                 Use signal.send(value) for automatic cross-thread dispatch, \
-                 or rinch::run_on_main_thread() to dispatch manually."
-            );
+            panic_off_main("set", "send");
         }
         SIGNAL_STORE.with(|store| {
             let mut store = store.borrow_mut();
@@ -207,11 +218,7 @@ impl<T: 'static> Signal<T> {
         T: PartialEq,
     {
         if !super::is_main_thread() {
-            panic!(
-                "Signal::set_if_changed() called from a background thread. \
-                 Use signal.send(value) for automatic cross-thread dispatch, \
-                 or rinch::run_on_main_thread() to dispatch manually."
-            );
+            panic_off_main("set_if_changed", "send");
         }
         let changed = SIGNAL_STORE.with(|store| {
             let mut store = store.borrow_mut();
@@ -240,11 +247,7 @@ impl<T: 'static> Signal<T> {
     /// for automatic cross-thread dispatch.
     pub fn update(&self, f: impl FnOnce(&mut T)) {
         if !super::is_main_thread() {
-            panic!(
-                "Signal::update() called from a background thread. \
-                 Use signal.update_send() for automatic cross-thread dispatch, \
-                 or rinch::run_on_main_thread() to dispatch manually."
-            );
+            panic_off_main("update", "update_send");
         }
         SIGNAL_STORE.with(|store| {
             let mut store = store.borrow_mut();
