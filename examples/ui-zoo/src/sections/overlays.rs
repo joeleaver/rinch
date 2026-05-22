@@ -179,32 +179,25 @@ pub fn overlays_section() -> NodeHandle {
                         }
                         Text { size: "sm", color: "dimmed", "Click to open a menu of actions." }
                         Divider {}
-                        DropdownMenu { opened_fn: move || dropdown_opened.get(),
+                        DropdownMenu {
+                            opened_fn: move || dropdown_opened.get(),
+                            on_close: move || dropdown_opened.set(false),
                             DropdownMenuTarget {
                                 Button { onclick: move || dropdown_opened.update(|v| *v = !*v), "Open Menu" }
                             }
                             DropdownMenuDropdown {
                                 DropdownMenuItem {
-                                    onclick: move || {
-                                        dropdown_selection.set("Edit".to_string());
-                                        dropdown_opened.set(false);
-                                    },
+                                    onclick: move || dropdown_selection.set("Edit".to_string()),
                                     "Edit"
                                 }
                                 DropdownMenuItem {
-                                    onclick: move || {
-                                        dropdown_selection.set("Duplicate".to_string());
-                                        dropdown_opened.set(false);
-                                    },
+                                    onclick: move || dropdown_selection.set("Duplicate".to_string()),
                                     "Duplicate"
                                 }
                                 DropdownMenuDivider {}
                                 DropdownMenuItem {
                                     color: "red",
-                                    onclick: move || {
-                                        dropdown_selection.set("Delete".to_string());
-                                        dropdown_opened.set(false);
-                                    },
+                                    onclick: move || dropdown_selection.set("Delete".to_string()),
                                     "Delete"
                                 }
                             }

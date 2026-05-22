@@ -118,6 +118,19 @@ pub fn styles() -> String {
     margin: var(--rinch-spacing-xs) 0;
 }
 
+/* Backdrop — invisible full-viewport overlay that catches outside clicks
+   when close_on_click_outside is true. z-index sits below the dropdown
+   panel (z-index: 100) so option clicks still land on the items. */
+.rinch-dropdown-menu__backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 99;
+    display: none;
+}
+
 /* Radius */
 .rinch-dropdown-menu--radius-xs .rinch-dropdown-menu__dropdown { border-radius: var(--rinch-radius-xs); }
 .rinch-dropdown-menu--radius-sm .rinch-dropdown-menu__dropdown { border-radius: var(--rinch-radius-sm); }
