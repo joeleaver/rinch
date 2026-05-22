@@ -730,6 +730,8 @@ Subscribe: `subscribe_ce_events(Rc::new(|event| { ... }))`. Dispatch: `dispatch_
 
 Rinch has two drag systems: **DOM drag attributes** for element-to-element DnD, and the **`Drag` builder** for pointer capture (sliders, panel dragging, resize handles).
 
+> **Picking the right one:** if you want **continuous per-frame tracking** (slider value, panel position, timeline scrub), use **`Drag::absolute()` / `Drag::percent()`** from inside an `onclick` handler — that's the pointer-capture system. The HTML5-style `draggable: true` + `ondragstart` + `ondragend` attributes only fire at the **endpoints** of the drag; for per-frame events on that path use `data-ondragmove` (source) and `data-ondragover` (target).
+
 ### DOM Drag Attributes
 
 Set these attributes on elements to participate in element-to-element drag-and-drop:

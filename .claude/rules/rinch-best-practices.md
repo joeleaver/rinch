@@ -93,6 +93,24 @@ input { oninput: move |value: String| name.set(value) }
 
 `set()`/`update()` panic off the main thread.
 
+### 11. Drag handling: pick the right primitive
+
+There are two drag systems. The HTML5-port instinct of `draggable: true` + `ondragstart` + `ondragend` only fires at the endpoints and silently gives a working-but-wrong implementation for continuous tracking.
+
+- **Continuous tracking (sliders, panel dragging, resize handles, timeline scrubbers):** use `Drag::absolute()` or `Drag::percent()` started from inside an `onclick` (rinch dispatches click on mousedown). `.on_move(...)` fires every frame, `.on_end(...)` fires on mouseup.
+
+  ```rust
+  div { onclick: move || {
+      let ctx = get_click_context();
+      Drag::absolute()
+          .on_move(move |x, _y| preview.set(x))
+          .on_end(move |x, _y| commit(x))
+          .start();
+  } }
+  ```
+
+- **Element-to-element DnD (drag a card into a list):** use the data-attribute drag system. **`data-ondragmove` fires on the source every motion event**; **`data-ondragover` fires on the drop target every motion event** — both are per-frame, not just at endpoints. `data-ondragstart` / `data-ondragend` fire at endpoints; `data-ondragenter` / `data-ondragleave` fire on target boundary crossings.
+
 ## Quick Checklist
 
 Before finishing any rinch code change, verify:
@@ -102,3 +120,4 @@ Before finishing any rinch code change, verify:
 - String literals for text props, not `Some(String::from(...))`
 - Controlled inputs have both `value_fn` and `oninput`
 - For loops have `key:` props
+- Continuous-drag handlers use `Drag::absolute()` / `Drag::percent()` (not `ondragstart` + `ondragend`)
