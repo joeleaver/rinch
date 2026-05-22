@@ -371,12 +371,17 @@ pub fn generate_component_field_assignments(
                 quote! { #name: Some(#value) }
             } else if name_str.ends_with("_fn") {
                 quote! { #name: Some(std::rc::Rc::new(#value)) }
-            } else if crate::helpers::is_literal_bool(value) {
-                quote! { #name: #value }
-            } else if crate::helpers::is_literal_int(value)
+            } else if crate::helpers::is_literal_bool(value)
+                || crate::helpers::is_literal_int(value)
                 || crate::helpers::is_literal_float(value)
             {
-                quote! { #name: Some(#value) }
+                // Literal bool/int/float fall through to `.into()` so the same expression
+                // works whether the destination field is `T` or `Option<T>`:
+                //   - `T` field: `From<T> for T` (trivial blanket) gives identity.
+                //   - `Option<T>` field: `From<T> for Option<T>` in std gives `Some(v)`.
+                // The destination field type drives inference, so unsuffixed literals
+                // like `12.0` resolve correctly against the field type.
+                quote! { #name: (#value).into() }
             } else if crate::helpers::is_literal_string(value) {
                 quote! { #name: String::from(#value) }
             } else if crate::helpers::is_option_expr(value) {

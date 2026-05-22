@@ -283,6 +283,8 @@ fn generate_component(func: syn::ItemFn) -> TokenStream {
 /// - Float types → `0.0`
 /// - `Callback` → no-op callback
 /// - `InputCallback` → no-op callback
+/// - `Signal<T>` → `Signal::new(T::default())` (requires `T: Default`)
+/// - `Memo<T>` → `Memo::new(|| T::default())` (requires `T: Default`)
 ///
 /// Unknown types fall back to `Default::default()`.
 fn type_default_expr(ty: &syn::Type) -> proc_macro2::TokenStream {
@@ -303,6 +305,20 @@ fn type_default_expr(ty: &syn::Type) -> proc_macro2::TokenStream {
             "f64" => return quote! { 0.0f64 },
             "Callback" => return quote! { Callback::new(|| {}) },
             "InputCallback" => return quote! { InputCallback::new(|_: String| {}) },
+            "Signal" => {
+                if let Some(inner) = generic_arg(&segment.arguments) {
+                    return quote! {
+                        Signal::new(<#inner as ::std::default::Default>::default())
+                    };
+                }
+            }
+            "Memo" => {
+                if let Some(inner) = generic_arg(&segment.arguments) {
+                    return quote! {
+                        Memo::new(|| <#inner as ::std::default::Default>::default())
+                    };
+                }
+            }
             _ => {}
         }
     }
@@ -311,4 +327,16 @@ fn type_default_expr(ty: &syn::Type) -> proc_macro2::TokenStream {
     // If the type doesn't impl Default and the user doesn't provide this prop,
     // they'll get a compile error pointing to this specific field.
     quote! { ::std::default::Default::default() }
+}
+
+/// Extract the first generic type argument from a path-segment's `<T, ...>`.
+fn generic_arg(args: &syn::PathArguments) -> Option<&syn::Type> {
+    if let syn::PathArguments::AngleBracketed(ab) = args {
+        for arg in &ab.args {
+            if let syn::GenericArgument::Type(ty) = arg {
+                return Some(ty);
+            }
+        }
+    }
+    None
 }

@@ -2,13 +2,94 @@
 //!
 //! Handles `Fragment` and native `if`/`for`/`match` control flow in RSX.
 
+use std::collections::HashSet;
+
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
+use syn::visit::Visit;
 
 use crate::element::RsxElement;
 use crate::node::{RsxElseBranch, RsxForLoop, RsxIfBlock, RsxMatchBlock, RsxNode};
 
 use super::DomCodegenContext;
+
+/// Collect simple identifier references in `expr` that look like captures of
+/// the surrounding scope (local variables / function parameters), as a fix for
+/// the nested `if { for { ... } }` capture conflict (issue #26 part 3+4).
+///
+/// **Heuristics** — we don't have type info in the macro, so this filters
+/// based on naming conventions:
+///
+/// - Single-segment path expressions only (`foo`, not `foo::bar` or `Module::FOO`)
+/// - Identifier's first character must be lowercase (filters out PascalCase types
+///   like `String`, `Vec`, user-defined `MyStruct`)
+/// - Excludes Rust keywords/literals (`self`, `true`, `false`)
+/// - Excludes macro-internal names (anything starting with `__`)
+///
+/// The collected list is used to emit `let #id = #id.clone();` shadow bindings
+/// before the inner `move ||` closure is constructed. Cloning Copy types via
+/// `.clone()` is a no-op; the shadow only matters for non-Copy values like
+/// `String`. Types that don't impl `Clone` will still fail with a clear error
+/// pointing at the field — same behaviour as user code calling `.clone()` directly.
+fn collect_capture_idents(expr: &syn::Expr) -> Vec<syn::Ident> {
+    struct Collector {
+        idents: Vec<syn::Ident>,
+        seen: HashSet<String>,
+    }
+
+    impl<'ast> Visit<'ast> for Collector {
+        fn visit_expr_path(&mut self, expr: &'ast syn::ExprPath) {
+            // Only single-segment paths with no generics / no leading `::`.
+            if expr.qself.is_some()
+                || expr.path.leading_colon.is_some()
+                || expr.path.segments.len() != 1
+            {
+                syn::visit::visit_expr_path(self, expr);
+                return;
+            }
+            let seg = &expr.path.segments[0];
+            if !seg.arguments.is_none() {
+                syn::visit::visit_expr_path(self, expr);
+                return;
+            }
+            let name = seg.ident.to_string();
+            let first = name.chars().next().unwrap_or('_');
+            let is_likely_local = first.is_ascii_lowercase()
+                && !name.starts_with("__")
+                && !matches!(name.as_str(), "self" | "true" | "false");
+            if is_likely_local && self.seen.insert(name) {
+                self.idents.push(seg.ident.clone());
+            }
+            syn::visit::visit_expr_path(self, expr);
+        }
+
+        fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+            // Only visit the receiver — method names are not captures.
+            self.visit_expr(&call.receiver);
+            for arg in &call.args {
+                self.visit_expr(arg);
+            }
+        }
+
+        fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+            // Skip the function expression if it's a plain path (the function
+            // name), only descend into arguments. Function names aren't moved.
+            if !matches!(*call.func, syn::Expr::Path(_)) {
+                self.visit_expr(&call.func);
+            }
+            for arg in &call.args {
+                self.visit_expr(arg);
+            }
+        }
+    }
+
+    let mut collector = Collector {
+        idents: Vec::new(),
+        seen: HashSet::new(),
+    };
+    collector.visit_expr(expr);
+    collector.idents
+}
 
 /// Generate DOM code for a Fragment (just renders children in an invisible wrapper).
 pub fn element_to_dom_fragment(element: &RsxElement, ctx: &mut DomCodegenContext) -> TokenStream2 {
@@ -262,8 +343,20 @@ pub fn generate_for_loop(
         quote! { move |#pattern| { #(#leading_stmts)* ::std::string::ToString::to_string(&#key_fn) } }
     };
 
+    // Issue #26 part 3: pre-clone identifiers referenced by `iter_expr` so the
+    // `move ||` collection closure can construct cleanly when the enclosing
+    // scope is itself a non-FnOnce closure (e.g. an `if`/`match` branch). The
+    // outer closure stays untouched; each call constructs a fresh shadow that
+    // the inner closure consumes. Copy types' `.clone()` is a no-op.
+    let captures = collect_capture_idents(iter_expr);
+    let capture_clones: Vec<TokenStream2> = captures
+        .iter()
+        .map(|id| quote! { #[allow(unused_mut)] let mut #id = ::std::clone::Clone::clone(&#id); })
+        .collect();
+
     quote! {
         {
+            #(#capture_clones)*
             rinch::core::for_each_dom_typed(
                 __scope,
                 &#parent_var,
