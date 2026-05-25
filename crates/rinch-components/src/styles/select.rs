@@ -79,12 +79,17 @@ pub fn styles() -> String {
     transition: transform 200ms ease;
 }
 
-/* Dropdown overlay */
+/* Dropdown overlay
+   Width: trigger width is the floor (min-width: 100%), but the panel grows
+   to fit the widest option (width: max-content). max-width caps it so
+   pathologically long labels don't escape the viewport. See GH #33. */
 .rinch-select__dropdown {
     position: absolute;
     top: 100%;
     left: 0;
-    right: 0;
+    min-width: 100%;
+    width: max-content;
+    max-width: min(calc(100vw - 16px), 480px);
     margin-top: 4px;
     display: none;
     flex-direction: column;
@@ -106,6 +111,12 @@ pub fn styles() -> String {
     margin-bottom: 4px;
 }
 
+/* Options demand a single-line intrinsic width via `white-space: nowrap`.
+   The column-flex panel sizes its cross axis to the widest child's
+   intrinsic width, so this is what actually grows the panel past
+   `min-width: 100%` up to the `max-width` cap (the `width: max-content`
+   above is a defensive hint — Stylo currently parses it as Auto). Without
+   nowrap, options wrap inside the trigger-width panel and nothing grows. */
 .rinch-select__option {
     padding: 8px var(--rinch-spacing-sm);
     font-size: var(--rinch-font-size-sm);
@@ -113,6 +124,7 @@ pub fn styles() -> String {
     border-radius: var(--rinch-radius-sm);
     cursor: pointer;
     user-select: none;
+    white-space: nowrap;
 }
 
 .rinch-select__option:hover {

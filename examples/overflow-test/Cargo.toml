@@ -1,0 +1,8 @@
+[package]
+name = "overflow-test"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop", "debug", "components", "theme"] }
+rinch-core = { workspace = true }

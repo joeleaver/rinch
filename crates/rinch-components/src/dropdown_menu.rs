@@ -2,6 +2,7 @@
 //!
 //! A dropdown menu component (distinct from native AppMenu/Menu).
 
+use rinch_core::Callback;
 use rinch_core::Component;
 use rinch_core::Signal;
 use rinch_core::dom::{NodeHandle, RenderScope};
@@ -105,7 +106,9 @@ impl std::str::FromStr for DropdownMenuPosition {
 /// let show_menu = Signal::new(false);
 ///
 /// rsx! {
-///     DropdownMenu { opened: show_menu.get(),
+///     DropdownMenu {
+///         opened_fn: move || show_menu.get(),
+///         on_close: move || show_menu.set(false),
 ///         DropdownMenuTarget {
 ///             Button { onclick: move || show_menu.update(|v| *v = !*v),
 ///                 "Options"
@@ -133,14 +136,28 @@ pub struct DropdownMenu {
     pub radius: String,
     /// Shadow size.
     pub shadow: String,
-    /// Whether clicking outside closes menu.
+    /// Whether clicking outside closes menu. Requires `on_close` to actually
+    /// close — the menu's open state is owned by the caller via `opened_fn`,
+    /// and the backdrop fires `on_close` so the caller can flip their signal.
     pub close_on_click_outside: bool,
-    /// Whether clicking item closes menu.
+    /// Whether clicking an item closes the menu. Requires `on_close`; when
+    /// true, item clicks fire `on_close` automatically so the caller doesn't
+    /// need `set(false)` boilerplate inside every item's onclick.
     pub close_on_item_click: bool,
+    /// Fired when the user clicks outside the menu or clicks a menu item
+    /// (gated by `close_on_click_outside` and `close_on_item_click` flags).
+    /// The caller should set their `opened_fn` source to false from here.
+    pub on_close: Option<Callback>,
     /// Width of the dropdown.
     pub width: String,
     /// Z-index.
     pub z_index: Option<i32>,
+    /// Internal signal shared with DropdownMenuItem children via thread-local
+    /// (set in Default::default before items render). Items publish a close
+    /// request by setting it to false; DropdownMenu observes that to fire
+    /// `on_close`. Set automatically — not a user prop.
+    #[doc(hidden)]
+    pub _close_signal: Signal<bool>,
 }
 
 impl std::fmt::Debug for DropdownMenu {
@@ -155,6 +172,13 @@ impl std::fmt::Debug for DropdownMenu {
 
 impl Default for DropdownMenu {
     fn default() -> Self {
+        // Set the thread-local close signal here (not in render) so
+        // DropdownMenuItem children — constructed and rendered AFTER this
+        // Default::default() call but BEFORE Component::render — can capture
+        // it. Initialized to true; items publish a close request by setting
+        // it to false. Same pattern as ContextMenu.
+        let close_sig = Signal::new(true);
+        set_menu_close_signal(close_sig);
         Self {
             opened: false,
             opened_fn: None,
@@ -164,8 +188,10 @@ impl Default for DropdownMenu {
             shadow: String::new(),
             close_on_click_outside: true,
             close_on_item_click: true,
+            on_close: None,
             width: String::new(),
             z_index: None,
+            _close_signal: close_sig,
         }
     }
 }
@@ -219,6 +245,10 @@ impl DropdownMenu {
 
 impl Component for DropdownMenu {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
+        // Children captured the close signal in their own render() pass; clear
+        // the thread-local so it doesn't leak to siblings or outer scopes.
+        clear_menu_close_signal();
+
         let is_opened = if let Some(ref opened_fn) = self.opened_fn {
             opened_fn()
         } else {
@@ -314,6 +344,76 @@ impl Component for DropdownMenu {
                 }
                 was_open.set(is_open);
             });
+        }
+
+        // close_on_item_click: items publish close requests by setting
+        // _close_signal to false (via the thread-local set in Default).
+        // We observe true→false transitions and forward to on_close. Don't
+        // write back to close_sig inside this effect — that would borrow_mut
+        // the running effect's own closure and panic. Instead, a separate
+        // effect resets close_sig to true on the next opened_fn rising edge
+        // (menu reopen), so the next item click is observable as a fresh
+        // transition.
+        if self.close_on_item_click && self.on_close.is_some() {
+            let close_sig = self._close_signal;
+            let cb = self.on_close.clone().unwrap();
+            let last = std::rc::Rc::new(std::cell::Cell::new(true));
+            let last_e = last.clone();
+            Effect::new(move || {
+                let is_true = close_sig.get();
+                if last_e.get() && !is_true {
+                    cb.invoke();
+                }
+                last_e.set(is_true);
+            });
+
+            // Reset close_sig to true on opened_fn rising edge so the next
+            // item click registers as a transition. Separate effect = no
+            // re-entrancy with the transition watcher above.
+            if let Some(ref opened_fn) = self.opened_fn {
+                let f = opened_fn.clone();
+                let last_open = std::rc::Rc::new(std::cell::Cell::new(false));
+                Effect::new(move || {
+                    let open = f();
+                    if open && !last_open.get() {
+                        close_sig.set(true);
+                    }
+                    last_open.set(open);
+                });
+            }
+        }
+
+        // close_on_click_outside: render an invisible full-viewport backdrop
+        // that fires on_close when clicked. Sibling of the dropdown content
+        // inside the position:relative root; z-index below the dropdown so
+        // option clicks still hit the items. Mirrors the Select pattern.
+        if self.close_on_click_outside && self.on_close.is_some() {
+            let backdrop = rinch_macros::rsx! { div { class: "rinch-dropdown-menu__backdrop" } };
+            let initial = if is_opened {
+                "display: block"
+            } else {
+                "display: none"
+            };
+            backdrop.set_attribute("style", initial);
+
+            if let Some(ref opened_fn) = self.opened_fn {
+                let backdrop_c = backdrop.clone();
+                let f = opened_fn.clone();
+                Effect::new(move || {
+                    let style = if f() {
+                        "display: block"
+                    } else {
+                        "display: none"
+                    };
+                    backdrop_c.set_attribute("style", style);
+                });
+            }
+
+            let cb = self.on_close.clone().unwrap();
+            let handler_id = __scope.register_handler(move || cb.invoke());
+            backdrop.set_attribute("data-rid", &handler_id.0.to_string());
+
+            root.append_child(&backdrop);
         }
 
         root
