@@ -17,6 +17,8 @@ mod bridge;
 #[cfg(target_os = "android")]
 pub mod callback;
 #[cfg(target_os = "android")]
+pub mod camera;
+#[cfg(target_os = "android")]
 pub mod clipboard;
 #[cfg(target_os = "android")]
 pub mod display;

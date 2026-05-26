@@ -4,11 +4,13 @@ import android.app.NativeActivity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Vibrator;
+import android.provider.MediaStore;
 import android.view.ViewGroup;
 import android.view.inputmethod.InputMethodManager;
 
@@ -28,6 +30,7 @@ public class RinchActivity extends NativeActivity {
     private ClipboardManager clipboardManager;
     private Vibrator vibrator;
     private RinchInputView inputView;
+    private Uri pendingPhotoUri;
 
 
 
@@ -108,6 +111,9 @@ public class RinchActivity extends NativeActivity {
         String dataUri = null;
         if (data != null && data.getData() != null) {
             dataUri = data.getData().toString();
+        } else if (pendingPhotoUri != null && resultCode == RESULT_OK) {
+            dataUri = pendingPhotoUri.toString();
+            pendingPhotoUri = null;
         }
         nativeOnActivityResult(requestCode, resultCode, dataUri);
     }
@@ -148,6 +154,31 @@ public class RinchActivity extends NativeActivity {
             intent.putExtra(Intent.EXTRA_TITLE, fileName);
         }
         startActivityForResult(intent, requestCode);
+    }
+
+    // ── Image Picker / Camera ─────────────────────────────────────────
+
+    public void openImagePicker(int requestCode) {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/*");
+        startActivityForResult(intent, requestCode);
+    }
+
+    public void takePhoto(int requestCode) {
+        Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        if (intent.resolveActivity(getPackageManager()) != null) {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Images.Media.DISPLAY_NAME,
+                "rinch_" + System.currentTimeMillis() + ".jpg");
+            values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+            pendingPhotoUri = getContentResolver().insert(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+            if (pendingPhotoUri != null) {
+                intent.putExtra(MediaStore.EXTRA_OUTPUT, pendingPhotoUri);
+                startActivityForResult(intent, requestCode);
+            }
+        }
     }
 
     // ── Content URI Reader ──────────────────────────────────────────────

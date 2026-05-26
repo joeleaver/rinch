@@ -4642,6 +4642,7 @@ name = "rinch-android"
 version = "0.1.0"
 dependencies = [
  "android-activity",
+ "base64",
  "jni",
  "log",
  "ndk-context",

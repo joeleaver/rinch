@@ -11,9 +11,8 @@ use rinch::prelude::*;
 fn app() -> NodeHandle {
     let count = Signal::new(0);
     let input_text = Signal::new(String::new());
-    let picked_uri = Signal::new(String::new());
-    let file_size = Signal::new(String::new());
-    let perm_status = Signal::new(String::new());
+    let image_data_uri = Signal::new(String::new());
+    let status = Signal::new(String::new());
 
     rsx! {
         div { style: "display: flex; flex-direction: column; padding: 40px; gap: 16px; height: 100%; overflow: auto",
@@ -45,84 +44,54 @@ fn app() -> NodeHandle {
                 "You typed: " {|| input_text.get()}
             }
 
-            // ── File Picker Test ────────────────────────────────────
+            // ── Image Picker / Camera ──────────────────────────────
             div { style: "margin-top: 16px; font-size: 20px; font-weight: bold; color: #1976D2",
-                "File Picker Test"
+                "Image Picker"
             }
             div { style: "display: flex; flex-direction: row; gap: 12px",
                 button {
                     style: "padding: 12px 24px; background-color: #2196F3; color: white; font-size: 18px",
                     onclick: move || {
                         #[cfg(target_os = "android")]
-                        rinch_android::file_picker::pick_file(move |uri| {
-                            match uri {
-                                Some(u) => {
-                                    picked_uri.set(u.clone());
-                                    match rinch_android::file_picker::read_content_uri(&u) {
-                                        Ok(bytes) => file_size.set(format!("{} bytes", bytes.len())),
-                                        Err(e) => file_size.set(format!("read error: {e}")),
-                                    }
+                        {
+                            status.set("Opening gallery...".into());
+                            rinch_android::camera::pick_image(move |bytes| match bytes {
+                                Some(b) => {
+                                    status.set(format!("Picked: {} bytes", b.len()));
+                                    image_data_uri.set(rinch_android::camera::bytes_to_data_uri(&b));
                                 }
-                                None => {
-                                    picked_uri.set("(cancelled)".into());
-                                    file_size.set(String::new());
-                                }
-                            }
-                        });
-                    },
-                    "Pick File"
-                }
-            }
-            div { style: "font-size: 14px; color: #666; word-break: break-all",
-                "URI: " {|| picked_uri.get()}
-            }
-            div { style: "font-size: 14px; color: #666",
-                "Size: " {|| file_size.get()}
-            }
-
-            // ── Permission Test ─────────────────────────────────────
-            div { style: "margin-top: 16px; font-size: 20px; font-weight: bold; color: #1976D2",
-                "Permission Test"
-            }
-            button {
-                style: "padding: 12px 24px; background-color: #FF9800; color: white; font-size: 18px",
-                onclick: move || {
-                    #[cfg(target_os = "android")]
-                    {
-                        let has = rinch_android::permissions::has_permission("android.permission.CAMERA");
-                        if has {
-                            perm_status.set("CAMERA: already granted".into());
-                        } else {
-                            perm_status.set("Requesting CAMERA...".into());
-                            rinch_android::permissions::request_permission(
-                                "android.permission.CAMERA",
-                                move |granted| {
-                                    perm_status.set(if granted {
-                                        "CAMERA: granted!".into()
-                                    } else {
-                                        "CAMERA: denied".into()
-                                    });
-                                },
-                            );
+                                None => status.set("Cancelled".into()),
+                            });
                         }
-                    }
-                },
-                "Request Camera Permission"
-            }
-            div { style: "font-size: 14px; color: #666",
-                {|| perm_status.get()}
-            }
-
-            div { style: "margin-top: 12px; font-size: 16px; color: #333",
-                "Scroll down to see more content..."
-            }
-            for i in 0..20 {
-                div { key: i, style: "padding: 16px; margin: 4px 0; background-color: #f0f0f0; font-size: 16px",
-                    {format!("Item {i}: scroll to see this content")}
+                    },
+                    "Gallery"
+                }
+                button {
+                    style: "padding: 12px 24px; background-color: #4CAF50; color: white; font-size: 18px",
+                    onclick: move || {
+                        #[cfg(target_os = "android")]
+                        {
+                            status.set("Opening camera...".into());
+                            rinch_android::camera::take_photo(move |bytes| match bytes {
+                                Some(b) => {
+                                    status.set(format!("Photo: {} bytes", b.len()));
+                                    image_data_uri.set(rinch_android::camera::bytes_to_data_uri(&b));
+                                }
+                                None => status.set("Cancelled".into()),
+                            });
+                        }
+                    },
+                    "Camera"
                 }
             }
-            div { style: "padding: 20px; font-size: 18px; font-weight: bold; color: #4CAF50",
-                "You reached the bottom!"
+            div { style: "font-size: 14px; color: #666",
+                {|| status.get()}
+            }
+            if !image_data_uri.get().is_empty() {
+                img {
+                    src: {|| image_data_uri.get()},
+                    style: "max-width: 100%; max-height: 400px; object-fit: contain",
+                }
             }
         }
     }
