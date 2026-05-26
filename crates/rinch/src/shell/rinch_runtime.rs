@@ -1480,9 +1480,8 @@ impl ApplicationHandler for RinchRuntime {
                 ..
             } => {
                 let platform_button = match button {
-                    winit::event::ButtonSource::Mouse(MouseButton::Left) => {
-                        PlatformMouseButton::Left
-                    }
+                    winit::event::ButtonSource::Mouse(MouseButton::Left)
+                    | winit::event::ButtonSource::Touch { .. } => PlatformMouseButton::Left,
                     winit::event::ButtonSource::Mouse(MouseButton::Right) => {
                         PlatformMouseButton::Right
                     }
@@ -1543,9 +1542,8 @@ impl ApplicationHandler for RinchRuntime {
                 ..
             } => {
                 let platform_button = match button {
-                    winit::event::ButtonSource::Mouse(MouseButton::Left) => {
-                        PlatformMouseButton::Left
-                    }
+                    winit::event::ButtonSource::Mouse(MouseButton::Left)
+                    | winit::event::ButtonSource::Touch { .. } => PlatformMouseButton::Left,
                     winit::event::ButtonSource::Mouse(MouseButton::Right) => {
                         PlatformMouseButton::Right
                     }
@@ -1816,9 +1814,8 @@ impl RinchRuntime {
                 ..
             } => {
                 let platform_button = match button {
-                    winit::event::ButtonSource::Mouse(MouseButton::Left) => {
-                        PlatformMouseButton::Left
-                    }
+                    winit::event::ButtonSource::Mouse(MouseButton::Left)
+                    | winit::event::ButtonSource::Touch { .. } => PlatformMouseButton::Left,
                     winit::event::ButtonSource::Mouse(MouseButton::Right) => {
                         PlatformMouseButton::Right
                     }
@@ -1863,9 +1860,8 @@ impl RinchRuntime {
                 ..
             } => {
                 let platform_button = match button {
-                    winit::event::ButtonSource::Mouse(MouseButton::Left) => {
-                        PlatformMouseButton::Left
-                    }
+                    winit::event::ButtonSource::Mouse(MouseButton::Left)
+                    | winit::event::ButtonSource::Touch { .. } => PlatformMouseButton::Left,
                     winit::event::ButtonSource::Mouse(MouseButton::Right) => {
                         PlatformMouseButton::Right
                     }

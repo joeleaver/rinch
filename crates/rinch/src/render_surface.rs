@@ -186,7 +186,7 @@ pub enum SurfaceMouseButton {
     Middle,
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(any(feature = "desktop", feature = "android"))]
 impl SurfaceMouseButton {
     /// Convert from platform MouseButton.
     pub fn from_platform(button: rinch_platform::MouseButton) -> Self {

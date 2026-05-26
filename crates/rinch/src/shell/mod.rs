@@ -11,21 +11,33 @@ pub mod devtools_store;
 pub(crate) mod frame_upload;
 pub mod html_parser;
 pub mod memory_profile;
+#[cfg(feature = "desktop")]
 pub mod rinch_runtime;
 pub mod screenshot;
+#[cfg(feature = "desktop")]
 pub mod softbuffer_renderer;
 #[cfg(feature = "gpu")]
 pub mod transparent_renderer;
 pub mod types;
+#[cfg(feature = "desktop")]
 pub mod window;
 
+#[cfg(all(feature = "android", target_os = "android"))]
+pub mod android_runtime;
+
 pub use devtools_store::DevToolsStore;
+#[cfg(feature = "desktop")]
 pub use rinch_runtime::inject_platform_event;
+#[cfg(feature = "desktop")]
 #[allow(deprecated)]
 pub use rinch_runtime::{run_on_main_thread, run_rinch, run_rinch_with_window_props};
-pub use types::{ElementLayout, HoveredElementInfo, RinchEvent};
+#[cfg(feature = "desktop")]
+pub use types::RinchEvent;
+pub use types::{ElementLayout, HoveredElementInfo};
 
+#[cfg(feature = "desktop")]
 use rinch_core::dom::{NodeHandle, RenderScope};
+#[cfg(feature = "desktop")]
 use rinch_core::element::ThemeProviderProps;
 
 /// Run a rinch application with fine-grained reactive rendering.
@@ -52,6 +64,7 @@ use rinch_core::element::ThemeProviderProps;
 ///     run("My App", 800, 600, app);
 /// }
 /// ```
+#[cfg(feature = "desktop")]
 #[allow(deprecated)]
 pub fn run<F>(title: &str, width: u32, height: u32, component: F)
 where
@@ -71,6 +84,7 @@ where
 ///
 /// This sets up theme CSS variables before running the application, making them
 /// available throughout the component tree.
+#[cfg(feature = "desktop")]
 #[allow(deprecated)]
 pub fn run_with_theme<F>(
     title: &str,
@@ -85,6 +99,7 @@ pub fn run_with_theme<F>(
     rinch_runtime::run_rinch(title, width, height, component);
 }
 
+#[cfg(feature = "desktop")]
 use rinch_core::element::WindowProps;
 
 /// Run a rinch application with a native menu bar.
@@ -104,6 +119,7 @@ use rinch_core::element::WindowProps;
 ///
 /// run_with_menu("My App", 800, 600, app, vec![("File", file_menu)]);
 /// ```
+#[cfg(feature = "desktop")]
 pub fn run_with_menu<F>(
     title: &str,
     width: u32,
@@ -152,6 +168,7 @@ pub fn run_with_menu<F>(
 }
 
 /// Run a rinch application with full window configuration and theme.
+#[cfg(feature = "desktop")]
 #[allow(deprecated)]
 pub fn run_with_window_props<F>(component: F, props: WindowProps, theme: Option<ThemeProviderProps>)
 where
@@ -161,6 +178,7 @@ where
 }
 
 /// Run a rinch application with full window configuration, theme, and optional native menu.
+#[cfg(feature = "desktop")]
 pub fn run_with_window_props_and_menu<F>(
     component: F,
     mut props: WindowProps,

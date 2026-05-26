@@ -1,0 +1,11 @@
+[package]
+name = "hello-android"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "hello_android"
+crate-type = ["cdylib"]
+
+[dependencies]
+rinch = { workspace = true, features = ["android", "components", "theme"] }

@@ -6,7 +6,7 @@ description = "Cross-platform clipboard abstraction for rinch (native + WASM)"
 
 [dependencies]
 # Native clipboard (not available on WASM)
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
 arboard = "3"
 
 # WASM clipboard via web-sys

@@ -42,22 +42,24 @@
 //! | [`create_context`] | Share state across components |
 //! | [`use_context`] | Access shared context values |
 
-#[cfg(feature = "desktop")]
+#[cfg(any(feature = "desktop", feature = "android"))]
 pub mod app;
-#[cfg(feature = "desktop")]
+#[cfg(any(feature = "desktop", feature = "android"))]
 pub mod ce_ops;
-#[cfg(feature = "desktop")]
+#[cfg(any(feature = "desktop", feature = "android"))]
 pub(crate) mod ce_render;
 #[cfg(feature = "gpu")]
 pub mod embed;
 #[cfg(feature = "desktop")]
 pub mod menu;
 pub mod render_surface;
-#[cfg(feature = "desktop")]
+#[cfg(any(feature = "desktop", feature = "android"))]
 pub mod shell;
 pub mod window;
 #[cfg(feature = "desktop")]
 pub mod windows;
+#[cfg(all(feature = "android", not(feature = "desktop")))]
+pub mod windows_stub;
 
 #[cfg(feature = "image-network")]
 pub mod image_loader;
@@ -78,7 +80,7 @@ pub mod clipboard;
 pub mod tray;
 
 /// Memory profiling utilities (enable with `memory-profile` feature).
-#[cfg(feature = "desktop")]
+#[cfg(any(feature = "desktop", feature = "android"))]
 pub mod memory {
     pub use crate::shell::memory_profile::*;
 }
@@ -110,8 +112,14 @@ pub mod components {
 
 pub mod prelude {
     //! Common imports for rinch applications.
+    #[cfg(all(feature = "android", target_os = "android"))]
+    pub use crate::shell::android_runtime::{
+        run as run_android, run_with_theme as run_android_with_theme,
+    };
     #[cfg(feature = "desktop")]
     pub use crate::shell::{run, run_with_theme};
+    #[cfg(all(feature = "android", target_os = "android"))]
+    pub use android_activity::AndroidApp;
     pub use rinch_core::element::*;
     pub use rinch_core::{Memo, Scope, Signal, batch, derived, untracked};
     // Context and stores for sharing state across components
@@ -127,6 +135,11 @@ pub mod prelude {
     // Window control functions
     #[cfg(feature = "desktop")]
     pub use crate::windows::{
+        close_current_window, hide_current_window, minimize_current_window, show_current_window,
+        toggle_maximize_current_window,
+    };
+    #[cfg(all(feature = "android", not(feature = "desktop")))]
+    pub use crate::windows_stub::{
         close_current_window, hide_current_window, minimize_current_window, show_current_window,
         toggle_maximize_current_window,
     };

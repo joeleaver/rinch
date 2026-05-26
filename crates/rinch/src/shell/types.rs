@@ -1,13 +1,13 @@
 //! Shared types for the rinch shell module.
 
-use rinch_core::events::{ClickContext, EventHandlerId};
-use winit::window::WindowId;
-
 /// Events used internally by rinch.
+#[cfg(feature = "desktop")]
+use rinch_core::events::{ClickContext, EventHandlerId};
+#[cfg(feature = "desktop")]
 #[derive(Debug, Clone)]
 pub enum RinchEvent {
     /// Poll a window for document updates.
-    Poll { window_id: WindowId },
+    Poll { window_id: winit::window::WindowId },
     /// A menu item was activated.
     MenuEvent(muda::MenuId),
     /// Request a re-render of all windows (full app re-execution).
@@ -21,11 +21,13 @@ pub enum RinchEvent {
     /// An element was clicked (with handler ID, source window, and click context).
     ElementClicked {
         handler_id: EventHandlerId,
-        window_id: WindowId,
+        window_id: winit::window::WindowId,
         click_context: ClickContext,
     },
     /// Toggle the DevTools window.
-    ToggleDevTools { source_window: WindowId },
+    ToggleDevTools {
+        source_window: winit::window::WindowId,
+    },
     /// Update DevTools with hovered element info.
     UpdateDevToolsHover {
         element_info: Option<HoveredElementInfo>,
@@ -41,15 +43,15 @@ pub enum RinchEvent {
     /// Process pending window requests (open/close).
     ProcessWindowRequests,
     /// Minimize a window.
-    MinimizeWindow { window_id: WindowId },
+    MinimizeWindow { window_id: winit::window::WindowId },
     /// Toggle maximize state of a window.
-    ToggleMaximizeWindow { window_id: WindowId },
+    ToggleMaximizeWindow { window_id: winit::window::WindowId },
     /// Close a window (from window controls).
-    CloseWindowControl { window_id: WindowId },
+    CloseWindowControl { window_id: winit::window::WindowId },
     /// Show a window (restore from hidden/tray).
-    ShowWindow { window_id: WindowId },
+    ShowWindow { window_id: winit::window::WindowId },
     /// Hide a window (minimize to tray).
-    HideWindow { window_id: WindowId },
+    HideWindow { window_id: winit::window::WindowId },
     /// Refresh the DevTools window content.
     RefreshDevTools,
 }

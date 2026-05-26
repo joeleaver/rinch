@@ -31,8 +31,11 @@
 //! The synchronous API (`copy_text`, `paste_text`) uses a polling mechanism internally.
 //! For better control in async contexts, use the `async` variants when available.
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 mod native;
+
+#[cfg(target_os = "android")]
+mod android_stub;
 
 #[cfg(target_arch = "wasm32")]
 mod web;
@@ -102,8 +105,11 @@ impl<'a> ImageData<'a> {
 }
 
 // Re-export platform-specific implementations
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 pub use native::*;
+
+#[cfg(target_os = "android")]
+pub use android_stub::*;
 
 #[cfg(target_arch = "wasm32")]
 pub use web::*;

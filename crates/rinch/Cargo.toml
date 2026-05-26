@@ -71,6 +71,13 @@ web-sys = { version = "0.3", features = [
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Graphics_Gdi", "Win32_Foundation"] }
 
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6", features = ["native-activity"], optional = true }
+ndk = { version = "0.9", optional = true }
+raw-window-handle = { version = "0.6", optional = true }
+log = { version = "0.4", optional = true }
+android_logger = { version = "0.14", optional = true }
+
 [features]
 default = ["desktop"]
 desktop = [
@@ -81,6 +88,16 @@ desktop = [
     "dep:png", "dep:base64", "dep:keyboard-types",
     "dep:bytemuck",
     "dep:softbuffer", "rinch-dom/software-renderer",
+]
+android = [
+    "dep:rinch-dom", "dep:rinch-editable", "dep:parley",
+    "dep:peniko", "dep:serde_json",
+    "dep:tracing-subscriber",
+    "dep:png", "dep:base64", "dep:keyboard-types",
+    "dep:bytemuck",
+    "dep:softbuffer", "rinch-dom/software-renderer",
+    "dep:android-activity", "dep:ndk", "dep:raw-window-handle",
+    "dep:log", "dep:android_logger",
 ]
 gpu = [
     "desktop",
