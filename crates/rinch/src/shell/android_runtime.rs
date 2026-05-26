@@ -271,10 +271,10 @@ impl TouchGesture {
                         }
                     }
                     TouchState::Scrolling { last_x, last_y } => {
-                        let delta_x = (last_x - x) as f64;
-                        let delta_y = (last_y - y) as f64;
-                        self.velocity_x = (last_x - x) * 0.8 + self.velocity_x * 0.2;
-                        self.velocity_y = (last_y - y) * 0.8 + self.velocity_y * 0.2;
+                        let delta_x = (x - last_x) as f64;
+                        let delta_y = (y - last_y) as f64;
+                        self.velocity_x = (x - last_x) * 0.8 + self.velocity_x * 0.2;
+                        self.velocity_y = (y - last_y) * 0.8 + self.velocity_y * 0.2;
                         self.state = TouchState::Scrolling {
                             last_x: x,
                             last_y: y,
