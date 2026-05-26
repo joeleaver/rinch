@@ -83,7 +83,7 @@ impl RinchApp {
                 self.ce_scroll_pending.set(true);
             }
 
-            d.tree.dirty_nodes.insert(ce_node_id);
+            d.tree.push_dirty(ce_node_id);
         }
     }
 
@@ -113,7 +113,7 @@ impl RinchApp {
             d.tree.nodes[ce_node_id]
                 .dirty
                 .insert(rinch_dom::DirtyFlags::PAINT);
-            d.tree.dirty_nodes.insert(ce_node_id);
+            d.tree.push_dirty(ce_node_id);
         }
 
         // Move cursor to approximately the same x position on the first/last
@@ -277,7 +277,7 @@ impl RinchApp {
                     node.scroll_offset.1 = new_scroll;
                     node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
                 }
-                d.tree.dirty_nodes.insert(ce_node_id);
+                d.tree.push_dirty(ce_node_id);
             }
         }
     }
