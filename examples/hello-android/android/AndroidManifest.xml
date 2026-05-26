@@ -6,6 +6,8 @@
 
     <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="35" />
 
+    <uses-permission android:name="android.permission.CAMERA" />
+
     <application
         android:label="Hello Rinch"
         android:hasCode="true">

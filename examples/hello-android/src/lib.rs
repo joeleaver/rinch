@@ -11,6 +11,9 @@ use rinch::prelude::*;
 fn app() -> NodeHandle {
     let count = Signal::new(0);
     let input_text = Signal::new(String::new());
+    let picked_uri = Signal::new(String::new());
+    let file_size = Signal::new(String::new());
+    let perm_status = Signal::new(String::new());
 
     rsx! {
         div { style: "display: flex; flex-direction: column; padding: 40px; gap: 16px; height: 100%; overflow: auto",
@@ -41,6 +44,75 @@ fn app() -> NodeHandle {
             div { style: "font-size: 16px; color: #666",
                 "You typed: " {|| input_text.get()}
             }
+
+            // ── File Picker Test ────────────────────────────────────
+            div { style: "margin-top: 16px; font-size: 20px; font-weight: bold; color: #1976D2",
+                "File Picker Test"
+            }
+            div { style: "display: flex; flex-direction: row; gap: 12px",
+                button {
+                    style: "padding: 12px 24px; background-color: #2196F3; color: white; font-size: 18px",
+                    onclick: move || {
+                        #[cfg(target_os = "android")]
+                        rinch_android::file_picker::pick_file(move |uri| {
+                            match uri {
+                                Some(u) => {
+                                    picked_uri.set(u.clone());
+                                    match rinch_android::file_picker::read_content_uri(&u) {
+                                        Ok(bytes) => file_size.set(format!("{} bytes", bytes.len())),
+                                        Err(e) => file_size.set(format!("read error: {e}")),
+                                    }
+                                }
+                                None => {
+                                    picked_uri.set("(cancelled)".into());
+                                    file_size.set(String::new());
+                                }
+                            }
+                        });
+                    },
+                    "Pick File"
+                }
+            }
+            div { style: "font-size: 14px; color: #666; word-break: break-all",
+                "URI: " {|| picked_uri.get()}
+            }
+            div { style: "font-size: 14px; color: #666",
+                "Size: " {|| file_size.get()}
+            }
+
+            // ── Permission Test ─────────────────────────────────────
+            div { style: "margin-top: 16px; font-size: 20px; font-weight: bold; color: #1976D2",
+                "Permission Test"
+            }
+            button {
+                style: "padding: 12px 24px; background-color: #FF9800; color: white; font-size: 18px",
+                onclick: move || {
+                    #[cfg(target_os = "android")]
+                    {
+                        let has = rinch_android::permissions::has_permission("android.permission.CAMERA");
+                        if has {
+                            perm_status.set("CAMERA: already granted".into());
+                        } else {
+                            perm_status.set("Requesting CAMERA...".into());
+                            rinch_android::permissions::request_permission(
+                                "android.permission.CAMERA",
+                                move |granted| {
+                                    perm_status.set(if granted {
+                                        "CAMERA: granted!".into()
+                                    } else {
+                                        "CAMERA: denied".into()
+                                    });
+                                },
+                            );
+                        }
+                    }
+                },
+                "Request Camera Permission"
+            }
+            div { style: "font-size: 14px; color: #666",
+                {|| perm_status.get()}
+            }
+
             div { style: "margin-top: 12px; font-size: 16px; color: #333",
                 "Scroll down to see more content..."
             }
