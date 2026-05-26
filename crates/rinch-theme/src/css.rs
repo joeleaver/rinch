@@ -254,6 +254,14 @@ pub fn generate_base_styles(theme: &Theme) -> String {
     css.push_str("  text-decoration: underline;\n");
     css.push_str("}\n\n");
 
+    // Form elements: inherit text color from the theme so they're visible in dark mode.
+    // Stylo's UA stylesheet sets form element colors to system defaults (e.g. buttontext)
+    // which don't adapt to dark mode without color-scheme support in the rendering engine.
+    css.push_str("button, input, select, textarea {\n");
+    css.push_str("  color: inherit;\n");
+    css.push_str("  font-family: inherit;\n");
+    css.push_str("}\n\n");
+
     // Focus styles based on theme setting
     match theme.focus_ring {
         crate::theme::FocusRing::Always => {

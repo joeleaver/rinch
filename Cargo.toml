@@ -39,6 +39,7 @@ rinch-av = { path = "crates/rinch-av" }
 rinch-webrtc = { path = "crates/rinch-webrtc" }
 rinch-signaling = { path = "crates/rinch-signaling" }
 rinch-screen-capture = { path = "crates/rinch-screen-capture" }
+rinch-android = { path = "crates/rinch-android" }
 
 # Rendering
 anyrender = "0.7"

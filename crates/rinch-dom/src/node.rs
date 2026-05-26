@@ -662,6 +662,9 @@ pub struct NodeTree {
     pub ifc_measure_cache: HashMap<(RawNodeId, u32), (f32, f32)>,
     /// Nodes that have requested scroll-into-view (deferred until after layout).
     pub scroll_into_view_requests: Vec<RawNodeId>,
+    /// Scale factor for text rendering (1.0 on desktop, >1.0 on HiDPI/mobile).
+    /// Applied to Parley font sizes so glyphs rasterize at physical pixel resolution.
+    pub text_scale: f32,
 }
 
 impl Default for NodeTree {
@@ -772,6 +775,7 @@ impl NodeTree {
             dirty_ifc_text_roots: HashSet::new(),
             ifc_measure_cache: HashMap::new(),
             scroll_into_view_requests: Vec::new(),
+            text_scale: 1.0,
         }
     }
 

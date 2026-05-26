@@ -1,4 +1,4 @@
-//! Android runtime using android-activity (GameActivity) + softbuffer.
+//! Android runtime using android-activity (NativeActivity) + softbuffer.
 //!
 //! Bypasses winit entirely for direct control over the Android Activity
 //! lifecycle, touch input, and surface management. Uses the same
@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use android_activity::InputStatus;
-use android_activity::input::{KeyAction, MotionAction};
+use android_activity::input::{KeyAction, KeyMapChar, MotionAction};
 use android_activity::{AndroidApp, MainEvent, PollEvent};
 
 use rinch_core::dom::{NodeHandle, RenderScope};
@@ -94,76 +94,90 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         REDRAW_PENDING.store(true, Ordering::Release);
     });
 
+    rinch_android::init(&android_app);
+
     events::clear_handlers();
     rinch_core::clear_context();
 
     let mut surface: Option<SoftSurface> = None;
     let mut mounted = false;
-    let mut window_size = (0u32, 0u32);
+    let mut physical_size = (0u32, 0u32);
     let mut scale_factor = 1.0f64;
     let mut running = true;
     let mut gesture = TouchGesture::new();
+    let mut combining_accent: Option<char> = None;
+    let mut keyboard_visible = false;
 
     while running {
-        android_app.poll_events(Some(Duration::from_millis(16)), |event| {
-            match event {
-                PollEvent::Main(main_event) => match main_event {
-                    MainEvent::InitWindow { .. } => {
-                        if let Some(native_window) = android_app.native_window() {
-                            let w = native_window.width() as u32;
-                            let h = native_window.height() as u32;
-                            window_size = (w, h);
+        android_app.poll_events(Some(Duration::from_millis(16)), |event| match event {
+            PollEvent::Main(main_event) => match main_event {
+                MainEvent::InitWindow { .. } => {
+                    if let Some(native_window) = android_app.native_window() {
+                        let w = native_window.width() as u32;
+                        let h = native_window.height() as u32;
+                        physical_size = (w, h);
 
+                        let dpi = rinch_android::display::density_dpi().unwrap_or_else(|| {
                             let config = android_app.config();
-                            let dpi = config.density().unwrap_or(160) as f64;
-                            scale_factor = dpi / 160.0;
+                            config.density().unwrap_or(160) as i32
+                        }) as f64;
+                        scale_factor = dpi / 160.0;
 
-                            surface = SoftSurface::new(&native_window, w, h);
+                        log::info!(
+                            "InitWindow: {}x{} physical, density={dpi}, scale={scale_factor:.2}",
+                            w,
+                            h
+                        );
 
-                            if !mounted {
-                                // Mount at physical pixel size — we use scale 1.0
-                                // for both rendering and input coordinates
-                                app.mount_component(w as f32, h as f32);
-                                mounted = true;
-                            }
+                        surface = SoftSurface::new(&native_window, w, h);
 
-                            REDRAW_PENDING.store(true, Ordering::Release);
+                        if !mounted {
+                            let lw = (w as f64 / scale_factor).round() as f32;
+                            let lh = (h as f64 / scale_factor).round() as f32;
+                            app.set_text_scale(scale_factor as f32);
+                            app.mount_component(lw, lh);
+                            mounted = true;
                         }
+
+                        REDRAW_PENDING.store(true, Ordering::Release);
                     }
-                    MainEvent::TerminateWindow { .. } => {
-                        surface = None;
-                    }
-                    MainEvent::WindowResized { .. } => {
-                        if let Some(native_window) = android_app.native_window() {
-                            let w = native_window.width() as u32;
-                            let h = native_window.height() as u32;
-                            window_size = (w, h);
+                }
+                MainEvent::TerminateWindow { .. } => {
+                    surface = None;
+                }
+                MainEvent::WindowResized { .. } => {
+                    if let Some(native_window) = android_app.native_window() {
+                        let w = native_window.width() as u32;
+                        let h = native_window.height() as u32;
+                        physical_size = (w, h);
 
-                            let actions = app.handle_event(
-                                PlatformEvent::Resized {
-                                    width: w,
-                                    height: h,
-                                },
-                                window_size,
-                                scale_factor,
-                            );
-                            process_actions(&actions, &mut running);
+                        let lw = (w as f64 / scale_factor).round() as u32;
+                        let lh = (h as f64 / scale_factor).round() as u32;
 
-                            if let Some(ref mut s) = surface {
-                                s.resize(w, h);
-                            }
+                        let actions = app.handle_event(
+                            PlatformEvent::Resized {
+                                width: lw,
+                                height: lh,
+                            },
+                            (lw, lh),
+                            scale_factor,
+                        );
+                        process_actions(&actions, &mut running);
 
-                            REDRAW_PENDING.store(true, Ordering::Release);
+                        if let Some(ref mut s) = surface {
+                            s.resize(w, h);
                         }
+
+                        REDRAW_PENDING.store(true, Ordering::Release);
                     }
-                    MainEvent::Destroy => {
-                        running = false;
-                    }
-                    _ => {}
-                },
-                PollEvent::Wake => {}
+                }
+                MainEvent::Destroy => {
+                    running = false;
+                }
                 _ => {}
-            }
+            },
+            PollEvent::Wake => {}
+            _ => {}
         });
 
         if !running {
@@ -176,10 +190,74 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         }
 
         // Process touch / key input — must drain after poll_events returns
-        let input_events = collect_input_events(&android_app, &mut gesture);
+        let logical_size = (
+            (physical_size.0 as f64 / scale_factor).round() as u32,
+            (physical_size.1 as f64 / scale_factor).round() as u32,
+        );
+        let input_events = collect_input_events(
+            &android_app,
+            &mut gesture,
+            scale_factor,
+            &mut combining_accent,
+        );
         for event in &input_events {
-            let actions = app.handle_event(event.clone(), window_size, scale_factor);
+            let actions = app.handle_event(event.clone(), logical_size, scale_factor);
             process_actions(&actions, &mut running);
+        }
+
+        // Show/hide soft keyboard based on input focus
+        let needs_keyboard = app.has_focused_input() || app.has_focused_contenteditable();
+        if needs_keyboard != keyboard_visible {
+            keyboard_visible = needs_keyboard;
+            if needs_keyboard {
+                rinch_android::ime::show_keyboard();
+            } else {
+                rinch_android::ime::hide_keyboard();
+            }
+        }
+
+        // Drain IME committed text from InputConnection
+        for text in rinch_android::ime::drain_committed_text() {
+            for ch in text.chars() {
+                let actions = app.handle_event(
+                    PlatformEvent::KeyDown {
+                        key: KeyCode::Other,
+                        text: Some(ch.to_string()),
+                        modifiers: Modifiers::default(),
+                    },
+                    logical_size,
+                    scale_factor,
+                );
+                process_actions(&actions, &mut running);
+            }
+        }
+
+        // Drain IME deletions
+        for deletion in rinch_android::ime::drain_deletions() {
+            for _ in 0..deletion.before {
+                let actions = app.handle_event(
+                    PlatformEvent::KeyDown {
+                        key: KeyCode::Backspace,
+                        text: None,
+                        modifiers: Modifiers::default(),
+                    },
+                    logical_size,
+                    scale_factor,
+                );
+                process_actions(&actions, &mut running);
+            }
+            for _ in 0..deletion.after {
+                let actions = app.handle_event(
+                    PlatformEvent::KeyDown {
+                        key: KeyCode::Delete,
+                        text: None,
+                        modifiers: Modifiers::default(),
+                    },
+                    logical_size,
+                    scale_factor,
+                );
+                process_actions(&actions, &mut running);
+            }
         }
 
         // Drain cross-thread callbacks
@@ -189,17 +267,19 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         // Check if app has pending layout (signal changes create pending updates)
         let has_momentum = gesture.velocity_x.abs() > MOMENTUM_MIN_VELOCITY
             || gesture.velocity_y.abs() > MOMENTUM_MIN_VELOCITY;
-        let needs_paint = REDRAW_PENDING.swap(false, Ordering::AcqRel)
-            || app.has_pending_layout()
-            || has_momentum;
+        let redraw = REDRAW_PENDING.swap(false, Ordering::AcqRel);
+        let pending = app.has_pending_layout();
+        let needs_paint = redraw || pending || has_momentum;
 
         if needs_paint && mounted {
             if let Some(ref mut s) = surface {
-                // Resolve any pending layout changes from signal updates
-                if app.has_pending_layout() {
-                    app.resolve_and_repaint(window_size.0 as f32, window_size.1 as f32);
+                if pending {
+                    app.resolve_and_repaint(
+                        (physical_size.0 as f64 / scale_factor).round() as f32,
+                        (physical_size.1 as f64 / scale_factor).round() as f32,
+                    );
                 }
-                let (pixels, w, h) = app.build_pixels(1.0, window_size, false);
+                let (pixels, w, h) = app.build_pixels(scale_factor, logical_size, false);
                 s.present_pixels(pixels, w, h);
             }
         }
@@ -360,6 +440,8 @@ impl TouchGesture {
 fn collect_input_events(
     android_app: &AndroidApp,
     gesture: &mut TouchGesture,
+    scale_factor: f64,
+    combining_accent: &mut Option<char>,
 ) -> Vec<PlatformEvent> {
     let mut events = Vec::new();
 
@@ -370,15 +452,52 @@ fn collect_input_events(
                 match input_event {
                     InputEvent::MotionEvent(motion) => {
                         let ptr = motion.pointer_at_index(0);
-                        gesture.process(motion.action(), ptr.x(), ptr.y(), &mut events);
+                        let x = (ptr.x() as f64 / scale_factor) as f32;
+                        let y = (ptr.y() as f64 / scale_factor) as f32;
+                        gesture.process(motion.action(), x, y, &mut events);
                     }
                     InputEvent::KeyEvent(key) => {
+                        let meta = key.meta_state();
+                        let modifiers = Modifiers {
+                            ctrl: meta.ctrl_on(),
+                            shift: meta.shift_on(),
+                            alt: meta.alt_on(),
+                            meta: false,
+                        };
+
                         if key.action() == KeyAction::Down {
+                            let text = android_app
+                                .device_key_character_map(key.device_id())
+                                .ok()
+                                .and_then(|map| match map.get(key.key_code(), key.meta_state()) {
+                                    Ok(KeyMapChar::Unicode(ch)) => {
+                                        if let Some(accent) = combining_accent.take() {
+                                            match map.get_dead_char(accent, ch) {
+                                                Ok(Some(combined)) => Some(combined.to_string()),
+                                                _ => Some(ch.to_string()),
+                                            }
+                                        } else {
+                                            Some(ch.to_string())
+                                        }
+                                    }
+                                    Ok(KeyMapChar::CombiningAccent(accent)) => {
+                                        *combining_accent = Some(accent);
+                                        None
+                                    }
+                                    _ => None,
+                                });
+
                             if let Some(key_code) = map_android_keycode(key.key_code()) {
                                 events.push(PlatformEvent::KeyDown {
                                     key: key_code,
-                                    text: None,
-                                    modifiers: Modifiers::default(),
+                                    text,
+                                    modifiers,
+                                });
+                            } else if let Some(text) = text {
+                                events.push(PlatformEvent::KeyDown {
+                                    key: KeyCode::Other,
+                                    text: Some(text),
+                                    modifiers,
                                 });
                             }
                         }
@@ -406,12 +525,58 @@ fn map_android_keycode(keycode: android_activity::input::Keycode) -> Option<KeyC
         AK::DpadDown => Some(KeyCode::ArrowDown),
         AK::DpadLeft => Some(KeyCode::ArrowLeft),
         AK::DpadRight => Some(KeyCode::ArrowRight),
+        AK::MoveHome => Some(KeyCode::Home),
+        AK::MoveEnd => Some(KeyCode::End),
+        AK::PageUp => Some(KeyCode::PageUp),
+        AK::PageDown => Some(KeyCode::PageDown),
         AK::Enter | AK::NumpadEnter => Some(KeyCode::Enter),
         AK::Tab => Some(KeyCode::Tab),
         AK::Escape | AK::Back => Some(KeyCode::Escape),
         AK::Del => Some(KeyCode::Backspace),
         AK::ForwardDel => Some(KeyCode::Delete),
         AK::Space => Some(KeyCode::Space),
+        AK::A => Some(KeyCode::KeyA),
+        AK::B => Some(KeyCode::KeyB),
+        AK::C => Some(KeyCode::KeyC),
+        AK::D => Some(KeyCode::KeyD),
+        AK::E => Some(KeyCode::KeyE),
+        AK::F => Some(KeyCode::KeyF),
+        AK::G => Some(KeyCode::KeyG),
+        AK::H => Some(KeyCode::KeyH),
+        AK::I => Some(KeyCode::KeyI),
+        AK::J => Some(KeyCode::KeyJ),
+        AK::K => Some(KeyCode::KeyK),
+        AK::L => Some(KeyCode::KeyL),
+        AK::M => Some(KeyCode::KeyM),
+        AK::N => Some(KeyCode::KeyN),
+        AK::O => Some(KeyCode::KeyO),
+        AK::P => Some(KeyCode::KeyP),
+        AK::Q => Some(KeyCode::KeyQ),
+        AK::R => Some(KeyCode::KeyR),
+        AK::S => Some(KeyCode::KeyS),
+        AK::T => Some(KeyCode::KeyT),
+        AK::U => Some(KeyCode::KeyU),
+        AK::V => Some(KeyCode::KeyV),
+        AK::W => Some(KeyCode::KeyW),
+        AK::X => Some(KeyCode::KeyX),
+        AK::Y => Some(KeyCode::KeyY),
+        AK::Z => Some(KeyCode::KeyZ),
+        AK::Keycode0 => Some(KeyCode::Digit0),
+        AK::Keycode1 => Some(KeyCode::Digit1),
+        AK::Keycode2 => Some(KeyCode::Digit2),
+        AK::Keycode3 => Some(KeyCode::Digit3),
+        AK::Keycode4 => Some(KeyCode::Digit4),
+        AK::Keycode5 => Some(KeyCode::Digit5),
+        AK::Keycode6 => Some(KeyCode::Digit6),
+        AK::Keycode7 => Some(KeyCode::Digit7),
+        AK::Keycode8 => Some(KeyCode::Digit8),
+        AK::Keycode9 => Some(KeyCode::Digit9),
+        AK::ShiftLeft => Some(KeyCode::ShiftLeft),
+        AK::ShiftRight => Some(KeyCode::ShiftRight),
+        AK::CtrlLeft => Some(KeyCode::ControlLeft),
+        AK::CtrlRight => Some(KeyCode::ControlRight),
+        AK::AltLeft => Some(KeyCode::AltLeft),
+        AK::AltRight => Some(KeyCode::AltRight),
         _ => None,
     }
 }

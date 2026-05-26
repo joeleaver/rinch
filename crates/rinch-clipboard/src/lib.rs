@@ -35,7 +35,7 @@
 mod native;
 
 #[cfg(target_os = "android")]
-mod android_stub;
+mod android;
 
 #[cfg(target_arch = "wasm32")]
 mod web;
@@ -109,7 +109,7 @@ impl<'a> ImageData<'a> {
 pub use native::*;
 
 #[cfg(target_os = "android")]
-pub use android_stub::*;
+pub use android::*;
 
 #[cfg(target_arch = "wasm32")]
 pub use web::*;

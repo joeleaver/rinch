@@ -176,6 +176,8 @@ pub struct RinchApp {
     pub(crate) modifiers: Modifiers,
     /// Whether the Vello scene needs to be rebuilt.
     pub(crate) scene_dirty: bool,
+    /// Text rendering scale for HiDPI/mobile (applied to Parley font sizes).
+    pub(crate) text_scale: f32,
     /// Whether we have a previous frame's pixels for dirty region caching.
     #[cfg(not(feature = "gpu"))]
     pub(crate) has_previous_frame: bool,
@@ -244,6 +246,7 @@ impl RinchApp {
             window_props: None,
             modifiers: Modifiers::default(),
             scene_dirty: true,
+            text_scale: 1.0,
             #[cfg(not(feature = "gpu"))]
             has_previous_frame: false,
             focused_input_handler_id: None,
@@ -364,6 +367,7 @@ impl RinchApp {
     /// Called once after the window and renderer are ready.
     pub fn mount_component(&mut self, viewport_width: f32, viewport_height: f32) {
         let doc = Rc::new(RefCell::new(RinchDocument::new()));
+        doc.borrow_mut().tree.text_scale = self.text_scale;
 
         // Set up network image loader if feature enabled (replaces default FileImageLoader)
         #[cfg(feature = "image-network")]
@@ -1313,6 +1317,7 @@ impl RinchApp {
                 state.selection.anchor.0.to_string(),
             );
             node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+            d.tree.paint_dirty_nodes.push(node_id);
         }
         d.tree.dirty_nodes.insert(node_id);
     }
@@ -1544,6 +1549,16 @@ impl RinchApp {
             }
         }
         self.sync_input_cursor_to_dom();
+    }
+
+    /// Set the text rendering scale factor (for HiDPI / mobile).
+    /// Parley will rasterize glyphs at this scale so they're crisp at physical resolution.
+    /// Call before `mount_component` so initial layout uses the correct scale.
+    pub fn set_text_scale(&mut self, scale: f32) {
+        self.text_scale = scale;
+        if let Some(doc) = &self.doc {
+            doc.borrow_mut().tree.text_scale = scale;
+        }
     }
 
     // ── Embed API helpers ─────────────────────────────────────────────
@@ -1928,6 +1943,7 @@ impl RinchApp {
                         .insert("value".to_string(), value.to_string());
                     node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
                 }
+                d.tree.paint_dirty_nodes.push(node_id);
                 d.tree.dirty_nodes.insert(node_id);
             }
         }

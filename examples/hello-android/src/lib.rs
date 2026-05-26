@@ -10,6 +10,7 @@ use rinch::prelude::*;
 #[component]
 fn app() -> NodeHandle {
     let count = Signal::new(0);
+    let input_text = Signal::new(String::new());
 
     rsx! {
         div { style: "display: flex; flex-direction: column; padding: 40px; gap: 16px; height: 100%; overflow: auto",
@@ -29,7 +30,18 @@ fn app() -> NodeHandle {
                     "Count: " {|| count.get().to_string()}
                 }
             }
-            div { style: "margin-top: 20px; font-size: 16px; color: #333",
+            div { style: "font-size: 16px; color: #333; margin-top: 8px",
+                "Type something (tap input to show keyboard):"
+            }
+            input {
+                style: "padding: 12px; font-size: 18px; border: 2px solid #ccc; background-color: white",
+                placeholder: "Type here...",
+                oninput: move |value: String| input_text.set(value),
+            }
+            div { style: "font-size: 16px; color: #666",
+                "You typed: " {|| input_text.get()}
+            }
+            div { style: "margin-top: 12px; font-size: 16px; color: #333",
                 "Scroll down to see more content..."
             }
             for i in 0..20 {

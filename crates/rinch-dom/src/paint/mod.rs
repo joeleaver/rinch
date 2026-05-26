@@ -1572,6 +1572,7 @@ fn paint_node(
                     y,
                     text_shadows,
                     parent_transform,
+                    scale,
                 );
                 return;
             }
@@ -1632,7 +1633,15 @@ fn paint_node(
             let text_shadows = parent_computed
                 .map(|s| s.text_shadow.as_slice())
                 .unwrap_or(&[]);
-            render_text_with_shadow(painter, &text_layout, x, y, text_shadows, parent_transform);
+            render_text_with_shadow(
+                painter,
+                &text_layout,
+                x,
+                y,
+                text_shadows,
+                parent_transform,
+                scale,
+            );
         }
 
         _ => {} // Document, Comment -- invisible

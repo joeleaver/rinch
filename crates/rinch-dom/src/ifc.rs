@@ -96,7 +96,7 @@ impl RinchDocument {
                 &self.tree.nodes,
                 root_id,
                 max_width,
-                1.0, // scale=1.0 for layout; paint scales later
+                1.0,
                 &mut self.font_cx,
                 paint_layout_cx,
             );

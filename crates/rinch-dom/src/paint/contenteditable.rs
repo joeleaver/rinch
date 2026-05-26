@@ -619,7 +619,7 @@ pub(super) fn paint_input_value(
         }
     }
 
-    // Render text
+    // Render text (layout already uses scaled_font_size, so pass scale=1.0)
     if !text.is_empty() {
         let text_shadows = node.computed_style.text_shadow.as_slice();
         render_text_with_shadow(
@@ -629,6 +629,7 @@ pub(super) fn paint_input_value(
             text_y,
             text_shadows,
             transform,
+            1.0,
         );
     }
 

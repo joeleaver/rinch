@@ -33,8 +33,6 @@ pub(super) fn paint_inline_layout(
         paint_inline_backgrounds(painter, parent_x, parent_y, inline_layout, transform);
     }
 
-    // Render the Parley layout at the IFC root's position
-    // Scale is already applied to font sizes during layout building
     render_text_with_shadow(
         painter,
         &inline_layout.layout,
@@ -42,6 +40,7 @@ pub(super) fn paint_inline_layout(
         parent_y,
         text_shadows,
         transform,
+        scale,
     );
 
     // Paint inline-block boxes by looking them up in tree and painting
@@ -149,24 +148,29 @@ fn paint_inline_backgrounds(
 }
 
 /// Render a Parley text layout using a Painter.
+///
+/// `scale` scales glyph positions and font sizes from logical to physical pixels
+/// so text rasterizes crisply on HiDPI displays. Pass 1.0 for no scaling.
 pub(super) fn render_text(
     painter: &mut dyn Painter,
     layout: &parley::layout::Layout<Brush>,
     x: f64,
     y: f64,
     css_transform: Affine,
+    scale: f64,
 ) {
+    let sf = scale as f32;
     let transform = css_transform * Affine::translate((x, y));
     for line in layout.lines() {
         for item in line.items() {
             let parley::layout::PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                 continue;
             };
-            let mut gx = glyph_run.offset();
-            let gy = glyph_run.baseline();
+            let mut gx = glyph_run.offset() * sf;
+            let gy = glyph_run.baseline() * sf;
             let run = glyph_run.run();
             let font = run.font();
-            let font_size = run.font_size();
+            let font_size = run.font_size() * sf;
             let synthesis = run.synthesis();
             let glyph_xform = synthesis
                 .skew()
@@ -175,14 +179,14 @@ pub(super) fn render_text(
             let brush = style.brush.clone();
 
             // Track run width for decorations
-            let run_x = glyph_run.offset();
+            let run_x = glyph_run.offset() * sf;
 
             let glyphs: Vec<PaintGlyph> = glyph_run
                 .glyphs()
                 .map(|glyph| {
-                    let px = gx + glyph.x;
-                    let py = gy - glyph.y;
-                    gx += glyph.advance;
+                    let px = gx + glyph.x * sf;
+                    let py = gy - glyph.y * sf;
+                    gx += glyph.advance * sf;
                     PaintGlyph {
                         id: glyph.id,
                         x: px,
@@ -204,11 +208,9 @@ pub(super) fn render_text(
             // Draw underline decoration
             if let Some(underline) = &style.underline {
                 let run_metrics = run.metrics();
-                let offset = underline.offset.unwrap_or(run_metrics.underline_offset);
-                let size = underline.size.unwrap_or(run_metrics.underline_size);
+                let offset = underline.offset.unwrap_or(run_metrics.underline_offset) * sf;
+                let size = underline.size.unwrap_or(run_metrics.underline_size) * sf;
                 let dec_brush = &underline.brush;
-                // underline_offset from font metrics is negative (below baseline),
-                // so subtract it to move the line below the baseline.
                 let line_y = (gy - offset) as f64;
                 let run_width = (gx - run_x) as f64;
                 let line = peniko::kurbo::Line::new(
@@ -224,8 +226,9 @@ pub(super) fn render_text(
                 let run_metrics = run.metrics();
                 let offset = strikethrough
                     .offset
-                    .unwrap_or(run_metrics.strikethrough_offset);
-                let size = strikethrough.size.unwrap_or(run_metrics.strikethrough_size);
+                    .unwrap_or(run_metrics.strikethrough_offset)
+                    * sf;
+                let size = strikethrough.size.unwrap_or(run_metrics.strikethrough_size) * sf;
                 let dec_brush = &strikethrough.brush;
                 let line_y = (gy - offset) as f64;
                 let run_width = (gx - run_x) as f64;
@@ -307,9 +310,10 @@ pub(super) fn render_text_with_shadow(
     y: f64,
     text_shadows: &[TextShadowValue],
     css_transform: Affine,
+    scale: f64,
 ) {
     if text_shadows.is_empty() {
-        render_text(painter, layout, x, y, css_transform);
+        render_text(painter, layout, x, y, css_transform, scale);
         return;
     }
 
@@ -320,10 +324,9 @@ pub(super) fn render_text_with_shadow(
         });
         let sx = x + shadow.offset_x as f64;
         let sy = y + shadow.offset_y as f64;
-        // Note: blur_radius is ignored for now (Vello lacks a blur API)
         render_text_shadow_pass(painter, layout, sx, sy, shadow_color, css_transform);
     }
 
     // Render the main text on top
-    render_text(painter, layout, x, y, css_transform);
+    render_text(painter, layout, x, y, css_transform, scale);
 }

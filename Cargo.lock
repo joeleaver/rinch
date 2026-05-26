@@ -4607,6 +4607,7 @@ dependencies = [
  "pollster",
  "raw-window-handle",
  "rfd",
+ "rinch-android",
  "rinch-clipboard",
  "rinch-components",
  "rinch-core",
@@ -4636,6 +4637,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rinch-android"
+version = "0.1.0"
+dependencies = [
+ "android-activity",
+ "jni",
+ "log",
+ "ndk-context",
+]
+
+[[package]]
 name = "rinch-av"
 version = "0.1.0"
 dependencies = [
@@ -4656,6 +4667,7 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "js-sys",
+ "rinch-android",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

@@ -79,11 +79,28 @@ if [[ ! -f "$SO_PATH" ]]; then
     exit 1
 fi
 
-# Package APK
-echo "==> Packaging APK..."
+# Compile Java companion classes (RinchActivity, RinchInputConnection)
+RINCH_ANDROID="$PROJECT_ROOT/crates/rinch-android"
+JAVA_SRC="$RINCH_ANDROID/java"
+
+echo "==> Compiling Java..."
 APK_DIR="$(mktemp -d)"
 trap "rm -rf $APK_DIR" EXIT
 
+mkdir -p "$APK_DIR/classes"
+javac -source 8 -target 8 \
+    -classpath "$PLATFORM" \
+    -d "$APK_DIR/classes" \
+    "$JAVA_SRC/com/rinch/RinchActivity.java" \
+    "$JAVA_SRC/com/rinch/RinchInputConnection.java" \
+    "$JAVA_SRC/com/rinch/RinchInputView.java"
+
+echo "==> Converting to DEX..."
+"$BUILD_TOOLS/d8" --output "$APK_DIR/" \
+    $(find "$APK_DIR/classes" -name "*.class")
+
+# Package APK
+echo "==> Packaging APK..."
 mkdir -p "$APK_DIR/lib/$ABI"
 cp "$SO_PATH" "$APK_DIR/lib/$ABI/"
 
@@ -94,7 +111,7 @@ cp "$SO_PATH" "$APK_DIR/lib/$ABI/"
     --target-sdk-version 35 \
     -o "$APK_DIR/base.apk"
 
-(cd "$APK_DIR" && zip -qr base.apk lib/)
+(cd "$APK_DIR" && zip -qr base.apk lib/ classes.dex)
 
 "$BUILD_TOOLS/zipalign" -f 4 "$APK_DIR/base.apk" "$APK_DIR/aligned.apk"
 
@@ -128,6 +145,6 @@ adb shell am force-stop com.rinch.hello 2>/dev/null || true
 adb install -r "$APK_DIR/hello-rinch.apk" 2>&1 | grep -E "Success|Failure"
 
 echo "==> Launching..."
-adb shell am start -n com.rinch.hello/android.app.NativeActivity
+adb shell am start -n com.rinch.hello/com.rinch.RinchActivity
 
 echo "==> Done. Use 'adb logcat -s rinch' for logs."
