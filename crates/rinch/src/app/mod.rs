@@ -28,9 +28,9 @@ use rinch_core::dom::{DomDocument, NodeHandle, RenderScope, clear_render_scope, 
 use rinch_core::events;
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::painter::Painter;
-#[cfg(not(feature = "gpu"))]
+#[cfg(not(any(feature = "gpu", feature = "android-gpu")))]
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
-#[cfg(feature = "gpu")]
+#[cfg(any(feature = "gpu", feature = "android-gpu"))]
 use rinch_dom::paint::vello_painter::VelloPainter;
 #[cfg(feature = "debug")]
 use rinch_dom::text_query::glyph_bounds_for_offset_layout;
@@ -42,7 +42,7 @@ use rinch_editable::{
 use rinch_platform::{
     AppAction, Instant, KeyCode, Modifiers, MouseButton, PlatformEvent, UserEvent,
 };
-#[cfg(feature = "gpu")]
+#[cfg(any(feature = "gpu", feature = "android-gpu"))]
 use vello::Scene;
 
 /// Viewport rectangle as (x, y, width, height) in logical pixels.
@@ -71,16 +71,16 @@ pub(crate) struct ActiveDrag {
     /// The draggable source element.
     pub node_id: usize,
     /// Captured painting of the source element's subtree (at origin).
-    #[cfg(feature = "gpu")]
+    #[cfg(any(feature = "gpu", feature = "android-gpu"))]
     pub snapshot: VelloPainter,
     /// Captured RGBA pixels of the source element's subtree (software backend).
-    #[cfg(not(feature = "gpu"))]
+    #[cfg(not(any(feature = "gpu", feature = "android-gpu")))]
     pub snapshot_pixels: Vec<u8>,
     /// Width of the snapshot pixmap in physical pixels.
-    #[cfg(not(feature = "gpu"))]
+    #[cfg(not(any(feature = "gpu", feature = "android-gpu")))]
     pub snapshot_width: u32,
     /// Height of the snapshot pixmap in physical pixels.
-    #[cfg(not(feature = "gpu"))]
+    #[cfg(not(any(feature = "gpu", feature = "android-gpu")))]
     pub snapshot_height: u32,
     /// Offset within element where the grab happened (physical px, relative to element top-left).
     pub anchor: (f32, f32),
@@ -142,10 +142,10 @@ pub struct RinchApp {
     /// The document (shared with RenderScope).
     pub(crate) doc: Option<Rc<RefCell<RinchDocument>>>,
     /// GPU painter (reused across frames). Wraps vello::Scene.
-    #[cfg(feature = "gpu")]
+    #[cfg(any(feature = "gpu", feature = "android-gpu"))]
     pub(crate) painter: VelloPainter,
     /// Software painter (reused across frames). Uses tiny-skia for CPU rendering.
-    #[cfg(not(feature = "gpu"))]
+    #[cfg(not(any(feature = "gpu", feature = "android-gpu")))]
     pub(crate) skia_painter: Option<TinySkiaPainter>,
     /// Parley layout context for paint-time text layout.
     pub(crate) paint_layout_cx: parley::LayoutContext<peniko::Brush>,
@@ -179,7 +179,7 @@ pub struct RinchApp {
     /// Text rendering scale for HiDPI/mobile (applied to Parley font sizes).
     pub(crate) text_scale: f32,
     /// Whether we have a previous frame's pixels for dirty region caching.
-    #[cfg(not(feature = "gpu"))]
+    #[cfg(not(any(feature = "gpu", feature = "android-gpu")))]
     pub(crate) has_previous_frame: bool,
     /// The data-oninput handler ID for the currently focused text input.
     pub(crate) focused_input_handler_id: Option<usize>,
@@ -228,9 +228,9 @@ impl RinchApp {
             component: Some(Box::new(component)),
             _render_scope: None,
             doc: None,
-            #[cfg(feature = "gpu")]
+            #[cfg(any(feature = "gpu", feature = "android-gpu"))]
             painter: VelloPainter::new(),
-            #[cfg(not(feature = "gpu"))]
+            #[cfg(not(any(feature = "gpu", feature = "android-gpu")))]
             skia_painter: None,
             paint_layout_cx: parley::LayoutContext::new(),
             cursor_pos: None,
@@ -247,7 +247,7 @@ impl RinchApp {
             modifiers: Modifiers::default(),
             scene_dirty: true,
             text_scale: 1.0,
-            #[cfg(not(feature = "gpu"))]
+            #[cfg(not(any(feature = "gpu", feature = "android-gpu")))]
             has_previous_frame: false,
             focused_input_handler_id: None,
             focused_input_value: String::new(),
@@ -499,7 +499,7 @@ impl RinchApp {
                 // Force full repaint — recompute_all_styles_full() updates computed
                 // styles but doesn't populate paint_dirty_nodes, so the software
                 // renderer's dirty region optimization would skip most of the screen.
-                #[cfg(not(feature = "gpu"))]
+                #[cfg(not(any(feature = "gpu", feature = "android-gpu")))]
                 {
                     self.has_previous_frame = false;
                 }
@@ -554,7 +554,7 @@ impl RinchApp {
             if d.tree.full_repaint_needed {
                 d.tree.full_repaint_needed = false;
                 self.scene_dirty = true;
-                #[cfg(not(feature = "gpu"))]
+                #[cfg(not(any(feature = "gpu", feature = "android-gpu")))]
                 {
                     self.has_previous_frame = false;
                 }
@@ -752,7 +752,7 @@ impl RinchApp {
     ///
     /// The scene is painted via the `Painter` trait and a reference to the
     /// underlying `vello::Scene` is returned for the GPU renderer.
-    #[cfg(feature = "gpu")]
+    #[cfg(any(feature = "gpu", feature = "android-gpu"))]
     pub fn build_scene(&mut self, scale: f64, size: (u32, u32)) -> &Scene {
         if !self.scene_dirty {
             return self.painter.scene();
@@ -803,7 +803,7 @@ impl RinchApp {
     ///
     /// Returns (pixels, width, height) in RGBA8 format. The painter is lazily
     /// created on first call and resized as needed.
-    #[cfg(not(feature = "gpu"))]
+    #[cfg(not(any(feature = "gpu", feature = "android-gpu")))]
     pub fn build_pixels(
         &mut self,
         scale: f64,
@@ -1006,7 +1006,7 @@ impl RinchApp {
     /// Blit premultiplied RGBA source pixels onto a destination buffer with
     /// alpha compositing (source-over). `dx`/`dy` can be negative for partially
     /// off-screen overlays.
-    #[cfg(not(feature = "gpu"))]
+    #[cfg(not(any(feature = "gpu", feature = "android-gpu")))]
     #[allow(clippy::too_many_arguments)]
     fn blit_drag_overlay(
         dst: &mut [u8],

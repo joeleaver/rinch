@@ -96,9 +96,14 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
 
     rinch_android::init(&android_app);
 
+    // #[cfg(feature = "android-gpu")]
+    // gpu_diagnostic::run_tests();
+
     events::clear_handlers();
     rinch_core::clear_context();
 
+    #[cfg(feature = "android-gpu")]
+    let mut gpu_surface: Option<GpuSurface> = None;
     let mut surface: Option<SoftSurface> = None;
     let mut mounted = false;
     let mut physical_size = (0u32, 0u32);
@@ -130,6 +135,10 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         );
 
                         surface = SoftSurface::new(&native_window, w, h);
+                        #[cfg(feature = "android-gpu")]
+                        {
+                            gpu_surface = GpuSurface::new(w, h);
+                        }
 
                         if !mounted {
                             let lw = (w as f64 / scale_factor).round() as f32;
@@ -143,6 +152,10 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                     }
                 }
                 MainEvent::TerminateWindow { .. } => {
+                    #[cfg(feature = "android-gpu")]
+                    {
+                        gpu_surface = None;
+                    }
                     surface = None;
                 }
                 MainEvent::WindowResized { .. } => {
@@ -165,6 +178,10 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         process_actions(&actions, &mut running);
 
                         if let Some(ref mut s) = surface {
+                            s.resize(w, h);
+                        }
+                        #[cfg(feature = "android-gpu")]
+                        if let Some(ref mut s) = gpu_surface {
                             s.resize(w, h);
                         }
 
@@ -281,13 +298,22 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         let needs_paint = redraw || pending || has_momentum;
 
         if needs_paint && mounted {
+            if pending {
+                app.resolve_and_repaint(
+                    (physical_size.0 as f64 / scale_factor).round() as f32,
+                    (physical_size.1 as f64 / scale_factor).round() as f32,
+                );
+            }
+
+            #[cfg(feature = "android-gpu")]
+            if let (Some(gpu), Some(soft)) = (&mut gpu_surface, &mut surface) {
+                let scene = app.build_scene(scale_factor, logical_size);
+                let (pixels, w, h) = gpu.render_to_pixels(scene);
+                soft.present_pixels(pixels, w, h);
+            }
+
+            #[cfg(not(feature = "android-gpu"))]
             if let Some(ref mut s) = surface {
-                if pending {
-                    app.resolve_and_repaint(
-                        (physical_size.0 as f64 / scale_factor).round() as f32,
-                        (physical_size.1 as f64 / scale_factor).round() as f32,
-                    );
-                }
                 let (pixels, w, h) = app.build_pixels(scale_factor, logical_size, false);
                 s.present_pixels(pixels, w, h);
             }
@@ -697,6 +723,560 @@ impl SoftSurface {
         }
 
         let _ = buffer.present();
+    }
+}
+
+// ── GPU surface (wgpu + vello) ──────────────────────────────────────────
+
+#[cfg(feature = "android-gpu")]
+struct GpuSurface {
+    renderer: vello::Renderer,
+    render_texture: wgpu::Texture,
+    readback_buffer: wgpu::Buffer,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    width: u32,
+    height: u32,
+}
+
+#[cfg(feature = "android-gpu")]
+impl GpuSurface {
+    fn new(width: u32, height: u32) -> Option<Self> {
+        let width = width.max(1);
+        let height = height.max(1);
+
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            flags: wgpu::InstanceFlags::empty(),
+            backend_options: wgpu::BackendOptions::from_env_or_default(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+        });
+
+        let adapter =
+            match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })) {
+                Ok(a) => a,
+                Err(e) => {
+                    log::error!("GPU: adapter failed: {e}");
+                    return None;
+                }
+            };
+
+        let experimental = wgpu::Features::EXPERIMENTAL_RAY_QUERY
+            | wgpu::Features::EXPERIMENTAL_MESH_SHADER
+            | wgpu::Features::EXPERIMENTAL_RAY_HIT_VERTEX_RETURN
+            | wgpu::Features::EXPERIMENTAL_MESH_SHADER_MULTIVIEW
+            | wgpu::Features::EXPERIMENTAL_PASSTHROUGH_SHADERS;
+
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("rinch-android-gpu"),
+            required_features: adapter.features() - experimental,
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::default(),
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+        }))
+        .map_err(|e| log::error!("GPU: device failed: {e}"))
+        .ok()?;
+
+        device.set_device_lost_callback(|reason, msg| {
+            log::error!("GPU DEVICE LOST: reason={reason:?} msg={msg}");
+        });
+
+        let render_texture = Self::make_texture(&device, width, height);
+        let readback_buffer = Self::make_buffer(&device, width, height);
+
+        let mut renderer = vello::Renderer::new(
+            &device,
+            vello::RendererOptions {
+                antialiasing_support: vello::AaSupport::area_only(),
+                use_cpu: true,
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        )
+        .ok()?;
+
+        log::info!("GPU: {width}x{height} {:?}", adapter.get_info().backend);
+
+        Some(Self {
+            renderer,
+            render_texture,
+            readback_buffer,
+            device,
+            queue,
+            width,
+            height,
+        })
+    }
+
+    fn make_texture(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        })
+    }
+
+    fn make_buffer(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Buffer {
+        let row = (w * 4 + 255) & !255;
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (row * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        })
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        let (w, h) = (width.max(1), height.max(1));
+        self.width = w;
+        self.height = h;
+        self.render_texture = Self::make_texture(&self.device, w, h);
+        self.readback_buffer = Self::make_buffer(&self.device, w, h);
+    }
+
+    fn render_to_pixels(&mut self, scene: &vello::Scene) -> (&[u8], u32, u32) {
+        let view = self
+            .render_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        if let Err(e) = self.renderer.render_to_texture(
+            &self.device,
+            &self.queue,
+            scene,
+            &view,
+            &vello::RenderParams {
+                base_color: peniko::Color::from_rgba8(255, 255, 255, 255),
+                width: self.width,
+                height: self.height,
+                antialiasing_method: vello::AaConfig::Area,
+            },
+        ) {
+            log::error!("GPU render failed: {e}");
+        }
+
+        let row = (self.width * 4 + 255) & !255;
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.copy_texture_to_buffer(
+            self.render_texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &self.readback_buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(self.height),
+                },
+            },
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = self.readback_buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+
+        // Return the mapped data directly — caller must use it before we unmap
+        // We can't return a reference to mapped data across the unmap boundary,
+        // so we copy row-by-row to strip padding and return owned data via a static buffer.
+        static PIXEL_BUF: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+        let data = slice.get_mapped_range();
+        let stride = (self.width * 4) as usize;
+        let mut buf = PIXEL_BUF.lock().unwrap();
+        buf.resize(stride * self.height as usize, 0);
+        for y in 0..self.height as usize {
+            let src = y * row as usize;
+            let dst = y * stride;
+            buf[dst..dst + stride].copy_from_slice(&data[src..src + stride]);
+        }
+        drop(data);
+        self.readback_buffer.unmap();
+
+        let ptr = buf.as_ptr();
+        let len = buf.len();
+        drop(buf);
+        // SAFETY: the static Mutex ensures the buffer lives long enough;
+        // caller uses it immediately in present_pixels before next frame.
+        let pixels = unsafe { std::slice::from_raw_parts(ptr, len) };
+        (pixels, self.width, self.height)
+    }
+}
+
+// ── GPU diagnostic tests ────────────────────────────────────────────────
+
+#[cfg(feature = "android-gpu")]
+mod gpu_diagnostic {
+    pub fn run_tests() {
+        log::info!("=== GPU DIAGNOSTIC TESTS ===");
+
+        // 1. Create device
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
+
+        let adapter =
+            match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })) {
+                Ok(a) => a,
+                Err(e) => {
+                    log::error!("TEST: No adapter: {e}");
+                    return;
+                }
+            };
+
+        let info = adapter.get_info();
+        log::info!("TEST: Adapter: {} ({:?})", info.name, info.backend);
+        log::info!("TEST: Driver: {}", info.driver_info);
+
+        let experimental = wgpu::Features::EXPERIMENTAL_RAY_QUERY
+            | wgpu::Features::EXPERIMENTAL_MESH_SHADER
+            | wgpu::Features::EXPERIMENTAL_RAY_HIT_VERTEX_RETURN
+            | wgpu::Features::EXPERIMENTAL_MESH_SHADER_MULTIVIEW
+            | wgpu::Features::EXPERIMENTAL_PASSTHROUGH_SHADERS;
+        let features = adapter.features() - experimental;
+
+        let (device, queue) =
+            match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("gpu-test"),
+                required_features: features,
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::default(),
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+            })) {
+                Ok(dq) => dq,
+                Err(e) => {
+                    log::error!("TEST: Device creation failed: {e}");
+                    return;
+                }
+            };
+        log::info!("TEST 1 PASS: Device created");
+
+        // 2. Test basic compute shader (write to storage buffer)
+        test_compute_buffer(&device, &queue);
+
+        // 3. Test storage texture write (what Vello does)
+        test_storage_texture(&device, &queue, 256, 256);
+
+        // 4. Test storage texture at larger sizes
+        test_storage_texture(&device, &queue, 1008, 2244);
+
+        // 5. Test Vello renderer creation
+        test_vello_renderer(&device);
+
+        // 6. Test Vello render to small texture
+        test_vello_render(&device, &queue, 256, 256);
+
+        // 7. Test Vello render to full-size texture
+        test_vello_render(&device, &queue, 1008, 2244);
+
+        log::info!("=== GPU DIAGNOSTIC TESTS COMPLETE ===");
+    }
+
+    fn test_compute_buffer(device: &wgpu::Device, queue: &wgpu::Queue) {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("test compute"),
+            source: wgpu::ShaderSource::Wgsl(
+                r"
+                @group(0) @binding(0) var<storage, read_write> output: array<u32>;
+                @compute @workgroup_size(64)
+                fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+                    output[id.x] = id.x + 42u;
+                }
+            "
+                .into(),
+            ),
+        });
+
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 256 * 4,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("test pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(4, 1, 1);
+        }
+        queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+        let data = slice.get_mapped_range();
+        let vals: &[u32] = bytemuck::cast_slice(&data);
+        if vals[0] == 42 && vals[1] == 43 {
+            log::info!(
+                "TEST 2 PASS: Compute shader works (vals[0]={}, vals[1]={})",
+                vals[0],
+                vals[1]
+            );
+        } else {
+            log::error!("TEST 2 FAIL: Unexpected values: {:?}", &vals[..4]);
+        }
+        drop(data);
+        buffer.unmap();
+    }
+
+    fn test_storage_texture(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("test storage texture"),
+            source: wgpu::ShaderSource::Wgsl(
+                r"
+                @group(0) @binding(0) var output: texture_storage_2d<rgba8unorm, write>;
+                @compute @workgroup_size(8, 8)
+                fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+                    let dims = textureDimensions(output);
+                    if id.x < dims.x && id.y < dims.y {
+                        textureStore(output, id.xy, vec4<f32>(1.0, 0.0, 0.0, 1.0));
+                    }
+                }
+            "
+                .into(),
+            ),
+        });
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::WriteOnly,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            }],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("test storage tex pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            }],
+        });
+
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups((w + 7) / 8, (h + 7) / 8, 1);
+        }
+        queue.submit(std::iter::once(encoder.finish()));
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+        log::info!("TEST 3 PASS: Storage texture {w}x{h} compute completed");
+    }
+
+    fn test_vello_renderer(device: &wgpu::Device) {
+        match vello::Renderer::new(
+            device,
+            vello::RendererOptions {
+                antialiasing_support: vello::AaSupport::area_only(),
+                use_cpu: false,
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        ) {
+            Ok(_) => log::info!("TEST 5 PASS: Vello GPU renderer created"),
+            Err(e) => log::error!("TEST 5 FAIL: Vello renderer creation failed: {e}"),
+        }
+    }
+
+    fn test_vello_render(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32) {
+        let mut renderer = match vello::Renderer::new(
+            device,
+            vello::RendererOptions {
+                antialiasing_support: vello::AaSupport::area_only(),
+                use_cpu: false,
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                log::error!("TEST 6/7 SKIP: Can't create renderer: {e}");
+                return;
+            }
+        };
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Create a scene with some content
+        let mut scene = vello::Scene::new();
+        use vello::kurbo::{Affine, Rect};
+        use vello::peniko::{Brush, Color, Fill};
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
+            None,
+            &Rect::new(0.0, 0.0, w as f64, h as f64),
+        );
+
+        match renderer.render_to_texture(
+            device,
+            queue,
+            &scene,
+            &view,
+            &vello::RenderParams {
+                base_color: peniko::Color::from_rgba8(255, 255, 255, 255),
+                width: w,
+                height: h,
+                antialiasing_method: vello::AaConfig::Area,
+            },
+        ) {
+            Ok(_) => {
+                log::info!("TEST 6/7: Vello submit OK for {w}x{h}, polling...");
+                match device.poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: None,
+                }) {
+                    Ok(_) => log::info!("TEST 6/7 PASS: poll OK for {w}x{h}"),
+                    Err(e) => log::error!("TEST 6/7 FAIL: poll failed for {w}x{h}: {e}"),
+                }
+            }
+            Err(e) => log::error!("TEST 6/7 FAIL: Vello render_to_texture {w}x{h} failed: {e}"),
+        }
     }
 }
 
