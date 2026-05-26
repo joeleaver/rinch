@@ -72,6 +72,38 @@ public class RinchActivity extends NativeActivity {
         addContentView(inputView, lp);
     }
 
+    // ── Safe Area Insets ─────────────────────────────────────────────────
+
+    public int[] getSafeAreaInsets() {
+        int top = 0, bottom = 0, left = 0, right = 0;
+
+        android.view.View decorView = getWindow().getDecorView();
+        android.view.WindowInsets insets = decorView.getRootWindowInsets();
+        if (insets != null) {
+            top = insets.getSystemWindowInsetTop();
+            bottom = insets.getSystemWindowInsetBottom();
+            left = insets.getSystemWindowInsetLeft();
+            right = insets.getSystemWindowInsetRight();
+
+            // Account for display cutout (notch)
+            android.view.DisplayCutout cutout = insets.getDisplayCutout();
+            if (cutout != null) {
+                top = Math.max(top, cutout.getSafeInsetTop());
+                bottom = Math.max(bottom, cutout.getSafeInsetBottom());
+                left = Math.max(left, cutout.getSafeInsetLeft());
+                right = Math.max(right, cutout.getSafeInsetRight());
+            }
+        } else {
+            // Fallback: status bar height from resources
+            int resourceId = getResources().getIdentifier("status_bar_height", "dimen", "android");
+            if (resourceId > 0) {
+                top = getResources().getDimensionPixelSize(resourceId);
+            }
+        }
+
+        return new int[] { top, bottom, left, right };
+    }
+
     // ── Lifecycle ────────────────────────────────────────────────────────
 
     @Override
