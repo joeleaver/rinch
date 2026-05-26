@@ -13,6 +13,8 @@ import android.graphics.Matrix;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Vibrator;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
@@ -46,6 +48,8 @@ public class RinchActivity extends NativeActivity {
     private Uri pendingPhotoUri;
     private SensorManager sensorManager;
     private final HashMap<Integer, SensorEventListener> activeSensors = new HashMap<>();
+    private NotificationManager notificationManager;
+    private int notificationId = 1;
     private LocationManager locationManager;
     private LocationListener locationListener;
 
@@ -59,6 +63,7 @@ public class RinchActivity extends NativeActivity {
         vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
         sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
         locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+        notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
 
         // Add input proxy for proper InputConnection (CJK, autocomplete, etc.)
         // Must have non-zero size and be visible for IME to connect.
@@ -66,6 +71,23 @@ public class RinchActivity extends NativeActivity {
         ViewGroup.LayoutParams lp = new ViewGroup.LayoutParams(1, 1);
         addContentView(inputView, lp);
     }
+
+    // ── Lifecycle ────────────────────────────────────────────────────────
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        nativeOnPause();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        nativeOnResume();
+    }
+
+    private native void nativeOnPause();
+    private native void nativeOnResume();
 
     // ── IME ─────────────────────────────────────────────────────────────
 
@@ -199,6 +221,68 @@ public class RinchActivity extends NativeActivity {
             }
         } catch (Exception e) {
             pendingPhotoUri = null;
+        }
+    }
+
+    // ── Notifications ────────────────────────────────────────────────────
+
+    private static final String CHANNEL_ID = "rinch_notifications";
+
+    private void ensureNotificationChannel(int importance) {
+        notificationManager.deleteNotificationChannel("rinch_default");
+        NotificationChannel channel = notificationManager.getNotificationChannel(CHANNEL_ID);
+        if (channel == null) {
+            channel = new NotificationChannel(CHANNEL_ID, "Rinch Notifications", importance);
+            notificationManager.createNotificationChannel(channel);
+        }
+    }
+
+    public void showNotification(String title, String body, int importance) {
+        ensureNotificationChannel(importance);
+        android.app.Notification notification = new android.app.Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setAutoCancel(true)
+            .build();
+        notificationManager.notify(notificationId++, notification);
+    }
+
+    // ── Share ───────────────────────────────────────────────────────────
+
+    public void shareText(String text) {
+        Intent intent = new Intent(Intent.ACTION_SEND);
+        intent.setType("text/plain");
+        intent.putExtra(Intent.EXTRA_TEXT, text);
+        startActivity(Intent.createChooser(intent, null));
+    }
+
+    public void shareImage(byte[] imageBytes, String text) {
+        try {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Images.Media.DISPLAY_NAME,
+                "rinch_share_" + System.currentTimeMillis() + ".jpg");
+            values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+            Uri uri = getContentResolver().insert(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+            if (uri == null) return;
+
+            java.io.OutputStream os = getContentResolver().openOutputStream(uri);
+            if (os != null) {
+                os.write(imageBytes);
+                os.close();
+            }
+
+            Intent intent = new Intent(Intent.ACTION_SEND);
+            intent.setType("image/jpeg");
+            intent.putExtra(Intent.EXTRA_STREAM, uri);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            if (text != null) {
+                intent.putExtra(Intent.EXTRA_TEXT, text);
+            }
+            startActivity(Intent.createChooser(intent, null));
+        } catch (Exception e) {
+            // sharing failed silently
         }
     }
 

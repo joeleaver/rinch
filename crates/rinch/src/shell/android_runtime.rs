@@ -264,9 +264,10 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         rinch_android::callback::drain_activity_results();
         rinch_android::callback::drain_permission_results();
 
-        // Drain sensor and location updates
+        // Drain sensor, location, and lifecycle updates
         rinch_android::sensors::drain_sensor_events();
         rinch_android::location::drain_location();
+        rinch_android::lifecycle::drain_lifecycle();
 
         // Drain cross-thread callbacks
         drain_main_queue();

@@ -71,6 +71,29 @@ fn app() -> NodeHandle {
                 {|| location_text.get()}
             }
 
+            // ── Notifications + Share ──────────────────────────────
+            div { style: "font-size: 18px; font-weight: bold; color: #1976D2; margin-top: 8px",
+                "Notifications & Share"
+            }
+            div { style: "display: flex; flex-direction: row; gap: 12px",
+                button {
+                    style: "padding: 10px 20px; background-color: #9C27B0; color: white; font-size: 16px",
+                    onclick: move || {
+                        #[cfg(target_os = "android")]
+                        rinch_android::notification::show("Hello from Rinch!", "This notification was sent from Rust 🦀");
+                    },
+                    "Notify"
+                }
+                button {
+                    style: "padding: 10px 20px; background-color: #607D8B; color: white; font-size: 16px",
+                    onclick: move || {
+                        #[cfg(target_os = "android")]
+                        rinch_android::share::share_text("Sent from Rinch on Android! 🚀");
+                    },
+                    "Share Text"
+                }
+            }
+
             // ── Image Picker / Camera ──────────────────────────────
             div { style: "font-size: 18px; font-weight: bold; color: #1976D2; margin-top: 8px",
                 "Image Picker"

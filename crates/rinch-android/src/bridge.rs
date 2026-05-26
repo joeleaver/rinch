@@ -140,6 +140,18 @@ pub fn init(android_app: &AndroidApp) {
                     fn_ptr: crate::location::Java_com_rinch_RinchActivity_nativeOnLocationChanged
                         as *mut std::ffi::c_void,
                 },
+                jni::NativeMethod {
+                    name: "nativeOnPause".into(),
+                    sig: "()V".into(),
+                    fn_ptr: crate::lifecycle::Java_com_rinch_RinchActivity_nativeOnPause
+                        as *mut std::ffi::c_void,
+                },
+                jni::NativeMethod {
+                    name: "nativeOnResume".into(),
+                    sig: "()V".into(),
+                    fn_ptr: crate::lifecycle::Java_com_rinch_RinchActivity_nativeOnResume
+                        as *mut std::ffi::c_void,
+                },
             ],
         )
         .expect("failed to register RinchActivity native methods");
