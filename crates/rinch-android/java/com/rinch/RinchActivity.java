@@ -7,6 +7,9 @@ import android.content.Context;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Matrix;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Vibrator;
@@ -16,6 +19,8 @@ import android.view.inputmethod.InputMethodManager;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+
+import android.media.ExifInterface;
 
 /**
  * Rinch Activity — extends NativeActivity with platform service methods
@@ -180,6 +185,54 @@ public class RinchActivity extends NativeActivity {
             }
         } catch (Exception e) {
             pendingPhotoUri = null;
+        }
+    }
+
+    // ── Image Reader (EXIF-aware) ─────────────────────────────────────
+
+    public byte[] readImageUri(String uriString) {
+        try {
+            Uri uri = Uri.parse(uriString);
+
+            // Read EXIF orientation
+            int rotation = 0;
+            try (InputStream exifStream = getContentResolver().openInputStream(uri)) {
+                if (exifStream != null) {
+                    ExifInterface exif = new ExifInterface(exifStream);
+                    int orient = exif.getAttributeInt(
+                        ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+                    switch (orient) {
+                        case ExifInterface.ORIENTATION_ROTATE_90:  rotation = 90;  break;
+                        case ExifInterface.ORIENTATION_ROTATE_180: rotation = 180; break;
+                        case ExifInterface.ORIENTATION_ROTATE_270: rotation = 270; break;
+                    }
+                }
+            }
+
+            // Decode bitmap
+            Bitmap bitmap;
+            try (InputStream imageStream = getContentResolver().openInputStream(uri)) {
+                bitmap = BitmapFactory.decodeStream(imageStream);
+            }
+            if (bitmap == null) return null;
+
+            // Apply rotation if needed
+            if (rotation != 0) {
+                Matrix matrix = new Matrix();
+                matrix.postRotate(rotation);
+                Bitmap rotated = Bitmap.createBitmap(
+                    bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+                bitmap.recycle();
+                bitmap = rotated;
+            }
+
+            // Encode to JPEG
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, baos);
+            bitmap.recycle();
+            return baos.toByteArray();
+        } catch (Exception e) {
+            return null;
         }
     }
 

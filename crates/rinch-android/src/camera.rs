@@ -6,7 +6,7 @@
 
 use jni::objects::JValue;
 
-use crate::{bridge, callback, file_picker};
+use crate::{bridge, callback};
 
 const RESULT_OK: i32 = -1;
 
@@ -16,7 +16,7 @@ pub fn pick_image(cb: impl FnOnce(Option<Vec<u8>>) + 'static) {
     callback::register_activity_callback(code, move |result| {
         if result.result_code == RESULT_OK {
             if let Some(uri) = result.data_uri {
-                match file_picker::read_content_uri(&uri) {
+                match read_image_uri(&uri) {
                     Ok(bytes) => return cb(Some(bytes)),
                     Err(e) => log::warn!("pick_image: read_content_uri failed: {e}"),
                 }
@@ -52,7 +52,7 @@ fn take_photo_inner(cb: impl FnOnce(Option<Vec<u8>>) + 'static) {
     callback::register_activity_callback(code, move |result| {
         if result.result_code == RESULT_OK {
             if let Some(uri) = result.data_uri {
-                match file_picker::read_content_uri(&uri) {
+                match read_image_uri(&uri) {
                     Ok(bytes) => return cb(Some(bytes)),
                     Err(e) => log::warn!("take_photo: read_content_uri failed: {e}"),
                 }
@@ -65,6 +65,40 @@ fn take_photo_inner(cb: impl FnOnce(Option<Vec<u8>>) + 'static) {
             log::warn!("takePhoto JNI call failed: {e}");
         }
     });
+}
+
+/// Read an image from a `content://` URI, applying EXIF rotation.
+/// Returns correctly-oriented JPEG bytes.
+fn read_image_uri(uri: &str) -> Result<Vec<u8>, String> {
+    bridge::with_activity(|env, activity| {
+        let juri = env.new_string(uri).map_err(|e| e.to_string())?;
+        let result = env
+            .call_method(
+                activity,
+                "readImageUri",
+                "(Ljava/lang/String;)[B",
+                &[JValue::Object(&juri)],
+            )
+            .map_err(|e| format!("readImageUri JNI call failed: {e}"))?
+            .l()
+            .map_err(|e| format!("readImageUri return type error: {e}"))?;
+
+        if result.is_null() {
+            return Err("readImageUri returned null".into());
+        }
+
+        let jbyte_array: jni::objects::JByteArray = result.into();
+        let len = env
+            .get_array_length(&jbyte_array)
+            .map_err(|e| format!("get_array_length failed: {e}"))?;
+
+        let mut buf = vec![0i8; len as usize];
+        env.get_byte_array_region(&jbyte_array, 0, &mut buf)
+            .map_err(|e| format!("get_byte_array_region failed: {e}"))?;
+
+        let bytes: Vec<u8> = buf.into_iter().map(|b| b as u8).collect();
+        Ok(bytes)
+    })
 }
 
 /// Convert image bytes (JPEG, PNG, etc.) to a `data:` URI for use with `<img src>`.
