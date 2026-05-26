@@ -13,12 +13,20 @@ import android.graphics.Matrix;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Vibrator;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
+import android.location.Location;
+import android.location.LocationListener;
+import android.location.LocationManager;
 import android.provider.MediaStore;
 import android.view.ViewGroup;
 import android.view.inputmethod.InputMethodManager;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.util.HashMap;
 
 import android.media.ExifInterface;
 
@@ -36,6 +44,10 @@ public class RinchActivity extends NativeActivity {
     private Vibrator vibrator;
     private RinchInputView inputView;
     private Uri pendingPhotoUri;
+    private SensorManager sensorManager;
+    private final HashMap<Integer, SensorEventListener> activeSensors = new HashMap<>();
+    private LocationManager locationManager;
+    private LocationListener locationListener;
 
 
 
@@ -45,6 +57,8 @@ public class RinchActivity extends NativeActivity {
         imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
         clipboardManager = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+        sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+        locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
 
         // Add input proxy for proper InputConnection (CJK, autocomplete, etc.)
         // Must have non-zero size and be visible for IME to connect.
@@ -187,6 +201,75 @@ public class RinchActivity extends NativeActivity {
             pendingPhotoUri = null;
         }
     }
+
+    // ── Sensors ─────────────────────────────────────────────────────────
+
+    public void startSensor(int sensorType, int delayUs) {
+        Sensor sensor = sensorManager.getDefaultSensor(sensorType);
+        if (sensor == null) return;
+        SensorEventListener listener = new SensorEventListener() {
+            @Override
+            public void onSensorChanged(SensorEvent event) {
+                nativeOnSensorChanged(sensorType, event.values, event.timestamp);
+            }
+            @Override
+            public void onAccuracyChanged(Sensor s, int accuracy) {}
+        };
+        sensorManager.registerListener(listener, sensor, delayUs);
+        activeSensors.put(sensorType, listener);
+    }
+
+    public void stopSensor(int sensorType) {
+        SensorEventListener listener = activeSensors.remove(sensorType);
+        if (listener != null) sensorManager.unregisterListener(listener);
+    }
+
+    private native void nativeOnSensorChanged(int sensorType, float[] values, long timestamp);
+
+    // ── Location ───────────────────────────────────────────────────────
+
+    @SuppressWarnings("MissingPermission")
+    public void startLocationUpdates(long minTimeMs, float minDistanceM) {
+        runOnUiThread(() -> {
+            locationListener = new LocationListener() {
+                @Override
+                public void onLocationChanged(Location location) {
+                    nativeOnLocationChanged(
+                        location.getLatitude(), location.getLongitude(), location.getAltitude(),
+                        location.getAccuracy(), location.getSpeed(), location.getBearing(),
+                        location.getTime(),
+                        location.getProvider() != null ? location.getProvider() : "unknown");
+                }
+            };
+
+            try {
+                if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                    locationManager.requestLocationUpdates(
+                        LocationManager.GPS_PROVIDER, minTimeMs, minDistanceM, locationListener);
+                }
+            } catch (Exception e) { /* provider unavailable */ }
+
+            try {
+                if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                    locationManager.requestLocationUpdates(
+                        LocationManager.NETWORK_PROVIDER, minTimeMs, minDistanceM, locationListener);
+                }
+            } catch (Exception e) { /* provider unavailable */ }
+        });
+    }
+
+    public void stopLocationUpdates() {
+        runOnUiThread(() -> {
+            if (locationListener != null) {
+                locationManager.removeUpdates(locationListener);
+                locationListener = null;
+            }
+        });
+    }
+
+    private native void nativeOnLocationChanged(
+        double lat, double lon, double alt, float accuracy,
+        float speed, float bearing, long timestamp, String provider);
 
     // ── Image Reader (EXIF-aware) ─────────────────────────────────────
 

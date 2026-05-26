@@ -7,6 +7,8 @@
     <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="35" />
 
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <queries>
         <intent>

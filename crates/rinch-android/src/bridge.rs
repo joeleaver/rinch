@@ -128,6 +128,18 @@ pub fn init(android_app: &AndroidApp) {
                     fn_ptr: crate::callback::Java_com_rinch_RinchActivity_nativeOnPermissionsResult
                         as *mut std::ffi::c_void,
                 },
+                jni::NativeMethod {
+                    name: "nativeOnSensorChanged".into(),
+                    sig: "(I[FJ)V".into(),
+                    fn_ptr: crate::sensors::Java_com_rinch_RinchActivity_nativeOnSensorChanged
+                        as *mut std::ffi::c_void,
+                },
+                jni::NativeMethod {
+                    name: "nativeOnLocationChanged".into(),
+                    sig: "(DDDFFFJLjava/lang/String;)V".into(),
+                    fn_ptr: crate::location::Java_com_rinch_RinchActivity_nativeOnLocationChanged
+                        as *mut std::ffi::c_void,
+                },
             ],
         )
         .expect("failed to register RinchActivity native methods");

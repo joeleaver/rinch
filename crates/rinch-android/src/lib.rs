@@ -27,7 +27,11 @@ pub mod file_picker;
 #[cfg(target_os = "android")]
 pub mod ime;
 #[cfg(target_os = "android")]
+pub mod location;
+#[cfg(target_os = "android")]
 pub mod permissions;
+#[cfg(target_os = "android")]
+pub mod sensors;
 
 #[cfg(target_os = "android")]
 pub use bridge::init;
