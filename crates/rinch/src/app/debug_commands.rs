@@ -283,6 +283,29 @@ impl RinchApp {
 
                 rinch_core::finish_drag(x, y);
                 self.scrollbar_drag = None;
+
+                // Finalize CE selection at the mouse_up position.
+                // Without this, mouse_down → mouse_up (no intermediate mouse_move)
+                // would leave the cursor at the mouse_down position with no selection.
+                if self.ce_selecting {
+                    if let Some(ref mut ce) = self.focused_contenteditable {
+                        let ce_node_id = ce.ce_node_id;
+                        if let Some(doc) = &self.doc {
+                            let new_cursor = {
+                                let d = doc.borrow();
+                                Self::compute_dom_cursor_from_click(&d.tree, ce_node_id, x, y)
+                            };
+                            ce.cursor = new_cursor;
+                            let anchor = ce.anchor;
+                            self.set_contenteditable_attributes_dom(
+                                ce_node_id, true, new_cursor, anchor,
+                            );
+                            self.sync_ce_ops_cursor();
+                            self.scene_dirty = true;
+                        }
+                    }
+                }
+
                 self.ce_selecting = false;
                 self.text_selecting = false;
                 actions.push(AppAction::RequestRedraw);
