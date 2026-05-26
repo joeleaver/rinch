@@ -260,6 +260,10 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
             }
         }
 
+        // Drain activity result callbacks (file picker, etc.)
+        rinch_android::callback::drain_activity_results();
+        rinch_android::callback::drain_permission_results();
+
         // Drain cross-thread callbacks
         drain_main_queue();
         rinch_core::reactive::drain_polls();

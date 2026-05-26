@@ -4,10 +4,16 @@ import android.app.NativeActivity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Vibrator;
 import android.view.ViewGroup;
 import android.view.inputmethod.InputMethodManager;
+
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 
 /**
  * Rinch Activity — extends NativeActivity with platform service methods
@@ -91,6 +97,76 @@ public class RinchActivity extends NativeActivity {
     public void vibrate(long ms) {
         if (vibrator != null && vibrator.hasVibrator()) {
             vibrator.vibrate(ms);
+        }
+    }
+
+    // ── Activity Result Routing ─────────────────────────────────────────
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        String dataUri = null;
+        if (data != null && data.getData() != null) {
+            dataUri = data.getData().toString();
+        }
+        nativeOnActivityResult(requestCode, resultCode, dataUri);
+    }
+
+    private native void nativeOnActivityResult(int requestCode, int resultCode, String dataUri);
+
+    // ── Permission Result Routing ───────────────────────────────────────
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        boolean allGranted = grantResults.length > 0;
+        for (int result : grantResults) {
+            if (result != PackageManager.PERMISSION_GRANTED) {
+                allGranted = false;
+                break;
+            }
+        }
+        nativeOnPermissionsResult(requestCode, allGranted);
+    }
+
+    private native void nativeOnPermissionsResult(int requestCode, boolean allGranted);
+
+    // ── File Picker (SAF) ───────────────────────────────────────────────
+
+    public void openFilePicker(int requestCode) {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        startActivityForResult(intent, requestCode);
+    }
+
+    public void saveFilePicker(int requestCode, String fileName) {
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        if (fileName != null) {
+            intent.putExtra(Intent.EXTRA_TITLE, fileName);
+        }
+        startActivityForResult(intent, requestCode);
+    }
+
+    // ── Content URI Reader ──────────────────────────────────────────────
+
+    public byte[] readContentUri(String uriString) {
+        try {
+            Uri uri = Uri.parse(uriString);
+            InputStream is = getContentResolver().openInputStream(uri);
+            if (is == null) return null;
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            byte[] buffer = new byte[8192];
+            int len;
+            while ((len = is.read(buffer)) != -1) {
+                baos.write(buffer, 0, len);
+            }
+            is.close();
+            return baos.toByteArray();
+        } catch (Exception e) {
+            return null;
         }
     }
 }
