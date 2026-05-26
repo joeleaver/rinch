@@ -166,8 +166,7 @@ public class RinchActivity extends NativeActivity {
     }
 
     public void takePhoto(int requestCode) {
-        Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-        if (intent.resolveActivity(getPackageManager()) != null) {
+        try {
             ContentValues values = new ContentValues();
             values.put(MediaStore.Images.Media.DISPLAY_NAME,
                 "rinch_" + System.currentTimeMillis() + ".jpg");
@@ -175,9 +174,12 @@ public class RinchActivity extends NativeActivity {
             pendingPhotoUri = getContentResolver().insert(
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
             if (pendingPhotoUri != null) {
+                Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
                 intent.putExtra(MediaStore.EXTRA_OUTPUT, pendingPhotoUri);
                 startActivityForResult(intent, requestCode);
             }
+        } catch (Exception e) {
+            pendingPhotoUri = null;
         }
     }
 
