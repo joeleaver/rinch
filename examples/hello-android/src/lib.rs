@@ -1,10 +1,8 @@
 //! Minimal rinch app for Android.
 //!
 //! Build with:
-//!   cargo ndk -t arm64-v8a build -p hello-android --release
-//!
-//! The android-activity crate provides the entry point via GameActivity.
-//! On desktop, this binary is a no-op (the android runtime is target-gated).
+//!   ./build-apk.sh
+//!   # or: cargo ndk -t x86_64 build -p hello-android --release
 
 use rinch::prelude::*;
 
@@ -14,7 +12,7 @@ fn app() -> NodeHandle {
     let count = Signal::new(0);
 
     rsx! {
-        div { style: "display: flex; flex-direction: column; padding: 40px; gap: 16px",
+        div { style: "display: flex; flex-direction: column; padding: 40px; gap: 16px; height: 100%; overflow: auto",
             div { style: "font-size: 32px; font-weight: bold; color: #1976D2",
                 "Hello from Android!"
             }
@@ -30,6 +28,17 @@ fn app() -> NodeHandle {
                 div { style: "font-size: 24px",
                     "Count: " {|| count.get().to_string()}
                 }
+            }
+            div { style: "margin-top: 20px; font-size: 16px; color: #333",
+                "Scroll down to see more content..."
+            }
+            for i in 0..20 {
+                div { key: i, style: "padding: 16px; margin: 4px 0; background-color: #f0f0f0; font-size: 16px",
+                    {format!("Item {i}: scroll to see this content")}
+                }
+            }
+            div { style: "padding: 20px; font-size: 18px; font-weight: bold; color: #4CAF50",
+                "You reached the bottom!"
             }
         }
     }

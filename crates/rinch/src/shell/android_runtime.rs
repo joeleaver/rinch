@@ -102,6 +102,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
     let mut window_size = (0u32, 0u32);
     let mut scale_factor = 1.0f64;
     let mut running = true;
+    let mut gesture = TouchGesture::new();
 
     while running {
         android_app.poll_events(Some(Duration::from_millis(16)), |event| {
@@ -175,7 +176,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         }
 
         // Process touch / key input — must drain after poll_events returns
-        let input_events = collect_input_events(&android_app, scale_factor);
+        let input_events = collect_input_events(&android_app, &mut gesture);
         for event in &input_events {
             let actions = app.handle_event(event.clone(), window_size, scale_factor);
             process_actions(&actions, &mut running);
@@ -186,7 +187,11 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         rinch_core::reactive::drain_polls();
 
         // Check if app has pending layout (signal changes create pending updates)
-        let needs_paint = REDRAW_PENDING.swap(false, Ordering::AcqRel) || app.has_pending_layout();
+        let has_momentum = gesture.velocity_x.abs() > MOMENTUM_MIN_VELOCITY
+            || gesture.velocity_y.abs() > MOMENTUM_MIN_VELOCITY;
+        let needs_paint = REDRAW_PENDING.swap(false, Ordering::AcqRel)
+            || app.has_pending_layout()
+            || has_momentum;
 
         if needs_paint && mounted {
             if let Some(ref mut s) = surface {
@@ -201,9 +206,161 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
     }
 }
 
+// ── Touch gesture recognizer ─────────────────────────────────────────────────
+
+const SCROLL_THRESHOLD: f32 = 8.0;
+const MOMENTUM_FRICTION: f32 = 0.95;
+const MOMENTUM_MIN_VELOCITY: f32 = 0.5;
+
+enum TouchState {
+    Idle,
+    /// Finger down, hasn't moved past threshold yet.
+    Pending {
+        x: f32,
+        y: f32,
+    },
+    /// Finger is dragging — emit scroll events.
+    Scrolling {
+        last_x: f32,
+        last_y: f32,
+    },
+}
+
+struct TouchGesture {
+    state: TouchState,
+    /// Velocity for momentum scrolling (pixels per frame).
+    velocity_x: f32,
+    velocity_y: f32,
+    /// Where to send scroll events (the initial touch point).
+    scroll_origin: (f32, f32),
+}
+
+impl TouchGesture {
+    fn new() -> Self {
+        Self {
+            state: TouchState::Idle,
+            velocity_x: 0.0,
+            velocity_y: 0.0,
+            scroll_origin: (0.0, 0.0),
+        }
+    }
+
+    fn process(&mut self, action: MotionAction, x: f32, y: f32, events: &mut Vec<PlatformEvent>) {
+        match action {
+            MotionAction::Down => {
+                self.velocity_x = 0.0;
+                self.velocity_y = 0.0;
+                self.scroll_origin = (x, y);
+                self.state = TouchState::Pending { x, y };
+                events.push(PlatformEvent::MouseMove { x, y });
+            }
+            MotionAction::Move => {
+                match self.state {
+                    TouchState::Pending {
+                        x: start_x,
+                        y: start_y,
+                    } => {
+                        let dx = x - start_x;
+                        let dy = y - start_y;
+                        if dx.abs() > SCROLL_THRESHOLD || dy.abs() > SCROLL_THRESHOLD {
+                            // Crossed threshold — switch to scrolling
+                            self.state = TouchState::Scrolling {
+                                last_x: x,
+                                last_y: y,
+                            };
+                        }
+                    }
+                    TouchState::Scrolling { last_x, last_y } => {
+                        let delta_x = (last_x - x) as f64;
+                        let delta_y = (last_y - y) as f64;
+                        self.velocity_x = (last_x - x) * 0.8 + self.velocity_x * 0.2;
+                        self.velocity_y = (last_y - y) * 0.8 + self.velocity_y * 0.2;
+                        self.state = TouchState::Scrolling {
+                            last_x: x,
+                            last_y: y,
+                        };
+                        let (ox, oy) = self.scroll_origin;
+                        events.push(PlatformEvent::MouseWheel {
+                            x: ox,
+                            y: oy,
+                            delta_x,
+                            delta_y,
+                        });
+                    }
+                    TouchState::Idle => {
+                        events.push(PlatformEvent::MouseMove { x, y });
+                    }
+                }
+            }
+            MotionAction::Up => {
+                match self.state {
+                    TouchState::Pending { x, y } => {
+                        // Didn't exceed threshold — this was a tap
+                        events.push(PlatformEvent::MouseDown {
+                            x,
+                            y,
+                            button: MouseButton::Left,
+                        });
+                        events.push(PlatformEvent::MouseUp {
+                            x,
+                            y,
+                            button: MouseButton::Left,
+                        });
+                    }
+                    TouchState::Scrolling { .. } => {
+                        // End of scroll drag — momentum will be applied in tick()
+                    }
+                    TouchState::Idle => {}
+                }
+                self.state = TouchState::Idle;
+            }
+            MotionAction::Cancel => {
+                self.state = TouchState::Idle;
+                self.velocity_x = 0.0;
+                self.velocity_y = 0.0;
+            }
+            MotionAction::HoverMove => {
+                events.push(PlatformEvent::MouseMove { x, y });
+            }
+            MotionAction::ButtonPress | MotionAction::ButtonRelease => {}
+            _ => {}
+        }
+    }
+
+    /// Generate momentum scroll events. Returns true if still animating.
+    fn tick_momentum(&mut self, events: &mut Vec<PlatformEvent>) -> bool {
+        if matches!(self.state, TouchState::Scrolling { .. }) {
+            // Still touching — don't apply momentum
+            return false;
+        }
+        if self.velocity_x.abs() < MOMENTUM_MIN_VELOCITY
+            && self.velocity_y.abs() < MOMENTUM_MIN_VELOCITY
+        {
+            self.velocity_x = 0.0;
+            self.velocity_y = 0.0;
+            return false;
+        }
+
+        let (ox, oy) = self.scroll_origin;
+        events.push(PlatformEvent::MouseWheel {
+            x: ox,
+            y: oy,
+            delta_x: self.velocity_x as f64,
+            delta_y: self.velocity_y as f64,
+        });
+
+        self.velocity_x *= MOMENTUM_FRICTION;
+        self.velocity_y *= MOMENTUM_FRICTION;
+        true
+    }
+}
+
 // ── Input translation ────────────────────────────────────────────────────────
 
-fn collect_input_events(android_app: &AndroidApp, _scale_factor: f64) -> Vec<PlatformEvent> {
+fn collect_input_events(
+    android_app: &AndroidApp,
+    gesture: &mut TouchGesture,
+) -> Vec<PlatformEvent> {
     let mut events = Vec::new();
 
     match android_app.input_events_iter() {
@@ -213,40 +370,7 @@ fn collect_input_events(android_app: &AndroidApp, _scale_factor: f64) -> Vec<Pla
                 match input_event {
                     InputEvent::MotionEvent(motion) => {
                         let ptr = motion.pointer_at_index(0);
-                        let x = ptr.x();
-                        let y = ptr.y();
-
-                        match motion.action() {
-                            MotionAction::Down => {
-                                events.push(PlatformEvent::MouseMove { x, y });
-                                events.push(PlatformEvent::MouseDown {
-                                    x,
-                                    y,
-                                    button: MouseButton::Left,
-                                });
-                            }
-                            MotionAction::Up => {
-                                events.push(PlatformEvent::MouseUp {
-                                    x,
-                                    y,
-                                    button: MouseButton::Left,
-                                });
-                            }
-                            MotionAction::Move | MotionAction::HoverMove => {
-                                events.push(PlatformEvent::MouseMove { x, y });
-                            }
-                            MotionAction::ButtonPress | MotionAction::ButtonRelease => {
-                                // Handled via Down/Up — ignore to avoid duplicates
-                            }
-                            MotionAction::Cancel => {
-                                events.push(PlatformEvent::MouseUp {
-                                    x,
-                                    y,
-                                    button: MouseButton::Left,
-                                });
-                            }
-                            _ => {}
-                        }
+                        gesture.process(motion.action(), ptr.x(), ptr.y(), &mut events);
                     }
                     InputEvent::KeyEvent(key) => {
                         if key.action() == KeyAction::Down {
@@ -268,6 +392,9 @@ fn collect_input_events(android_app: &AndroidApp, _scale_factor: f64) -> Vec<Pla
             log::warn!("input_events_iter failed: {e:?}");
         }
     }
+
+    // Apply momentum scrolling
+    gesture.tick_momentum(&mut events);
 
     events
 }
