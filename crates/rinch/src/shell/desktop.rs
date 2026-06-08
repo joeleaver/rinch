@@ -337,10 +337,20 @@ impl PlatformRenderer for WgpuRenderer {
         height: u32,
         base_color: Color,
     ) -> Result<(), RenderError> {
-        let surface_texture = self
-            .surface
-            .get_current_texture()
-            .map_err(|_| RenderError::SurfaceLost)?;
+        let surface_texture = match self.surface.get_current_texture() {
+            Ok(t) => t,
+            // Swapchain went stale (resize/DPI/occlusion/GPU reset) — recreate it and retry once.
+            Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
+                self.surface.configure(&self.device, &self.surface_config);
+                match self.surface.get_current_texture() {
+                    Ok(t) => t,
+                    Err(_) => return Ok(()), // try again on the next redraw
+                }
+            }
+            // Transient — skip this frame.
+            Err(wgpu::SurfaceError::Timeout) => return Ok(()),
+            Err(e) => return Err(RenderError::Internal(format!("get_current_texture: {e:?}"))),
+        };
 
         let render_texture_view = self
             .render_texture
