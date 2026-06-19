@@ -2315,6 +2315,14 @@ fn load_window_icon(png_data: &[u8]) -> Result<winit::icon::Icon, Box<dyn std::e
 /// compositors can display the icon in the taskbar via `app_id` matching.
 #[cfg(target_os = "linux")]
 fn install_wayland_icon(app_id: &str, png_data: &[u8]) {
+    // If the app already has a system-wide launcher (e.g. it was installed from
+    // a package), don't write a user-level NoDisplay stub of the same name: it
+    // would shadow that launcher and hide the app from the application menu. The
+    // packaged .desktop already supplies the taskbar icon via app_id/StartupWMClass.
+    if system_desktop_entry_exists(app_id) {
+        return;
+    }
+
     let Some(data_home) = std::env::var_os("XDG_DATA_HOME")
         .map(std::path::PathBuf::from)
         .or_else(dirs_icon_fallback)
@@ -2350,6 +2358,18 @@ fn install_wayland_icon(app_id: &str, png_data: &[u8]) {
         icon_path.display()
     );
     let _ = std::fs::write(&desktop_path, desktop_content);
+}
+
+/// Returns true if a `.desktop` entry for `app_id` exists in any system
+/// application directory (`$XDG_DATA_DIRS`, default `/usr/local/share:/usr/share`).
+#[cfg(target_os = "linux")]
+fn system_desktop_entry_exists(app_id: &str) -> bool {
+    let dirs = std::env::var("XDG_DATA_DIRS")
+        .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
+    let rel = format!("applications/{app_id}.desktop");
+    dirs.split(':')
+        .filter(|p| !p.is_empty())
+        .any(|p| std::path::Path::new(p).join(&rel).exists())
 }
 
 #[cfg(target_os = "linux")]
