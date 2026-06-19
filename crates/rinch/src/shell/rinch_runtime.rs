@@ -1432,6 +1432,14 @@ impl ApplicationHandler for RinchRuntime {
             self.handle_native_event(event, event_loop);
         }
 
+        // A cross-thread signal update (drained above) may have mutated the
+        // scene without resolve_and_repaint detecting a change; force a repaint
+        // so background-thread Signal::send()/update_send() reliably show up
+        // (previously the new DOM only painted on the next input event).
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+
         // Also resolve DevTools if signals changed
         if self.devtools_window.is_some() {
             self.resolve_devtools();
