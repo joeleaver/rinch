@@ -2375,12 +2375,15 @@ fn install_wayland_icon(app_id: &str, png_data: &[u8]) {
 /// application directory (`$XDG_DATA_DIRS`, default `/usr/local/share:/usr/share`).
 #[cfg(target_os = "linux")]
 fn system_desktop_entry_exists(app_id: &str) -> bool {
-    let dirs = std::env::var("XDG_DATA_DIRS")
-        .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
+    // Read XDG_DATA_DIRS as an OsString and split with split_paths so non-UTF8
+    // directory entries are preserved (var() would drop the whole value to the
+    // default on any non-UTF8 byte).
+    let dirs = std::env::var_os("XDG_DATA_DIRS")
+        .unwrap_or_else(|| std::ffi::OsString::from("/usr/local/share:/usr/share"));
     let rel = format!("applications/{app_id}.desktop");
-    dirs.split(':')
-        .filter(|p| !p.is_empty())
-        .any(|p| std::path::Path::new(p).join(&rel).exists())
+    std::env::split_paths(&dirs)
+        .filter(|p| !p.as_os_str().is_empty())
+        .any(|p| p.join(&rel).exists())
 }
 
 #[cfg(target_os = "linux")]
