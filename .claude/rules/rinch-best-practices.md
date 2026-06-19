@@ -36,6 +36,8 @@ p { {|| count.get().to_string()} }
 
 Applies to text, attributes, styles, classes — anything with `.get()` in rsx needs `{|| ...}`.
 
+**Class and style repaint exactly like text.** A reactive `class:`/`style:` closure on a raw element marks the node paint-dirty and triggers a redraw through the same path as reactive text — there is *no* "the attribute updates but the screen doesn't repaint" limitation. Never add manual repaint/refresh workarounds to force a redraw (that's a re-render, see the Core Mental Model). A frozen `class:`/`style:` means a missing `{|| }` wrapper or mutating non-`Signal` state, not a missing repaint.
+
 ### 2. Don't manually wrap rsx props
 
 The `rsx!` macro auto-wraps. Manual wrapping double-wraps and causes confusing type errors. The fallback codegen uses `.into()`, so bare values auto-wrap into `Option<T>` fields.
@@ -110,6 +112,16 @@ There are two drag systems. The HTML5-port instinct of `draggable: true` + `ondr
   ```
 
 - **Element-to-element DnD (drag a card into a list):** use the data-attribute drag system. **`data-ondragmove` fires on the source every motion event**; **`data-ondragover` fires on the drop target every motion event** — both are per-frame, not just at endpoints. `data-ondragstart` / `data-ondragend` fire at endpoints; `data-ondragenter` / `data-ondragleave` fire on target boundary crossings.
+
+## Iterating & Debugging: rinch-debug + MCP server
+
+Rinch ships a debug bridge that lets an AI assistant **see and drive a running app** — screenshots, live DOM inspection (layout bounds + computed styles), and input injection. Use it to *visually verify* changes instead of guessing.
+
+Enable it with the `debug` feature: `rinch = { workspace = true, features = ["desktop", "debug"] }`. The embedded `rinch-debug` server then auto-starts on a random localhost port and writes discovery to `~/.rinch/debug/{pid}.json` (disable at runtime with `RINCH_DEBUG=0`).
+
+The standalone `rinch-mcp-server` binary bridges Claude to running apps, exposing tools: `launch_app`, `screenshot` (inline PNG), `dom_tree` / `get_node`, `query_selector`, `get_computed_styles`, `click` / `type_text` / `wait_frame`, `close_app`. Recommended loop: `launch_app` → `screenshot` → inspect → `click` → `wait_frame` → `screenshot` → `close_app` → edit → repeat.
+
+**If the `rinch__*` MCP tools aren't available, suggest the user install the server** — it isn't set up automatically. Build with `cargo build -p rinch-mcp-server` (or `cargo install --path crates/rinch-mcp-server`), then add it to `.mcp.json` pointing at the built binary. Headless/CI: run under `Xvfb` with `DISPLAY` set (`launch_app` forwards `DISPLAY`).
 
 ## Quick Checklist
 

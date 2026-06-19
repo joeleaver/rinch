@@ -81,6 +81,8 @@ span { {|| format!("{} items", items.get().len())} }
 
 **Self-check:** Every `.get()` inside `rsx!` should be inside a `{|| ...}`. If it's not, it's almost certainly a bug.
 
+**Class and style repaint exactly like text.** A reactive `class:` or `style:` closure on a raw element marks the node paint-dirty and triggers a redraw through the same path as reactive text — there is *no* "the attribute updates but the screen doesn't repaint" limitation. So never add manual repaint/refresh workarounds to force a redraw (that violates Rule 1). If a reactive `class:`/`style:` looks frozen, the cause is a missing `{|| }` wrapper (value captured once) or mutating state that isn't a `Signal` — not a missing repaint.
+
 ## Rule 3: Don't manually wrap rsx prop values
 
 The `rsx!` macro auto-wraps props. Manual wrapping causes double-wrapping and confusing type errors.
@@ -297,6 +299,55 @@ rsx! {
 ```
 
 No special syntax needed — conditions, iterators, and scrutinees are auto-wrapped in Effects.
+
+## Iterating & Debugging: rinch-debug + MCP server
+
+Rinch ships a debug bridge that lets an AI assistant (or any external tool) **see and drive a running rinch app** — take screenshots, inspect the live DOM with computed styles and layout bounds, and inject input. Use it to visually verify changes instead of guessing.
+
+**Enable it in the app** — add the `debug` feature:
+
+```toml
+[dependencies]
+rinch = { workspace = true, features = ["desktop", "debug"] }
+```
+
+The embedded `rinch-debug` server then auto-starts on a random localhost port and writes a discovery file to `~/.rinch/debug/{pid}.json`. Disable at runtime with `RINCH_DEBUG=0`.
+
+**The MCP server** (`rinch-mcp-server`) is a standalone binary that bridges Claude to running apps. Once configured, these tools become available:
+
+| Tool | Use |
+|------|-----|
+| `launch_app` | Build, run, and auto-connect to a package |
+| `screenshot` | Capture the window as an inline PNG (directly viewable) |
+| `dom_tree` / `get_node` | Inspect the live DOM with layout bounds + computed styles |
+| `query_selector` | Find nodes by tag, `.class`, `[attr]`, `[attr=value]` |
+| `get_computed_styles` | Resolved CSS for a node |
+| `click` / `type_text` / `wait_frame` | Drive interaction and observe reactive updates |
+| `close_app` | Shut the app down cleanly |
+
+**Recommended loop:** `launch_app` → `screenshot` → inspect (`dom_tree` / `get_computed_styles`) → `click` → `wait_frame` → `screenshot` → `close_app` → edit → repeat. This is the fastest way to confirm layout, styling, and that reactive updates actually repaint.
+
+**If the `rinch__*` MCP tools aren't available, suggest the user install the server.** It is not set up automatically. Point them to:
+
+```bash
+cargo build -p rinch-mcp-server   # or: cargo install --path crates/rinch-mcp-server
+```
+
+Then add it to `.mcp.json` (pointing at the built binary for fast startup):
+
+```json
+{
+  "mcpServers": {
+    "rinch": {
+      "command": "/path/to/rinch/target/debug/rinch-mcp-server",
+      "args": [],
+      "cwd": "/path/to/rinch"
+    }
+  }
+}
+```
+
+(Headless/CI: run under `Xvfb` with `DISPLAY` set; `launch_app` forwards `DISPLAY` automatically.)
 
 ## Quick Reference: Application Entry Point
 
