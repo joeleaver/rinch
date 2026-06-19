@@ -1423,6 +1423,11 @@ impl ApplicationHandler for RinchRuntime {
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
+        // Track whether any reactive state changes while we drain queued work,
+        // so the redraw decision below can key off the actual cause (a signal
+        // changed) instead of repainting on every wake.
+        rinch_core::clear_signals_changed();
+
         // Drain main-thread callback queue.
         drain_main_queue();
 
@@ -1432,12 +1437,18 @@ impl ApplicationHandler for RinchRuntime {
             self.handle_native_event(event, event_loop);
         }
 
-        // A cross-thread signal update (drained above) may have mutated the
-        // scene without resolve_and_repaint detecting a change; force a repaint
-        // so background-thread Signal::send()/update_send() reliably show up
-        // (previously the new DOM only painted on the next input event).
-        if let Some(w) = &self.window {
-            w.request_redraw();
+        // A cross-thread Signal::send()/update_send() drained above runs its
+        // effects on this thread, but the ReRender handler's resolve_and_repaint
+        // doesn't always flag that mutation as a paint-worthy change (e.g. the
+        // dirty state was already consumed earlier in this batch). If a signal
+        // actually changed — or the DOM is still dirty — force a repaint so
+        // background-thread updates reliably show up instead of waiting for the
+        // next input event. Wakes that change nothing (window controls, debug
+        // commands, no-op callbacks) skip the redraw.
+        if rinch_core::signals_changed() || self.app.has_pending_layout() {
+            if let Some(w) = &self.window {
+                w.request_redraw();
+            }
         }
 
         // Also resolve DevTools if signals changed
