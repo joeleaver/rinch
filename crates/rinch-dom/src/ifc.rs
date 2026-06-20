@@ -694,6 +694,17 @@ impl RinchDocument {
             ) {
                 continue;
             }
+            // A `display: contents` element generates no box, so it can't
+            // establish an inline formatting context. When it flattens into a
+            // flex container (sync_display_contents reparents its children there),
+            // those children become flex items — an IFC rooted here would fight
+            // the flattening and overlap them (issue #41). Inside a block
+            // container the existing IFC handling is left unchanged.
+            if node.computed_style.display == crate::computed_style::values::DisplayValue::Contents
+                && Self::contents_ancestor_is_flex(&self.tree.nodes, id)
+            {
+                continue;
+            }
 
             let inline_children: Vec<usize> = node
                 .children
@@ -784,6 +795,25 @@ impl RinchDocument {
                     .set_node_context(root_taffy, Some(NodeContext::InlineRoot(root_id)));
             }
         }
+    }
+
+    /// Whether the nearest non-`display:contents` ancestor of `node_id` is a flex
+    /// container. Used to decide that a `display:contents` node's children are
+    /// flattened into a flex context (so the contents node must not be an IFC
+    /// root). Walks up through chained `display:contents` ancestors.
+    fn contents_ancestor_is_flex(nodes: &slab::Slab<Node>, node_id: usize) -> bool {
+        use crate::computed_style::values::DisplayValue;
+        let mut cur = nodes.get(node_id).and_then(|n| n.parent);
+        while let Some(anc_id) = cur {
+            match nodes.get(anc_id) {
+                Some(a) if a.computed_style.display == DisplayValue::Contents => {
+                    cur = a.parent;
+                }
+                Some(a) => return a.display_mode == DisplayMode::Flex,
+                None => return false,
+            }
+        }
+        false
     }
 
     /// Pre-compute layout for inline-block children that were detached from Taffy.
