@@ -125,6 +125,9 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                     "oncontextmenu" => "data-oncontextmenu",
                     "onmouseenter" => "data-onenter",
                     "onmouseleave" => "data-onleave",
+                    "onmousedown" => "data-onmousedown",
+                    "onmouseup" => "data-onmouseup",
+                    "onmousemove" => "data-onmousemove",
                     _ => "data-rid", // onclick and all other events
                 };
                 quote! {

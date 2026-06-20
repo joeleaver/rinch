@@ -453,6 +453,8 @@ impl RinchApp {
                         text_hit,
                         viewport_width,
                         viewport_height,
+                        button: events::MouseButton::Left,
+                        modifiers: self.modifier_state(),
                     });
                     events::set_click_ancestors(Self::collect_click_ancestors(&d.tree, node_id));
 

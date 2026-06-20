@@ -13,6 +13,72 @@ use rinch_core::events;
 
 use crate::web_document::WebDocument;
 
+thread_local! {
+    /// The element currently under the pointer that carries a `data-onenter`/
+    /// `data-onleave` handler. Used to implement non-bubbling
+    /// `mouseenter`/`mouseleave` semantics: enter/leave fire exactly once when
+    /// the resolved handler element under the pointer changes (moving between
+    /// descendants of the same handler element fires nothing). This is the
+    /// correct hover model; note it does not byte-for-byte match the desktop
+    /// backend, which keys on the raw hit-test node and may re-fire.
+    static LAST_HOVER: std::cell::RefCell<Option<web_sys::Element>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Map a browser `MouseEvent.button` index onto the core button enum.
+fn mouse_button_from_event(event: &web_sys::MouseEvent) -> events::MouseButton {
+    match event.button() {
+        1 => events::MouseButton::Middle,
+        2 => events::MouseButton::Right,
+        _ => events::MouseButton::Left,
+    }
+}
+
+/// Read the keyboard modifier state carried by a browser mouse event.
+fn modifiers_from_event(event: &web_sys::MouseEvent) -> events::ModifierState {
+    events::ModifierState {
+        shift: event.shift_key(),
+        ctrl: event.ctrl_key(),
+        alt: event.alt_key(),
+        meta: event.meta_key(),
+    }
+}
+
+/// Compare two elements by DOM node identity.
+fn same_element(a: &web_sys::Element, b: &web_sys::Element) -> bool {
+    let a_node: &web_sys::Node = a.as_ref();
+    let b_node: &web_sys::Node = b.as_ref();
+    a_node.is_same_node(Some(b_node))
+}
+
+/// Walk up from `el` to the nearest ancestor carrying `attr`, set the
+/// [`events::ClickContext`] (cursor + element bounds + button + modifiers from
+/// `event`), and dispatch the registered handler. Mirrors the `data-rid`
+/// pattern; used for `data-onmousedown`/`data-onmouseup`/`data-onmousemove`.
+fn dispatch_mouse_attr(el: &web_sys::Element, attr: &str, event: &web_sys::MouseEvent) {
+    let selector = format!("[{attr}]");
+    if let Ok(Some(target_el)) = el.closest(&selector)
+        && let Some(id_str) = target_el.get_attribute(attr)
+        && let Ok(id) = id_str.parse::<usize>()
+    {
+        let rect = target_el.get_bounding_client_rect();
+        events::set_click_context(events::ClickContext {
+            mouse_x: event.client_x() as f32,
+            mouse_y: event.client_y() as f32,
+            element_x: rect.x() as f32,
+            element_y: rect.y() as f32,
+            element_width: rect.width() as f32,
+            element_height: rect.height() as f32,
+            text_hit: Default::default(),
+            viewport_width: 0.0,
+            viewport_height: 0.0,
+            button: mouse_button_from_event(event),
+            modifiers: modifiers_from_event(event),
+        });
+        events::dispatch_event(events::EventHandlerId(id));
+    }
+}
+
 /// Convert a UTF-16 code unit offset within a string to a UTF-8 byte offset.
 fn utf16_offset_to_utf8_bytes(text: &str, utf16_offset: u32) -> usize {
     let mut utf16_count = 0u32;
@@ -148,8 +214,20 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 rinch::render_surface::set_focused_surface(None);
             }
 
+            // Additive: fire data-onmousedown before the click dispatch below,
+            // matching DOM order (mousedown precedes click) and the desktop arm.
+            dispatch_mouse_attr(&el, "data-onmousedown", &event);
+
+            // Click dispatch (data-rid fires on mousedown). The primary (left)
+            // button always clicks; a non-primary button clicks only when there
+            // is no contextmenu handler in the ancestry — mirroring the desktop
+            // right-click gate where oncontextmenu suppresses the click.
+            let click_allowed =
+                event.button() == 0 || el.closest("[data-oncontextmenu]").ok().flatten().is_none();
+
             // Walk up from target to find nearest [data-rid]
-            if let Ok(Some(rid_el)) = el.closest("[data-rid]")
+            if click_allowed
+                && let Ok(Some(rid_el)) = el.closest("[data-rid]")
                 && let Some(rid_str) = rid_el.get_attribute("data-rid")
                 && let Ok(rid) = rid_str.parse::<usize>()
             {
@@ -172,6 +250,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                     text_hit,
                     viewport_width: 0.0,
                     viewport_height: 0.0,
+                    button: mouse_button_from_event(&event),
+                    modifiers: modifiers_from_event(&event),
                 });
 
                 // Prevent browser default behavior (e.g. text selection
@@ -193,15 +273,58 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         if drag_active {
             event.prevent_default();
         }
+
+        if let Some(target) = event.target()
+            && let Ok(el) = target.dyn_into::<web_sys::Element>()
+        {
+            dispatch_mouse_attr(&el, "data-onmousemove", &event);
+
+            // Hover: fire data-onleave on the old element and data-onenter on the
+            // new one whenever the resolved hover element changes.
+            let new_hover = el.closest("[data-onenter],[data-onleave]").ok().flatten();
+            LAST_HOVER.with(|lh| {
+                let changed = {
+                    let cur = lh.borrow();
+                    match (cur.as_ref(), new_hover.as_ref()) {
+                        (Some(old), Some(new)) => !same_element(old, new),
+                        (None, None) => false,
+                        _ => true,
+                    }
+                };
+                if !changed {
+                    return;
+                }
+                // Drop all borrows before dispatching (handlers may re-enter).
+                let old = lh.borrow().clone();
+                if let Some(old_el) = old
+                    && let Some(id_str) = old_el.get_attribute("data-onleave")
+                    && let Ok(id) = id_str.parse::<usize>()
+                {
+                    events::dispatch_event(events::EventHandlerId(id));
+                }
+                if let Some(new_el) = new_hover.as_ref()
+                    && let Some(id_str) = new_el.get_attribute("data-onenter")
+                    && let Ok(id) = id_str.parse::<usize>()
+                {
+                    events::dispatch_event(events::EventHandlerId(id));
+                }
+                *lh.borrow_mut() = new_hover;
+            });
+        }
     }) as Box<dyn FnMut(_)>);
     browser_doc
         .add_event_listener_with_callback("mousemove", mousemove_closure.as_ref().unchecked_ref())
         .unwrap();
     mousemove_closure.forget();
 
-    // Mouseup delegation: stop active drag operations.
-    let mouseup_closure = Closure::wrap(Box::new(move |_event: web_sys::MouseEvent| {
+    // Mouseup delegation: stop active drag operations and fire data-onmouseup.
+    let mouseup_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
         rinch_core::Drag::cancel();
+        if let Some(target) = event.target()
+            && let Ok(el) = target.dyn_into::<web_sys::Element>()
+        {
+            dispatch_mouse_attr(&el, "data-onmouseup", &event);
+        }
     }) as Box<dyn FnMut(_)>);
     browser_doc
         .add_event_listener_with_callback("mouseup", mouseup_closure.as_ref().unchecked_ref())
@@ -305,4 +428,60 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         .add_event_listener_with_callback("input", input_closure.as_ref().unchecked_ref())
         .unwrap();
     input_closure.forget();
+
+    // Contextmenu delegation: dispatch data-oncontextmenu and suppress the
+    // native browser menu when a handler is found.
+    let contextmenu_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+        if let Some(target) = event.target()
+            && let Ok(el) = target.dyn_into::<web_sys::Element>()
+            && let Ok(Some(menu_el)) = el.closest("[data-oncontextmenu]")
+            && let Some(id_str) = menu_el.get_attribute("data-oncontextmenu")
+            && let Ok(id) = id_str.parse::<usize>()
+        {
+            let rect = menu_el.get_bounding_client_rect();
+            events::set_click_context(events::ClickContext {
+                mouse_x: event.client_x() as f32,
+                mouse_y: event.client_y() as f32,
+                element_x: rect.x() as f32,
+                element_y: rect.y() as f32,
+                element_width: rect.width() as f32,
+                element_height: rect.height() as f32,
+                text_hit: Default::default(),
+                viewport_width: 0.0,
+                viewport_height: 0.0,
+                button: events::MouseButton::Right,
+                modifiers: modifiers_from_event(&event),
+            });
+            event.prevent_default();
+            events::dispatch_event(events::EventHandlerId(id));
+        }
+    }) as Box<dyn FnMut(_)>);
+    browser_doc
+        .add_event_listener_with_callback(
+            "contextmenu",
+            contextmenu_closure.as_ref().unchecked_ref(),
+        )
+        .unwrap();
+    contextmenu_closure.forget();
+
+    // Scroll delegation: the native `scroll` event fires on the scrolled element
+    // and does NOT bubble, so register in the capture phase to catch all
+    // descendants with a single document-level listener.
+    let scroll_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        if let Some(target) = event.target()
+            && let Ok(el) = target.dyn_into::<web_sys::Element>()
+            && let Some(id_str) = el.get_attribute("data-onscroll")
+            && let Ok(id) = id_str.parse::<usize>()
+        {
+            events::dispatch_scroll_event(events::EventHandlerId(id), el.scroll_top() as f64);
+        }
+    }) as Box<dyn FnMut(_)>);
+    browser_doc
+        .add_event_listener_with_callback_and_bool(
+            "scroll",
+            scroll_closure.as_ref().unchecked_ref(),
+            true, // capture phase
+        )
+        .unwrap();
+    scroll_closure.forget();
 }

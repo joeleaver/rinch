@@ -104,6 +104,7 @@ impl RinchApp {
                 let mouse_button = parse_button(button);
                 if mouse_button == MouseButton::Right {
                     // Right-click: try oncontextmenu dispatch first, then fallback
+                    let mods = self.modifier_state();
                     let mut handled = false;
                     if let Some(doc) = &self.doc {
                         let hit_id = {
@@ -113,7 +114,7 @@ impl RinchApp {
                         if let Some(hit_id) = hit_id {
                             let vw = window_size.0 as f32 / scale_factor as f32;
                             let vh = window_size.1 as f32 / scale_factor as f32;
-                            if Self::dispatch_oncontextmenu(doc, hit_id, x, y, vw, vh) {
+                            if Self::dispatch_oncontextmenu(doc, hit_id, x, y, vw, vh, mods) {
                                 actions.push(AppAction::RequestRedraw);
                                 handled = true;
                             }
@@ -148,9 +149,18 @@ impl RinchApp {
             DebugCommandKind::MouseDown { x, y, ref button } => {
                 let mouse_button = parse_button(button);
                 self.cursor_pos = Some((x, y));
+                self.dispatch_mouse_attr(
+                    "data-onmousedown",
+                    x,
+                    y,
+                    Self::core_button(mouse_button),
+                    window_size.0 as f32 / scale_factor as f32,
+                    window_size.1 as f32 / scale_factor as f32,
+                );
 
                 if mouse_button == MouseButton::Right {
                     // Right-click: try oncontextmenu dispatch first
+                    let mods = self.modifier_state();
                     let mut handled = false;
                     if let Some(doc) = &self.doc {
                         let hit_id = {
@@ -160,7 +170,7 @@ impl RinchApp {
                         if let Some(hit_id) = hit_id {
                             let vw = window_size.0 as f32 / scale_factor as f32;
                             let vh = window_size.1 as f32 / scale_factor as f32;
-                            if Self::dispatch_oncontextmenu(doc, hit_id, x, y, vw, vh) {
+                            if Self::dispatch_oncontextmenu(doc, hit_id, x, y, vw, vh, mods) {
                                 actions.push(AppAction::RequestRedraw);
                                 handled = true;
                             }
@@ -225,6 +235,14 @@ impl RinchApp {
             }
             DebugCommandKind::MouseUp { x, y, ref button } => {
                 let mouse_button = parse_button(button);
+                self.dispatch_mouse_attr(
+                    "data-onmouseup",
+                    x,
+                    y,
+                    Self::core_button(mouse_button),
+                    window_size.0 as f32 / scale_factor as f32,
+                    window_size.1 as f32 / scale_factor as f32,
+                );
 
                 // Dispatch MouseUp to focused render surface
                 if let Some(surface_id) = crate::render_surface::focused_surface_id() {
@@ -313,6 +331,14 @@ impl RinchApp {
             }
             DebugCommandKind::MouseMove { x, y } => {
                 self.cursor_pos = Some((x, y));
+                self.dispatch_mouse_attr(
+                    "data-onmousemove",
+                    x,
+                    y,
+                    events::MouseButton::Left,
+                    window_size.0 as f32 / scale_factor as f32,
+                    window_size.1 as f32 / scale_factor as f32,
+                );
 
                 // Drag-and-drop: pending → active transition
                 if let Some(ref pending) = self.pending_drag {
