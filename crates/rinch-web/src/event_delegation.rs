@@ -249,7 +249,10 @@ fn handle_web_drag_move(event: &web_sys::MouseEvent) {
             }
         });
         dispatch_plain_attr(&source, "data-ondragstart");
-        return;
+        // Fall through to also process the drop target on this same move, so a
+        // coarse drag (only a few pointer moves) still fires enter/over and can
+        // drop. (Desktop splits dragstart and the first target frame to render a
+        // drag ghost first; web has no ghost, so doing both here is fine.)
     }
 
     // Active: resolve the [data-ondrop] target under the cursor.
@@ -638,6 +641,23 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         .add_event_listener_with_callback("mouseup", mouseup_closure.as_ref().unchecked_ref())
         .unwrap();
     mouseup_closure.forget();
+
+    // Suppress the browser's native HTML5 drag for rinch draggables: the element
+    // drag-and-drop above is synthesized from mouse events, and a native drag
+    // would otherwise hijack the gesture (suppressing mousemove/mouseup). Preventing
+    // the default on `dragstart` cancels the native drag so the mouse events keep flowing.
+    let dragstart_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        if let Some(target) = event.target()
+            && let Ok(el) = target.dyn_into::<web_sys::Element>()
+            && el.closest("[draggable=\"true\"]").ok().flatten().is_some()
+        {
+            event.prevent_default();
+        }
+    }) as Box<dyn FnMut(_)>);
+    browser_doc
+        .add_event_listener_with_callback("dragstart", dragstart_closure.as_ref().unchecked_ref())
+        .unwrap();
+    dragstart_closure.forget();
 
     // Keyboard delegation: route to focused render surface or keyboard interceptor.
     let keydown_closure = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
