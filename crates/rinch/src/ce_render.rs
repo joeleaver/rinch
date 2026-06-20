@@ -39,6 +39,7 @@ pub(crate) fn mark_type_to_tag(mark_type: &str) -> &str {
         "highlight" => "mark",
         "subscript" => "sub",
         "superscript" => "sup",
+        "link" => "a",
         other => other,
     }
 }
@@ -135,7 +136,14 @@ pub(crate) fn extract_inline_runs(
     // Element node: check if it's a formatting tag
     let tag = node.tag().unwrap_or("");
     let mut marks = active_marks.to_vec();
-    if let Some(mark_type) = tag_to_mark_type(tag) {
+    if tag == "a" {
+        // Link mark — preserve all attributes (href, title, target, …) so
+        // links round-trip through extract_content() → load_content().
+        marks.push(InlineMarkData {
+            mark_type: "link".to_string(),
+            attrs: node.attributes.clone(),
+        });
+    } else if let Some(mark_type) = tag_to_mark_type(tag) {
         marks.push(InlineMarkData {
             mark_type: mark_type.to_string(),
             attrs: HashMap::new(),
@@ -374,6 +382,11 @@ pub(crate) fn render_inline_content(
             for mark in &run.marks {
                 let tag = mark_type_to_tag(&mark.mark_type);
                 let el = d.create_element(tag);
+                // Apply mark attributes (e.g. a link's `href`) so they survive
+                // load_content() — symmetric with extract_inline_runs().
+                for (name, value) in &mark.attrs {
+                    d.set_attribute(el, name, value);
+                }
                 d.append_child(rinch_core::dom::NodeId(wrapper_id), el);
                 wrapper_id = el.0;
             }

@@ -118,3 +118,6 @@ web = ["dep:rinch-web"]
 video = ["dep:rinch-video"]
 image-network = ["dep:ureq"]
 collaboration = ["rinch-editor/collaboration"]
+# Derive serde on the CE interchange types (BlockData / InlineRunData /
+# InlineMarkData) for persisting contenteditable content.
+serde = ["rinch-core/serde"]

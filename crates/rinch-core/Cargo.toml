@@ -8,7 +8,14 @@ description = "Core types and traits for the rinch GUI framework"
 [features]
 default = []
 theme = []
+# Derive serde on the contenteditable interchange types (BlockData /
+# InlineRunData / InlineMarkData) so downstream apps can persist CE content.
+serde = ["dep:serde"]
 
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
+serde = { version = "1", optional = true, features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
