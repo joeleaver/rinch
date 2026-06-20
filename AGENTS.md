@@ -29,12 +29,12 @@ crates/
 ├── rinch-mcp-server/    # MCP server for Claude integration (862 lines)
 ├── rinch-visual-test/   # Visual regression test framework (2.1K lines)
 ├── rinch-renderer/      # PLACEHOLDER — 9 lines, unused
-└── rinch-web/           # STUB — 217 lines, all TODOs
+└── rinch-web/           # Browser-native DOM backend (WebDocument, event delegation, mount)
 
 examples/
 ├── ui-zoo/              # Shared component showcase (primary dev target)
 ├── ui-zoo-desktop/      # Desktop entry point
-├── ui-zoo-web/          # WASM entry (excluded from workspace, not functional via rinch-web)
+├── ui-zoo-web/          # WASM entry (excluded from workspace; built on rinch-web)
 ├── hello_rinch_dom/     # Minimal hello world
 ├── fine_grained_window/ # Fine-grained rendering demo
 └── todo-app/

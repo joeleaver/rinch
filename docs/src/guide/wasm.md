@@ -17,7 +17,7 @@ Same `rsx!`. Same `Signal::new()`. Same `Button { "Click me" }`. Different backe
 
 ## Project Setup
 
-WASM targets live outside the main workspace because Parley's fontconfig dependency doesn't cross-compile to wasm32. Structure your project like this:
+The WASM entry point is its own crate (separate from the desktop workspace) so it can carry wasm-tuned build profiles and a Trunk setup. It depends on `rinch-web` — the browser-native DOM backend that implements `DomDocument` over `web_sys`. Structure your project like this:
 
 ```
 my-app/              # Shared library: components, stores, logic
@@ -80,7 +80,9 @@ fn main() {
 name = "my-app-web"
 
 [dependencies]
-rinch = { git = "...", default-features = false, features = ["web", "components", "theme"] }
+rinch = { git = "...", default-features = false, features = ["components", "theme"] }
+rinch-core = { git = "..." }
+rinch-web = { git = "..." }   # browser-native DOM backend: WebDocument + mount
 my-app = { path = "../my-app" }
 wasm-bindgen = "0.2"
 console_error_panic_hook = "0.1"
@@ -89,12 +91,22 @@ console_error_panic_hook = "0.1"
 ```rust
 // my-app-web/src/main.rs
 use wasm_bindgen::prelude::*;
+use rinch_core::element::ThemeProviderProps;
 
 #[wasm_bindgen(start)]
-pub fn main() {
+pub fn start() {
     console_error_panic_hook::set_once();
-    // Mount to browser DOM — see examples/ui-zoo-web for the full pattern
+
+    // `rinch_web::mount` creates the WebDocument, builds your component tree,
+    // wires browser event delegation, and installs the theme CSS.
+    let theme = ThemeProviderProps {
+        dark_mode: false,
+        ..Default::default()
+    };
+    rinch_web::mount(theme, my_app::app);
 }
+
+fn main() {}
 ```
 
 ## Building

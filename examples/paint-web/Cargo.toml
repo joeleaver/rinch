@@ -14,19 +14,11 @@ paint = { path = "../paint" }
 rinch = { path = "../../crates/rinch", default-features = false, features = ["components", "theme"] }
 rinch-core = { path = "../../crates/rinch-core", features = ["theme"] }
 
+# Browser-native DOM backend (WebDocument, event delegation, mount)
+rinch-web = { path = "../../crates/rinch-web" }
+
 # WASM bindings
 wasm-bindgen = "0.2"
-js-sys = "0.3"
-web-sys = { version = "0.3", features = [
-    "Window", "Document", "Element", "HtmlElement", "HtmlInputElement",
-    "HtmlTextAreaElement", "HtmlHeadElement",
-    "Node", "NodeList", "Text", "Comment",
-    "CssStyleDeclaration", "DomRect", "DomRectList",
-    "Event", "MouseEvent", "KeyboardEvent", "InputEvent",
-    "EventTarget",
-    "Range", "Selection", "CharacterData",
-    "console",
-] }
 
 # WASM utilities
 console_error_panic_hook = "0.1"
