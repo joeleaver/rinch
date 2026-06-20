@@ -71,6 +71,56 @@ rsx! {
 }
 ```
 
+## Event Handlers
+
+Event handlers are `on*` attributes on HTML elements. Pointer/click handlers are
+`Fn()` closures; read the cursor position, button, and modifier keys from
+`get_click_context()`:
+
+```rust
+use rinch::prelude::*;
+
+rsx! {
+    div {
+        onclick: || println!("clicked"),
+        onmousedown: || {
+            let ctx = get_click_context();
+            match ctx.button {
+                MouseButton::Right => println!("right press"),
+                _ if ctx.modifiers.shift => println!("shift+press"),
+                _ => println!("press at {}, {}", ctx.mouse_x, ctx.mouse_y),
+            }
+        },
+        onmouseup: || println!("released"),
+        onmousemove: || { /* fires on every move over this element */ },
+        onmouseenter: || println!("hover in"),
+        onmouseleave: || println!("hover out"),
+        oncontextmenu: || println!("right-click menu"),
+        "Interactive"
+    }
+}
+```
+
+Supported HTML-element event attributes:
+
+| Attribute | Fires | Closure |
+|---|---|---|
+| `onclick` | Primary press (rinch dispatches click on mousedown) | `Fn()` |
+| `onmousedown` / `onmouseup` | Pointer press / release (any button) | `Fn()` |
+| `onmousemove` | Pointer moves over the element | `Fn()` |
+| `onmouseenter` / `onmouseleave` | Pointer enters / leaves the element | `Fn()` |
+| `oncontextmenu` | Right-click (suppresses the native menu when handled) | `Fn()` |
+| `oninput` / `onchange` | `<input>`/`<textarea>` value change | `Fn(String)` |
+| `onscroll` | Scroll container scrolls | `Fn(f64)` (scrollTop) |
+| `ondragstart` … `ondrop`, `ondragend` | Element drag-and-drop | `Fn()` |
+| `onfiledrop`, `onfiledragenter`/`onfiledragleave` | OS → app file drop | `Fn(Vec<PathBuf>)` / `Fn()` |
+
+Mouse and click handlers read per-event data from `get_click_context()`:
+`mouse_x`/`mouse_y`, element bounds (`relative_x()`, `percent_x()`, …),
+`button` (`MouseButton::{Left, Middle, Right}`), and `modifiers`
+(`shift`/`ctrl`/`alt`/`meta`). These behave identically on the desktop and web
+(WASM) backends.
+
 ## Components
 
 Components are custom UI elements written in PascalCase. They implement the `Component` trait and render directly to DOM nodes:

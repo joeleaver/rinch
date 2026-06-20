@@ -40,6 +40,17 @@ impl RinchApp {
             PlatformEvent::MouseMove { x, y } => {
                 self.cursor_pos = Some((x, y));
 
+                // Additive: fire data-onmousemove before any drag/scroll/hover
+                // logic below (which can early-return).
+                self.dispatch_mouse_attr(
+                    "data-onmousemove",
+                    x,
+                    y,
+                    events::MouseButton::Left,
+                    vp_w,
+                    vp_h,
+                );
+
                 // ── Drag-and-drop: pending → active transition ────────────
                 if let Some(ref pending) = self.pending_drag {
                     let dx = x - pending.mousedown_pos.0;
@@ -173,6 +184,8 @@ impl RinchApp {
                             text_hit: Default::default(),
                             viewport_width: vp_w,
                             viewport_height: vp_h,
+                            button: events::MouseButton::Left,
+                            modifiers: events::ModifierState::default(),
                         });
                         Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragmove");
                     }
@@ -390,6 +403,17 @@ impl RinchApp {
                 y,
                 button: MouseButton::Left,
             } => {
+                // Additive: fire data-onmousedown before the resize/drag/scroll/
+                // click logic below (which can early-return).
+                self.dispatch_mouse_attr(
+                    "data-onmousedown",
+                    x,
+                    y,
+                    events::MouseButton::Left,
+                    vp_w,
+                    vp_h,
+                );
+
                 // Check resize edge for borderless windows
                 if let Some(ref props) = self.window_props {
                     if props.borderless && props.resizable {
@@ -514,9 +538,19 @@ impl RinchApp {
                 }
             }
             PlatformEvent::MouseDown { x, y, button } => {
+                self.dispatch_mouse_attr(
+                    "data-onmousedown",
+                    x,
+                    y,
+                    Self::core_button(button),
+                    vp_w,
+                    vp_h,
+                );
+
                 let mut handled = false;
                 if button == MouseButton::Right {
                     // Right-click: try oncontextmenu dispatch first
+                    let mods = self.modifier_state();
                     if let Some(doc) = &self.doc {
                         let hit_id = {
                             let d = doc.borrow();
@@ -525,7 +559,7 @@ impl RinchApp {
                         if let Some(hit_id) = hit_id {
                             let vw = window_size.0 as f32 / scale_factor as f32;
                             let vh = window_size.1 as f32 / scale_factor as f32;
-                            if Self::dispatch_oncontextmenu(doc, hit_id, x, y, vw, vh) {
+                            if Self::dispatch_oncontextmenu(doc, hit_id, x, y, vw, vh, mods) {
                                 actions.push(AppAction::RequestRedraw);
                                 handled = true;
                             }
@@ -541,6 +575,15 @@ impl RinchApp {
                 }
             }
             PlatformEvent::MouseUp { x, y, button } => {
+                self.dispatch_mouse_attr(
+                    "data-onmouseup",
+                    x,
+                    y,
+                    Self::core_button(button),
+                    vp_w,
+                    vp_h,
+                );
+
                 // ── Drag-and-drop: complete or cancel ─────────────────────
                 if let Some(pending) = self.pending_drag.take() {
                     // Threshold was never crossed — fire normal click instead
@@ -585,6 +628,8 @@ impl RinchApp {
                             text_hit: Default::default(),
                             viewport_width: vp_w,
                             viewport_height: vp_h,
+                            button: events::MouseButton::Left,
+                            modifiers: self.modifier_state(),
                         });
                         Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragend");
                     }
@@ -1170,6 +1215,7 @@ impl RinchApp {
         y: f32,
         viewport_width: f32,
         viewport_height: f32,
+        modifiers: events::ModifierState,
     ) -> bool {
         let handler_info = {
             let d = doc.borrow();
@@ -1216,6 +1262,8 @@ impl RinchApp {
                 text_hit: events::TextHitInfo::default(),
                 viewport_width,
                 viewport_height,
+                button: events::MouseButton::Right,
+                modifiers,
             });
             events::dispatch_event(events::EventHandlerId(id));
             true
@@ -1368,6 +1416,8 @@ impl RinchApp {
                 text_hit: events::TextHitInfo::default(),
                 viewport_width: 0.0,
                 viewport_height: 0.0,
+                button: events::MouseButton::Left,
+                modifiers: events::ModifierState::default(),
             });
             events::dispatch_event(events::EventHandlerId(id));
         }
@@ -1396,6 +1446,99 @@ impl RinchApp {
             found
         };
         if let Some(id) = handler_id {
+            events::dispatch_event(events::EventHandlerId(id));
+        }
+    }
+
+    /// Map a platform mouse button onto the `rinch-core` button enum carried by
+    /// [`events::ClickContext`].
+    pub(super) fn core_button(button: MouseButton) -> events::MouseButton {
+        match button {
+            MouseButton::Left => events::MouseButton::Left,
+            MouseButton::Right => events::MouseButton::Right,
+            MouseButton::Middle => events::MouseButton::Middle,
+        }
+    }
+
+    /// Snapshot the live platform modifier state as the core
+    /// [`events::ModifierState`] stored in [`events::ClickContext`].
+    pub(super) fn modifier_state(&self) -> events::ModifierState {
+        events::ModifierState {
+            shift: self.modifiers.shift,
+            ctrl: self.modifiers.ctrl,
+            alt: self.modifiers.alt,
+            meta: self.modifiers.meta,
+        }
+    }
+
+    /// Hit-test `(x, y)`, walk up for `attr`, set the [`events::ClickContext`]
+    /// (cursor + target bounds + button + modifiers), and dispatch the handler.
+    ///
+    /// Additive notification used for `data-onmousedown`/`data-onmouseup`/
+    /// `data-onmousemove`. It never consumes the event, so it is safe to call at
+    /// the top of the MouseDown/MouseUp/MouseMove arms before the existing
+    /// click/drag/scroll logic (which may early-return).
+    pub(super) fn dispatch_mouse_attr(
+        &self,
+        attr: &str,
+        x: f32,
+        y: f32,
+        button: events::MouseButton,
+        vp_w: f32,
+        vp_h: f32,
+    ) {
+        let Some(doc) = &self.doc else { return };
+        let handler_info = {
+            let d = doc.borrow();
+            let Some(hit_id) = hit_test(&d.tree, x, y) else {
+                return;
+            };
+            let mut current = Some(hit_id);
+            let mut found = None;
+            while let Some(nid) = current {
+                if let Some(node) = d.tree.get(nid) {
+                    if let Some(val) = node.attributes.get(attr) {
+                        if let Ok(id) = val.parse::<usize>() {
+                            // Compute element absolute position
+                            let mut ax = node.layout.x;
+                            let mut ay = node.layout.y;
+                            let mut pid = node.parent;
+                            while let Some(p) = pid {
+                                if let Some(pn) = d.tree.get(p) {
+                                    ax += pn.layout.x;
+                                    ay += pn.layout.y;
+                                    ax -= pn.scroll_offset.0 as f32;
+                                    ay -= pn.scroll_offset.1 as f32;
+                                    pid = pn.parent;
+                                } else {
+                                    break;
+                                }
+                            }
+                            found = Some((id, ax, ay, node.layout.width, node.layout.height));
+                        }
+                        break;
+                    }
+                    current = node.parent;
+                } else {
+                    break;
+                }
+            }
+            found
+        };
+        if let Some((id, elem_x, elem_y, elem_w, elem_h)) = handler_info {
+            events::set_click_context(events::ClickContext {
+                mouse_x: x,
+                mouse_y: y,
+                element_x: elem_x,
+                element_y: elem_y,
+                element_width: elem_w,
+                element_height: elem_h,
+                text_hit: events::TextHitInfo::default(),
+                viewport_width: vp_w,
+                viewport_height: vp_h,
+                button,
+                modifiers: self.modifier_state(),
+            });
             events::dispatch_event(events::EventHandlerId(id));
         }
     }

@@ -51,9 +51,9 @@ pub use context::{
 pub use events::{
     AncestorBounds, ClickContext, ContentEditableClickData, ContentEditableDragData, Drag,
     DragContext, EventCallback, EventHandlerId, FileDropCallback, InputCallback, InputContext,
-    KeyEventData, ModifierState, SelectionAction, TextHitInfo, check_and_clear_input_handled,
-    clear_ce_click_interceptor, clear_ce_drag_interceptor, clear_handlers,
-    clear_keyboard_interceptor, clear_selection_callback, clear_selection_snapshot,
+    KeyEventData, ModifierState, MouseButton, SelectionAction, TextHitInfo,
+    check_and_clear_input_handled, clear_ce_click_interceptor, clear_ce_drag_interceptor,
+    clear_handlers, clear_keyboard_interceptor, clear_selection_callback, clear_selection_snapshot,
     clear_selection_sync_callback, click_ancestors, dispatch_ce_click, dispatch_ce_drag,
     dispatch_event, dispatch_file_drop_event, dispatch_input_event, dispatch_keyboard_event,
     dispatch_selection, find_click_ancestor, finish_drag, fire_selection_sync, get_click_context,

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>rinch-web islands</title>
+    <style>
+        body { font-family: sans-serif; margin: 24px; max-width: 560px; color: #222; }
+        .static { color: #555; }
+        .ph { margin: 16px 0; }
+        button { margin-right: 8px; }
+    </style>
+    <link data-trunk rel="rust" data-wasm-opt="z" />
+</head>
+<body>
+    <h1 class="static" id="page-title">Static page with rinch islands</h1>
+    <p class="static" id="static-text">This text is plain server-rendered HTML — not managed by rinch.</p>
+
+    <!-- Placeholder hydrated by an independent rinch root: -->
+    <div class="ph" id="island-a"></div>
+
+    <p class="static" id="between">Static content between the two islands.</p>
+
+    <!-- A second, fully independent rinch root: -->
+    <div class="ph" id="island-b"></div>
+</body>
+</html>

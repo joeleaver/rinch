@@ -168,6 +168,25 @@ pub fn reset_handler_ids() {
     NEXT_HANDLER_ID.store(0, Ordering::SeqCst);
 }
 
+/// The id the *next* `register_*` call will allocate. Capture this before and
+/// after building a component subtree to record which handler ids that subtree
+/// created (used by `rinch-web` to tear down a root on unmount).
+pub fn handler_id_watermark() -> EventHandlerId {
+    EventHandlerId(NEXT_HANDLER_ID.load(Ordering::SeqCst))
+}
+
+/// Remove every handler whose id is in `[start, end)` from all registries.
+///
+/// Used to deregister the handlers a single root created at build time when it
+/// is unmounted, without disturbing handlers belonging to other roots.
+pub fn remove_handlers_in_range(start: EventHandlerId, end: EventHandlerId) {
+    let range = start.0..end.0;
+    EVENT_REGISTRY.with(|r| r.borrow_mut().handlers.retain(|k, _| !range.contains(&k.0)));
+    INPUT_REGISTRY.with(|r| r.borrow_mut().handlers.retain(|k, _| !range.contains(&k.0)));
+    FILE_DROP_REGISTRY.with(|r| r.borrow_mut().handlers.retain(|k, _| !range.contains(&k.0)));
+    SCROLL_REGISTRY.with(|r| r.borrow_mut().handlers.retain(|k, _| !range.contains(&k.0)));
+}
+
 // Thread-local event handler registry.
 thread_local! {
     static EVENT_REGISTRY: RefCell<EventRegistry> = RefCell::new(EventRegistry::new());

@@ -128,8 +128,8 @@ pub mod prelude {
     };
     // Event handling - click context, drag support, input callbacks, file-drop callbacks
     pub use rinch_core::{
-        ClickContext, Drag, DragContext, FileDropCallback, InputCallback, get_click_context,
-        restore_drag_ghost, suppress_drag_ghost,
+        ClickContext, Drag, DragContext, FileDropCallback, InputCallback, ModifierState,
+        MouseButton, get_click_context, restore_drag_ghost, suppress_drag_ghost,
     };
     pub use rinch_macros::{component, rsx};
     // Window control functions

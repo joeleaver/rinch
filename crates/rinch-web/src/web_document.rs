@@ -6,10 +6,16 @@
 //! through NodeHandle -> DomDocument, so everything works automatically.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rinch_core::dom::{DomDocument, GlyphBounds, NodeId};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
+
+/// Process-global NodeId counter. Shared across all `WebDocument`s so that
+/// multiple coexisting roots (islands) never reuse a NodeId — keeping each
+/// node's `__nid` unambiguous even when several documents share the page.
+static NEXT_NODE_ID: AtomicUsize = AtomicUsize::new(0);
 
 /// A `DomDocument` backed by real browser DOM elements.
 ///
@@ -21,9 +27,8 @@ pub struct WebDocument {
     browser_doc: web_sys::Document,
     /// Map from rinch NodeId to browser DOM node.
     nodes: HashMap<usize, web_sys::Node>,
-    /// Next available node ID.
-    next_id: usize,
-    /// The root wrapper element (`<div id="rinch-root">`).
+    /// The root wrapper element (`<div id="rinch-root">`), or the adopted host
+    /// element for an island mount (see [`WebDocument::new_into`]).
     root_id: NodeId,
     /// The body wrapper element (`<div id="rinch-body">`).
     body_id: NodeId,
@@ -88,6 +93,27 @@ fn get_nid(node: &web_sys::Node) -> Option<NodeId> {
         .map(|n| NodeId(n as usize))
 }
 
+/// Update (or inject) the page-global theme `<style data-rinch-theme>` in the
+/// document head, independent of any one `WebDocument`.
+///
+/// Theme CSS is page-global (one `<style>` shared by every root), so the
+/// signal-change hook uses this to keep it current regardless of which root
+/// triggered the change. Idempotent: updates the existing element if present.
+pub fn update_theme_style_global(css: &str) {
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    if let Ok(Some(el)) = doc.query_selector("[data-rinch-theme]") {
+        el.set_text_content(Some(css));
+    } else if let Ok(style) = doc.create_element("style") {
+        style.set_attribute("data-rinch-theme", "true").ok();
+        style.set_text_content(Some(css));
+        if let Some(head) = doc.head() {
+            head.append_child(&style).ok();
+        }
+    }
+}
+
 impl WebDocument {
     /// Create a new WebDocument backed by the browser's document.
     ///
@@ -97,7 +123,6 @@ impl WebDocument {
         let mut doc = Self {
             browser_doc,
             nodes: HashMap::new(),
-            next_id: 0,
             root_id: NodeId(0),
             body_id: NodeId(0),
         };
@@ -131,11 +156,35 @@ impl WebDocument {
         doc
     }
 
-    /// Allocate the next NodeId.
+    /// Create a `WebDocument` that mounts into an **existing** browser element
+    /// (an "island" host), instead of creating `#rinch-root`/`#rinch-body` and
+    /// appending to `document.body`.
+    ///
+    /// The `host` element is adopted as both the document root and body, so the
+    /// component tree is appended directly inside it. No fixed ids are set, so
+    /// any number of islands can coexist on one page without id collisions.
+    pub fn new_into(browser_doc: web_sys::Document, host: web_sys::Element) -> Self {
+        let mut doc = Self {
+            browser_doc,
+            nodes: HashMap::new(),
+            root_id: NodeId(0),
+            body_id: NodeId(0),
+        };
+
+        let host_node: web_sys::Node = host.into();
+        let id = doc.alloc_id();
+        set_nid(&host_node, id);
+        doc.nodes.insert(id.0, host_node);
+        // The host is both root and body: content mounts directly inside it.
+        doc.root_id = id;
+        doc.body_id = id;
+
+        doc
+    }
+
+    /// Allocate the next (process-globally unique) NodeId.
     fn alloc_id(&mut self) -> NodeId {
-        let id = NodeId(self.next_id);
-        self.next_id += 1;
-        id
+        NodeId(NEXT_NODE_ID.fetch_add(1, Ordering::Relaxed))
     }
 
     /// Get a reference to the browser document.

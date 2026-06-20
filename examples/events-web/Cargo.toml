@@ -1,0 +1,27 @@
+[package]
+name = "events-web"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Web event-surface demo/test for rinch-web: click, mouse, hover, contextmenu, drag-and-drop, viewport"
+
+[dependencies]
+# Rinch without desktop + the browser-native DOM backend
+rinch = { path = "../../crates/rinch", default-features = false, features = ["components", "theme"] }
+rinch-core = { path = "../../crates/rinch-core", features = ["theme"] }
+rinch-web = { path = "../../crates/rinch-web" }
+
+# WASM bindings
+wasm-bindgen = "0.2"
+
+# WASM utilities
+console_error_panic_hook = "0.1"
+console_log = "0.2"
+log = "0.4"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
