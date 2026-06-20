@@ -4770,6 +4770,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rinch-editor-core"
+version = "0.1.0"
+dependencies = [
+ "pretty_assertions",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "rinch-editor-macros"
 version = "0.1.0"
 dependencies = [

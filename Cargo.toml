@@ -28,6 +28,7 @@ rinch-theme = { path = "crates/rinch-theme" }
 rinch-components = { path = "crates/rinch-components" }
 rinch-tabler-icons = { path = "crates/rinch-tabler-icons" }
 rinch-dom = { path = "crates/rinch-dom" }
+rinch-editor-core = { path = "crates/rinch-editor-core" }
 rinch-editor = { path = "crates/rinch-editor" }
 rinch-editor-macros = { path = "crates/rinch-editor-macros" }
 rinch-editor-components = { path = "crates/rinch-editor-components" }
