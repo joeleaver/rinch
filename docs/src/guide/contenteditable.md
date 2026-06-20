@@ -308,10 +308,36 @@ pub struct InlineRunData {
 }
 
 pub struct InlineMarkData {
-    pub mark_type: String,                     // "bold", "italic", "code", etc.
-    pub attrs: HashMap<String, String>,
+    pub mark_type: String,                     // "bold", "italic", "code", "link", etc.
+    pub attrs: HashMap<String, String>,        // e.g. {"href": "https://…"} for links
 }
 ```
+
+### Persisting content (serde)
+
+`Vec<BlockData>` is the canonical save/load representation. Enable the optional `serde`
+feature to derive `Serialize`/`Deserialize` on `BlockData`, `InlineRunData`, and
+`InlineMarkData`, so content can be persisted directly — no mirror struct, one source of
+truth for the format:
+
+```toml
+# via the rinch facade:
+rinch = { workspace = true, features = ["desktop", "serde"] }
+# or depending on rinch-core directly:
+rinch-core = { workspace = true, features = ["serde"] }
+```
+
+```rust
+let blocks = api.borrow().extract_content();
+let json = serde_json::to_string(&blocks)?;        // store it
+// …later…
+let blocks: Vec<BlockData> = serde_json::from_str(&json)?;
+api.borrow_mut().load_content(&blocks);            // restore it
+```
+
+The wire format uses the struct field names verbatim (snake_case: `block_type`,
+`mark_type`). Link marks carry their `href` in `attrs` and round-trip losslessly through
+`extract_content()` → `load_content()`.
 
 ## Keyboard Shortcuts
 

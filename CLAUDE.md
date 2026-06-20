@@ -655,6 +655,8 @@ Rinch has a built-in contenteditable system for rich-text editing. Set `contente
 
 **Architecture:** CRDT-first. Every mutation flows through `EditorDocument` (Automerge CRDT) first, then the DOM is re-rendered as a view. The `EditorDocument` is always present on every CE element — no opt-in required. The `collaboration` feature only gates sync methods (`save_incremental`, `load_incremental`, `apply_remote_changes`).
 
+**Persisting content:** `Vec<BlockData>` (from `extract_content()`) is the canonical save/load shape. Enable the optional `serde` feature (`rinch-core/serde`, or `serde` on the `rinch` facade) to derive `Serialize`/`Deserialize` on `BlockData`/`InlineRunData`/`InlineMarkData`. The wire format is snake_case (`block_type`, `mark_type`) — the durable persistence contract.
+
 **Full guide:** `docs/src/guide/contenteditable.md`
 
 ### Key Types (all in `rinch_core::ce`)

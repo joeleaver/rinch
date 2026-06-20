@@ -387,6 +387,9 @@ fn clear_formatting() {
     }
 }
 
+// Link mark href round-trip lives in tests/ce_link_roundtrip.rs (not gated behind
+// `collaboration`, so it runs in a default `cargo test -p rinch`).
+
 // ============================================================================
 // Undo / Redo
 // ============================================================================

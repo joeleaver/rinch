@@ -283,7 +283,13 @@ impl std::fmt::Debug for CeEventDispatcher {
 // ============================================================================
 
 /// A block of content (paragraph, heading, list item, etc.) for save/load.
+///
+/// With the `serde` feature, this and the nested [`InlineRunData`] /
+/// [`InlineMarkData`] serialize using their field names verbatim (snake_case:
+/// `block_type`, `mark_type`). Those keys are the durable wire format — treat
+/// renames as a breaking change to persisted content.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BlockData {
     /// Block type: "paragraph", "heading", "bullet_list", "ordered_list",
     /// "blockquote", "code_block", "horizontal_rule", etc.
@@ -296,6 +302,7 @@ pub struct BlockData {
 
 /// A run of text with inline marks (bold, italic, etc.).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InlineRunData {
     /// The text content of this run.
     pub text: String,
@@ -305,6 +312,7 @@ pub struct InlineRunData {
 
 /// An inline mark (bold, italic, code, etc.).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InlineMarkData {
     /// Mark type: "bold", "italic", "code", "underline", "strike", etc.
     pub mark_type: String,
@@ -735,5 +743,38 @@ mod tests {
 
         clear_ce_event_listeners();
         assert_eq!(ce_event_listener_count(), 0);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn block_data_serde_round_trip_snake_case() {
+        use std::collections::HashMap;
+
+        let mut block_attrs = HashMap::new();
+        block_attrs.insert("level".to_string(), "2".to_string());
+
+        let mut link_attrs = HashMap::new();
+        link_attrs.insert("href".to_string(), "https://example.com".to_string());
+
+        let blocks = vec![BlockData {
+            block_type: "heading".to_string(),
+            attrs: block_attrs,
+            content: vec![InlineRunData {
+                text: "Title".to_string(),
+                marks: vec![InlineMarkData {
+                    mark_type: "link".to_string(),
+                    attrs: link_attrs,
+                }],
+            }],
+        }];
+
+        let json = serde_json::to_string(&blocks).expect("serialize");
+        // Field names use the Rust snake_case identifiers verbatim — this is the
+        // durable wire format consumers persist against.
+        assert!(json.contains("\"block_type\""), "got: {json}");
+        assert!(json.contains("\"mark_type\""), "got: {json}");
+
+        let round: Vec<BlockData> = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(blocks, round, "BlockData must round-trip losslessly");
     }
 }
