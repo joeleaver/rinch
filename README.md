@@ -298,12 +298,14 @@ The result: ~3MB binary, no JavaScript framework, real DOM elements you can insp
 
 ### Setup
 
-The WASM target lives outside the main workspace (fontconfig dependency doesn't cross-compile):
+The WASM entry point is its own crate and depends on `rinch-web`, the browser-native DOM backend:
 
 ```toml
 # my-app-web/Cargo.toml
 [dependencies]
-rinch = { git = "...", default-features = false, features = ["web", "components", "theme"] }
+rinch = { git = "...", default-features = false, features = ["components", "theme"] }
+rinch-core = { git = "..." }
+rinch-web = { git = "..." }   # browser-native DOM backend: WebDocument + mount
 wasm-bindgen = "0.2"
 console_error_panic_hook = "0.1"
 ```
@@ -311,14 +313,17 @@ console_error_panic_hook = "0.1"
 ```rust
 // my-app-web/src/main.rs
 use wasm_bindgen::prelude::*;
-use rinch::prelude::*;
+use rinch_core::element::ThemeProviderProps;
 
 #[wasm_bindgen(start)]
-pub fn main() {
+pub fn start() {
     console_error_panic_hook::set_once();
-    // Mount your app to the browser DOM
-    // See examples/ui-zoo-web for the full pattern
+    // `mount` builds your component tree, wires browser event delegation,
+    // and injects the theme CSS. See examples/ui-zoo-web for the full pattern.
+    rinch_web::mount(ThemeProviderProps::default(), my_app::app);
 }
+
+fn main() {}
 ```
 
 ### Building

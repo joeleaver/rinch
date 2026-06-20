@@ -26,7 +26,7 @@ rinch/
 │   ├── rinch-macros/       # rsx! proc macro
 │   ├── rinch-dom/          # HTML/CSS DOM (Taffy + Parley + Stylo + Vello)
 │   ├── rinch-platform/     # Platform abstraction traits
-│   ├── rinch-web/          # WASM backend stubs
+│   ├── rinch-web/          # Browser-native DOM backend (WebDocument over web_sys)
 │   ├── rinch-editor/       # Rich-text editor (CRDT)
 │   ├── rinch-theme/        # Theme system (CSS variables)
 │   ├── rinch-components/   # UI component library (~55 components)
@@ -170,13 +170,14 @@ HTML/CSS DOM implementation:
 - **Styling** - Stylo for CSS parsing and computed styles
 - **Rendering** - Vello (GPU) or tiny-skia (software) via the Painter trait abstraction
 
-### rinch-web / ui-zoo-web
+### rinch-web
 
-WASM backend using browser-native DOM:
+Browser-native DOM backend (the WASM target). Consumed by `examples/ui-zoo-web` and `examples/paint-web`:
 
 - **WebDocument** - Implements `DomDocument` via `web_sys`, creating real browser DOM elements
 - **No Taffy/Parley/Vello** - The browser handles layout, text shaping, and painting natively
-- **Event delegation** - Document-level listeners dispatch via `data-rid` attributes
+- **Event delegation** - `setup_event_delegation` installs document-level listeners that dispatch via `data-rid` attributes (plus drag, render-surface routing, and `data-onsubmit`/`data-oninput`)
+- **`mount` helper** - One call wires the WebDocument, builds the component tree, installs event delegation, and injects theme CSS
 - **Smaller binary** - ~3.2MB WASM (vs 11MB+ with Vello rendering)
 
 ### rinch-theme

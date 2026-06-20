@@ -4620,7 +4620,6 @@ dependencies = [
  "rinch-renderer",
  "rinch-theme",
  "rinch-video",
- "rinch-web",
  "serde_json",
  "softbuffer",
  "tokio",
@@ -4920,10 +4919,8 @@ name = "rinch-web"
 version = "0.1.0"
 dependencies = [
  "js-sys",
- "peniko",
- "rinch-platform",
- "tracing",
- "vello",
+ "rinch",
+ "rinch-core",
  "wasm-bindgen",
  "web-sys",
 ]
