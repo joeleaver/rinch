@@ -624,3 +624,61 @@ fn test_display_contents_mixed_siblings() {
     assert_eq!(la.x, 60.0, "contents child at x=60");
     assert_eq!(ln2.x, 130.0, "normal2 at x=130");
 }
+
+/// Issue #41: a flex container's `gap` must account for the widths of
+/// **inline-level** children that live inside a `display:contents` wrapper
+/// (as emitted by rsx `if`/`match`). Before the fix, the contents wrapper was
+/// wrongly treated as an inline-formatting-context root, so its children were
+/// laid out inline instead of as flex items — collapsing the gap and overlapping.
+#[test]
+fn test_display_contents_flex_gap_inline_children() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(
+        container,
+        "style",
+        "display: flex; flex-direction: row; gap: 12px; width: 400px",
+    );
+    doc.append_child(body, container);
+
+    let wrapper = doc.create_element("div");
+    doc.set_attribute(wrapper, "style", "display: contents");
+    doc.append_child(container, wrapper);
+
+    // Inline-level children (inline-block) with fixed widths → deterministic.
+    let a = doc.create_element("span");
+    doc.set_attribute(
+        a,
+        "style",
+        "display: inline-block; width: 50px; height: 20px",
+    );
+    doc.append_child(wrapper, a);
+    let b = doc.create_element("span");
+    doc.set_attribute(
+        b,
+        "style",
+        "display: inline-block; width: 60px; height: 20px",
+    );
+    doc.append_child(wrapper, b);
+    let c = doc.create_element("span");
+    doc.set_attribute(
+        c,
+        "style",
+        "display: inline-block; width: 40px; height: 20px",
+    );
+    doc.append_child(wrapper, c);
+
+    doc.resolve_layout(800.0, 600.0);
+
+    let la = doc.tree.get(a.0).unwrap().layout;
+    let lb = doc.tree.get(b.0).unwrap().layout;
+    let lc = doc.tree.get(c.0).unwrap().layout;
+    // gap = 12: a at 0, b at 50+12, c at 62+60+12 — no overlap.
+    assert_eq!(la.x, 0.0, "a.x");
+    assert_eq!(lb.x, 62.0, "b.x must account for a's width + gap");
+    assert_eq!(
+        lc.x, 134.0,
+        "c.x must account for b's width + gap (not overlap b)"
+    );
+}
