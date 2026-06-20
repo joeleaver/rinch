@@ -44,6 +44,25 @@ fn modifiers_from_event(event: &web_sys::MouseEvent) -> events::ModifierState {
     }
 }
 
+/// Current visual viewport size in CSS (logical) pixels, for the ClickContext's
+/// `viewport_width`/`viewport_height` — consumed by flip/placement logic in
+/// `Select`/`DropdownMenu`/`ContextMenu`. Mirrors the desktop backend, which
+/// fills these on the click/mouse/contextmenu paths (but not the drag paths).
+fn viewport_dims() -> (f32, f32) {
+    let win = web_sys::window();
+    let w = win
+        .as_ref()
+        .and_then(|w| w.inner_width().ok())
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as f32;
+    let h = win
+        .as_ref()
+        .and_then(|w| w.inner_height().ok())
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as f32;
+    (w, h)
+}
+
 /// Compare two elements by DOM node identity.
 fn same_element(a: &web_sys::Element, b: &web_sys::Element) -> bool {
     let a_node: &web_sys::Node = a.as_ref();
@@ -62,6 +81,7 @@ fn dispatch_mouse_attr(el: &web_sys::Element, attr: &str, event: &web_sys::Mouse
         && let Ok(id) = id_str.parse::<usize>()
     {
         let rect = target_el.get_bounding_client_rect();
+        let (vp_w, vp_h) = viewport_dims();
         events::set_click_context(events::ClickContext {
             mouse_x: event.client_x() as f32,
             mouse_y: event.client_y() as f32,
@@ -70,8 +90,8 @@ fn dispatch_mouse_attr(el: &web_sys::Element, attr: &str, event: &web_sys::Mouse
             element_width: rect.width() as f32,
             element_height: rect.height() as f32,
             text_hit: Default::default(),
-            viewport_width: 0.0,
-            viewport_height: 0.0,
+            viewport_width: vp_w,
+            viewport_height: vp_h,
             button: mouse_button_from_event(event),
             modifiers: modifiers_from_event(event),
         });
@@ -408,6 +428,7 @@ fn dispatch_click_at(
         && let Ok(rid) = rid_str.parse::<usize>()
     {
         let rect = rid_el.get_bounding_client_rect();
+        let (vp_w, vp_h) = viewport_dims();
         let text_hit = resolve_text_hit(
             browser_doc,
             event.client_x() as f32,
@@ -422,11 +443,33 @@ fn dispatch_click_at(
             element_width: rect.width() as f32,
             element_height: rect.height() as f32,
             text_hit,
-            viewport_width: 0.0,
-            viewport_height: 0.0,
+            viewport_width: vp_w,
+            viewport_height: vp_h,
             button: mouse_button_from_event(event),
             modifiers: modifiers_from_event(event),
         });
+
+        // Ancestor chain (immediate parent → root, absolute viewport bounds) so
+        // handlers can use find_click_ancestor()/click_ancestors() — matches the
+        // desktop backend. getBoundingClientRect already returns absolute logical
+        // px, so no manual offset accumulation is needed.
+        let mut ancestors = Vec::new();
+        let mut parent = rid_el.parent_element();
+        while let Some(p) = parent {
+            let p_rect = p.get_bounding_client_rect();
+            ancestors.push(events::AncestorBounds {
+                tag: p.tag_name().to_lowercase(),
+                id: p.id(),
+                class: p.class_name(),
+                x: p_rect.x() as f32,
+                y: p_rect.y() as f32,
+                width: p_rect.width() as f32,
+                height: p_rect.height() as f32,
+            });
+            parent = p.parent_element();
+        }
+        events::set_click_ancestors(ancestors);
+
         // Prevent browser default behavior (e.g. text selection during slider
         // drag, <label> synthesizing extra events).
         event.prevent_default();
@@ -711,6 +754,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             && let Ok(id) = id_str.parse::<usize>()
         {
             let rect = menu_el.get_bounding_client_rect();
+            let (vp_w, vp_h) = viewport_dims();
             events::set_click_context(events::ClickContext {
                 mouse_x: event.client_x() as f32,
                 mouse_y: event.client_y() as f32,
@@ -719,8 +763,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 element_width: rect.width() as f32,
                 element_height: rect.height() as f32,
                 text_hit: Default::default(),
-                viewport_width: 0.0,
-                viewport_height: 0.0,
+                viewport_width: vp_w,
+                viewport_height: vp_h,
                 button: events::MouseButton::Right,
                 modifiers: modifiers_from_event(&event),
             });
