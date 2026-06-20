@@ -79,6 +79,210 @@ fn dispatch_mouse_attr(el: &web_sys::Element, attr: &str, event: &web_sys::Mouse
     }
 }
 
+// ── Element-to-element drag-and-drop (the data-ondrag* attribute suite) ───────
+//
+// Synthesized from mouse events to mirror the desktop backend's DOM drag system
+// (NOT the browser's native HTML5 drag events). A `draggable="true"` element
+// under mousedown becomes a *pending* source; once the pointer moves past the
+// threshold the drag *activates* (data-ondragstart). While active, each move
+// tracks the [data-ondrop] target under the cursor (data-ondragenter/leave),
+// fires data-ondragover on it and data-ondragmove on the source; mouseup fires
+// data-ondrop + data-ondragend (Escape cancels). Typed payloads flow through the
+// backend-agnostic `DragContext<T>` in the app's handlers — nothing here.
+//
+// Unlike desktop there is no drag ghost (the browser owns paint); apps render
+// their own visual feedback by positioning an element from data-ondragmove.
+
+/// Movement threshold (CSS px) before a drag activates — matches desktop.
+const WEB_DRAG_THRESHOLD: f32 = 5.0;
+
+struct WebDragState {
+    /// The `draggable="true"` source element.
+    source: web_sys::Element,
+    /// Pointer position at mousedown (for the activation threshold).
+    start_x: f32,
+    start_y: f32,
+    /// Last known pointer position (used by Escape-cancel).
+    cursor: (f32, f32),
+    /// Whether the movement threshold has been crossed.
+    active: bool,
+    /// The current [data-ondrop] target under the pointer.
+    over_target: Option<web_sys::Element>,
+}
+
+thread_local! {
+    static WEB_DRAG: std::cell::RefCell<Option<WebDragState>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Walk up from `el` for the nearest ancestor with `attr` and dispatch its
+/// handler with no ClickContext (data-ondragstart/enter/leave/drop).
+fn dispatch_plain_attr(el: &web_sys::Element, attr: &str) {
+    let selector = format!("[{attr}]");
+    if let Ok(Some(t)) = el.closest(&selector)
+        && let Some(id_str) = t.get_attribute(attr)
+        && let Ok(id) = id_str.parse::<usize>()
+    {
+        events::dispatch_event(events::EventHandlerId(id));
+    }
+}
+
+/// Dispatch `attr` with a ClickContext set to the cursor position and the
+/// resolved element's bounds (data-ondragover).
+fn dispatch_drag_with_bounds(el: &web_sys::Element, attr: &str, x: f32, y: f32) {
+    let selector = format!("[{attr}]");
+    if let Ok(Some(t)) = el.closest(&selector)
+        && let Some(id_str) = t.get_attribute(attr)
+        && let Ok(id) = id_str.parse::<usize>()
+    {
+        let rect = t.get_bounding_client_rect();
+        events::set_click_context(events::ClickContext {
+            mouse_x: x,
+            mouse_y: y,
+            element_x: rect.x() as f32,
+            element_y: rect.y() as f32,
+            element_width: rect.width() as f32,
+            element_height: rect.height() as f32,
+            text_hit: Default::default(),
+            viewport_width: 0.0,
+            viewport_height: 0.0,
+            button: events::MouseButton::Left,
+            modifiers: events::ModifierState::default(),
+        });
+        events::dispatch_event(events::EventHandlerId(id));
+    }
+}
+
+/// Dispatch `attr` with a ClickContext set to the cursor position and zero
+/// element bounds (data-ondragmove / data-ondragend), matching desktop.
+fn dispatch_drag_cursor_only(el: &web_sys::Element, attr: &str, x: f32, y: f32) {
+    let selector = format!("[{attr}]");
+    if let Ok(Some(t)) = el.closest(&selector)
+        && let Some(id_str) = t.get_attribute(attr)
+        && let Ok(id) = id_str.parse::<usize>()
+    {
+        events::set_click_context(events::ClickContext {
+            mouse_x: x,
+            mouse_y: y,
+            element_x: 0.0,
+            element_y: 0.0,
+            element_width: 0.0,
+            element_height: 0.0,
+            text_hit: Default::default(),
+            viewport_width: 0.0,
+            viewport_height: 0.0,
+            button: events::MouseButton::Left,
+            modifiers: events::ModifierState::default(),
+        });
+        events::dispatch_event(events::EventHandlerId(id));
+    }
+}
+
+/// Advance an in-progress element drag on pointer move: cross the activation
+/// threshold (firing data-ondragstart), then track the drop target
+/// (data-ondragenter/leave) and fire data-ondragover (target) + data-ondragmove
+/// (source). All WEB_DRAG borrows are released before dispatching handlers.
+fn handle_web_drag_move(event: &web_sys::MouseEvent) {
+    let x = event.client_x() as f32;
+    let y = event.client_y() as f32;
+
+    // Self-heal: if the primary button is no longer held, a mouseup was missed
+    // (e.g. released outside the window) — cancel rather than leave the drag
+    // stuck active across subsequent moves. (`&` binds looser than `==`, hence
+    // the parentheses.)
+    if (event.buttons() & 1) == 0 {
+        cancel_web_drag();
+        return;
+    }
+
+    // Snapshot current state; do not hold the borrow across dispatch.
+    let Some((source, was_active, old_target, start)) = WEB_DRAG.with(|d| {
+        d.borrow().as_ref().map(|s| {
+            (
+                s.source.clone(),
+                s.active,
+                s.over_target.clone(),
+                (s.start_x, s.start_y),
+            )
+        })
+    }) else {
+        return;
+    };
+
+    // Record the latest cursor (used by Escape-cancel).
+    WEB_DRAG.with(|d| {
+        if let Some(s) = d.borrow_mut().as_mut() {
+            s.cursor = (x, y);
+        }
+    });
+
+    // Pending → active once the threshold is crossed.
+    if !was_active {
+        let dx = x - start.0;
+        let dy = y - start.1;
+        if (dx * dx + dy * dy).sqrt() < WEB_DRAG_THRESHOLD {
+            return;
+        }
+        WEB_DRAG.with(|d| {
+            if let Some(s) = d.borrow_mut().as_mut() {
+                s.active = true;
+            }
+        });
+        dispatch_plain_attr(&source, "data-ondragstart");
+        return;
+    }
+
+    // Active: resolve the [data-ondrop] target under the cursor.
+    let new_target = event
+        .target()
+        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        .and_then(|el| el.closest("[data-ondrop]").ok().flatten());
+
+    let changed = match (&old_target, &new_target) {
+        (Some(o), Some(n)) => !same_element(o, n),
+        (None, None) => false,
+        _ => true,
+    };
+    if changed {
+        if let Some(o) = &old_target {
+            dispatch_plain_attr(o, "data-ondragleave");
+        }
+        if let Some(n) = &new_target {
+            dispatch_plain_attr(n, "data-ondragenter");
+        }
+        WEB_DRAG.with(|d| {
+            if let Some(s) = d.borrow_mut().as_mut() {
+                s.over_target = new_target.clone();
+            }
+        });
+    }
+
+    if let Some(t) = &new_target {
+        dispatch_drag_with_bounds(t, "data-ondragover", x, y);
+    }
+    dispatch_drag_cursor_only(&source, "data-ondragmove", x, y);
+}
+
+/// Cancel an in-progress element drag (Escape, or a mouseup missed outside the
+/// window). An *active* drag fires data-ondragleave on the target and
+/// data-ondragend on the source (using the last known cursor); a merely
+/// *pending* drag is just cleared. Returns true if any drag — pending or active
+/// — was in progress, so the caller can consume the key, matching the desktop
+/// backend (which swallows Escape for both pending and active drags).
+fn cancel_web_drag() -> bool {
+    let Some(state) = WEB_DRAG.with(|d| d.borrow_mut().take()) else {
+        return false;
+    };
+    if state.active {
+        let (x, y) = state.cursor;
+        if let Some(t) = &state.over_target {
+            dispatch_plain_attr(t, "data-ondragleave");
+        }
+        dispatch_drag_cursor_only(&state.source, "data-ondragend", x, y);
+    }
+    true
+}
+
 /// Convert a UTF-16 code unit offset within a string to a UTF-8 byte offset.
 fn utf16_offset_to_utf8_bytes(text: &str, utf16_offset: u32) -> usize {
     let mut utf16_count = 0u32;
@@ -189,13 +393,57 @@ fn walk_text_nodes_for_offset(
     false
 }
 
+/// Dispatch the click (`data-rid`) handler nearest to `el`, with a full
+/// [`events::ClickContext`] (cursor, element bounds, text-hit, button,
+/// modifiers) and `prevent_default`. Used for the mousedown click and for the
+/// deferred click when a draggable's drag never activates, so both paths get
+/// identical click semantics.
+fn dispatch_click_at(
+    el: &web_sys::Element,
+    browser_doc: &web_sys::Document,
+    event: &web_sys::MouseEvent,
+) {
+    if let Ok(Some(rid_el)) = el.closest("[data-rid]")
+        && let Some(rid_str) = rid_el.get_attribute("data-rid")
+        && let Ok(rid) = rid_str.parse::<usize>()
+    {
+        let rect = rid_el.get_bounding_client_rect();
+        let text_hit = resolve_text_hit(
+            browser_doc,
+            event.client_x() as f32,
+            event.client_y() as f32,
+        )
+        .unwrap_or_default();
+        events::set_click_context(events::ClickContext {
+            mouse_x: event.client_x() as f32,
+            mouse_y: event.client_y() as f32,
+            element_x: rect.x() as f32,
+            element_y: rect.y() as f32,
+            element_width: rect.width() as f32,
+            element_height: rect.height() as f32,
+            text_hit,
+            viewport_width: 0.0,
+            viewport_height: 0.0,
+            button: mouse_button_from_event(event),
+            modifiers: modifiers_from_event(event),
+        });
+        // Prevent browser default behavior (e.g. text selection during slider
+        // drag, <label> synthesizing extra events).
+        event.prevent_default();
+        events::dispatch_event(events::EventHandlerId(rid));
+    }
+}
+
 /// Set up global event listeners that delegate to rinch's event handler registry.
 ///
-/// Wires `mousedown`/`mousemove`/`mouseup` (click dispatch + drag tracking +
-/// text-hit resolution), `keydown` (render-surface routing, keyboard
-/// interceptor, and `data-onsubmit` on Enter), and `input` (`data-oninput`
-/// dispatch). Listeners are leaked via `Closure::forget` and live for the
-/// lifetime of the page.
+/// Wires `mousedown`/`mousemove`/`mouseup` (click dispatch, `data-onmousedown`/
+/// `up`/`move`, pointer-capture drag tracking, text-hit resolution, hover
+/// `data-onenter`/`data-onleave`, and the element drag-and-drop `data-ondrag*`
+/// suite), `keydown` (render-surface routing, keyboard interceptor,
+/// `data-onsubmit` on Enter, Escape drag-cancel), `input` (`data-oninput`),
+/// `contextmenu` (`data-oncontextmenu`), and capture-phase `scroll`
+/// (`data-onscroll`). Listeners are leaked via `Closure::forget` and live for
+/// the lifetime of the page.
 pub fn setup_event_delegation(doc: &WebDocument) {
     let browser_doc = doc.browser_document().clone();
     let browser_doc_for_click = browser_doc.clone();
@@ -218,46 +466,36 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             // matching DOM order (mousedown precedes click) and the desktop arm.
             dispatch_mouse_attr(&el, "data-onmousedown", &event);
 
+            // Element drag-and-drop: a mousedown on a `draggable="true"` element
+            // starts a pending drag. Its click is deferred to mouseup (and fires
+            // only if the drag never activates), matching the desktop backend.
+            let drag_source = el.closest("[draggable=\"true\"]").ok().flatten();
+            if let Some(source) = &drag_source {
+                WEB_DRAG.with(|d| {
+                    *d.borrow_mut() = Some(WebDragState {
+                        source: source.clone(),
+                        start_x: event.client_x() as f32,
+                        start_y: event.client_y() as f32,
+                        cursor: (event.client_x() as f32, event.client_y() as f32),
+                        active: false,
+                        over_target: None,
+                    });
+                });
+            }
+
             // Click dispatch (data-rid fires on mousedown). The primary (left)
             // button always clicks; a non-primary button clicks only when there
             // is no contextmenu handler in the ancestry — mirroring the desktop
-            // right-click gate where oncontextmenu suppresses the click.
-            let click_allowed =
-                event.button() == 0 || el.closest("[data-oncontextmenu]").ok().flatten().is_none();
+            // right-click gate where oncontextmenu suppresses the click. Draggable
+            // sources defer their click to mouseup (above).
+            let click_allowed = drag_source.is_none()
+                && (event.button() == 0
+                    || el.closest("[data-oncontextmenu]").ok().flatten().is_none());
 
-            // Walk up from target to find nearest [data-rid]
-            if click_allowed
-                && let Ok(Some(rid_el)) = el.closest("[data-rid]")
-                && let Some(rid_str) = rid_el.get_attribute("data-rid")
-                && let Ok(rid) = rid_str.parse::<usize>()
-            {
-                // Set click context with mouse position and element bounds
-                let rect = rid_el.get_bounding_client_rect();
-                let text_hit = resolve_text_hit(
-                    &browser_doc_for_click,
-                    event.client_x() as f32,
-                    event.client_y() as f32,
-                )
-                .unwrap_or_default();
-
-                events::set_click_context(events::ClickContext {
-                    mouse_x: event.client_x() as f32,
-                    mouse_y: event.client_y() as f32,
-                    element_x: rect.x() as f32,
-                    element_y: rect.y() as f32,
-                    element_width: rect.width() as f32,
-                    element_height: rect.height() as f32,
-                    text_hit,
-                    viewport_width: 0.0,
-                    viewport_height: 0.0,
-                    button: mouse_button_from_event(&event),
-                    modifiers: modifiers_from_event(&event),
-                });
-
-                // Prevent browser default behavior (e.g. text selection
-                // during slider drag, <label> synthesizing extra events).
-                event.prevent_default();
-                events::dispatch_event(events::EventHandlerId(rid));
+            // Dispatch the click for the nearest [data-rid] (draggables defer to
+            // mouseup above).
+            if click_allowed {
+                dispatch_click_at(&el, &browser_doc_for_click, &event);
             }
         }
     }) as Box<dyn FnMut(_)>);
@@ -278,6 +516,13 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             && let Ok(el) = target.dyn_into::<web_sys::Element>()
         {
             dispatch_mouse_attr(&el, "data-onmousemove", &event);
+
+            // Element drag-and-drop: if a drag is pending/active, advance it and
+            // skip hover — an active drag owns the move (mirrors desktop).
+            if WEB_DRAG.with(|d| d.borrow().is_some()) {
+                handle_web_drag_move(&event);
+                return;
+            }
 
             // Hover: fire data-onleave on the old element and data-onenter on the
             // new one whenever the resolved hover element changes.
@@ -318,12 +563,32 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     mousemove_closure.forget();
 
     // Mouseup delegation: stop active drag operations and fire data-onmouseup.
+    let browser_doc_for_up = browser_doc.clone();
     let mouseup_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
         rinch_core::Drag::cancel();
         if let Some(target) = event.target()
             && let Ok(el) = target.dyn_into::<web_sys::Element>()
         {
             dispatch_mouse_attr(&el, "data-onmouseup", &event);
+        }
+
+        // Element drag-and-drop: finish drop/dragend, or fire the click that was
+        // deferred when this draggable's mousedown started a pending drag.
+        let dnd = WEB_DRAG.with(|d| d.borrow_mut().take());
+        if let Some(state) = dnd {
+            if state.active {
+                let x = event.client_x() as f32;
+                let y = event.client_y() as f32;
+                if let Some(t) = &state.over_target {
+                    dispatch_plain_attr(t, "data-ondrop");
+                    dispatch_plain_attr(t, "data-ondragleave");
+                }
+                dispatch_drag_cursor_only(&state.source, "data-ondragend", x, y);
+            } else {
+                // Threshold never crossed — treat as a click on the draggable,
+                // with the same full click semantics as the mousedown path.
+                dispatch_click_at(&state.source, &browser_doc_for_up, &event);
+            }
         }
     }) as Box<dyn FnMut(_)>);
     browser_doc
@@ -333,6 +598,13 @@ pub fn setup_event_delegation(doc: &WebDocument) {
 
     // Keyboard delegation: route to focused render surface or keyboard interceptor.
     let keydown_closure = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+        // Escape cancels an in-progress element drag (consumed only if one was
+        // actually active, so Escape otherwise reaches the app normally).
+        if event.key() == "Escape" && cancel_web_drag() {
+            event.prevent_default();
+            return;
+        }
+
         // If a render surface is focused, route keyboard events to it
         if let Some(surface_id) = rinch::render_surface::focused_surface_id() {
             let key_data = rinch::render_surface::SurfaceKeyData {
