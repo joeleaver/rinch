@@ -38,6 +38,23 @@ pub struct TextHitInfo {
     pub valid: bool,
 }
 
+/// Which mouse button triggered a pointer event.
+///
+/// Defaults to [`MouseButton::Left`] so existing click/hover/drag contexts
+/// (which don't track a button) are unaffected. This is a `rinch-core`-local
+/// type so the events layer stays free of any platform dependency; backends map
+/// their native button type onto it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MouseButton {
+    /// Primary button (usually left).
+    #[default]
+    Left,
+    /// Middle button (wheel press).
+    Middle,
+    /// Secondary button (usually right).
+    Right,
+}
+
 /// Click event context with mouse position and element bounds.
 ///
 /// This data is available to event handlers during callback execution.
@@ -61,6 +78,18 @@ pub struct ClickContext {
     pub viewport_width: f32,
     /// Viewport height in logical pixels.
     pub viewport_height: f32,
+    /// Which mouse button triggered the event.
+    ///
+    /// Meaningful for `onmousedown`/`onmouseup` (and `oncontextmenu`, which is
+    /// always [`MouseButton::Right`]). Defaults to [`MouseButton::Left`] for
+    /// `onclick`/`onmousemove`/hover/drag contexts that don't carry a button.
+    pub button: MouseButton,
+    /// Keyboard modifier state (Shift/Ctrl/Alt/Meta) at the time of the event.
+    ///
+    /// Populated for mouse events on both backends. The global
+    /// [`get_modifier_state`] is not used for this — it is filled directly from
+    /// the live platform/browser modifier state when the context is set.
+    pub modifiers: ModifierState,
 }
 
 impl ClickContext {

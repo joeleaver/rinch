@@ -8,6 +8,8 @@ exclude = [
     "crates/rinch-visual-test",
     "examples/ui-zoo-web",
     "examples/paint-web",
+    "examples/events-web",
+    "examples/islands-web",
 ]
 
 [workspace.package]

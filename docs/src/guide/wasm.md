@@ -109,6 +109,49 @@ pub fn start() {
 fn main() {}
 ```
 
+## Islands (multiple roots per page)
+
+`mount` boots a single whole-page app. For a **static-first** page (e.g.
+server-rendered HTML) you can instead hydrate independent rinch widgets into
+specific placeholder elements — the "islands" pattern. Each island is its own
+reactive root; they coexist on one page and can be unmounted individually.
+
+```html
+<article>… static server-rendered content …</article>
+<div id="comments"></div>
+<div id="search"></div>
+```
+
+```rust
+#[wasm_bindgen(start)]
+pub fn start() {
+    let theme = ThemeProviderProps::default();
+
+    // Mount into an element selected by CSS selector …
+    rinch_web::mount_selector("#comments", theme.clone(), comments_app);
+
+    // … or into a `web_sys::Element` you already hold:
+    let el = web_sys::window().unwrap().document().unwrap()
+        .get_element_by_id("search").unwrap();
+    let handle = rinch_web::mount_into(&el, theme, search_app);
+
+    // Later, tear that root down (removes its DOM + handlers; the host stays):
+    // handle.unmount();
+}
+```
+
+| API | Purpose |
+|-----|---------|
+| `mount_into(&Element, theme, build) -> RootHandle` | Mount a root into an existing element |
+| `mount_selector("#id", theme, build) -> Option<RootHandle>` | Same, by CSS selector (`None` if no match) |
+| `RootHandle::unmount(self)` | Remove that root's DOM subtree and its event handlers |
+
+Islands adopt their host element directly (no `#rinch-root`/`#rinch-body`
+wrappers), share one page-global theme `<style>`, and install document event
+listeners once — so any number can coexist without interfering. Dropping a
+`RootHandle` keeps the root mounted; only `unmount()` tears it down. See
+`examples/islands-web` for a runnable demo.
+
 ## Building
 
 ### With Trunk (Recommended)
