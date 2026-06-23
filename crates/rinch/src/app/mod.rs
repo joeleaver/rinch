@@ -467,8 +467,28 @@ impl RinchApp {
 
         // Initial layout
         {
+            #[cfg(feature = "new-editor")]
+            let focused = self.focused_editor_id();
             let mut d = doc.borrow_mut();
+            // New-editor: virtualize each large scroll editor BEFORE the first
+            // layout so its off-screen blocks are never Parley-measured at mount.
+            // The scroll-container gate reads computed `overflow-y`, so resolve
+            // styles first (the `resolve_layout` below re-resolves them); the
+            // post-layout pass then settles the off-screen height estimates so they
+            // don't jump on the first interaction.
+            #[cfg(feature = "new-editor")]
+            {
+                d.resolve_styles();
+                crate::editor::virtualization_pre_layout(&mut d, focused);
+            }
             d.resolve_layout(viewport_width, viewport_height);
+            #[cfg(feature = "new-editor")]
+            crate::editor::virtualization_post_layout(
+                &mut d,
+                focused,
+                viewport_width,
+                viewport_height,
+            );
             let _ = d.take_dirty_nodes();
         }
 
