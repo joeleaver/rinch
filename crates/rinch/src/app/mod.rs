@@ -220,6 +220,12 @@ pub struct RinchApp {
     /// (`focused_input_*`, `focused_contenteditable`, the surface/editor
     /// registries) via [`Self::set_focus_target`].
     pub(crate) focus_target: FocusTarget,
+    /// The "goal column" (a window-space x) preserved across consecutive vertical
+    /// cursor moves (Up/Down) in the focused new editor, so the caret keeps its
+    /// horizontal position through short lines instead of drifting to line ends.
+    /// Set on the first Up/Down, reset by any other key, click, or drag.
+    #[cfg(feature = "new-editor")]
+    pub(crate) editor_goal_x: Option<f32>,
     /// State for a focused contenteditable element.
     pub(crate) focused_contenteditable: Option<ContentEditableFocus>,
     /// Active CE API instance for the focused contentEditable element.
@@ -286,6 +292,8 @@ impl RinchApp {
             focused_input_state: None,
             focused_input_node_id: None,
             focus_target: FocusTarget::None,
+            #[cfg(feature = "new-editor")]
+            editor_goal_x: None,
             focused_contenteditable: None,
             ce_ops: None,
             ce_selecting: false,

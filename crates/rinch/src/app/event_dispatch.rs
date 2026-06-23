@@ -1783,6 +1783,11 @@ impl RinchApp {
         ctrl: bool,
         _alt: bool,
     ) -> bool {
+        // The vertical "goal column" survives only a run of Up/Down — any other key
+        // (typing, horizontal arrows, Home/End, edits) abandons it.
+        if !matches!(key, KeyCode::ArrowUp | KeyCode::ArrowDown) {
+            self.editor_goal_x = None;
+        }
         match key {
             KeyCode::Backspace => handle.command("deleteCharBackward"),
             KeyCode::Delete => handle.command("deleteCharForward"),
@@ -1903,9 +1908,17 @@ impl RinchApp {
             Motion::LineEnd => line_bound(&doc, head, true),
             Motion::DocStart => Some(Selection::at_start(&doc).head()),
             Motion::DocEnd => Some(Selection::at_end(&doc).head()),
-            Motion::LineUp | Motion::LineDown => self
-                .vertical_step(handle, head, matches!(motion, Motion::LineDown))
-                .map(|sel| sel.head()),
+            Motion::LineUp | Motion::LineDown => {
+                // Establish the goal column from the current caret on the first
+                // vertical step, then reuse it so the cursor keeps its horizontal
+                // position through short lines instead of drifting to line ends.
+                let goal_x = self
+                    .editor_goal_x
+                    .or_else(|| self.editor_caret_point(handle, head).map(|(x, _, _)| x));
+                self.editor_goal_x = goal_x;
+                self.vertical_step(handle, head, matches!(motion, Motion::LineDown), goal_x)
+                    .map(|sel| sel.head())
+            }
         };
         match new_head {
             Some(nh) => {
@@ -2152,13 +2165,17 @@ impl RinchApp {
         handle: &crate::editor::EditorHandle,
         head: rinch_editor_core::Pos,
         down: bool,
+        goal_x: Option<f32>,
     ) -> Option<rinch_editor_core::Selection> {
         use rinch_editor_core::{Pos, Selection};
         let doc = handle.doc();
         if let Some((cx, cy, ch)) = self.editor_caret_point(handle, head)
             && let Some((_c, tb, ifc)) = {
+                // Hit-test at the goal column (preserved across consecutive
+                // Up/Down), falling back to the live caret x for the first step.
+                let tx = goal_x.unwrap_or(cx);
                 let ty = if down { cy + ch * 1.5 } else { cy - ch * 0.5 };
-                self.editor_point_address(cx, ty)
+                self.editor_point_address(tx, ty)
             }
             && let Some(p) = handle.pos_at(tb, ifc)
         {
@@ -2314,6 +2331,9 @@ impl RinchApp {
         // Take keyboard focus through the arbiter (tears down a prior surface /
         // input / CE / different editor).
         self.set_focus_target(FocusTarget::Editor(container));
+        // A click places the cursor at a new column, so abandon any vertical goal
+        // column from a prior Up/Down run.
+        self.editor_goal_x = None;
         // A click on a leaf node (an image or horizontal rule) selects the node
         // itself — a `Selection::Node`, outlined by the view — rather than placing a
         // text cursor (design §6 node-views). A node-select never arms a drag.
