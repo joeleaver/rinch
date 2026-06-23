@@ -249,6 +249,18 @@ pub trait DomDocument {
     /// Returns the (x, y, width, height) of the node's layout box.
     fn query_node_layout(&self, node_id: u64) -> Option<(f32, f32, f32, f32)>;
 
+    /// Per-line selection rectangles `(x, y, width, height)`, layout-local to the
+    /// node's inline layout, covering the byte range `[a, b)`. Used to render a
+    /// text selection's highlight. Default: empty (no inline layout / mock).
+    fn query_selection_rects(
+        &self,
+        _node_id: u64,
+        _byte_a: usize,
+        _byte_b: usize,
+    ) -> Vec<(f32, f32, f32, f32)> {
+        Vec::new()
+    }
+
     /// Get the tag name of an element node.
     ///
     /// Returns `Some("div")`, `Some("p")`, etc. for elements, `None` for text/comment nodes.

@@ -1,0 +1,8 @@
+[package]
+name = "new-editor-demo"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop", "new-editor", "debug", "clipboard"] }
+rinch-editor-core = { workspace = true }

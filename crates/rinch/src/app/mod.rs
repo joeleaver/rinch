@@ -11,6 +11,7 @@ pub(crate) mod contenteditable;
 #[cfg(feature = "debug")]
 mod debug_commands;
 mod event_dispatch;
+mod focus;
 pub(crate) mod hit_testing;
 mod html_parser;
 mod text_selection;
@@ -130,6 +131,30 @@ pub(crate) struct ScrollbarDrag {
 /// platform event. The returned [`AppAction`]s tell the shell what to do
 /// (request redraw, exit, etc.).
 #[allow(dead_code)] // Some fields are only used behind feature gates (debug, theme)
+/// What currently owns keyboard / IME input. Exactly one target is focused at a
+/// time — the [`RinchApp::set_focus_target`] choke-point tears the previous one
+/// down before installing the next, so focus is **mutually exclusive by
+/// construction** (design A10). The runtime routes `KeyDown`/`KeyUp` (and, in M6,
+/// `Ime`) by matching on this single field instead of the old order-dependent
+/// interceptor-then-fallback chain that caused the dual-arm routing bugs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum FocusTarget {
+    /// Nothing focused — keys fall through to the global handlers (DevTools,
+    /// inspect mode, Tab navigation, read-only text-selection caret motion).
+    #[default]
+    None,
+    /// A render surface (game viewport / custom renderer), by surface id.
+    Surface(usize),
+    /// An `<input>`/`<textarea>` (the rinch-editable engine), by DOM node id.
+    Input(usize),
+    /// The legacy contenteditable engine, by DOM node id. Transitional — the M8
+    /// rip deletes this variant along with the engine.
+    ContentEditable(usize),
+    /// A new-editor (`rinch-editor-core`) instance, by container node id.
+    #[cfg(feature = "new-editor")]
+    Editor(usize),
+}
+
 pub struct RinchApp {
     /// Component function to render (consumed on mount).
     #[allow(clippy::type_complexity)]
@@ -147,7 +172,8 @@ pub struct RinchApp {
     /// Software painter (reused across frames). Uses tiny-skia for CPU rendering.
     #[cfg(not(feature = "gpu"))]
     pub(crate) skia_painter: Option<TinySkiaPainter>,
-    /// Parley layout context for paint-time text layout.
+    /// Parley layout context for paint-time text layout (debug screenshots).
+    #[cfg(feature = "debug")]
     pub(crate) paint_layout_cx: parley::LayoutContext<peniko::Brush>,
     /// Current cursor position.
     pub(crate) cursor_pos: Option<(f32, f32)>,
@@ -189,6 +215,17 @@ pub struct RinchApp {
     pub(crate) focused_input_state: Option<EditableState<StringDocument>>,
     /// DOM node ID of the currently focused text input.
     pub(crate) focused_input_node_id: Option<usize>,
+    /// The single authority for which widget owns keyboard/IME input (design
+    /// A10). Kept in lockstep with the per-engine focus state below
+    /// (`focused_input_*`, `focused_contenteditable`, the surface/editor
+    /// registries) via [`Self::set_focus_target`].
+    pub(crate) focus_target: FocusTarget,
+    /// The "goal column" (a window-space x) preserved across consecutive vertical
+    /// cursor moves (Up/Down) in the focused new editor, so the caret keeps its
+    /// horizontal position through short lines instead of drifting to line ends.
+    /// Set on the first Up/Down, reset by any other key, click, or drag.
+    #[cfg(feature = "new-editor")]
+    pub(crate) editor_goal_x: Option<f32>,
     /// State for a focused contenteditable element.
     pub(crate) focused_contenteditable: Option<ContentEditableFocus>,
     /// Active CE API instance for the focused contentEditable element.
@@ -232,6 +269,7 @@ impl RinchApp {
             painter: VelloPainter::new(),
             #[cfg(not(feature = "gpu"))]
             skia_painter: None,
+            #[cfg(feature = "debug")]
             paint_layout_cx: parley::LayoutContext::new(),
             cursor_pos: None,
             scrollbar_drag: None,
@@ -253,6 +291,9 @@ impl RinchApp {
             focused_input_value: String::new(),
             focused_input_state: None,
             focused_input_node_id: None,
+            focus_target: FocusTarget::None,
+            #[cfg(feature = "new-editor")]
+            editor_goal_x: None,
             focused_contenteditable: None,
             ce_ops: None,
             ce_selecting: false,
@@ -426,10 +467,36 @@ impl RinchApp {
 
         // Initial layout
         {
+            #[cfg(feature = "new-editor")]
+            let focused = self.focused_editor_id();
             let mut d = doc.borrow_mut();
+            // New-editor: virtualize each large scroll editor BEFORE the first
+            // layout so its off-screen blocks are never Parley-measured at mount.
+            // The scroll-container gate reads computed `overflow-y`, so resolve
+            // styles first (the `resolve_layout` below re-resolves them); the
+            // post-layout pass then settles the off-screen height estimates so they
+            // don't jump on the first interaction.
+            #[cfg(feature = "new-editor")]
+            {
+                d.resolve_styles();
+                crate::editor::virtualization_pre_layout(&mut d, focused);
+            }
             d.resolve_layout(viewport_width, viewport_height);
+            #[cfg(feature = "new-editor")]
+            crate::editor::virtualization_post_layout(
+                &mut d,
+                focused,
+                viewport_width,
+                viewport_height,
+            );
             let _ = d.take_dirty_nodes();
         }
+
+        // New-editor phase 2 (design A3): render mounted editors' carets against
+        // the fresh initial layout (the steady-state pass in resolve_and_repaint
+        // short-circuits when nothing is dirty, so the first caret renders here).
+        #[cfg(feature = "new-editor")]
+        crate::editor::update_all_carets(self.focused_editor_id());
 
         self.scene_dirty = true;
         self.doc = Some(doc.clone());
@@ -473,6 +540,22 @@ impl RinchApp {
 
     // ── Layout / repaint ─────────────────────────────────────────────────
 
+    /// Run the post-layout overlay pass for mounted editors (from an input handler,
+    /// where a selection-only change doesn't dirty the document) and, if any overlay
+    /// moved, force a full repaint. The caret / selection / node-outline overlays are
+    /// absolutely positioned, and the software renderer's dirty-region cache can't
+    /// clear a moved absolute element's old rect — so without this they ghost.
+    #[cfg(feature = "new-editor")]
+    pub(crate) fn refresh_editor_overlays(&mut self) {
+        if crate::editor::update_all_carets(self.focused_editor_id()) {
+            self.scene_dirty = true;
+            #[cfg(not(feature = "gpu"))]
+            {
+                self.has_previous_frame = false;
+            }
+        }
+    }
+
     /// Re-resolve layout after signal changes. Returns `true` if a redraw
     /// is needed.
     pub fn resolve_and_repaint(&mut self, viewport_width: f32, viewport_height: f32) -> bool {
@@ -504,6 +587,18 @@ impl RinchApp {
                     self.has_previous_frame = false;
                 }
             }
+        }
+
+        // New-editor block virtualization (design A3, phase 1) — run BEFORE the
+        // short-circuit. Creating a window (or moving the materialized range) sets
+        // the document's style/layout dirty flags, so this frame won't short-circuit
+        // and the resolve below applies the collapse. A selection-only first
+        // interaction otherwise never triggers the initial collapse.
+        #[cfg(feature = "new-editor")]
+        {
+            let focused = self.focused_editor_id();
+            let mut d = doc.borrow_mut();
+            crate::editor::virtualization_pre_layout(&mut d, focused);
         }
 
         // Short-circuit when nothing needs resolving — avoids redundant tree walks
@@ -564,6 +659,42 @@ impl RinchApp {
         // Apply deferred scroll-into-view now that layout is fresh
         self.apply_ce_scroll_into_view();
         self.apply_scroll_into_view();
+
+        // New-editor block virtualization (design A3, phase 2): cache measured
+        // heights and re-verify the materialized range with fresh positions, re
+        // laying out once if a big scroll jump changed it. Before the caret pass so
+        // the caret reads post-virtualization geometry.
+        #[cfg(feature = "new-editor")]
+        {
+            let focused = self.focused_editor_id();
+            let mut d = doc.borrow_mut();
+            crate::editor::virtualization_post_layout(
+                &mut d,
+                focused,
+                viewport_width,
+                viewport_height,
+            );
+        }
+
+        // New-editor phase 2 (design A3): render each mounted editor's caret from
+        // its selection now that layout geometry is fresh. If an overlay (caret /
+        // selection / node-outline) actually moved, re-resolve so its new absolute
+        // position is current, then force a full repaint — the software renderer's
+        // dirty-region cache can't clear a moved absolute element's *old* rect, so
+        // the overlay would otherwise ghost.
+        #[cfg(feature = "new-editor")]
+        if crate::editor::update_all_carets(self.focused_editor_id()) {
+            {
+                let mut d = doc.borrow_mut();
+                let _ = d.take_dirty_nodes();
+                d.resolve_layout(viewport_width, viewport_height);
+            }
+            self.scene_dirty = true;
+            #[cfg(not(feature = "gpu"))]
+            {
+                self.has_previous_frame = false;
+            }
+        }
 
         // Post-layout: cache heights, then verify materialized range with
         // fresh positions. If the range changed (big scroll jump), re-layout.
@@ -1442,12 +1573,8 @@ impl RinchApp {
         };
 
         if has_oninput {
-            // Clear any CE focus first
-            if let Some(prev_ce) = self.focused_contenteditable.take() {
-                ce::clear_active_ce_api();
-                self.ce_ops = None;
-                self.set_contenteditable_attributes(prev_ce.ce_node_id, false, 0, 0);
-            }
+            // `try_focus_input` takes focus through the arbiter (tears down any
+            // prior CE / surface / editor / input).
             self.try_focus_input(node_id);
             // Update DOM focus state
             if let Some(doc) = &self.doc {
@@ -1455,12 +1582,9 @@ impl RinchApp {
                 d.update_focus(Some(node_id));
             }
         } else if is_contenteditable {
-            // Clear any input focus first
-            self.clear_input_focus_attrs();
-            self.focused_input_handler_id = None;
-            self.focused_input_value.clear();
-            self.focused_input_state = None;
-            self.focused_input_node_id = None;
+            // Take CE focus through the arbiter (tears down any prior input /
+            // surface / editor / different CE).
+            self.set_focus_target(FocusTarget::ContentEditable(node_id));
 
             // Set up CE focus with cursor at position 0
             let input_handler = InputHandler::new()
@@ -1514,10 +1638,9 @@ impl RinchApp {
         let value = node.attributes.get("value").cloned().unwrap_or_default();
         drop(d);
 
-        // Clear previous input focus if switching to a different node
-        if self.focused_input_node_id.is_some() && self.focused_input_node_id != Some(node_id) {
-            self.clear_input_focus_attrs();
-        }
+        // Take input focus through the arbiter (tears down a prior surface / CE /
+        // editor / different input; re-focusing the same input is a no-op).
+        self.set_focus_target(FocusTarget::Input(node_id));
 
         self.focused_input_handler_id = Some(handler_id);
         self.focused_input_value = value.clone();
@@ -1562,16 +1685,8 @@ impl RinchApp {
     }
 
     // ── Embed API helpers ─────────────────────────────────────────────
-
-    /// Whether a text input element is currently focused.
-    pub fn has_focused_input(&self) -> bool {
-        self.focused_input_handler_id.is_some()
-    }
-
-    /// Whether a contenteditable element is currently focused.
-    pub fn has_focused_contenteditable(&self) -> bool {
-        self.focused_contenteditable.is_some()
-    }
+    // `has_focused_input` / `has_focused_contenteditable` now live in `focus.rs`
+    // (repointed at `FocusTarget`, design A9/A10).
 
     /// Query the computed layout rect of a `GameViewport` component by name.
     ///

@@ -7,12 +7,20 @@ description = "Pure, renderer-agnostic core of the Rinch rich-text editor: docum
 
 [dependencies]
 thiserror.workspace = true
-# NOTE (editor-rearchitecture milestones): regex (input rules, M4), serde (DocNode
-# wire shape, M3), and pulldown-cmark (markdown I/O, M3) are added by the milestone
-# that first needs them. M0 is schema-only. NO automerge / rinch-dom / winit ever.
+# Input rules (M4): markdown-shortcut pattern matching. Pure Rust, wasm-clean.
+regex = "1"
+# Total, attr-aware serialization (M3). Both optional and wasm-clean.
+# NO automerge / rinch-dom / winit ever.
+serde = { version = "1", optional = true, features = ["derive"] }
+pulldown-cmark = { version = "0.12", optional = true, default-features = false }
 
 [features]
 default = []
+# The durable, schema-derived DocNode wire shape (serialize/doc_json.rs).
+serde = ["dep:serde"]
+# Markdown I/O via pulldown-cmark (serialize/markdown.rs); benign, wasm-clean.
+markdown = ["dep:pulldown-cmark"]
 
 [dev-dependencies]
 pretty_assertions = "1"
+serde_json = "1"

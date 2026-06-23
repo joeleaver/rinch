@@ -122,6 +122,29 @@ impl Node {
         self.0.typ.is_atom()
     }
 
+    /// True if this is a textblock (block-level node with inline content).
+    pub fn is_textblock(&self) -> bool {
+        self.0.typ.is_textblock()
+    }
+
+    /// True if this node already has the given type and attributes — used by
+    /// `set_block_type` to skip nodes that need no change. Port of `Node.hasMarkup`
+    /// (restricted to type + attrs).
+    pub fn has_markup(&self, typ: &NodeType, attrs: &Attrs) -> bool {
+        self.0.typ == *typ && self.0.attrs == *attrs
+    }
+
+    /// Visit every descendant node whose range overlaps `from..to`, calling
+    /// `f(node, pos, parent)` with the node's document position and its parent.
+    /// Returning `false` from `f` skips descending into that node's content. Port
+    /// of `Node.nodesBetween`.
+    pub fn nodes_between<F>(&self, from: usize, to: usize, f: &mut F)
+    where
+        F: FnMut(&Node, usize, Option<&Node>) -> bool,
+    {
+        nodes_between_frag(&self.0.content, from, to, 0, Some(self), f);
+    }
+
     /// Number of children.
     pub fn child_count(&self) -> usize {
         self.0.content.child_count()
@@ -162,6 +185,162 @@ impl Node {
     /// Pointer-identity check — the view-diff fast path.
     pub fn same_ref(&self, other: &Node) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// True if `self` and `other` have the same type, attrs and marks — i.e. they
+    /// differ only (possibly) in content. Used to decide whether two adjacent text
+    /// runs may be merged. Port of ProseMirror's `Node.sameMarkup`.
+    pub fn same_markup(&self, other: &Node) -> bool {
+        self.0.typ == other.0.typ && self.0.attrs == other.0.attrs && self.0.marks == other.0.marks
+    }
+
+    /// A copy of this **non-text** node with new content, preserving type, attrs
+    /// and marks (the persistent-tree `copy` primitive). The transform engine
+    /// builds every new tree out of `copy_with_content` over shared subtrees.
+    pub fn copy_with_content(&self, content: Fragment) -> Node {
+        debug_assert!(!self.is_text(), "copy_with_content on a text node");
+        Node(Rc::new(NodeInner {
+            typ: self.0.typ.clone(),
+            attrs: self.0.attrs.clone(),
+            content,
+            marks: self.0.marks.clone(),
+            text: None,
+            text_len: 0,
+        }))
+    }
+
+    /// A copy of this **text** node carrying `text` in place of its own, keeping
+    /// the same marks. Port of `TextNode.withText`.
+    pub(crate) fn with_text(&self, text: Box<str>) -> Node {
+        debug_assert!(self.is_text(), "with_text on a non-text node");
+        Node::new_text(self.0.typ.clone(), text, self.0.marks.clone())
+    }
+
+    /// Cut this node to a sub-range, slicing its text (text node, char offsets) or
+    /// its content (non-text node, content offsets). Port of `Node.cut` /
+    /// `TextNode.cut`.
+    pub fn cut(&self, from: usize, to: usize) -> Node {
+        if self.is_text() {
+            if from == 0 && to == self.0.text_len {
+                return self.clone();
+            }
+            let sliced: String = self
+                .text()
+                .unwrap()
+                .chars()
+                .skip(from)
+                .take(to - from)
+                .collect();
+            return self.with_text(sliced.into());
+        }
+        if from == 0 && to == self.content_size() {
+            return self.clone();
+        }
+        self.copy_with_content(self.0.content.cut(from, to))
+    }
+
+    /// The node that *starts* at `pos` (or the text node `pos` falls inside),
+    /// interpreting `self` as the document root. `None` if `pos` is at the end of a
+    /// parent's content. Port of `Node.nodeAt`.
+    pub fn node_at(&self, pos: usize) -> Option<Node> {
+        let mut node = self.clone();
+        let mut pos = pos;
+        loop {
+            let (index, offset) = node.content().find_index(pos);
+            let child = node.content().maybe_child(index)?.clone();
+            if offset == pos || child.is_text() {
+                return Some(child);
+            }
+            pos -= offset + 1;
+            node = child;
+        }
+    }
+
+    /// A copy of this node with the given mark list (text node keeps its text,
+    /// non-text node keeps its content). Port of `Node.mark`.
+    pub(crate) fn mark(&self, marks: Vec<Mark>) -> Node {
+        if self.is_text() {
+            Node::new_text(self.0.typ.clone(), self.0.text.clone().unwrap(), marks)
+        } else {
+            Node(Rc::new(NodeInner {
+                typ: self.0.typ.clone(),
+                attrs: self.0.attrs.clone(),
+                content: self.0.content.clone(),
+                marks,
+                text: None,
+                text_len: 0,
+            }))
+        }
+    }
+
+    /// A copy of this **non-text** node with replaced attrs, keeping content and
+    /// marks. The attr-step primitive.
+    pub(crate) fn with_attrs(&self, attrs: Attrs) -> Node {
+        debug_assert!(!self.is_text(), "with_attrs on a text node");
+        Node(Rc::new(NodeInner {
+            typ: self.0.typ.clone(),
+            attrs,
+            content: self.0.content.clone(),
+            marks: self.0.marks.clone(),
+            text: None,
+            text_len: 0,
+        }))
+    }
+
+    /// Extract a [`Slice`] of the content between two positions (interpreting
+    /// `self` as the document root), recording the open depths at each end. Port of
+    /// `Node.slice`. Used by `ReplaceStep::invert` to recover the replaced content.
+    pub fn slice(&self, from: usize, to: usize) -> Result<crate::model::Slice, EditorError> {
+        use crate::model::Slice;
+        if from == to {
+            return Ok(Slice::empty());
+        }
+        let r_from = self.resolve(Pos(from))?;
+        let r_to = self.resolve(Pos(to))?;
+        let depth = r_from.shared_depth(Pos(to));
+        let start = r_from.start(depth);
+        let node = r_from.node(depth);
+        let content = node.content().cut(from - start, to - start);
+        Ok(Slice::new(
+            content,
+            r_from.depth() - depth,
+            r_to.depth() - depth,
+        ))
+    }
+}
+
+/// Recursive worker for [`Node::nodes_between`].
+fn nodes_between_frag<F>(
+    frag: &Fragment,
+    from: usize,
+    to: usize,
+    node_start: usize,
+    parent: Option<&Node>,
+    f: &mut F,
+) where
+    F: FnMut(&Node, usize, Option<&Node>) -> bool,
+{
+    let mut pos = 0usize;
+    for child in frag.children() {
+        if pos >= to {
+            break;
+        }
+        let end = pos + child.node_size();
+        if end > from {
+            let descend = f(child, node_start + pos, parent) && child.content_size() > 0;
+            if descend {
+                let start = pos + 1;
+                nodes_between_frag(
+                    child.content(),
+                    from.saturating_sub(start),
+                    (to.saturating_sub(start)).min(child.content_size()),
+                    node_start + start,
+                    Some(child),
+                    f,
+                );
+            }
+        }
+        pos = end;
     }
 }
 
@@ -467,6 +646,92 @@ mod tests {
         assert_eq!(g.depth(), 1);
         assert_eq!(g.parent().type_name(), "blockquote");
         assert_eq!(g.index(1), 1);
+    }
+
+    #[test]
+    fn slice_within_one_textblock_is_flat() {
+        // doc(paragraph("abcd")); slice 2..3 = "b"? positions: 0 open p,1 a,2 b,3 c,4 d,5 close
+        let s = Schema::starter_kit();
+        let para = s
+            .branch("paragraph", Fragment::from_node(s.text("abcd").unwrap()))
+            .unwrap();
+        let doc = s.branch("doc", Fragment::from_node(para)).unwrap();
+        // pos 2..4 -> chars "bc", inside the single paragraph -> open depths 0
+        let slice = doc.slice(2, 4).unwrap();
+        assert_eq!(slice.open_start, 0);
+        assert_eq!(slice.open_end, 0);
+        assert_eq!(slice.content.child(0).text(), Some("bc"));
+        assert_eq!(slice.size(), 2);
+    }
+
+    #[test]
+    fn slice_spanning_two_paragraphs_is_open_on_both_sides() {
+        // doc(paragraph("ab"), paragraph("cd")); positions:
+        // 0 [p1 1 a 2 b 3] 4 [p2 5 c 6 d 7] 8 -- content size 8
+        let s = Schema::starter_kit();
+        let p1 = s
+            .branch("paragraph", Fragment::from_node(s.text("ab").unwrap()))
+            .unwrap();
+        let p2 = s
+            .branch("paragraph", Fragment::from_node(s.text("cd").unwrap()))
+            .unwrap();
+        let doc = s
+            .branch("doc", Fragment::from_children(vec![p1, p2]))
+            .unwrap();
+        // slice 2..6 : "b" .. "c", crossing the paragraph boundary -> open 1/1
+        let slice = doc.slice(2, 6).unwrap();
+        assert_eq!((slice.open_start, slice.open_end), (1, 1));
+        assert_eq!(slice.content.child_count(), 2);
+        assert_eq!(slice.content.child(0).child(0).text(), Some("b"));
+        assert_eq!(slice.content.child(1).child(0).text(), Some("c"));
+        // slice.size() = content.size() - open_start - open_end
+        assert_eq!(slice.size(), slice.content.size() - 2);
+    }
+
+    #[test]
+    fn slice_empty_range_is_empty() {
+        let s = Schema::starter_kit();
+        let para = s
+            .branch("paragraph", Fragment::from_node(s.text("abcd").unwrap()))
+            .unwrap();
+        let doc = s.branch("doc", Fragment::from_node(para)).unwrap();
+        assert!(doc.slice(2, 2).unwrap().is_empty());
+    }
+
+    #[test]
+    fn resolved_text_offset_and_neighbors() {
+        // doc(paragraph("abcd"))
+        let s = Schema::starter_kit();
+        let para = s
+            .branch("paragraph", Fragment::from_node(s.text("abcd").unwrap()))
+            .unwrap();
+        let doc = s.branch("doc", Fragment::from_node(para)).unwrap();
+        let r = doc.resolve(Pos(3)).unwrap(); // between b and c (offset 2 into text)
+        assert_eq!(r.text_offset(), 2);
+        // node_before -> "ab", node_after -> "cd"
+        assert_eq!(r.node_before().unwrap().text(), Some("ab"));
+        assert_eq!(r.node_after().unwrap().text(), Some("cd"));
+    }
+
+    #[test]
+    fn resolved_neighbors_at_block_boundary() {
+        // doc(paragraph("ab"), paragraph("cd")); pos 4 = the gap between paragraphs
+        let s = Schema::starter_kit();
+        let p1 = s
+            .branch("paragraph", Fragment::from_node(s.text("ab").unwrap()))
+            .unwrap();
+        let p2 = s
+            .branch("paragraph", Fragment::from_node(s.text("cd").unwrap()))
+            .unwrap();
+        let doc = s
+            .branch("doc", Fragment::from_children(vec![p1, p2]))
+            .unwrap();
+        let r = doc.resolve(Pos(4)).unwrap();
+        assert_eq!(r.text_offset(), 0);
+        assert_eq!(r.node_before().unwrap().type_name(), "paragraph");
+        assert_eq!(r.node_after().unwrap().type_name(), "paragraph");
+        // shared_depth between pos 4 and a pos inside p2 is the doc (0)
+        assert_eq!(r.shared_depth(Pos(6)), 0);
     }
 
     #[test]

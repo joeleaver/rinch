@@ -12,9 +12,10 @@ pub mod validation;
 pub use mark::{MarkSpec, MarkSpecBuilder};
 pub use node::{AttrSpec, MarkSet, NodeSpec, NodeSpecBuilder};
 
+use crate::model::AttrValue;
 use crate::model::types::{MarkType, NodeType};
 use content_match::ContentMatch;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Schema defines the valid structure of a document.
 ///
@@ -85,7 +86,7 @@ impl Schema {
             NodeSpec::builder("heading")
                 .content("inline*")
                 .group("block")
-                .attr("level", AttrSpec::optional("1"))
+                .attr("level", AttrSpec::optional(AttrValue::Int(1)))
                 .parse_html(vec![
                     "h1".into(),
                     "h2".into(),
@@ -135,7 +136,7 @@ impl Schema {
             NodeSpec::builder("ordered_list")
                 .content("list_item+")
                 .group("block")
-                .attr("start", AttrSpec::optional("1"))
+                .attr("start", AttrSpec::optional(AttrValue::Int(1)))
                 .parse_html(vec!["ol".into()])
                 .build(),
         );
@@ -163,7 +164,7 @@ impl Schema {
             "task_item",
             NodeSpec::builder("task_item")
                 .content("block+")
-                .attr("checked", AttrSpec::optional("false"))
+                .attr("checked", AttrSpec::optional(AttrValue::Bool(false)))
                 .build(),
         );
 
@@ -231,7 +232,7 @@ impl Schema {
         builder = builder.mark("code", code);
 
         // link
-        let mut link_attrs = HashMap::new();
+        let mut link_attrs = BTreeMap::new();
         link_attrs.insert("href".into(), AttrSpec::required());
         link_attrs.insert("title".into(), AttrSpec::optional(""));
         link_attrs.insert("target".into(), AttrSpec::optional(""));
@@ -240,14 +241,14 @@ impl Schema {
         builder = builder.mark("link", link);
 
         // highlight
-        let mut hl_attrs = HashMap::new();
+        let mut hl_attrs = BTreeMap::new();
         hl_attrs.insert("color".into(), AttrSpec::optional(""));
         let mut highlight = MarkSpec::with_attrs("highlight", hl_attrs);
         highlight.parse_html_tags = vec!["mark".into()];
         builder = builder.mark("highlight", highlight);
 
         // text_color
-        let mut tc_attrs = HashMap::new();
+        let mut tc_attrs = BTreeMap::new();
         tc_attrs.insert("color".into(), AttrSpec::required());
         let text_color = MarkSpec::with_attrs("text_color", tc_attrs);
         builder = builder.mark("text_color", text_color);
@@ -699,7 +700,7 @@ mod tests {
         let schema = Schema::starter_kit();
         let heading = schema.node("heading").unwrap();
         assert!(heading.attrs.contains_key("level"));
-        assert_eq!(heading.attrs["level"].default, Some("1".to_string()));
+        assert_eq!(heading.attrs["level"].default, Some(AttrValue::Int(1)));
     }
 
     #[test]

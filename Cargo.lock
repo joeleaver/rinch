@@ -3289,6 +3289,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "new-editor-demo"
+version = "0.1.0"
+dependencies = [
+ "rinch",
+ "rinch-editor-core",
+]
+
+[[package]]
 name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4615,6 +4623,7 @@ dependencies = [
  "rinch-dom",
  "rinch-editable",
  "rinch-editor",
+ "rinch-editor-core",
  "rinch-macros",
  "rinch-platform",
  "rinch-renderer",
@@ -4774,6 +4783,10 @@ name = "rinch-editor-core"
 version = "0.1.0"
 dependencies = [
  "pretty_assertions",
+ "pulldown-cmark",
+ "regex",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
 ]
 

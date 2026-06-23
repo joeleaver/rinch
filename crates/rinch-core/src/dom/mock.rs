@@ -13,7 +13,6 @@ pub struct MockDomDocument {
 }
 
 struct MockNode {
-    #[allow(dead_code)]
     kind: MockNodeKind,
     text: String,
     attributes: std::collections::HashMap<String, String>,
@@ -21,7 +20,6 @@ struct MockNode {
     parent: Option<NodeId>,
 }
 
-#[allow(dead_code)] // tag is stored for debugging but not read
 enum MockNodeKind {
     Element(String),
     Text,
@@ -294,5 +292,37 @@ impl DomDocument for MockDomDocument {
 
     fn query_node_layout(&self, _node_id: u64) -> Option<(f32, f32, f32, f32)> {
         None // Mock returns None
+    }
+
+    fn tag_name(&self, node: NodeId) -> Option<String> {
+        match &self.nodes.get(&node)?.kind {
+            MockNodeKind::Element(tag) => Some(tag.clone()),
+            _ => None,
+        }
+    }
+
+    fn node_type(&self, node: NodeId) -> Option<u16> {
+        match &self.nodes.get(&node)?.kind {
+            MockNodeKind::Element(_) => Some(1),
+            MockNodeKind::Text => Some(3),
+            MockNodeKind::Comment => Some(8),
+        }
+    }
+
+    fn text_content(&self, node: NodeId) -> Option<String> {
+        let n = self.nodes.get(&node)?;
+        match n.kind {
+            MockNodeKind::Text | MockNodeKind::Comment => Some(n.text.clone()),
+            MockNodeKind::Element(_) => {
+                // Concatenate descendant text (depth-first), matching the real DOM.
+                let mut out = String::new();
+                for &child in &n.children {
+                    if let Some(t) = self.text_content(child) {
+                        out.push_str(&t);
+                    }
+                }
+                Some(out)
+            }
+        }
     }
 }

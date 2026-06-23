@@ -8,6 +8,73 @@ fn parse_button(s: &Option<String>) -> MouseButton {
     }
 }
 
+/// Map a printable character to a physical `KeyCode` for synthesizing keystrokes
+/// (the `text` field carries the actual character; the keycode only matters for
+/// shortcut/interceptor matching). Unknown characters fall back to `Space`.
+fn char_to_keycode(c: char) -> KeyCode {
+    match c.to_ascii_lowercase() {
+        'a' => KeyCode::KeyA,
+        'b' => KeyCode::KeyB,
+        'c' => KeyCode::KeyC,
+        'd' => KeyCode::KeyD,
+        'e' => KeyCode::KeyE,
+        'f' => KeyCode::KeyF,
+        'g' => KeyCode::KeyG,
+        'h' => KeyCode::KeyH,
+        'i' => KeyCode::KeyI,
+        'j' => KeyCode::KeyJ,
+        'k' => KeyCode::KeyK,
+        'l' => KeyCode::KeyL,
+        'm' => KeyCode::KeyM,
+        'n' => KeyCode::KeyN,
+        'o' => KeyCode::KeyO,
+        'p' => KeyCode::KeyP,
+        'q' => KeyCode::KeyQ,
+        'r' => KeyCode::KeyR,
+        's' => KeyCode::KeyS,
+        't' => KeyCode::KeyT,
+        'u' => KeyCode::KeyU,
+        'v' => KeyCode::KeyV,
+        'w' => KeyCode::KeyW,
+        'x' => KeyCode::KeyX,
+        'y' => KeyCode::KeyY,
+        'z' => KeyCode::KeyZ,
+        '0' => KeyCode::Digit0,
+        '1' => KeyCode::Digit1,
+        '2' => KeyCode::Digit2,
+        '3' => KeyCode::Digit3,
+        '4' => KeyCode::Digit4,
+        '5' => KeyCode::Digit5,
+        '6' => KeyCode::Digit6,
+        '7' => KeyCode::Digit7,
+        '8' => KeyCode::Digit8,
+        '9' => KeyCode::Digit9,
+        _ => KeyCode::Space,
+    }
+}
+
+/// Map a debug `key_press` key-name string to a `KeyCode`.
+fn keyname_to_keycode(key: &str) -> KeyCode {
+    match key {
+        "ArrowLeft" => KeyCode::ArrowLeft,
+        "ArrowRight" => KeyCode::ArrowRight,
+        "ArrowUp" => KeyCode::ArrowUp,
+        "ArrowDown" => KeyCode::ArrowDown,
+        "Home" => KeyCode::Home,
+        "End" => KeyCode::End,
+        "PageUp" => KeyCode::PageUp,
+        "PageDown" => KeyCode::PageDown,
+        "Enter" => KeyCode::Enter,
+        "Backspace" => KeyCode::Backspace,
+        "Delete" => KeyCode::Delete,
+        "Tab" => KeyCode::Tab,
+        "Escape" => KeyCode::Escape,
+        "F12" => KeyCode::F12,
+        k if k.chars().count() == 1 => char_to_keycode(k.chars().next().unwrap()),
+        _ => KeyCode::Space,
+    }
+}
+
 #[cfg(feature = "debug")]
 impl RinchApp {
     // ── Debug commands ───────────────────────────────────────────────────
@@ -101,405 +168,75 @@ impl RinchApp {
                 }
             }
             DebugCommandKind::Click { x, y, ref button } => {
+                // Route through the REAL input path (press + release) so MCP
+                // exercises exactly what a real mouse does — `handle_event` owns all
+                // the click logic (contextmenu, focus, editor, drag). Injecting via a
+                // parallel path here is what hid the dual-arm MouseDown bug.
                 let mouse_button = parse_button(button);
-                if mouse_button == MouseButton::Right {
-                    // Right-click: try oncontextmenu dispatch first, then fallback
-                    let mods = self.modifier_state();
-                    let mut handled = false;
-                    if let Some(doc) = &self.doc {
-                        let hit_id = {
-                            let d = doc.borrow();
-                            hit_test(&d.tree, x, y)
-                        };
-                        if let Some(hit_id) = hit_id {
-                            let vw = window_size.0 as f32 / scale_factor as f32;
-                            let vh = window_size.1 as f32 / scale_factor as f32;
-                            if Self::dispatch_oncontextmenu(doc, hit_id, x, y, vw, vh, mods) {
-                                actions.push(AppAction::RequestRedraw);
-                                handled = true;
-                            }
-                        }
-                    }
-                    if !handled {
-                        let click_actions = self.handle_click_with_button(
-                            x,
-                            y,
-                            scale_factor,
-                            mouse_button,
-                            window_size.0 as f32 / scale_factor as f32,
-                            window_size.1 as f32 / scale_factor as f32,
-                        );
-                        actions.extend(click_actions);
-                    }
-                } else {
-                    let click_actions = self.handle_click_with_button(
+                self.cursor_pos = Some((x, y));
+                actions.extend(self.handle_event(
+                    PlatformEvent::MouseDown {
                         x,
                         y,
-                        scale_factor,
-                        mouse_button,
-                        window_size.0 as f32 / scale_factor as f32,
-                        window_size.1 as f32 / scale_factor as f32,
-                    );
-                    actions.extend(click_actions);
-                }
-                self.ce_selecting = false;
+                        button: mouse_button,
+                    },
+                    window_size,
+                    scale_factor,
+                ));
+                actions.extend(self.handle_event(
+                    PlatformEvent::MouseUp {
+                        x,
+                        y,
+                        button: mouse_button,
+                    },
+                    window_size,
+                    scale_factor,
+                ));
                 actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
             }
             DebugCommandKind::MouseDown { x, y, ref button } => {
+                // Route through the real input path so MCP matches a real press.
                 let mouse_button = parse_button(button);
                 self.cursor_pos = Some((x, y));
-                self.dispatch_mouse_attr(
-                    "data-onmousedown",
-                    x,
-                    y,
-                    Self::core_button(mouse_button),
-                    window_size.0 as f32 / scale_factor as f32,
-                    window_size.1 as f32 / scale_factor as f32,
-                );
-
-                if mouse_button == MouseButton::Right {
-                    // Right-click: try oncontextmenu dispatch first
-                    let mods = self.modifier_state();
-                    let mut handled = false;
-                    if let Some(doc) = &self.doc {
-                        let hit_id = {
-                            let d = doc.borrow();
-                            hit_test(&d.tree, x, y)
-                        };
-                        if let Some(hit_id) = hit_id {
-                            let vw = window_size.0 as f32 / scale_factor as f32;
-                            let vh = window_size.1 as f32 / scale_factor as f32;
-                            if Self::dispatch_oncontextmenu(doc, hit_id, x, y, vw, vh, mods) {
-                                actions.push(AppAction::RequestRedraw);
-                                handled = true;
-                            }
-                        }
-                    }
-                    if !handled {
-                        let click_actions = self.handle_click_with_button(
-                            x,
-                            y,
-                            scale_factor,
-                            mouse_button,
-                            window_size.0 as f32 / scale_factor as f32,
-                            window_size.1 as f32 / scale_factor as f32,
-                        );
-                        actions.extend(click_actions);
-                    }
-                } else {
-                    // Update :active and :focus
-                    if let Some(doc) = &self.doc {
-                        let hit = {
-                            let d = doc.borrow();
-                            hit_test(&d.tree, x, y)
-                        };
-                        let active_changed = doc.borrow_mut().update_active(hit);
-                        let focus_changed = doc.borrow_mut().update_focus(hit);
-                        if active_changed || focus_changed {
-                            actions.push(AppAction::RequestRedraw);
-                        }
-                    }
-
-                    // Check for draggable element — enter pending drag
-                    let draggable_node = if let Some(doc) = &self.doc {
-                        let d = doc.borrow();
-                        if let Some(hit_id) = hit_test(&d.tree, x, y) {
-                            Self::find_draggable(&d.tree, hit_id)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-
-                    if let Some(drag_node_id) = draggable_node {
-                        self.pending_drag = Some(PendingDrag {
-                            node_id: drag_node_id,
-                            mousedown_pos: (x, y),
-                        });
-                    } else {
-                        let click_actions = self.handle_click_with_button(
-                            x,
-                            y,
-                            scale_factor,
-                            mouse_button,
-                            window_size.0 as f32 / scale_factor as f32,
-                            window_size.1 as f32 / scale_factor as f32,
-                        );
-                        actions.extend(click_actions);
-                    }
-                }
+                actions.extend(self.handle_event(
+                    PlatformEvent::MouseDown {
+                        x,
+                        y,
+                        button: mouse_button,
+                    },
+                    window_size,
+                    scale_factor,
+                ));
                 actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
             }
             DebugCommandKind::MouseUp { x, y, ref button } => {
+                // Route through the real input path so MCP matches a real release.
                 let mouse_button = parse_button(button);
-                self.dispatch_mouse_attr(
-                    "data-onmouseup",
-                    x,
-                    y,
-                    Self::core_button(mouse_button),
-                    window_size.0 as f32 / scale_factor as f32,
-                    window_size.1 as f32 / scale_factor as f32,
-                );
-
-                // Dispatch MouseUp to focused render surface
-                if let Some(surface_id) = crate::render_surface::focused_surface_id() {
-                    if let Some(doc) = &self.doc {
-                        let surface_hit = {
-                            let d = doc.borrow();
-                            if let Some(hit_id) = hit_test(&d.tree, x, y) {
-                                Self::find_render_surface_at(&d.tree, hit_id, x, y)
-                            } else {
-                                None
-                            }
-                        };
-                        let (local_x, local_y) = surface_hit
-                            .filter(|(sid, _, _)| *sid == surface_id)
-                            .map(|(_, lx, ly)| (lx, ly))
-                            .unwrap_or((x, y));
-                        crate::render_surface::dispatch_surface_event(
-                            surface_id,
-                            crate::render_surface::SurfaceEvent::MouseUp {
-                                x: local_x,
-                                y: local_y,
-                                button: crate::render_surface::SurfaceMouseButton::from_platform(
-                                    mouse_button,
-                                ),
-                            },
-                        );
-                    }
-                }
-
-                // Drag-and-drop: complete or cancel
-                if let Some(pending) = self.pending_drag.take() {
-                    // Threshold never crossed — fire normal click
-                    let (px, py) = pending.mousedown_pos;
-                    let click_actions = self.handle_click(
-                        px,
-                        py,
-                        scale_factor,
-                        window_size.0 as f32 / scale_factor as f32,
-                        window_size.1 as f32 / scale_factor as f32,
-                    );
-                    actions.extend(click_actions);
-                } else if let Some(drag) = self.active_dnd.take() {
-                    // Fire ondrop on target if present
-                    if let Some(target_id) = drag.over_target {
-                        if let Some(doc) = &self.doc {
-                            Self::dispatch_drag_attr(doc, target_id, "data-ondrop");
-                        }
-                    }
-                    // Fire ondragend on dragged element
-                    if let Some(doc) = &self.doc {
-                        Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragend");
-                    }
-                    let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                    self.resolve_and_repaint(w, h);
-                }
-
-                rinch_core::finish_drag(x, y);
-                self.scrollbar_drag = None;
-
-                // Finalize CE selection at the mouse_up position.
-                // Without this, mouse_down → mouse_up (no intermediate mouse_move)
-                // would leave the cursor at the mouse_down position with no selection.
-                if self.ce_selecting {
-                    if let Some(ref mut ce) = self.focused_contenteditable {
-                        let ce_node_id = ce.ce_node_id;
-                        if let Some(doc) = &self.doc {
-                            let new_cursor = {
-                                let d = doc.borrow();
-                                Self::compute_dom_cursor_from_click(&d.tree, ce_node_id, x, y)
-                            };
-                            ce.cursor = new_cursor;
-                            let anchor = ce.anchor;
-                            self.set_contenteditable_attributes_dom(
-                                ce_node_id, true, new_cursor, anchor,
-                            );
-                            self.sync_ce_ops_cursor();
-                            self.scene_dirty = true;
-                        }
-                    }
-                }
-
-                self.ce_selecting = false;
-                self.text_selecting = false;
+                self.cursor_pos = Some((x, y));
+                actions.extend(self.handle_event(
+                    PlatformEvent::MouseUp {
+                        x,
+                        y,
+                        button: mouse_button,
+                    },
+                    window_size,
+                    scale_factor,
+                ));
                 actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
             }
             DebugCommandKind::MouseMove { x, y } => {
+                // Route through the real input path so MCP matches a real move
+                // (drag-select, hover, surface dispatch all live in `handle_event`).
                 self.cursor_pos = Some((x, y));
-                self.dispatch_mouse_attr(
-                    "data-onmousemove",
-                    x,
-                    y,
-                    events::MouseButton::Left,
-                    window_size.0 as f32 / scale_factor as f32,
-                    window_size.1 as f32 / scale_factor as f32,
-                );
-
-                // Drag-and-drop: pending → active transition
-                if let Some(ref pending) = self.pending_drag {
-                    let dx = x - pending.mousedown_pos.0;
-                    let dy = y - pending.mousedown_pos.1;
-                    let dist = (dx * dx + dy * dy).sqrt();
-                    if dist >= DRAG_THRESHOLD {
-                        let node_id = pending.node_id;
-                        let mousedown_pos = pending.mousedown_pos;
-                        self.pending_drag = None;
-
-                        self.activate_drag(node_id, mousedown_pos, (x, y), scale_factor);
-
-                        if let Some(doc) = &self.doc {
-                            Self::dispatch_drag_attr(doc, node_id, "data-ondragstart");
-                        }
-                        let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                        self.resolve_and_repaint(w, h);
-                        actions.push(AppAction::RequestRedraw);
-                        return DebugResult::Json { data: json!(null) };
-                    }
-                    return DebugResult::Json { data: json!(null) };
-                }
-
-                // Drag-and-drop: active drag tracking
-                if let Some(ref mut drag) = self.active_dnd {
-                    drag.cursor = (x, y);
-
-                    let new_target = if let Some(doc) = &self.doc {
-                        let d = doc.borrow();
-                        hit_test(&d.tree, x, y)
-                            .and_then(|hit_id| Self::find_drop_target(&d.tree, hit_id))
-                    } else {
-                        None
-                    };
-
-                    let old_target = drag.over_target;
-                    if new_target != old_target {
-                        drag.over_target = new_target;
-                        if let Some(doc) = &self.doc {
-                            if let Some(old_id) = old_target {
-                                Self::dispatch_drag_attr(doc, old_id, "data-ondragleave");
-                            }
-                            if let Some(new_id) = new_target {
-                                Self::dispatch_drag_attr(doc, new_id, "data-ondragenter");
-                            }
-                        }
-                    }
-
-                    // Fire ondragover on current drop target
-                    let current_target = drag.over_target;
-                    if let Some(target_id) = current_target {
-                        if let Some(doc) = &self.doc {
-                            Self::dispatch_drag_attr_with_context(
-                                doc,
-                                target_id,
-                                "data-ondragover",
-                                x,
-                                y,
-                            );
-                        }
-                    }
-
-                    self.scene_dirty = true;
-                    let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                    self.resolve_and_repaint(w, h);
-                    actions.push(AppAction::RequestRedraw);
-                    return DebugResult::Json { data: json!(null) };
-                }
-
-                // Handle component drag (sliders, floating panels, etc.)
-                let (drag_active, _drag_forward_surface) = rinch_core::update_drag(x, y);
-                if drag_active {
-                    let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                    self.resolve_and_repaint(w, h);
-                    actions.push(AppAction::RequestRedraw);
-                    return DebugResult::Json { data: json!(null) };
-                }
-
-                // Handle contenteditable text selection drag
-                if self.ce_selecting
-                    && let Some(ref mut ce) = self.focused_contenteditable
-                {
-                    let ce_node_id = ce.ce_node_id;
-                    if let Some(doc) = &self.doc {
-                        let new_cursor = {
-                            let d = doc.borrow();
-                            Self::compute_dom_cursor_from_click(&d.tree, ce_node_id, x, y)
-                        };
-                        ce.cursor = new_cursor;
-                        let anchor = ce.anchor;
-                        self.set_contenteditable_attributes_dom(
-                            ce_node_id, true, new_cursor, anchor,
-                        );
-                        self.scene_dirty = true;
-                        actions.push(AppAction::RequestRedraw);
-                        return DebugResult::Json { data: json!(null) };
-                    }
-                }
-
-                // Handle read-only text selection drag
-                if self.text_selecting {
-                    if let Some(sel) = &self.text_selection {
-                        let ifc_node_id = sel.ifc_node_id;
-                        let anchor = sel.anchor_offset;
-                        let new_offset = if let Some(doc) = &self.doc {
-                            let d = doc.borrow();
-                            Self::compute_ifc_offset_from_click(&d.tree, ifc_node_id, x, y)
-                        } else {
-                            anchor
-                        };
-                        if let Some(sel) = &mut self.text_selection {
-                            sel.focus_offset = new_offset;
-                        }
-                        self.set_text_selection_attributes(ifc_node_id, anchor, new_offset);
-                        self.scene_dirty = true;
-                        let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                        self.resolve_and_repaint(w, h);
-                        actions.push(AppAction::RequestRedraw);
-                        return DebugResult::Json { data: json!(null) };
-                    }
-                }
-
-                // Update hover state
-                if let Some(doc) = &self.doc {
-                    let (hovered, old_hovered) = {
-                        let d = doc.borrow();
-                        (hit_test(&d.tree, x, y), d.tree.hovered_node)
-                    };
-                    let mut hovered_changed = false;
-                    let needs_repaint =
-                        doc.borrow_mut().update_hover(hovered, &mut hovered_changed);
-                    if hovered_changed {
-                        if let Some(old_id) = old_hovered {
-                            Self::dispatch_onleave(doc, old_id);
-                        }
-                        if let Some(hit_id) = hovered {
-                            Self::dispatch_onenter(doc, hit_id);
-                        }
-                    }
-                    if needs_repaint {
-                        actions.push(AppAction::RequestRedraw);
-                    }
-
-                    // Dispatch MouseMove to render surface under cursor
-                    if let Some(hit_id) = hovered {
-                        let surface_hit = {
-                            let d = doc.borrow();
-                            Self::find_render_surface_at(&d.tree, hit_id, x, y)
-                        };
-                        if let Some((surface_id, local_x, local_y)) = surface_hit {
-                            crate::render_surface::dispatch_surface_event(
-                                surface_id,
-                                crate::render_surface::SurfaceEvent::MouseMove {
-                                    x: local_x,
-                                    y: local_y,
-                                },
-                            );
-                        }
-                    }
-                }
+                actions.extend(self.handle_event(
+                    PlatformEvent::MouseMove { x, y },
+                    window_size,
+                    scale_factor,
+                ));
+                actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
             }
             DebugCommandKind::Scroll {
@@ -586,47 +323,25 @@ impl RinchApp {
                 DebugResult::Json { data: json!(null) }
             }
             DebugCommandKind::TypeText { text } => {
+                // Synthesize a real KeyDown per character and route through
+                // `handle_event`, so MCP `type_text` drives the exact same path as
+                // physical keystrokes.
                 for ch in text.chars() {
-                    let key = match ch {
-                        ' ' => "Space".to_string(),
-                        '\n' => "Enter".to_string(),
-                        '\t' => "Tab".to_string(),
-                        c => c.to_string(),
+                    let (key, txt) = match ch {
+                        '\n' => (KeyCode::Enter, None),
+                        '\t' => (KeyCode::Tab, None),
+                        '\x08' => (KeyCode::Backspace, None),
+                        c => (char_to_keycode(c), Some(c.to_string())),
                     };
-                    let key_data = events::KeyEventData {
-                        key: key.clone(),
-                        code: key,
-                        ctrl: false,
-                        shift: false,
-                        alt: false,
-                        meta: false,
-                    };
-                    let handled = events::dispatch_keyboard_event(&key_data);
-                    if !handled {
-                        if self.focused_contenteditable.is_some() {
-                            // Route to contenteditable handler
-                            let key_code = match ch {
-                                '\n' => KeyCode::Enter,
-                                '\t' => KeyCode::Tab,
-                                '\x08' => KeyCode::Backspace,
-                                _ => KeyCode::Space, // Use Space as a safe unmapped key
-                            };
-                            let text_str = ch.to_string();
-                            if self.handle_contenteditable_key(
-                                key_code,
-                                Some(&text_str),
-                                false,
-                                false,
-                                false,
-                            ) {
-                                let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                                self.resolve_and_repaint(w, h);
-                            }
-                        } else {
-                            // Fallback to handle_text_input for non-intercepted chars
-                            self.handle_text_input(&ch.to_string());
-                        }
-                    }
+                    actions.extend(self.handle_event(
+                        PlatformEvent::KeyDown {
+                            key,
+                            text: txt,
+                            modifiers: rinch_platform::Modifiers::default(),
+                        },
+                        window_size,
+                        scale_factor,
+                    ));
                 }
                 actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
@@ -664,130 +379,29 @@ impl RinchApp {
                 ctrl,
                 alt,
             } => {
-                // Escape cancels active drag-and-drop
-                if key == "Escape" {
-                    if let Some(drag) = self.active_dnd.take() {
-                        if let Some(doc) = &self.doc {
-                            if let Some(target_id) = drag.over_target {
-                                Self::dispatch_drag_attr(doc, target_id, "data-ondragleave");
-                            }
-                            Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragend");
-                        }
-                        rinch_core::Drag::cancel();
-                        self.scene_dirty = true;
-                        let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                        self.resolve_and_repaint(w, h);
-                        actions.push(AppAction::RequestRedraw);
-                        return DebugResult::Json { data: json!(null) };
-                    }
-                    if self.pending_drag.take().is_some() {
-                        actions.push(AppAction::RequestRedraw);
-                        return DebugResult::Json { data: json!(null) };
-                    }
-                }
-
-                // F12: toggle devtools
-                if key == "F12" {
-                    actions.push(AppAction::ToggleDevTools);
-                    actions.push(AppAction::RequestRedraw);
-                    return DebugResult::Json { data: json!(null) };
-                }
-
-                // Alt+I: toggle inspect mode
-                if (key == "i" || key == "I") && alt && !ctrl && !shift {
-                    actions.push(AppAction::ToggleInspectMode);
-                    actions.push(AppAction::RequestRedraw);
-                    return DebugResult::Json { data: json!(null) };
-                }
-
-                let key_data = events::KeyEventData {
-                    key: key.clone(),
-                    code: key.clone(),
-                    ctrl,
-                    shift,
-                    alt,
-                    meta: false,
+                // Synthesize a real KeyDown and route through `handle_event` (which
+                // owns Escape/F12/inspect/editor/CE handling) so MCP `key_press`
+                // matches a physical keystroke.
+                let key_code = keyname_to_keycode(&key);
+                let text = match key.as_str() {
+                    "Enter" => Some("\n".to_string()),
+                    k if k.chars().count() == 1 => Some(k.to_string()),
+                    _ => None,
                 };
-                let handled = events::dispatch_keyboard_event(&key_data);
-
-                if handled {
-                    actions.push(AppAction::RequestRedraw);
-                }
-
-                if !handled {
-                    if self.focused_contenteditable.is_some() {
-                        // Route to contenteditable handler
-                        let key_code = match key.as_str() {
-                            "ArrowUp" => KeyCode::ArrowUp,
-                            "ArrowDown" => KeyCode::ArrowDown,
-                            "ArrowLeft" => KeyCode::ArrowLeft,
-                            "ArrowRight" => KeyCode::ArrowRight,
-                            "Home" => KeyCode::Home,
-                            "End" => KeyCode::End,
-                            "Enter" => KeyCode::Enter,
-                            "Backspace" => KeyCode::Backspace,
-                            "Delete" => KeyCode::Delete,
-                            "Tab" => KeyCode::Tab,
-                            "Escape" => KeyCode::Escape,
-                            // Map single letter keys to their KeyCode variants
-                            "a" | "A" => KeyCode::KeyA,
-                            "b" | "B" => KeyCode::KeyB,
-                            "c" | "C" => KeyCode::KeyC,
-                            "d" | "D" => KeyCode::KeyD,
-                            "e" | "E" => KeyCode::KeyE,
-                            "f" | "F" => KeyCode::KeyF,
-                            "g" | "G" => KeyCode::KeyG,
-                            "h" | "H" => KeyCode::KeyH,
-                            "i" | "I" => KeyCode::KeyI,
-                            "j" | "J" => KeyCode::KeyJ,
-                            "k" | "K" => KeyCode::KeyK,
-                            "l" | "L" => KeyCode::KeyL,
-                            "m" | "M" => KeyCode::KeyM,
-                            "n" | "N" => KeyCode::KeyN,
-                            "o" | "O" => KeyCode::KeyO,
-                            "p" | "P" => KeyCode::KeyP,
-                            "q" | "Q" => KeyCode::KeyQ,
-                            "r" | "R" => KeyCode::KeyR,
-                            "s" | "S" => KeyCode::KeyS,
-                            "t" | "T" => KeyCode::KeyT,
-                            "u" | "U" => KeyCode::KeyU,
-                            "v" | "V" => KeyCode::KeyV,
-                            "w" | "W" => KeyCode::KeyW,
-                            "x" | "X" => KeyCode::KeyX,
-                            "y" | "Y" => KeyCode::KeyY,
-                            "z" | "Z" => KeyCode::KeyZ,
-                            _ => KeyCode::Space, // Safe fallback for other keys
-                        };
-                        let text = match key.as_str() {
-                            "Enter" => Some("\n".to_string()),
-                            k if k.len() == 1 => Some(k.to_string()),
-                            _ => None,
-                        };
-                        if self.handle_contenteditable_key(
-                            key_code,
-                            text.as_deref(),
+                actions.extend(self.handle_event(
+                    PlatformEvent::KeyDown {
+                        key: key_code,
+                        text,
+                        modifiers: rinch_platform::Modifiers {
                             shift,
                             ctrl,
                             alt,
-                        ) {
-                            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                            self.resolve_and_repaint(w, h);
-                        }
-                    } else {
-                        match key.as_str() {
-                            "ArrowUp" => self.handle_arrow_up(shift),
-                            "ArrowDown" => self.handle_arrow_down(shift),
-                            "ArrowLeft" => self.handle_arrow_left(shift, ctrl),
-                            "ArrowRight" => self.handle_arrow_right(shift, ctrl),
-                            "Home" => self.handle_home(shift),
-                            "End" => self.handle_end(shift),
-                            "Enter" => self.handle_enter(),
-                            "Backspace" => self.handle_backspace(),
-                            "Delete" => self.handle_delete(),
-                            _ => {}
-                        }
-                    }
-                }
+                            meta: false,
+                        },
+                    },
+                    window_size,
+                    scale_factor,
+                ));
                 actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
             }

@@ -1737,10 +1737,36 @@ impl ApplicationHandler for RinchRuntime {
                 }
             }
         }
+
+        // Drive the focused editor's caret blink. This is the only thing that
+        // arms a timed wake (`WaitUntil`); when nothing is blinking it returns the
+        // loop to `Wait` so the app stays idle.
+        #[cfg(feature = "new-editor")]
+        self.tick_caret_blink(event_loop);
     }
 }
 
 impl RinchRuntime {
+    /// Blink the focused editor's caret by arming a `WaitUntil` wake for the next
+    /// phase toggle (see [`crate::editor::caret_blink_tick`]). Owns the event
+    /// loop's control flow: `WaitUntil` while a caret blinks, `Wait` otherwise.
+    #[cfg(feature = "new-editor")]
+    fn tick_caret_blink(&mut self, event_loop: &dyn ActiveEventLoop) {
+        let focused = self.app.focused_editor_id();
+        match crate::editor::caret_blink_tick(focused) {
+            Some(blink) => {
+                if blink.redraw
+                    && let Some(w) = &self.window
+                {
+                    w.request_redraw();
+                }
+                event_loop.set_control_flow(ControlFlow::WaitUntil(
+                    std::time::Instant::now() + blink.next,
+                ));
+            }
+            None => event_loop.set_control_flow(ControlFlow::Wait),
+        }
+    }
     /// Handle a single native event from the queue.
     fn handle_native_event(&mut self, event: RinchNativeEvent, event_loop: &dyn ActiveEventLoop) {
         let platform_event = match event {

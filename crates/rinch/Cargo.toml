@@ -46,10 +46,17 @@ rinch-theme = { workspace = true, optional = true }
 rinch-components = { workspace = true, optional = true }
 rinch-debug = { path = "../rinch-debug", optional = true }
 rinch-editor = { workspace = true }
+# New ProseMirror-style editor core (M5+). Optional, behind `new-editor`, so `main`
+# stays green while the old CE engine is still live; the rip/flip lands in M8.
+rinch-editor-core = { workspace = true, optional = true }
 rinch-video = { workspace = true, optional = true }
 ureq = { version = "3", optional = true }
 memory-stats = { version = "1.2", optional = true }
 softbuffer = { git = "https://github.com/rust-windowing/softbuffer", rev = "672d180", optional = true }
+
+[dev-dependencies]
+# Test-only: the headless DomDocument double, used by the new editor view's tests.
+rinch-core = { workspace = true, features = ["test-util"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", optional = true }
@@ -116,6 +123,10 @@ debug = ["dep:rinch-debug"]
 video = ["dep:rinch-video"]
 image-network = ["dep:ureq"]
 collaboration = ["rinch-editor/collaboration"]
+# The new desktop rich-text editor view (M5). Behind a feature so `main` stays
+# green; needs the desktop renderer. Flipped to default and the old engine ripped
+# in M8.
+new-editor = ["desktop", "dep:rinch-editor-core"]
 # Derive serde on the CE interchange types (BlockData / InlineRunData /
 # InlineMarkData) for persisting contenteditable content.
 serde = ["rinch-core/serde"]

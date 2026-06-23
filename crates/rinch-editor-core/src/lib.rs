@@ -11,20 +11,63 @@
 //! `rinch-editor-collab`.
 //!
 //! See `docs/design/editor-rearchitecture.md` for the full design and the
-//! milestone plan. This is **M0**: the crate scaffold plus the schema, lifted
-//! from the old `rinch-editor` crate (dyn `Node`/`Mark` traits and the
-//! Automerge error variant dropped). The concrete `Node`/`Mark`/`Fragment`/
-//! `Slice` value model, `Pos`, the `Step`/`Transaction` engine, and typed
-//! attrs (`AttrValue`) arrive in M1+.
+//! milestone plan. Implemented through **M4**: the schema (M0), the value model +
+//! positions + `ContentMatch` (M1), the transform/`Step` engine (M2), total
+//! schema-driven serialization — the durable `DocNode` JSON wire shape, HTML, and
+//! markdown (M3) — and the state layer: [`EditorState`]/[`Transaction`],
+//! [`Selection`], [`Plugin`]s, the [`Command`] catalogue, the [`keymap`], input
+//! rules, and the Step-based undo/redo [`plugins::HistoryPlugin`] (M4). The
+//! platform view seams (M5+) follow.
 
+use std::rc::Rc;
+
+pub mod command;
+pub mod commands;
+pub mod decoration;
 pub mod error;
+pub mod input_rules;
+pub mod keymap;
 pub mod model;
+pub mod plugin;
+pub mod plugins;
 pub mod pos;
 pub mod schema;
+pub mod selection;
+pub mod serialize;
+pub mod state;
+pub mod transform;
+pub mod view;
 
+pub use command::{Command, Dispatch, chain};
+pub use commands::BaseCommandsPlugin;
+pub use decoration::{Decoration, DecorationSet, Widget};
 pub use error::EditorError;
+pub use input_rules::{InputRule, apply_input_rules};
+pub use keymap::{Key, KeyBinding, Keymap, Modifiers};
 pub use model::{AttrValue, Attrs, Fragment, Mark, MarkType, Node, NodeType, Slice};
+pub use plugin::{Plugin, PluginKey};
+pub use plugins::{HistoryPlugin, MarkdownInputRulesPlugin, PlaceholderPlugin};
 pub use pos::{Pos, ResolvedPos};
 pub use schema::{
     AttrSpec, MarkSet, MarkSpec, MarkSpecBuilder, NodeSpec, NodeSpecBuilder, Schema, SchemaBuilder,
 };
+pub use selection::{NodeSelection, Selection, TextSelection};
+pub use state::{EditorState, Transaction};
+pub use transform::{
+    AddMarkStep, MapResult, Mapping, NodeRange, RemoveMarkStep, ReplaceAroundStep, ReplaceStep,
+    SetDocAttrStep, SetNodeAttrStep, Step, StepError, StepMap, Transform, block_range,
+    block_range_simple,
+};
+pub use view::{EditorView, ViewRequest};
+
+/// The default plugin set for a standard rich-text editor: the built-in command
+/// catalogue + keymap ([`BaseCommandsPlugin`]), markdown input rules
+/// ([`MarkdownInputRulesPlugin`]), and Step-based undo/redo ([`HistoryPlugin`]).
+/// Pass to [`EditorState::create`].
+pub fn default_plugins() -> Vec<Rc<dyn Plugin>> {
+    vec![
+        Rc::new(BaseCommandsPlugin),
+        Rc::new(MarkdownInputRulesPlugin),
+        Rc::new(HistoryPlugin::new()),
+    ]
+}

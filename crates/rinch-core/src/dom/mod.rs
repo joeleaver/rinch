@@ -69,8 +69,10 @@
 //! }
 //! ```
 
-#[cfg(test)]
-mod mock;
+/// A headless [`DomDocument`](traits::DomDocument) implementation for tests.
+/// Available to downstream test code via the `test-util` feature.
+#[cfg(any(test, feature = "test-util"))]
+pub mod mock;
 mod render_scope;
 pub mod traits;
 
