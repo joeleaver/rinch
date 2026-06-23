@@ -1,7 +1,7 @@
 //! Mark types and specifications.
 
 use super::node::AttrSpec;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 // NOTE: the old dyn `Mark` trait was dropped in the rearchitecture (M0). The
 // concrete `Mark` value type lives in `crate::model` (M1); the schema only deals
@@ -14,7 +14,7 @@ pub struct MarkSpec {
     pub name: String,
 
     /// Mark attributes
-    pub attrs: HashMap<String, AttrSpec>,
+    pub attrs: BTreeMap<String, AttrSpec>,
 
     /// Whether this mark spans across nodes
     pub spanning: bool,
@@ -34,7 +34,7 @@ impl MarkSpec {
     pub fn simple(name: &str) -> Self {
         Self {
             name: name.to_string(),
-            attrs: HashMap::new(),
+            attrs: BTreeMap::new(),
             spanning: true,
             excludes: None,
             parse_html_tags: Vec::new(),
@@ -42,7 +42,7 @@ impl MarkSpec {
     }
 
     /// Create a mark with attributes.
-    pub fn with_attrs(name: &str, attrs: HashMap<String, AttrSpec>) -> Self {
+    pub fn with_attrs(name: &str, attrs: BTreeMap<String, AttrSpec>) -> Self {
         Self {
             name: name.to_string(),
             attrs,
@@ -126,7 +126,7 @@ mod tests {
 
     #[test]
     fn with_attrs_constructor() {
-        let mut attrs = HashMap::new();
+        let mut attrs = BTreeMap::new();
         attrs.insert("href".to_string(), AttrSpec::required());
         attrs.insert("title".to_string(), AttrSpec::optional(""));
         let spec = MarkSpec::with_attrs("link", attrs);

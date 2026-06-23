@@ -52,7 +52,8 @@ impl RinchApp {
             };
 
             if let Some((surface_id, local_x, local_y)) = surface_hit {
-                // Dispatch MouseDown to the surface
+                // Dispatch MouseDown to the surface (every click, regardless of
+                // whether focus changes).
                 crate::render_surface::dispatch_surface_event(
                     surface_id,
                     crate::render_surface::SurfaceEvent::MouseDown {
@@ -62,67 +63,24 @@ impl RinchApp {
                     },
                 );
 
-                // Focus the surface
-                let prev_focused = crate::render_surface::focused_surface_id();
-                if prev_focused != Some(surface_id) {
-                    // Dispatch FocusLost to the previous surface
-                    if let Some(prev_id) = prev_focused {
-                        crate::render_surface::dispatch_surface_event(
-                            prev_id,
-                            crate::render_surface::SurfaceEvent::FocusLost,
-                        );
-                    }
+                // Take keyboard focus through the arbiter: it tears down whatever
+                // was focused before (input / CE / editor / a prior surface), then
+                // we register this surface. `set_focused_surface` dispatches
+                // `FocusGained` (and `FocusLost` to any prior surface) — surfaces
+                // are routed by `FocusTarget::Surface` now, not the old keyboard
+                // interceptor hijack.
+                if self.set_focus_target(FocusTarget::Surface(surface_id)) {
                     crate::render_surface::set_focused_surface(Some(surface_id));
-                    crate::render_surface::dispatch_surface_event(
-                        surface_id,
-                        crate::render_surface::SurfaceEvent::FocusGained,
-                    );
-
-                    // Install keyboard interceptor that forwards all keys to the surface
-                    let sid = surface_id;
-                    events::set_keyboard_interceptor(move |key_data| {
-                        crate::render_surface::dispatch_surface_event(
-                            sid,
-                            crate::render_surface::SurfaceEvent::KeyDown(
-                                crate::render_surface::SurfaceKeyData {
-                                    key: key_data.key.clone(),
-                                    code: key_data.code.clone(),
-                                    ctrl: key_data.ctrl,
-                                    shift: key_data.shift,
-                                    alt: key_data.alt,
-                                    meta: key_data.meta,
-                                },
-                            ),
-                        );
-                        true // consume all keys
-                    });
-                }
-
-                // Clear any existing input/CE focus
-                self.clear_input_focus_attrs();
-                self.focused_input_handler_id = None;
-                self.focused_input_value.clear();
-                self.focused_input_state = None;
-                self.focused_input_node_id = None;
-                if let Some(prev_ce) = self.focused_contenteditable.take() {
-                    ce::clear_active_ce_api();
-                    self.ce_ops = None;
-                    self.set_contenteditable_attributes(prev_ce.ce_node_id, false, 0, 0);
                 }
 
                 actions.push(AppAction::RequestRedraw);
                 return actions;
             }
 
-            // If clicking outside a focused render surface, unfocus it
-            if crate::render_surface::focused_surface_id().is_some() {
-                let prev_id = crate::render_surface::focused_surface_id().unwrap();
-                crate::render_surface::dispatch_surface_event(
-                    prev_id,
-                    crate::render_surface::SurfaceEvent::FocusLost,
-                );
-                crate::render_surface::set_focused_surface(None);
-                events::clear_keyboard_interceptor();
+            // Clicking outside any surface drops surface focus (the arbiter's
+            // teardown dispatches FocusLost). Other targets are taken below.
+            if matches!(self.focus_target, FocusTarget::Surface(_)) {
+                self.set_focus_target(FocusTarget::None);
             }
         }
 
@@ -134,7 +92,6 @@ impl RinchApp {
             Focus {
                 ce_node_id: usize,
                 dom_cursor: DomCursor,
-                prev_node_id: Option<usize>,
             },
             /// We did NOT hit contenteditable — clear previous if any.
             Clear { prev_node_id: Option<usize> },
@@ -173,7 +130,6 @@ impl RinchApp {
                     CeAction::Focus {
                         ce_node_id,
                         dom_cursor,
-                        prev_node_id,
                     }
                 } else {
                     // Check if the click target has a data-rid handler — if so,
@@ -210,7 +166,6 @@ impl RinchApp {
             CeAction::Focus {
                 ce_node_id,
                 mut dom_cursor,
-                prev_node_id,
             } => {
                 let input_handler = InputHandler::new()
                     .with_multiline(true)
@@ -254,6 +209,11 @@ impl RinchApp {
                     _ => {} // Single click: cursor already set
                 }
 
+                // Take focus through the arbiter: tears down a prior input /
+                // surface / editor / different CE (re-clicking the same CE is a
+                // no-op teardown, so its state survives — we just move the cursor).
+                self.set_focus_target(FocusTarget::ContentEditable(ce_node_id));
+
                 self.focused_contenteditable = Some(ContentEditableFocus {
                     ce_node_id,
                     cursor: dom_cursor,
@@ -265,32 +225,29 @@ impl RinchApp {
                 // Start mouse-drag selection tracking
                 self.ce_selecting = true;
 
-                // Clear regular input focus
-                self.clear_input_focus_attrs();
-                self.focused_input_handler_id = None;
-                self.focused_input_value.clear();
-                self.focused_input_state = None;
-                self.focused_input_node_id = None;
-
-                // Clear previous contenteditable focus attributes
-                if let Some(prev_id) = prev_node_id
-                    && prev_id != ce_node_id
-                {
-                    self.set_contenteditable_attributes(prev_id, false, 0, 0);
-                }
-                // Set cursor/selection attributes on the new focused node
+                // Set cursor/selection attributes on the focused node.
                 self.set_contenteditable_attributes_dom(ce_node_id, true, dom_cursor, anchor);
                 self.scene_dirty = true;
                 actions.push(AppAction::RequestRedraw);
                 return actions;
             }
             CeAction::Clear { prev_node_id } => {
-                if let Some(prev_id) = prev_node_id {
-                    self.focused_contenteditable = None;
-                    ce::clear_active_ce_api();
-                    self.ce_ops = None;
-                    self.set_contenteditable_attributes(prev_id, false, 0, 0);
-                    self.scene_dirty = true;
+                // Clicked a non-editable, non-toolbar (no `data-rid`) target: blur
+                // any focused rich-text editor. Toolbar clicks take the
+                // `PreserveCe` path and keep focus (the "click Bold, keep typing"
+                // case — audit S2).
+                if prev_node_id.is_some() {
+                    self.set_focus_target(FocusTarget::None);
+                }
+                // A click on the focused editor's OWN chrome (padding / empty area)
+                // is not a blur — only blur when the click landed outside its
+                // container. (Left clicks inside the editor never reach here: they
+                // short-circuit in `try_new_editor_click`. This covers right-click.)
+                #[cfg(feature = "new-editor")]
+                if let FocusTarget::Editor(focused) = self.focus_target
+                    && self.editor_container_at(x, y) != Some(focused)
+                {
+                    self.set_focus_target(FocusTarget::None);
                 }
             }
             CeAction::PreserveCe => {
@@ -387,10 +344,10 @@ impl RinchApp {
         drop(d);
 
         if let Some((nid, handler_id, value)) = found_input_focus {
-            // Clear previous input focus attrs if switching to a different input
-            if self.focused_input_node_id.is_some() && self.focused_input_node_id != Some(nid) {
-                self.clear_input_focus_attrs();
-            }
+            // Take input focus through the arbiter: tears down a prior surface /
+            // CE / editor / different input (re-clicking the same input is a no-op
+            // teardown, so we just move its cursor below).
+            self.set_focus_target(FocusTarget::Input(nid));
             self.focused_input_handler_id = Some(handler_id);
             self.focused_input_value = value.clone();
             self.focused_input_node_id = Some(nid);
@@ -402,16 +359,15 @@ impl RinchApp {
             self.focused_input_state = Some(state);
             self.sync_input_cursor_to_dom();
             self.scene_dirty = true;
-        } else {
-            // Clicked outside any input — clear focus
-            if self.focused_input_node_id.is_some() {
-                self.clear_input_focus_attrs();
-                self.scene_dirty = true;
-            }
-            self.focused_input_handler_id = None;
-            self.focused_input_value.clear();
-            self.focused_input_state = None;
-            self.focused_input_node_id = None;
+        } else if matches!(
+            self.focus_target,
+            FocusTarget::Input(_) | FocusTarget::Surface(_)
+        ) {
+            // Clicked a non-input target: drop input/surface focus. CE/editor focus
+            // is preserved here so their toolbar buttons (data-rid, dispatched
+            // below) keep working; an empty/non-toolbar click already blurred them
+            // via `CeAction::Clear`.
+            self.set_focus_target(FocusTarget::None);
         }
 
         // Re-borrow for the data-rid walk

@@ -1,6 +1,7 @@
 //! Node types and specifications.
 
-use std::collections::HashMap;
+use crate::model::AttrValue;
+use std::collections::BTreeMap;
 
 // NOTE: the old dyn `Node` trait was dropped in the rearchitecture (M0). The
 // concrete `Node` value type lives in `crate::model` (M1); the schema only deals
@@ -39,7 +40,7 @@ pub struct NodeSpec {
     pub isolating: bool,
 
     /// Node attributes with their defaults
-    pub attrs: HashMap<String, AttrSpec>,
+    pub attrs: BTreeMap<String, AttrSpec>,
 
     /// HTML tags to parse as this node (e.g., ["p"], ["h1", "h2", "h3"...])
     pub parse_html_tags: Vec<String>,
@@ -63,7 +64,7 @@ impl NodeSpec {
             selectable: true,
             draggable: false,
             isolating: false,
-            attrs: HashMap::new(),
+            attrs: BTreeMap::new(),
             parse_html_tags: Vec::new(),
         }
     }
@@ -80,7 +81,7 @@ impl NodeSpec {
             selectable: false,
             draggable: false,
             isolating: false,
-            attrs: HashMap::new(),
+            attrs: BTreeMap::new(),
             parse_html_tags: Vec::new(),
         }
     }
@@ -97,7 +98,7 @@ impl NodeSpec {
             selectable: true,
             draggable: false,
             isolating: false,
-            attrs: HashMap::new(),
+            attrs: BTreeMap::new(),
             parse_html_tags: Vec::new(),
         }
     }
@@ -133,20 +134,26 @@ impl MarkSet {
     }
 }
 
-/// Attribute specification with optional default value.
-#[derive(Debug, Clone)]
+/// Attribute specification with an optional, **typed** default value.
+///
+/// The default is an [`AttrValue`] (not a string) so that `heading.level`
+/// defaults to `Int(1)` and `task_item.checked` to `Bool(false)` — the typed
+/// model the document tree carries (amendment A11). `default == None` marks a
+/// required attribute (no default; absence is a schema-validation error at the
+/// serialization / Step boundary via [`NodeType::compute_attrs`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttrSpec {
     /// Default value (None = required attribute)
-    pub default: Option<String>,
+    pub default: Option<AttrValue>,
     /// Whether this attribute is required
     pub required: bool,
 }
 
 impl AttrSpec {
-    /// Create an optional attribute with a default value.
-    pub fn optional(default: &str) -> Self {
+    /// Create an optional attribute with a typed default value.
+    pub fn optional(default: impl Into<AttrValue>) -> Self {
         Self {
-            default: Some(default.to_string()),
+            default: Some(default.into()),
             required: false,
         }
     }
@@ -180,7 +187,7 @@ impl NodeSpecBuilder {
                 selectable: true,
                 draggable: false,
                 isolating: false,
-                attrs: HashMap::new(),
+                attrs: BTreeMap::new(),
                 parse_html_tags: Vec::new(),
             },
         }
@@ -298,7 +305,7 @@ mod tests {
         let spec = NodeSpec::builder("heading")
             .content("inline*")
             .group("block")
-            .attr("level", AttrSpec::optional("1"))
+            .attr("level", AttrSpec::optional(AttrValue::Int(1)))
             .parse_html(vec!["h1".into(), "h2".into()])
             .build();
 
@@ -306,7 +313,7 @@ mod tests {
         assert_eq!(spec.content, Some("inline*".to_string()));
         assert_eq!(spec.group, Some("block".to_string()));
         assert!(spec.attrs.contains_key("level"));
-        assert_eq!(spec.attrs["level"].default, Some("1".to_string()));
+        assert_eq!(spec.attrs["level"].default, Some(AttrValue::Int(1)));
         assert_eq!(spec.parse_html_tags.len(), 2);
     }
 
@@ -339,9 +346,12 @@ mod tests {
 
     #[test]
     fn attrspec_optional_has_default() {
-        let attr = AttrSpec::optional("1");
-        assert_eq!(attr.default, Some("1".to_string()));
+        let attr = AttrSpec::optional(AttrValue::Int(1));
+        assert_eq!(attr.default, Some(AttrValue::Int(1)));
         assert!(!attr.required);
+        // string defaults still work via the `Into<AttrValue>` bound
+        let s = AttrSpec::optional("");
+        assert_eq!(s.default, Some(AttrValue::Str("".into())));
     }
 
     #[test]

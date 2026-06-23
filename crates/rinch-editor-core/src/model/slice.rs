@@ -9,7 +9,7 @@
 //! The transform engine (M2) uses `Slice` as the payload of `ReplaceStep`; copy
 //! and paste (M6) serialize to/from it.
 
-use crate::model::Fragment;
+use crate::model::{Fragment, Node};
 
 /// A slice of document content with open boundary depths.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,6 +64,74 @@ impl Slice {
     pub fn is_empty(&self) -> bool {
         self.content.is_empty()
     }
+
+    /// Insert `fragment` into this slice's content at the (content) offset `pos`,
+    /// descending into open nodes as needed. Returns `None` if it cannot fit.
+    /// Used by `ReplaceAroundStep` to drop the preserved gap content into the
+    /// wrapping slice. Port of `Slice.insertAt`.
+    pub fn insert_at(&self, pos: usize, fragment: &Fragment) -> Option<Slice> {
+        let content = insert_into(&self.content, pos + self.open_start, fragment)?;
+        Some(Slice::new(content, self.open_start, self.open_end))
+    }
+
+    /// Remove the (content) range `from..to` from this slice's content, descending
+    /// into open nodes. The range must be flat (not cross a node boundary at an
+    /// unequal depth). Used by `ReplaceAroundStep::invert`. Port of
+    /// `Slice.removeBetween`.
+    pub fn remove_between(&self, from: usize, to: usize) -> Slice {
+        Slice::new(
+            remove_range(&self.content, from + self.open_start, to + self.open_start),
+            self.open_start,
+            self.open_end,
+        )
+    }
+}
+
+/// Recursive helper for [`Slice::insert_at`]. Port of `insertInto` (the `parent`
+/// argument is always absent in this call chain, so the `canReplace` check PM
+/// guards with it is a no-op and omitted; schema validity is enforced later by the
+/// replace's `close`).
+fn insert_into(content: &Fragment, dist: usize, insert: &Fragment) -> Option<Fragment> {
+    let (index, offset) = content.find_index(dist);
+    let child = content.maybe_child(index);
+    if offset == dist || child.is_some_and(Node::is_text) {
+        Some(
+            content
+                .cut(0, dist)
+                .append(insert)
+                .append(&content.cut(dist, content.size())),
+        )
+    } else {
+        let child = child?;
+        let inner = insert_into(child.content(), dist - offset - 1, insert)?;
+        Some(content.replace_child(index, child.copy_with_content(inner)))
+    }
+}
+
+/// Recursive helper for [`Slice::remove_between`]. Port of `removeRange`.
+fn remove_range(content: &Fragment, from: usize, to: usize) -> Fragment {
+    let (index, offset) = content.find_index(from);
+    let child = content.maybe_child(index);
+    let (index_to, offset_to) = content.find_index(to);
+    if offset == from || child.is_some_and(Node::is_text) {
+        debug_assert!(
+            offset_to == to || content.child(index_to).is_text(),
+            "remove_range: non-flat range"
+        );
+        return content
+            .cut(0, from)
+            .append(&content.cut(to, content.size()));
+    }
+    debug_assert!(index == index_to, "remove_range: non-flat range");
+    let child = content.child(index);
+    content.replace_child(
+        index,
+        child.copy_with_content(remove_range(
+            child.content(),
+            from - offset - 1,
+            to - offset - 1,
+        )),
+    )
 }
 
 impl Default for Slice {

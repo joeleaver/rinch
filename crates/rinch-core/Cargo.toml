@@ -11,6 +11,10 @@ theme = []
 # Derive serde on the contenteditable interchange types (BlockData /
 # InlineRunData / InlineMarkData) so downstream apps can persist CE content.
 serde = ["dep:serde"]
+# Expose `dom::mock::MockDomDocument`, a headless `DomDocument` test double, to
+# downstream crates' tests (e.g. the new editor view in `rinch`). Test-only —
+# enabled via dev-dependencies, never in a production build.
+test-util = []
 
 [dependencies]
 thiserror.workspace = true

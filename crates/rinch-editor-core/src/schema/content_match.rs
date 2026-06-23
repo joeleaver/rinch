@@ -102,6 +102,15 @@ impl ContentMatch {
         ContentMatch { parts }
     }
 
+    /// Do this and `other` accept at least one node type in common? The replace
+    /// algorithm uses this to decide whether two nodes' contents may be joined.
+    /// Port (over the part list) of `ContentMatch.compatible`.
+    pub fn compatible(&self, other: &ContentMatch) -> bool {
+        self.parts
+            .iter()
+            .any(|p| other.parts.iter().any(|q| !p.types.is_disjoint(&q.types)))
+    }
+
     /// Does any part of this expression accept a child of type `name`?
     ///
     /// This answers "can node type X ever appear as a child here" — the basis for

@@ -957,6 +957,23 @@ impl DomDocument for RinchDocument {
         caret_position_for_offset(self, node_id, byte_offset)
     }
 
+    fn query_selection_rects(
+        &self,
+        node_id: u64,
+        byte_a: usize,
+        byte_b: usize,
+    ) -> Vec<(f32, f32, f32, f32)> {
+        let Some(node) = self.tree.nodes.get(node_id as usize) else {
+            return Vec::new();
+        };
+        let layout = match (&node.text_layout, &node.cached_text_parley) {
+            (Some(inline), _) => &inline.layout,
+            (None, Some(layout)) => layout,
+            (None, None) => return Vec::new(),
+        };
+        crate::text_query::selection_rects_for_layout(layout, byte_a, byte_b)
+    }
+
     fn query_glyph_bounds(
         &self,
         node_id: u64,

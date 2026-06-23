@@ -8,7 +8,7 @@
 //! within it, and the positions before/after/inside any ancestor.
 
 use crate::EditorError;
-use crate::model::Node;
+use crate::model::{Mark, Node};
 use crate::pos::Pos;
 
 /// One level of the resolved path.
@@ -107,6 +107,18 @@ impl ResolvedPos {
         self.path[depth].index
     }
 
+    /// The child index *after* the position within the node at `depth`. Equal to
+    /// [`Self::index`] except at the deepest level when the position sits inside a
+    /// text node (then it is the next index). Port of `ResolvedPos.indexAfter`.
+    pub fn index_after(&self, depth: usize) -> usize {
+        self.index(depth)
+            + if depth == self.depth && self.text_offset() == 0 {
+                0
+            } else {
+                1
+            }
+    }
+
     /// The offset of the position within its immediate parent's content (within a
     /// text node, the char offset).
     pub fn parent_offset(&self) -> usize {
@@ -140,6 +152,87 @@ impl ResolvedPos {
     /// The document position directly after the node at `depth`. `None` at depth 0.
     pub fn after(&self, depth: usize) -> Option<usize> {
         self.before(depth).map(|b| b + self.node(depth).node_size())
+    }
+
+    /// The offset of the position within the deepest child boundary — i.e. the
+    /// char offset into the text node the position sits in, or `0` at a non-text
+    /// boundary. Port of `ResolvedPos.textOffset`.
+    pub fn text_offset(&self) -> usize {
+        self.pos.0 - self.path[self.depth].before
+    }
+
+    /// The node directly after the position within its parent, cut at the position
+    /// if it falls inside a text node; `None` at the parent's end. Port of
+    /// `ResolvedPos.nodeAfter`.
+    pub fn node_after(&self) -> Option<Node> {
+        let parent = self.parent();
+        let index = self.index(self.depth);
+        if index == parent.child_count() {
+            return None;
+        }
+        let d_off = self.text_offset();
+        let child = parent.child(index);
+        if d_off > 0 {
+            let to = if child.is_text() {
+                child.text_len()
+            } else {
+                child.content_size()
+            };
+            Some(child.cut(d_off, to))
+        } else {
+            Some(child.clone())
+        }
+    }
+
+    /// The node directly before the position within its parent, cut at the
+    /// position if it falls inside a text node; `None` at the parent's start. Port
+    /// of `ResolvedPos.nodeBefore`.
+    pub fn node_before(&self) -> Option<Node> {
+        let index = self.index(self.depth);
+        let d_off = self.text_offset();
+        if d_off > 0 {
+            Some(self.parent().child(index).cut(0, d_off))
+        } else if index == 0 {
+            None
+        } else {
+            Some(self.parent().child(index - 1).clone())
+        }
+    }
+
+    /// The deepest ancestor whose content range contains both this position and
+    /// `pos` — the depth at which a slice between the two stays closed. Port of
+    /// `ResolvedPos.sharedDepth`.
+    pub fn shared_depth(&self, pos: Pos) -> usize {
+        let p = pos.0;
+        let mut depth = self.depth;
+        while depth > 0 {
+            if self.start(depth) <= p && self.end(depth) >= p {
+                return depth;
+            }
+            depth -= 1;
+        }
+        0
+    }
+
+    /// The set of marks active *at* this position — the marks a character typed
+    /// here would inherit. Inside a text node, the node's own marks; at a boundary,
+    /// the marks of the node immediately before (or, if none, the node after). Port
+    /// of `ResolvedPos.marks` (without the `inclusive` spec flag, which this engine
+    /// does not model — every mark behaves as inclusive).
+    pub fn marks(&self) -> Vec<Mark> {
+        let parent = self.parent();
+        if parent.content().size() == 0 {
+            return Vec::new();
+        }
+        if self.text_offset() > 0 {
+            return parent.child(self.index(self.depth)).marks().to_vec();
+        }
+        let index = self.index(self.depth);
+        let before = index
+            .checked_sub(1)
+            .and_then(|i| parent.content().maybe_child(i));
+        let main = before.or_else(|| parent.content().maybe_child(index));
+        main.map(|n| n.marks().to_vec()).unwrap_or_default()
     }
 
     /// If the position is inside (or at the left edge of) a text node, return that

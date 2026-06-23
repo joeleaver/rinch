@@ -40,6 +40,15 @@ impl RinchApp {
             PlatformEvent::MouseMove { x, y } => {
                 self.cursor_pos = Some((x, y));
 
+                // New editor (M5): extend an in-progress drag-select.
+                #[cfg(feature = "new-editor")]
+                if crate::editor::drag_anchor().is_some()
+                    && self.extend_editor_drag(x, y, scale_factor, window_size)
+                {
+                    actions.push(AppAction::RequestRedraw);
+                    return actions;
+                }
+
                 // Additive: fire data-onmousemove before any drag/scroll/hover
                 // logic below (which can early-return).
                 self.dispatch_mouse_attr(
@@ -447,6 +456,23 @@ impl RinchApp {
                 self.last_click_time = now;
                 self.last_click_pos = (x, y);
 
+                // New editor (M5): a left click inside an editor places the cursor
+                // (and arms a drag-select). This MUST run in the Left-specific arm —
+                // the general MouseDown arm below never sees left buttons (the cause
+                // of the original "click does nothing" bug).
+                #[cfg(feature = "new-editor")]
+                if self.try_new_editor_click(
+                    x,
+                    y,
+                    scale_factor,
+                    window_size,
+                    self.click_count,
+                    self.modifiers.shift,
+                ) {
+                    actions.push(AppAction::RequestRedraw);
+                    return actions;
+                }
+
                 // Update :active and :focus pseudo-class state.
                 // Don't request redraw here — AboutToWait will pick up the
                 // dirty styles and batch them into a single repaint.
@@ -583,6 +609,10 @@ impl RinchApp {
                     vp_w,
                     vp_h,
                 );
+
+                // New editor (M5): end any drag-select.
+                #[cfg(feature = "new-editor")]
+                crate::editor::end_drag();
 
                 // ── Drag-and-drop: complete or cancel ─────────────────────
                 if let Some(pending) = self.pending_drag.take() {
@@ -822,7 +852,7 @@ impl RinchApp {
                 let ctrl = modifiers.primary();
                 let alt = modifiers.alt;
 
-                // Build key string for keyboard interceptor - handle ALL key types
+                // Build key string for the user keyboard hook + global fallback.
                 let key_str: Option<String> = match key {
                     // Named keys
                     KeyCode::ArrowLeft => Some("ArrowLeft".into()),
@@ -871,8 +901,11 @@ impl RinchApp {
 
                 tracing::trace!(?key, ?text, ?key_str, shift, ctrl, alt, "KeyDown event");
 
-                // Try keyboard interceptor first for ALL keys
-                let handled_by_interceptor = if let Some(ref ks) = key_str {
+                // 1. User keyboard hooks (document-level interceptor). A user
+                //    handler that consumes the key wins and stops here, like a
+                //    capturing DOM listener. Render surfaces no longer hijack this
+                //    slot — they are routed by `FocusTarget::Surface` below.
+                if let Some(ref ks) = key_str {
                     let key_data = events::KeyEventData {
                         key: ks.clone(),
                         code: format!("{:?}", key),
@@ -881,14 +914,43 @@ impl RinchApp {
                         alt,
                         meta: false,
                     };
-                    events::dispatch_keyboard_event(&key_data)
-                } else {
-                    false
-                };
+                    if events::dispatch_keyboard_event(&key_data) {
+                        actions.push(AppAction::RequestRedraw);
+                        return actions;
+                    }
+                }
 
-                if handled_by_interceptor {
-                    // If a render surface is focused, forward KeyDown + text input
-                    if let Some(surface_id) = crate::render_surface::focused_surface_id() {
+                // 2. Route by the focus arbiter (design A10): exactly one target
+                //    owns keyboard input, so there is no order-dependent fallthrough.
+                match self.focus_target {
+                    #[cfg(feature = "new-editor")]
+                    FocusTarget::Editor(container) => {
+                        if let Some(handle) = crate::editor::editor_for(container) {
+                            self.dispatch_new_editor_key(
+                                &handle,
+                                key,
+                                text.as_deref(),
+                                shift,
+                                ctrl,
+                                alt,
+                            );
+                            // Position the caret against the current layout (dirtying
+                            // its block if it reparented), re-layout, then the
+                            // post-layout caret pass finalizes it with fresh geometry.
+                            crate::editor::update_all_carets(self.focused_editor_id());
+                            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+                            self.resolve_and_repaint(w, h);
+                            actions.push(AppAction::RequestRedraw);
+                        } else {
+                            // The focused editor was unmounted out from under us:
+                            // drop the stale focus so this key (and future ones)
+                            // fall through to the global handlers instead of being
+                            // silently swallowed.
+                            self.focus_target = FocusTarget::None;
+                        }
+                    }
+                    FocusTarget::Surface(surface_id) => {
+                        // Forward KeyDown + text input to the focused surface.
                         crate::render_surface::dispatch_surface_event(
                             surface_id,
                             crate::render_surface::SurfaceEvent::KeyDown(
@@ -910,53 +972,59 @@ impl RinchApp {
                                 );
                             }
                         }
-                    }
-                    actions.push(AppAction::RequestRedraw);
-                } else if self.focused_contenteditable.is_some() {
-                    // Route keyboard events to the contenteditable editing state
-                    if self.handle_contenteditable_key(key, text.as_deref(), shift, ctrl, alt) {
-                        // Resolve layout immediately so the IFC text layout is
-                        // rebuilt before the next paint.  Without this, the
-                        // invalidated text_layout (set to None by set_text_content)
-                        // causes a one-frame flicker where text is invisible.
-                        let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                        self.resolve_and_repaint(w, h);
                         actions.push(AppAction::RequestRedraw);
                     }
-                } else {
-                    #[cfg(feature = "desktop")]
-                    if key == KeyCode::F12 {
-                        actions.push(AppAction::ToggleDevTools);
-                        return actions;
+                    FocusTarget::ContentEditable(_) => {
+                        // Route keyboard events to the legacy contenteditable engine.
+                        if self.handle_contenteditable_key(key, text.as_deref(), shift, ctrl, alt) {
+                            // Resolve layout immediately so the IFC text layout is
+                            // rebuilt before the next paint. Without this, the
+                            // invalidated text_layout (set to None by set_text_content)
+                            // causes a one-frame flicker where text is invisible.
+                            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+                            self.resolve_and_repaint(w, h);
+                            actions.push(AppAction::RequestRedraw);
+                        }
                     }
+                    // No widget owns the key, or a plain `<input>` does (its editing
+                    // commands live in the global handlers, gated internally on
+                    // `focused_input_state`). Falls through to DevTools / inspect /
+                    // Tab navigation / read-only text-selection caret motion.
+                    FocusTarget::Input(_) | FocusTarget::None => {
+                        #[cfg(feature = "desktop")]
+                        if key == KeyCode::F12 {
+                            actions.push(AppAction::ToggleDevTools);
+                            return actions;
+                        }
 
-                    // Alt+I: toggle inspect mode
-                    if key == KeyCode::KeyI && alt && !ctrl && !shift {
-                        actions.push(AppAction::ToggleInspectMode);
-                        return actions;
-                    }
+                        // Alt+I: toggle inspect mode
+                        if key == KeyCode::KeyI && alt && !ctrl && !shift {
+                            actions.push(AppAction::ToggleInspectMode);
+                            return actions;
+                        }
 
-                    match key {
-                        KeyCode::Tab => self.handle_tab(shift),
-                        KeyCode::Backspace => self.handle_backspace(),
-                        KeyCode::Delete => self.handle_delete(),
-                        KeyCode::ArrowLeft => self.handle_arrow_left(shift, ctrl),
-                        KeyCode::ArrowRight => self.handle_arrow_right(shift, ctrl),
-                        KeyCode::Home => self.handle_home(shift),
-                        KeyCode::End => self.handle_end(shift),
-                        KeyCode::KeyA if ctrl => self.handle_select_all(),
-                        KeyCode::KeyC if ctrl => self.handle_copy(),
-                        KeyCode::KeyV if ctrl => self.handle_paste(),
-                        KeyCode::KeyX if ctrl => self.handle_cut(),
-                        KeyCode::Enter if !ctrl => self.handle_enter(),
-                        KeyCode::ArrowUp => self.handle_arrow_up(shift),
-                        KeyCode::ArrowDown => self.handle_arrow_down(shift),
-                        _ => {
-                            if !ctrl
-                                && let Some(t) = &text
-                                && !t.is_empty()
-                            {
-                                self.handle_text_input(t);
+                        match key {
+                            KeyCode::Tab => self.handle_tab(shift),
+                            KeyCode::Backspace => self.handle_backspace(),
+                            KeyCode::Delete => self.handle_delete(),
+                            KeyCode::ArrowLeft => self.handle_arrow_left(shift, ctrl),
+                            KeyCode::ArrowRight => self.handle_arrow_right(shift, ctrl),
+                            KeyCode::Home => self.handle_home(shift),
+                            KeyCode::End => self.handle_end(shift),
+                            KeyCode::KeyA if ctrl => self.handle_select_all(),
+                            KeyCode::KeyC if ctrl => self.handle_copy(),
+                            KeyCode::KeyV if ctrl => self.handle_paste(),
+                            KeyCode::KeyX if ctrl => self.handle_cut(),
+                            KeyCode::Enter if !ctrl => self.handle_enter(),
+                            KeyCode::ArrowUp => self.handle_arrow_up(shift),
+                            KeyCode::ArrowDown => self.handle_arrow_down(shift),
+                            _ => {
+                                if !ctrl
+                                    && let Some(t) = &text
+                                    && !t.is_empty()
+                                {
+                                    self.handle_text_input(t);
+                                }
                             }
                         }
                     }
@@ -1681,5 +1749,754 @@ impl RinchApp {
             cursor,
             over_target: None,
         });
+    }
+}
+
+/// A cursor motion produced by an arrow/Home/End key (design §7 keyboard).
+#[cfg(feature = "new-editor")]
+#[derive(Clone, Copy)]
+pub(crate) enum Motion {
+    CharLeft,
+    CharRight,
+    WordLeft,
+    WordRight,
+    LineUp,
+    LineDown,
+    LineStart,
+    LineEnd,
+    DocStart,
+    DocEnd,
+}
+
+/// New-editor (M5) keyboard handling, behind the `new-editor` feature.
+#[cfg(feature = "new-editor")]
+impl RinchApp {
+    /// Translate a key press into an action on the focused editor's
+    /// [`EditorHandle`](crate::editor::EditorHandle). Returns whether the document
+    /// or selection changed (and a repaint/caret refresh is needed).
+    pub(crate) fn dispatch_new_editor_key(
+        &mut self,
+        handle: &crate::editor::EditorHandle,
+        key: KeyCode,
+        text: Option<&str>,
+        shift: bool,
+        ctrl: bool,
+        _alt: bool,
+    ) -> bool {
+        match key {
+            KeyCode::Backspace => handle.command("deleteCharBackward"),
+            KeyCode::Delete => handle.command("deleteCharForward"),
+            KeyCode::Enter if !ctrl => handle.command("enter"),
+            // Cursor movement / selection extension (Shift extends, Ctrl = word/doc).
+            KeyCode::ArrowLeft => self.move_editor(
+                handle,
+                if ctrl {
+                    Motion::WordLeft
+                } else {
+                    Motion::CharLeft
+                },
+                shift,
+            ),
+            KeyCode::ArrowRight => self.move_editor(
+                handle,
+                if ctrl {
+                    Motion::WordRight
+                } else {
+                    Motion::CharRight
+                },
+                shift,
+            ),
+            KeyCode::ArrowUp => self.move_editor(handle, Motion::LineUp, shift),
+            KeyCode::ArrowDown => self.move_editor(handle, Motion::LineDown, shift),
+            KeyCode::Home => self.move_editor(
+                handle,
+                if ctrl {
+                    Motion::DocStart
+                } else {
+                    Motion::LineStart
+                },
+                shift,
+            ),
+            KeyCode::End => self.move_editor(
+                handle,
+                if ctrl {
+                    Motion::DocEnd
+                } else {
+                    Motion::LineEnd
+                },
+                shift,
+            ),
+            KeyCode::KeyA if ctrl => {
+                let state = handle.state();
+                let sel = rinch_editor_core::Selection::text(
+                    rinch_editor_core::Selection::at_start(&state.doc).head(),
+                    rinch_editor_core::Selection::at_end(&state.doc).head(),
+                );
+                handle.set_selection(sel);
+                true
+            }
+            KeyCode::KeyB if ctrl => handle.command("toggleBold"),
+            KeyCode::KeyI if ctrl => handle.command("toggleItalic"),
+            KeyCode::KeyU if ctrl => handle.command("toggleUnderline"),
+            #[cfg(feature = "clipboard")]
+            KeyCode::KeyC if ctrl => {
+                self.editor_copy(handle);
+                false // copy doesn't change the document or selection
+            }
+            #[cfg(feature = "clipboard")]
+            KeyCode::KeyX if ctrl => self.editor_cut(handle),
+            #[cfg(feature = "clipboard")]
+            KeyCode::KeyV if ctrl => self.editor_paste(handle),
+            KeyCode::KeyZ if ctrl && shift => handle.command("redo"),
+            KeyCode::KeyZ if ctrl => handle.command("undo"),
+            KeyCode::KeyY if ctrl => handle.command("redo"),
+            _ => {
+                if ctrl {
+                    return false;
+                }
+                match text {
+                    Some(t) if !t.is_empty() && t.chars().all(|c| !c.is_control()) => handle
+                        .update(|state| {
+                            let mut tr = state.tr();
+                            tr.insert_text(t).ok()?;
+                            Some(tr)
+                        }),
+                    _ => false,
+                }
+            }
+        }
+    }
+
+    /// Apply a cursor [`Motion`] to the focused editor: compute the new head and
+    /// either collapse the cursor there or, when `extend` (Shift), keep the anchor
+    /// and move only the head (extending the selection).
+    pub(crate) fn move_editor(
+        &mut self,
+        handle: &crate::editor::EditorHandle,
+        motion: Motion,
+        extend: bool,
+    ) -> bool {
+        use rinch_editor_core::{Pos, Selection};
+        let state = handle.state();
+        let doc = state.doc.clone();
+        let head = state.selection.head();
+        let new_head: Option<Pos> = match motion {
+            Motion::CharLeft => {
+                Some(Selection::near(&doc, Pos(head.0.saturating_sub(1)), -1).head())
+            }
+            Motion::CharRight => {
+                Some(Selection::near(&doc, Pos((head.0 + 1).min(doc.content_size())), 1).head())
+            }
+            Motion::WordLeft => word_boundary(&doc, head, false),
+            Motion::WordRight => word_boundary(&doc, head, true),
+            Motion::LineStart => line_bound(&doc, head, false),
+            Motion::LineEnd => line_bound(&doc, head, true),
+            Motion::DocStart => Some(Selection::at_start(&doc).head()),
+            Motion::DocEnd => Some(Selection::at_end(&doc).head()),
+            Motion::LineUp | Motion::LineDown => match self.editor_caret_point(handle, head) {
+                Some((cx, cy, ch)) => {
+                    let ty = if matches!(motion, Motion::LineUp) {
+                        cy - ch * 0.5
+                    } else {
+                        cy + ch * 1.5
+                    };
+                    self.editor_point_address(cx, ty)
+                        .and_then(|(_c, tb, ifc)| handle.pos_at(tb, ifc))
+                }
+                None => None,
+            },
+        };
+        match new_head {
+            Some(nh) => {
+                let sel = if extend {
+                    Selection::text(state.selection.anchor(), nh)
+                } else {
+                    Selection::cursor(nh)
+                };
+                handle.set_selection(sel);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Copy the focused editor's selection to the clipboard as both `text/html`
+    /// (rich) and `text/plain` (the fall-back alternative). A no-op for an empty
+    /// selection.
+    #[cfg(feature = "clipboard")]
+    fn editor_copy(&self, handle: &crate::editor::EditorHandle) {
+        if let Some((html, text)) = handle.selection_clipboard() {
+            let _ = crate::clipboard::copy_html(&html, Some(&text));
+        }
+    }
+
+    /// Cut: copy the selection to the clipboard, then delete it. Returns whether the
+    /// document changed.
+    #[cfg(feature = "clipboard")]
+    fn editor_cut(&self, handle: &crate::editor::EditorHandle) -> bool {
+        match handle.selection_clipboard() {
+            Some((html, text)) => {
+                let _ = crate::clipboard::copy_html(&html, Some(&text));
+                handle.command("deleteSelection")
+            }
+            None => false,
+        }
+    }
+
+    /// Paste the clipboard over the selection, preferring rich `text/html` and
+    /// falling back to `text/plain`. Returns whether the document changed.
+    #[cfg(feature = "clipboard")]
+    fn editor_paste(&self, handle: &crate::editor::EditorHandle) -> bool {
+        if let Ok(html) = crate::clipboard::paste_html()
+            && !html.trim().is_empty()
+            && handle.replace_selection_with_html(&html)
+        {
+            return true;
+        }
+        if let Ok(text) = crate::clipboard::paste_text()
+            && !text.is_empty()
+        {
+            return handle.replace_selection_with_text(&text);
+        }
+        false
+    }
+
+    /// Like [`Self::editor_point_address`] but for a **physical** pointer position:
+    /// the layout is in logical pixels while pointer events arrive in physical
+    /// pixels, so we don't know up front whether the layout is logical or physical.
+    ///
+    /// Resolve in two passes so the scale hedge is sound (a wrong-space coordinate
+    /// must fail rather than silently snap): first try an **exact** textblock hit
+    /// at the raw point, then at the scale-divided point — a click on actual text
+    /// lands here in the correct space. Only if neither lands directly on a
+    /// textblock (a genuine click on chrome / padding / beside a short line) do we
+    /// **snap** to the nearest block, preferring the raw point. Snapping last (not
+    /// per-attempt) is what stops a HiDPI text-click from resolving to garbage in
+    /// the physical space before the logical retry runs.
+    pub(crate) fn editor_point_address_physical(
+        &self,
+        x: f32,
+        y: f32,
+        scale: f64,
+    ) -> Option<(usize, usize, usize)> {
+        let s = scale as f32;
+        let scaled = (s - 1.0).abs() > f32::EPSILON;
+        // Pass 1: exact textblock resolution (no snap) at raw, then scaled.
+        if let Some(r) = self.editor_point_address_in(x, y, false) {
+            return Some(r);
+        }
+        if scaled && let Some(r) = self.editor_point_address_in(x / s, y / s, false) {
+            return Some(r);
+        }
+        // Pass 2: genuine chrome click — snap to the nearest block, raw first.
+        if let Some(r) = self.editor_point_address_in(x, y, true) {
+            return Some(r);
+        }
+        if scaled {
+            return self.editor_point_address_in(x / s, y / s, true);
+        }
+        None
+    }
+
+    /// Resolve a window/logical point to `(container id, textblock id, flat IFC
+    /// byte offset)` inside whatever editor it lands on — the shared primitive for
+    /// click, drag-select, and vertical/Home-End movement. Snaps to the nearest
+    /// block when the point misses every textblock (see [`Self::editor_point_address_in`]).
+    pub(crate) fn editor_point_address(&self, x: f32, y: f32) -> Option<(usize, usize, usize)> {
+        self.editor_point_address_in(x, y, true)
+    }
+
+    /// The shared resolver. When `allow_nearest` is false it requires the point to
+    /// land directly on (or inside) a textblock; when true it falls back to the
+    /// geometrically nearest block in the editor (snap-to-line).
+    fn editor_point_address_in(
+        &self,
+        x: f32,
+        y: f32,
+        allow_nearest: bool,
+    ) -> Option<(usize, usize, usize)> {
+        let doc = self.doc.clone()?;
+        let d = doc.borrow();
+        let hit = hit_test(&d.tree, x, y)?;
+        // Walk up for the nearest editor textblock (including empty ones, which
+        // have no Parley layout) and the `data-pm-editor` container.
+        let mut textblock = None;
+        let mut container = None;
+        let mut cur = Some(hit);
+        while let Some(id) = cur {
+            let node = d.tree.get(id)?;
+            if textblock.is_none() && Self::is_editor_textblock(&d.tree, id) {
+                textblock = Some(id);
+            }
+            if node.attributes.get("data-pm-editor").map(String::as_str) == Some("true") {
+                container = Some(id);
+                break;
+            }
+            cur = node.parent;
+        }
+        let cont = container?;
+        // The point missed every textblock — a click on padding, a vertical gap, or
+        // the whitespace beside a short line (e.g. right of a narrow list item).
+        // Snap to the nearest block when allowed.
+        let tb = match textblock {
+            Some(tb) => tb,
+            None if allow_nearest => Self::nearest_textblock_in(&d.tree, cont, x, y)?,
+            None => return None,
+        };
+        let node = d.tree.get(tb)?;
+        // An empty textblock has no inline content and so no Parley layout — the
+        // only cursor position in it is offset 0.
+        let Some(layout) = node.text_layout.as_ref() else {
+            return Some((cont, tb, 0));
+        };
+        let (abs_x, abs_y) = Self::compute_absolute_position(&d.tree, tb);
+        let pad_l = node.computed_style.padding_left.to_px();
+        let pad_t = node.computed_style.padding_top.to_px();
+        let rel_x = x - abs_x - pad_l + node.scroll_offset.0 as f32;
+        let rel_y = y - abs_y - pad_t + node.scroll_offset.1 as f32;
+        let ifc_byte =
+            rinch_dom::text_query::byte_offset_from_position(&layout.layout, rel_x, rel_y);
+        Some((cont, tb, ifc_byte))
+    }
+
+    /// Whether `id` is an editor textblock element — one that holds inline content
+    /// (a `<p>`/`<h*>`/`<pre>`), as opposed to a block container (list / list item /
+    /// blockquote / the editor root, which carry schema-node element children) or a
+    /// void leaf (image / hr / hard break). Recognizes **empty** textblocks too,
+    /// which have no Parley `text_layout`, by structure rather than layout.
+    fn is_editor_textblock(tree: &rinch_dom::NodeTree, id: usize) -> bool {
+        let Some(node) = tree.get(id) else {
+            return false;
+        };
+        let Some(pm_type) = node.attributes.get("data-pm-type") else {
+            return false; // text node or mark wrapper (`data-pm-mark`)
+        };
+        // The editor root and void leaves are never text-cursor targets.
+        if matches!(
+            pm_type.as_str(),
+            "doc" | "image" | "horizontal_rule" | "hard_break"
+        ) {
+            return false;
+        }
+        // Containers hold schema-node element children; a textblock's children are
+        // inline (text / mark wrappers) or it is empty.
+        !node.children.iter().any(|&c| {
+            tree.get(c)
+                .is_some_and(|n| n.attributes.contains_key("data-pm-type"))
+        })
+    }
+
+    /// The editor textblock inside `container` geometrically nearest to window
+    /// point `(x, y)`. Distance prioritizes vertical proximity — the line/block
+    /// whose vertical band contains `y` wins — then horizontal, so a click in the
+    /// whitespace beside a line resolves to that line's textblock rather than an
+    /// unrelated one above/below. Considers empty textblocks (no `text_layout`) too.
+    fn nearest_textblock_in(
+        tree: &rinch_dom::NodeTree,
+        container: usize,
+        x: f32,
+        y: f32,
+    ) -> Option<usize> {
+        let mut best: Option<(usize, f32)> = None;
+        let mut stack = vec![container];
+        while let Some(id) = stack.pop() {
+            let Some(node) = tree.get(id) else { continue };
+            if Self::is_editor_textblock(tree, id) {
+                let (ax, ay) = Self::compute_absolute_position(tree, id);
+                let (w, h) = (node.layout.width, node.layout.height);
+                let dy = (ay - y).max(0.0).max(y - (ay + h));
+                let dx = (ax - x).max(0.0).max(x - (ax + w));
+                // Vertical distance dominates so same-line beats nearer-but-other-line.
+                let dist = dy * 1.0e4 + dx;
+                if best.is_none_or(|(_, bd)| dist < bd) {
+                    best = Some((id, dist));
+                }
+            }
+            stack.extend(node.children.iter().copied());
+        }
+        best.map(|(id, _)| id)
+    }
+
+    /// The caret's `(x, y, height)` in window coordinates for a model `pos` — the
+    /// forward geometry used to anchor vertical movement.
+    fn editor_caret_point(
+        &self,
+        handle: &crate::editor::EditorHandle,
+        pos: rinch_editor_core::Pos,
+    ) -> Option<(f32, f32, f32)> {
+        let (tb, flat) = handle.caret_address(pos)?;
+        let doc = self.doc.clone()?;
+        let d = doc.borrow();
+        let (local_x, local_y) = d.query_caret_position(tb as u64, flat)?;
+        let height = d
+            .query_glyph_bounds(tb as u64, flat)
+            .map(|g| g.height)
+            .unwrap_or(18.0);
+        let node = d.tree.get(tb)?;
+        let (abs_x, abs_y) = Self::compute_absolute_position(&d.tree, tb);
+        let pad_l = node.computed_style.padding_left.to_px();
+        let pad_t = node.computed_style.padding_top.to_px();
+        Some((abs_x + pad_l + local_x, abs_y + pad_t + local_y, height))
+    }
+
+    /// The id of the `data-pm-editor` container under window/logical point
+    /// `(x, y)`, if the click landed inside any editor — independent of whether it
+    /// hit a textblock. Used so a click on the editor's padding / empty area still
+    /// takes (or keeps) focus rather than blurring it.
+    pub(crate) fn editor_container_at(&self, x: f32, y: f32) -> Option<usize> {
+        let doc = self.doc.clone()?;
+        let d = doc.borrow();
+        let hit = hit_test(&d.tree, x, y)?;
+        let mut cur = Some(hit);
+        while let Some(id) = cur {
+            let node = d.tree.get(id)?;
+            if node.attributes.get("data-pm-editor").map(String::as_str) == Some("true") {
+                return Some(id);
+            }
+            cur = node.parent;
+        }
+        None
+    }
+
+    /// Physical-coordinate variant of [`Self::editor_container_at`] (the raw-or-
+    /// scaled HiDPI hedge, mirroring [`Self::editor_point_address_physical`]).
+    pub(crate) fn editor_container_at_physical(&self, x: f32, y: f32, scale: f64) -> Option<usize> {
+        self.editor_container_at(x, y).or_else(|| {
+            let s = scale as f32;
+            if (s - 1.0).abs() > f32::EPSILON {
+                self.editor_container_at(x / s, y / s)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Focus the new editor under a pointer click at physical `(x, y)` and set the
+    /// selection per the click gesture. Returns whether the click landed in an
+    /// editor.
+    ///
+    /// A click **anywhere inside** the editor container takes/keeps focus — even on
+    /// the container's padding or empty `min-height` area (otherwise it would fall
+    /// through to `handle_click` and blur the editor, silently killing input). The
+    /// click resolves to a model position via the nearest textblock (the clicked
+    /// line, or the nearest line for a click on padding / in a gap); from there the
+    /// gesture chooses the selection:
+    /// - `click_count == 2` → select the **word** under the pointer;
+    /// - `click_count == 3` → select the whole **textblock**;
+    /// - `shift` → **extend** the existing selection from its anchor to the click;
+    /// - otherwise → place a collapsed **cursor** and arm a drag-select.
+    ///
+    /// Only the single-click cases arm a drag (a plain click drags from the click;
+    /// Shift+click drags from the existing anchor). The only click that keeps the
+    /// prior selection is one that resolves to no textblock at all (an empty editor
+    /// with no addressable block).
+    pub(crate) fn try_new_editor_click(
+        &mut self,
+        x: f32,
+        y: f32,
+        scale: f64,
+        window_size: (u32, u32),
+        click_count: u8,
+        shift: bool,
+    ) -> bool {
+        let Some(container) = self.editor_container_at_physical(x, y, scale) else {
+            return false;
+        };
+        let Some(handle) = crate::editor::editor_for(container) else {
+            return false;
+        };
+        // Take keyboard focus through the arbiter (tears down a prior surface /
+        // input / CE / different editor).
+        self.set_focus_target(FocusTarget::Editor(container));
+        if let Some((c, textblock, ifc_byte)) = self.editor_point_address_physical(x, y, scale)
+            && c == container
+            && let Some(clicked) = handle.pos_at(textblock, ifc_byte)
+        {
+            use rinch_editor_core::Selection;
+            let doc = handle.doc();
+            let prior_anchor = handle.selection().anchor();
+            let (selection, drag_anchor) = match click_count {
+                2 => {
+                    let (from, to) = word_range_at(&doc, clicked);
+                    (Selection::text(from, to), None)
+                }
+                3 => {
+                    let (from, to) = block_range_at(&doc, clicked);
+                    (Selection::text(from, to), None)
+                }
+                _ if shift => (Selection::text(prior_anchor, clicked), Some(prior_anchor)),
+                _ => (Selection::cursor(clicked), Some(clicked)),
+            };
+            handle.set_selection(selection);
+            if let Some(anchor) = drag_anchor {
+                crate::editor::begin_drag(container, anchor.0);
+            }
+        }
+        // Position the caret first, then re-layout so the post-layout caret pass
+        // finalizes it against fresh geometry.
+        crate::editor::update_all_carets(self.focused_editor_id());
+        let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+        self.resolve_and_repaint(w, h);
+        true
+    }
+
+    /// Extend an in-progress drag-select to physical pointer `(x, y)`: the
+    /// selection runs from the mousedown anchor to the position under the pointer.
+    /// Returns whether a drag was active and updated.
+    pub(crate) fn extend_editor_drag(
+        &mut self,
+        x: f32,
+        y: f32,
+        scale: f64,
+        window_size: (u32, u32),
+    ) -> bool {
+        let Some((container, anchor)) = crate::editor::drag_anchor() else {
+            return false;
+        };
+        let Some((c, tb, ifc)) = self.editor_point_address_physical(x, y, scale) else {
+            return true; // dragged off the text; keep the drag, don't change selection
+        };
+        if c != container {
+            return true;
+        }
+        let Some(handle) = crate::editor::editor_for(container) else {
+            return false;
+        };
+        if let Some(head) = handle.pos_at(tb, ifc) {
+            handle.set_selection(rinch_editor_core::Selection::text(
+                rinch_editor_core::Pos(anchor),
+                head,
+            ));
+            crate::editor::update_all_carets(self.focused_editor_id());
+            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+            self.resolve_and_repaint(w, h);
+        }
+        true
+    }
+}
+
+/// The model position at the start (`end=false`) or end (`end=true`) of the
+/// textblock `head` is in. (Visual-line Home/End for wrapped lines is a later
+/// refinement; this is block start/end.)
+#[cfg(feature = "new-editor")]
+fn line_bound(
+    doc: &rinch_editor_core::Node,
+    head: rinch_editor_core::Pos,
+    end: bool,
+) -> Option<rinch_editor_core::Pos> {
+    let r = doc.resolve(head).ok()?;
+    if !r.parent().is_textblock() {
+        return None;
+    }
+    let content_start = head.0 - r.parent_offset();
+    Some(rinch_editor_core::Pos(if end {
+        content_start + r.parent().content().size()
+    } else {
+        content_start
+    }))
+}
+
+/// The model position at the previous/next word boundary within `head`'s
+/// textblock (a simple whitespace/word-character scan; cross-block word motion is
+/// a later refinement).
+#[cfg(feature = "new-editor")]
+fn word_boundary(
+    doc: &rinch_editor_core::Node,
+    head: rinch_editor_core::Pos,
+    forward: bool,
+) -> Option<rinch_editor_core::Pos> {
+    let r = doc.resolve(head).ok()?;
+    if !r.parent().is_textblock() {
+        return None;
+    }
+    let chars: Vec<char> = block_text(r.parent()).chars().collect();
+    let content_start = head.0 - r.parent_offset();
+    let mut i = r.parent_offset();
+    if forward {
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        while i < chars.len() && !chars[i].is_whitespace() {
+            i += 1;
+        }
+    } else {
+        i = i.saturating_sub(1);
+        while i > 0 && chars[i].is_whitespace() {
+            i -= 1;
+        }
+        while i > 0 && !chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+    }
+    Some(rinch_editor_core::Pos(content_start + i))
+}
+
+/// The concatenated inline text of a textblock, with each non-text leaf counted as
+/// one placeholder char (so word/line offsets line up with the position space).
+#[cfg(feature = "new-editor")]
+fn block_text(block: &rinch_editor_core::Node) -> String {
+    let mut s = String::new();
+    for i in 0..block.child_count() {
+        let child = block.child(i);
+        match child.text() {
+            Some(t) => s.push_str(t),
+            None => s.push(' '),
+        }
+    }
+    s
+}
+
+/// The model word range `(start, end)` around `pos` — the contiguous run of
+/// like-classed characters (word vs. whitespace) under a double-click, classified
+/// by the character to the right of the gap (or the last character at block end).
+/// Falls back to a collapsed range at `pos` when it is not inside a textblock or
+/// the block is empty.
+#[cfg(feature = "new-editor")]
+fn word_range_at(
+    doc: &rinch_editor_core::Node,
+    pos: rinch_editor_core::Pos,
+) -> (rinch_editor_core::Pos, rinch_editor_core::Pos) {
+    use rinch_editor_core::Pos;
+    let Ok(r) = doc.resolve(pos) else {
+        return (pos, pos);
+    };
+    if !r.parent().is_textblock() {
+        return (pos, pos);
+    }
+    let chars: Vec<char> = block_text(r.parent()).chars().collect();
+    if chars.is_empty() {
+        return (pos, pos);
+    }
+    let content_start = pos.0 - r.parent_offset();
+    let off = r.parent_offset().min(chars.len());
+    let is_word_char = |c: char| !c.is_whitespace();
+    // Classify the run to select. Normally use the char to the right of the gap, but
+    // at a word's *trailing* edge (the right char is whitespace, or we're at block
+    // end, while the left char is a word char) prefer the word — a double-click just
+    // after a word selects the word, not the following space. A click genuinely
+    // inside a whitespace run (whitespace on both sides) still selects the whitespace.
+    let classify_right = off < chars.len()
+        && (is_word_char(chars[off]) || off == 0 || !is_word_char(chars[off - 1]));
+    let class_idx = if classify_right { off } else { off - 1 };
+    let target = is_word_char(chars[class_idx]);
+    let mut start = off;
+    while start > 0 && is_word_char(chars[start - 1]) == target {
+        start -= 1;
+    }
+    let mut end = off;
+    while end < chars.len() && is_word_char(chars[end]) == target {
+        end += 1;
+    }
+    (Pos(content_start + start), Pos(content_start + end))
+}
+
+/// The model content range `(start, end)` of the textblock containing `pos` — the
+/// whole-block selection a triple-click makes. Falls back to a collapsed range at
+/// `pos` when it is not inside a textblock.
+#[cfg(feature = "new-editor")]
+fn block_range_at(
+    doc: &rinch_editor_core::Node,
+    pos: rinch_editor_core::Pos,
+) -> (rinch_editor_core::Pos, rinch_editor_core::Pos) {
+    use rinch_editor_core::Pos;
+    let Ok(r) = doc.resolve(pos) else {
+        return (pos, pos);
+    };
+    if !r.parent().is_textblock() {
+        return (pos, pos);
+    }
+    let content_start = pos.0 - r.parent_offset();
+    let content_end = content_start + r.parent().content().size();
+    (Pos(content_start), Pos(content_end))
+}
+
+#[cfg(all(test, feature = "new-editor"))]
+mod editor_selection_tests {
+    use super::{block_range_at, word_range_at};
+    use rinch_editor_core::model::Fragment;
+    use rinch_editor_core::{Node, Pos, Schema};
+
+    fn paragraph_doc(text: &str) -> Node {
+        let s = Schema::starter_kit();
+        let p = s
+            .branch("paragraph", Fragment::from_node(s.text(text).unwrap()))
+            .unwrap();
+        s.branch("doc", Fragment::from_node(p)).unwrap()
+    }
+
+    #[test]
+    fn word_range_selects_word_under_pos() {
+        let doc = paragraph_doc("hello world");
+        // Positions: 0[p 1 'hello world'(11) 12]13.
+        assert_eq!(
+            word_range_at(&doc, Pos(3)),
+            (Pos(1), Pos(6)),
+            "inside 'hello'"
+        );
+        assert_eq!(
+            word_range_at(&doc, Pos(9)),
+            (Pos(7), Pos(12)),
+            "inside 'world'"
+        );
+    }
+
+    #[test]
+    fn word_range_at_block_end_selects_last_word() {
+        let doc = paragraph_doc("hello world");
+        // The gap at block end classifies by the last char ('d').
+        assert_eq!(word_range_at(&doc, Pos(12)), (Pos(7), Pos(12)));
+    }
+
+    #[test]
+    fn word_range_on_whitespace_selects_whitespace_run() {
+        let doc = paragraph_doc("a  b");
+        // chars a,_,_,b — a click *between* the two spaces (both neighbours
+        // whitespace) selects the run of spaces.
+        assert_eq!(word_range_at(&doc, Pos(3)), (Pos(2), Pos(4)));
+    }
+
+    #[test]
+    fn word_range_at_word_trailing_edge_selects_the_word() {
+        let doc = paragraph_doc("a  b");
+        // A click in the gap just *after* 'a' (right char is whitespace, left char is
+        // a word char) selects the word 'a', not the following space.
+        assert_eq!(word_range_at(&doc, Pos(2)), (Pos(1), Pos(2)));
+        // And the gap just before 'b' selects 'b'.
+        assert_eq!(word_range_at(&doc, Pos(4)), (Pos(4), Pos(5)));
+    }
+
+    #[test]
+    fn word_range_empty_block_is_collapsed() {
+        let s = Schema::starter_kit();
+        let doc = s
+            .branch(
+                "doc",
+                Fragment::from_node(s.branch("paragraph", Fragment::empty()).unwrap()),
+            )
+            .unwrap();
+        assert_eq!(word_range_at(&doc, Pos(1)), (Pos(1), Pos(1)));
+    }
+
+    #[test]
+    fn block_range_selects_whole_textblock() {
+        let doc = paragraph_doc("hello world");
+        assert_eq!(block_range_at(&doc, Pos(3)), (Pos(1), Pos(12)));
+        assert_eq!(block_range_at(&doc, Pos(8)), (Pos(1), Pos(12)));
+    }
+
+    #[test]
+    fn block_range_targets_the_clicked_block() {
+        let s = Schema::starter_kit();
+        let p1 = s
+            .branch("paragraph", Fragment::from_node(s.text("ab").unwrap()))
+            .unwrap();
+        let p2 = s
+            .branch("paragraph", Fragment::from_node(s.text("cdef").unwrap()))
+            .unwrap();
+        let doc = s
+            .branch("doc", Fragment::from_children(vec![p1, p2]))
+            .unwrap();
+        // Positions: 0[p 1 ab 3]4[p 5 cdef 9]10 — second block content is [5, 9).
+        assert_eq!(block_range_at(&doc, Pos(7)), (Pos(5), Pos(9)));
     }
 }

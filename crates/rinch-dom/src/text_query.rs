@@ -179,6 +179,36 @@ pub fn byte_offset_from_position(layout: &parley::layout::Layout<Brush>, x: f32,
     Cursor::from_point(layout, x, y).index()
 }
 
+/// Per-line selection rectangles `(x, y, width, height)` (layout-local) covering
+/// the byte range `[a, b)` in `layout`. One rect per visual line the range spans.
+/// Used to render a text selection's highlight.
+pub fn selection_rects_for_layout(
+    layout: &parley::layout::Layout<Brush>,
+    a: usize,
+    b: usize,
+) -> Vec<(f32, f32, f32, f32)> {
+    let (a, b) = if a <= b { (a, b) } else { (b, a) };
+    let mut rects = Vec::new();
+    for line in layout.lines() {
+        let range = line.text_range();
+        let start = a.max(range.start);
+        let end = b.min(range.end);
+        if start >= end {
+            continue;
+        }
+        let metrics = line.metrics();
+        let top = metrics.baseline - metrics.ascent;
+        let left = Cursor::from_byte_index(layout, start, Affinity::Downstream)
+            .geometry(layout, 0.0)
+            .x0 as f32;
+        let right = Cursor::from_byte_index(layout, end, Affinity::Downstream)
+            .geometry(layout, 0.0)
+            .x0 as f32;
+        rects.push((left, top, (right - left).max(1.0), metrics.line_height));
+    }
+    rects
+}
+
 // ── IFC ↔ DomCursor conversions ─────────────────────────────────────────
 
 /// Convert an IFC flat byte offset to a DOM cursor `(node_id, offset_within_node)`.
