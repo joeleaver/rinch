@@ -170,6 +170,16 @@ impl Selection {
             .unwrap_or_else(|| Selection::cursor(Pos(pos.0.min(doc.content_size()))))
     }
 
+    /// The nearest **text cursor** to `pos` (searching `bias`'s direction then the
+    /// other), **skipping** any selectable block atoms in the way. Unlike
+    /// [`Self::near`], this never returns a [`Selection::Node`] — it is the
+    /// vertical-caret-movement primitive, which steps *over* an atom (a horizontal
+    /// rule) rather than selecting it. `None` if there is no text cursor on either
+    /// side.
+    pub fn near_text(doc: &Node, pos: Pos, bias: i32) -> Option<Selection> {
+        find_from(doc, pos, bias, true).or_else(|| find_from(doc, pos, -bias, true))
+    }
+
     /// A selection at the very start of the document's first textblock.
     pub fn at_start(doc: &Node) -> Selection {
         find_from(doc, Pos(0), 1, false).unwrap_or_else(|| Selection::cursor(Pos(0)))
@@ -187,6 +197,22 @@ impl Selection {
             Selection::Node(n) => doc.node_at(n.anchor.0),
             Selection::Text(_) => None,
         }
+    }
+
+    /// A [`NodeSelection`] of the node that *starts* at `pos`, if there is one and
+    /// it is a selectable **leaf atom** (an image or horizontal rule). `None` for a
+    /// text node, a non-leaf container (a paragraph / list — `selectable` in the
+    /// schema but never node-selected this way), an unselectable node, or no node at
+    /// `pos`. The pointer and keyboard layers use this to node-select a leaf the
+    /// user clicks or arrows onto (design §6 node-views).
+    pub fn node_at(doc: &Node, pos: Pos) -> Option<Selection> {
+        let sel = node_selection_at(doc, pos)?;
+        // Restrict to leaf atoms — `node_selection_at` (shared with selection
+        // mapping) only checks `selectable`, which is `true` for block containers.
+        if !sel.node(doc)?.node_type().is_leaf() {
+            return None;
+        }
+        Some(sel)
     }
 }
 
@@ -344,6 +370,53 @@ mod tests {
         // hr occupies 0..1; paragraph 1..4, its inline content at pos 2
         let sel = Selection::near(&d, Pos(1), 1);
         assert_eq!(sel, Selection::cursor(Pos(2)));
+    }
+
+    #[test]
+    fn node_at_selects_block_atom_and_rejects_text() {
+        // doc(paragraph "ab", hr): the hr is a selectable block atom.
+        let s = sk();
+        let hr = s.branch("horizontal_rule", Fragment::empty()).unwrap();
+        let d = doc(&s, vec![para(&s, "ab"), hr]);
+        // positions: 0[p 1 a 2 b 3]4 <hr 4..5> 5 ; the hr starts at pos 4.
+        let sel = Selection::node_at(&d, Pos(4)).expect("hr is selectable");
+        assert_eq!(sel.from(), Pos(4));
+        assert_eq!(sel.to(), Pos(5));
+        assert!(matches!(sel, Selection::Node(_)));
+        // A position before a text run is not a node selection.
+        assert!(Selection::node_at(&d, Pos(1)).is_none());
+        // Out of range / no node after → None (total, no panic).
+        assert!(Selection::node_at(&d, Pos(5)).is_none());
+        // A selectable *container* (the paragraph, `selectable: true` by default)
+        // is NOT node-selectable via `node_at` — only leaf atoms are.
+        assert!(
+            Selection::node_at(&d, Pos(0)).is_none(),
+            "a paragraph container must not node-select"
+        );
+    }
+
+    #[test]
+    fn node_at_selects_inline_image() {
+        // doc(paragraph(text "a", image)) — the image is a selectable inline atom.
+        let s = sk();
+        let img = s
+            .create_node(
+                "image",
+                crate::model::Attrs::from_iter([("src", crate::model::AttrValue::from("a.png"))]),
+                Fragment::empty(),
+            )
+            .unwrap();
+        let p = s
+            .branch(
+                "paragraph",
+                Fragment::from_children(vec![s.text("a").unwrap(), img]),
+            )
+            .unwrap();
+        let d = doc(&s, vec![p]);
+        // positions: 0[p 1 a 2 (img) 3]4 ; the image starts at pos 2.
+        let sel = Selection::node_at(&d, Pos(2)).expect("image is selectable");
+        assert_eq!(sel.from(), Pos(2));
+        assert_eq!(sel.to(), Pos(3));
     }
 
     #[test]

@@ -232,6 +232,24 @@ impl EditorHandle {
             .pos_at(textblock_dom_id, ifc_byte)
     }
 
+    /// A [`Selection::Node`] for the leaf node (image / horizontal rule) whose host
+    /// element is `host_id` — the pointer hit-test path for node-selecting a leaf the
+    /// user clicks. `None` if `host_id` isn't a placed node, or its node isn't
+    /// selectable (design §6 node-views).
+    ///
+    /// [`Selection::Node`]: rinch_editor_core::Selection::Node
+    pub fn node_selection_at_host(&self, host_id: usize) -> Option<Selection> {
+        let core = self.inner.borrow();
+        let (pos, node) = core.view.as_ref()?.node_pos_for_host(host_id)?;
+        // Node-views are *leaf* atoms (image / horizontal rule). A block container
+        // (paragraph, list, blockquote) is `selectable` in the schema but is never
+        // node-selected by a click, so restrict to leaves here.
+        if !node.node_type().is_leaf() {
+            return None;
+        }
+        Selection::node_at(&core.state.doc, Pos(pos))
+    }
+
     /// Place the cursor at a host caret address `(textblock element id, flat UTF-8
     /// byte offset)` produced by a pointer hit-test (the click→`Pos` path). Returns
     /// whether the address resolved to a model position.
@@ -243,6 +261,28 @@ impl EditorHandle {
             }
             None => false,
         }
+    }
+
+    /// Insert `text`, replacing the current selection — the keyboard text-input
+    /// path. A flat insert handles a text range or an *inline* node selection
+    /// directly (text is valid inline content); for a *block* node selection (a
+    /// selected horizontal rule, where a bare text node isn't valid `doc` content)
+    /// it deletes the node first, then inserts the text at the resulting cursor
+    /// (ProseMirror `replaceSelection` for text input). Returns whether the
+    /// document changed.
+    pub fn insert_text(&self, text: &str) -> bool {
+        self.update(|state| {
+            let mut tr = state.tr();
+            if tr.insert_text(text).is_ok() {
+                return Some(tr);
+            }
+            // The flat insert couldn't replace the selection in place (a block node
+            // selection). Delete it, then insert the text at the collapsed cursor.
+            let mut tr = state.tr();
+            tr.delete_selection().ok()?;
+            tr.insert_text(text).ok()?;
+            Some(tr)
+        })
     }
 
     /// Move the selection (and re-project, so the caret follows once geometry lands).
@@ -346,20 +386,32 @@ impl EditorHandle {
 
     /// Phase-2 projection: render caret/selection geometry from the current state.
     /// The runtime calls this **after** layout (design A3); headless it is a no-op.
-    pub fn update_caret(&self) {
+    /// Returns whether an overlay actually moved (so the runtime can force a full
+    /// repaint — the overlays are absolutely positioned and the software renderer's
+    /// dirty-region cache can't clear their old rect).
+    pub fn update_caret(&self) -> bool {
         let mut core = self.inner.borrow_mut();
         let state = core.state.clone();
-        if let Some(view) = core.view.as_mut() {
-            view.update_caret(&state);
+        match core.view.as_mut() {
+            Some(view) => {
+                view.update_caret(&state);
+                view.take_overlay_dirty()
+            }
+            None => false,
         }
     }
 
     /// Hide this editor's overlays (caret + selection highlight) because it isn't
     /// focused. The runtime's focus-aware caret pass calls this for every editor
-    /// that isn't the focused one. A no-op before mount.
-    pub(crate) fn hide_overlays(&self) {
-        if let Some(view) = self.inner.borrow_mut().view.as_mut() {
-            view.hide_overlays();
+    /// that isn't the focused one. A no-op before mount. Returns whether an overlay
+    /// was actually cleared (so the runtime can force a full repaint).
+    pub(crate) fn hide_overlays(&self) -> bool {
+        match self.inner.borrow_mut().view.as_mut() {
+            Some(view) => {
+                view.hide_overlays();
+                view.take_overlay_dirty()
+            }
+            None => false,
         }
     }
 
@@ -615,6 +667,123 @@ mod tests {
         assert_eq!(
             text(&h, children(&h, h.container_id)[0]).as_deref(),
             Some("abcd")
+        );
+    }
+
+    // ── Node-views (NodeSelection of an image / horizontal rule) ─────────────
+
+    fn hr(s: &Schema) -> Node {
+        s.branch("horizontal_rule", Fragment::empty()).unwrap()
+    }
+
+    fn img(s: &Schema) -> Node {
+        s.create_node(
+            "image",
+            rinch_editor_core::Attrs::from_iter([(
+                "src",
+                rinch_editor_core::AttrValue::from("a.png"),
+            )]),
+            Fragment::empty(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn node_selection_at_host_resolves_a_leaf_and_rejects_a_textblock() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "ab"), hr(&s)]));
+        let blocks = children(&h, h.container_id);
+        assert_eq!(tag(&h, blocks[1]).as_deref(), Some("hr"));
+
+        // The hr's host id → a NodeSelection of the hr (model pos 4..5).
+        let sel = h
+            .handle
+            .node_selection_at_host(blocks[1].0)
+            .expect("hr host resolves to a node selection");
+        assert_eq!(sel.from(), Pos(4));
+        assert_eq!(sel.to(), Pos(5));
+
+        // The paragraph host is a node but not a selectable leaf → None.
+        assert!(
+            h.handle.node_selection_at_host(blocks[0].0).is_none(),
+            "a textblock is not node-selectable"
+        );
+    }
+
+    #[test]
+    fn backspace_deletes_a_node_selection() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "ab"), hr(&s)]));
+        let sel = h
+            .handle
+            .node_selection_at_host(children(&h, h.container_id)[1].0)
+            .unwrap();
+        h.handle.set_selection(sel);
+
+        // Backspace over a (never-empty) node selection deletes the node.
+        assert!(h.handle.command("deleteCharBackward"));
+        let blocks = children(&h, h.container_id);
+        assert_eq!(blocks.len(), 1, "the hr was removed");
+        assert_eq!(tag(&h, blocks[0]).as_deref(), Some("p"));
+    }
+
+    #[test]
+    fn typing_replaces_an_inline_image_node_selection() {
+        let s = schema();
+        // doc(paragraph(text "a", image)) — positions 0[p 1 a 2 (img) 3]4.
+        let p = s
+            .branch(
+                "paragraph",
+                Fragment::from_children(vec![s.text("a").unwrap(), img(&s)]),
+            )
+            .unwrap();
+        let h = mount(doc_node(&s, vec![p]));
+        // The image is the paragraph's 2nd inline host child; node-select it.
+        let para_host = children(&h, h.container_id)[0];
+        let img_host = children(&h, para_host)[1];
+        let sel = h
+            .handle
+            .node_selection_at_host(img_host.0)
+            .expect("inline image node-selects");
+        h.handle.set_selection(sel);
+
+        // A flat text insert *can* replace an inline image (text is valid inline
+        // content) — the image becomes the typed text within the paragraph.
+        assert!(h.handle.update(|state| {
+            let mut tr = state.tr();
+            tr.insert_text("X").ok()?;
+            Some(tr)
+        }));
+        assert_eq!(
+            text(&h, children(&h, h.container_id)[0]).as_deref(),
+            Some("aX")
+        );
+        assert!(
+            h.handle.selection().is_empty(),
+            "cursor collapses after insert"
+        );
+    }
+
+    #[test]
+    fn insert_text_over_a_block_node_selection_deletes_then_inserts() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "ab"), hr(&s)]));
+        let sel = h
+            .handle
+            .node_selection_at_host(children(&h, h.container_id)[1].0)
+            .unwrap();
+        h.handle.set_selection(sel);
+
+        // Typing over a *block* node selection (a selected hr, where a bare text
+        // node isn't valid `doc` content) deletes the node, then inserts the text
+        // at the resulting cursor — landing at the end of the previous paragraph.
+        assert!(h.handle.insert_text("X"));
+        let blocks = children(&h, h.container_id);
+        assert_eq!(blocks.len(), 1, "the hr was removed");
+        assert_eq!(text(&h, blocks[0]).as_deref(), Some("abX"));
+        assert!(
+            h.handle.selection().is_empty(),
+            "cursor collapses after insert"
         );
     }
 

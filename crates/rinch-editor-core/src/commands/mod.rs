@@ -601,22 +601,107 @@ fn build_lift_after(state: &EditorState, cut: usize) -> Option<Transaction> {
     None
 }
 
+/// A wrapping chain of node types `[W1, .., Wn]` — PM `ContentMatch.findWrapping`
+/// adapted to the simplified content model — such that `before_type` can contain
+/// `W1`, each `Wi` can contain `Wi+1`, and `Wn` can contain `target_type`. A BFS
+/// over node types (edge `A → B` iff `A`'s content accepts `B`), depth-bounded.
+/// `None` if no chain exists. Used by [`wrap_into_before`] to move a block into a
+/// preceding container.
+fn find_wrapping(
+    schema: &crate::Schema,
+    before_type: &str,
+    target_type: &str,
+) -> Option<Vec<NodeType>> {
+    use std::collections::{HashSet, VecDeque};
+    // Deterministic candidate order (the node map is a HashMap).
+    let mut names: Vec<&str> = schema.nodes.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    let is_container = |n: &str| schema.node_type(n).is_some_and(|t| !t.is_leaf());
+
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut queue: VecDeque<Vec<&str>> = VecDeque::new();
+    for &n in &names {
+        if schema.allows_child(before_type, n) && is_container(n) {
+            visited.insert(n);
+            queue.push_back(vec![n]);
+        }
+    }
+    while let Some(chain) = queue.pop_front() {
+        let last = *chain.last()?;
+        if schema.allows_child(last, target_type) {
+            return chain
+                .iter()
+                .map(|&n| schema.node_type(n).cloned())
+                .collect();
+        }
+        if chain.len() >= 4 {
+            continue; // depth bound — no real schema nests this deep
+        }
+        for &n in &names {
+            if !visited.contains(n) && schema.allows_child(last, n) && is_container(n) {
+                visited.insert(n);
+                let mut next = chain.clone();
+                next.push(n);
+                queue.push_back(next);
+            }
+        }
+    }
+    None
+}
+
+/// PM `deleteBarrier` find-wrapping branch: move the block just after `cut` into the
+/// container just before it, wrapped to fit — a paragraph after a bullet list
+/// becomes a new list item. `None` if the before-block isn't a container that can
+/// take the after-block (wrapped), or either side is isolating.
+fn wrap_into_before(state: &EditorState, cut: usize) -> Option<Transaction> {
+    let r_cut = state.doc.resolve(Pos(cut)).ok()?;
+    let before = r_cut.node_before()?;
+    let after = r_cut.node_after()?;
+    if before.node_type().spec().isolating || after.node_type().spec().isolating {
+        return None;
+    }
+    let conn = find_wrapping(state.schema(), before.type_name(), after.type_name())?;
+    // Build the wrapper chain innermost-first (`[list_item]` → `list_item(<gap>)`),
+    // then a copy of the `before` container around it, so the slice (open at the
+    // start) merges with the existing container. The gap (the after-block) fills the
+    // innermost wrapper via the `ReplaceAroundStep`.
+    let mut wrap = Fragment::empty();
+    for typ in conn.iter().rev() {
+        wrap = Fragment::from_node(Node::new_branch(typ.clone(), Attrs::default(), wrap));
+    }
+    let before_copy = before.copy_with_content(wrap);
+    let slice = crate::Slice::new(Fragment::from_node(before_copy), 1, 0);
+    let end = cut + after.node_size();
+    let mut tr = state.tr();
+    tr.step(Box::new(ReplaceAroundStep::new(
+        cut - 1,
+        end,
+        cut,
+        end,
+        slice,
+        conn.len(),
+        true,
+    )))
+    .ok()?;
+    tr.doc_changed().then_some(tr)
+}
+
 /// Backspace: delete the selection, else the char before the cursor, else — at the
-/// start of a textblock — join onto the previous block or lift this block out of
-/// its wrapper.
+/// start of a textblock — join onto the previous block, move into a preceding
+/// container, or lift this block out of its wrapper.
 ///
-/// At block start this is PM's `joinBackward`/`deleteBarrier` (the common cases):
-/// it joins across the nearest cut with a **structural** replace of the boundary
-/// token pair (its own undo group, never coalesced into typing), and when that
-/// crosses a wrapper boundary it cannot join directly — into a blockquote or list
-/// item — it instead **lifts** this block out of the wrapper, so a second
-/// Backspace then joins.
+/// At block start this is PM's `joinBackward`/`deleteBarrier`: it joins across the
+/// nearest cut with a **structural** replace of the boundary token pair (its own
+/// undo group, never coalesced into typing); when it cannot join directly but the
+/// block before the cut is a **container** that can take this block (wrapped) — a
+/// paragraph after a list — it **moves the block in** as a new item
+/// ([`wrap_into_before`], the find-wrapping branch); and when it crosses a wrapper
+/// boundary from *inside* — a block at the start of a blockquote / list item — it
+/// **lifts** this block out of the wrapper, so a second Backspace then joins.
 ///
-/// Not yet ported (the remaining `deleteBarrier` branches; they need
-/// `ContentMatch::find_wrapping`, and belong with the M5.6 keyboard integration):
-/// the **wrap-and-move** branch — Backspace at the start of a paragraph that
-/// *follows* a list moves the paragraph into the list as a new item (currently a
-/// no-op here) — and the **content-move** + select-node-backward branches.
+/// Not ported (rare `deleteBarrier` tails): the content-move `ReplaceAround` (merge
+/// into the before-container's last textblock) and select-node-backward (atom
+/// delete) branches.
 pub fn delete_char_backward() -> Command {
     command_tr(|state| {
         let sel = &state.selection;
@@ -636,7 +721,8 @@ pub fn delete_char_backward() -> Command {
             tr.delete(pos - 1, pos).ok()?;
             return tr.doc_changed().then_some(tr);
         }
-        // At block start: join across the nearest cut, else lift out of the wrapper.
+        // At block start: join across the nearest cut, else move into the preceding
+        // container, else lift out of the wrapper.
         if let Some(cut) = find_cut_before(&r) {
             let mut tr = state.tr();
             if tr
@@ -648,6 +734,11 @@ pub fn delete_char_backward() -> Command {
                 .is_ok()
                 && tr.doc_changed()
             {
+                return Some(tr);
+            }
+            // Could not join directly across the cut — try moving this block into
+            // the container before it (a paragraph after a list → a new list item).
+            if let Some(tr) = wrap_into_before(state, cut) {
                 return Some(tr);
             }
         }
@@ -878,6 +969,58 @@ mod tests {
         let back = list.run("toggleBulletList").expect("lift out of list");
         assert!(!in_node_type(&back, "bullet_list"));
         assert_eq!(back.doc.child(0).type_name(), "paragraph");
+    }
+
+    #[test]
+    fn backspace_at_paragraph_after_list_moves_it_into_the_list() {
+        // doc(bullet_list(li(p"a"), li(p"b")), paragraph "c"); Backspace at the start
+        // of "c" moves it into the list as a third item (PM deleteBarrier findWrapping).
+        let s = Rc::new(Schema::starter_kit());
+        let li = |t: &str| {
+            s.branch(
+                "list_item",
+                Fragment::from_node(
+                    s.branch("paragraph", Fragment::from_node(s.text(t).unwrap()))
+                        .unwrap(),
+                ),
+            )
+            .unwrap()
+        };
+        let list = s
+            .branch(
+                "bullet_list",
+                Fragment::from_children(vec![li("a"), li("b")]),
+            )
+            .unwrap();
+        let para = s
+            .branch("paragraph", Fragment::from_node(s.text("c").unwrap()))
+            .unwrap();
+        let doc = s
+            .branch("doc", Fragment::from_children(vec![list, para]))
+            .unwrap();
+        let mut state = EditorState::create(s, doc, vec![Rc::new(BaseCommandsPlugin)]);
+
+        // Cursor at the start of "c" — just inside the paragraph after the list.
+        let list_size = state.doc.child(0).node_size();
+        state.selection = Selection::cursor(Pos(list_size + 1));
+
+        let next = state
+            .run("deleteCharBackward")
+            .expect("backspace moves the paragraph into the list");
+        assert_eq!(
+            next.doc.child_count(),
+            1,
+            "only the list remains at top level"
+        );
+        let list = next.doc.child(0);
+        assert_eq!(list.type_name(), "bullet_list");
+        assert_eq!(list.child_count(), 3, "a third list item was added");
+        assert_eq!(list.child(2).type_name(), "list_item");
+        assert_eq!(list.child(2).child(0).type_name(), "paragraph");
+        assert_eq!(all_text(list.child(2)), "c");
+        // The first two items are untouched.
+        assert_eq!(all_text(list.child(0)), "a");
+        assert_eq!(all_text(list.child(1)), "b");
     }
 
     #[test]

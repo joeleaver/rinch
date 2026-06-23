@@ -512,6 +512,22 @@ impl RinchApp {
 
     // ── Layout / repaint ─────────────────────────────────────────────────
 
+    /// Run the post-layout overlay pass for mounted editors (from an input handler,
+    /// where a selection-only change doesn't dirty the document) and, if any overlay
+    /// moved, force a full repaint. The caret / selection / node-outline overlays are
+    /// absolutely positioned, and the software renderer's dirty-region cache can't
+    /// clear a moved absolute element's old rect — so without this they ghost.
+    #[cfg(feature = "new-editor")]
+    pub(crate) fn refresh_editor_overlays(&mut self) {
+        if crate::editor::update_all_carets(self.focused_editor_id()) {
+            self.scene_dirty = true;
+            #[cfg(not(feature = "gpu"))]
+            {
+                self.has_previous_frame = false;
+            }
+        }
+    }
+
     /// Re-resolve layout after signal changes. Returns `true` if a redraw
     /// is needed.
     pub fn resolve_and_repaint(&mut self, viewport_width: f32, viewport_height: f32) -> bool {
@@ -605,9 +621,24 @@ impl RinchApp {
         self.apply_scroll_into_view();
 
         // New-editor phase 2 (design A3): render each mounted editor's caret from
-        // its selection now that layout geometry is fresh.
+        // its selection now that layout geometry is fresh. If an overlay (caret /
+        // selection / node-outline) actually moved, re-resolve so its new absolute
+        // position is current, then force a full repaint — the software renderer's
+        // dirty-region cache can't clear a moved absolute element's *old* rect, so
+        // the overlay would otherwise ghost.
         #[cfg(feature = "new-editor")]
-        crate::editor::update_all_carets(self.focused_editor_id());
+        if crate::editor::update_all_carets(self.focused_editor_id()) {
+            {
+                let mut d = doc.borrow_mut();
+                let _ = d.take_dirty_nodes();
+                d.resolve_layout(viewport_width, viewport_height);
+            }
+            self.scene_dirty = true;
+            #[cfg(not(feature = "gpu"))]
+            {
+                self.has_previous_frame = false;
+            }
+        }
 
         // Post-layout: cache heights, then verify materialized range with
         // fresh positions. If the range changed (big scroll jump), re-layout.

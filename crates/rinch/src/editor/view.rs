@@ -266,8 +266,23 @@ pub struct RinchDomEditorView {
     selection_rects: Vec<NodeHandle>,
     /// The last rendered selection `(from, to)`, for change-detection.
     last_selection: Option<(usize, usize)>,
+    /// The outline overlay for a [`Selection::Node`] — a translucent box tracing the
+    /// selected leaf node (image / horizontal rule), drawn from `state.selection`
+    /// (design §6 node-views). `None` when the current selection is not a node
+    /// selection.
+    node_outline: Option<NodeHandle>,
+    /// The last rendered node-selection box `(x, y, w, h)` (pixels rounded), so a
+    /// re-run on the same geometry writes nothing (mirrors [`Self::last_caret`]).
+    last_node_outline: Option<(i32, i32, i32, i32)>,
     /// The decoration set currently projected, for the next diff.
     decorations: DecorationSet,
+    /// Set whenever the post-layout pass writes an overlay's geometry (caret,
+    /// selection rect, or node outline). The runtime reads it via
+    /// [`Self::take_overlay_dirty`] to force a full repaint: these overlays are
+    /// absolutely positioned, and the software renderer's dirty-region cache can't
+    /// clear an absolute element's *old* rect when it moves, so a moved overlay
+    /// would otherwise ghost.
+    overlay_dirty: bool,
 }
 
 impl RinchDomEditorView {
@@ -304,7 +319,10 @@ impl RinchDomEditorView {
             blink_shown: None,
             selection_rects: Vec::new(),
             last_selection: None,
+            node_outline: None,
+            last_node_outline: None,
             decorations: DecorationSet::empty(),
+            overlay_dirty: false,
         };
         view.sync_decorations(state);
         view
@@ -360,8 +378,18 @@ impl EditorView for RinchDomEditorView {
     }
 
     fn update_caret(&mut self, next: &EditorState) -> Vec<ViewRequest> {
-        // Phase 2 (after layout): render the selection highlight (for a range) and
-        // the caret (at a collapsed cursor), both from `next.selection`.
+        // Phase 2 (after layout): render the selection from `next.selection`.
+        // A node selection (a selected image / horizontal rule) outlines the node
+        // and shows neither a text highlight nor a caret (design §6 node-views).
+        if let rinch_editor_core::Selection::Node(_) = &next.selection {
+            self.clear_selection_rects();
+            self.hide_caret();
+            self.render_node_selection(next);
+            return vec![ViewRequest::ScrollSelectionIntoView];
+        }
+        self.clear_node_selection();
+        // Otherwise: the text selection highlight (for a range) and the caret (at a
+        // collapsed cursor).
         self.render_selection(next);
         // No caret while a range is selected — the highlight conveys the head, a
         // caret blinking over a highlight reads as noise, and with no caret the
@@ -379,18 +407,24 @@ impl EditorView for RinchDomEditorView {
         };
         let block_id = block.node_id().0;
         // Query Parley for the caret geometry (layout-local to the textblock), then
-        // translate into the container's coordinate space.
+        // translate into the container's coordinate space. An *empty* textblock has
+        // no Parley layout, so `query_caret_position` returns `None` there — fall
+        // back to the block's content origin with a sensible line height, so the
+        // caret is still visible on a blank line.
         let geometry = {
             let d = doc.borrow();
-            d.query_caret_position(block_id as u64, flat_byte)
-                .map(|(local_x, local_y)| {
-                    let height = d
-                        .query_glyph_bounds(block_id as u64, flat_byte)
-                        .map(|g| g.height)
-                        .unwrap_or(18.0);
-                    let (ox, oy) = self.block_offset_in_container(&*d, block_id);
-                    (ox + local_x, oy + local_y, height)
-                })
+            let from_parley =
+                d.query_caret_position(block_id as u64, flat_byte)
+                    .map(|(local_x, local_y)| {
+                        let height = d
+                            .query_glyph_bounds(block_id as u64, flat_byte)
+                            .map(|g| g.height)
+                            .unwrap_or(18.0);
+                        let (ox, oy) = self.block_offset_in_container(&*d, block_id);
+                        (ox + local_x, oy + local_y, height)
+                    });
+            from_parley
+                .or_else(|| self.empty_block_caret(&*d, &next.doc, next.selection.head(), block_id))
         };
         match geometry {
             Some((x, y, height)) => self.position_caret(x, y, height),
@@ -460,6 +494,39 @@ impl RinchDomEditorView {
         (x, y)
     }
 
+    /// Caret geometry for an *empty* textblock (which has no Parley layout, so
+    /// [`DomDocument::query_caret_position`] returns `None`): the block's content
+    /// origin in container space with the block's own box height as the line
+    /// height. `None` if the block at `pos` is *not* actually empty (a non-empty
+    /// block that merely failed to measure — leave the caret hidden rather than
+    /// misplace it) or has no host box yet.
+    fn empty_block_caret(
+        &self,
+        d: &dyn DomDocument,
+        doc: &Node,
+        pos: Pos,
+        block_id: usize,
+    ) -> Option<(f32, f32, f32)> {
+        let r = doc.resolve(pos).ok()?;
+        if r.parent().content().size() != 0 {
+            return None;
+        }
+        let (_, _, _, bh) = d.query_node_layout(block_id as u64)?;
+        let (ox, oy) = self.block_offset_in_container(d, block_id);
+        // An empty block's box height is its single line box; clamp to a sane range
+        // and fall back to a default when it has collapsed to zero.
+        let h = if (4.0..=80.0).contains(&bh) { bh } else { 18.0 };
+        Some((ox, oy, h))
+    }
+
+    /// Take and clear the "an overlay moved" flag. The runtime forces a full repaint
+    /// when set, because the caret / selection / node-outline overlays are absolutely
+    /// positioned and the software renderer's dirty-region cache can't clear their
+    /// *old* rect when they move (otherwise they ghost — see [`Self::overlay_dirty`]).
+    pub(crate) fn take_overlay_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.overlay_dirty)
+    }
+
     /// Render (or clear) the text-selection highlight from `state.selection`.
     fn render_selection(&mut self, state: &EditorState) {
         let sel = &state.selection;
@@ -520,6 +587,7 @@ impl RinchDomEditorView {
     /// Reconcile the selection-highlight divs (container children) to `rects`
     /// (container space).
     fn set_selection_rects(&mut self, rects: &[(f32, f32, f32, f32)]) {
+        self.overlay_dirty = true;
         while self.selection_rects.len() < rects.len() {
             let Some(div) = create_element(&self.doc, "div") else {
                 break;
@@ -560,10 +628,125 @@ impl RinchDomEditorView {
         if self.last_selection.is_none() && self.selection_rects.is_empty() {
             return;
         }
+        self.overlay_dirty = true;
         self.last_selection = None;
         for div in self.selection_rects.drain(..) {
             div.remove();
         }
+    }
+
+    /// Outline the node a [`Selection::Node`] selects — resolve the node's host
+    /// element, compute its box in container space, and position a translucent
+    /// overlay over it. Clears the outline if the node can't be located or has no
+    /// geometry yet (e.g. an off-screen / virtualized block).
+    ///
+    /// [`Selection::Node`]: rinch_editor_core::Selection::Node
+    fn render_node_selection(&mut self, state: &EditorState) {
+        let Some(node_id) = self.node_host_at(&state.doc, state.selection.from()) else {
+            self.clear_node_selection();
+            return;
+        };
+        let Some(doc) = self.doc.upgrade() else {
+            return;
+        };
+        let geometry = {
+            let d = doc.borrow();
+            d.query_node_layout(node_id as u64).map(|(_, _, w, h)| {
+                let (ox, oy) = self.block_offset_in_container(&*d, node_id);
+                (ox, oy, w, h)
+            })
+        };
+        match geometry {
+            Some((x, y, w, h)) => self.position_node_outline(x, y, w, h),
+            None => self.clear_node_selection(),
+        }
+    }
+
+    /// Position the node-selection outline at the container-space box `(x, y, w, h)`.
+    /// Reuses one overlay div (created lazily) and skips the writes when the box is
+    /// unchanged, so a re-run doesn't re-dirty the tree (mirrors
+    /// [`Self::position_caret`]).
+    fn position_node_outline(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        let key = (
+            x.round() as i32,
+            y.round() as i32,
+            w.round() as i32,
+            h.round() as i32,
+        );
+        if self.last_node_outline == Some(key) {
+            return;
+        }
+        self.overlay_dirty = true;
+        self.last_node_outline = Some(key);
+        if self.node_outline.is_none() {
+            let Some(div) = create_element(&self.doc, "div") else {
+                return;
+            };
+            div.set_attribute("data-pm-selected", "true");
+            div.set_styles(&[
+                ("position", "absolute"),
+                // Trace the node's box exactly (border drawn inside the box).
+                ("box-sizing", "border-box"),
+                ("border", "2px solid #1a73e8"),
+                ("background-color", "rgba(26,115,232,0.15)"),
+                ("pointer-events", "none"),
+                // In front of the node content, like the caret.
+                ("z-index", "1"),
+            ]);
+            self.root.dom.append_child(&div);
+            self.node_outline = Some(div);
+        }
+        if let Some(div) = &self.node_outline {
+            let left = format!("{x}px");
+            let top = format!("{y}px");
+            let width = format!("{w}px");
+            let height = format!("{h}px");
+            div.set_styles(&[
+                ("left", &left),
+                ("top", &top),
+                ("width", &width),
+                ("height", &height),
+                ("display", "block"),
+            ]);
+        }
+    }
+
+    /// Hide the node-selection outline (the selection is no longer a node selection,
+    /// or its node went off-screen).
+    fn clear_node_selection(&mut self) {
+        if self.last_node_outline.is_none() {
+            return;
+        }
+        self.overlay_dirty = true;
+        self.last_node_outline = None;
+        if let Some(div) = &self.node_outline {
+            div.set_style("display", "none");
+        }
+    }
+
+    /// The host element id of the node *after* `pos` — the node a [`Selection::Node`]
+    /// anchored at `pos` selects — navigating the descriptor tree by the resolved
+    /// path. `None` if `pos` doesn't sit immediately before a child node.
+    ///
+    /// [`Selection::Node`]: rinch_editor_core::Selection::Node
+    fn node_host_at(&self, doc: &Node, pos: Pos) -> Option<usize> {
+        let r = doc.resolve(pos).ok()?;
+        let mut desc = &self.root;
+        for d in 0..r.depth() {
+            desc = desc.children.get(r.index(d))?;
+        }
+        let child = desc.children.get(r.index(r.depth()))?;
+        Some(child.outer.node_id().0)
+    }
+
+    /// The model position immediately **before** the node whose placed host element
+    /// is `target`, plus that node — the inverse of [`Self::node_host_at`], used to
+    /// node-select a leaf (image / horizontal rule) the user clicks. Matches either
+    /// the node's inner element (`dom`) or its outermost mark wrapper (`outer`), so a
+    /// hit on a marked inline image still resolves. `None` if `target` isn't a placed
+    /// node in this view.
+    pub(crate) fn node_pos_for_host(&self, target: usize) -> Option<(usize, Node)> {
+        find_node_by_host(&self.root, target, 0).map(|(pos, node)| (pos, node.clone()))
     }
 
     /// Position the caret overlay at `(x, y)` in **container space** with `height`.
@@ -576,6 +759,7 @@ impl RinchDomEditorView {
         if self.last_caret == Some(key) {
             return;
         }
+        self.overlay_dirty = true;
         self.last_caret = Some(key);
         // The caret moved (edit/cursor move) — restart the blink phase so the
         // caret is solid immediately after the interaction. Scope the reset to
@@ -624,6 +808,7 @@ impl RinchDomEditorView {
     pub(crate) fn hide_overlays(&mut self) {
         self.hide_caret();
         self.clear_selection_rects();
+        self.clear_node_selection();
     }
 
     /// Hide the caret (no collapsed cursor in a textblock).
@@ -631,6 +816,7 @@ impl RinchDomEditorView {
         if self.last_caret.is_none() {
             return;
         }
+        self.overlay_dirty = true;
         self.last_caret = None;
         self.blink_shown = None;
         if let Some(caret) = &self.caret {
@@ -678,6 +864,29 @@ fn find_block(desc: &ViewDesc, target: usize, content_start: usize) -> Option<(u
             return Some((pos + 1, &child.node));
         }
         if let Some(found) = find_block(child, target, pos + 1) {
+            return Some(found);
+        }
+        pos += child.node.node_size();
+    }
+    None
+}
+
+/// Walk the descriptor tree for the node whose placed host element is `target`
+/// (matching either its inner `dom` or its outermost mark wrapper `outer`),
+/// returning its model **position-before** and the node. `content_start` is the
+/// position just inside `desc`'s content (0 for the root/doc). The successor lookup
+/// to [`find_block`] for *node* (not text-cursor) addressing.
+fn find_node_by_host(
+    desc: &ViewDesc,
+    target: usize,
+    content_start: usize,
+) -> Option<(usize, &Node)> {
+    let mut pos = content_start; // the position just before the current child
+    for child in &desc.children {
+        if child.dom.node_id().0 == target || child.outer.node_id().0 == target {
+            return Some((pos, &child.node));
+        }
+        if let Some(found) = find_node_by_host(child, target, pos + 1) {
             return Some(found);
         }
         pos += child.node.node_size();
@@ -1237,6 +1446,68 @@ mod tests {
     }
 
     // ── A15: char→flat-byte caret map (the off-by-one-prone part) ─────────────
+
+    // ── node-views: NodeSelection of a leaf (image / horizontal rule) ─────────
+
+    #[test]
+    fn node_selection_host_round_trips_for_block_atom() {
+        let h = harness();
+        let s = schema();
+        let hr = s.branch("horizontal_rule", Fragment::empty()).unwrap();
+        let st = state(s.clone(), doc_node(&s, vec![para(&s, "ab"), hr]));
+        let view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+
+        // The hr is the 2nd container child; it renders as <hr>.
+        let blocks = children(&h, h.container_id);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(tag(&h, blocks[1]).as_deref(), Some("hr"));
+        let hr_id = blocks[1].0;
+
+        // Forward: the position just before the hr (model pos 4) → the hr host id.
+        assert_eq!(
+            view.node_host_at(&st.doc, rinch_editor_core::Pos(4)),
+            Some(hr_id)
+        );
+        // Inverse: the hr host id → (pos-before, node).
+        let (pos, node) = view.node_pos_for_host(hr_id).expect("hr is a placed node");
+        assert_eq!(pos, 4, "position immediately before the hr");
+        assert_eq!(node.type_name(), "horizontal_rule");
+
+        // A textblock host is not a node-selectable leaf.
+        assert!(view.node_pos_for_host(blocks[0].0).is_some()); // the paragraph IS a node…
+        // …but its position-before is 0 and it isn't a leaf — selectability is the
+        // core's call (`Selection::node_at`), exercised in the handle tests.
+    }
+
+    #[test]
+    fn node_selection_hides_caret_and_text_highlight() {
+        let h = harness();
+        let s = schema();
+        let hr = s.branch("horizontal_rule", Fragment::empty()).unwrap();
+        let mut st = state(s.clone(), doc_node(&s, vec![para(&s, "ab"), hr]));
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+
+        // Seed a caret so there is something for the node-selection pass to clear.
+        view.position_caret(1.0, 2.0, 18.0);
+        assert!(view.last_caret.is_some());
+
+        // Select the hr and run the post-layout pass.
+        st.selection =
+            rinch_editor_core::Selection::node_at(&st.doc, rinch_editor_core::Pos(4)).unwrap();
+        view.update_caret(&st);
+
+        // A node selection shows neither a caret nor a text highlight (the mock has
+        // no geometry, so the outline itself can't be positioned here — but the
+        // branch runs without panicking and leaves no stale overlays).
+        assert!(
+            view.last_caret.is_none(),
+            "caret hidden for a node selection"
+        );
+        assert!(
+            view.selection_rects.is_empty(),
+            "no text highlight for a node selection"
+        );
+    }
 
     #[test]
     fn textblock_flat_byte_spans_runs_and_multibyte() {

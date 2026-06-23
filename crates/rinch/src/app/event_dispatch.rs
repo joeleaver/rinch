@@ -937,7 +937,7 @@ impl RinchApp {
                             // Position the caret against the current layout (dirtying
                             // its block if it reparented), re-layout, then the
                             // post-layout caret pass finalizes it with fresh geometry.
-                            crate::editor::update_all_carets(self.focused_editor_id());
+                            self.refresh_editor_overlays();
                             let (w, h) = (window_size.0 as f32, window_size.1 as f32);
                             self.resolve_and_repaint(w, h);
                             actions.push(AppAction::RequestRedraw);
@@ -1855,12 +1855,9 @@ impl RinchApp {
                     return false;
                 }
                 match text {
-                    Some(t) if !t.is_empty() && t.chars().all(|c| !c.is_control()) => handle
-                        .update(|state| {
-                            let mut tr = state.tr();
-                            tr.insert_text(t).ok()?;
-                            Some(tr)
-                        }),
+                    Some(t) if !t.is_empty() && t.chars().all(|c| !c.is_control()) => {
+                        handle.insert_text(t)
+                    }
                     _ => false,
                 }
             }
@@ -1882,10 +1879,23 @@ impl RinchApp {
         let head = state.selection.head();
         let new_head: Option<Pos> = match motion {
             Motion::CharLeft => {
-                Some(Selection::near(&doc, Pos(head.0.saturating_sub(1)), -1).head())
+                let near = Selection::near(&doc, Pos(head.0.saturating_sub(1)), -1);
+                // A char move that lands on a selectable block atom (a horizontal
+                // rule) is a node selection, not a cursor. Honor it when collapsing
+                // (not extending) so the leaf is keyboard-reachable and deletable.
+                if !extend && matches!(near, Selection::Node(_)) {
+                    handle.set_selection(near);
+                    return true;
+                }
+                Some(near.head())
             }
             Motion::CharRight => {
-                Some(Selection::near(&doc, Pos((head.0 + 1).min(doc.content_size())), 1).head())
+                let near = Selection::near(&doc, Pos((head.0 + 1).min(doc.content_size())), 1);
+                if !extend && matches!(near, Selection::Node(_)) {
+                    handle.set_selection(near);
+                    return true;
+                }
+                Some(near.head())
             }
             Motion::WordLeft => word_boundary(&doc, head, false),
             Motion::WordRight => word_boundary(&doc, head, true),
@@ -1893,18 +1903,9 @@ impl RinchApp {
             Motion::LineEnd => line_bound(&doc, head, true),
             Motion::DocStart => Some(Selection::at_start(&doc).head()),
             Motion::DocEnd => Some(Selection::at_end(&doc).head()),
-            Motion::LineUp | Motion::LineDown => match self.editor_caret_point(handle, head) {
-                Some((cx, cy, ch)) => {
-                    let ty = if matches!(motion, Motion::LineUp) {
-                        cy - ch * 0.5
-                    } else {
-                        cy + ch * 1.5
-                    };
-                    self.editor_point_address(cx, ty)
-                        .and_then(|(_c, tb, ifc)| handle.pos_at(tb, ifc))
-                }
-                None => None,
-            },
+            Motion::LineUp | Motion::LineDown => self
+                .vertical_step(handle, head, matches!(motion, Motion::LineDown))
+                .map(|sel| sel.head()),
         };
         match new_head {
             Some(nh) => {
@@ -2139,6 +2140,70 @@ impl RinchApp {
         Some((abs_x + pad_l + local_x, abs_y + pad_t + local_y, height))
     }
 
+    /// One vertical cursor step (Up / Down), as a text cursor. First tries the
+    /// visual line above or below via Parley geometry; when that is **stuck** — the
+    /// caret would stay on the same visual line because a block atom (a horizontal
+    /// rule) or a large gap blocks the way — it steps **over** the atom to the
+    /// next/previous textblock (`Selection::near_text`, which skips atoms). `None`
+    /// when there is nowhere to go. Vertical movement never node-selects an atom;
+    /// the horizontal arrows and clicks do that.
+    fn vertical_step(
+        &self,
+        handle: &crate::editor::EditorHandle,
+        head: rinch_editor_core::Pos,
+        down: bool,
+    ) -> Option<rinch_editor_core::Selection> {
+        use rinch_editor_core::{Pos, Selection};
+        let doc = handle.doc();
+        if let Some((cx, cy, ch)) = self.editor_caret_point(handle, head)
+            && let Some((_c, tb, ifc)) = {
+                let ty = if down { cy + ch * 1.5 } else { cy - ch * 0.5 };
+                self.editor_point_address(cx, ty)
+            }
+            && let Some(p) = handle.pos_at(tb, ifc)
+        {
+            // A move into a *different* textblock is always a real line change.
+            let head_tb = handle.caret_address(head).map(|(t, _)| t);
+            let p_tb = handle.caret_address(p).map(|(t, _)| t);
+            if p_tb != head_tb {
+                return Some(Selection::cursor(p));
+            }
+            // Same textblock: accept only if the caret actually advanced to a
+            // different visual line (a wrapped paragraph) — otherwise the target
+            // point snapped back to the current line (a block atom is in the way).
+            if let Some((_, py, _)) = self.editor_caret_point(handle, p) {
+                let advanced = if down {
+                    py > cy + ch * 0.5
+                } else {
+                    py < cy - ch * 0.5
+                };
+                if advanced {
+                    return Some(Selection::cursor(p));
+                }
+            }
+        }
+        // Stuck (or an empty target with no Parley geometry) — step over any block
+        // atom(s) to the next/previous textblock. Probe from just outside the
+        // current block (for a cursor in a textblock) or from `head` itself (a
+        // doc-level boundary, e.g. coming from a node selection).
+        let r = doc.resolve(head).ok()?;
+        let probe = if r.parent().is_textblock() {
+            let content_start = head.0 - r.parent_offset();
+            if down {
+                content_start + r.parent().content().size() + 1
+            } else {
+                content_start.checked_sub(1)?
+            }
+        } else {
+            head.0
+        };
+        Selection::near_text(
+            &doc,
+            Pos(probe.min(doc.content_size())),
+            if down { 1 } else { -1 },
+        )
+    }
+
     /// The id of the `data-pm-editor` container under window/logical point
     /// `(x, y)`, if the click landed inside any editor — independent of whether it
     /// hit a textblock. Used so a click on the editor's padding / empty area still
@@ -2165,6 +2230,47 @@ impl RinchApp {
             let s = scale as f32;
             if (s - 1.0).abs() > f32::EPSILON {
                 self.editor_container_at(x / s, y / s)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// The host id of an editor **leaf** node element — an `<img>`/`<hr>` whose
+    /// `data-pm-type` is `image` or `horizontal_rule` — under logical point
+    /// `(x, y)`, if the click landed on one inside an editor container. Walks up
+    /// from the hit node, recording the first leaf seen, and returns it only once
+    /// the walk reaches the `data-pm-editor` container (so a leaf outside any editor,
+    /// or a click on a non-leaf block, yields `None`). The click→node-select path.
+    fn editor_leaf_at(&self, x: f32, y: f32) -> Option<usize> {
+        let doc = self.doc.clone()?;
+        let d = doc.borrow();
+        let hit = hit_test(&d.tree, x, y)?;
+        let mut leaf: Option<usize> = None;
+        let mut cur = Some(hit);
+        while let Some(id) = cur {
+            let node = d.tree.get(id)?;
+            if leaf.is_none()
+                && let Some(t) = node.attributes.get("data-pm-type")
+                && matches!(t.as_str(), "image" | "horizontal_rule")
+            {
+                leaf = Some(id);
+            }
+            if node.attributes.get("data-pm-editor").map(String::as_str) == Some("true") {
+                return leaf; // inside an editor — return the leaf if we passed one
+            }
+            cur = node.parent;
+        }
+        None
+    }
+
+    /// Physical-coordinate variant of [`Self::editor_leaf_at`] (the raw-or-scaled
+    /// HiDPI hedge, mirroring [`Self::editor_container_at_physical`]).
+    fn editor_leaf_at_physical(&self, x: f32, y: f32, scale: f64) -> Option<usize> {
+        self.editor_leaf_at(x, y).or_else(|| {
+            let s = scale as f32;
+            if (s - 1.0).abs() > f32::EPSILON {
+                self.editor_leaf_at(x / s, y / s)
             } else {
                 None
             }
@@ -2208,7 +2314,16 @@ impl RinchApp {
         // Take keyboard focus through the arbiter (tears down a prior surface /
         // input / CE / different editor).
         self.set_focus_target(FocusTarget::Editor(container));
-        if let Some((c, textblock, ifc_byte)) = self.editor_point_address_physical(x, y, scale)
+        // A click on a leaf node (an image or horizontal rule) selects the node
+        // itself — a `Selection::Node`, outlined by the view — rather than placing a
+        // text cursor (design §6 node-views). A node-select never arms a drag.
+        if let Some(leaf) = self.editor_leaf_at_physical(x, y, scale)
+            && let Some(selection) = handle.node_selection_at_host(leaf)
+        {
+            handle.set_selection(selection);
+            crate::editor::end_drag();
+        } else if let Some((c, textblock, ifc_byte)) =
+            self.editor_point_address_physical(x, y, scale)
             && c == container
             && let Some(clicked) = handle.pos_at(textblock, ifc_byte)
         {
@@ -2234,7 +2349,7 @@ impl RinchApp {
         }
         // Position the caret first, then re-layout so the post-layout caret pass
         // finalizes it against fresh geometry.
-        crate::editor::update_all_carets(self.focused_editor_id());
+        self.refresh_editor_overlays();
         let (w, h) = (window_size.0 as f32, window_size.1 as f32);
         self.resolve_and_repaint(w, h);
         true
@@ -2267,7 +2382,7 @@ impl RinchApp {
                 rinch_editor_core::Pos(anchor),
                 head,
             ));
-            crate::editor::update_all_carets(self.focused_editor_id());
+            self.refresh_editor_overlays();
             let (w, h) = (window_size.0 as f32, window_size.1 as f32);
             self.resolve_and_repaint(w, h);
         }

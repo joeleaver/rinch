@@ -22,6 +22,8 @@ fn app() -> NodeHandle {
             color: #555; margin: 0 0 8px; } \
         [data-pm-editor] ul { padding-left: 24px; margin: 0; } \
         [data-pm-editor] li { display: flex; align-items: baseline; gap: 6px; } \
+        [data-pm-editor] hr { border: none; border-top: 2px solid #ccc; margin: 14px 0; \
+            height: 0; } \
         [data-pm-placeholder] { color: #999; position: absolute; pointer-events: none; }";
 
     let tree = rsx! {
@@ -32,6 +34,7 @@ fn app() -> NodeHandle {
                 editor: editor.clone(),
                 content: "<h1>New editor</h1>\
                     <p>Hello <strong>bold</strong> and <em>italic</em> world.</p>\
+                    <hr>\
                     <blockquote><p>A quote block.</p></blockquote>\
                     <ul><li><p>first item</p></li><li><p>second item</p></li></ul>",
             }

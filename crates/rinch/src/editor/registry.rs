@@ -72,14 +72,16 @@ pub fn editor_for(container_id: usize) -> Option<EditorHandle> {
 /// other mounted editor hides its overlays — so a blurred editor shows neither a
 /// caret nor a selection (and the caret blink, which only runs for the focused
 /// editor, idles for the rest).
-pub fn update_all_carets(focused: Option<usize>) {
+pub fn update_all_carets(focused: Option<usize>) -> bool {
     let editors: Vec<(usize, EditorHandle)> =
         EDITORS.with(|e| e.borrow().iter().map(|(id, h)| (*id, h.clone())).collect());
+    let mut moved = false;
     for (id, handle) in editors {
         if Some(id) == focused {
-            handle.update_caret();
+            moved |= handle.update_caret();
         } else {
-            handle.hide_overlays();
+            moved |= handle.hide_overlays();
         }
     }
+    moved
 }
