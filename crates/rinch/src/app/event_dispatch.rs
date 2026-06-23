@@ -1904,8 +1904,14 @@ impl RinchApp {
             }
             Motion::WordLeft => word_boundary(&doc, head, false),
             Motion::WordRight => word_boundary(&doc, head, true),
-            Motion::LineStart => line_bound(&doc, head, false),
-            Motion::LineEnd => line_bound(&doc, head, true),
+            // Visual-line edge for wrapped paragraphs (geometry), falling back to
+            // the block edge when the caret has no Parley layout (an empty block).
+            Motion::LineStart => self
+                .visual_line_bound(handle, head, false)
+                .or_else(|| line_bound(&doc, head, false)),
+            Motion::LineEnd => self
+                .visual_line_bound(handle, head, true)
+                .or_else(|| line_bound(&doc, head, true)),
             Motion::DocStart => Some(Selection::at_start(&doc).head()),
             Motion::DocEnd => Some(Selection::at_end(&doc).head()),
             Motion::LineUp | Motion::LineDown => {
@@ -2219,6 +2225,53 @@ impl RinchApp {
             Pos(probe.min(doc.content_size())),
             if down { 1 } else { -1 },
         )
+    }
+
+    /// The model position at the start (`end = false`) or end (`end = true`) of the
+    /// caret's current **visual** line — so Home/End land at the wrapped line's edge,
+    /// not the whole block's. Hit-tests the far-left / far-right of the caret's line
+    /// box via the same geometry as [`Self::vertical_step`]. `None` when the caret
+    /// has no Parley geometry (an empty block); the caller falls back to the
+    /// block-level [`line_bound`].
+    fn visual_line_bound(
+        &self,
+        handle: &crate::editor::EditorHandle,
+        head: rinch_editor_core::Pos,
+        end: bool,
+    ) -> Option<rinch_editor_core::Pos> {
+        let (_cx, cy, ch) = self.editor_caret_point(handle, head)?;
+        let (tb, _flat) = handle.caret_address(head)?;
+        // Content-box left/right of the textblock, in window coords.
+        let (content_left, content_right) = {
+            let doc = self.doc.clone()?;
+            let d = doc.borrow();
+            let node = d.tree.get(tb)?;
+            let (abs_x, _abs_y) = Self::compute_absolute_position(&d.tree, tb);
+            let pad_l = node.computed_style.padding_left.to_px();
+            let pad_r = node.computed_style.padding_right.to_px();
+            (abs_x + pad_l, abs_x + node.layout.width - pad_r)
+        };
+        // Probe the middle of the caret's line box, just inside the far edge.
+        let ty = cy + ch * 0.5;
+        let tx = if end {
+            content_right - 1.0
+        } else {
+            content_left + 1.0
+        };
+        let (_c, tb2, ifc) = self.editor_point_address(tx, ty)?;
+        let p = handle.pos_at(tb2, ifc)?;
+        // At a soft-wrap boundary the end-of-line byte is the same model position as
+        // the start of the next visual line, and rinch-dom renders its caret with
+        // *downstream* affinity (at the next line's start). For End, step back one
+        // position when the target spilled onto the next line so the caret stays at
+        // the visual end of the current line.
+        if end
+            && let Some((_, py, _)) = self.editor_caret_point(handle, p)
+            && py > cy + ch * 0.5
+        {
+            return Some(rinch_editor_core::Pos(p.0.saturating_sub(1)));
+        }
+        Some(p)
     }
 
     /// The id of the `data-pm-editor` container under window/logical point
