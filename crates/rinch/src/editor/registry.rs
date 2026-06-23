@@ -51,6 +51,13 @@ pub fn register_editor(container_id: usize, handle: EditorHandle) {
 /// Forget the editor mounted at `container_id`.
 pub fn unregister_editor(container_id: usize) {
     EDITORS.with(|e| e.borrow_mut().retain(|(id, _)| *id != container_id));
+    super::virtualization::forget(container_id);
+}
+
+/// Every mounted editor as `(container id, handle)`. The virtualization driver
+/// sweeps these each layout to maintain a per-editor block window.
+pub(crate) fn all_editors() -> Vec<(usize, EditorHandle)> {
+    EDITORS.with(|e| e.borrow().iter().map(|(id, h)| (*id, h.clone())).collect())
 }
 
 /// The handle registered for `container_id`, if any. The runtime resolves its

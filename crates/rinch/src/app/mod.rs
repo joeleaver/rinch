@@ -561,6 +561,18 @@ impl RinchApp {
             }
         }
 
+        // New-editor block virtualization (design A3, phase 1) — run BEFORE the
+        // short-circuit. Creating a window (or moving the materialized range) sets
+        // the document's style/layout dirty flags, so this frame won't short-circuit
+        // and the resolve below applies the collapse. A selection-only first
+        // interaction otherwise never triggers the initial collapse.
+        #[cfg(feature = "new-editor")]
+        {
+            let focused = self.focused_editor_id();
+            let mut d = doc.borrow_mut();
+            crate::editor::virtualization_pre_layout(&mut d, focused);
+        }
+
         // Short-circuit when nothing needs resolving — avoids redundant tree walks
         // when a ReRender event arrives after the drag handler already resolved.
         {
@@ -619,6 +631,22 @@ impl RinchApp {
         // Apply deferred scroll-into-view now that layout is fresh
         self.apply_ce_scroll_into_view();
         self.apply_scroll_into_view();
+
+        // New-editor block virtualization (design A3, phase 2): cache measured
+        // heights and re-verify the materialized range with fresh positions, re
+        // laying out once if a big scroll jump changed it. Before the caret pass so
+        // the caret reads post-virtualization geometry.
+        #[cfg(feature = "new-editor")]
+        {
+            let focused = self.focused_editor_id();
+            let mut d = doc.borrow_mut();
+            crate::editor::virtualization_post_layout(
+                &mut d,
+                focused,
+                viewport_width,
+                viewport_height,
+            );
+        }
 
         // New-editor phase 2 (design A3): render each mounted editor's caret from
         // its selection now that layout geometry is fresh. If an overlay (caret /

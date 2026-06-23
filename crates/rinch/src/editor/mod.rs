@@ -17,6 +17,7 @@ mod component;
 mod handle;
 mod registry;
 mod view;
+mod virtualization;
 
 pub use component::Editor;
 pub use handle::EditorHandle;
@@ -24,6 +25,9 @@ pub use registry::{
     begin_drag, drag_anchor, editor_for, end_drag, unregister_editor, update_all_carets,
 };
 pub use view::RinchDomEditorView;
+pub(crate) use virtualization::{
+    post_layout as virtualization_post_layout, pre_layout as virtualization_pre_layout,
+};
 
 use std::rc::Rc;
 use std::time::Duration;

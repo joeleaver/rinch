@@ -48,12 +48,26 @@ pub(crate) struct CeVirtualWindow {
     /// and must not be collapsed by the next `pre_layout_update`.
     /// Cleared after each `pre_layout_update`.
     pub pending_nav_blocks: Vec<usize>,
+
+    /// When true, the window models only the container's `data-pm-type` children
+    /// (the new-editor's block elements), excluding overlay siblings (caret /
+    /// selection / node-outline / placeholder). The old contenteditable keeps
+    /// the original behavior (every direct child is a block) with `false`.
+    filter_blocks: bool,
 }
 
 impl CeVirtualWindow {
     /// Create a new VirtualWindow and collapse blocks outside the initial range.
+    /// Every direct child of `ce_node_id` is treated as a block (contenteditable).
     pub fn new(ce_node_id: usize, doc: &mut RinchDocument) -> Self {
-        let children: Vec<usize> = doc.tree.nodes[ce_node_id].children.clone();
+        Self::new_filtered(ce_node_id, doc, false)
+    }
+
+    /// As [`Self::new`], but when `filter_blocks` is true the window models only
+    /// the container's `data-pm-type` children (new-editor blocks), so overlay
+    /// siblings are never collapsed or counted.
+    pub fn new_filtered(ce_node_id: usize, doc: &mut RinchDocument, filter_blocks: bool) -> Self {
+        let children: Vec<usize> = block_children_of(doc, ce_node_id, filter_blocks);
         let block_count = children.len();
 
         let active = block_count >= MIN_BLOCKS_FOR_VIRTUALIZATION;
@@ -72,6 +86,7 @@ impl CeVirtualWindow {
             active,
             initialized: false,
             pending_nav_blocks: Vec::new(),
+            filter_blocks,
         };
 
         if active {
@@ -102,7 +117,7 @@ impl CeVirtualWindow {
             return false;
         }
 
-        let children: Vec<usize> = doc.tree.nodes[self.ce_node_id].children.clone();
+        let children: Vec<usize> = self.block_children(doc);
         let block_count = children.len();
         if block_count == 0 {
             return false;
@@ -178,7 +193,7 @@ impl CeVirtualWindow {
             return;
         }
 
-        let children: Vec<usize> = doc.tree.nodes[self.ce_node_id].children.clone();
+        let children: Vec<usize> = self.block_children(doc);
         if self.measured_heights.len() != children.len() {
             self.measured_heights.resize(children.len(), None);
         }
@@ -257,7 +272,7 @@ impl CeVirtualWindow {
         if !self.active {
             return false;
         }
-        let children = &doc.tree.nodes[self.ce_node_id].children;
+        let children = self.block_children(doc);
         let Some(idx) = children.iter().position(|&id| id == block_node_id) else {
             return false;
         };
@@ -283,7 +298,7 @@ impl CeVirtualWindow {
 
     /// Called when blocks are inserted/removed.
     pub fn on_blocks_changed(&mut self, doc: &mut RinchDocument) {
-        let children: Vec<usize> = doc.tree.nodes[self.ce_node_id].children.clone();
+        let children: Vec<usize> = self.block_children(doc);
         let block_count = children.len();
 
         if block_count < MIN_BLOCKS_FOR_VIRTUALIZATION {
@@ -328,5 +343,134 @@ impl CeVirtualWindow {
 
     pub fn is_active(&self) -> bool {
         self.active
+    }
+
+    /// The number of blocks this window currently models (used by the new-editor
+    /// driver to detect insert/delete and re-sync via `on_blocks_changed`).
+    #[cfg(feature = "new-editor")]
+    pub fn block_count(&self) -> usize {
+        self.measured_heights.len()
+    }
+
+    /// The container's block children, honoring `filter_blocks` (excludes overlay
+    /// siblings for the new editor).
+    fn block_children(&self, doc: &RinchDocument) -> Vec<usize> {
+        block_children_of(doc, self.ce_node_id, self.filter_blocks)
+    }
+}
+
+/// The block children of `ce_node_id`: every direct child when `filter_blocks` is
+/// false (contenteditable), or only the `data-pm-type` children when true (the
+/// new editor, where caret / selection / outline / placeholder overlays are
+/// container siblings with no `data-pm-type`).
+fn block_children_of(doc: &RinchDocument, ce_node_id: usize, filter_blocks: bool) -> Vec<usize> {
+    let children = &doc.tree.nodes[ce_node_id].children;
+    if !filter_blocks {
+        return children.clone();
+    }
+    children
+        .iter()
+        .copied()
+        .filter(|&id| {
+            doc.tree
+                .nodes
+                .get(id)
+                .is_some_and(|n| n.attributes.contains_key("data-pm-type"))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rinch_core::dom::DomDocument;
+
+    /// Build a new-editor-like host: a `data-pm-editor` scroll container with `n`
+    /// `<p data-pm-type="paragraph">` blocks (each wrapping to ~2 lines in a narrow
+    /// column) plus a `data-pm-caret` overlay sibling that has **no** `data-pm-type`
+    /// (so the block filter must exclude it). Returns `(container, block_ids, caret)`.
+    fn build_editor_host(doc: &mut RinchDocument, n: usize) -> (usize, Vec<usize>, usize) {
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(container, "data-pm-editor", "true");
+        doc.set_attribute(container, "data-pm-type", "doc");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 150px; height: 300px; overflow-y: auto; position: relative",
+        );
+        doc.append_child(body, container);
+
+        let mut blocks = Vec::new();
+        for i in 0..n {
+            let p = doc.create_element("p");
+            doc.set_attribute(p, "data-pm-type", "paragraph");
+            doc.append_child(container, p);
+            let text = doc.create_text(&format!(
+                "Block {i} with plenty of words here so it wraps across at least two lines in a narrow column"
+            ));
+            doc.append_child(p, text);
+            blocks.push(p.0);
+        }
+
+        // A caret overlay (container child, no data-pm-type) — like the live tree
+        // after focus. The block filter must never collapse it.
+        let caret = doc.create_element("div");
+        doc.set_attribute(caret, "data-pm-caret", "true");
+        doc.set_attribute(
+            caret,
+            "style",
+            "position: absolute; left: 0; top: 0; width: 2px; height: 18px",
+        );
+        doc.append_child(container, caret);
+
+        (container.0, blocks, caret.0)
+    }
+
+    #[test]
+    fn block_filter_excludes_overlay_siblings() {
+        let mut doc = RinchDocument::new();
+        let (container, blocks, caret) = build_editor_host(&mut doc, 5);
+        let filtered = block_children_of(&doc, container, true);
+        assert_eq!(filtered, blocks, "only data-pm-type blocks are modeled");
+        assert!(!filtered.contains(&caret), "the caret overlay is excluded");
+        // Without filtering (contenteditable), every child is a block.
+        assert_eq!(
+            block_children_of(&doc, container, false).len(),
+            blocks.len() + 1
+        );
+    }
+
+    #[test]
+    fn new_filtered_collapses_far_offscreen_block_and_spares_overlay() {
+        let mut doc = RinchDocument::new();
+        let (container, blocks, caret) = build_editor_host(&mut doc, 80);
+        doc.resolve_layout(400.0, 600.0);
+
+        let probe = blocks[50];
+        let full_h = doc.tree.nodes[probe].layout.height;
+        assert!(
+            full_h > 30.0,
+            "expected a multi-line block (>30px), got {full_h}"
+        );
+        let caret_h = doc.tree.nodes[caret].layout.height;
+
+        // This is exactly what the driver does on first run for a scroll editor.
+        let vw = CeVirtualWindow::new_filtered(container, &mut doc, true);
+        assert!(vw.is_active(), "80 blocks must activate virtualization");
+        doc.resolve_layout(400.0, 600.0);
+
+        let collapsed_h = doc.tree.nodes[probe].layout.height;
+        assert!(
+            (collapsed_h - DEFAULT_ESTIMATED_HEIGHT).abs() < 1.0,
+            "off-screen block 50 should collapse to ~{DEFAULT_ESTIMATED_HEIGHT}px, \
+             got {collapsed_h} (full height was {full_h})"
+        );
+        // The overlay must be untouched by virtualization.
+        assert_eq!(
+            doc.tree.nodes[caret].estimated_height, None,
+            "the caret overlay must not get an estimated height"
+        );
+        assert!((doc.tree.nodes[caret].layout.height - caret_h).abs() < 0.5);
     }
 }
