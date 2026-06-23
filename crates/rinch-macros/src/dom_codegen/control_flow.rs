@@ -62,7 +62,7 @@ fn collect_capture_idents(expr: &syn::Expr) -> Vec<syn::Ident> {
         /// bound by each pattern are added to the top `locals` frame so the
         /// branch body (pushed by the caller) skips them. A plain boolean
         /// condition just falls through to a normal visit.
-        fn scan_cond<'ast>(&mut self, cond: &'ast syn::Expr) {
+        fn scan_cond(&mut self, cond: &syn::Expr) {
             match cond {
                 syn::Expr::Let(let_expr) => {
                     self.visit_expr(&let_expr.expr);
@@ -722,8 +722,12 @@ mod tests {
     fn if_let_else_branch_does_not_see_binding() {
         // A name used only in the else branch IS an outer capture; the `if let`
         // pattern binding does not leak there.
-        let captures =
-            caps("{ if let Some(x) = maybe { vec![x] } else { vec![fallback] } }");
+        //
+        // NB: use array literals (`[..]`), not `vec![..]`. `syn`'s visitor treats
+        // macro token streams as opaque, so an ident only ever referenced inside a
+        // `vec![..]` is invisible to the scanner and would never be collected —
+        // which would make the `fallback` assertion below spuriously fail.
+        let captures = caps("{ if let Some(x) = maybe { [x] } else { [fallback] } }");
         assert!(captures.contains(&"maybe".to_string()));
         assert!(captures.contains(&"fallback".to_string()));
         assert!(!captures.contains(&"x".to_string()));
@@ -741,7 +745,7 @@ mod tests {
 
     #[test]
     fn while_let_binding_is_not_a_capture() {
-        let captures = caps("{ while let Some(n) = cursor.next() { total += n; } vec![total] }");
+        let captures = caps("{ while let Some(n) = cursor.next() { total += n; } [total] }");
         assert!(captures.contains(&"cursor".to_string()));
         assert!(captures.contains(&"total".to_string()));
         assert!(!captures.contains(&"n".to_string()));
@@ -751,9 +755,36 @@ mod tests {
     fn let_chain_later_link_sees_earlier_binding() {
         // In `if let Some(x) = a && x > 0`, `x` in the second link resolves to
         // the binding from the first — not an outer capture. `a` is a capture.
-        let captures = caps("{ if let Some(x) = a && x > threshold { vec![x] } else { vec![] } }");
+        let captures = caps("{ if let Some(x) = a && x > threshold { [x] } else { [] } }");
         assert!(captures.contains(&"a".to_string()));
         assert!(captures.contains(&"threshold".to_string()));
         assert!(!captures.contains(&"x".to_string()));
+    }
+
+    #[test]
+    fn match_guard_sees_arm_binding() {
+        // A `match` arm guard can reference the names bound by its pattern, so
+        // those names are not outer captures — but a name used *only* in the guard
+        // (`limit`) still is.
+        let captures = caps(
+            "items.iter().filter(|i| match active.get() { Editor(c) if c > limit => true, _ => false })",
+        );
+        assert!(captures.contains(&"items".to_string()));
+        assert!(captures.contains(&"active".to_string()));
+        assert!(captures.contains(&"limit".to_string()));
+        assert!(!captures.contains(&"c".to_string()));
+    }
+
+    #[test]
+    fn nested_else_if_let_scopes_each_branch() {
+        // `else if let Some(y) = b` recurses through the same `visit_expr_if`
+        // path, so `y` is scoped to its own branch (not a capture) while both
+        // scrutinees `a` and `b` are captured.
+        let captures =
+            caps("{ if let Some(x) = a { [x] } else if let Some(y) = b { [y] } else { [] } }");
+        assert!(captures.contains(&"a".to_string()));
+        assert!(captures.contains(&"b".to_string()));
+        assert!(!captures.contains(&"x".to_string()));
+        assert!(!captures.contains(&"y".to_string()));
     }
 }
