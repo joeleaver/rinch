@@ -29,6 +29,9 @@ use super::DomCodegenContext;
 ///   inside the expression itself (issue #32 — `.filter(|b| b % 4 == 0)` must
 ///   not shadow a non-existent outer `b`). Scope-tracked via a stack pushed on
 ///   `Closure` / `Block` entry and popped on exit.
+/// - Excludes identifiers bound by `if let` / `while let` (incl. `&&`
+///   let-chains) patterns and `match` arm patterns, each scoped to the branch
+///   that can actually see them — the `if let` analogue of the #32 fix.
 ///
 /// The collected list is used to emit `let #id = #id.clone();` shadow bindings
 /// before the inner `move ||` closure is constructed. Cloning Copy types via
@@ -49,6 +52,30 @@ fn collect_capture_idents(expr: &syn::Expr) -> Vec<syn::Ident> {
     impl Collector {
         fn is_locally_bound(&self, name: &str) -> bool {
             self.locals.iter().any(|frame| frame.contains(name))
+        }
+
+        /// Scan an `if`/`while` condition that may introduce `let` bindings
+        /// (`if let`, `while let`, and `&&` let-chains). Each scrutinee
+        /// expression is visited so its identifiers resolve against the
+        /// *current* scope — which already includes bindings from earlier links
+        /// of a let-chain (`if let Some(x) = a && x > 0`) — while the names
+        /// bound by each pattern are added to the top `locals` frame so the
+        /// branch body (pushed by the caller) skips them. A plain boolean
+        /// condition just falls through to a normal visit.
+        fn scan_cond<'ast>(&mut self, cond: &'ast syn::Expr) {
+            match cond {
+                syn::Expr::Let(let_expr) => {
+                    self.visit_expr(&let_expr.expr);
+                    if let Some(frame) = self.locals.last_mut() {
+                        collect_pat_idents(&let_expr.pat, frame);
+                    }
+                }
+                syn::Expr::Binary(bin) if matches!(bin.op, syn::BinOp::And(_)) => {
+                    self.scan_cond(&bin.left);
+                    self.scan_cond(&bin.right);
+                }
+                other => self.visit_expr(other),
+            }
         }
     }
 
@@ -132,6 +159,45 @@ fn collect_capture_idents(expr: &syn::Expr) -> Vec<syn::Ident> {
             if let Some(frame) = self.locals.last_mut() {
                 collect_pat_idents(&local.pat, frame);
             }
+        }
+
+        fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
+            // `if let PAT = scrutinee { then } else { else }` binds the names in
+            // `PAT` only within `then` — NOT the scrutinee and NOT the else
+            // branch. The default visitor doesn't know this, so it would treat
+            // those names as outer captures and emit `let name = name.clone();`
+            // for a binding that doesn't exist (the `if let` analogue of #32).
+            // A plain `if cond` leaves the pushed frame empty and is unaffected.
+            self.locals.push(HashSet::new());
+            self.scan_cond(&node.cond);
+            self.visit_block(&node.then_branch);
+            self.locals.pop();
+            if let Some((_, else_branch)) = &node.else_branch {
+                self.visit_expr(else_branch);
+            }
+        }
+
+        fn visit_expr_while(&mut self, node: &'ast syn::ExprWhile) {
+            // `while let PAT = scrutinee { body }` — same scoping as `if let`,
+            // with the pattern visible in the body.
+            self.locals.push(HashSet::new());
+            self.scan_cond(&node.cond);
+            self.visit_block(&node.body);
+            self.locals.pop();
+        }
+
+        fn visit_arm(&mut self, arm: &'ast syn::Arm) {
+            // A `match` arm pattern binds names visible in the arm's guard and
+            // body only. The scrutinee is visited by `visit_expr_match` in the
+            // outer scope, so we only scope the arm here.
+            let mut frame = HashSet::new();
+            collect_pat_idents(&arm.pat, &mut frame);
+            self.locals.push(frame);
+            if let Some((_, guard)) = &arm.guard {
+                self.visit_expr(guard);
+            }
+            self.visit_expr(&arm.body);
+            self.locals.pop();
         }
     }
 
@@ -637,5 +703,57 @@ mod tests {
         // The original #26 case — a non-Copy fn param used in the iter source.
         let captures = caps("variant_options(default_variant.clone())");
         assert!(captures.contains(&"default_variant".to_string()));
+    }
+
+    #[test]
+    fn if_let_binding_is_not_a_capture() {
+        // The repro: `cid` is bound by `if let` inside a filter closure and used
+        // in the then-branch. It must not be treated as an outer capture, while
+        // the scrutinee `active_pane` still is.
+        let captures = caps(
+            "items.into_iter().filter(|f| if let Pane::Editor(ref cid) = active_pane.get() { f.id == *cid } else { false })",
+        );
+        assert!(captures.contains(&"items".to_string()));
+        assert!(captures.contains(&"active_pane".to_string()));
+        assert!(!captures.contains(&"cid".to_string()));
+    }
+
+    #[test]
+    fn if_let_else_branch_does_not_see_binding() {
+        // A name used only in the else branch IS an outer capture; the `if let`
+        // pattern binding does not leak there.
+        let captures =
+            caps("{ if let Some(x) = maybe { vec![x] } else { vec![fallback] } }");
+        assert!(captures.contains(&"maybe".to_string()));
+        assert!(captures.contains(&"fallback".to_string()));
+        assert!(!captures.contains(&"x".to_string()));
+    }
+
+    #[test]
+    fn match_arm_binding_is_not_a_capture() {
+        let captures = caps(
+            "items.iter().filter(|i| match active.get() { Pane::Editor(ref c) => i.id == *c, _ => false })",
+        );
+        assert!(captures.contains(&"items".to_string()));
+        assert!(captures.contains(&"active".to_string()));
+        assert!(!captures.contains(&"c".to_string()));
+    }
+
+    #[test]
+    fn while_let_binding_is_not_a_capture() {
+        let captures = caps("{ while let Some(n) = cursor.next() { total += n; } vec![total] }");
+        assert!(captures.contains(&"cursor".to_string()));
+        assert!(captures.contains(&"total".to_string()));
+        assert!(!captures.contains(&"n".to_string()));
+    }
+
+    #[test]
+    fn let_chain_later_link_sees_earlier_binding() {
+        // In `if let Some(x) = a && x > 0`, `x` in the second link resolves to
+        // the binding from the first — not an outer capture. `a` is a capture.
+        let captures = caps("{ if let Some(x) = a && x > threshold { vec![x] } else { vec![] } }");
+        assert!(captures.contains(&"a".to_string()));
+        assert!(captures.contains(&"threshold".to_string()));
+        assert!(!captures.contains(&"x".to_string()));
     }
 }
