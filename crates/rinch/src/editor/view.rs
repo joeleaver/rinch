@@ -736,7 +736,11 @@ impl RinchDomEditorView {
             desc = desc.children.get(r.index(d))?;
         }
         let child = desc.children.get(r.index(r.depth()))?;
-        Some(child.outer.node_id().0)
+        // The *inner* leaf element (`dom`), not the mark wrapper (`outer`): a node
+        // selection outlines the image / hr box itself, even when the leaf carries
+        // marks (e.g. a linked image, where `outer` is the `<a>`). For an unmarked
+        // leaf `dom == outer`, so this is unchanged for the common case.
+        Some(child.dom.node_id().0)
     }
 
     /// The model position immediately **before** the node whose placed host element
@@ -1477,6 +1481,38 @@ mod tests {
         assert!(view.node_pos_for_host(blocks[0].0).is_some()); // the paragraph IS a node…
         // …but its position-before is 0 and it isn't a leaf — selectability is the
         // core's call (`Selection::node_at`), exercised in the handle tests.
+    }
+
+    #[test]
+    fn marked_inline_leaf_node_host_is_the_inner_element() {
+        // A node selection of a *marked* inline leaf (a linked image) must outline
+        // the inner <img>, not the <a> mark wrapper — so node_host_at returns the
+        // img host id (the inner `dom`), not the wrapper id (`outer`).
+        let h = harness();
+        let s = schema();
+        let slice = rinch_editor_core::serialize::slice_from_html(
+            &s,
+            "<p>a<a href=\"https://example.com\"><img src=\"y.png\"></a></p>",
+        )
+        .expect("parse linked image");
+        let st = state(s.clone(), s.branch("doc", slice.content).unwrap());
+        let view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+
+        // Host tree: the paragraph's children are the text "a" and the <a> mark
+        // wrapper, whose only child is the <img>. (Also asserts the fixture really
+        // wraps the image — i.e. the parser applied the link mark to the leaf.)
+        let para = children(&h, h.container_id)[0];
+        let a_id = *children(&h, para)
+            .iter()
+            .find(|&&c| tag(&h, c).as_deref() == Some("a"))
+            .expect("the image is wrapped in an <a> mark wrapper");
+        let img_id = children(&h, a_id)[0];
+        assert_eq!(tag(&h, img_id).as_deref(), Some("img"));
+
+        // doc(p(text "a", image)) → positions 0[p 1 a 2 (img) 3]4 ; the image is at 2.
+        let host = view.node_host_at(&st.doc, rinch_editor_core::Pos(2));
+        assert_eq!(host, Some(img_id.0), "outline traces the inner <img>");
+        assert_ne!(host, Some(a_id.0), "not the <a> mark wrapper");
     }
 
     #[test]
