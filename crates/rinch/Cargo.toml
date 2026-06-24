@@ -45,9 +45,8 @@ tray-icon = { workspace = true, optional = true }
 rinch-theme = { workspace = true, optional = true }
 rinch-components = { workspace = true, optional = true }
 rinch-debug = { path = "../rinch-debug", optional = true }
-rinch-editor = { workspace = true }
-# New ProseMirror-style editor core (M5+). Optional, behind `new-editor`, so `main`
-# stays green while the old CE engine is still live; the rip/flip lands in M8.
+# ProseMirror-style editor core. Pulled in by the `desktop` feature (the desktop
+# rich-text editor view lives in this crate's `editor` module).
 rinch-editor-core = { workspace = true, optional = true }
 rinch-video = { workspace = true, optional = true }
 ureq = { version = "3", optional = true }
@@ -101,6 +100,9 @@ desktop = [
     "dep:png", "dep:base64", "dep:keyboard-types",
     "dep:bytemuck",
     "dep:softbuffer", "rinch-dom/software-renderer",
+    # The ProseMirror-style rich-text editor is a first-class desktop feature
+    # (its rinch-dom view needs the desktop renderer; the web view is a follow-up).
+    "dep:rinch-editor-core",
 ]
 android = [
     "dep:rinch-dom", "dep:rinch-editable", "dep:parley",
@@ -128,15 +130,9 @@ components = ["theme", "dep:rinch-components"]
 debug = ["dep:rinch-debug"]
 video = ["dep:rinch-video"]
 image-network = ["dep:ureq"]
-collaboration = ["rinch-editor/collaboration"]
-# The new desktop rich-text editor view (M5). Behind a feature so `main` stays
-# green; needs the desktop renderer. Flipped to default and the old engine ripped
-# in M8.
-new-editor = ["desktop", "dep:rinch-editor-core"]
 # Editor accessibility (M7b): derive an accesskit TreeUpdate from EditorState and
 # push it through a per-platform adapter. Linux uses accesskit_unix (AT-SPI); other
 # desktop platforms fall back to a no-op bridge until their adapters land.
-a11y = ["new-editor", "rinch-editor-core/a11y", "dep:accesskit", "dep:accesskit_unix"]
-# Derive serde on the CE interchange types (BlockData / InlineRunData /
-# InlineMarkData) for persisting contenteditable content.
-serde = ["rinch-core/serde"]
+a11y = ["desktop", "rinch-editor-core/a11y", "dep:accesskit", "dep:accesskit_unix"]
+# Derive serde on the editor's durable wire shape (DocNode / BlockData).
+serde = ["rinch-editor-core/serde"]

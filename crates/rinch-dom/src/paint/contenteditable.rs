@@ -1,4 +1,6 @@
-//! ContentEditable cursor/selection painting and input value rendering.
+//! `<input>`/`<textarea>` value rendering (text, placeholder, caret, selection,
+//! and IME preedit), the read-only text-selection highlight (`user-select: text`),
+//! plus the small style/px helpers they share.
 
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, Rect};
@@ -6,15 +8,13 @@ use peniko::{Brush, Fill};
 
 use super::painter::Painter;
 use crate::computed_style::LineHeightValue;
-use crate::node::{Node, NodeTree};
+use crate::node::Node;
 
 use super::text::render_text_with_shadow;
 
-/// Find the line height from a Parley layout for the line containing the given y position.
-///
-/// `y` should be in layout-relative coordinates (e.g., from cursor.geometry().y0).
-/// Returns the line's height as reported by Parley, which already reflects the actual
-/// font metrics and line-height of the text that was laid out.
+/// Find the line height from a Parley layout for the line containing the given y
+/// position (layout-relative). Returns Parley's reported line height for that
+/// line, which reflects the actual font metrics of the laid-out text.
 fn line_height_at_y(layout: &parley::layout::Layout<Brush>, y: f32) -> Option<f64> {
     for line in layout.lines() {
         let m = line.metrics();
@@ -26,11 +26,105 @@ fn line_height_at_y(layout: &parley::layout::Layout<Brush>, y: f32) -> Option<f6
             return Some(m.line_height as f64);
         }
     }
-    // If y doesn't match any line (e.g. empty layout), try first line
+    // If y doesn't match any line (e.g. empty layout), try the first line.
     layout
         .lines()
         .next()
         .map(|line| line.metrics().line_height as f64)
+}
+
+/// Paint the translucent selection highlight for a **read-only** text selection
+/// (`user-select: text`) over a block's inline `layout`. `sel_start`/`sel_end`
+/// are byte offsets into the laid-out text; `text_x`/`text_y` are the content-box
+/// origin. (The editor and `<input>` render their own selections elsewhere; this
+/// is only for selecting static, non-editable text.)
+#[allow(clippy::too_many_arguments)]
+pub(super) fn paint_text_selection_highlight(
+    node: &Node,
+    painter: &mut dyn Painter,
+    scale: f64,
+    text_x: f64,
+    text_y: f64,
+    layout: &parley::layout::Layout<Brush>,
+    text_len: usize,
+    sel_start: usize,
+    sel_end: usize,
+    content_width: f64,
+    transform: Affine,
+) {
+    if sel_start == sel_end {
+        return;
+    }
+
+    // Parley's line metrics are authoritative (the layout may belong to a child
+    // block with its own font size); fall back to computed style if needed.
+    let fallback_line_height = {
+        let font_size = node.computed_style.font_size;
+        let scaled = font_size * scale as f32;
+        let mult = match node.computed_style.line_height {
+            LineHeightValue::Relative(r) => r as f64,
+            LineHeightValue::Absolute(abs) => (abs / font_size) as f64,
+            LineHeightValue::Normal => 1.2,
+        };
+        scaled as f64 * mult
+    };
+
+    let sel_start_byte = sel_start.min(text_len);
+    let sel_end_byte = sel_end.min(text_len);
+
+    let (start_x, start_y) =
+        crate::text_query::caret_position_for_offset_layout(layout, sel_start_byte);
+    let (end_x, end_y) = crate::text_query::caret_position_for_offset_layout(layout, sel_end_byte);
+
+    let sel_color = AlphaColor::<Srgb>::from_rgba8(51, 154, 240, 100);
+
+    if (start_y - end_y).abs() < 0.1 {
+        // Same line — find the matching line's actual height from Parley.
+        let actual_line_height = line_height_at_y(layout, start_y).unwrap_or(fallback_line_height);
+        let sel_rect = Rect::new(
+            text_x + start_x as f64,
+            text_y + start_y as f64,
+            text_x + end_x as f64,
+            text_y + start_y as f64 + actual_line_height,
+        );
+        painter.fill_color(Fill::NonZero, transform, sel_color, &sel_rect.into());
+    } else {
+        // Multi-line selection.
+        for line in layout.lines() {
+            let line_metrics = line.metrics();
+            let glyph_top = line_metrics.baseline - line_metrics.ascent;
+            let half_leading =
+                (line_metrics.line_height - line_metrics.ascent - line_metrics.descent) / 2.0;
+            let line_box_top = glyph_top - half_leading;
+            let line_box_bottom = line_box_top + line_metrics.line_height;
+
+            // Skip lines entirely outside the selection.
+            if line_box_bottom <= start_y || line_box_top > end_y + 0.5 {
+                continue;
+            }
+
+            let is_start_line = start_y >= line_box_top - 0.5 && start_y < line_box_bottom;
+            let is_end_line = end_y >= line_box_top - 0.5 && end_y < line_box_bottom;
+
+            let rect_y = text_y + line_box_top as f64;
+            let (rect_start_x, rect_end_x) = if is_start_line && is_end_line {
+                (start_x as f64, end_x as f64)
+            } else if is_start_line {
+                (start_x as f64, content_width)
+            } else if is_end_line {
+                (0.0, end_x as f64)
+            } else {
+                (0.0, content_width)
+            };
+            let sel_rect = Rect::new(
+                text_x + rect_start_x,
+                rect_y,
+                text_x + rect_end_x,
+                rect_y + line_metrics.line_height as f64,
+            );
+            painter.fill_color(Fill::NonZero, transform, sel_color, &sel_rect.into());
+        }
+    }
 }
 
 /// Get a CSS style property value from inline styles.
@@ -71,367 +165,6 @@ pub(super) fn get_style_property(node: &Node, property: &str) -> Option<String> 
 pub(super) fn parse_px(value: &str) -> Option<f32> {
     let v = value.trim().strip_suffix("px").unwrap_or(value.trim());
     v.parse().ok()
-}
-
-/// Paint the value of an input element.
-#[allow(clippy::too_many_arguments)]
-/// Paint the cursor/selection overlay for a contenteditable element.
-///
-/// Uses the IFC inline layout already built for the element to position
-/// the caret and selection highlight. Cursor/selection byte offsets are
-/// read from `data-ce-cursor` and `data-ce-selection-start` attributes.
-/// Check if a tag name represents a block-level element.
-pub(super) fn is_block_tag(tag: &str) -> bool {
-    matches!(
-        tag,
-        "div"
-            | "p"
-            | "h1"
-            | "h2"
-            | "h3"
-            | "h4"
-            | "h5"
-            | "h6"
-            | "li"
-            | "ul"
-            | "ol"
-            | "section"
-            | "article"
-            | "blockquote"
-            | "pre"
-            | "hr"
-            | "table"
-            | "tr"
-            | "header"
-            | "footer"
-            | "main"
-            | "nav"
-            | "aside"
-            | "figure"
-            | "figcaption"
-            | "details"
-            | "summary"
-    )
-}
-
-/// Compute the flat text length for a subtree, matching extract_text_content's logic.
-/// This accounts for `\n` separators between block elements.
-pub(super) fn get_flat_text_len(tree: &NodeTree, node_id: usize) -> usize {
-    let mut len = 0usize;
-    let mut ends_with_newline = false;
-    collect_text_len_recursive(tree, node_id, &mut len, &mut ends_with_newline);
-    // Strip trailing newline (matching extract_text_content)
-    if ends_with_newline && len > 0 {
-        len -= 1;
-    }
-    len
-}
-
-pub(super) fn collect_text_len_recursive(
-    tree: &NodeTree,
-    node_id: usize,
-    len: &mut usize,
-    ends_with_newline: &mut bool,
-) {
-    if let Some(node) = tree.nodes.get(node_id) {
-        if let Some(t) = node.text_content() {
-            *len += t.len();
-            *ends_with_newline = t.ends_with('\n');
-        } else if node.tag() == Some("br") {
-            // <br> is inline, contributes 1 byte ("\n") — matches walk_for_global_offset
-            *len += 1;
-            *ends_with_newline = true;
-        } else {
-            let is_block = node.tag().map(is_block_tag).unwrap_or(false);
-            if is_block && *len > 0 && !*ends_with_newline {
-                *len += 1;
-                *ends_with_newline = true;
-            }
-            for &child_id in &node.children {
-                collect_text_len_recursive(tree, child_id, len, ends_with_newline);
-            }
-            // Empty block elements must reset ends_with_newline so consecutive
-            // empty blocks each get a unique offset via their own separator.
-            if is_block && node.children.is_empty() {
-                *ends_with_newline = false;
-            }
-            if is_block && *len > 0 && !*ends_with_newline {
-                *len += 1;
-                *ends_with_newline = true;
-            }
-        }
-    }
-}
-
-/// Render selection/cursor across sub-blocks (e.g. ul > li items).
-/// `parent_x`/`parent_y` are the absolute position of the parent block element.
-/// `children` are the sub-block node IDs. `parent_accumulated` is the global
-/// text offset at the start of the parent block.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn paint_ce_sub_blocks(
-    tree: &NodeTree,
-    ce_node: &Node,
-    painter: &mut dyn Painter,
-    scale: f64,
-    parent_x: f64,
-    parent_y: f64,
-    children: &[usize],
-    parent_accumulated: usize,
-    cursor_pos: usize,
-    sel_min: usize,
-    sel_max: usize,
-    content_width: f64,
-    transform: Affine,
-) {
-    let mut sub_acc = parent_accumulated;
-    let mut sub_first = true;
-
-    for &sub_id in children {
-        if let Some(sub_node) = tree.nodes.get(sub_id) {
-            let sub_text_len = get_flat_text_len(tree, sub_id);
-            if !sub_first {
-                sub_acc += 1; // \n separator
-            }
-            sub_first = false;
-
-            let sub_end = sub_acc + sub_text_len;
-            let has_cursor = cursor_pos >= sub_acc && cursor_pos <= sub_end;
-            let in_selection = sel_min < sub_end && sel_max > sub_acc && sel_min != sel_max;
-
-            if has_cursor || in_selection {
-                let local_sel_start = if in_selection {
-                    sel_min.max(sub_acc) - sub_acc
-                } else {
-                    0
-                };
-                let local_sel_end = if in_selection {
-                    sel_max.min(sub_end) - sub_acc
-                } else {
-                    0
-                };
-                let caret = if has_cursor {
-                    Some(cursor_pos - sub_acc)
-                } else {
-                    None
-                };
-
-                let sub_pad_x = sub_node.computed_style.padding_left.to_px() as f64 * scale;
-                let sub_pad_y = sub_node.computed_style.padding_top.to_px() as f64 * scale;
-                let sub_x = parent_x + sub_node.layout.x as f64 * scale + sub_pad_x;
-                let sub_y = parent_y + sub_node.layout.y as f64 * scale + sub_pad_y;
-
-                // Try sub-node's IFC layout
-                if let Some(ref il) = sub_node.text_layout {
-                    paint_contenteditable_cursor(
-                        ce_node,
-                        painter,
-                        scale,
-                        sub_x,
-                        sub_y,
-                        &il.layout,
-                        sub_text_len,
-                        local_sel_start.min(sub_text_len),
-                        local_sel_end.min(sub_text_len),
-                        caret.map(|c| c.min(sub_text_len)),
-                        content_width,
-                        transform,
-                    );
-                } else if sub_node.children.is_empty() {
-                    // Empty block — draw a simple caret
-                    if caret.is_some() {
-                        let cs = &sub_node.computed_style;
-                        let font_size = cs.font_size;
-                        let line_h = match cs.line_height {
-                            LineHeightValue::Relative(r) => font_size * r,
-                            LineHeightValue::Absolute(a) => a,
-                            LineHeightValue::Normal => font_size * 1.2,
-                        };
-                        let caret_height = line_h as f64 * scale;
-                        let caret_color = cs
-                            .color
-                            .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(33, 37, 41, 255));
-                        let caret_rect =
-                            Rect::new(sub_x, sub_y, sub_x + 1.5 * scale, sub_y + caret_height);
-                        painter.fill_color(
-                            Fill::NonZero,
-                            transform,
-                            caret_color,
-                            &caret_rect.into(),
-                        );
-                    }
-                } else {
-                    // Try sub-node's text children
-                    let mut found_text_child = false;
-                    for &gc_id in &sub_node.children {
-                        if let Some(gc) = tree.nodes.get(gc_id)
-                            && let Some(ref cl) = gc.cached_text_parley
-                        {
-                            let gc_len = gc.text_content().map(|s| s.len()).unwrap_or(0);
-                            paint_contenteditable_cursor(
-                                ce_node,
-                                painter,
-                                scale,
-                                sub_x,
-                                sub_y,
-                                cl,
-                                gc_len,
-                                local_sel_start.min(gc_len),
-                                local_sel_end.min(gc_len),
-                                caret.map(|c| c.min(gc_len)),
-                                content_width,
-                                transform,
-                            );
-                            found_text_child = true;
-                            break;
-                        }
-                    }
-                    // Recurse into deeper block structure (e.g., li > div + ul after indent)
-                    if !found_text_child {
-                        paint_ce_sub_blocks(
-                            tree,
-                            ce_node,
-                            painter,
-                            scale,
-                            parent_x + sub_node.layout.x as f64 * scale,
-                            parent_y + sub_node.layout.y as f64 * scale,
-                            &sub_node.children,
-                            sub_acc,
-                            cursor_pos,
-                            sel_min,
-                            sel_max,
-                            content_width,
-                            transform,
-                        );
-                    }
-                }
-            }
-            sub_acc = sub_end;
-        }
-    }
-}
-
-/// Render cursor and selection for a contenteditable element within a single layout.
-///
-/// `sel_start`/`sel_end` define the local selection range within this layout.
-/// `caret_pos` is Some(offset) to draw the cursor caret, None to skip it.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn paint_contenteditable_cursor(
-    node: &Node,
-    painter: &mut dyn Painter,
-    scale: f64,
-    text_x: f64,
-    text_y: f64,
-    layout: &parley::layout::Layout<Brush>,
-    text_len: usize,
-    sel_start: usize,
-    sel_end: usize,
-    caret_pos: Option<usize>,
-    content_width: f64,
-    transform: Affine,
-) {
-    // Use Parley's actual line metrics from the layout rather than computing
-    // from node.computed_style. The node passed here is the CE root, but
-    // the layout belongs to a child block (h1, h2, p, etc.) which may have
-    // a different font size and line height. Parley's metrics are authoritative
-    // since they reflect the actual text that was laid out.
-    let fallback_line_height = {
-        let font_size = node.computed_style.font_size;
-        let scaled = font_size * scale as f32;
-        let mult = match node.computed_style.line_height {
-            LineHeightValue::Relative(r) => r as f64,
-            LineHeightValue::Absolute(abs) => (abs / font_size) as f64,
-            LineHeightValue::Normal => 1.2,
-        };
-        scaled as f64 * mult
-    };
-
-    // Draw selection highlight if there's a selection range
-    if sel_start != sel_end {
-        let sel_start_byte = sel_start.min(text_len);
-        let sel_end_byte = sel_end.min(text_len);
-
-        let (start_x, start_y) =
-            crate::text_query::caret_position_for_offset_layout(layout, sel_start_byte);
-        let (end_x, end_y) =
-            crate::text_query::caret_position_for_offset_layout(layout, sel_end_byte);
-
-        let sel_color = AlphaColor::<Srgb>::from_rgba8(51, 154, 240, 100);
-
-        if (start_y - end_y).abs() < 0.1 {
-            // Same line — find the matching line's actual height from Parley
-            let actual_line_height =
-                line_height_at_y(layout, start_y).unwrap_or(fallback_line_height);
-            let sel_rect = Rect::new(
-                text_x + start_x as f64,
-                text_y + start_y as f64,
-                text_x + end_x as f64,
-                text_y + start_y as f64 + actual_line_height,
-            );
-            painter.fill_color(Fill::NonZero, transform, sel_color, &sel_rect.into());
-        } else {
-            // Multi-line selection
-            for line in layout.lines() {
-                let line_metrics = line.metrics();
-                let glyph_top = line_metrics.baseline - line_metrics.ascent;
-                let half_leading =
-                    (line_metrics.line_height - line_metrics.ascent - line_metrics.descent) / 2.0;
-                let line_box_top = glyph_top - half_leading;
-                let line_box_bottom = line_box_top + line_metrics.line_height;
-
-                // Skip lines entirely outside the selection
-                if line_box_bottom <= start_y || line_box_top > end_y + 0.5 {
-                    continue;
-                }
-
-                // Check if this line contains the start/end positions
-                let is_start_line = start_y >= line_box_top - 0.5 && start_y < line_box_bottom;
-                let is_end_line = end_y >= line_box_top - 0.5 && end_y < line_box_bottom;
-
-                let rect_y = text_y + line_box_top as f64;
-                let (rect_start_x, rect_end_x) = if is_start_line && is_end_line {
-                    (start_x as f64, end_x as f64)
-                } else if is_start_line {
-                    (start_x as f64, content_width)
-                } else if is_end_line {
-                    (0.0, end_x as f64)
-                } else {
-                    (0.0, content_width)
-                };
-                let sel_rect = Rect::new(
-                    text_x + rect_start_x,
-                    rect_y,
-                    text_x + rect_end_x,
-                    rect_y + line_metrics.line_height as f64,
-                );
-                painter.fill_color(Fill::NonZero, transform, sel_color, &sel_rect.into());
-            }
-        }
-    }
-
-    // Draw cursor/caret only if requested
-    if let Some(caret) = caret_pos {
-        let caret_byte = caret.min(text_len);
-        let (caret_offset_x, caret_offset_y) = if text_len == 0 {
-            (0.0, 0.0)
-        } else {
-            crate::text_query::caret_position_for_offset_layout(layout, caret_byte)
-        };
-        let caret_x = text_x + caret_offset_x as f64;
-        let caret_y = text_y + caret_offset_y as f64;
-        let caret_height = line_height_at_y(layout, caret_offset_y).unwrap_or(fallback_line_height);
-
-        let caret_color = node
-            .computed_style
-            .color
-            .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(33, 37, 41, 255));
-        let caret_rect = Rect::new(
-            caret_x,
-            caret_y,
-            caret_x + 1.5 * scale,
-            caret_y + caret_height,
-        );
-        painter.fill_color(Fill::NonZero, transform, caret_color, &caret_rect.into());
-    }
 }
 
 #[allow(clippy::too_many_arguments)]

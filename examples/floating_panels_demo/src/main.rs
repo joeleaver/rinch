@@ -128,37 +128,22 @@ fn app() -> NodeHandle {
                     on_close: move || ed_visible.set(false),
 
                     Stack { gap: "md",
-                        // Plaintext contenteditable
+                        // The rich-text editor, embedded in a draggable panel — the
+                        // caret and selection track correctly even after the panel
+                        // moves. (`Editor {}` self-creates an `EditorHandle`.)
                         Text { size: "xs", weight: "bold", color: "dimmed", "Plain Text" }
-                        div {
-                            contenteditable: "plaintext-only",
-                            style: "border: 1px solid var(--rinch-color-gray-3); padding: 10px; min-height: 80px; font-size: 14px; line-height: 1.6; outline: none; border-radius: var(--rinch-radius-sm); background: var(--rinch-color-gray-0); overflow-wrap: break-word; cursor: text",
-                            "The quick brown fox jumps over the lazy dog." br {} br {} "Try clicking to place the cursor, selecting text, and using arrow keys to navigate." br {} br {} "Drag this panel by its title bar to test that cursor and selection still work at a different position."
+                        Editor {
+                            content: "<p>The quick brown fox jumps over the lazy dog.</p>\
+                                <p>Click to place the cursor, select text, and use the arrow keys to navigate.</p>\
+                                <p>Drag this panel by its title bar to test that the cursor and selection still work at a different position.</p>",
                         }
 
                         Divider {}
 
-                        // Rich contenteditable
                         Text { size: "xs", weight: "bold", color: "dimmed", "Rich Text" }
-                        div {
-                            contenteditable: "true",
-                            style: "border: 1px solid var(--rinch-color-gray-3); padding: 10px; min-height: 100px; font-size: 14px; line-height: 1.6; outline: none; border-radius: var(--rinch-radius-sm); background: var(--rinch-color-gray-0); overflow-wrap: break-word; cursor: text",
-                            "This has "
-                            span { style: "font-weight: bold;", "bold" }
-                            " and "
-                            span { style: "font-style: italic;", "italic" }
-                            " text, plus "
-                            span { style: "color: #228be6;", "colored" }
-                            " and "
-                            span { style: "text-decoration: underline;", "underlined" }
-                            " spans."
-                            br {}
-                            br {}
-                            "Second paragraph. "
-                            span { style: "font-weight: bold; font-style: italic;", "Bold italic" }
-                            " mixed with "
-                            span { style: "color: #e64980; font-weight: bold;", "bold pink" }
-                            " text."
+                        Editor {
+                            content: "<p>This has <strong>bold</strong> and <em>italic</em> text, plus <span style=\"color: #228be6\">colored</span> and <u>underlined</u> spans.</p>\
+                                <p>Second paragraph. <strong><em>Bold italic</em></strong> mixed with <strong><span style=\"color: #e64980\">bold pink</span></strong> text.</p>",
                         }
                     }
                 }

@@ -44,13 +44,9 @@
 
 #[cfg(any(feature = "desktop", feature = "android"))]
 pub mod app;
-#[cfg(any(feature = "desktop", feature = "android"))]
-pub mod ce_ops;
-#[cfg(any(feature = "desktop", feature = "android"))]
-pub(crate) mod ce_render;
-/// The new ProseMirror-style desktop editor view (M5+), behind the `new-editor`
-/// feature. Implements `rinch_editor_core::EditorView` over rinch-dom primitives.
-#[cfg(feature = "new-editor")]
+/// The ProseMirror-style desktop rich-text editor view. Part of the `desktop`
+/// feature; implements `rinch_editor_core::EditorView` over rinch-dom primitives.
+#[cfg(feature = "desktop")]
 pub mod editor;
 #[cfg(feature = "gpu")]
 pub mod embed;
@@ -173,7 +169,7 @@ pub mod prelude {
     };
 
     // New ProseMirror-style rich-text editor (M5+)
-    #[cfg(feature = "new-editor")]
+    #[cfg(feature = "desktop")]
     pub use crate::editor::{Editor, EditorHandle, create_editor};
 
     // Desktop-only GPU types for render surfaces

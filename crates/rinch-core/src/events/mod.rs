@@ -3,7 +3,6 @@
 //! This module provides the event handler registry that maps element IDs
 //! to Rust callbacks, enabling reactive event handling in the UI.
 
-mod contenteditable;
 mod drag;
 mod drag_context;
 mod handlers;
@@ -12,7 +11,6 @@ mod modifier;
 mod selection;
 
 // Re-export all public items so external code continues to work.
-pub use contenteditable::*;
 pub use drag::*;
 pub use drag_context::*;
 pub use handlers::*;

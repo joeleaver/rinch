@@ -84,177 +84,68 @@ impl RinchApp {
             }
         }
 
-        // ── Phase 1: contenteditable detection (short borrow) ───────
-        // Do a quick read-only scan to decide if we hit a contenteditable.
-        // Gather all needed data, then drop the borrow before mutating.
-        enum CeAction {
-            /// We hit a contenteditable element — focus it.
-            Focus {
-                ce_node_id: usize,
-                dom_cursor: DomCursor,
-            },
-            /// We did NOT hit contenteditable — clear previous if any.
-            Clear { prev_node_id: Option<usize> },
-            /// Hit a data-rid handler outside CE — preserve CE focus, continue to Phase 3.
-            PreserveCe,
+        // ── Phase 1: editor focus management (short borrow) ─────────
+        // A click that misses every `data-rid` handler blurs the focused editor
+        // (unless it lands inside the editor's own container chrome). A click
+        // that *hits* a `data-rid` (e.g. a toolbar button) preserves editor
+        // focus so "click Bold, keep typing" works (audit S2) and falls through
+        // to Phase 3 to dispatch the handler. Left-clicks inside the editor are
+        // handled earlier by `try_new_editor_click` and never reach here.
+        enum ClickFocus {
+            /// Hit a `data-rid` handler — preserve editor focus, continue.
+            PreserveEditor,
+            /// No `data-rid` under the click — blur the editor if outside it.
+            Blur,
             /// No hit at all.
             NoHit,
         }
 
-        let ce_action = {
+        let click_focus = {
             let d = doc.borrow();
             if let Some(hit_id) = hit_test(&d.tree, x, y) {
-                let mut ce_result = None;
-                let mut check = Some(hit_id);
-                while let Some(nid) = check {
+                let mut walk = Some(hit_id);
+                let mut has_rid = false;
+                while let Some(nid) = walk {
                     if let Some(node) = d.tree.get(nid) {
-                        if let Some(ce_val) = node.attributes.get("contenteditable") {
-                            let is_editable =
-                                matches!(ce_val.as_str(), "plaintext-only" | "true" | "");
-                            if is_editable {
-                                let dom_cursor =
-                                    Self::compute_dom_cursor_from_click(&d.tree, nid, x, y);
-                                ce_result = Some((nid, dom_cursor));
-                            }
+                        if node.attributes.contains_key("data-rid") {
+                            has_rid = true;
                             break;
                         }
-                        check = node.parent;
+                        walk = node.parent;
                     } else {
                         break;
                     }
                 }
-
-                let prev_node_id = self.focused_contenteditable.as_ref().map(|f| f.ce_node_id);
-
-                if let Some((ce_node_id, dom_cursor)) = ce_result {
-                    CeAction::Focus {
-                        ce_node_id,
-                        dom_cursor,
-                    }
+                if has_rid {
+                    ClickFocus::PreserveEditor
                 } else {
-                    // Check if the click target has a data-rid handler — if so,
-                    // preserve CE focus so toolbar buttons can use the CE API.
-                    let has_rid = {
-                        let mut walk = Some(hit_id);
-                        let mut found = false;
-                        while let Some(nid) = walk {
-                            if let Some(node) = d.tree.get(nid) {
-                                if node.attributes.contains_key("data-rid") {
-                                    found = true;
-                                    break;
-                                }
-                                walk = node.parent;
-                            } else {
-                                break;
-                            }
-                        }
-                        found
-                    };
-                    if has_rid {
-                        CeAction::PreserveCe // Preserve CE focus, let Phase 3 handle the click
-                    } else {
-                        CeAction::Clear { prev_node_id }
-                    }
+                    ClickFocus::Blur
                 }
             } else {
-                CeAction::NoHit
+                ClickFocus::NoHit
             }
         }; // d dropped here
 
-        // ── Phase 2: apply contenteditable mutations ────────────────
-        match ce_action {
-            CeAction::Focus {
-                ce_node_id,
-                mut dom_cursor,
-            } => {
-                let input_handler = InputHandler::new()
-                    .with_multiline(true)
-                    .with_macos(cfg!(target_os = "macos"));
-
-                // Handle double-click (word select) and triple-click (line select)
-                let mut anchor = dom_cursor;
-                match self.click_count {
-                    2 => {
-                        // Double-click: select word at cursor position
-                        if let Some(doc) = &self.doc {
-                            let d = doc.borrow();
-                            if let Some(node) = d.tree.get(dom_cursor.node_id)
-                                && let Some(text) = node.text_content()
-                            {
-                                let ws = Self::find_word_start(text, dom_cursor.offset);
-                                let we = Self::find_word_end(text, dom_cursor.offset);
-                                anchor = DomCursor {
-                                    node_id: dom_cursor.node_id,
-                                    offset: ws,
-                                };
-                                dom_cursor = DomCursor {
-                                    node_id: dom_cursor.node_id,
-                                    offset: we,
-                                };
-                            }
-                        }
-                    }
-                    3 => {
-                        // Triple-click: select all text in the CE
-                        if let Some(doc) = &self.doc {
-                            let d = doc.borrow();
-                            if let Some(first) = Self::first_text_cursor(&d.tree, ce_node_id) {
-                                anchor = first;
-                            }
-                            if let Some(last) = Self::last_text_cursor(&d.tree, ce_node_id) {
-                                dom_cursor = last;
-                            }
-                        }
-                    }
-                    _ => {} // Single click: cursor already set
-                }
-
-                // Take focus through the arbiter: tears down a prior input /
-                // surface / editor / different CE (re-clicking the same CE is a
-                // no-op teardown, so its state survives — we just move the cursor).
-                self.set_focus_target(FocusTarget::ContentEditable(ce_node_id));
-
-                self.focused_contenteditable = Some(ContentEditableFocus {
-                    ce_node_id,
-                    cursor: dom_cursor,
-                    anchor,
-                    input_handler,
-                });
-                self.register_ce_ops(ce_node_id, dom_cursor);
-
-                // Start mouse-drag selection tracking
-                self.ce_selecting = true;
-
-                // Set cursor/selection attributes on the focused node.
-                self.set_contenteditable_attributes_dom(ce_node_id, true, dom_cursor, anchor);
-                self.scene_dirty = true;
-                actions.push(AppAction::RequestRedraw);
-                return actions;
-            }
-            CeAction::Clear { prev_node_id } => {
-                // Clicked a non-editable, non-toolbar (no `data-rid`) target: blur
-                // any focused rich-text editor. Toolbar clicks take the
-                // `PreserveCe` path and keep focus (the "click Bold, keep typing"
-                // case — audit S2).
-                if prev_node_id.is_some() {
-                    self.set_focus_target(FocusTarget::None);
-                }
-                // A click on the focused editor's OWN chrome (padding / empty area)
-                // is not a blur — only blur when the click landed outside its
-                // container. (Left clicks inside the editor never reach here: they
-                // short-circuit in `try_new_editor_click`. This covers right-click.)
-                #[cfg(feature = "new-editor")]
+        // ── Phase 2: apply the focus change ─────────────────────────
+        match click_focus {
+            ClickFocus::Blur => {
+                // A click on the focused editor's OWN chrome (padding / empty
+                // area) is not a blur — only blur when the click landed outside
+                // its container. (Left clicks inside the editor never reach here:
+                // they short-circuit in `try_new_editor_click`. This covers
+                // right-click and clicks elsewhere in the window.)
+                #[cfg(feature = "desktop")]
                 if let FocusTarget::Editor(focused) = self.focus_target
                     && self.editor_container_at(x, y) != Some(focused)
                 {
                     self.set_focus_target(FocusTarget::None);
                 }
             }
-            CeAction::PreserveCe => {
-                // CE focus preserved — fall through to Phase 3 for data-rid dispatch
-                tracing::debug!("click: PreserveCe — CE focus preserved, dispatching data-rid");
+            ClickFocus::PreserveEditor => {
+                // Editor focus preserved — fall through to Phase 3 for the
+                // `data-rid` dispatch (the toolbar-button case).
             }
-            CeAction::NoHit => {
+            ClickFocus::NoHit => {
                 return actions;
             }
         }
@@ -363,10 +254,10 @@ impl RinchApp {
             self.focus_target,
             FocusTarget::Input(_) | FocusTarget::Surface(_)
         ) {
-            // Clicked a non-input target: drop input/surface focus. CE/editor focus
-            // is preserved here so their toolbar buttons (data-rid, dispatched
-            // below) keep working; an empty/non-toolbar click already blurred them
-            // via `CeAction::Clear`.
+            // Clicked a non-input target: drop input/surface focus. Editor focus is
+            // preserved here so its toolbar buttons (data-rid, dispatched below) keep
+            // working; an empty/non-toolbar click already blurred the editor in
+            // Phase 2 (`ClickFocus::Blur`).
             self.set_focus_target(FocusTarget::None);
         }
 
@@ -415,19 +306,7 @@ impl RinchApp {
                     events::set_click_ancestors(Self::collect_click_ancestors(&d.tree, node_id));
 
                     drop(d);
-                    // Sync CE cursor before handler so toolbar buttons see current selection
-                    self.sync_ce_ops_cursor();
                     events::dispatch_event(events::EventHandlerId(handler_id));
-                    // Sync selection back from CE API after handler (e.g., toggle_wrap changes it)
-                    if let Some(ops) = &self.ce_ops
-                        && let Ok(ops) = ops.try_borrow()
-                    {
-                        let sel = ops.get_selection();
-                        if let Some(ce) = self.focused_contenteditable.as_mut() {
-                            ce.cursor = sel.head;
-                            ce.anchor = sel.anchor;
-                        }
-                    }
                     // Process any pending focus request from the event handler
                     // (e.g., a handler may call request_focus on an input element).
                     if let Some(focus_node_id) = rinch_core::take_pending_focus_request() {

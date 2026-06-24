@@ -3,6 +3,36 @@
 use super::*;
 
 impl RinchApp {
+    /// Compute the absolute position of a node by walking up through parents.
+    /// Stops at `position: fixed` elements since they are viewport-relative.
+    pub(in crate::app) fn compute_absolute_position(
+        tree: &rinch_dom::NodeTree,
+        node_id: usize,
+    ) -> (f32, f32) {
+        let mut x = 0.0f32;
+        let mut y = 0.0f32;
+        let mut current = Some(node_id);
+        while let Some(nid) = current {
+            if let Some(node) = tree.get(nid) {
+                x += node.layout.x;
+                y += node.layout.y;
+                if node.computed_style.position == rinch_dom::computed_style::PositionValue::Fixed {
+                    break;
+                }
+                if let Some(parent_id) = node.parent
+                    && let Some(parent) = tree.get(parent_id)
+                {
+                    x -= parent.scroll_offset.0 as f32;
+                    y -= parent.scroll_offset.1 as f32;
+                }
+                current = node.parent;
+            } else {
+                break;
+            }
+        }
+        (x, y)
+    }
+
     /// Find the IFC root node (block element with an inline layout) at or
     /// above `hit_id` that has `user_select.is_selectable()`.
     pub(super) fn find_selectable_ifc(tree: &rinch_dom::NodeTree, hit_id: usize) -> Option<usize> {

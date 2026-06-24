@@ -3,10 +3,10 @@
 //! [`FocusTarget`](super::FocusTarget) is the single source of truth for which
 //! widget owns keyboard/IME input. All focus changes go through
 //! [`RinchApp::set_focus_target`], which tears the previous owner down before the
-//! caller installs the next — so the four engines (render surfaces, `<input>`,
-//! the legacy contenteditable, and the new editor) can never be focused at once,
-//! and the `KeyDown`/`KeyUp` routing is a single exhaustive match instead of the
-//! old interceptor-then-fallback chain.
+//! caller installs the next — so the three engines (render surfaces, `<input>`,
+//! and the editor) can never be focused at once, and the `KeyDown`/`KeyUp`
+//! routing is a single exhaustive match instead of the old
+//! interceptor-then-fallback chain.
 
 use super::*;
 
@@ -53,13 +53,7 @@ impl RinchApp {
                 self.focused_input_node_id = None;
                 self.focused_input_preedit = None;
             }
-            FocusTarget::ContentEditable(prev) => {
-                ce::clear_active_ce_api();
-                self.ce_ops = None;
-                self.set_contenteditable_attributes(prev, false, 0, 0);
-                self.focused_contenteditable = None;
-            }
-            #[cfg(feature = "new-editor")]
+            #[cfg(feature = "desktop")]
             FocusTarget::Editor(prev) => {
                 // Hide the blurred editor's caret and selection highlight so an
                 // unfocused editor shows neither. (Its model state lives in the
@@ -82,7 +76,7 @@ impl RinchApp {
     /// [`ImeState`]).
     pub(crate) fn ime_state(&self) -> ImeState {
         match self.focus_target {
-            #[cfg(feature = "new-editor")]
+            #[cfg(feature = "desktop")]
             FocusTarget::Editor(container) => {
                 let cursor_area = crate::editor::editor_for(container).and_then(|handle| {
                     let head = handle.selection().head();
@@ -98,7 +92,7 @@ impl RinchApp {
                 enabled: true,
                 cursor_area: self.input_caret_area(node_id),
             },
-            // Surfaces, the legacy CE, and no focus do not drive desktop IME.
+            // Surfaces and no focus do not drive desktop IME.
             _ => ImeState {
                 enabled: false,
                 cursor_area: None,
@@ -113,7 +107,7 @@ impl RinchApp {
 
     /// The container id of the focused new-editor, if one holds focus. Drives the
     /// runtime's caret-blink tick.
-    #[cfg(feature = "new-editor")]
+    #[cfg(feature = "desktop")]
     pub(crate) fn focused_editor_id(&self) -> Option<usize> {
         match self.focus_target {
             FocusTarget::Editor(id) => Some(id),
@@ -121,20 +115,18 @@ impl RinchApp {
         }
     }
 
-    /// Whether a rich-text editor (legacy contenteditable or the new editor) is
-    /// currently focused. Kept (and repointed at `FocusTarget`) for the embed and
-    /// Android soft-keyboard callers (design A9).
+    /// Whether a rich-text editor currently holds focus. Kept (and repointed at
+    /// `FocusTarget`) for the embed and Android soft-keyboard callers (design A9).
+    /// The name is retained for those callers; the editor is desktop-only, so
+    /// non-desktop builds have no rich-text focus target.
     pub fn has_focused_contenteditable(&self) -> bool {
-        #[cfg(feature = "new-editor")]
+        #[cfg(feature = "desktop")]
         {
-            matches!(
-                self.focus_target,
-                FocusTarget::ContentEditable(_) | FocusTarget::Editor(_)
-            )
+            matches!(self.focus_target, FocusTarget::Editor(_))
         }
-        #[cfg(not(feature = "new-editor"))]
+        #[cfg(not(feature = "desktop"))]
         {
-            matches!(self.focus_target, FocusTarget::ContentEditable(_))
+            false
         }
     }
 }
