@@ -66,11 +66,19 @@ impl RinchDocument {
                 let border_h = cs.border_left_width.to_px() + cs.border_right_width.to_px();
                 let content_width = node.layout.width - padding_h - border_h;
                 if content_width > 0.0 {
-                    // For auto-width elements, add a small tolerance to avoid
-                    // floating-point precision causing unwanted line breaks.
+                    // An auto-width element is sized to its content: its box width is
+                    // the text's max-content width (+ padding/border) measured with NO
+                    // wrap, then ROUNDED DOWN to an integer pixel — losing strictly
+                    // less than 1px of the text's true width. So the paint layout here
+                    // must allow up to 1px more than `content_width`, or it re-wraps
+                    // the text at a space inside a box that was sized for one line
+                    // (the box says one line, the glyphs render two). A 0.5px
+                    // tolerance can't absorb a full 1px floor; 1.0px provably can
+                    // (`natural - content_width == frac(natural) < 1.0`). Explicit-
+                    // width elements get no tolerance — they should wrap at their width.
                     let tolerance =
                         if matches!(cs.width, crate::computed_style::DimensionValue::Auto) {
-                            0.5
+                            1.0
                         } else {
                             0.0
                         };
