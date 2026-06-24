@@ -34,7 +34,7 @@ use rinch_core::events;
 #[cfg(feature = "gpu")]
 use rinch_platform::PlatformRenderer;
 use rinch_platform::{
-    AppAction, KeyCode, Modifiers, MouseButton as PlatformMouseButton, PlatformEvent,
+    AppAction, ImeEvent, KeyCode, Modifiers, MouseButton as PlatformMouseButton, PlatformEvent,
     PlatformWindow, UserEvent,
 };
 
@@ -227,6 +227,15 @@ pub struct RinchRuntime {
     last_paint_time: Option<std::time::Instant>,
     /// Recent frame times in ms (ring buffer for FPS averaging).
     frame_times: VecDeque<f64>,
+
+    // ── IME ──────────────────────────────────────────────────────
+    /// Whether IME composition is currently enabled on the window. Mirrors the
+    /// desired state from the focus arbiter so [`Self::sync_ime`] only issues a
+    /// winit `request_ime_update` on an actual change.
+    ime_enabled: bool,
+    /// Last-applied IME cursor area (logical window `x, y, w, h`), to avoid
+    /// re-issuing identical `Update` requests every frame.
+    ime_cursor_area: Option<(f32, f32, f32, f32)>,
 }
 
 impl RinchRuntime {
@@ -260,6 +269,8 @@ impl RinchRuntime {
             devtools_prev_hovered: None,
             last_paint_time: None,
             frame_times: VecDeque::with_capacity(60),
+            ime_enabled: false,
+            ime_cursor_area: None,
         }
     }
 
@@ -1642,6 +1653,30 @@ impl ApplicationHandler for RinchRuntime {
                     modifiers: mods,
                 }
             }
+            WindowEvent::Ime(ime) => {
+                // Translate winit's IME composition events into the portable
+                // `ImeEvent` contract. `handle_event` then routes them through
+                // the focus arbiter, exactly like keyboard input — so the
+                // editor, `<input>`, etc. all consume IME the same way.
+                let ime_event = match ime {
+                    winit::event::Ime::Enabled => ImeEvent::Enabled,
+                    winit::event::Ime::Preedit(text, cursor) => ImeEvent::Preedit { text, cursor },
+                    winit::event::Ime::Commit(text) => ImeEvent::Commit(text),
+                    winit::event::Ime::DeleteSurrounding {
+                        before_bytes,
+                        after_bytes,
+                    } => ImeEvent::DeleteSurrounding {
+                        // winit reports UTF-8 byte counts; the target converts to
+                        // its char-based model. Exact byte→char conversion is only
+                        // needed once we advertise the surrounding-text capability
+                        // (not enabled yet), so this passes the counts through.
+                        before: before_bytes,
+                        after: after_bytes,
+                    },
+                    winit::event::Ime::Disabled => ImeEvent::Disabled,
+                };
+                PlatformEvent::Ime(ime_event)
+            }
             WindowEvent::DragEntered { paths, position } => {
                 let size = self.window_size();
                 let scale = self.scale_factor();
@@ -1738,6 +1773,10 @@ impl ApplicationHandler for RinchRuntime {
             }
         }
 
+        // Reconcile the window's IME state with the focus arbiter (enable on a
+        // focused text target, follow the caret, disable on blur).
+        self.sync_ime();
+
         // Drive the focused editor's caret blink. This is the only thing that
         // arms a timed wake (`WaitUntil`); when nothing is blinking it returns the
         // loop to `Wait` so the app stays idle.
@@ -1767,6 +1806,52 @@ impl RinchRuntime {
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
+
+    /// Push the focus arbiter's desired IME state to the window. Enables IME with
+    /// a cursor area when a text target is focused, disables it otherwise, and
+    /// moves the candidate-box rect as the caret moves. Diffs against the
+    /// last-applied state so it only issues a `request_ime_update` on a real
+    /// change. This is the single place the winit IME surface is touched; every
+    /// text target (editor, `<input>`, …) feeds it through [`RinchApp::ime_state`].
+    fn sync_ime(&mut self) {
+        use winit::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
+
+        let Some(w) = &self.window else { return };
+        let desired = self.app.ime_state();
+
+        let to_area = |a: (f32, f32, f32, f32)| {
+            let (x, y, width, height) = a;
+            (
+                winit::dpi::LogicalPosition::new(x as f64, y as f64),
+                winit::dpi::LogicalSize::new(width.max(1.0) as f64, height.max(1.0) as f64),
+            )
+        };
+
+        if desired.enabled != self.ime_enabled {
+            if desired.enabled {
+                let area = desired.cursor_area.unwrap_or((0.0, 0.0, 1.0, 16.0));
+                let (pos, size) = to_area(area);
+                let caps = ImeCapabilities::new().with_cursor_area();
+                let data = ImeRequestData::default().with_cursor_area(pos.into(), size.into());
+                if let Some(req) = ImeEnableRequest::new(caps, data) {
+                    let _ = w.window.request_ime_update(ImeRequest::Enable(req));
+                }
+                self.ime_cursor_area = desired.cursor_area;
+            } else {
+                let _ = w.window.request_ime_update(ImeRequest::Disable);
+                self.ime_cursor_area = None;
+            }
+            self.ime_enabled = desired.enabled;
+        } else if desired.enabled && desired.cursor_area != self.ime_cursor_area {
+            if let Some(area) = desired.cursor_area {
+                let (pos, size) = to_area(area);
+                let data = ImeRequestData::default().with_cursor_area(pos.into(), size.into());
+                let _ = w.window.request_ime_update(ImeRequest::Update(data));
+            }
+            self.ime_cursor_area = desired.cursor_area;
+        }
+    }
+
     /// Handle a single native event from the queue.
     fn handle_native_event(&mut self, event: RinchNativeEvent, event_loop: &dyn ActiveEventLoop) {
         let platform_event = match event {

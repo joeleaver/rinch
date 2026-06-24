@@ -1049,6 +1049,34 @@ impl RinchApp {
                     );
                 }
             }
+            PlatformEvent::Ime(ime) => {
+                // Route IME composition through the focus arbiter (design A10),
+                // exactly like KeyDown: whichever text target holds focus consumes
+                // it. IME is a shared runtime service, not a per-widget path.
+                match self.focus_target {
+                    #[cfg(feature = "new-editor")]
+                    FocusTarget::Editor(container) => {
+                        if let Some(handle) = crate::editor::editor_for(container) {
+                            self.dispatch_editor_ime(&handle, ime);
+                            self.refresh_editor_overlays();
+                            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+                            self.resolve_and_repaint(w, h);
+                            actions.push(AppAction::RequestRedraw);
+                        } else {
+                            // Focused editor unmounted out from under us.
+                            self.focus_target = FocusTarget::None;
+                        }
+                    }
+                    FocusTarget::Input(node_id) => {
+                        self.dispatch_input_ime(node_id, ime);
+                        actions.push(AppAction::RequestRedraw);
+                    }
+                    // Surface / legacy contenteditable / None ignore IME. (Legacy
+                    // CE is removed at M8 and the new editor replaces it, so wiring
+                    // IME there would be throwaway.)
+                    _ => {}
+                }
+            }
             PlatformEvent::ScaleFactorChanged(_) => {
                 // The shell handles reconfiguring the renderer; we just need a redraw.
                 actions.push(AppAction::RequestRedraw);
@@ -1940,6 +1968,112 @@ impl RinchApp {
         }
     }
 
+    // ── IME (input method editor) ──────────────────────────────────────
+    // Both targets consume the same portable `ImeEvent`; only the rendering of
+    // the preedit differs (the editor's decoration overlay vs the `<input>`'s
+    // `data-preedit` paint splice).
+
+    /// Apply an [`ImeEvent`] to the focused new editor: preedit becomes a
+    /// transient overlay (never in the document), commit clears it and inserts
+    /// the text in one transaction, delete-surrounding deletes around the caret.
+    #[cfg(feature = "new-editor")]
+    fn dispatch_editor_ime(&mut self, handle: &crate::editor::EditorHandle, ime: ImeEvent) {
+        match ime {
+            ImeEvent::Enabled => {}
+            ImeEvent::Preedit { text, cursor } => {
+                handle.ime_set_preedit(&text, cursor);
+            }
+            ImeEvent::Commit(text) => {
+                handle.ime_commit(&text);
+                self.editor_goal_x = None;
+            }
+            ImeEvent::DeleteSurrounding { before, after } => {
+                handle.ime_delete_surrounding(before, after);
+                self.editor_goal_x = None;
+            }
+            ImeEvent::Disabled => {
+                handle.ime_clear_preedit();
+            }
+        }
+    }
+}
+
+/// IME (input method editor) handling for single-line `<input>` text fields.
+///
+/// Ungated: `<input>` IME works without the `new-editor` feature. (The editor
+/// half above is gated because it needs [`EditorHandle`](crate::editor::EditorHandle).)
+impl RinchApp {
+    /// Apply an [`ImeEvent`] to the focused `<input>`: preedit is rendered inline
+    /// at the caret via the `data-preedit` attribute, commit clears it and inserts
+    /// the text, delete-surrounding maps to backward/forward deletes.
+    fn dispatch_input_ime(&mut self, node_id: usize, ime: ImeEvent) {
+        match ime {
+            ImeEvent::Enabled => {}
+            ImeEvent::Preedit { text, cursor } => {
+                self.focused_input_preedit = if text.is_empty() {
+                    None
+                } else {
+                    Some((text, cursor))
+                };
+                self.sync_input_preedit_to_dom(node_id);
+            }
+            ImeEvent::Commit(text) => {
+                self.focused_input_preedit = None;
+                self.sync_input_preedit_to_dom(node_id);
+                if !text.is_empty() {
+                    self.handle_input_edit_command(EditCommand::InsertText(text));
+                }
+            }
+            ImeEvent::DeleteSurrounding { before, after } => {
+                for _ in 0..before {
+                    self.handle_input_edit_command(EditCommand::DeleteBackward);
+                }
+                for _ in 0..after {
+                    self.handle_input_edit_command(EditCommand::DeleteForward);
+                }
+            }
+            ImeEvent::Disabled => {
+                self.focused_input_preedit = None;
+                self.sync_input_preedit_to_dom(node_id);
+            }
+        }
+    }
+
+    /// Write (or clear) the focused `<input>`'s `data-preedit` attribute so the
+    /// paint path renders the composition string inline at the caret.
+    fn sync_input_preedit_to_dom(&self, node_id: usize) {
+        let Some(doc) = &self.doc else { return };
+        let mut d = doc.borrow_mut();
+        if let Some(node) = d.tree.nodes.get_mut(node_id) {
+            match &self.focused_input_preedit {
+                Some((text, _)) => {
+                    node.attributes.insert("data-preedit".into(), text.clone());
+                }
+                None => {
+                    node.attributes.remove("data-preedit");
+                }
+            }
+            node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
+        }
+        d.tree.dirty_nodes.insert(node_id);
+    }
+
+    /// The focused `<input>`'s caret rect in logical window space, for the IME
+    /// candidate box. Approximated at the field's text origin (left padding, full
+    /// height); the exact caret-x is a follow-up.
+    pub(crate) fn input_caret_area(&self, node_id: usize) -> Option<(f32, f32, f32, f32)> {
+        let doc = self.doc.as_ref()?;
+        let d = doc.borrow();
+        let node = d.tree.get(node_id)?;
+        let pad_l = node.computed_style.padding_left.to_px();
+        let (_, _, _, h) = d.query_node_layout(node_id as u64)?;
+        let (ax, ay) = Self::compute_absolute_position(&d.tree, node_id);
+        Some((ax + pad_l, ay, 1.0, h))
+    }
+}
+
+#[cfg(feature = "new-editor")]
+impl RinchApp {
     /// Copy the focused editor's selection to the clipboard as both `text/html`
     /// (rich) and `text/plain` (the fall-back alternative). A no-op for an empty
     /// selection.
@@ -2139,7 +2273,7 @@ impl RinchApp {
 
     /// The caret's `(x, y, height)` in window coordinates for a model `pos` — the
     /// forward geometry used to anchor vertical movement.
-    fn editor_caret_point(
+    pub(crate) fn editor_caret_point(
         &self,
         handle: &crate::editor::EditorHandle,
         pos: rinch_editor_core::Pos,

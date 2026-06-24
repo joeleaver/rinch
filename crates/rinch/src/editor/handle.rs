@@ -426,6 +426,70 @@ impl EditorHandle {
             .as_mut()?
             .set_caret_blink_visible(visible)
     }
+
+    // ── IME (input method editor) ────────────────────────────────────────────
+    //
+    // The composition (preedit) is a **view-local overlay** that is never part of
+    // the document (design A5): it is shown at the caret while composing and
+    // discarded on commit or clear. Commit inserts the final text as one ordinary
+    // edit, so undo/history treat it exactly like typing.
+
+    /// Show the IME composition string `text` as a transient overlay at the caret
+    /// (never inserted into the document). An empty `text` clears the overlay.
+    /// `cursor` is the candidate cursor within `text`; the overlay ignores it for
+    /// now (the platform candidate box is placed from the model caret instead). A
+    /// no-op before mount.
+    pub(crate) fn ime_set_preedit(&self, text: &str, _cursor: Option<(usize, usize)>) {
+        if let Some(view) = self.inner.borrow_mut().view.as_mut() {
+            view.set_preedit(text);
+        }
+    }
+
+    /// Clear the IME composition overlay without inserting anything (composition
+    /// cancelled / disabled). A no-op before mount.
+    pub(crate) fn ime_clear_preedit(&self) {
+        if let Some(view) = self.inner.borrow_mut().view.as_mut() {
+            view.set_preedit("");
+        }
+    }
+
+    /// Commit composed `text`: clear the preedit overlay, then insert the text at
+    /// the selection as one ordinary edit (so it joins the undo history like
+    /// typing). An empty commit just clears the overlay.
+    pub(crate) fn ime_commit(&self, text: &str) {
+        if let Some(view) = self.inner.borrow_mut().view.as_mut() {
+            view.set_preedit("");
+        }
+        if !text.is_empty() {
+            self.insert_text(text);
+        }
+    }
+
+    /// Delete `before` characters before the caret and `after` after it — the
+    /// surrounding-text edit some IMEs use to recompose. Clears any preedit first,
+    /// then deletes the clamped `[head - before, head + after)` range in one edit.
+    /// A defensive no-op if the range is empty or the delete is invalid (e.g. it
+    /// would cross a block boundary the schema rejects). Only reached once a backend
+    /// advertises surrounding-text support.
+    pub(crate) fn ime_delete_surrounding(&self, before: usize, after: usize) {
+        if let Some(view) = self.inner.borrow_mut().view.as_mut() {
+            view.set_preedit("");
+        }
+        if before == 0 && after == 0 {
+            return;
+        }
+        self.update(|state| {
+            let head = state.selection.head().0;
+            let from = head.saturating_sub(before);
+            let to = (head + after).min(state.doc.content().size());
+            if from >= to {
+                return None;
+            }
+            let mut tr = state.tr();
+            tr.delete(from, to).ok()?;
+            Some(tr)
+        });
+    }
 }
 
 #[cfg(test)]
@@ -785,6 +849,80 @@ mod tests {
             h.handle.selection().is_empty(),
             "cursor collapses after insert"
         );
+    }
+
+    // ── IME (input method editor) ────────────────────────────────────────────
+
+    #[test]
+    fn ime_preedit_is_view_local_and_commit_inserts_one_edit() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "ab")]));
+        h.handle.set_selection(Selection::cursor(Pos(3))); // end of "ab"
+
+        // Composing shows a preedit overlay but never touches the document.
+        h.handle.ime_set_preedit("ne", None);
+        assert_eq!(
+            text(&h, children(&h, h.container_id)[0]).as_deref(),
+            Some("ab"),
+            "preedit is a view overlay, not part of the document"
+        );
+
+        // Commit inserts the final text as one ordinary edit.
+        h.handle.ime_commit("ね");
+        assert_eq!(
+            text(&h, children(&h, h.container_id)[0]).as_deref(),
+            Some("abね")
+        );
+        // ...and it's a single undo step, exactly like typing.
+        assert!(h.handle.command("undo"));
+        assert_eq!(
+            text(&h, children(&h, h.container_id)[0]).as_deref(),
+            Some("ab")
+        );
+    }
+
+    #[test]
+    fn ime_clear_and_empty_commit_leave_doc_unchanged() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "ab")]));
+        h.handle.set_selection(Selection::cursor(Pos(3)));
+
+        h.handle.ime_set_preedit("xy", None);
+        h.handle.ime_clear_preedit(); // composition cancelled
+        h.handle.ime_commit(""); // an empty commit clears, inserts nothing
+        assert_eq!(
+            text(&h, children(&h, h.container_id)[0]).as_deref(),
+            Some("ab")
+        );
+    }
+
+    #[test]
+    fn ime_delete_surrounding_deletes_around_caret() {
+        let s = schema();
+        // doc(paragraph "abcd") — positions 0[p 1 a 2 b 3 c 4 d 5]6.
+        let h = mount(doc_node(&s, vec![para(&s, "abcd")]));
+        h.handle.set_selection(Selection::cursor(Pos(3))); // between "b" and "c"
+        h.handle.ime_delete_surrounding(1, 1); // delete "b" and "c"
+        assert_eq!(
+            text(&h, children(&h, h.container_id)[0]).as_deref(),
+            Some("ad")
+        );
+    }
+
+    #[test]
+    fn ime_methods_are_safe_before_mount() {
+        let s = Rc::new(schema());
+        let h = EditorHandle::unmounted(s.clone(), empty_doc(&s), default_plugins());
+        h.set_selection(Selection::cursor(Pos(1))); // inside the empty paragraph
+        // No view yet → preedit overlay ops are safe no-ops, but commit still edits
+        // the owned state.
+        h.ime_set_preedit("ab", None);
+        h.ime_clear_preedit();
+        h.ime_commit("hi");
+        // "hi" landed in the document even though the editor isn't mounted.
+        let doc = h.doc();
+        assert_eq!(doc.child_count(), 1);
+        assert_eq!(doc.child(0).child(0).text(), Some("hi"));
     }
 
     // ── Deferred mount (create_editor → load → attach) ───────────────────────

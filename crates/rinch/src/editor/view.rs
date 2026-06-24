@@ -274,6 +274,17 @@ pub struct RinchDomEditorView {
     /// The last rendered node-selection box `(x, y, w, h)` (pixels rounded), so a
     /// re-run on the same geometry writes nothing (mirrors [`Self::last_caret`]).
     last_node_outline: Option<(i32, i32, i32, i32)>,
+    /// The IME composition (preedit) overlay: a span shown inline at the caret
+    /// with the composing text underlined. The composition is **never** part of
+    /// the document (design A5) — it is a transient view overlay, discarded on the
+    /// next commit or clear. `preedit_text` is the span's text-node child.
+    preedit_node: Option<NodeHandle>,
+    preedit_text: Option<NodeHandle>,
+    /// The active composition string, or `None` when not composing.
+    preedit: Option<String>,
+    /// Last applied preedit `(x, y, text)`, so a re-run on the same composition and
+    /// caret writes nothing (mirrors [`Self::last_caret`]).
+    last_preedit: Option<(i32, i32, String)>,
     /// The decoration set currently projected, for the next diff.
     decorations: DecorationSet,
     /// Set whenever the post-layout pass writes an overlay's geometry (caret,
@@ -321,6 +332,10 @@ impl RinchDomEditorView {
             last_selection: None,
             node_outline: None,
             last_node_outline: None,
+            preedit_node: None,
+            preedit_text: None,
+            preedit: None,
+            last_preedit: None,
             decorations: DecorationSet::empty(),
             overlay_dirty: false,
         };
@@ -384,6 +399,7 @@ impl EditorView for RinchDomEditorView {
         if let rinch_editor_core::Selection::Node(_) = &next.selection {
             self.clear_selection_rects();
             self.hide_caret();
+            self.hide_preedit();
             self.render_node_selection(next);
             return vec![ViewRequest::ScrollSelectionIntoView];
         }
@@ -396,10 +412,12 @@ impl EditorView for RinchDomEditorView {
         // blink loop idles (`set_caret_blink` reports "nothing to blink").
         if !next.selection.is_empty() {
             self.hide_caret();
+            self.hide_preedit();
             return Vec::new();
         }
         let Some((block, flat_byte)) = self.caret_target(&next.doc, next.selection.head()) else {
             self.hide_caret();
+            self.hide_preedit();
             return Vec::new();
         };
         let Some(doc) = self.doc.upgrade() else {
@@ -427,8 +445,22 @@ impl EditorView for RinchDomEditorView {
                 .or_else(|| self.empty_block_caret(&*d, &next.doc, next.selection.head(), block_id))
         };
         match geometry {
-            Some((x, y, height)) => self.position_caret(x, y, height),
-            None => self.hide_caret(),
+            Some((x, y, height)) => {
+                // While composing, the preedit overlay stands in for the caret at
+                // the cursor — show it and hide the blinking caret. Otherwise place
+                // the caret as usual.
+                if let Some(text) = self.preedit.clone() {
+                    self.position_preedit(x, y, height, &text);
+                    self.hide_caret();
+                } else {
+                    self.hide_preedit();
+                    self.position_caret(x, y, height);
+                }
+            }
+            None => {
+                self.hide_preedit();
+                self.hide_caret();
+            }
         }
         vec![ViewRequest::ScrollSelectionIntoView]
     }
@@ -813,6 +845,7 @@ impl RinchDomEditorView {
         self.hide_caret();
         self.clear_selection_rects();
         self.clear_node_selection();
+        self.hide_preedit();
     }
 
     /// Hide the caret (no collapsed cursor in a textblock).
@@ -847,6 +880,88 @@ impl RinchDomEditorView {
             caret.set_style("display", if visible { "block" } else { "none" });
         }
         Some(true)
+    }
+
+    // ── IME composition (preedit) overlay ────────────────────────────────────
+
+    /// Set the IME composition (preedit) string, shown as a transient overlay at
+    /// the caret on the next [`EditorView::update_caret`] pass. The composition is
+    /// **never** part of the document (design A5) — it is discarded on commit or
+    /// clear. An empty `text` clears it.
+    pub(crate) fn set_preedit(&mut self, text: &str) {
+        self.preedit = if text.is_empty() {
+            None
+        } else {
+            Some(text.to_string())
+        };
+    }
+
+    /// Position the IME composition overlay at `(x, y)` in container space — a span
+    /// carrying the composing `text`, underlined, with an opaque background so it
+    /// reads cleanly over any in-flow text it overlaps (the composition is an
+    /// overlay, not part of the document). `height` is the caret line height, used
+    /// to size the overlay box. Reuses one span (created lazily) and skips the
+    /// writes when the composition and caret are unchanged (mirrors
+    /// [`Self::position_caret`]).
+    fn position_preedit(&mut self, x: f32, y: f32, height: f32, text: &str) {
+        let key = (x.round() as i32, y.round() as i32, text.to_string());
+        if self.last_preedit.as_ref() == Some(&key) {
+            return;
+        }
+        self.overlay_dirty = true;
+        self.last_preedit = Some(key);
+        if self.preedit_node.is_none() {
+            let Some(span) = create_element(&self.doc, "span") else {
+                return;
+            };
+            span.set_attribute("data-pm-preedit", "true");
+            span.set_styles(&[
+                ("position", "absolute"),
+                // Preserve composition spacing; size to the content.
+                ("white-space", "pre"),
+                // Opaque so the composition reads cleanly over any text underneath.
+                ("background-color", "#ffffff"),
+                // Underline marks it as an in-progress composition.
+                ("border-bottom", "1px solid #1a73e8"),
+                ("pointer-events", "none"),
+                // Above the in-flow text, the selection highlight, and the caret.
+                ("z-index", "2"),
+            ]);
+            let Some(t) = create_text(&self.doc, text) else {
+                return;
+            };
+            span.append_child(&t);
+            self.root.dom.append_child(&span);
+            self.preedit_text = Some(t);
+            self.preedit_node = Some(span);
+        }
+        if let Some(t) = &self.preedit_text {
+            t.set_text(text);
+        }
+        if let Some(span) = &self.preedit_node {
+            let left = format!("{x}px");
+            let top = format!("{y}px");
+            let lh = format!("{height}px");
+            span.set_styles(&[
+                ("left", &left),
+                ("top", &top),
+                ("height", &lh),
+                ("line-height", &lh),
+                ("display", "inline-block"),
+            ]);
+        }
+    }
+
+    /// Hide the IME composition overlay (composition committed or cleared).
+    fn hide_preedit(&mut self) {
+        if self.last_preedit.is_none() {
+            return;
+        }
+        self.overlay_dirty = true;
+        self.last_preedit = None;
+        if let Some(span) = &self.preedit_node {
+            span.set_style("display", "none");
+        }
     }
 }
 

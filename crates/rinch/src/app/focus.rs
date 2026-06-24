@@ -10,6 +10,19 @@
 
 use super::*;
 
+/// The IME state the focus arbiter wants the window to be in. The runtime
+/// ([`crate::shell`]) diffs this against the window's current IME state each tick
+/// and issues a winit `request_ime_update` only on change — so enable/disable and
+/// candidate-box placement follow focus and the caret uniformly across targets.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ImeState {
+    /// Whether a text target is focused and wants IME composition.
+    pub enabled: bool,
+    /// The caret's logical window-space rect `(x, y, w, h)` for candidate-box
+    /// placement, when known.
+    pub cursor_area: Option<(f32, f32, f32, f32)>,
+}
+
 impl RinchApp {
     /// Switch keyboard/IME focus to `target`, tearing down whatever was focused
     /// before. Returns `true` if the focus target actually changed.
@@ -38,6 +51,7 @@ impl RinchApp {
                 self.focused_input_value.clear();
                 self.focused_input_state = None;
                 self.focused_input_node_id = None;
+                self.focused_input_preedit = None;
             }
             FocusTarget::ContentEditable(prev) => {
                 ce::clear_active_ce_api();
@@ -60,6 +74,36 @@ impl RinchApp {
         self.focus_target = target;
         self.scene_dirty = true;
         true
+    }
+
+    /// The IME state the focused target wants — enable + caret rect for a text
+    /// target, disabled otherwise. The runtime applies it via the window. This is
+    /// the single bridge from focus → the platform IME surface (see
+    /// [`ImeState`]).
+    pub(crate) fn ime_state(&self) -> ImeState {
+        match self.focus_target {
+            #[cfg(feature = "new-editor")]
+            FocusTarget::Editor(container) => {
+                let cursor_area = crate::editor::editor_for(container).and_then(|handle| {
+                    let head = handle.selection().head();
+                    self.editor_caret_point(&handle, head)
+                        .map(|(x, y, h)| (x, y, 1.0, h))
+                });
+                ImeState {
+                    enabled: true,
+                    cursor_area,
+                }
+            }
+            FocusTarget::Input(node_id) => ImeState {
+                enabled: true,
+                cursor_area: self.input_caret_area(node_id),
+            },
+            // Surfaces, the legacy CE, and no focus do not drive desktop IME.
+            _ => ImeState {
+                enabled: false,
+                cursor_area: None,
+            },
+        }
     }
 
     /// Whether a text input element is currently focused.
