@@ -21,6 +21,8 @@
 
 use std::rc::Rc;
 
+#[cfg(feature = "a11y")]
+pub mod a11y;
 pub mod command;
 pub mod commands;
 pub mod decoration;

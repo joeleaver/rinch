@@ -149,6 +149,10 @@ pub enum RinchNativeEvent {
     HideWindow,
     /// An injected platform event (e.g. synthetic gamepad input).
     InjectedPlatformEvent(PlatformEvent),
+    /// An accessibility action requested by the AT (delivered from the adapter's
+    /// thread; applied to the focused editor on the main thread).
+    #[cfg(feature = "a11y")]
+    A11yAction(accesskit::ActionRequest),
 }
 
 /// Inject a synthetic [`PlatformEvent`] into the rinch event loop.
@@ -236,6 +240,16 @@ pub struct RinchRuntime {
     /// Last-applied IME cursor area (logical window `x, y, w, h`), to avoid
     /// re-issuing identical `Update` requests every frame.
     ime_cursor_area: Option<(f32, f32, f32, f32)>,
+
+    // ── Accessibility (M7b) ──────────────────────────────────────
+    /// The per-platform AccessKit bridge (Linux AT-SPI; no-op elsewhere). Created
+    /// lazily on first window creation; pushes the editor's tree on change.
+    #[cfg(feature = "a11y")]
+    a11y: Option<crate::editor::a11y::AccesskitBridge>,
+    /// The (doc, selection) last pushed to the AT, so the tree is re-derived only
+    /// when the focused editor actually changed.
+    #[cfg(feature = "a11y")]
+    a11y_last: Option<(rinch_editor_core::Node, rinch_editor_core::Selection)>,
 }
 
 impl RinchRuntime {
@@ -271,6 +285,10 @@ impl RinchRuntime {
             frame_times: VecDeque::with_capacity(60),
             ime_enabled: false,
             ime_cursor_area: None,
+            #[cfg(feature = "a11y")]
+            a11y: None,
+            #[cfg(feature = "a11y")]
+            a11y_last: None,
         }
     }
 
@@ -1604,6 +1622,14 @@ impl ApplicationHandler for RinchRuntime {
                     delta_y: dy,
                 }
             }
+            WindowEvent::Focused(_focused) => {
+                // Tell the AT whether this window has OS focus (a11y only).
+                #[cfg(feature = "a11y")]
+                if let Some(bridge) = self.a11y.as_mut() {
+                    bridge.set_window_focused(_focused);
+                }
+                return;
+            }
             WindowEvent::ModifiersChanged(new_modifiers) => {
                 self.modifiers = new_modifiers.state();
                 let mods = self.translate_modifiers();
@@ -1777,6 +1803,10 @@ impl ApplicationHandler for RinchRuntime {
         // focused text target, follow the caret, disable on blur).
         self.sync_ime();
 
+        // Push the focused editor's accessibility tree to the AT when it changed.
+        #[cfg(feature = "a11y")]
+        self.sync_a11y();
+
         // Drive the focused editor's caret blink. This is the only thing that
         // arms a timed wake (`WaitUntil`); when nothing is blinking it returns the
         // loop to `Wait` so the app stays idle.
@@ -1852,6 +1882,59 @@ impl RinchRuntime {
         }
     }
 
+    /// Push the focused editor's accessibility tree to the AT when its document or
+    /// selection changed since the last push (the AT consumes a full snapshot). The
+    /// per-platform bridge is created lazily on first editor focus; on Linux it is
+    /// the AT-SPI adapter, elsewhere a no-op. The whole method compiles to nothing
+    /// without the `a11y` feature.
+    #[cfg(feature = "a11y")]
+    fn sync_a11y(&mut self) {
+        let Some(handle) = self
+            .app
+            .focused_editor_id()
+            .and_then(crate::editor::editor_for)
+        else {
+            return;
+        };
+        let state = handle.state();
+        let unchanged = matches!(
+            &self.a11y_last,
+            Some((doc, sel)) if doc.same_ref(&state.doc) && *sel == state.selection
+        );
+        if unchanged {
+            return;
+        }
+        let bridge = self
+            .a11y
+            .get_or_insert_with(crate::editor::a11y::AccesskitBridge::new);
+        bridge.update(&state);
+        self.a11y_last = Some((state.doc.clone(), state.selection.clone()));
+    }
+
+    /// Apply an AT-requested action to the focused editor. A screen reader moving
+    /// the caret/selection arrives as `SetTextSelection`; `Focus` is advisory (the
+    /// focus arbiter owns focus). Runs on the main thread (from the native-event
+    /// queue) after the adapter thread forwarded the request.
+    #[cfg(feature = "a11y")]
+    fn apply_a11y_action(&mut self, req: accesskit::ActionRequest) {
+        use accesskit::{Action, ActionData};
+        let Some(handle) = self
+            .app
+            .focused_editor_id()
+            .and_then(crate::editor::editor_for)
+        else {
+            return;
+        };
+        if req.action == Action::SetTextSelection
+            && let Some(ActionData::SetTextSelection(ak_sel)) = &req.data
+            && let Some(sel) =
+                rinch_editor_core::a11y::accesskit_selection_to_model(&handle.doc(), ak_sel)
+        {
+            handle.set_selection(sel);
+            send_native_event(RinchNativeEvent::ReRender);
+        }
+    }
+
     /// Handle a single native event from the queue.
     fn handle_native_event(&mut self, event: RinchNativeEvent, event_loop: &dyn ActiveEventLoop) {
         let platform_event = match event {
@@ -1875,6 +1958,11 @@ impl RinchRuntime {
             RinchNativeEvent::ShowWindow => PlatformEvent::UserEvent(UserEvent::ShowWindow),
             RinchNativeEvent::HideWindow => PlatformEvent::UserEvent(UserEvent::HideWindow),
             RinchNativeEvent::InjectedPlatformEvent(pe) => pe,
+            #[cfg(feature = "a11y")]
+            RinchNativeEvent::A11yAction(req) => {
+                self.apply_a11y_action(req);
+                return;
+            }
         };
         let size = self.window_size();
         let scale = self.scale_factor();

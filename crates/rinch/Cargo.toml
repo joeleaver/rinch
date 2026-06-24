@@ -52,6 +52,9 @@ rinch-editor-core = { workspace = true, optional = true }
 rinch-video = { workspace = true, optional = true }
 ureq = { version = "3", optional = true }
 memory-stats = { version = "1.2", optional = true }
+# Accessibility (M7b) — `accesskit` core types are platform-neutral; the per-platform
+# adapter (`accesskit_unix` etc.) lives in the target tables below. Gated by `a11y`.
+accesskit = { version = "0.24", optional = true }
 softbuffer = { git = "https://github.com/rust-windowing/softbuffer", rev = "672d180", optional = true }
 
 [dev-dependencies]
@@ -61,6 +64,9 @@ rinch-core = { workspace = true, features = ["test-util"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", optional = true }
 ksni = { workspace = true, optional = true }
+# AT-SPI (D-Bus) accessibility adapter for Linux. Pulls zbus/atspi/async-io; only
+# compiled when the `a11y` feature is on. Windows/macOS adapters are a follow-up.
+accesskit_unix = { version = "0.22", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
@@ -127,6 +133,10 @@ collaboration = ["rinch-editor/collaboration"]
 # green; needs the desktop renderer. Flipped to default and the old engine ripped
 # in M8.
 new-editor = ["desktop", "dep:rinch-editor-core"]
+# Editor accessibility (M7b): derive an accesskit TreeUpdate from EditorState and
+# push it through a per-platform adapter. Linux uses accesskit_unix (AT-SPI); other
+# desktop platforms fall back to a no-op bridge until their adapters land.
+a11y = ["new-editor", "rinch-editor-core/a11y", "dep:accesskit", "dep:accesskit_unix"]
 # Derive serde on the CE interchange types (BlockData / InlineRunData /
 # InlineMarkData) for persisting contenteditable content.
 serde = ["rinch-core/serde"]
