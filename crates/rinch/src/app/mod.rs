@@ -41,7 +41,7 @@ use rinch_editable::{
     Modifiers as EditModifiers, Selection, StringDocument,
 };
 use rinch_platform::{
-    AppAction, Instant, KeyCode, Modifiers, MouseButton, PlatformEvent, UserEvent,
+    AppAction, ImeEvent, Instant, KeyCode, Modifiers, MouseButton, PlatformEvent, UserEvent,
 };
 #[cfg(feature = "gpu")]
 use vello::Scene;
@@ -215,6 +215,11 @@ pub struct RinchApp {
     pub(crate) focused_input_state: Option<EditableState<StringDocument>>,
     /// DOM node ID of the currently focused text input.
     pub(crate) focused_input_node_id: Option<usize>,
+    /// In-progress IME composition (preedit) for the focused `<input>`: the
+    /// composing string and an optional `(begin, end)` byte cursor within it.
+    /// Rendered inline at the input caret as an underlined overlay (via the
+    /// `data-preedit` attribute) and never part of the input's committed value.
+    pub(crate) focused_input_preedit: Option<(String, Option<(usize, usize)>)>,
     /// The single authority for which widget owns keyboard/IME input (design
     /// A10). Kept in lockstep with the per-engine focus state below
     /// (`focused_input_*`, `focused_contenteditable`, the surface/editor
@@ -291,6 +296,7 @@ impl RinchApp {
             focused_input_value: String::new(),
             focused_input_state: None,
             focused_input_node_id: None,
+            focused_input_preedit: None,
             focus_target: FocusTarget::None,
             #[cfg(feature = "new-editor")]
             editor_goal_x: None,
@@ -1465,6 +1471,7 @@ impl RinchApp {
             node.attributes.remove("data-focused");
             node.attributes.remove("data-cursor-pos");
             node.attributes.remove("data-selection-start");
+            node.attributes.remove("data-preedit");
             node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
         }
         d.tree.dirty_nodes.insert(node_id);

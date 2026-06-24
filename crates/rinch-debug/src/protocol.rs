@@ -72,6 +72,17 @@ pub enum DebugCommandKind {
         #[serde(default)]
         alt: bool,
     },
+    #[serde(rename = "ime")]
+    Ime {
+        /// One of `"enable"`, `"preedit"`, `"commit"`, `"disable"`.
+        action: String,
+        /// The preedit composition string, or the committed text.
+        #[serde(default)]
+        text: String,
+        /// Optional `(begin, end)` byte cursor within a preedit composition.
+        #[serde(default)]
+        cursor: Option<(usize, usize)>,
+    },
     #[serde(rename = "get_caret_position")]
     GetCaretPosition { node_id: usize, byte_offset: usize },
     #[serde(rename = "get_glyph_bounds")]

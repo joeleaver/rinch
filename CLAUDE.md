@@ -835,7 +835,7 @@ The software renderer includes **dirty region caching**: when only a few nodes c
 
 ### Image Support
 
-Images render on the desktop (Vello) backend via `<img>` elements and `background-image: url(...)` CSS. Images load asynchronously on background threads.
+Images render on **both** desktop backends — GPU (Vello, `scene.draw_image`) and software (tiny-skia, `draw_pixmap`) — via `<img>` elements and `background-image: url(...)` CSS. Remote/file images load asynchronously on background threads; `data:` URIs (e.g. base64 PNG) are decoded synchronously and inserted straight into the cache (`request_image_load_for_node`).
 
 **Architecture:**
 ```

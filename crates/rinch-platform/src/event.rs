@@ -57,6 +57,53 @@ pub enum PlatformEvent {
         paths: Vec<PathBuf>,
         position: (f64, f64),
     },
+    /// An IME (input method editor) composition event for the focused text
+    /// target. Desktop (winit `WindowEvent::Ime`) and Android (the
+    /// `InputConnection` drain loop) both translate their native composition
+    /// events into this single portable variant, so IME rides the same
+    /// focus-arbiter routing as [`PlatformEvent::KeyDown`] — it is not an
+    /// editor-specific path.
+    Ime(ImeEvent),
+}
+
+/// A platform-agnostic IME (input method editor) composition event.
+///
+/// This is the **portable IME contract**: every text target (the rich-text
+/// editor, a single-line `<input>`, …) consumes the same five variants through
+/// the runtime's [`FocusTarget`](https://docs.rs) routing, so IME behaves
+/// uniformly everywhere rather than being re-implemented per widget.
+///
+/// Backends translate into this:
+/// - **Desktop:** winit `WindowEvent::Ime(Ime)` → one of these variants.
+/// - **Android:** `drain_committed_text()` → [`ImeEvent::Commit`],
+///   `drain_deletions()` → [`ImeEvent::DeleteSurrounding`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImeEvent {
+    /// Composition became available for the focused target. The target may
+    /// start receiving [`Preedit`](ImeEvent::Preedit)/[`Commit`](ImeEvent::Commit)
+    /// events.
+    Enabled,
+    /// Set (or clear) the current composition string shown inline at the caret.
+    ///
+    /// `text` is the in-progress composition (an empty string clears it).
+    /// `cursor` is an optional `(begin, end)` **byte** range within `text` for
+    /// candidate-box placement; `None` hides the candidate cursor. The preedit
+    /// is **never** part of the document — it is rendered as a transient overlay
+    /// and discarded on the next [`Commit`](ImeEvent::Commit) or clear.
+    Preedit {
+        text: String,
+        cursor: Option<(usize, usize)>,
+    },
+    /// Commit composed text into the focused target. The target clears any
+    /// pending preedit and inserts `text` at the selection in one edit.
+    Commit(String),
+    /// Delete `before`/`after` units around the cursor (surrounding-text edit
+    /// some IMEs use to recompose). Units are characters in rinch's char-based
+    /// model; the platform boundary converts as needed. Only delivered once a
+    /// backend advertises surrounding-text support.
+    DeleteSurrounding { before: usize, after: usize },
+    /// Composition ended for the focused target; any pending preedit is cleared.
+    Disabled,
 }
 
 /// Application-level events sent to the event loop.

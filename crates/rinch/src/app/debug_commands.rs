@@ -405,6 +405,36 @@ impl RinchApp {
                 actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
             }
+            DebugCommandKind::Ime {
+                action,
+                text,
+                cursor,
+            } => {
+                // Synthesize a real `PlatformEvent::Ime` and route it through
+                // `handle_event` — exactly the path winit's `WindowEvent::Ime` takes
+                // — so a debug-injected composition drives the focus arbiter and the
+                // focused target's preedit/commit identically to a physical IME.
+                let ime_event = match action.as_str() {
+                    "enable" => Some(rinch_platform::ImeEvent::Enabled),
+                    "preedit" => Some(rinch_platform::ImeEvent::Preedit { text, cursor }),
+                    "commit" => Some(rinch_platform::ImeEvent::Commit(text)),
+                    "disable" => Some(rinch_platform::ImeEvent::Disabled),
+                    other => {
+                        return DebugResult::Error {
+                            message: format!("Unknown ime action: {other}"),
+                        };
+                    }
+                };
+                if let Some(ev) = ime_event {
+                    actions.extend(self.handle_event(
+                        PlatformEvent::Ime(ev),
+                        window_size,
+                        scale_factor,
+                    ));
+                }
+                actions.push(AppAction::RequestRedraw);
+                DebugResult::Json { data: json!(null) }
+            }
             DebugCommandKind::GetCaretPosition {
                 node_id,
                 byte_offset,

@@ -481,14 +481,33 @@ pub(super) fn paint_input_value(
         .map(|s| s == "true")
         .unwrap_or(true);
 
-    let (text, is_placeholder) = if value.is_empty() && !placeholder.is_empty() {
-        (placeholder, true)
+    let is_password = node.attributes.get("type").map(|s| s.as_str()) == Some("password");
+
+    // IME composition (preedit): the in-progress composition string lives only in
+    // `data-preedit` (written by the runtime during composition) — never in the
+    // field's `value`. Splice it into the displayed text at the caret so it flows
+    // inline, underline that run, and put the caret at its end. Composition takes
+    // precedence over the placeholder (composing into an empty field shows the
+    // composition, not the placeholder).
+    let preedit = node
+        .attributes
+        .get("data-preedit")
+        .map(|s| s.as_str())
+        .unwrap_or("");
+    let composing = is_focused && !preedit.is_empty() && !is_password;
+    let composed_text;
+    let (text, is_placeholder, cursor_pos, selection_start, preedit_range) = if composing {
+        let c = cursor_pos.min(value.len());
+        composed_text = format!("{}{}{}", &value[..c], preedit, &value[c..]);
+        let end = c + preedit.len();
+        (composed_text.as_str(), false, end, end, Some((c, end)))
+    } else if value.is_empty() && !placeholder.is_empty() {
+        (placeholder, true, cursor_pos, selection_start, None)
     } else {
-        (value, false)
+        (value, false, cursor_pos, selection_start, None)
     };
 
     // Password masking: replace display text with bullets for type="password"
-    let is_password = node.attributes.get("type").map(|s| s.as_str()) == Some("password");
     let password_display;
     let (text, cursor_pos, selection_start) = if is_password && !is_placeholder && !text.is_empty()
     {
@@ -655,6 +674,24 @@ pub(super) fn paint_input_value(
             caret_y + caret_height,
         );
         painter.fill_color(Fill::NonZero, transform, caret_color, &caret_rect.into());
+    }
+
+    // Underline the IME composition run so it reads as an in-progress composition.
+    if let Some((a, b)) = preedit_range {
+        let a = a.min(text.len());
+        let b = b.min(text.len());
+        let (start_x, start_y) =
+            crate::text_query::caret_position_for_offset_layout(&text_layout, a);
+        let (end_x, _end_y) = crate::text_query::caret_position_for_offset_layout(&text_layout, b);
+        let line_height = scaled_font_size as f64 * 1.2;
+        let underline_y = text_y + start_y as f64 + line_height - scale;
+        let ul_rect = Rect::new(
+            text_x + start_x as f64,
+            underline_y,
+            text_x + end_x as f64,
+            underline_y + scale,
+        );
+        painter.fill_color(Fill::NonZero, transform, base_color, &ul_rect.into());
     }
 }
 
