@@ -82,14 +82,19 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 /* ── Horizontal rule ───────────────────────────────────────────────────── */
 [data-pm-editor] hr { border: none; border-top: 2px solid #e1e4e8; margin: 1.2em 0; height: 0; }
 
-/* ── Tables (flexbox — rinch-dom has no display:table) ─────────────────── */
+/* ── Tables (CSS grid — rinch-dom has no display:table) ─────────────────
+   The <table> is a grid; the view sets `grid-template-columns: repeat(N, …)`
+   inline (N = column count). <tr> is `display: contents`, so its cells become
+   the grid's direct items, and a merged cell carries an inline
+   `grid-column`/`grid-row` span — that is how colspan/rowspan render. */
 [data-pm-editor] table {
-  display: flex; flex-direction: column; margin: 0.85em 0;
+  display: grid; margin: 0.85em 0;
+  grid-template-columns: minmax(0, 1fr);
   border: 1px solid #d0d7de; border-radius: 6px;
 }
-[data-pm-editor] tr { display: flex; flex-direction: row; }
+[data-pm-editor] tr { display: contents; }
 [data-pm-editor] td, [data-pm-editor] th {
-  display: block; flex-grow: 1; flex-basis: 0; min-width: 0;
+  display: block; min-width: 0;
   padding: 0.45em 0.7em; border: 1px solid #d0d7de;
 }
 [data-pm-editor] th { font-weight: 600; background: #f6f8fa; }
@@ -115,6 +120,10 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 [data-pm-editor][data-pm-theme="dark"] blockquote { border-left-color: #3d444d; color: #9198a1; }
 [data-pm-editor][data-pm-theme="dark"] pre { background: #161b22; }
 [data-pm-editor][data-pm-theme="dark"] hr { border-top-color: #30363d; }
+[data-pm-editor][data-pm-theme="dark"] table,
+[data-pm-editor][data-pm-theme="dark"] td,
+[data-pm-editor][data-pm-theme="dark"] th { border-color: #30363d; }
+[data-pm-editor][data-pm-theme="dark"] th { background: #161b22; }
 [data-pm-editor][data-pm-theme="dark"] table { border-color: #30363d; }
 [data-pm-editor][data-pm-theme="dark"] td,
 [data-pm-editor][data-pm-theme="dark"] th { border-color: #30363d; }

@@ -10,6 +10,8 @@
 
 use std::rc::Rc;
 
+pub mod table_ops;
+
 use crate::Fragment;
 use crate::command::{Command, chain};
 use crate::keymap::KeyBinding;
@@ -103,7 +105,7 @@ pub fn can_sink(state: &EditorState) -> bool {
 /// Wrap a transaction-builder into a [`Command`]. The builder returns `Some(tr)`
 /// when the command applies (even a stored-marks-only transaction with no doc
 /// change), or `None` when it does not.
-fn command_tr(build: impl Fn(&EditorState) -> Option<Transaction> + 'static) -> Command {
+pub(crate) fn command_tr(build: impl Fn(&EditorState) -> Option<Transaction> + 'static) -> Command {
     Rc::new(move |state, dispatch| match build(state) {
         Some(tr) => {
             if let Some(d) = dispatch {
@@ -566,9 +568,14 @@ pub fn insert_image(src: String, alt: String) -> Command {
     })
 }
 
-/// Delete the current selection (only applies when it is non-empty).
+/// Delete the current selection (only applies when it is non-empty). A cell
+/// selection clears the selected cells' content (it is never empty) rather than
+/// splicing its coarse range.
 pub fn delete_selection() -> Command {
     command_tr(|state| {
+        if matches!(state.selection, crate::selection::Selection::Cell(_)) {
+            return table_ops::clear_cells(state);
+        }
         if state.selection.is_empty() {
             return None;
         }
@@ -747,6 +754,9 @@ fn wrap_into_before(state: &EditorState, cut: usize) -> Option<Transaction> {
 pub fn delete_char_backward() -> Command {
     command_tr(|state| {
         let sel = &state.selection;
+        if matches!(sel, crate::selection::Selection::Cell(_)) {
+            return table_ops::clear_cells(state);
+        }
         if !sel.is_empty() {
             let mut tr = state.tr();
             tr.delete_selection().ok()?;
@@ -796,6 +806,9 @@ pub fn delete_char_backward() -> Command {
 pub fn delete_char_forward() -> Command {
     command_tr(|state| {
         let sel = &state.selection;
+        if matches!(sel, crate::selection::Selection::Cell(_)) {
+            return table_ops::clear_cells(state);
+        }
         if !sel.is_empty() {
             let mut tr = state.tr();
             tr.delete_selection().ok()?;
@@ -864,6 +877,16 @@ impl Plugin for BaseCommandsPlugin {
             ("insertHorizontalRule", insert_horizontal_rule()),
             ("insertHardBreak", insert_hard_break()),
             ("insertTable", insert_table(3, 3)),
+            ("addRowBefore", table_ops::add_row_before()),
+            ("addRowAfter", table_ops::add_row_after()),
+            ("addColumnBefore", table_ops::add_column_before()),
+            ("addColumnAfter", table_ops::add_column_after()),
+            ("deleteRow", table_ops::delete_row()),
+            ("deleteColumn", table_ops::delete_column()),
+            ("deleteTable", table_ops::delete_table()),
+            ("mergeCells", table_ops::merge_cells()),
+            ("splitCell", table_ops::split_cell()),
+            ("deleteCellSelection", table_ops::delete_cell_selection()),
             ("splitBlock", split_block()),
             ("splitListItem", split_list_item("list_item")),
             ("enter", split_block_or_list_item()),

@@ -271,6 +271,13 @@ impl EditorHandle {
     /// (ProseMirror `replaceSelection` for text input). Returns whether the
     /// document changed.
     pub fn insert_text(&self, text: &str) -> bool {
+        // Typing over a cell selection first clears the selected cells and collapses
+        // the cursor into the top-left cell (PM `deleteCellSelection`); the text then
+        // replaces the cells' content. Without this, the generic insert below would
+        // splice the cell selection's coarse range and corrupt the table.
+        if matches!(self.selection(), Selection::Cell(_)) {
+            self.command("deleteCellSelection");
+        }
         self.update(|state| {
             let mut tr = state.tr();
             if tr.insert_text(text).is_ok() {

@@ -162,6 +162,13 @@ pub struct ComputedStyle {
     pub grid_template_rows: Vec<taffy::GridTemplateComponent<String>>,
     #[serde(skip)]
     pub grid_auto_flow: taffy::GridAutoFlow,
+    /// Grid item column placement (`grid-column`) — honors `span N` and line
+    /// numbers, so a `colspan`-style cell occupies several grid columns.
+    #[serde(skip)]
+    pub grid_column: taffy::Line<taffy::GridPlacement<String>>,
+    /// Grid item row placement (`grid-row`) — the `rowspan` analogue.
+    #[serde(skip)]
+    pub grid_row: taffy::Line<taffy::GridPlacement<String>>,
 
     // Parsing metadata
     /// Whether display was explicitly set in CSS (affects flex defaults).
@@ -279,6 +286,14 @@ impl Default for ComputedStyle {
             grid_template_columns: Vec::new(),
             grid_template_rows: Vec::new(),
             grid_auto_flow: taffy::GridAutoFlow::Row,
+            grid_column: taffy::Line {
+                start: taffy::GridPlacement::Auto,
+                end: taffy::GridPlacement::Auto,
+            },
+            grid_row: taffy::Line {
+                start: taffy::GridPlacement::Auto,
+                end: taffy::GridPlacement::Auto,
+            },
 
             has_explicit_display: false,
         }

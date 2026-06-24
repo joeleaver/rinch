@@ -95,6 +95,18 @@ fn block_tags(node: &Node) -> (String, String) {
             }
         }
         "code_block" => ("<pre>".to_string(), "</pre>".to_string()),
+        "table_cell" | "table_header_cell" => {
+            let tag = primary_tag(node.node_type());
+            let mut open = format!("<{tag}");
+            for (name, attr) in [("colspan", "colspan"), ("rowspan", "rowspan")] {
+                let n = node.attrs().get_int(attr).unwrap_or(1);
+                if n > 1 {
+                    open.push_str(&format!(" {name}=\"{n}\""));
+                }
+            }
+            open.push('>');
+            (open, format!("</{tag}>"))
+        }
         _ => {
             let tag = primary_tag(node.node_type());
             (format!("<{tag}>"), format!("</{tag}>"))
@@ -1249,7 +1261,16 @@ fn filter_attributes(attrs: Vec<(String, String)>) -> Vec<(String, String)> {
         .filter(|(name, _)| {
             matches!(
                 name.as_str(),
-                "href" | "src" | "alt" | "title" | "target" | "start" | "style" | "class"
+                "href"
+                    | "src"
+                    | "alt"
+                    | "title"
+                    | "target"
+                    | "start"
+                    | "style"
+                    | "class"
+                    | "colspan"
+                    | "rowspan"
             )
         })
         .collect()
@@ -1337,7 +1358,9 @@ mod tests {
             row.content_match()
                 .matches(&["table_header_cell", "table_cell"])
         );
-        assert!(!row.content_match().matches(&[]), "a row needs >= 1 cell");
+        // A row may be empty (`cell*`): every column can be covered by a `rowspan`
+        // cell from a row above (e.g. after merging a full-width rectangle).
+        assert!(row.content_match().matches(&[]), "an empty row is allowed");
         assert!(
             schema
                 .node_type("table_cell")
@@ -1360,6 +1383,24 @@ mod tests {
         let schema = s();
         let html = "<table><tr><td><p>a</p></td><td><p>b</p></td></tr></table>";
         assert_eq!(reserialize_via_slice(&schema, html), html);
+    }
+
+    #[test]
+    fn table_colspan_rowspan_round_trip() {
+        // `colspan`/`rowspan` must survive both parse (the `filter_attributes`
+        // whitelist) and serialize (`block_tags`) — without them a merged cell
+        // silently un-merges, which the CSS-grid view then can't render.
+        let schema = s();
+        let html = "<table><tr><th colspan=\"2\"><p>h</p></th></tr>\
+                    <tr><td rowspan=\"2\"><p>a</p></td><td><p>b</p></td></tr></table>";
+        assert_eq!(reserialize_via_slice(&schema, html), html);
+        // And the parsed model actually carries the spans.
+        let slice = slice_from_html(&schema, html).unwrap();
+        let table = slice.content.child(0);
+        let header_cell = table.content().child(0).content().child(0);
+        assert_eq!(header_cell.attrs().get_int("colspan"), Some(2));
+        let span_cell = table.content().child(1).content().child(0);
+        assert_eq!(span_cell.attrs().get_int("rowspan"), Some(2));
     }
 
     #[test]

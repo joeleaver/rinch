@@ -837,6 +837,23 @@ impl RinchDocument {
                 }
             }
 
+            // An inline-block child of an IFC has its *position* assigned by the IFC
+            // (`write_inline_positions`), not Taffy: it is detached from its parent's
+            // Taffy tree and measured standalone (Taffy location 0,0). Keep the IFC's
+            // x/y here — only the size comes from the standalone measure. Without
+            // this, a non-structural re-layout (which doesn't rebuild the IFC) snaps
+            // every inline-block back to the line origin, collapsing e.g. a row of
+            // inline-block buttons into a pile.
+            {
+                let node = &self.tree.nodes[node_id];
+                if node.display_mode == crate::node::DisplayMode::InlineBlock
+                    && node.ifc_root.is_some()
+                {
+                    new_layout.x = node.layout.x;
+                    new_layout.y = node.layout.y;
+                }
+            }
+
             // Save previous layout for dirty region computation
             let node = &mut self.tree.nodes[node_id];
             node.prev_layout = node.layout;

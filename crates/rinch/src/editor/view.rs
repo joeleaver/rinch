@@ -46,6 +46,39 @@ fn apply_element_attrs(dom: &NodeHandle, node: &Node) {
             Some(start) if start != 1 => dom.set_attribute("start", &start.to_string()),
             _ => dom.remove_attribute("start"),
         },
+        // A table is laid out as a CSS grid (the default stylesheet sets
+        // `display: grid` on `<table>` and `display: contents` on `<tr>`, so the
+        // cells are the grid's items). The column count is data-dependent, so the
+        // view writes it inline; cells carry their colspan/rowspan as a grid span.
+        "table" => {
+            let cols = rinch_editor_core::tables::column_count(node).max(1);
+            dom.set_style(
+                "grid-template-columns",
+                &format!("repeat({cols}, minmax(0, 1fr))"),
+            );
+        }
+        "table_cell" | "table_header_cell" => {
+            let cspan = node.attrs().get_int("colspan").unwrap_or(1).max(1);
+            let rspan = node.attrs().get_int("rowspan").unwrap_or(1).max(1);
+            // Always write both (resetting to `auto`) so a split/merge that shrinks
+            // a span doesn't leave a stale `span N` behind.
+            dom.set_style(
+                "grid-column",
+                &(if cspan > 1 {
+                    format!("span {cspan}")
+                } else {
+                    "auto".to_string()
+                }),
+            );
+            dom.set_style(
+                "grid-row",
+                &(if rspan > 1 {
+                    format!("span {rspan}")
+                } else {
+                    "auto".to_string()
+                }),
+            );
+        }
         _ => {}
     }
 }
@@ -186,7 +219,15 @@ impl ViewDesc {
         if self.is_text || node_dom_tag(&self.node) != node_dom_tag(new) {
             return false;
         }
-        if self.node.attrs() != new.attrs() {
+        // Re-apply element attrs when the node's own attrs changed, OR when it is a
+        // `table` whose column count changed: a table's `grid-template-columns` is
+        // derived from its column count (its *content*), not its attrs, so a column
+        // add/remove must refresh it. Gating on the count (rather than any table edit)
+        // avoids a full table restyle on every keystroke inside a cell.
+        let table_cols_changed = new.type_name() == "table"
+            && rinch_editor_core::tables::column_count(&self.node)
+                != rinch_editor_core::tables::column_count(new);
+        if self.node.attrs() != new.attrs() || table_cols_changed {
             apply_element_attrs(&self.dom, new);
         }
         self.diff_children(new, doc);
@@ -265,7 +306,10 @@ pub struct RinchDomEditorView {
     /// reused across updates).
     selection_rects: Vec<NodeHandle>,
     /// The last rendered selection `(from, to)`, for change-detection.
-    last_selection: Option<(usize, usize)>,
+    /// Change-detection key for the selection overlay (the wash). Tagged by kind
+    /// (`0` = text range, `1` = cell rectangle) so a text and a cell selection that
+    /// happen to share the same two positions don't alias and stale-skip a re-render.
+    last_selection: Option<(u8, usize, usize)>,
     /// The outline overlay for a [`Selection::Node`] — a translucent box tracing the
     /// selected leaf node (image / horizontal rule), drawn from `state.selection`
     /// (design §6 node-views). `None` when the current selection is not a node
@@ -404,6 +448,15 @@ impl EditorView for RinchDomEditorView {
             self.hide_caret();
             self.hide_preedit();
             self.render_node_selection(next);
+            return vec![ViewRequest::ScrollSelectionIntoView];
+        }
+        // A cell selection (a rectangle of table cells) washes each selected cell
+        // and shows neither a caret nor a node outline.
+        if let rinch_editor_core::Selection::Cell(_) = &next.selection {
+            self.clear_node_selection();
+            self.hide_caret();
+            self.hide_preedit();
+            self.render_cell_selection(next);
             return vec![ViewRequest::ScrollSelectionIntoView];
         }
         self.clear_node_selection();
@@ -578,7 +631,7 @@ impl RinchDomEditorView {
             self.clear_selection_rects();
             return;
         }
-        let key = (sel.from().0, sel.to().0);
+        let key = (0u8, sel.from().0, sel.to().0);
         if self.last_selection == Some(key) {
             return;
         }
@@ -677,6 +730,55 @@ impl RinchDomEditorView {
         for div in self.selection_rects.drain(..) {
             div.remove();
         }
+    }
+
+    /// Render the wash for a [`Selection::Cell`] — one translucent rectangle over
+    /// each selected cell's box (merged cells span via their grid placement, so
+    /// their host box already covers the merged area). Reuses the text-selection
+    /// rect pool, so the wash sits behind the cell content just like a text
+    /// highlight. Clears the wash if the table can't be resolved.
+    ///
+    /// [`Selection::Cell`]: rinch_editor_core::Selection::Cell
+    fn render_cell_selection(&mut self, state: &EditorState) {
+        use rinch_editor_core::Pos;
+        let rinch_editor_core::Selection::Cell(cell) = &state.selection else {
+            return;
+        };
+        let key = (1u8, cell.anchor_cell.0, cell.head_cell.0);
+        if self.last_selection == Some(key) {
+            return;
+        }
+        let Some((map, _table, _start)) =
+            rinch_editor_core::tables::map_around(&state.doc, cell.head_cell)
+        else {
+            self.clear_selection_rects();
+            return;
+        };
+        let Some(rect) = map.rect_between(cell.anchor_cell.0, cell.head_cell.0) else {
+            self.clear_selection_rects();
+            return;
+        };
+        let Some(doc) = self.doc.upgrade() else {
+            return;
+        };
+        let rects: Vec<(f32, f32, f32, f32)> = {
+            let d = doc.borrow();
+            map.cells_in_rect(rect)
+                .into_iter()
+                .filter_map(|cell_pos| {
+                    let node_id = self.node_host_at(&state.doc, Pos(cell_pos))?;
+                    let (_, _, w, h) = d.query_node_layout(node_id as u64)?;
+                    let (ox, oy) = self.block_offset_in_container(&*d, node_id);
+                    Some((ox, oy, w, h))
+                })
+                .collect()
+        };
+        if rects.is_empty() {
+            self.clear_selection_rects();
+            return;
+        }
+        self.last_selection = Some(key);
+        self.set_selection_rects(&rects);
     }
 
     /// Outline the node a [`Selection::Node`] selects — resolve the node's host

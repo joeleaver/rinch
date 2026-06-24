@@ -1,9 +1,45 @@
 //! Grid-related Stylo conversion functions (from Stylo types to Taffy types).
 
 use style::computed_values::grid_auto_flow::T as GridAutoFlow;
-use style::values::computed::GridTemplateComponent;
+use style::values::computed::{GridLine, GridTemplateComponent};
 use style::values::generics::grid::{RepeatCount, TrackBreadth, TrackListValue, TrackSize};
 use style::values::specified::GenericGridTemplateComponent;
+
+/// Convert a single Stylo grid line (`grid-column-start` etc.) to a Taffy grid
+/// placement. Honors `span N` and explicit line numbers (named lines are carried
+/// through as their ident string). Mirrors `stylo-taffy`'s `grid_line`.
+fn grid_line_from_stylo(input: &GridLine) -> taffy::GridPlacement<String> {
+    if input.is_auto() {
+        return taffy::GridPlacement::Auto;
+    }
+    let ident = input.ident.0.to_string();
+    if input.is_span {
+        let n: u16 = input.line_num.try_into().unwrap_or(1);
+        if ident.is_empty() {
+            taffy::GridPlacement::Span(n.max(1))
+        } else {
+            taffy::GridPlacement::NamedSpan(ident, n.max(1))
+        }
+    } else if !ident.is_empty() {
+        taffy::GridPlacement::NamedLine(ident, input.line_num as i16)
+    } else if input.line_num != 0 {
+        taffy::style_helpers::line(input.line_num as i16)
+    } else {
+        taffy::GridPlacement::Auto
+    }
+}
+
+/// Convert a Stylo `(start, end)` grid-line pair to a Taffy placement line
+/// (`grid-column` / `grid-row`).
+pub(super) fn grid_placement_from_stylo(
+    start: &GridLine,
+    end: &GridLine,
+) -> taffy::Line<taffy::GridPlacement<String>> {
+    taffy::Line {
+        start: grid_line_from_stylo(start),
+        end: grid_line_from_stylo(end),
+    }
+}
 
 pub(super) fn grid_auto_flow_from_stylo(input: &GridAutoFlow) -> taffy::GridAutoFlow {
     let is_row = input.contains(GridAutoFlow::ROW);

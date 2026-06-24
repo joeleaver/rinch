@@ -233,6 +233,14 @@ impl ComputedStyle {
             ),
             grid_template_rows: grid_template_tracks_from_stylo(&position_style.grid_template_rows),
             grid_auto_flow: grid_auto_flow_from_stylo(&position_style.grid_auto_flow),
+            grid_column: grid_placement_from_stylo(
+                &position_style.grid_column_start,
+                &position_style.grid_column_end,
+            ),
+            grid_row: grid_placement_from_stylo(
+                &position_style.grid_row_start,
+                &position_style.grid_row_end,
+            ),
 
             // Display was explicitly set by Stylo
             has_explicit_display: !box_style.display.is_none(),

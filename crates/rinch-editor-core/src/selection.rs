@@ -8,10 +8,9 @@
 //!   `anchor == head`); `anchor` is the fixed end, `head` the moving end.
 //! - [`NodeSelection`] — a whole non-text node selected (an image, a horizontal
 //!   rule).
-//!
-//! A `Cell` selection (table rectangles) is intentionally **not** here yet — it
-//! lands with the tables plugin in M7, so adding a dead variant now would trip the
-//! crate's "no dead code" gate.
+//! - [`CellSelection`] — a rectangle of table cells (M7); `anchor_cell` and
+//!   `head_cell` are the document positions *before* the two corner cells, and the
+//!   covered rectangle is derived from the [`TableMap`](crate::tables::TableMap).
 //!
 //! Every transaction maps its selection forward through the accumulated
 //! [`Mapping`], so the caret follows content as it shifts. A faithful port of the
@@ -21,15 +20,19 @@
 
 use crate::model::Node;
 use crate::pos::Pos;
+use crate::tables;
 use crate::transform::step_map::Mapping;
 
-/// The editor selection: a caret, a text range, or a selected node.
+/// The editor selection: a caret, a text range, a selected node, or a rectangle of
+/// table cells.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Selection {
     /// A text range (collapsed when `anchor == head`).
     Text(TextSelection),
     /// A whole non-text node selected.
     Node(NodeSelection),
+    /// A rectangle of table cells.
+    Cell(CellSelection),
 }
 
 /// A text selection: `anchor` is fixed, `head` moves (e.g. while shift-arrowing).
@@ -48,6 +51,19 @@ pub struct NodeSelection {
     pub anchor: Pos,
     /// The position immediately after the selected node (`anchor + node_size`).
     pub head: Pos,
+}
+
+/// A cell selection: a rectangle of table cells. `anchor_cell`/`head_cell` are the
+/// document positions immediately *before* the two corner cells (the same anchor a
+/// [`NodeSelection`] or the [`TableMap`](crate::tables::TableMap) uses). The covered
+/// rectangle is `map.rect_between(anchor_cell, head_cell)`; `head_cell` is the
+/// moving corner (e.g. while shift-arrowing across cells).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CellSelection {
+    /// The position before the fixed corner cell.
+    pub anchor_cell: Pos,
+    /// The position before the moving corner cell.
+    pub head_cell: Pos,
 }
 
 impl TextSelection {
@@ -76,19 +92,36 @@ impl Selection {
         Selection::Text(TextSelection::new(anchor, head))
     }
 
-    /// The lower bound of the selection (its leftmost position).
+    /// A cell selection from `anchor_cell` to `head_cell` (positions before the two
+    /// corner cells).
+    pub fn cell(anchor_cell: Pos, head_cell: Pos) -> Selection {
+        Selection::Cell(CellSelection {
+            anchor_cell,
+            head_cell,
+        })
+    }
+
+    /// The lower bound of the selection (its leftmost position). For a cell
+    /// selection this is the lesser of the two corner-cell positions — a coarse
+    /// bound; the precise rectangle is derived via the [`TableMap`].
+    ///
+    /// [`TableMap`]: crate::tables::TableMap
     pub fn from(&self) -> Pos {
         match self {
             Selection::Text(t) => Pos(t.anchor.0.min(t.head.0)),
             Selection::Node(n) => n.anchor,
+            Selection::Cell(c) => Pos(c.anchor_cell.0.min(c.head_cell.0)),
         }
     }
 
-    /// The upper bound of the selection (its rightmost position).
+    /// The upper bound of the selection (its rightmost position). For a cell
+    /// selection this is the greater of the two corner-cell positions (a coarse
+    /// bound — see [`Self::from`]).
     pub fn to(&self) -> Pos {
         match self {
             Selection::Text(t) => Pos(t.anchor.0.max(t.head.0)),
             Selection::Node(n) => n.head,
+            Selection::Cell(c) => Pos(c.anchor_cell.0.max(c.head_cell.0)),
         }
     }
 
@@ -97,6 +130,7 @@ impl Selection {
         match self {
             Selection::Text(t) => t.anchor,
             Selection::Node(n) => n.anchor,
+            Selection::Cell(c) => c.anchor_cell,
         }
     }
 
@@ -105,15 +139,16 @@ impl Selection {
         match self {
             Selection::Text(t) => t.head,
             Selection::Node(n) => n.head,
+            Selection::Cell(c) => c.head_cell,
         }
     }
 
-    /// True if the selection covers no content (a collapsed text cursor). A node
-    /// selection is never empty.
+    /// True if the selection covers no content (a collapsed text cursor). A node or
+    /// cell selection is never empty.
     pub fn is_empty(&self) -> bool {
         match self {
             Selection::Text(t) => t.anchor == t.head,
-            Selection::Node(_) => false,
+            Selection::Node(_) | Selection::Cell(_) => false,
         }
     }
 
@@ -157,6 +192,21 @@ impl Selection {
                     None => Selection::near(doc, pos, 1),
                 }
             }
+            Selection::Cell(c) => {
+                // Map both corner cells; if both still point at cells in the same
+                // table, keep a cell selection, else fall back to a text selection
+                // near the mapped head (PM `CellSelection.map`).
+                let anchor = mapping.map(c.anchor_cell.0, 1);
+                let head = mapping.map(c.head_cell.0, 1);
+                if points_at_cell(doc, anchor)
+                    && points_at_cell(doc, head)
+                    && in_same_table(doc, anchor, head)
+                {
+                    Selection::cell(Pos(anchor), Pos(head))
+                } else {
+                    Selection::near(doc, Pos(head.min(doc.content_size())), 1)
+                }
+            }
         }
     }
 
@@ -191,11 +241,12 @@ impl Selection {
             .unwrap_or_else(|| Selection::cursor(Pos(doc.content_size())))
     }
 
-    /// The selected node, for a [`NodeSelection`]; `None` for a text selection.
+    /// The selected node, for a [`NodeSelection`]; `None` for a text or cell
+    /// selection.
     pub fn node(&self, doc: &Node) -> Option<Node> {
         match self {
             Selection::Node(n) => doc.node_at(n.anchor.0),
-            Selection::Text(_) => None,
+            Selection::Text(_) | Selection::Cell(_) => None,
         }
     }
 
@@ -213,6 +264,29 @@ impl Selection {
             return None;
         }
         Some(sel)
+    }
+}
+
+/// True if the node immediately after `pos` is a table cell — i.e. `pos` is a valid
+/// cell-selection corner. Port of `pointsAtCell`.
+fn points_at_cell(doc: &Node, pos: usize) -> bool {
+    doc.resolve(Pos(pos))
+        .ok()
+        .and_then(|r| r.node_after())
+        .is_some_and(|n| tables::is_cell(&n))
+}
+
+/// True if `a` and `b` (positions before cells) sit in the same table, compared by
+/// the table's content-start position (unique per table in a document).
+fn in_same_table(doc: &Node, a: usize, b: usize) -> bool {
+    let table_start = |p: usize| {
+        doc.resolve(Pos(p))
+            .ok()
+            .and_then(|r| tables::table_around(&r).map(|(_, start)| start))
+    };
+    match (table_start(a), table_start(b)) {
+        (Some(sa), Some(sb)) => sa == sb,
+        _ => false,
     }
 }
 
@@ -417,6 +491,45 @@ mod tests {
         let sel = Selection::node_at(&d, Pos(2)).expect("image is selectable");
         assert_eq!(sel.from(), Pos(2));
         assert_eq!(sel.to(), Pos(3));
+    }
+
+    #[test]
+    fn cell_selection_basics_and_map() {
+        // A 2x2 table at doc start. Cells (positions before each cell) come from the
+        // TableMap. A cell selection is never empty / never a text cursor, and its
+        // anchor/head are the two corner cells.
+        let s = sk();
+        let table = crate::commands::build_table(&s, 2, 2).unwrap();
+        let d = doc(&s, vec![table.clone()]);
+        let map = crate::tables::TableMap::compute(&table, 1);
+        let c00 = map.cell_at(0, 0).unwrap();
+        let c11 = map.cell_at(1, 1).unwrap();
+        let sel = Selection::cell(Pos(c00), Pos(c11));
+        assert!(!sel.is_empty());
+        assert!(!sel.is_text_cursor());
+        assert_eq!(sel.anchor(), Pos(c00));
+        assert_eq!(sel.head(), Pos(c11));
+        assert!(sel.node(&d).is_none());
+
+        // Identity mapping keeps it a cell selection (both corners still cells).
+        let m = Mapping::new();
+        assert_eq!(sel.map(&d, &m), Selection::cell(Pos(c00), Pos(c11)));
+    }
+
+    #[test]
+    fn cell_selection_map_falls_back_when_table_gone() {
+        // If the cells no longer resolve (e.g. mapped past the doc), map falls back
+        // to a text selection rather than an invalid cell selection.
+        let s = sk();
+        let table = crate::commands::build_table(&s, 1, 2).unwrap();
+        let d = doc(&s, vec![para(&s, "x")]); // a doc WITHOUT the table
+        let map = crate::tables::TableMap::compute(&table, 1);
+        let c0 = map.cell_at(0, 0).unwrap();
+        let c1 = map.cell_at(0, 1).unwrap();
+        let sel = Selection::cell(Pos(c0), Pos(c1));
+        let m = Mapping::new();
+        // Against a table-less doc the corners aren't cells → not a cell selection.
+        assert!(matches!(sel.map(&d, &m), Selection::Text(_)));
     }
 
     #[test]
