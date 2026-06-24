@@ -1878,6 +1878,10 @@ impl RinchApp {
             }
             #[cfg(feature = "clipboard")]
             KeyCode::KeyX if ctrl => self.editor_cut(handle),
+            // Paste-and-match-style (Ctrl+Shift+V) must precede plain Ctrl+V — the
+            // `if ctrl` arm below would otherwise also match with Shift held.
+            #[cfg(feature = "clipboard")]
+            KeyCode::KeyV if ctrl && shift => self.editor_paste_plain(handle),
             #[cfg(feature = "clipboard")]
             KeyCode::KeyV if ctrl => self.editor_paste(handle),
             KeyCode::KeyZ if ctrl && shift => handle.command("redo"),
@@ -2097,22 +2101,45 @@ impl RinchApp {
         }
     }
 
-    /// Paste the clipboard over the selection, preferring rich `text/html` and
-    /// falling back to `text/plain`. Returns whether the document changed.
+    /// Paste the clipboard over the selection, preferring rich `text/html`, then a
+    /// raw bitmap image (as a PNG `data:` URL), then `text/plain`. Returns whether
+    /// the document changed.
     #[cfg(feature = "clipboard")]
     fn editor_paste(&self, handle: &crate::editor::EditorHandle) -> bool {
+        // 1. Rich HTML — preserves structure, links, and images referenced by URL.
         if let Ok(html) = crate::clipboard::paste_html()
             && !html.trim().is_empty()
             && handle.replace_selection_with_html(&html)
         {
             return true;
         }
+        // 2. A raw bitmap (a screenshot / "copy image" with no HTML wrapper): encode
+        //    it as a PNG `data:` URL and insert an image node.
+        if crate::clipboard::has_image()
+            && let Ok(img) = crate::clipboard::paste_image()
+            && let Some(url) = image_rgba_to_png_data_url(img.width, img.height, &img.bytes)
+            && handle.insert_image(&url, "")
+        {
+            return true;
+        }
+        // 3. Plain text.
         if let Ok(text) = crate::clipboard::paste_text()
             && !text.is_empty()
         {
             return handle.replace_selection_with_text(&text);
         }
         false
+    }
+
+    /// Paste the clipboard as **plain text**, dropping any rich formatting even when
+    /// `text/html` is on the clipboard (the Ctrl+Shift+V "paste and match style"
+    /// gesture). Returns whether the document changed.
+    #[cfg(feature = "clipboard")]
+    fn editor_paste_plain(&self, handle: &crate::editor::EditorHandle) -> bool {
+        match crate::clipboard::paste_text() {
+            Ok(text) if !text.is_empty() => handle.replace_selection_with_text(&text),
+            _ => false,
+        }
     }
 
     /// Like [`Self::editor_point_address`] but for a **physical** pointer position:
@@ -2730,6 +2757,61 @@ fn block_range_at(
     let content_start = pos.0 - r.parent_offset();
     let content_end = content_start + r.parent().content().size();
     (Pos(content_start), Pos(content_end))
+}
+
+/// Encode `width`×`height` RGBA8 pixels (the clipboard bitmap format) as a
+/// `data:image/png;base64,…` URL for an image node `src`. Returns `None` if the
+/// buffer isn't exactly `width * height * 4` bytes or PNG encoding fails.
+///
+/// `png` and `base64` are guaranteed present here: this is reached only via the
+/// `new-editor` editor paste path, and `new-editor` ⇒ `desktop`/`android`, both of
+/// which enable `dep:png`/`dep:base64`.
+#[cfg(all(feature = "new-editor", feature = "clipboard"))]
+fn image_rgba_to_png_data_url(width: usize, height: usize, rgba: &[u8]) -> Option<String> {
+    use base64::Engine;
+    if width == 0 || height == 0 || rgba.len() != width.checked_mul(height)?.checked_mul(4)? {
+        return None;
+    }
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, width as u32, height as u32);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().ok()?;
+        writer.write_image_data(rgba).ok()?;
+    }
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+    Some(format!("data:image/png;base64,{b64}"))
+}
+
+#[cfg(all(test, feature = "new-editor", feature = "clipboard"))]
+mod paste_image_tests {
+    use super::image_rgba_to_png_data_url;
+
+    #[test]
+    fn encodes_valid_rgba_as_a_png_data_url() {
+        // 2×1 RGBA (red, green) = 8 bytes.
+        let rgba = [255, 0, 0, 255, 0, 255, 0, 255];
+        let url = image_rgba_to_png_data_url(2, 1, &rgba).expect("valid rgba encodes");
+        assert!(url.starts_with("data:image/png;base64,"));
+        // The payload decodes and carries the PNG magic signature.
+        use base64::Engine;
+        let b64 = url.strip_prefix("data:image/png;base64,").unwrap();
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .expect("base64 decodes");
+        assert_eq!(
+            &png[..8],
+            &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']
+        );
+    }
+
+    #[test]
+    fn rejects_a_mismatched_buffer() {
+        // 2×2 RGBA needs 16 bytes; give it 8 → None (not a panic).
+        assert!(image_rgba_to_png_data_url(2, 2, &[0; 8]).is_none());
+        assert!(image_rgba_to_png_data_url(0, 0, &[]).is_none());
+    }
 }
 
 #[cfg(all(test, feature = "new-editor"))]

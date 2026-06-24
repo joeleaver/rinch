@@ -353,6 +353,23 @@ impl EditorHandle {
         }
     }
 
+    /// Insert an image node with `src` (e.g. a `data:` URL) and `alt`, replacing
+    /// the current selection — the image-paste path. Returns whether the document
+    /// changed (the schema rejects an image where inline content isn't allowed).
+    pub fn insert_image(&self, src: &str, alt: &str) -> bool {
+        let cmd = rinch_editor_core::commands::insert_image(src.to_string(), alt.to_string());
+        let mut core = self.inner.borrow_mut();
+        let Some(next) = core.state.run_command(&cmd) else {
+            return false;
+        };
+        let prev = core.state.clone();
+        core.state = next.clone();
+        if let Some(view) = core.view.as_mut() {
+            view.update_dom(&prev, &next);
+        }
+        true
+    }
+
     /// Replace the current selection with plain text (one paragraph per line) —
     /// the plain-text paste path. Returns whether anything was inserted.
     pub fn replace_selection_with_text(&self, text: &str) -> bool {
@@ -685,6 +702,25 @@ mod tests {
             "paste collapses the cursor"
         );
         assert_eq!(h.handle.selection().head(), Pos(3));
+    }
+
+    #[test]
+    fn insert_image_places_an_inline_image_node() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "ab")]));
+        h.handle.set_selection(Selection::cursor(Pos(2))); // between "a" and "b"
+        assert!(h.handle.insert_image("data:image/png;base64,AAAA", "shot"));
+        // The image lands inline in the paragraph, between the text runs.
+        let p = children(&h, h.container_id)[0];
+        let img = children(&h, p)
+            .into_iter()
+            .find(|&c| tag(&h, c).as_deref() == Some("img"));
+        assert!(img.is_some(), "image node placed inline in the paragraph");
+        let img = img.unwrap();
+        assert_eq!(
+            h.doc.borrow().get_attribute(img, "src").as_deref(),
+            Some("data:image/png;base64,AAAA")
+        );
     }
 
     #[test]
