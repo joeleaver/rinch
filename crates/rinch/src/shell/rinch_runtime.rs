@@ -307,7 +307,6 @@ impl RinchRuntime {
         //    RinchApp's own drop order handles _render_scope before doc.
         drop(self.app.component.take());
         drop(self.app._render_scope.take());
-        drop(self.app.ce_ops.take());
         drop(self.app.doc.take());
 
         // 4. Drop renderer before window — Surface holds a window handle reference.
@@ -413,7 +412,6 @@ impl RinchRuntime {
         if let Some(mut dt_app) = self.devtools_app.take() {
             drop(dt_app.component.take());
             drop(dt_app._render_scope.take());
-            drop(dt_app.ce_ops.take());
             drop(dt_app.doc.take());
         }
 
@@ -1810,7 +1808,7 @@ impl ApplicationHandler for RinchRuntime {
         // Drive the focused editor's caret blink. This is the only thing that
         // arms a timed wake (`WaitUntil`); when nothing is blinking it returns the
         // loop to `Wait` so the app stays idle.
-        #[cfg(feature = "new-editor")]
+        #[cfg(feature = "desktop")]
         self.tick_caret_blink(event_loop);
     }
 }
@@ -1819,7 +1817,7 @@ impl RinchRuntime {
     /// Blink the focused editor's caret by arming a `WaitUntil` wake for the next
     /// phase toggle (see [`crate::editor::caret_blink_tick`]). Owns the event
     /// loop's control flow: `WaitUntil` while a caret blinks, `Wait` otherwise.
-    #[cfg(feature = "new-editor")]
+    #[cfg(feature = "desktop")]
     fn tick_caret_blink(&mut self, event_loop: &dyn ActiveEventLoop) {
         let focused = self.app.focused_editor_id();
         match crate::editor::caret_blink_tick(focused) {

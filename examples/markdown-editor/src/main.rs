@@ -1,18 +1,18 @@
 //! Markdown Editor — standalone rich-text editor example.
 //!
-//! A focused editor app that exercises the contenteditable + CE API.
-//! Built with the `debug` feature so MCP tools can inspect and interact with it.
+//! A focused editor app built on the ProseMirror-style rinch editor. It mounts an
+//! [`EditorHandle`] with the [`Editor`] component, loads starter content as HTML,
+//! and drives formatting from a toolbar of `handle.command("...")` buttons — there
+//! is one mutation path (`EditorState::apply`) and the host is always a pure
+//! projection of the model. Built with the `debug` feature so MCP tools can inspect
+//! and interact with it.
 
 use rinch::prelude::*;
-use rinch_core::with_active_ce_api;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
-/// Helper: call a CE API method on the active contenteditable element.
-fn ce_do(f: impl FnOnce(&mut dyn rinch_core::ce::ContentEditableApi) + 'static) {
-    with_active_ce_api(|api| f(&mut *api.borrow_mut()));
-}
-
-/// Global CSS for the editor app.
+/// App chrome CSS. The editor *content* is styled by the editor's own built-in
+/// light/dark stylesheet — we only style the surrounding shell (toolbar, scroll
+/// area) here, never the editor internals.
 const CSS: &str = r#"
 * {
     box-sizing: border-box;
@@ -63,82 +63,9 @@ body {
 
 .editor-content {
     min-height: 100%;
-    max-width: 720px;
+    max-width: 760px;
     margin: 0 auto;
     padding: 32px 48px;
-    font-size: 16px;
-    line-height: 1.7;
-    color: var(--rinch-color-text);
-    outline: none;
-    cursor: text;
-}
-
-/* Block element styles */
-.editor-content p { margin: 0 0 8px 0; }
-.editor-content h1 { font-size: 2em; font-weight: 700; margin: 24px 0 12px 0; }
-.editor-content h2 { font-size: 1.5em; font-weight: 700; margin: 20px 0 10px 0; }
-.editor-content h3 { font-size: 1.25em; font-weight: 600; margin: 16px 0 8px 0; }
-.editor-content h4 { font-size: 1.1em; font-weight: 600; margin: 12px 0 6px 0; }
-.editor-content h5 { font-size: 1em; font-weight: 600; margin: 10px 0 4px 0; }
-.editor-content h6 { font-size: 0.9em; font-weight: 600; margin: 10px 0 4px 0; color: var(--rinch-color-dimmed); }
-
-.editor-content blockquote {
-    border-left: 3px solid var(--rinch-color-gray-4);
-    padding-left: 16px;
-    margin: 12px 0;
-    color: var(--rinch-color-dimmed);
-}
-
-.editor-content pre {
-    background: var(--rinch-color-gray-1);
-    border-radius: var(--rinch-radius-sm);
-    padding: 12px 16px;
-    margin: 12px 0;
-    font-family: monospace;
-    font-size: 14px;
-    overflow-x: auto;
-}
-
-.editor-content code {
-    background: var(--rinch-color-gray-1);
-    padding: 2px 5px;
-    border-radius: 3px;
-    font-size: 0.9em;
-}
-
-.editor-content pre code {
-    background: none;
-    padding: 0;
-    border-radius: 0;
-}
-
-.editor-content ul, .editor-content ol {
-    margin: 8px 0;
-    padding-left: 24px;
-}
-
-.editor-content li { margin: 4px 0; }
-
-.editor-content hr {
-    border: none;
-    border-top: 1px solid var(--rinch-color-gray-3);
-    margin: 20px 0;
-}
-
-.editor-content strong { font-weight: 700; }
-.editor-content em { font-style: italic; }
-.editor-content u { text-decoration: underline; }
-.editor-content s { text-decoration: line-through; }
-
-.editor-content a {
-    color: var(--rinch-primary-color);
-    text-decoration: underline;
-}
-
-.editor-content mark {
-    background: var(--rinch-color-yellow-2);
-    padding: 1px 2px;
-    border-radius: 2px;
 }
 "#;
 
@@ -162,91 +89,114 @@ fn toolbar_button(icon: TablerIcon, tooltip: &str, on_click: impl Fn() + 'static
     }
 }
 
-/// The formatting toolbar.
+/// The formatting toolbar. Every button dispatches a named command through its own
+/// cheap [`EditorHandle`] clone — the canonical way to drive the editor.
 #[component]
-fn editor_toolbar() -> NodeHandle {
+fn editor_toolbar(editor: EditorHandle) -> NodeHandle {
+    // One handle clone per toolbar action (EditorHandle is an Rc — cheap to clone).
+    let ed_bold = editor.clone();
+    let ed_italic = editor.clone();
+    let ed_under = editor.clone();
+    let ed_strike = editor.clone();
+    let ed_code = editor.clone();
+    let ed_h1 = editor.clone();
+    let ed_h2 = editor.clone();
+    let ed_h3 = editor.clone();
+    let ed_p = editor.clone();
+    let ed_quote = editor.clone();
+    let ed_ul = editor.clone();
+    let ed_ol = editor.clone();
+    let ed_indent = editor.clone();
+    let ed_outdent = editor.clone();
+    let ed_hr = editor.clone();
+    let ed_table = editor.clone();
+    let ed_undo = editor.clone();
+    let ed_redo = editor.clone();
+
     rsx! {
         div { class: "toolbar",
-            // Inline formatting
-            {toolbar_button(__scope, TablerIcon::Bold, "Bold (Ctrl+B)", move || ce_do(|api| api.toggle_wrap("strong")))}
-            {toolbar_button(__scope, TablerIcon::Italic, "Italic (Ctrl+I)", move || ce_do(|api| api.toggle_wrap("em")))}
-            {toolbar_button(__scope, TablerIcon::Underline, "Underline (Ctrl+U)", move || ce_do(|api| api.toggle_wrap("u")))}
-            {toolbar_button(__scope, TablerIcon::Strikethrough, "Strikethrough", move || ce_do(|api| api.toggle_wrap("s")))}
-            {toolbar_button(__scope, TablerIcon::Code, "Inline Code (Ctrl+E)", move || ce_do(|api| api.toggle_wrap("code")))}
+            // Inline marks
+            {toolbar_button(__scope, TablerIcon::Bold, "Bold (Ctrl+B)", move || { ed_bold.command("toggleBold"); })}
+            {toolbar_button(__scope, TablerIcon::Italic, "Italic (Ctrl+I)", move || { ed_italic.command("toggleItalic"); })}
+            {toolbar_button(__scope, TablerIcon::Underline, "Underline (Ctrl+U)", move || { ed_under.command("toggleUnderline"); })}
+            {toolbar_button(__scope, TablerIcon::Strikethrough, "Strikethrough", move || { ed_strike.command("toggleStrike"); })}
+            {toolbar_button(__scope, TablerIcon::Code, "Inline code", move || { ed_code.command("toggleCode"); })}
 
             {separator(__scope)}
 
             // Block types
-            {toolbar_button(__scope, TablerIcon::H1, "Heading 1", move || ce_do(|api| api.set_block_type("h1")))}
-            {toolbar_button(__scope, TablerIcon::H2, "Heading 2", move || ce_do(|api| api.set_block_type("h2")))}
-            {toolbar_button(__scope, TablerIcon::H3, "Heading 3", move || ce_do(|api| api.set_block_type("h3")))}
+            {toolbar_button(__scope, TablerIcon::H1, "Heading 1", move || { ed_h1.command("setHeading1"); })}
+            {toolbar_button(__scope, TablerIcon::H2, "Heading 2", move || { ed_h2.command("setHeading2"); })}
+            {toolbar_button(__scope, TablerIcon::H3, "Heading 3", move || { ed_h3.command("setHeading3"); })}
+            {toolbar_button(__scope, TablerIcon::Pilcrow, "Paragraph", move || { ed_p.command("setParagraph"); })}
 
             {separator(__scope)}
 
-            // Block elements
-            {toolbar_button(__scope, TablerIcon::Blockquote, "Blockquote", move || ce_do(|api| api.set_block_type("blockquote")))}
-            {toolbar_button(__scope, TablerIcon::List, "Bullet List", move || ce_do(|api| api.set_block_type("ul")))}
-            {toolbar_button(__scope, TablerIcon::ListNumbers, "Numbered List", move || ce_do(|api| api.set_block_type("ol")))}
+            // Block containers
+            {toolbar_button(__scope, TablerIcon::Blockquote, "Blockquote", move || { ed_quote.command("wrapInBlockquote"); })}
+            {toolbar_button(__scope, TablerIcon::List, "Bullet list", move || { ed_ul.command("toggleBulletList"); })}
+            {toolbar_button(__scope, TablerIcon::ListNumbers, "Ordered list", move || { ed_ol.command("toggleOrderedList"); })}
 
             {separator(__scope)}
 
-            // Indent / Outdent
-            {toolbar_button(__scope, TablerIcon::IndentIncrease, "Indent (Tab)", move || ce_do(|api| api.indent()))}
-            {toolbar_button(__scope, TablerIcon::IndentDecrease, "Outdent (Shift+Tab)", move || ce_do(|api| api.outdent()))}
+            // Indent / outdent (list items)
+            {toolbar_button(__scope, TablerIcon::IndentIncrease, "Indent (sinkListItem)", move || { ed_indent.command("sinkListItem"); })}
+            {toolbar_button(__scope, TablerIcon::IndentDecrease, "Outdent (liftListItem)", move || { ed_outdent.command("liftListItem"); })}
 
             {separator(__scope)}
 
-            // Undo / Redo
-            {toolbar_button(__scope, TablerIcon::ArrowBackUp, "Undo (Ctrl+Z)", move || ce_do(|api| api.undo()))}
-            {toolbar_button(__scope, TablerIcon::ArrowForwardUp, "Redo (Ctrl+Shift+Z)", move || ce_do(|api| api.redo()))}
+            // Inserts
+            {toolbar_button(__scope, TablerIcon::Separator, "Horizontal rule", move || { ed_hr.command("insertHorizontalRule"); })}
+            {toolbar_button(__scope, TablerIcon::Table, "Insert table", move || { ed_table.command("insertTable"); })}
+
+            {separator(__scope)}
+
+            // History
+            {toolbar_button(__scope, TablerIcon::ArrowBackUp, "Undo (Ctrl+Z)", move || { ed_undo.command("undo"); })}
+            {toolbar_button(__scope, TablerIcon::ArrowForwardUp, "Redo (Ctrl+Shift+Z)", move || { ed_redo.command("redo"); })}
         }
     }
 }
 
-/// The main editor surface.
-#[component]
-fn editor_surface() -> NodeHandle {
-    rsx! {
-        div { class: "editor-scroll",
-            div {
-                contenteditable: "true",
-                class: "editor-content",
-                h1 { "Welcome to the Markdown Editor" }
-                p {
-                    "This is a "
-                    strong { "rich-text editor" }
-                    " built with rinch's "
-                    em { "ContentEditable API" }
-                    ". Select text and use the toolbar or keyboard shortcuts to format."
-                }
-                h2 { "Features" }
-                ul {
-                    li { "Inline formatting: " strong { "bold" } ", " em { "italic" } ", " u { "underline" } ", " s { "strikethrough" } ", " code { "code" } }
-                    li { "Block types: headings, paragraphs, blockquotes" }
-                    li { "Lists: bullet and numbered, with indent/outdent" }
-                    li { "Undo and redo" }
-                }
-                h2 { "Keyboard Shortcuts" }
-                p { strong { "Ctrl+B" } " Bold  |  " strong { "Ctrl+I" } " Italic  |  " strong { "Ctrl+U" } " Underline  |  " strong { "Ctrl+E" } " Code" }
-                p { strong { "Tab" } " Indent  |  " strong { "Shift+Tab" } " Outdent  |  " strong { "Ctrl+Z" } " Undo  |  " strong { "Ctrl+Shift+Z" } " Redo" }
-                h2 { "Try It Out" }
-                p { "Click anywhere and start typing. The editor handles cursor movement, text selection, and block splitting automatically." }
-                blockquote { p { "This is a blockquote. You can create one by clicking the blockquote button in the toolbar." } }
-                p { "Happy editing!" }
-            }
-        }
-    }
-}
+/// Starter content, parsed into the document on mount via the `content:` prop.
+/// Schema-whitelisted HTML — block tags become nodes, inline tags become marks.
+const STARTER: &str = "<h1>Welcome to the Markdown Editor</h1>\
+    <p>This is a <strong>rich-text editor</strong> built on rinch's \
+    <em>ProseMirror-style</em> editor. Select text and use the toolbar, or type \
+    with <strong>Ctrl+B</strong> / <em>Ctrl+I</em>.</p>\
+    <h2>Features</h2>\
+    <ul>\
+    <li><p>Inline marks: <strong>bold</strong>, <em>italic</em>, <u>underline</u>, \
+    <s>strikethrough</s>, <code>code</code></p></li>\
+    <li><p>Block types: headings, paragraphs, blockquotes, code blocks</p></li>\
+    <li><p>Lists (bullet and ordered) with indent / outdent</p></li>\
+    <li><p>Tables, horizontal rules, and exact undo / redo</p></li>\
+    </ul>\
+    <h2>Try it out</h2>\
+    <p>Click anywhere and start typing. The editor renders the caret and selection \
+    straight from the model — every edit is an invertible step, so undo / redo is \
+    exact.</p>\
+    <blockquote><p>Everything flows through one mutation path; the document on screen \
+    is always a pure projection of the editor state.</p></blockquote>\
+    <p>Happy editing!</p>";
 
 /// Main app component.
 #[component]
 fn app() -> NodeHandle {
+    let editor = create_editor();
+
     rsx! {
         Fragment {
             style { {CSS} }
             div { class: "editor-root",
-                {editor_toolbar(__scope)}
-                {editor_surface(__scope)}
+                {editor_toolbar(__scope, editor.clone())}
+                div { class: "editor-scroll",
+                    Editor {
+                        editor: editor.clone(),
+                        content: STARTER,
+                        class: "editor-content",
+                    }
+                }
             }
         }
     }

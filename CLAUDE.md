@@ -649,84 +649,61 @@ let count = Signal::new(0);
 MenuItem::new("Reset Counter").on_click(move || count.set(0))
 ```
 
-## ContentEditable (Rich-Text Editing)
+## Rich-Text Editor
 
-Rinch has a built-in contenteditable system for rich-text editing. Set `contenteditable: "true"` on a `<div>` to activate cursor rendering, text selection, keyboard input, clipboard, and undo/redo.
+Rinch's rich-text editor is a ProseMirror-style, **model-first** editor. The document lives in `rinch-editor-core` (a pure, wasm-clean crate: `Node`/`Mark`/`Fragment`/`Slice`, one char-based `Pos` space, a real `ContentMatch` schema, invertible `Step`s, `Transaction`/`EditorState`, plugins/commands/keymap/input-rules, a single Step-based history). The desktop view (in `crates/rinch/src/editor/`) projects that model onto rinch-dom primitives and renders the caret/selection from `Selection` after layout. It is a **desktop feature** (folded into `desktop`); the web view is a follow-up. There is no `contenteditable` attribute engine anymore — mount the `Editor {}` component instead.
 
-**Architecture:** CRDT-first. Every mutation flows through `EditorDocument` (Automerge CRDT) first, then the DOM is re-rendered as a view. The `EditorDocument` is always present on every CE element — no opt-in required. The `collaboration` feature only gates sync methods (`save_incremental`, `load_incremental`, `apply_remote_changes`).
+**Mutation flows one way:** every edit is a `Transaction` applied by `EditorState::apply` → the view diffs old/new doc + decorations and patches the DOM. Commands read **state**, never the DOM.
 
-**Persisting content:** `Vec<BlockData>` (from `extract_content()`) is the canonical save/load shape. Enable the optional `serde` feature (`rinch-core/serde`, or `serde` on the `rinch` facade) to derive `Serialize`/`Deserialize` on `BlockData`/`InlineRunData`/`InlineMarkData`. The wire format is snake_case (`block_type`, `mark_type`) — the durable persistence contract.
+**Persisting content:** `DocNode` (serde) is the durable wire shape — `Node::to_doc()` / `Schema::node_from_doc()`, plus total HTML/markdown serializers in `rinch-editor-core::serialize`. Enable `serde` on the `rinch` facade (→ `rinch-editor-core/serde`).
 
-**Full guide:** `docs/src/guide/contenteditable.md`
+**Full guides:** `docs/src/guide/contenteditable.md` (using the editor) and `docs/src/guide/editor.md` (model/schema/steps/plugins/view). Design: `docs/design/editor-rearchitecture.md`.
 
-### Key Types (all in `rinch_core::ce`)
-
-| Type | Purpose |
-|------|---------|
-| `ContentEditableApi` | Trait — single mutation interface for all CE operations |
-| `CeOps` | Runtime implementation of `ContentEditableApi` (`rinch/src/ce_ops.rs`) |
-| `CeEvent` | Enum — events dispatched after each DOM mutation |
-| `DomCursor` | Position: `{ node_id: usize, offset: usize }` |
-| `CeSelection` | Selection: `{ anchor: DomCursor, head: DomCursor }` |
-| `BlockData` | Structured content for interchange |
-
-### Accessing the CE API
+### Mounting an editor (the public API)
 
 ```rust
-use rinch_core::ce::with_active_ce_api;
+use rinch::prelude::*;
 
-// Helper: operate on the focused CE element
-fn ce_do(f: impl FnOnce(&mut dyn ContentEditableApi) + 'static) {
-    with_active_ce_api(|api| f(&mut *api.borrow_mut()));
+#[component]
+fn app() -> NodeHandle {
+    let editor = create_editor();           // -> EditorHandle (cheap to clone)
+    let ed_bold = editor.clone();           // one clone per closure
+    rsx! {
+        div {
+            button { onclick: move || { ed_bold.command("toggleBold"); }, "Bold" }
+            Editor {
+                editor: editor.clone(),     // optional; omit to self-create a handle
+                content: "<h1>Title</h1><p>Hello <strong>world</strong></p>",
+            }
+        }
+    }
 }
-
-// Toolbar buttons:
-button { onclick: move || ce_do(|api| api.toggle_wrap("strong")), "Bold" }
-
-// Load content into a specific CE element (works before focus):
-editor_div.with_ce_api(|api| {
-    api.borrow_mut().load_html("<p>Hello <strong>world</strong></p>");
-});
 ```
 
-### ContentEditableApi Methods
+### `EditorHandle` (the app/component API)
 
 | Category | Methods |
 |----------|---------|
-| **Text** | `insert_text(&str)`, `delete_backward()`, `delete_forward()`, `delete_selection()` |
-| **Block** | `split_block()`, `set_block_type(&str)` |
-| **Formatting** | `wrap_selection(&str)`, `unwrap_selection(&str)`, `toggle_wrap(&str)` |
-| **Lists** | `indent()`, `outdent()` |
-| **Selection** | `get_selection()`, `set_selection(CeSelection)` |
-| **History** | `undo()`, `redo()` |
-| **Query** | `has_active_mark(&str)`, `cursor_block_tag()` |
-| **Content** | `extract_content()`, `load_content(&[BlockData])`, `load_html(&str)`, `clear_formatting()` |
+| **Dispatch** | `command(name) -> bool`, `update(\|state\| -> Option<Transaction>)`, `insert_text(&str)`, `replace_selection_with_html/text(&str)`, `insert_image(src, alt)` |
+| **Query (read state)** | `can_run(name)`, `is_mark_active(mark)`, `current_block_type()`, `in_node_type(type)`, `doc() -> Node`, `state()`, `selection()` |
+| **Content / selection** | `load_html(&str)`, `load_doc(Node)`, `set_selection(Selection)`, `selection_clipboard()`, `set_dark_mode(bool)` |
 
-### CeEvent Variants
+Command names (dispatch by string): `toggleBold/Italic/Underline/Strike/Code/Highlight/Subscript/Superscript`, `setParagraph`, `setHeading1..6`, `setCodeBlock`, `toggleBulletList`, `toggleOrderedList`, `wrapInBlockquote`, `sinkListItem`/`liftListItem` (indent/outdent), `insertHorizontalRule`, `insertHardBreak`, `insertTable`, `addRow{After,Before}`, `addColumn{After,Before}`, `deleteRow`/`deleteColumn`/`deleteTable`, `mergeCells`/`splitCell`, `link`/`removeLink`, `undo`/`redo`.
 
-Every `ContentEditableApi` method dispatches a `CeEvent`. Key variants:
-
-- **Text:** `TextInserted { node_id, offset, text }`, `TextDeleted { node_id, offset, length }`, `TextNodeCreated`, `NodeRemoved`
-- **Selection:** `SelectionChanged { selection }`
-- **Block:** `BlockSplit`, `BlockJoined`, `BlockTypeChanged`
-- **Formatting:** `SelectionWrapped`, `SelectionUnwrapped`
-- **Lists:** `ListItemOutdented`, `BlockIndented`
-- **History:** `UndoApplied`, `RedoApplied`
-- **Clipboard:** `HtmlPasted`
-
-Subscribe: `subscribe_ce_events(Rc::new(|event| { ... }))`. Dispatch: `dispatch_ce_event(&event)`.
+The editor ships its own default light/dark stylesheet (`editor/styles.rs`, injected once by the view); toggle dark mode with `handle.set_dark_mode(true)` (sets `data-pm-theme="dark"` on the container). Don't hand-roll editor CSS.
 
 ### Key Source Files
 
 | File | Purpose |
 |------|---------|
-| `crates/rinch-core/src/ce.rs` | Core types, trait, events, dispatchers |
-| `crates/rinch/src/ce_ops.rs` | `CeOps` impl of `ContentEditableApi` (CRDT-first mutations) |
-| `crates/rinch/src/ce_render.rs` | Block rendering, `BlockMap`, position conversion (`EditorPosition ↔ DomCursor`) |
-| `crates/rinch/src/app/contenteditable/mod.rs` | Keyboard handler, cursor management |
-| `crates/rinch/src/app/contenteditable/ce_selection.rs` | Selection, copy/cut |
-| `crates/rinch/src/app/contenteditable/ce_paste.rs` | HTML paste |
-| `crates/rinch-editable/src/` | Generic editing primitives (`EditCommand`, `InputHandler`) |
+| `crates/rinch-editor-core/src/` | Pure model: `model/*`, `pos/*`, `schema/*`, `transform/*` (Steps), `state/*`, `commands/*`, `plugins/*`, `serialize/*`, `tables.rs`, `a11y.rs` |
+| `crates/rinch/src/editor/mod.rs` | `create_editor`, the registry, the two-phase caret/overlay passes |
+| `crates/rinch/src/editor/component.rs` | The `Editor {}` rsx component |
+| `crates/rinch/src/editor/handle.rs` | `EditorHandle` — the imperative app/component API |
+| `crates/rinch/src/editor/view.rs` | `RinchDomEditorView` (the `EditorView` impl: `ViewDesc` diff, caret/selection/decoration overlays) |
+| `crates/rinch/src/editor/styles.rs` | Default light/dark stylesheet |
+| `crates/rinch/src/editor/virtual_window.rs` | Block virtualization for large docs |
+| `crates/rinch-editable/src/` | The separate single-line `<input>`/`<textarea>` engine (`EditCommand`, `InputHandler`) — unrelated to the rich editor |
 
 ## Drag and Drop
 
@@ -1687,8 +1664,8 @@ Documentation locations:
 - `docs/src/guide/game-engine.md` - Game engine integration (embed API)
 - `docs/src/guide/theming.md` - Theme system and CSS variables
 - `docs/src/guide/components.md` - Component library
-- `docs/src/guide/contenteditable.md` - ContentEditable API and CE events
-- `docs/src/guide/editor.md` - Rich-text editor (schemas, extensions, document model)
+- `docs/src/guide/contenteditable.md` - Using the rich-text editor (Editor component, EditorHandle, commands)
+- `docs/src/guide/editor.md` - Rich-text editor internals (model, schema, steps, plugins, view)
 - `docs/src/SUMMARY.md` - Table of contents (update when adding new pages)
 
 Architecture documentation:

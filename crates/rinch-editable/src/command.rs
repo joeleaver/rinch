@@ -46,22 +46,4 @@ pub enum EditCommand {
 
     // Multi-line specific
     InsertNewline,
-
-    // Block structure
-    Indent,  // Tab in list item
-    Outdent, // Shift+Tab in list item
-
-    // Inline formatting
-    ToggleBold,
-    ToggleItalic,
-    ToggleUnderline,
-    ToggleStrikethrough,
-    ToggleCode,
-
-    // Block type changes
-    SetBlockType(String), // "paragraph", "heading1", etc.
-    ToggleBulletList,
-    ToggleOrderedList,
-    InsertHorizontalRule,
-    ToggleBlockquote,
 }

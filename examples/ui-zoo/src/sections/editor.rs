@@ -1,16 +1,12 @@
-//! Rich Text Editor section — showcases contenteditable + CE API.
+//! Rich Text Editor section — showcases the ProseMirror-style editor.
 //!
-//! Users don't interact with CeOps directly. They set `contenteditable="true"`
-//! on a div and the framework handles everything. For programmatic access
-//! (toolbar buttons), `with_active_ce_api()` provides the thread-local CE API.
+//! The editor is a first-class **desktop** feature: a model-first document
+//! (`rinch-editor-core`) rendered by a rinch-dom view. Mount it with the
+//! [`Editor`] component and an [`EditorHandle`]; drive it from toolbar buttons
+//! with `handle.command("toggleBold")`. The web view is a follow-up, so on
+//! wasm this section shows a note instead.
 
 use rinch::prelude::*;
-use rinch_core::with_active_ce_api;
-
-/// Helper: call a CE API method on the active contenteditable element.
-fn ce_do(f: impl FnOnce(&mut dyn rinch_core::ce::ContentEditableApi) + 'static) {
-    with_active_ce_api(|api| f(&mut *api.borrow_mut()));
-}
 
 #[component]
 pub fn editor_section() -> NodeHandle {
@@ -19,171 +15,38 @@ pub fn editor_section() -> NodeHandle {
             Stack { gap: "xs",
                 Title { order: 1, "Rich Text Editor" }
                 Text { size: "lg", color: "dimmed",
-                    "ContentEditable powered by the CE API. Set contenteditable=\"true\" on any div — the framework handles input, cursor, and block structure. Use with_active_ce_api() for programmatic formatting."
+                    "A ProseMirror-style rich-text editor: a model-first document with invertible steps, schema-enforced structure, marks, lists, tables, and a single command API. Mount it with the Editor {} component and drive it through an EditorHandle."
                 }
             }
             Space { h: "xl" }
 
-            // ── Toolbar ─────────────────────────────────────────────
-            Paper { p: "xs", radius: "md", with_border: true,
-                style: "border-bottom: none; border-bottom-left-radius: 0; border-bottom-right-radius: 0;",
-                Group { gap: "2",
-                    // Inline formatting
-                    ActionIcon { variant: "subtle", size: "sm",
-                        onclick: move || ce_do(|api| api.toggle_wrap("strong")),
-                        span { style: "font-weight: 700; font-size: 14px;", "B" }
-                    }
-                    ActionIcon { variant: "subtle", size: "sm",
-                        onclick: move || ce_do(|api| api.toggle_wrap("em")),
-                        span { style: "font-style: italic; font-size: 14px;", "I" }
-                    }
-                    ActionIcon { variant: "subtle", size: "sm",
-                        onclick: move || ce_do(|api| api.toggle_wrap("u")),
-                        span { style: "text-decoration: underline; font-size: 14px;", "U" }
-                    }
-                    ActionIcon { variant: "subtle", size: "sm",
-                        onclick: move || ce_do(|api| api.toggle_wrap("s")),
-                        span { style: "text-decoration: line-through; font-size: 14px;", "S" }
-                    }
-                    ActionIcon { variant: "subtle", size: "sm",
-                        onclick: move || ce_do(|api| api.toggle_wrap("code")),
-                        span { style: "font-family: monospace; font-size: 13px;", "<>" }
-                    }
-
-                    // Separator
-                    div { style: "width: 1px; height: 20px; background: var(--rinch-color-border); margin: 0 4px;" }
-
-                    // Block types
-                    ActionIcon { variant: "subtle", size: "sm",
-                        onclick: move || ce_do(|api| api.set_block_type("h1")),
-                        span { style: "font-weight: 700; font-size: 14px;", "H1" }
-                    }
-                    ActionIcon { variant: "subtle", size: "sm",
-                        onclick: move || ce_do(|api| api.set_block_type("h2")),
-                        span { style: "font-weight: 700; font-size: 13px;", "H2" }
-                    }
-                    ActionIcon { variant: "subtle", size: "sm",
-                        onclick: move || ce_do(|api| api.set_block_type("h3")),
-                        span { style: "font-weight: 600; font-size: 12px;", "H3" }
-                    }
-                    ActionIcon { variant: "subtle", size: "sm",
-                        onclick: move || ce_do(|api| api.set_block_type("p")),
-                        span { style: "font-size: 13px;", "P" }
-                    }
-
-                    // Separator
-                    div { style: "width: 1px; height: 20px; background: var(--rinch-color-border); margin: 0 4px;" }
-
-                    // Block quote
-                    ActionIcon { variant: "subtle", size: "sm",
-                        onclick: move || ce_do(|api| api.set_block_type("blockquote")),
-                        span { style: "font-size: 16px;", "\u{201C}" }
-                    }
-
-                    // Lists
-                    ActionIcon { variant: "subtle", size: "sm",
-                        onclick: move || ce_do(|api| api.set_block_type("ul")),
-                        span { style: "font-size: 13px;", "UL" }
-                    }
-                    ActionIcon { variant: "subtle", size: "sm",
-                        onclick: move || ce_do(|api| api.set_block_type("ol")),
-                        span { style: "font-size: 13px;", "OL" }
-                    }
-
-                    // Separator
-                    div { style: "width: 1px; height: 20px; background: var(--rinch-color-border); margin: 0 4px;" }
-
-                    // Indent / Outdent
-                    ActionIcon { variant: "subtle", size: "sm",
-                        onclick: move || ce_do(|api| api.indent()),
-                        span { style: "font-size: 16px;", "\u{2192}" }
-                    }
-                    ActionIcon { variant: "subtle", size: "sm",
-                        onclick: move || ce_do(|api| api.outdent()),
-                        span { style: "font-size: 16px;", "\u{2190}" }
-                    }
-
-                    // Separator
-                    div { style: "width: 1px; height: 20px; background: var(--rinch-color-border); margin: 0 4px;" }
-
-                    // Undo / Redo
-                    ActionIcon { variant: "subtle", size: "sm",
-                        onclick: move || ce_do(|api| api.undo()),
-                        span { style: "font-size: 16px;", "\u{21A9}" }
-                    }
-                    ActionIcon { variant: "subtle", size: "sm",
-                        onclick: move || ce_do(|api| api.redo()),
-                        span { style: "font-size: 16px;", "\u{21AA}" }
-                    }
-
-                    // Separator
-                    div { style: "width: 1px; height: 20px; background: var(--rinch-color-border); margin: 0 4px;" }
-
-                    // Stress test: load 1000 paragraphs
-                    Button { variant: "light", size: "xs",
-                        onclick: move || {
-                            ce_do(|api| {
-                                let mut html = String::new();
-                                for ch in 0..50 {
-                                    html.push_str(&format!("<h2>Chapter {}</h2>", ch + 1));
-                                    for p in 0..20 {
-                                        html.push_str(&format!(
-                                            "<p>Chapter {} paragraph {}. Lorem ipsum dolor sit amet, \
-                                            consectetur adipiscing elit. Sed do eiusmod tempor incididunt \
-                                            ut labore et dolore magna aliqua. Ut enim ad minim veniam, \
-                                            quis nostrud exercitation ullamco laboris.</p>",
-                                            ch + 1, p + 1
-                                        ));
-                                    }
-                                }
-                                api.load_html(&html);
-                            });
-                        },
-                        "Load 1000p stress test"
-                    }
-                }
-            }
-
-            // ── Editor Surface ──────────────────────────────────────
-            Paper { p: "0", radius: "md", with_border: true,
-                style: "border-top-left-radius: 0; border-top-right-radius: 0;",
-                div {
-                    contenteditable: "true",
-                    class: "editor-content",
-                    style: "min-height: 300px; max-height: 500px; overflow-y: auto; padding: 16px 24px; background: var(--rinch-color-body); \
-                            font-size: 16px; line-height: 1.6; color: var(--rinch-color-text); \
-                            outline: none; cursor: text;",
-                    p { "Start typing here. Select text and use the toolbar buttons or keyboard shortcuts to format." }
-                    p { "The editor uses " strong { "contenteditable" } " with the " em { "CE API" } " for all mutations." }
-                }
-            }
+            {editor_body(__scope)}
 
             Space { h: "xl" }
 
-            // ── CE API Reference ────────────────────────────────────
-            Title { order: 3, "CE API Reference" }
+            // ── Command API Reference ───────────────────────────────
+            Title { order: 3, "Command API" }
             Space { h: "sm" }
             Text { color: "dimmed", size: "sm",
-                "Available methods via with_active_ce_api(). The framework calls these automatically for keyboard input. Toolbar buttons call them programmatically."
+                "Dispatch by name with handle.command(name). Queries (handle.is_mark_active / current_block_type / can_run) read editor state, never the DOM."
             }
             Space { h: "md" }
 
             Paper { p: "xl", radius: "md", with_border: true,
                 Stack { gap: "xs",
-                    {render_api_row(__scope, "insert_text(text)", "Insert text at cursor")}
-                    {render_api_row(__scope, "delete_backward()", "Backspace")}
-                    {render_api_row(__scope, "delete_forward()", "Delete key")}
-                    {render_api_row(__scope, "delete_selection()", "Delete selected text")}
-                    {render_api_row(__scope, "split_block()", "Enter — split block at cursor")}
-                    {render_api_row(__scope, "set_block_type(tag)", "Change block to h1, h2, p, blockquote, etc.")}
-                    {render_api_row(__scope, "toggle_wrap(tag)", "Toggle bold/italic/underline/code")}
-                    {render_api_row(__scope, "wrap_selection(tag)", "Wrap selection in formatting element")}
-                    {render_api_row(__scope, "unwrap_selection(tag)", "Remove formatting from selection")}
-                    {render_api_row(__scope, "indent()", "Indent block / increase list nesting")}
-                    {render_api_row(__scope, "outdent()", "Outdent block / decrease list nesting")}
-                    {render_api_row(__scope, "undo() / redo()", "Undo and redo operations")}
-                    {render_api_row(__scope, "get_selection()", "Read current cursor / selection state")}
-                    {render_api_row(__scope, "set_selection(sel)", "Set cursor / selection position")}
+                    {render_api_row(__scope, "toggleBold / toggleItalic", "Toggle inline marks at the cursor or over a range")}
+                    {render_api_row(__scope, "toggleUnderline / toggleStrike", "Underline / strikethrough marks")}
+                    {render_api_row(__scope, "toggleCode / toggleHighlight", "Inline code and highlight marks")}
+                    {render_api_row(__scope, "setParagraph / setHeading1..6", "Change the current block type")}
+                    {render_api_row(__scope, "setCodeBlock", "Turn the block into a code block")}
+                    {render_api_row(__scope, "toggleBulletList / toggleOrderedList", "Wrap into / lift out of a list")}
+                    {render_api_row(__scope, "wrapInBlockquote", "Wrap the selection in a blockquote")}
+                    {render_api_row(__scope, "sinkListItem / liftListItem", "Indent / outdent a list item")}
+                    {render_api_row(__scope, "insertHorizontalRule", "Insert a horizontal rule")}
+                    {render_api_row(__scope, "insertTable", "Insert a 3×3 table")}
+                    {render_api_row(__scope, "addRowAfter / addColumnAfter", "Grow the table at the cursor")}
+                    {render_api_row(__scope, "mergeCells / splitCell", "Merge or split a cell selection")}
+                    {render_api_row(__scope, "undo / redo", "History (grouped, typing-merged)")}
                 }
             }
 
@@ -192,7 +55,7 @@ pub fn editor_section() -> NodeHandle {
             // ── Keyboard Shortcuts ──────────────────────────────────
             Title { order: 3, "Keyboard Shortcuts" }
             Space { h: "sm" }
-            Text { color: "dimmed", size: "sm", "Built-in shortcuts handled by the framework." }
+            Text { color: "dimmed", size: "sm", "Built-in shortcuts handled by the editor." }
             Space { h: "md" }
 
             Paper { p: "xl", radius: "md", with_border: true,
@@ -200,22 +63,154 @@ pub fn editor_section() -> NodeHandle {
                     {render_shortcut_row(__scope, "Ctrl+B", "Bold")}
                     {render_shortcut_row(__scope, "Ctrl+I", "Italic")}
                     {render_shortcut_row(__scope, "Ctrl+U", "Underline")}
-                    {render_shortcut_row(__scope, "Ctrl+Shift+S", "Strikethrough")}
-                    {render_shortcut_row(__scope, "Ctrl+E", "Inline code")}
                     {render_shortcut_row(__scope, "Ctrl+Z", "Undo")}
-                    {render_shortcut_row(__scope, "Ctrl+Shift+Z", "Redo")}
-                    {render_shortcut_row(__scope, "Enter", "Split block")}
-                    {render_shortcut_row(__scope, "Tab", "Indent")}
-                    {render_shortcut_row(__scope, "Shift+Tab", "Outdent")}
-                    {render_shortcut_row(__scope, "Backspace", "Delete backward")}
-                    {render_shortcut_row(__scope, "Delete", "Delete forward")}
+                    {render_shortcut_row(__scope, "Ctrl+Shift+Z / Ctrl+Y", "Redo")}
+                    {render_shortcut_row(__scope, "Enter", "Split block / new list item")}
+                    {render_shortcut_row(__scope, "Tab / Shift+Tab", "Move between table cells")}
+                    {render_shortcut_row(__scope, "Backspace / Delete", "Delete backward / forward")}
                 }
             }
+        }
+    }
+}
 
-            // Editor CSS
-            div {
-                style: "display: none;",
-                {render_editor_styles(__scope)}
+/// Desktop: mount the real editor with a working command toolbar.
+#[cfg(feature = "desktop")]
+fn editor_body(__scope: &mut RenderScope) -> NodeHandle {
+    let editor = create_editor();
+
+    // One handle clone per toolbar action (EditorHandle is cheap to clone).
+    let ed_bold = editor.clone();
+    let ed_italic = editor.clone();
+    let ed_under = editor.clone();
+    let ed_strike = editor.clone();
+    let ed_code = editor.clone();
+    let ed_h1 = editor.clone();
+    let ed_h2 = editor.clone();
+    let ed_h3 = editor.clone();
+    let ed_p = editor.clone();
+    let ed_quote = editor.clone();
+    let ed_ul = editor.clone();
+    let ed_ol = editor.clone();
+    let ed_indent = editor.clone();
+    let ed_outdent = editor.clone();
+    let ed_table = editor.clone();
+    let ed_undo = editor.clone();
+    let ed_redo = editor.clone();
+
+    rsx! {
+        Fragment {
+        Paper { p: "xs", radius: "md", with_border: true,
+            style: "border-bottom: none; border-bottom-left-radius: 0; border-bottom-right-radius: 0;",
+            Group { gap: "2",
+                ActionIcon { variant: "subtle", size: "sm",
+                    onclick: move || { ed_bold.command("toggleBold"); },
+                    span { style: "font-weight: 700; font-size: 14px;", "B" }
+                }
+                ActionIcon { variant: "subtle", size: "sm",
+                    onclick: move || { ed_italic.command("toggleItalic"); },
+                    span { style: "font-style: italic; font-size: 14px;", "I" }
+                }
+                ActionIcon { variant: "subtle", size: "sm",
+                    onclick: move || { ed_under.command("toggleUnderline"); },
+                    span { style: "text-decoration: underline; font-size: 14px;", "U" }
+                }
+                ActionIcon { variant: "subtle", size: "sm",
+                    onclick: move || { ed_strike.command("toggleStrike"); },
+                    span { style: "text-decoration: line-through; font-size: 14px;", "S" }
+                }
+                ActionIcon { variant: "subtle", size: "sm",
+                    onclick: move || { ed_code.command("toggleCode"); },
+                    span { style: "font-family: monospace; font-size: 13px;", "<>" }
+                }
+
+                div { style: "width: 1px; height: 20px; background: var(--rinch-color-border); margin: 0 4px;" }
+
+                ActionIcon { variant: "subtle", size: "sm",
+                    onclick: move || { ed_h1.command("setHeading1"); },
+                    span { style: "font-weight: 700; font-size: 14px;", "H1" }
+                }
+                ActionIcon { variant: "subtle", size: "sm",
+                    onclick: move || { ed_h2.command("setHeading2"); },
+                    span { style: "font-weight: 700; font-size: 13px;", "H2" }
+                }
+                ActionIcon { variant: "subtle", size: "sm",
+                    onclick: move || { ed_h3.command("setHeading3"); },
+                    span { style: "font-weight: 600; font-size: 12px;", "H3" }
+                }
+                ActionIcon { variant: "subtle", size: "sm",
+                    onclick: move || { ed_p.command("setParagraph"); },
+                    span { style: "font-size: 13px;", "P" }
+                }
+
+                div { style: "width: 1px; height: 20px; background: var(--rinch-color-border); margin: 0 4px;" }
+
+                ActionIcon { variant: "subtle", size: "sm",
+                    onclick: move || { ed_quote.command("wrapInBlockquote"); },
+                    span { style: "font-size: 16px;", "\u{201C}" }
+                }
+                ActionIcon { variant: "subtle", size: "sm",
+                    onclick: move || { ed_ul.command("toggleBulletList"); },
+                    span { style: "font-size: 13px;", "UL" }
+                }
+                ActionIcon { variant: "subtle", size: "sm",
+                    onclick: move || { ed_ol.command("toggleOrderedList"); },
+                    span { style: "font-size: 13px;", "OL" }
+                }
+
+                div { style: "width: 1px; height: 20px; background: var(--rinch-color-border); margin: 0 4px;" }
+
+                ActionIcon { variant: "subtle", size: "sm",
+                    onclick: move || { ed_indent.command("sinkListItem"); },
+                    span { style: "font-size: 16px;", "\u{2192}" }
+                }
+                ActionIcon { variant: "subtle", size: "sm",
+                    onclick: move || { ed_outdent.command("liftListItem"); },
+                    span { style: "font-size: 16px;", "\u{2190}" }
+                }
+                ActionIcon { variant: "subtle", size: "sm",
+                    onclick: move || { ed_table.command("insertTable"); },
+                    span { style: "font-size: 13px;", "\u{229E}" }
+                }
+
+                div { style: "width: 1px; height: 20px; background: var(--rinch-color-border); margin: 0 4px;" }
+
+                ActionIcon { variant: "subtle", size: "sm",
+                    onclick: move || { ed_undo.command("undo"); },
+                    span { style: "font-size: 16px;", "\u{21A9}" }
+                }
+                ActionIcon { variant: "subtle", size: "sm",
+                    onclick: move || { ed_redo.command("redo"); },
+                    span { style: "font-size: 16px;", "\u{21AA}" }
+                }
+            }
+        }
+
+        Paper { p: "0", radius: "md", with_border: true,
+            style: "border-top-left-radius: 0; border-top-right-radius: 0;",
+            Editor {
+                editor: editor.clone(),
+                content: "<h1>Rich Text</h1>\
+                    <p>Select text and use the toolbar, or type with <strong>Ctrl+B</strong> / <em>Ctrl+I</em>. The editor ships its own default stylesheet.</p>\
+                    <ul><li><p>Lists, headings, blockquotes</p></li>\
+                    <li><p>Inline marks: <strong>bold</strong>, <em>italic</em>, <code>code</code></p></li></ul>\
+                    <blockquote><p>Everything flows through invertible steps, so undo/redo is exact.</p></blockquote>",
+            }
+        }
+        }
+    }
+}
+
+/// Web (no desktop renderer yet): the editor view is desktop-only for now.
+#[cfg(not(feature = "desktop"))]
+fn editor_body(__scope: &mut RenderScope) -> NodeHandle {
+    rsx! {
+        Paper { p: "xl", radius: "md", with_border: true,
+            Stack { gap: "sm",
+                Text { style: "font-weight: 600;", "The rich-text editor view is a desktop feature." }
+                Text { color: "dimmed", size: "sm",
+                    "The model-first editor core is renderer-agnostic; the web view (over the browser's native contentEditable) is a planned follow-up. Run the desktop UI Zoo to try it."
+                }
             }
         }
     }
@@ -226,13 +221,13 @@ fn render_api_row(__scope: &mut RenderScope, method: &str, desc: &str) -> NodeHa
     rsx! {
         div {
             style: "display: flex; justify-content: space-between; align-items: center; \
-                    padding: 4px 8px; border-radius: 4px; background: var(--rinch-color-default);",
+                    padding: 4px 8px; border-radius: 4px; background: var(--rinch-color-default); gap: 12px;",
             span {
                 style: "font-family: monospace; font-size: 13px; font-weight: 600;",
                 {method}
             }
             span {
-                style: "font-size: 13px; color: var(--rinch-color-dimmed);",
+                style: "font-size: 13px; color: var(--rinch-color-dimmed); text-align: right;",
                 {desc}
             }
         }
@@ -255,65 +250,5 @@ fn render_shortcut_row(__scope: &mut RenderScope, shortcut: &str, desc: &str) ->
                 {shortcut}
             }
         }
-    }
-}
-
-/// Editor-specific CSS styles for content elements.
-#[component]
-fn render_editor_styles() -> NodeHandle {
-    let css = r#"
-        .editor-content p { margin: 0 0 8px 0; }
-        .editor-content h1 { font-size: 2em; font-weight: 700; margin: 16px 0 8px 0; }
-        .editor-content h2 { font-size: 1.5em; font-weight: 700; margin: 14px 0 6px 0; }
-        .editor-content h3 { font-size: 1.25em; font-weight: 600; margin: 12px 0 6px 0; }
-        .editor-content h4 { font-size: 1.1em; font-weight: 600; margin: 10px 0 4px 0; }
-        .editor-content h5 { font-size: 1em; font-weight: 600; margin: 8px 0 4px 0; }
-        .editor-content h6 { font-size: 0.9em; font-weight: 600; margin: 8px 0 4px 0; }
-        .editor-content blockquote {
-            border-left: 3px solid var(--rinch-color-gray-4);
-            padding-left: 16px; margin: 8px 0;
-            color: var(--rinch-color-dimmed);
-        }
-        .editor-content pre {
-            background: var(--rinch-color-default);
-            border-radius: var(--rinch-radius-sm);
-            padding: 12px; margin: 8px 0;
-            font-family: monospace; font-size: 14px;
-            overflow-x: auto;
-        }
-        .editor-content code {
-            background: var(--rinch-color-default);
-            padding: 2px 4px; border-radius: 3px;
-            font-size: 0.9em;
-        }
-        .editor-content pre code {
-            background: none; padding: 0; border-radius: 0;
-        }
-        .editor-content ul, .editor-content ol {
-            margin: 8px 0; padding-left: 24px;
-        }
-        .editor-content li { margin: 2px 0; }
-        .editor-content hr {
-            border: none; border-top: 1px solid var(--rinch-color-border);
-            margin: 16px 0;
-        }
-        .editor-content mark {
-            background: var(--rinch-color-yellow-2);
-            padding: 1px 2px; border-radius: 2px;
-        }
-        .editor-content a {
-            color: var(--rinch-primary-color);
-            text-decoration: underline;
-        }
-        .editor-content strong { font-weight: 700; }
-        .editor-content em { font-style: italic; }
-        .editor-content u { text-decoration: underline; }
-        .editor-content s { text-decoration: line-through; }
-        .editor-content sub { vertical-align: sub; font-size: smaller; }
-        .editor-content sup { vertical-align: super; font-size: smaller; }
-    "#;
-
-    rsx! {
-        style { {css} }
     }
 }

@@ -1,570 +1,279 @@
 # Rich-Text Editor
 
-Rinch provides a comprehensive rich-text editor with collaborative editing support through Automerge CRDT, a schema-driven document model, and a powerful extension system.
+Rinch's rich-text editor is a **ProseMirror-faithful architecture in idiomatic
+Rust**: a pure, renderer-agnostic core (`rinch-editor-core`) plus a desktop view
+that projects it onto rinch-dom. This page is the conceptual guide to that core —
+the document model, schema, steps and transactions, state, commands, history, and
+the view seam.
 
-> **Looking for the ContentEditable API?** This guide covers the high-level `rinch-editor` crate (schemas, extensions, document model). For the lower-level DOM editing API (`ContentEditableApi`, `CeEvent`, `DomCursor`), see the [ContentEditable API](./contenteditable.md) guide. The editor uses the CE API internally — the CE layer handles DOM mutations while this layer handles document structure and serialization.
+> **Just adding an editor to a screen?** Start with the
+> [Rich-text editing](./contenteditable.md) guide — `create_editor()`, the
+> `Editor {}` component, and the command API. This page is the layer underneath it.
 
-## Quick Start
+## The one big idea
 
-Create a new editor with the StarterKit (22 default extensions):
+There is exactly one source of truth and exactly one way to change it:
 
-```rust
-use rinch_editor::prelude::*;
+1. **`EditorState` is a value** — `{ doc, selection, stored_marks, plugin_state }`.
+   No DOM node is ever authoritative.
+2. **Every edit is a `Transaction` of invertible `Step`s**. `state.apply(tr)`
+   returns a *new* `EditorState`; it is pure and side-effect-free.
+3. **The view is a pure function of state.** The desktop view diffs the old and new
+   document and patches the host tree; it renders the caret and selection from
+   `state.selection`. The host tree is never read back for content.
+4. **Input produces transactions, not DOM edits.** Keys, IME, paste, and pointer
+   selection are translated into commands/transactions.
+5. **The schema is authoritative and enforced.** Transactions are validated; invalid
+   steps are rejected, never silently written. Serialization is total and
+   attr-aware — no mark or node type can be dropped.
 
-#[component]
-fn editor_component() -> NodeHandle {
-    // Create schema with all standard editing features
-    let schema = Schema::starter_kit();
-    let config = EditorConfig::default();
+Because the host is *derived* from the model on every transaction, "the DOM and the
+model disagree" is structurally impossible.
 
-    // Create editor instance
-    let mut editor = Editor::new(schema, config)?;
+## The document model
 
-    // Render editor content...
-    todo!()
-}
-```
+The model is a **persistent (structurally-shared) immutable tree**. Cloning a `Node`
+is a cheap `Rc` bump; every edit produces a new tree that shares unchanged subtrees
+with the old one. That is what makes states cheap to keep in history and cheap to
+diff in the view.
 
-## Editor Configuration
+### Node, Mark, Fragment, Slice
 
-The `Editor` struct holds the document model, schema, selection state, and all editing capabilities:
-
-```rust
-pub struct Editor {
-    pub doc: EditorDocument,           // The document being edited
-    pub schema: Schema,                // Validation rules
-    pub selection: SelectionState,     // Current cursor/selection
-    pub history: History,              // Undo/redo
-    pub commands: CommandDispatcher,   // All mutations
-    pub extensions: ExtensionRegistry, // Loaded extensions
-    pub input_rules: InputRuleSet,     // Auto-transforms
-    pub shortcuts: ShortcutRegistry,   // Keyboard bindings
-    pub events: EventDispatcher,       // Event handling
-    pub config: EditorConfig,          // Editor settings
-}
-```
-
-### Configuration Options
-
-```rust
-#[derive(Debug, Clone)]
-pub struct EditorConfig {
-    pub autofocus: AutoFocus,  // Focus behavior on mount
-    pub editable: bool,        // Allow editing
-}
-
-pub enum AutoFocus {
-    Start,  // Focus at document start
-    End,    // Focus at document end
-    None,   // Don't auto-focus (default)
-}
-```
-
-## StarterKit Extensions
-
-The `StarterKit` provides 22 pre-configured extensions covering all standard editing operations. These are organized into node and mark extensions.
-
-### Node Extensions (12 types)
-
-| Extension | Tag | Purpose |
-|-----------|-----|---------|
-| **Document** | `doc` | Root container (content: `block+`) |
-| **Paragraph** | `<p>` | Default text block (content: `inline*`) |
-| **Text** | - | Inline text content |
-| **Heading** | `<h1>-<h6>` | Section headings with level attribute |
-| **Blockquote** | `<blockquote>` | Quoted content (content: `block+`) |
-| **Bullet List** | `<ul>` | Unordered list (content: `list_item+`) |
-| **Ordered List** | `<ol>` | Numbered list (content: `list_item+`) |
-| **List Item** | `<li>` | List entry (content: `block+`) |
-| **Code Block** | `<pre><code>` | Fenced code with language attr |
-| **Horizontal Rule** | `<hr>` | Visual divider (atomic) |
-| **Hard Break** | `<br>` | Line break (inline, atomic) |
-| **Image** | `<img>` | Embedded image (requires src) |
-
-### Mark Extensions (10 types)
-
-| Extension | HTML | Shortcut | Purpose |
-|-----------|------|----------|---------|
-| **Bold** | `<strong>` | Mod-B | **Bold text** |
-| **Italic** | `<em>` | Mod-I | *Italic text* |
-| **Underline** | `<u>` | Mod-U | Underlined text |
-| **Strikethrough** | `<s>` | Mod-Shift-X | ~~Struck text~~ |
-| **Code** | `<code>` | Mod-E | `Inline code` |
-| **Link** | `<a href>` | - | Clickable links |
-| **Highlight** | `<mark>` | Mod-Shift-H | Highlighted text |
-| **Subscript** | `<sub>` | Mod-, | x₂ subscript |
-| **Superscript** | `<sup>` | Mod-. | x² superscript |
-| **Text Color** | `<span>` | - | Colored text (requires color attr) |
-
-### Using StarterKit
+- **`Node`** — a value in the tree. It has a schema node type, typed attrs, a
+  `Fragment` of children (empty for leaves), marks (on inline/text leaves), and
+  optional text (for the `text` node). `hard_break`, `horizontal_rule`, and `image`
+  are first-class nodes, not strings.
+- **`Mark`** — an inline annotation (`bold`, `italic`, `link{href}`, …) carried on
+  text and inline leaves, with typed attrs.
+- **`Fragment`** — an ordered, sized, `Rc`-shared child list with the cut / append /
+  replace primitives the transform engine needs.
+- **`Slice`** — `{ content: Fragment, open_start, open_end }`. The open depths let a
+  copied or pasted range merge into the surrounding structure; it is the unit that
+  `replace` and paste operate on.
 
 ```rust
-use rinch_editor::prelude::*;
+use rinch::prelude::*;            // Node, Mark, Slice, Schema, Selection, Pos, …
 
-// Create schema with all 22 extensions
-let schema = Schema::starter_kit();
-
-// Or manually load extensions
-let mut editor = Editor::new(schema, EditorConfig::default())?;
-for ext in StarterKit::extensions() {
-    editor.extensions.register(ext)?;
-}
+let doc = editor.doc();           // the current document Node (the save shape)
+assert!(doc.child_count() >= 1);
 ```
 
-## Keyboard Shortcuts
+### One position space
 
-All StarterKit extensions come with keyboard shortcuts. Here's the complete reference:
+The editor uses ProseMirror's **single depth-aware integer position space**, `Pos`:
 
-### Text Formatting
+- Each node contributes **1** for its opening boundary and **1** for its closing
+  boundary.
+- Text contributes **one position per Unicode scalar value (char)**, not per byte —
+  byte offsets exist only transiently at platform seams (Parley layout, IME).
+- The document root starts at `0`; `doc.content_size()` is the last valid position.
 
-| Shortcut | Action |
-|----------|--------|
-| Mod-B | Toggle **bold** |
-| Mod-I | Toggle *italic* |
-| Mod-U | Toggle <u>underline</u> |
-| Mod-Shift-X | Toggle ~~strikethrough~~ |
-| Mod-E | Toggle `code` |
-| Mod-Shift-H | Toggle highlight |
-| Mod-, | Toggle subscript |
-| Mod-. | Toggle superscript |
+`Pos` resolves to a `ResolvedPos` that answers `parent()`, `node(depth)`,
+`before(depth)`/`after(depth)`, `index(depth)`, and `marks()` — replacing flat
+block/inline/offset math with one consistent model.
 
-**Note:** "Mod" means Ctrl on Windows/Linux and Cmd on macOS.
+### Schema and ContentMatch
 
-### Block Structure
+The **schema** defines which nodes and marks exist and what content each node may
+contain. The starter-kit catalogue:
 
-| Shortcut | Action |
-|----------|--------|
-| Mod-Alt-0 | Convert to paragraph |
-| Mod-Alt-1 | Convert to heading 1 |
-| Mod-Alt-2 | Convert to heading 2 |
-| Mod-Alt-3 | Convert to heading 3 |
-| Mod-Alt-4 | Convert to heading 4 |
-| Mod-Alt-5 | Convert to heading 5 |
-| Mod-Alt-6 | Convert to heading 6 |
+- **Nodes:** `doc`, `paragraph`, `heading{level}`, `blockquote`, `code_block`,
+  `bullet_list`, `ordered_list`, `list_item`, `horizontal_rule`, `hard_break`,
+  `text`, `image{src, alt}`, plus the table nodes.
+- **Marks:** `bold`, `italic`, `underline`, `strike`, `code`, `link{href}`,
+  `highlight{color?}`, `text_color{color}`, `subscript`, `superscript`.
 
-### Lists and Quotes
+Each node spec carries a **content expression** (e.g. `blockquote > block+`,
+`list_item > block+`, `bullet_list > list_item+`). These compile to a **ContentMatch
+NFA** that the transform engine consults to decide whether a step's result is valid —
+`matchType`, `matchFragment`, and `fillBefore` drive both validation and the
+automatic insertion of required nodes. Required attrs (`link.href`, `image.src`,
+`heading.level`) are applied/enforced at the step boundary, so attr-aware round-trip
+is structural, not best-effort.
 
-| Shortcut | Action |
-|----------|--------|
-| Mod-Shift-B | Toggle blockquote |
-| Mod-Shift-8 | Toggle bullet list |
-| Mod-Shift-7 | Toggle ordered list |
+### Serialization
 
-### Special
+The durable save/load shape is a recursive, schema-derived structure (under the
+`serde` feature). Serialize walks the schema, so every node type and mark type has a
+name and there is no string-tag fallthrough; deserialize consults the schema and
+**rejects** unknown types rather than dropping them silently. HTML serialization
+derives tags from the schema's `parse_html_tags`, so copy-out and paste-in share one
+table — the same one `Editor`'s `content:` prop and `load_html` use.
 
-| Shortcut | Action |
-|----------|--------|
-| Mod-Alt-C | Toggle code block |
-| Shift-Enter | Insert hard break |
+## The transform engine
 
-## Markdown Input Rules
+Every editing operation is a `Transaction` carrying one or more `Step`s. Steps are
+**invertible** (for undo) and **mappable** (for redo, collaboration rebase, and
+decoration tracking).
 
-StarterKit includes markdown-style input rules that auto-convert patterns to formatted content:
+### A deliberately minimal Step set
 
-### Headings
+There is *not* a step per gesture. A small primitive set expresses everything; the
+gestures map onto it:
 
-Type any of these at the start of a line, followed by space:
+| Step | Purpose |
+|------|---------|
+| `ReplaceStep { from, to, slice }` | Replace a range with a `Slice`. **The workhorse** — text insert, delete, split, join, and paste all reduce to this. |
+| `ReplaceAroundStep { … gap …, slice }` | Replace around a preserved gap — wrapping (blockquote/list), lifting, and re-parenting block-type changes. |
+| `AddMarkStep { from, to, mark }` | Add a mark across an inline range. |
+| `RemoveMarkStep { from, to, mark }` | Remove a mark across an inline range. |
+| `SetNodeAttrStep { pos, attr, value }` | Change one node attr (heading level, image alt, list start). |
+| `SetDocAttrStep { attr, value }` | A document-level attr. |
 
-```
-# <space>     → Heading 1
-## <space>    → Heading 2
-### <space>   → Heading 3
-#### <space>  → Heading 4
-##### <space> → Heading 5
-###### <space> → Heading 6
-```
+Tables and collaboration add **no new step kinds** — table edits are `Replace` /
+`ReplaceAround` / `SetNodeAttr` over the table, row, and cell nodes.
 
-### Lists
+A few gesture → step mappings:
 
-```
-- <space>  → Bullet list (dash)
-* <space>  → Bullet list (asterisk)
-1. <space> → Ordered list
-```
-
-### Quotes and Code
-
-```
-> <space>  → Blockquote
-```<space> → Code block
----        → Horizontal rule
-```
-
-### Inline Formatting
-
-These patterns auto-toggle marks while typing:
-
-```
-**text**   → Bold
-*text*     → Italic
-~~text~~   → Strikethrough
-```
-
-## Commands
-
-All mutations go through the command system. Commands are registered by extensions and dispatched by name:
-
-```rust
-// Toggle bold on current selection
-editor.commands.execute("toggle_bold")?;
-
-// Set heading level
-editor.commands.execute("set_heading_1")?;
-
-// Insert elements
-editor.commands.execute("insert_table")?;
-```
-
-### Command Categories
-
-Commands are organized into three categories:
-
-#### Text Commands
-- `insert_text(text)` - Insert characters
-- `delete_range(range)` - Delete text range
-- `replace_range(range, text)` - Replace with text
-
-#### Formatting Commands
-- `toggle_mark(mark)` - Toggle mark on selection
-- `remove_mark(mark)` - Remove mark from selection
-- `set_mark(mark, attrs)` - Set mark with attributes
-
-#### Structure Commands
-- `set_block_type(type)` - Change node type
-- `wrap_in(type)` - Wrap in container
-- `lift()` - Lift out of container
-- `split_block()` - Split at cursor
-- `join_blocks()` - Merge adjacent blocks
-
-## Table Editing
-
-The optional `TableExtension` provides full table editing support with 11 commands:
-
-### Table Commands
-
-| Command | Purpose |
+| Gesture | Step(s) |
 |---------|---------|
-| `insert_table` | Insert 3x3 table |
-| `delete_table` | Remove table |
-| `add_row_before` | Insert row before cursor |
-| `add_row_after` | Insert row after cursor |
-| `delete_row` | Delete current row |
-| `add_column_before` | Insert column before cursor |
-| `add_column_after` | Insert column after cursor |
-| `delete_column` | Delete current column |
-| `merge_cells` | Merge selected cells |
-| `split_cell` | Split cell (if colspan/rowspan > 1) |
-| `toggle_header_row` | Promote/demote first row as header |
+| Type a character | `ReplaceStep(from, to, Slice::text(ch, stored_marks))` |
+| Backspace mid-text | `ReplaceStep(pos-1, pos, empty)` |
+| Enter / split block | a `ReplaceStep` that splits the textblock (open slice + new block) |
+| Toggle bold over a range | `AddMarkStep` / `RemoveMarkStep` over `from..to` |
+| Toggle bold at a cursor | **no step** — set `stored_marks` (applied to the next typed text) |
+| Wrap in blockquote | `wrap(range, [(blockquote, {})])` → `ReplaceAroundStep` |
+| Paste | parse to a `Slice`, then `ReplaceStep(from, to, slice)` |
 
-### Table Navigation
+`Step::apply` is where **schema enforcement** lives: a `ReplaceStep` whose slice
+would violate the parent's ContentMatch returns an error and the whole transaction is
+rejected. Invert is mechanical; map rebases positions through a `Mapping`; merge
+coalesces consecutive single-char replaces so typing groups naturally.
 
-| Shortcut | Action |
-|----------|--------|
-| Tab | Move to next cell |
-| Shift-Tab | Move to previous cell |
+### Transactions
 
-### Table Structure
-
-Tables contain:
-- `<table>` - Container (group: block)
-- `<table_row>` - Row (content: `table_cell+`) |
-- `<table_cell>` - Cell (content: `block+`, attrs: colspan, rowspan)
-- `<table_header>` - Header cell (content: `block+`, attrs: colspan, rowspan)
-
-Enable tables:
+A `Transaction` accumulates steps (each applied into a running `doc`), maps the
+selection forward as steps are added, and carries `stored_marks` and plugin meta. You
+rarely build one by hand — commands do — but the shape is:
 
 ```rust
-let mut editor = Editor::new(Schema::starter_kit(), config)?;
-editor.extensions.register(Box::new(TableExtension))?;
+// Inside a command, or via EditorHandle::update:
+let mut tr = state.tr();
+tr.insert_text("hello").ok()?;     // a ReplaceStep
+tr.set_selection(Selection::cursor(Pos(/* … */)));
+Some(tr)                           // dispatched and applied by state.apply
 ```
 
-## Document Model
+## State, selection, stored marks
 
-The editor document is backed by Automerge CRDT, enabling offline editing and automatic conflict resolution:
+```text
+EditorState { doc, selection, stored_marks, schema, plugins, plugin_state }
+```
+
+`state.apply(tr)` runs the transaction's steps, then folds each plugin's state
+forward (history pushes inverted steps, decoration sets remap through the mapping).
+It returns a brand-new state; nothing is mutated in place, no DOM is touched.
+
+**Selection** is part of state and is mapped forward by every transaction. It is one
+of:
+
+- `Text { anchor, head }` — a text caret/range (anchor fixed, head moving).
+- `Node { pos }` — a whole atom selected (an image, a horizontal rule).
+- `Cell { anchor_cell, head_cell }` — a table-cell rectangle.
+
+The caret is **rendered from the selection** by the view — there is no second cursor
+model.
+
+**Stored marks** carry a tri-state for the "click Bold then type" case:
+
+- `None` → inherit marks from the position context on the next insert.
+- `Some(vec![])` → explicitly no marks.
+- `Some([bold])` → the next inserted text gets bold.
+
+Toggling a mark at a *collapsed cursor* sets `stored_marks`; toggling over a *range*
+emits an `AddMark`/`RemoveMark` step.
+
+## Commands, keymap, input rules
+
+A **command** queries the state and, if it applies, builds a transaction and
+dispatches it — returning `true`. Called for applicability only, it reports whether
+it *would* apply (driving toolbar enabled/disabled state). Toolbar queries read
+**state**, never the DOM:
 
 ```rust
-pub struct EditorDocument {
-    // Automerge-backed CRDT document
-}
-
-impl EditorDocument {
-    // Insert text at position
-    pub fn insert_text(&mut self, pos: Position, text: &str) -> Result<(), EditorError>
-
-    // Delete text range
-    pub fn delete_range(&mut self, range: Range) -> Result<(), EditorError>
-
-    // Add mark (formatting) to range
-    pub fn add_mark(&mut self, range: Range, mark: &str, attrs: Option<HashMap<String, String>>) -> Result<(), EditorError>
-
-    // Remove mark from range
-    pub fn remove_mark(&mut self, range: Range, mark: &str) -> Result<(), EditorError>
-
-    // Split block at position
-    pub fn split_block(&mut self, pos: Position) -> Result<(), EditorError>
-
-    // Get block type at position
-    pub fn block_type(&self, pos: usize) -> Option<String>
-
-    // Get document length
-    pub fn length(&self) -> usize
-}
+editor.command("toggleBold");          // dispatch by name
+editor.can_run("liftListItem");        // would it apply? (enablement)
+editor.is_mark_active("bold");         // toolbar "on" state
+editor.current_block_type();           // e.g. Some("heading")
+editor.in_node_type("bullet_list");    // ancestor-aware (lists, blockquote)
 ```
 
-### Position and Range
+The built-in command catalogue is listed in the
+[Rich-text editing](./contenteditable.md#driving-the-editor-command) guide:
+mark toggles, block-type setters, list/blockquote wrapping, indent/outdent, inserts,
+the full table command set, and `undo`/`redo`.
 
-```rust
-// Position: byte offset in document (0 = start)
-pub struct Position {
-    pub offset: usize,
-}
+The **keymap** normalizes platform keys + modifiers into a binding and looks up a
+command name (so Ctrl+B → `toggleBold`). **Input rules** are regex-driven
+transforms — markdown shortcuts like `## ` → heading, `- ` → bullet list, `> ` →
+blockquote — each returning an optional transaction.
 
-// Range: contiguous span from start to end
-pub struct Range {
-    pub start: Position,
-    pub end: Position,
-}
+## History
+
+There is **one** history, implemented as a plugin. It stores **inverted steps** (not
+byte positions), groups them by transaction boundary, and **merges consecutive typing
+transactions** within a time/affinity window, so a burst of typing undoes as one
+step. On undo it pops a group, rebases its inverted steps over any intervening
+mappings, applies them as a transaction that doesn't re-enter history, and restores
+the recorded selection. `undo` / `redo` are the only history entry points.
+
+## Plugins
+
+History, tables, links, input rules, and (later) collaboration and accessibility are
+**all plugins** — none is special-cased in the core. A plugin can contribute schema
+nodes/marks, commands, keymap bindings, input rules, per-document state, decorations
+(preedit overlay, selection rectangle, search highlight), and node-views. This is how
+features compose without bloating the core.
+
+## The view seam
+
+The core defines an `EditorView` trait and a small request/event vocabulary; it knows
+nothing about any renderer. The **desktop view lives in the `rinch` crate** — the
+only rinch-dom touchpoint — and a **web view (a follow-up) will live in `rinch-web`**,
+delegating to the browser's native contentEditable. Nothing else knows the renderer.
+
+The desktop view, on each transaction:
+
+1. **Diffs** `prev.doc` against `next.doc`. Because the model is persistent,
+   `Rc::ptr_eq` makes the diff cheap — unchanged subtrees are skipped entirely.
+2. **Patches** rinch-dom for the changed regions via the standard primitives
+   (`create_element` / `create_text` / `append_child` / `insert_before` / `remove` /
+   `set_text` / `set_attribute` / `set_style`), choosing tags from the schema-driven
+   serializer. **Leaf node-views** (image, horizontal rule, table cell) own their own
+   subtree; the diff stops at their boundary and delegates.
+3. **Renders the caret and selection from `state.selection`** (after layout),
+   converting the model's char `Pos` to a byte offset for Parley only at this render
+   edge.
+
+The view also owns block virtualization (skipping layout for off-screen blocks while
+keeping their real height), IME positioning, and — under the opt-in `a11y` feature —
+deriving an accessibility tree from the state.
+
+## End-to-end edit flow
+
+```text
+key / IME / paste / pointer event
+  → the view translates it to a command call or a transaction
+  → command(state, dispatch): queries state, builds tr, dispatches it
+  → new_state = state.apply(tr)         // schema-validated; reject ⇒ no-op
+       • steps applied, selection mapped forward
+       • plugins fold state (history pushes inverse, decorations remap)
+  → view.update(old_state, new_state)   // diff doc → minimal host patches
+       • caret/selection rendered from new_state.selection
 ```
 
-## Schema System
+No step in this pipeline reads the host tree for content. That is the whole design.
 
-The schema defines what content is valid. Every extension contributes node and mark specifications:
+## Persisting content
 
-```rust
-// Create a custom schema
-let mut schema = Schema::new();
+`handle.doc()` returns the current document `Node` — the canonical save shape. Enable
+the `serde` feature (`rinch-editor-core/serde`, or `serde` on the `rinch` facade) to
+serialize it to the recursive, schema-derived wire shape and load it back; unknown
+types are rejected on load, never silently dropped.
 
-// Add node type
-schema.add_node(NodeSpec::builder("paragraph")
-    .content("inline*")
-    .group("block")
-    .build());
+## Where to go next
 
-// Add mark type
-schema.add_mark(MarkSpec::simple("bold"));
-```
-
-### Node Specs
-
-```rust
-pub struct NodeSpec {
-    pub name: String,
-    pub content: Option<String>,    // Content model (e.g., "inline*", "block+")
-    pub group: Option<String>,      // Grouping (block, inline)
-    pub attrs: HashMap<String, AttrSpec>,
-    pub inline: bool,               // Inline vs block
-    pub atom: bool,                 // Atomic (no content)
-    pub isolating: bool,            // Boundary for operations
-    pub marks: MarkSet,             // Which marks allowed
-    pub parse_html_tags: Vec<String>,
-}
-```
-
-### Mark Specs
-
-```rust
-pub struct MarkSpec {
-    pub name: String,
-    pub attrs: HashMap<String, AttrSpec>,
-    pub parse_html_tags: Vec<String>,
-    pub inclusive: bool,            // Extend to typing (default: true)
-    pub excludes: Option<String>,   // Conflicts (e.g., "bold italic")
-}
-```
-
-## Selection and Cursor
-
-The selection tracks the current cursor position or selection range:
-
-```rust
-pub struct Selection {
-    pub anchor: Position,    // Selection start
-    pub head: Position,      // Selection end (same as anchor for cursor)
-}
-
-impl Selection {
-    // Cursor at position
-    pub fn cursor(pos: Position) -> Self
-
-    // Range from start to end
-    pub fn range(start: Position, end: Position) -> Self
-
-    // Check if collapsed (cursor, not range)
-    pub fn is_collapsed(&self) -> bool
-}
-
-// Update selection
-editor.set_selection(Selection::cursor(Position::new(10)));
-```
-
-## Undo/Redo
-
-Rinch editor includes local undo/redo for collaborative editing. Operations are stored with inverses for reversal:
-
-```rust
-pub struct History {
-    pub undo_stack: Vec<UndoOperation>,
-    pub redo_stack: Vec<UndoOperation>,
-}
-
-pub struct UndoOperation {
-    pub changes: Vec<DocumentChange>,
-    pub inverse: Vec<DocumentChange>,  // Undo reverses these
-}
-
-// Undo last operation
-editor.history.undo();
-
-// Redo last undone operation
-editor.history.redo();
-```
-
-Each operation is atomic - undo/redo are single steps regardless of how many DOM mutations happened.
-
-## Extension System
-
-Create custom extensions by implementing the `Extension` trait:
-
-```rust
-use rinch_editor::prelude::*;
-
-#[derive(Debug)]
-struct MyCustomExtension;
-
-impl Extension for MyCustomExtension {
-    fn name(&self) -> &str {
-        "my_custom"
-    }
-
-    fn nodes(&self) -> Vec<NodeSpec> {
-        vec![NodeSpec::builder("custom_node")
-            .content("inline*")
-            .group("block")
-            .build()]
-    }
-
-    fn marks(&self) -> Vec<MarkSpec> {
-        vec![MarkSpec::simple("custom_mark")]
-    }
-
-    fn commands(&self) -> Vec<CommandRegistration> {
-        vec![CommandRegistration::new("my_command", |editor| {
-            // Command logic here
-            Ok(())
-        })]
-    }
-
-    fn keyboard_shortcuts(&self) -> Vec<(KeyboardShortcut, String)> {
-        vec![(
-            KeyboardShortcut::new("Mod-K", "My command"),
-            "my_command".into(),
-        )]
-    }
-
-    fn input_rules(&self) -> Vec<InputRule> {
-        vec![InputRule::new(
-            regex::Regex::new(r"^:wave: $").unwrap(),
-            "Wave emoji",
-            |_editor, _caps| Ok(()),
-        )]
-    }
-}
-
-// Register extension
-editor.extensions.register(Box::new(MyCustomExtension))?;
-```
-
-### Extension Priorities
-
-Extensions can specify priority (lower = earlier initialization):
-
-```rust
-impl Extension for MyExtension {
-    fn priority(&self) -> i32 {
-        50  // Lower than default (100)
-    }
-}
-```
-
-Use priorities to control initialization order when extensions have dependencies.
-
-## Events
-
-The editor dispatches events for state changes:
-
-```rust
-pub struct EventDispatcher {
-    // Event routing system
-}
-
-// Listen to updates
-editor.events.on("update", |event| {
-    // Handle update
-});
-```
-
-## Testing
-
-Rinch provides testing utilities:
-
-```rust
-use rinch_editor::prelude::*;
-
-#[test]
-fn test_bold_toggle() {
-    let schema = Schema::starter_kit();
-    let mut editor = Editor::new(schema, EditorConfig::default()).unwrap();
-
-    // Insert text
-    editor.doc.insert_text(Position::new(0), "hello").unwrap();
-
-    // Toggle bold
-    editor.commands.execute("toggle_bold").unwrap();
-
-    // Verify mark applied
-    let marks = editor.doc.marks_at(Position::new(2));
-    assert!(marks.iter().any(|m| m.name == "bold"));
-}
-```
-
-## Advanced: Custom Document Rendering
-
-For embedding the editor in your Rinch app, implement DOM rendering:
-
-```rust
-#[component]
-fn render_editor(editor: &Editor) -> NodeHandle {
-    let div = __scope.create_element("div");
-    div.set_attribute("class", "editor");
-
-    // Render document
-    for node in editor.doc.nodes() {
-        let rendered = render_node(__scope, node);
-        div.append_child(&rendered);
-    }
-
-    // Render cursor/selection
-    if let Some(cursor_node) = render_cursor(__scope, &editor.selection) {
-        div.append_child(&cursor_node);
-    }
-
-    div
-}
-```
-
-## Architecture
-
-The editor uses a **Hidden Textarea + Virtual DOM** approach:
-
-1. A hidden `<textarea>` captures keyboard input, IME, and clipboard
-2. The document model (Automerge CRDT) is the source of truth
-3. DOM nodes are rendered from the document using Rinch's NodeHandle API
-4. Selection and cursor overlays provide visual feedback
-
-This design enables:
-- Full IME support (Chinese, Japanese, etc.)
-- Native clipboard handling
-- Undo/redo compatible with collaborative editing
-- Surgical DOM updates (only changed nodes update)
-
-See [Editor Architecture](../architecture/editor.md) for deep technical details.
+- [Rich-text editing](./contenteditable.md) — the practical component + command API.
+- `examples/markdown-editor` and `examples/ui-zoo/src/sections/editor.rs` — working
+  editors driving the command API.
+- [Editor Architecture](../architecture/editor.md) — deeper technical notes.

@@ -540,27 +540,6 @@ impl NodeHandle {
         }
     }
 
-    /// Execute a closure with the CE API for this contenteditable element.
-    ///
-    /// Works whether or not the element is focused. If this element hasn't
-    /// been focused yet, a CeOps is created lazily via the registered factory.
-    ///
-    /// Returns `Some(result)` if this element has a CE API (i.e., it is a
-    /// contenteditable element and the rinch runtime is active).
-    ///
-    /// ```ignore
-    /// let editor_div = rsx! { div { contenteditable: "true" } };
-    /// editor_div.with_ce_api(|api| {
-    ///     api.borrow_mut().load_html("<p>Hello <strong>world</strong></p>");
-    /// });
-    /// ```
-    pub fn with_ce_api<F, R>(&self, f: F) -> Option<R>
-    where
-        F: FnOnce(&std::rc::Rc<std::cell::RefCell<dyn crate::ce::ContentEditableApi>>) -> R,
-    {
-        crate::ce::with_ce_api_for_node(self.node_id.0, f)
-    }
-
     /// Clear CSS animations and transitions on this node and all descendants.
     ///
     /// This should be called before removing nodes to ensure rinch-dom cleans up

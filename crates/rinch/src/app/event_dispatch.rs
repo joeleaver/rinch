@@ -41,7 +41,7 @@ impl RinchApp {
                 self.cursor_pos = Some((x, y));
 
                 // New editor (M5): extend an in-progress drag-select.
-                #[cfg(feature = "new-editor")]
+                #[cfg(feature = "desktop")]
                 if crate::editor::drag_anchor().is_some()
                     && self.extend_editor_drag(x, y, scale_factor, window_size)
                 {
@@ -266,28 +266,6 @@ impl RinchApp {
                     return actions;
                 }
 
-                // Handle contenteditable text selection drag
-                if self.ce_selecting
-                    && let Some(ref mut ce) = self.focused_contenteditable
-                {
-                    let ce_node_id = ce.ce_node_id;
-                    if let Some(doc) = &self.doc {
-                        let new_cursor = {
-                            let d = doc.borrow();
-                            Self::compute_dom_cursor_from_click(&d.tree, ce_node_id, x, y)
-                        };
-                        ce.cursor = new_cursor;
-                        let anchor = ce.anchor;
-                        self.set_contenteditable_attributes_dom(
-                            ce_node_id, true, new_cursor, anchor,
-                        );
-                        self.sync_ce_ops_cursor();
-                        self.scene_dirty = true;
-                        actions.push(AppAction::RequestRedraw);
-                        return actions;
-                    }
-                }
-
                 // Handle read-only text selection drag
                 if self.text_selecting {
                     if let Some(sel) = &self.text_selection {
@@ -460,7 +438,7 @@ impl RinchApp {
                 // (and arms a drag-select). This MUST run in the Left-specific arm —
                 // the general MouseDown arm below never sees left buttons (the cause
                 // of the original "click does nothing" bug).
-                #[cfg(feature = "new-editor")]
+                #[cfg(feature = "desktop")]
                 if self.try_new_editor_click(
                     x,
                     y,
@@ -611,7 +589,7 @@ impl RinchApp {
                 );
 
                 // New editor (M5): end any drag-select.
-                #[cfg(feature = "new-editor")]
+                #[cfg(feature = "desktop")]
                 crate::editor::end_drag();
 
                 // ── Drag-and-drop: complete or cancel ─────────────────────
@@ -699,7 +677,6 @@ impl RinchApp {
 
                 rinch_core::finish_drag(x, y);
                 self.scrollbar_drag = None;
-                self.ce_selecting = false;
                 self.text_selecting = false;
 
                 // Clear :active pseudo-class state on mouse release.
@@ -923,7 +900,7 @@ impl RinchApp {
                 // 2. Route by the focus arbiter (design A10): exactly one target
                 //    owns keyboard input, so there is no order-dependent fallthrough.
                 match self.focus_target {
-                    #[cfg(feature = "new-editor")]
+                    #[cfg(feature = "desktop")]
                     FocusTarget::Editor(container) => {
                         if let Some(handle) = crate::editor::editor_for(container) {
                             self.dispatch_new_editor_key(
@@ -973,18 +950,6 @@ impl RinchApp {
                             }
                         }
                         actions.push(AppAction::RequestRedraw);
-                    }
-                    FocusTarget::ContentEditable(_) => {
-                        // Route keyboard events to the legacy contenteditable engine.
-                        if self.handle_contenteditable_key(key, text.as_deref(), shift, ctrl, alt) {
-                            // Resolve layout immediately so the IFC text layout is
-                            // rebuilt before the next paint. Without this, the
-                            // invalidated text_layout (set to None by set_text_content)
-                            // causes a one-frame flicker where text is invisible.
-                            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                            self.resolve_and_repaint(w, h);
-                            actions.push(AppAction::RequestRedraw);
-                        }
                     }
                     // No widget owns the key, or a plain `<input>` does (its editing
                     // commands live in the global handlers, gated internally on
@@ -1054,7 +1019,7 @@ impl RinchApp {
                 // exactly like KeyDown: whichever text target holds focus consumes
                 // it. IME is a shared runtime service, not a per-widget path.
                 match self.focus_target {
-                    #[cfg(feature = "new-editor")]
+                    #[cfg(feature = "desktop")]
                     FocusTarget::Editor(container) => {
                         if let Some(handle) = crate::editor::editor_for(container) {
                             self.dispatch_editor_ime(&handle, ime);
@@ -1071,9 +1036,7 @@ impl RinchApp {
                         self.dispatch_input_ime(node_id, ime);
                         actions.push(AppAction::RequestRedraw);
                     }
-                    // Surface / legacy contenteditable / None ignore IME. (Legacy
-                    // CE is removed at M8 and the new editor replaces it, so wiring
-                    // IME there would be throwaway.)
+                    // Surfaces and no focus do not consume IME.
                     _ => {}
                 }
             }
@@ -1781,7 +1744,7 @@ impl RinchApp {
 }
 
 /// A cursor motion produced by an arrow/Home/End key (design §7 keyboard).
-#[cfg(feature = "new-editor")]
+#[cfg(feature = "desktop")]
 #[derive(Clone, Copy)]
 pub(crate) enum Motion {
     CharLeft,
@@ -1796,8 +1759,8 @@ pub(crate) enum Motion {
     DocEnd,
 }
 
-/// New-editor (M5) keyboard handling, behind the `new-editor` feature.
-#[cfg(feature = "new-editor")]
+/// Rich-text editor keyboard handling (desktop).
+#[cfg(feature = "desktop")]
 impl RinchApp {
     /// Translate a key press into an action on the focused editor's
     /// [`EditorHandle`](crate::editor::EditorHandle). Returns whether the document
@@ -2012,7 +1975,7 @@ impl RinchApp {
     /// Apply an [`ImeEvent`] to the focused new editor: preedit becomes a
     /// transient overlay (never in the document), commit clears it and inserts
     /// the text in one transaction, delete-surrounding deletes around the caret.
-    #[cfg(feature = "new-editor")]
+    #[cfg(feature = "desktop")]
     fn dispatch_editor_ime(&mut self, handle: &crate::editor::EditorHandle, ime: ImeEvent) {
         match ime {
             ImeEvent::Enabled => {}
@@ -2036,8 +1999,8 @@ impl RinchApp {
 
 /// IME (input method editor) handling for single-line `<input>` text fields.
 ///
-/// Ungated: `<input>` IME works without the `new-editor` feature. (The editor
-/// half above is gated because it needs [`EditorHandle`](crate::editor::EditorHandle).)
+/// Ungated: `<input>` IME works on every build with an app loop. (The editor IME
+/// half above is `desktop`-gated because it needs the [`EditorHandle`](crate::editor::EditorHandle).)
 impl RinchApp {
     /// Apply an [`ImeEvent`] to the focused `<input>`: preedit is rendered inline
     /// at the caret via the `data-preedit` attribute, commit clears it and inserts
@@ -2108,7 +2071,7 @@ impl RinchApp {
     }
 }
 
-#[cfg(feature = "new-editor")]
+#[cfg(feature = "desktop")]
 impl RinchApp {
     /// Copy the focused editor's selection to the clipboard as both `text/html`
     /// (rich) and `text/plain` (the fall-back alternative). A no-op for an empty
@@ -2670,7 +2633,7 @@ impl RinchApp {
 /// The model position at the start (`end=false`) or end (`end=true`) of the
 /// textblock `head` is in. (Visual-line Home/End for wrapped lines is a later
 /// refinement; this is block start/end.)
-#[cfg(feature = "new-editor")]
+#[cfg(feature = "desktop")]
 fn line_bound(
     doc: &rinch_editor_core::Node,
     head: rinch_editor_core::Pos,
@@ -2691,7 +2654,7 @@ fn line_bound(
 /// The model position at the previous/next word boundary within `head`'s
 /// textblock (a simple whitespace/word-character scan; cross-block word motion is
 /// a later refinement).
-#[cfg(feature = "new-editor")]
+#[cfg(feature = "desktop")]
 fn word_boundary(
     doc: &rinch_editor_core::Node,
     head: rinch_editor_core::Pos,
@@ -2725,7 +2688,7 @@ fn word_boundary(
 
 /// The concatenated inline text of a textblock, with each non-text leaf counted as
 /// one placeholder char (so word/line offsets line up with the position space).
-#[cfg(feature = "new-editor")]
+#[cfg(feature = "desktop")]
 fn block_text(block: &rinch_editor_core::Node) -> String {
     let mut s = String::new();
     for i in 0..block.child_count() {
@@ -2743,7 +2706,7 @@ fn block_text(block: &rinch_editor_core::Node) -> String {
 /// by the character to the right of the gap (or the last character at block end).
 /// Falls back to a collapsed range at `pos` when it is not inside a textblock or
 /// the block is empty.
-#[cfg(feature = "new-editor")]
+#[cfg(feature = "desktop")]
 fn word_range_at(
     doc: &rinch_editor_core::Node,
     pos: rinch_editor_core::Pos,
@@ -2785,7 +2748,7 @@ fn word_range_at(
 /// The model content range `(start, end)` of the textblock containing `pos` — the
 /// whole-block selection a triple-click makes. Falls back to a collapsed range at
 /// `pos` when it is not inside a textblock.
-#[cfg(feature = "new-editor")]
+#[cfg(feature = "desktop")]
 fn block_range_at(
     doc: &rinch_editor_core::Node,
     pos: rinch_editor_core::Pos,
@@ -2807,9 +2770,8 @@ fn block_range_at(
 /// buffer isn't exactly `width * height * 4` bytes or PNG encoding fails.
 ///
 /// `png` and `base64` are guaranteed present here: this is reached only via the
-/// `new-editor` editor paste path, and `new-editor` ⇒ `desktop`/`android`, both of
-/// which enable `dep:png`/`dep:base64`.
-#[cfg(all(feature = "new-editor", feature = "clipboard"))]
+/// editor paste path, gated on `desktop`, which enables `dep:png`/`dep:base64`.
+#[cfg(all(feature = "desktop", feature = "clipboard"))]
 fn image_rgba_to_png_data_url(width: usize, height: usize, rgba: &[u8]) -> Option<String> {
     use base64::Engine;
     if width == 0 || height == 0 || rgba.len() != width.checked_mul(height)?.checked_mul(4)? {
@@ -2827,7 +2789,7 @@ fn image_rgba_to_png_data_url(width: usize, height: usize, rgba: &[u8]) -> Optio
     Some(format!("data:image/png;base64,{b64}"))
 }
 
-#[cfg(all(test, feature = "new-editor", feature = "clipboard"))]
+#[cfg(all(test, feature = "desktop", feature = "clipboard"))]
 mod paste_image_tests {
     use super::image_rgba_to_png_data_url;
 
@@ -2857,7 +2819,7 @@ mod paste_image_tests {
     }
 }
 
-#[cfg(all(test, feature = "new-editor"))]
+#[cfg(all(test, feature = "desktop"))]
 mod editor_selection_tests {
     use super::{block_range_at, word_range_at};
     use rinch_editor_core::model::Fragment;

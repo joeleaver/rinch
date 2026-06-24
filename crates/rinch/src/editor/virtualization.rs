@@ -20,7 +20,7 @@ use rinch_dom::computed_style::OverflowValue;
 
 use super::handle::EditorHandle;
 use super::registry;
-use crate::app::contenteditable::ce_virtualization::CeVirtualWindow;
+use super::virtual_window::CeVirtualWindow;
 
 thread_local! {
     /// `(container id, window)` for each scroll-container editor being virtualized.

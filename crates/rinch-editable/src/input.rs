@@ -211,27 +211,13 @@ impl InputHandler {
 
             // Shortcuts
             Key::A if primary_mod => Some(EditCommand::SelectAll),
-            Key::B if primary_mod => Some(EditCommand::ToggleBold),
             Key::C if primary_mod => Some(EditCommand::Copy),
-            Key::E if primary_mod => Some(EditCommand::ToggleCode),
-            Key::I if primary_mod => Some(EditCommand::ToggleItalic),
-            Key::U if primary_mod => Some(EditCommand::ToggleUnderline),
-            Key::X if primary_mod && modifiers.shift => Some(EditCommand::ToggleStrikethrough),
             Key::X if primary_mod => Some(EditCommand::Cut),
             Key::Z if primary_mod && modifiers.shift => Some(EditCommand::Redo),
             Key::Z if primary_mod => Some(EditCommand::Undo),
             Key::Y if primary_mod => Some(EditCommand::Redo),
 
-            // Indent / Outdent
-            Key::Tab => {
-                if modifiers.shift {
-                    Some(EditCommand::Outdent)
-                } else {
-                    Some(EditCommand::Indent)
-                }
-            }
-
-            // Not handled
+            // Not handled (Tab is left for focus navigation at the app level)
             _ => None,
         }
     }

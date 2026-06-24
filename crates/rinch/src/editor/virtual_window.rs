@@ -1,4 +1,4 @@
-//! Block-level virtualization for contenteditable elements.
+//! Block-level virtualization for mounted editors.
 //!
 //! Keeps all DOM nodes in the tree but prevents off-screen blocks from doing
 //! expensive Parley text measurement by giving them a fixed estimated height
@@ -7,6 +7,10 @@
 //!
 //! Uses Taffy's actual layout positions (from the previous frame) to determine
 //! which blocks to materialize before layout runs. No parallel height model.
+//!
+//! Driven by [`super::virtualization`] (the per-editor two-phase hooks). The
+//! window models only the container's `data-pm-type` block children, excluding
+//! caret / selection / outline / placeholder overlay siblings.
 
 use rinch_dom::RinchDocument;
 
@@ -44,28 +48,19 @@ pub(crate) struct CeVirtualWindow {
     /// True after the first layout pass has cached heights.
     initialized: bool,
 
-    /// Block IDs that were just materialized by `materialize_for_navigation`
-    /// and must not be collapsed by the next `pre_layout_update`.
-    /// Cleared after each `pre_layout_update`.
-    pub pending_nav_blocks: Vec<usize>,
-
     /// When true, the window models only the container's `data-pm-type` children
-    /// (the new-editor's block elements), excluding overlay siblings (caret /
-    /// selection / node-outline / placeholder). The old contenteditable keeps
-    /// the original behavior (every direct child is a block) with `false`.
+    /// (the editor's block elements), excluding overlay siblings (caret /
+    /// selection / node-outline / placeholder). Editors always pass `true`; the
+    /// `false` path (every direct child is a block) is retained for tests.
     filter_blocks: bool,
 }
 
 impl CeVirtualWindow {
     /// Create a new VirtualWindow and collapse blocks outside the initial range.
-    /// Every direct child of `ce_node_id` is treated as a block (contenteditable).
-    pub fn new(ce_node_id: usize, doc: &mut RinchDocument) -> Self {
-        Self::new_filtered(ce_node_id, doc, false)
-    }
-
-    /// As [`Self::new`], but when `filter_blocks` is true the window models only
-    /// the container's `data-pm-type` children (new-editor blocks), so overlay
-    /// siblings are never collapsed or counted.
+    ///
+    /// When `filter_blocks` is true the window models only the container's
+    /// `data-pm-type` children (editor blocks), so overlay siblings are never
+    /// collapsed or counted.
     pub fn new_filtered(ce_node_id: usize, doc: &mut RinchDocument, filter_blocks: bool) -> Self {
         let children: Vec<usize> = block_children_of(doc, ce_node_id, filter_blocks);
         let block_count = children.len();
@@ -85,7 +80,6 @@ impl CeVirtualWindow {
             mat_end,
             active,
             initialized: false,
-            pending_nav_blocks: Vec::new(),
             filter_blocks,
         };
 
@@ -106,8 +100,8 @@ impl CeVirtualWindow {
     /// which blocks should be materialized, then materialize/collapse them
     /// so the upcoming layout pass includes the correct set.
     ///
-    /// `protected_blocks` are blocks that must not be collapsed (cursor block
-    /// + any blocks just materialized by materialize_for_navigation).
+    /// `protected_blocks` are blocks that must not be collapsed (e.g. the block
+    /// holding the caret).
     pub fn pre_layout_update(
         &mut self,
         doc: &mut RinchDocument,
@@ -345,9 +339,8 @@ impl CeVirtualWindow {
         self.active
     }
 
-    /// The number of blocks this window currently models (used by the new-editor
+    /// The number of blocks this window currently models (used by the editor
     /// driver to detect insert/delete and re-sync via `on_blocks_changed`).
-    #[cfg(feature = "new-editor")]
     pub fn block_count(&self) -> usize {
         self.measured_heights.len()
     }
@@ -360,9 +353,9 @@ impl CeVirtualWindow {
 }
 
 /// The block children of `ce_node_id`: every direct child when `filter_blocks` is
-/// false (contenteditable), or only the `data-pm-type` children when true (the
-/// new editor, where caret / selection / outline / placeholder overlays are
-/// container siblings with no `data-pm-type`).
+/// false, or only the `data-pm-type` children when true (the editor, where caret /
+/// selection / outline / placeholder overlays are container siblings with no
+/// `data-pm-type`).
 fn block_children_of(doc: &RinchDocument, ce_node_id: usize, filter_blocks: bool) -> Vec<usize> {
     let children = &doc.tree.nodes[ce_node_id].children;
     if !filter_blocks {

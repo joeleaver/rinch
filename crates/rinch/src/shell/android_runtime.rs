@@ -219,14 +219,11 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         // Drain IME committed text from InputConnection.
         //
         // This synthesizes per-character `KeyDown`s rather than a single
-        // `PlatformEvent::Ime(Commit)`. That is deliberate for now: the `Ime`
-        // routing (`handle_event`) intentionally ignores the legacy
-        // contenteditable (it is removed at M8), and `has_focused_contenteditable`
-        // cannot tell a legacy CE apart from the new editor — so emitting `Ime`
-        // here would drop committed text on a focused legacy CE. The new editor
-        // and `<input>` both accept these text `KeyDown`s already. Migrate this to
-        // `ImeEvent::Commit` (one edit, better undo grouping) at M8 once the legacy
-        // CE is gone.
+        // `PlatformEvent::Ime(Commit)`. The focused `<input>` accepts these text
+        // `KeyDown`s already (Android has no rich-text editor — that view is
+        // desktop-only). Switching to `ImeEvent::Commit` (one edit, better undo
+        // grouping) is now unblocked since the legacy CE is gone, but it changes
+        // Android text-input behavior and should be validated on a device first.
         for text in rinch_android::ime::drain_committed_text() {
             for ch in text.chars() {
                 let actions = app.handle_event(

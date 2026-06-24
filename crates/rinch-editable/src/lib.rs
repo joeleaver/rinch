@@ -7,14 +7,12 @@
 //! - [`EditCommand`] for the standard set of editing commands
 //! - [`EditableDocument`] trait for document implementations
 //! - [`StringDocument`] for single-line text
-//! - [`MultilineDocument`] for multi-line text
 //! - [`EditableState`] for orchestrating editing operations
 //! - [`InputHandler`] for mapping keyboard input to commands
 
 mod command;
 mod document;
 mod input;
-mod multiline_doc;
 mod operation;
 mod position;
 mod selection;
@@ -25,7 +23,6 @@ mod undo;
 pub use command::EditCommand;
 pub use document::EditableDocument;
 pub use input::{InputHandler, Key, Modifiers};
-pub use multiline_doc::MultilineDocument;
 pub use operation::TextOperation;
 pub use position::{Position, Range};
 pub use selection::Selection;

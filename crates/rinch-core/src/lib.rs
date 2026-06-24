@@ -1,6 +1,5 @@
 //! Core types and traits for rinch.
 
-pub mod ce;
 pub mod context;
 pub mod dom;
 pub mod element;
@@ -49,20 +48,18 @@ pub use context::{
 
 // Re-export event handling types
 pub use events::{
-    AncestorBounds, ClickContext, ContentEditableClickData, ContentEditableDragData, Drag,
-    DragContext, EventCallback, EventHandlerId, FileDropCallback, InputCallback, InputContext,
-    KeyEventData, ModifierState, MouseButton, SelectionAction, TextHitInfo,
-    check_and_clear_input_handled, clear_ce_click_interceptor, clear_ce_drag_interceptor,
-    clear_handlers, clear_keyboard_interceptor, clear_selection_callback, clear_selection_snapshot,
-    clear_selection_sync_callback, click_ancestors, dispatch_ce_click, dispatch_ce_drag,
-    dispatch_event, dispatch_file_drop_event, dispatch_input_event, dispatch_keyboard_event,
-    dispatch_selection, find_click_ancestor, finish_drag, fire_selection_sync, get_click_context,
-    get_input_context, get_modifier_state, get_saved_selection, is_drag_ghost_visible,
-    query_selection_ranges, register_file_drop_handler, register_handler, register_input_handler,
-    request_focus, request_selection_clear, reset_drag_ghost_visibility, restore_drag_ghost,
-    save_selection_snapshot, set_ce_click_interceptor, set_ce_drag_interceptor,
-    set_click_ancestors, set_click_context, set_input_context, set_keyboard_interceptor,
-    set_modifier_state, set_selection_callback, set_selection_sync_callback, suppress_drag_ghost,
+    AncestorBounds, ClickContext, Drag, DragContext, EventCallback, EventHandlerId,
+    FileDropCallback, InputCallback, InputContext, KeyEventData, ModifierState, MouseButton,
+    SelectionAction, TextHitInfo, check_and_clear_input_handled, clear_handlers,
+    clear_keyboard_interceptor, clear_selection_callback, clear_selection_snapshot,
+    clear_selection_sync_callback, click_ancestors, dispatch_event, dispatch_file_drop_event,
+    dispatch_input_event, dispatch_keyboard_event, dispatch_selection, find_click_ancestor,
+    finish_drag, fire_selection_sync, get_click_context, get_input_context, get_modifier_state,
+    get_saved_selection, is_drag_ghost_visible, query_selection_ranges, register_file_drop_handler,
+    register_handler, register_input_handler, request_focus, request_selection_clear,
+    reset_drag_ghost_visibility, restore_drag_ghost, save_selection_snapshot, set_click_ancestors,
+    set_click_context, set_input_context, set_keyboard_interceptor, set_modifier_state,
+    set_selection_callback, set_selection_sync_callback, suppress_drag_ghost,
     take_pending_focus_request, take_pending_selection_clear, update_drag,
 };
 
@@ -71,14 +68,6 @@ pub use dom::{
     DomDocument, DomUpdate, IntoNode, NodeHandle, NodeId, RenderScope, UpdateBatch,
     clear_render_scope, has_render_scope, reactive_component_dom, set_render_scope,
     try_with_render_scope, with_render_scope,
-};
-
-// Re-export ContentEditable API types
-pub use ce::{
-    CeEvent, CeEventCallback, CeEventDispatcher, CeSelection, ContentEditableApi, DomCursor,
-    ce_event_listener_count, clear_active_ce_api, clear_ce_event_listeners, dispatch_ce_event,
-    register_ce_api, set_active_ce_api, set_ce_api_factory, subscribe_ce_events, unregister_ce_api,
-    with_active_ce_api, with_ce_api_for_node,
 };
 
 use std::cell::RefCell;

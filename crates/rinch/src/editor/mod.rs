@@ -1,12 +1,10 @@
-//! The new desktop rich-text editor view (M5+), behind the `new-editor` feature.
+//! The desktop rich-text editor view (part of the `desktop` feature).
 //!
 //! [`RinchDomEditorView`] implements the renderer-agnostic
 //! [`EditorView`](rinch_editor_core::EditorView) seam from `rinch-editor-core`,
 //! projecting an immutable `EditorState { doc, selection }` onto the rinch-dom
 //! host tree. The model is the single source of truth; the host is *derived* from
-//! it on every transaction and never read back for content (design §6). This is
-//! the desktop replacement for the old contenteditable engine, which the M8 rip
-//! deletes.
+//! it on every transaction and never read back for content (design §6).
 //!
 //! [`EditorHandle`] is the imperative API for app/component code (design A7);
 //! [`mount_editor`] wires one into a [`RenderScope`] and registers it so the
@@ -20,6 +18,7 @@ mod handle;
 mod registry;
 mod styles;
 mod view;
+mod virtual_window;
 mod virtualization;
 
 pub use component::Editor;
