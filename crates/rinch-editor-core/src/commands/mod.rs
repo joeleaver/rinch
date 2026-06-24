@@ -507,6 +507,48 @@ pub fn insert_horizontal_rule() -> Command {
     })
 }
 
+/// Build a `table` node with `rows`×`cols` body cells, each holding one empty
+/// paragraph. `rows`/`cols` are clamped to a minimum of 1. `None` if the schema
+/// lacks table types.
+pub fn build_table(schema: &crate::Schema, rows: usize, cols: usize) -> Option<Node> {
+    let rows = rows.max(1);
+    let cols = cols.max(1);
+    let make_cell = || {
+        let para = schema
+            .create_node("paragraph", Attrs::new(), Fragment::empty())
+            .ok()?;
+        schema
+            .create_node("table_cell", Attrs::new(), Fragment::from_node(para))
+            .ok()
+    };
+    let mut row_nodes = Vec::with_capacity(rows);
+    for _ in 0..rows {
+        let mut cells = Vec::with_capacity(cols);
+        for _ in 0..cols {
+            cells.push(make_cell()?);
+        }
+        row_nodes.push(
+            schema
+                .create_node("table_row", Attrs::new(), Fragment::from_children(cells))
+                .ok()?,
+        );
+    }
+    schema
+        .create_node("table", Attrs::new(), Fragment::from_children(row_nodes))
+        .ok()
+}
+
+/// Insert a `rows`×`cols` table, replacing the selection. A builder (the dims are
+/// the caller's; the registered `insertTable` command uses a default size).
+pub fn insert_table(rows: usize, cols: usize) -> Command {
+    command_tr(move |state| {
+        let table = build_table(state.schema(), rows, cols)?;
+        let mut tr = state.tr();
+        tr.replace_selection_with(table).ok()?;
+        Some(tr)
+    })
+}
+
 /// Insert an image with `src`/`alt`, replacing the selection. A builder.
 pub fn insert_image(src: String, alt: String) -> Command {
     command_tr(move |state| {
@@ -821,6 +863,7 @@ impl Plugin for BaseCommandsPlugin {
             ("indent", sink_list_item("list_item")),
             ("insertHorizontalRule", insert_horizontal_rule()),
             ("insertHardBreak", insert_hard_break()),
+            ("insertTable", insert_table(3, 3)),
             ("splitBlock", split_block()),
             ("splitListItem", split_list_item("list_item")),
             ("enter", split_block_or_list_item()),
@@ -1404,6 +1447,49 @@ mod tests {
                 .iter()
                 .any(|n| n.type_name() == "horizontal_rule")
         );
+    }
+
+    #[test]
+    fn insert_table_creates_a_grid_and_undoes() {
+        let s = Rc::new(Schema::starter_kit());
+        let para = s
+            .branch("paragraph", Fragment::from_node(s.text("ab").unwrap()))
+            .unwrap();
+        let doc = s.branch("doc", Fragment::from_node(para)).unwrap();
+        let mut state = EditorState::create(s, doc, default_plugins());
+        // Insert at the doc-level gap after the paragraph (0[p 1 a 2 b 3]4).
+        state.selection = Selection::text(Pos(4), Pos(4));
+        let next = state.run("insertTable").expect("insertTable applies");
+
+        let table = next
+            .doc
+            .content()
+            .iter()
+            .find(|n| n.type_name() == "table")
+            .expect("table inserted");
+        assert_eq!(table.content().child_count(), 3, "3 rows");
+        for r in 0..3 {
+            let row = table.content().child(r);
+            assert_eq!(row.type_name(), "table_row");
+            assert_eq!(row.content().child_count(), 3, "3 cells per row");
+            for c in 0..3 {
+                let cell = row.content().child(c);
+                assert_eq!(cell.type_name(), "table_cell");
+                assert_eq!(cell.content().child(0).type_name(), "paragraph");
+            }
+        }
+
+        // Structural insert is a single undo step.
+        let undone = next.run("undo").expect("undo applies");
+        assert!(
+            undone
+                .doc
+                .content()
+                .iter()
+                .all(|n| n.type_name() != "table"),
+            "undo removed the table"
+        );
+        assert_eq!(all_text(&undone.doc), "ab");
     }
 
     #[test]

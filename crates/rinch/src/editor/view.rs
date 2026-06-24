@@ -301,6 +301,9 @@ impl RinchDomEditorView {
     /// element standing in for the `doc` node). `container` is owned by the caller
     /// and never replaced.
     pub fn new(container: NodeHandle, doc: DocRef, state: &EditorState) -> RinchDomEditorView {
+        // Ship the default editor stylesheet (light + dark) so the editor looks
+        // polished out of the box — injected once per document.
+        super::styles::ensure_default_styles(&doc);
         container.set_attribute("data-pm-type", state.doc.type_name());
         // The caret and selection overlays are positioned absolutely relative to the
         // container. A non-`auto` `z-index` makes the container a CSS stacking
@@ -470,6 +473,15 @@ impl RinchDomEditorView {
     /// The host id of the editor container (the `doc` node's element).
     pub(crate) fn container_id(&self) -> usize {
         self.root.dom.node_id().0
+    }
+
+    /// Switch the editor's color scheme by setting `data-pm-theme` on the container,
+    /// which the default stylesheet's dark rules key off of (see
+    /// [`styles`](super::styles)).
+    pub(crate) fn set_dark_mode(&self, dark: bool) {
+        self.root
+            .dom
+            .set_attribute("data-pm-theme", if dark { "dark" } else { "light" });
     }
 
     /// Resolve a model [`Pos`] to its host caret address `(textblock element id,

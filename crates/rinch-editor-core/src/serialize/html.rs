@@ -436,6 +436,15 @@ impl<'a> HtmlParser<'a> {
                 self.make_node(nt, Attrs::new(), Fragment::from_children(inner))
             }
             "horizontal_rule" => self.make_node(nt, Attrs::new(), Fragment::empty()),
+            "table" => {
+                let mut rows = self.parse_table_rows(children)?;
+                // `table > table_row+` must be non-empty: a table with no valid rows
+                // gets one empty single-cell row rather than an invalid node.
+                if rows.is_empty() {
+                    rows.push(self.empty_table_row()?);
+                }
+                self.make_node(nt, Attrs::new(), Fragment::from_children(rows))
+            }
             _ => {
                 // Any other textblock-ish block: treat content as inline.
                 let _ = attributes;
@@ -481,6 +490,112 @@ impl<'a> HtmlParser<'a> {
     fn empty_list_item(&self) -> Result<Node, EditorError> {
         let para = self.make_node(self.paragraph, Attrs::new(), Fragment::empty())?;
         self.make_node(self.list_item, Attrs::new(), Fragment::from_node(para))
+    }
+
+    // ── Tables ───────────────────────────────────────────────────────────────
+
+    /// A table node type by name, erroring if the schema lacks tables (only
+    /// reachable when `<table>` was a known block, so this is a schema-consistency
+    /// guard rather than an expected path).
+    fn table_node_type(&self, name: &str) -> Result<&'a NodeType, EditorError> {
+        self.schema
+            .node_type(name)
+            .ok_or_else(|| EditorError::HtmlParse(format!("schema has no '{name}' type")))
+    }
+
+    /// Parse a table's `<tr>` children into `table_row` nodes, transparently
+    /// descending through `<thead>`/`<tbody>`/`<tfoot>` wrappers. Rows with no
+    /// recognized cells are dropped.
+    fn parse_table_rows(&self, children: &[ParsedNode]) -> Result<Vec<Node>, EditorError> {
+        let row_type = self.table_node_type("table_row")?;
+        let mut rows = Vec::new();
+        for child in children {
+            let ParsedNode::Element {
+                tag,
+                children: tr_children,
+                ..
+            } = child
+            else {
+                continue;
+            };
+            if is_dropped(tag) {
+                continue;
+            }
+            if matches!(tag.as_str(), "thead" | "tbody" | "tfoot") {
+                rows.extend(self.parse_table_rows(tr_children)?);
+                continue;
+            }
+            if tag != "tr" {
+                continue;
+            }
+            let cells = self.parse_table_cells(tr_children)?;
+            if cells.is_empty() {
+                continue;
+            }
+            rows.push(self.make_node(row_type, Attrs::new(), Fragment::from_children(cells))?);
+        }
+        Ok(rows)
+    }
+
+    /// Parse a row's `<td>`/`<th>` children into cell nodes (block content, with
+    /// `colspan`/`rowspan` carried through). Non-cell children are dropped.
+    fn parse_table_cells(&self, children: &[ParsedNode]) -> Result<Vec<Node>, EditorError> {
+        let cell_type = self.table_node_type("table_cell")?;
+        let header_type = self.table_node_type("table_header_cell")?;
+        let mut cells = Vec::new();
+        for child in children {
+            let ParsedNode::Element {
+                tag,
+                children: cell_children,
+                attributes,
+            } = child
+            else {
+                continue;
+            };
+            let nt = match tag.as_str() {
+                "td" => cell_type,
+                "th" => header_type,
+                _ => continue,
+            };
+            let inner = self.ensure_block_plus(self.parse_blocks(cell_children)?)?;
+            cells.push(self.make_node(
+                nt,
+                self.cell_span_attrs(attributes),
+                Fragment::from_children(inner),
+            )?);
+        }
+        Ok(cells)
+    }
+
+    /// `colspan`/`rowspan` attrs parsed from a cell element (defaulting to 1, the
+    /// minimum) — the only table attributes that survive paste.
+    fn cell_span_attrs(&self, attributes: &[(String, String)]) -> Attrs {
+        let span = |name: &str| {
+            attr(attributes, name)
+                .and_then(|s| s.parse::<i64>().ok())
+                .filter(|&n| n >= 1)
+                .unwrap_or(1)
+        };
+        Attrs::from_iter([
+            ("colspan", AttrValue::Int(span("colspan"))),
+            ("rowspan", AttrValue::Int(span("rowspan"))),
+        ])
+    }
+
+    /// A `table_row` holding one empty (single-paragraph) `table_cell` — the
+    /// fallback for a `<table>` that parsed no usable rows.
+    fn empty_table_row(&self) -> Result<Node, EditorError> {
+        let para = self.make_node(self.paragraph, Attrs::new(), Fragment::empty())?;
+        let cell = self.make_node(
+            self.table_node_type("table_cell")?,
+            self.cell_span_attrs(&[]),
+            Fragment::from_node(para),
+        )?;
+        self.make_node(
+            self.table_node_type("table_row")?,
+            Attrs::new(),
+            Fragment::from_node(cell),
+        )
     }
 
     fn parse_inline_children(&self, children: &[ParsedNode]) -> Result<Fragment, EditorError> {
@@ -1167,6 +1282,84 @@ mod tests {
             slice.content.clone(),
         );
         node_to_html(&doc)
+    }
+
+    // ── Tables (M7a) ─────────────────────────────────────────────────────────
+
+    fn table_2x2(schema: &Schema) -> Node {
+        let cell = |t: &str| {
+            schema
+                .branch(
+                    "table_cell",
+                    Fragment::from_node(
+                        schema
+                            .branch("paragraph", Fragment::from_node(schema.text(t).unwrap()))
+                            .unwrap(),
+                    ),
+                )
+                .unwrap()
+        };
+        let row = |a: &str, b: &str| {
+            schema
+                .branch("table_row", Fragment::from_children(vec![cell(a), cell(b)]))
+                .unwrap()
+        };
+        schema
+            .branch(
+                "table",
+                Fragment::from_children(vec![row("a", "b"), row("c", "d")]),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn table_serializes_to_html() {
+        let schema = s();
+        assert_eq!(
+            node_to_html(&table_2x2(&schema)),
+            "<table><tr><td><p>a</p></td><td><p>b</p></td></tr>\
+             <tr><td><p>c</p></td><td><p>d</p></td></tr></table>"
+        );
+    }
+
+    #[test]
+    fn schema_accepts_a_wellformed_table() {
+        let schema = s();
+        let table = schema.node_type("table").unwrap();
+        assert!(table.content_match().matches(&["table_row", "table_row"]));
+        assert!(
+            !table.content_match().matches(&["table_cell"]),
+            "a cell may not sit directly in a table"
+        );
+        let row = schema.node_type("table_row").unwrap();
+        // The `cell` group accepts both cell kinds (and a mix) in one row.
+        assert!(
+            row.content_match()
+                .matches(&["table_header_cell", "table_cell"])
+        );
+        assert!(!row.content_match().matches(&[]), "a row needs >= 1 cell");
+        assert!(
+            schema
+                .node_type("table_cell")
+                .unwrap()
+                .content_match()
+                .matches(&["paragraph"])
+        );
+        // A table is a block, so it can be inserted wherever block content goes.
+        assert!(
+            schema
+                .node_type("doc")
+                .unwrap()
+                .content_match()
+                .accepts("table")
+        );
+    }
+
+    #[test]
+    fn table_round_trips_through_html() {
+        let schema = s();
+        let html = "<table><tr><td><p>a</p></td><td><p>b</p></td></tr></table>";
+        assert_eq!(reserialize_via_slice(&schema, html), html);
     }
 
     #[test]

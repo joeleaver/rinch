@@ -16,6 +16,7 @@ mod blink;
 mod component;
 mod handle;
 mod registry;
+mod styles;
 mod view;
 mod virtualization;
 

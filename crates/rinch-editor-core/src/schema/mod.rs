@@ -203,6 +203,55 @@ impl Schema {
             spec
         });
 
+        // === Tables ===
+        // A table is a block whose children are rows; each row holds cells; each
+        // cell holds block content. Cells (`table_cell`/`table_header_cell`) share
+        // a `cell` group so a row's content is simply `cell+` (the content-match
+        // grammar has no alternation, so a group stands in for `(td | th)+`).
+
+        // table > table_row+
+        builder = builder.node(
+            "table",
+            NodeSpec::builder("table")
+                .content("table_row+")
+                .group("block")
+                .parse_html(vec!["table".into()])
+                .build(),
+        );
+
+        // table_row > cell+
+        builder = builder.node(
+            "table_row",
+            NodeSpec::builder("table_row")
+                .content("cell+")
+                .parse_html(vec!["tr".into()])
+                .build(),
+        );
+
+        // table_cell > block+
+        builder = builder.node(
+            "table_cell",
+            NodeSpec::builder("table_cell")
+                .content("block+")
+                .group("cell")
+                .attr("colspan", AttrSpec::optional(AttrValue::Int(1)))
+                .attr("rowspan", AttrSpec::optional(AttrValue::Int(1)))
+                .parse_html(vec!["td".into()])
+                .build(),
+        );
+
+        // table_header_cell > block+
+        builder = builder.node(
+            "table_header_cell",
+            NodeSpec::builder("table_header_cell")
+                .content("block+")
+                .group("cell")
+                .attr("colspan", AttrSpec::optional(AttrValue::Int(1)))
+                .attr("rowspan", AttrSpec::optional(AttrValue::Int(1)))
+                .parse_html(vec!["th".into()])
+                .build(),
+        );
+
         // === Marks ===
 
         // bold

@@ -294,6 +294,15 @@ impl EditorHandle {
         });
     }
 
+    /// Switch the editor between the light (default) and dark color schemes of the
+    /// built-in stylesheet. A no-op before mount. The app should trigger a repaint
+    /// afterward (toolbar/keyboard handlers already do).
+    pub fn set_dark_mode(&self, dark: bool) {
+        if let Some(view) = self.inner.borrow().view.as_ref() {
+            view.set_dark_mode(dark);
+        }
+    }
+
     /// Replace the document with `doc`, resetting selection and history (a fresh
     /// load, not an undoable edit). The host diffs from the old content to the new,
     /// so unchanged leading blocks are reused. Works before focus.
