@@ -286,9 +286,22 @@ impl RinchDocument {
             .unwrap_or_default();
 
         for child_id in children {
-            if let Some(node) = self.tree.nodes.get(child_id) {
+            if let Some(node) = self.tree.nodes.get_mut(child_id) {
+                // Drop the cached match result so the descendant re-resolves against
+                // the new ancestor state (class / attribute).
                 *node.stylo_element_data.borrow_mut() = None;
+                // …and mark it paint-dirty: a re-resolved style that isn't repainted
+                // leaves the software renderer's dirty-region cache showing the stale
+                // pixels (e.g. a dark-mode toggle re-colored the tree but only the
+                // toggled node repainted). Layout is driven by the ancestor's LAYOUT
+                // flag (set by the caller), so STYLE | PAINT suffices here.
+                node.dirty.insert(DirtyFlags::STYLE | DirtyFlags::PAINT);
             }
+            self.tree.dirty_nodes.insert(child_id);
+            // Text color (and other inline properties) is baked into the cached
+            // Parley `text_layout`; drop it so the descendant's text re-lays with the
+            // re-resolved color rather than rendering the stale brush.
+            self.invalidate_ifc_for_node(child_id);
             self.invalidate_descendant_styles(child_id);
         }
     }

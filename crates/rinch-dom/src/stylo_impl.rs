@@ -826,6 +826,13 @@ impl<'a> TElement for RinchNode<'a> {
         static WBR: OnceLock<BorrowedLocalName> = OnceLock::new();
         static DEL: OnceLock<BorrowedLocalName> = OnceLock::new();
         static INS: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static TR: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static TD: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static TH: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static THEAD: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static TBODY: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static TFOOT: OnceLock<BorrowedLocalName> = OnceLock::new();
+        static CAPTION: OnceLock<BorrowedLocalName> = OnceLock::new();
 
         match self.node().tag() {
             Some("div") => DIV.get_or_init(|| web_atoms::local_name!("div")),
@@ -850,6 +857,13 @@ impl<'a> TElement for RinchNode<'a> {
             Some("img") => IMG.get_or_init(|| web_atoms::local_name!("img")),
             Some("form") => FORM.get_or_init(|| web_atoms::local_name!("form")),
             Some("table") => TABLE.get_or_init(|| web_atoms::local_name!("table")),
+            Some("tr") => TR.get_or_init(|| web_atoms::local_name!("tr")),
+            Some("td") => TD.get_or_init(|| web_atoms::local_name!("td")),
+            Some("th") => TH.get_or_init(|| web_atoms::local_name!("th")),
+            Some("thead") => THEAD.get_or_init(|| web_atoms::local_name!("thead")),
+            Some("tbody") => TBODY.get_or_init(|| web_atoms::local_name!("tbody")),
+            Some("tfoot") => TFOOT.get_or_init(|| web_atoms::local_name!("tfoot")),
+            Some("caption") => CAPTION.get_or_init(|| web_atoms::local_name!("caption")),
             Some("section") => SECTION.get_or_init(|| web_atoms::local_name!("section")),
             Some("article") => ARTICLE.get_or_init(|| web_atoms::local_name!("article")),
             Some("header") => HEADER.get_or_init(|| web_atoms::local_name!("header")),
@@ -892,7 +906,12 @@ impl<'a> TElement for RinchNode<'a> {
             Some("wbr") => WBR.get_or_init(|| web_atoms::local_name!("wbr")),
             Some("del") => DEL.get_or_init(|| web_atoms::local_name!("del")),
             Some("ins") => INS.get_or_init(|| web_atoms::local_name!("ins")),
-            _ => EMPTY.get_or_init(|| web_atoms::local_name!("")),
+            // Any other tag: intern it dynamically so type selectors still match it.
+            // The arms above are a lock-free fast path for common tags; without this
+            // fallback, an unlisted tag (a custom element, a less common HTML tag)
+            // would return the EMPTY atom and silently fail every tag selector.
+            Some(other) => intern_local_name(other),
+            None => EMPTY.get_or_init(|| web_atoms::local_name!("")),
         }
     }
 
@@ -943,4 +962,25 @@ impl<'a> TElement for RinchNode<'a> {
         // Return full damage for now - can optimize later
         style::selector_parser::RestyleDamage::all()
     }
+}
+
+/// Intern an arbitrary tag name into a `'static` [`BorrowedLocalName`] so stylo's
+/// type-selector matching recognizes it. The hardcoded fast-path arms in
+/// [`local_name`](RinchElement::local_name) cover the common tags lock-free; this
+/// handles the long tail (table cells `td`/`tr`/`th`, custom elements, …) by
+/// interning on first use and caching the leaked atom. The set of distinct tag
+/// names a document uses is small and finite, so the bounded leak is intentional.
+fn intern_local_name(tag: &str) -> &'static BorrowedLocalName {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static CACHE: OnceLock<Mutex<HashMap<String, &'static BorrowedLocalName>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(&name) = map.get(tag) {
+        return name;
+    }
+    let leaked: &'static BorrowedLocalName = Box::leak(Box::new(BorrowedLocalName::from(tag)));
+    map.insert(tag.to_string(), leaked);
+    leaked
 }
