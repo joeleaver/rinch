@@ -455,32 +455,27 @@ impl DomDocument for RinchDocument {
             self.request_image_load_for_node(node.0, value);
         }
 
-        // SVG elements: width/height HTML attributes affect layout sizing
-        let needs_style_recompute = name == "class"
-            || name == "style"
-            || ((name == "width" || name == "height" || name == "viewBox")
-                && self.tree.nodes[node.0].tag() == Some("svg"));
-
-        if needs_style_recompute {
-            // Invalidate cached Stylo data — deferred to resolve_layout()
-            *self.tree.nodes[node.0].stylo_element_data.borrow_mut() = None;
-            self.tree.style_roots.push(node.0);
-            self.tree.styles_dirty = true;
-            self.push_dirty_flags(
-                node.0,
-                DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT,
-            );
-
-            // Class changes can affect descendant selectors (e.g. `.parent--active .child`),
-            // so invalidate all descendants' cached Stylo data too. The style_root above
-            // ensures resolve_styles_recursive walks from this node down, and clearing
-            // descendants' caches forces Stylo to re-match selectors against the new class.
-            if name == "class" {
-                self.invalidate_descendant_styles(node.0);
-            }
-        } else {
-            self.push_dirty(node.0);
-        }
+        // Any attribute can participate in a selector — `[data-state=open]`,
+        // `[aria-selected]`, `[data-pm-theme=dark] h1`, attribute-based component
+        // styling, etc. — so an attribute change must re-resolve styles, not only
+        // for `class`/`style`. (Browsers use a per-attribute invalidation map keyed
+        // on which selectors reference the attribute; rinch-dom doesn't track that
+        // yet, so it conservatively restyles this node and its subtree. This is
+        // cheap in practice: most `set_attribute` calls happen at element creation
+        // when the node has no descendants, and post-render attribute changes are
+        // rare — the per-frame hot path uses `set_style`/`set_text`, which have
+        // their own paths.)
+        //
+        // Invalidate cached Stylo data (deferred to resolve_layout) and mark the
+        // subtree so descendant/sibling selectors re-match against the new value.
+        *self.tree.nodes[node.0].stylo_element_data.borrow_mut() = None;
+        self.tree.style_roots.push(node.0);
+        self.tree.styles_dirty = true;
+        self.push_dirty_flags(
+            node.0,
+            DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT,
+        );
+        self.invalidate_descendant_styles(node.0);
     }
 
     fn remove_attribute(&mut self, node: NodeId, name: &str) {

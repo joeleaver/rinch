@@ -1820,6 +1820,9 @@ impl RinchApp {
             KeyCode::Backspace => handle.command("deleteCharBackward"),
             KeyCode::Delete => handle.command("deleteCharForward"),
             KeyCode::Enter if !ctrl => handle.command("enter"),
+            // Tab / Shift-Tab move between table cells when the cursor is in a table;
+            // outside a table Tab does nothing here (no focus-traversal in the editor).
+            KeyCode::Tab => self.tab_cell(handle, shift),
             // Cursor movement / selection extension (Shift extends, Ctrl = word/doc).
             KeyCode::ArrowLeft => self.move_editor(
                 handle,
@@ -1899,6 +1902,35 @@ impl RinchApp {
                 }
             }
         }
+    }
+
+    /// Tab / Shift-Tab cell navigation: move the cursor to the start of the next
+    /// (or previous) table cell. A forward Tab in the last cell appends a row and
+    /// moves into it (ProseMirror behavior). Returns `false` when the cursor isn't in
+    /// a table — though the editor focus arbiter consumes the key either way (Tab
+    /// never moves focus mid-edit), so a non-table Tab is simply a no-op.
+    fn tab_cell(&mut self, handle: &crate::editor::EditorHandle, shift: bool) -> bool {
+        use rinch_editor_core::{Pos, Selection, tables};
+        let state = handle.state();
+        let head = state.selection.head();
+        let dir = if shift { -1 } else { 1 };
+        if let Some(target) = tables::next_cell_in_table(&state.doc, head, dir) {
+            handle.set_selection(Selection::near(&state.doc, Pos(target + 1), 1));
+            return true;
+        }
+        // Forward Tab at the last cell: append a row and move into its first cell.
+        if dir > 0
+            && tables::cell_at_pos(&state.doc, head).is_some()
+            && handle.command("addRowAfter")
+        {
+            let state = handle.state();
+            if let Some(target) = tables::next_cell_in_table(&state.doc, state.selection.head(), 1)
+            {
+                handle.set_selection(Selection::near(&state.doc, Pos(target + 1), 1));
+            }
+            return true;
+        }
+        false
     }
 
     /// Apply a cursor [`Motion`] to the focused editor: compute the new head and
@@ -2612,10 +2644,21 @@ impl RinchApp {
             return false;
         };
         if let Some(head) = handle.pos_at(tb, ifc) {
-            handle.set_selection(rinch_editor_core::Selection::text(
-                rinch_editor_core::Pos(anchor),
-                head,
-            ));
+            use rinch_editor_core::{Pos, Selection, tables};
+            let doc = handle.doc();
+            // A drag that spans two different cells of one table is a cell (rectangle)
+            // selection; otherwise it is an ordinary text selection.
+            let anchor_pos = Pos(anchor);
+            let sel = match (
+                tables::cell_at_pos(&doc, anchor_pos),
+                tables::cell_at_pos(&doc, head),
+            ) {
+                (Some(ac), Some(hc)) if ac != hc && tables::same_table(&doc, anchor_pos, head) => {
+                    Selection::cell(Pos(ac), Pos(hc))
+                }
+                _ => Selection::text(anchor_pos, head),
+            };
+            handle.set_selection(sel);
             self.refresh_editor_overlays();
             let (w, h) = (window_size.0 as f32, window_size.1 as f32);
             self.resolve_and_repaint(w, h);

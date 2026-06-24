@@ -203,6 +203,63 @@ impl Schema {
             spec
         });
 
+        // === Tables ===
+        // A table is a block whose children are rows; each row holds cells; each
+        // cell holds block content. Cells (`table_cell`/`table_header_cell`) share
+        // a `cell` group so a row's content is simply `cell+` (the content-match
+        // grammar has no alternation, so a group stands in for `(td | th)+`).
+
+        // table > table_row+
+        builder = builder.node(
+            "table",
+            NodeSpec::builder("table")
+                .content("table_row+")
+                .group("block")
+                .parse_html(vec!["table".into()])
+                .build(),
+        );
+
+        // table_row > cell*
+        // Zero-or-more (not `cell+`): a row can be **empty** when every one of its
+        // columns is covered by a `rowspan` cell from a row above (e.g. after merging
+        // a full-width rectangle of cells). This matches ProseMirror's row content.
+        builder = builder.node(
+            "table_row",
+            NodeSpec::builder("table_row")
+                .content("cell*")
+                .parse_html(vec!["tr".into()])
+                .build(),
+        );
+
+        // table_cell > block+
+        // Cells are `isolating`: edits (backspace/delete, lift/wrap, find-wrapping)
+        // never cross a cell boundary — a cell is its own editing context, just as
+        // in ProseMirror. `find_cut_before`/`find_cut_after` already honor this flag.
+        builder = builder.node(
+            "table_cell",
+            NodeSpec::builder("table_cell")
+                .content("block+")
+                .group("cell")
+                .isolating(true)
+                .attr("colspan", AttrSpec::optional(AttrValue::Int(1)))
+                .attr("rowspan", AttrSpec::optional(AttrValue::Int(1)))
+                .parse_html(vec!["td".into()])
+                .build(),
+        );
+
+        // table_header_cell > block+
+        builder = builder.node(
+            "table_header_cell",
+            NodeSpec::builder("table_header_cell")
+                .content("block+")
+                .group("cell")
+                .isolating(true)
+                .attr("colspan", AttrSpec::optional(AttrValue::Int(1)))
+                .attr("rowspan", AttrSpec::optional(AttrValue::Int(1)))
+                .parse_html(vec!["th".into()])
+                .build(),
+        );
+
         // === Marks ===
 
         // bold

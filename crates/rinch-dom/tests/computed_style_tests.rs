@@ -1,8 +1,8 @@
 use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::{
-    BackgroundValue, BorderStyleValue, CursorValue, OverflowValue, PointerEventsValue,
-    PositionValue, TextOverflowValue, VisibilityValue, WhiteSpaceValue,
+    BackgroundValue, BorderStyleValue, CursorValue, DisplayValue, OverflowValue,
+    PointerEventsValue, PositionValue, TextOverflowValue, VisibilityValue, WhiteSpaceValue,
 };
 
 // Helper to check approximate float equality
@@ -786,5 +786,40 @@ fn test_text_overflow_default_is_clip() {
         node.computed_style.text_overflow,
         TextOverflowValue::Clip,
         "default text_overflow should be Clip"
+    );
+}
+
+// ===== Tag-selector matching (stylo local_name regression) =====
+
+#[test]
+fn tag_selector_matches_table_cells_and_custom_tags() {
+    // Regression: stylo's `local_name()` returned an interned atom only for a
+    // hardcoded tag list; unlisted tags (`td`/`tr`/`th`, custom elements) fell back
+    // to the empty atom and silently failed every type selector. Now any tag is
+    // interned on demand, so bare tag selectors match it.
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    let style = doc.create_element("style");
+    let css = doc.create_text("td { display: flex; } widget-x { display: flex; }");
+    doc.append_child(style, css);
+    doc.append_child(body, style);
+
+    let td = doc.create_element("td");
+    doc.append_child(body, td);
+    let widget = doc.create_element("widget-x");
+    doc.append_child(body, widget);
+
+    doc.resolve_layout(800.0, 600.0);
+
+    assert_eq!(
+        doc.tree.get(td.0).unwrap().computed_style.display,
+        DisplayValue::Flex,
+        "a `td` tag selector now matches (was silently dropped)"
+    );
+    assert_eq!(
+        doc.tree.get(widget.0).unwrap().computed_style.display,
+        DisplayValue::Flex,
+        "an unlisted custom-element tag selector matches via dynamic interning"
     );
 }

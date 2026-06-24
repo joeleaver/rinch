@@ -21,6 +21,8 @@
 
 use std::rc::Rc;
 
+#[cfg(feature = "a11y")]
+pub mod a11y;
 pub mod command;
 pub mod commands;
 pub mod decoration;
@@ -35,6 +37,7 @@ pub mod schema;
 pub mod selection;
 pub mod serialize;
 pub mod state;
+pub mod tables;
 pub mod transform;
 pub mod view;
 
@@ -51,8 +54,9 @@ pub use pos::{Pos, ResolvedPos};
 pub use schema::{
     AttrSpec, MarkSet, MarkSpec, MarkSpecBuilder, NodeSpec, NodeSpecBuilder, Schema, SchemaBuilder,
 };
-pub use selection::{NodeSelection, Selection, TextSelection};
+pub use selection::{CellSelection, NodeSelection, Selection, TextSelection};
 pub use state::{EditorState, Transaction};
+pub use tables::{Axis, Rect, TableMap};
 pub use transform::{
     AddMarkStep, MapResult, Mapping, NodeRange, RemoveMarkStep, ReplaceAroundStep, ReplaceStep,
     SetDocAttrStep, SetNodeAttrStep, Step, StepError, StepMap, Transform, block_range,

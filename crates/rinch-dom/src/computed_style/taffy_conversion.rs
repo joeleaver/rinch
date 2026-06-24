@@ -123,6 +123,8 @@ impl ComputedStyle {
             grid_template_columns: self.grid_template_columns.clone(),
             grid_template_rows: self.grid_template_rows.clone(),
             grid_auto_flow: self.grid_auto_flow,
+            grid_column: self.grid_column.clone(),
+            grid_row: self.grid_row.clone(),
 
             ..Default::default()
         }

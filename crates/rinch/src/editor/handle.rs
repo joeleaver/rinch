@@ -271,6 +271,13 @@ impl EditorHandle {
     /// (ProseMirror `replaceSelection` for text input). Returns whether the
     /// document changed.
     pub fn insert_text(&self, text: &str) -> bool {
+        // Typing over a cell selection first clears the selected cells and collapses
+        // the cursor into the top-left cell (PM `deleteCellSelection`); the text then
+        // replaces the cells' content. Without this, the generic insert below would
+        // splice the cell selection's coarse range and corrupt the table.
+        if matches!(self.selection(), Selection::Cell(_)) {
+            self.command("deleteCellSelection");
+        }
         self.update(|state| {
             let mut tr = state.tr();
             if tr.insert_text(text).is_ok() {
@@ -292,6 +299,15 @@ impl EditorHandle {
             tr.set_selection(selection.clone());
             Some(tr)
         });
+    }
+
+    /// Switch the editor between the light (default) and dark color schemes of the
+    /// built-in stylesheet. A no-op before mount. The app should trigger a repaint
+    /// afterward (toolbar/keyboard handlers already do).
+    pub fn set_dark_mode(&self, dark: bool) {
+        if let Some(view) = self.inner.borrow().view.as_ref() {
+            view.set_dark_mode(dark);
+        }
     }
 
     /// Replace the document with `doc`, resetting selection and history (a fresh

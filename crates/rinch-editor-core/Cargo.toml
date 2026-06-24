@@ -13,6 +13,10 @@ regex = "1"
 # NO automerge / rinch-dom / winit ever.
 serde = { version = "1", optional = true, features = ["derive"] }
 pulldown-cmark = { version = "0.12", optional = true, default-features = false }
+# Accessibility tree types (M7b). `accesskit` core is pure (only depends on uuid),
+# wasm-clean, and carries NO platform/AT-SPI deps — those live in the desktop
+# `rinch` crate. Optional + feature-gated so it only compiles when a11y is wanted.
+accesskit = { version = "0.24", optional = true }
 
 [features]
 default = []
@@ -20,6 +24,8 @@ default = []
 serde = ["dep:serde"]
 # Markdown I/O via pulldown-cmark (serialize/markdown.rs); benign, wasm-clean.
 markdown = ["dep:pulldown-cmark"]
+# Accessibility tree derivation (a11y.rs): EditorState -> accesskit::TreeUpdate.
+a11y = ["dep:accesskit"]
 
 [dev-dependencies]
 pretty_assertions = "1"

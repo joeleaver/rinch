@@ -12,10 +12,13 @@
 //! [`mount_editor`] wires one into a [`RenderScope`] and registers it so the
 //! runtime can drive its caret pass and route input.
 
+#[cfg(feature = "a11y")]
+pub(crate) mod a11y;
 mod blink;
 mod component;
 mod handle;
 mod registry;
+mod styles;
 mod view;
 mod virtualization;
 
