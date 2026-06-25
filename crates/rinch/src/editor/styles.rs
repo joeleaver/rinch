@@ -35,6 +35,12 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
   padding: 16px 20px;
   border: 1px solid #d0d7de;
   border-radius: 10px;
+  /* The caret and selection overlays are children positioned absolutely relative
+     to the container, so it must be a positioned stacking context. These live here
+     (not as inline styles set by the view) so a consumer's `style:` prop on the
+     `Editor {}` component can't clobber them and silently break the overlays. */
+  position: relative;
+  z-index: 0;
 }
 
 /* ── Headings ──────────────────────────────────────────────────────────── */

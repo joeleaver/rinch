@@ -48,9 +48,15 @@ impl Mark {
     /// Add this mark to `set`, returning the new set. If an existing mark equals
     /// this one the set is returned unchanged; marks this one *excludes* are
     /// dropped; if an existing mark excludes this one the set is returned unchanged
-    /// (the mark cannot be added). Port of ProseMirror's `Mark.addToSet` (without
-    /// the rank-based ordering — the new mark is appended, which preserves set
-    /// membership; ordering is not load-bearing for our value model).
+    /// (the mark cannot be added). Port of ProseMirror's `Mark.addToSet`.
+    ///
+    /// The mark is inserted in **canonical mark-type-name order** (not appended), so a
+    /// node's mark `Vec` is deterministic regardless of the order marks were toggled.
+    /// `Node`/`Fragment` equality is mark-order-sensitive (a `Vec` compare), and the
+    /// collab projection reconstructs marks name-sorted — so without a canonical order
+    /// the same logical mark *set* would compare unequal and break the
+    /// `model ≡ project(model)` invariant. (A fuzz over random mark toggles caught
+    /// exactly this.)
     pub fn add_to_set(&self, set: &[Mark]) -> Vec<Mark> {
         let mut copy: Option<Vec<Mark>> = None;
         for (i, other) in set.iter().enumerate() {
@@ -70,7 +76,12 @@ impl Mark {
             }
         }
         let mut copy = copy.unwrap_or_else(|| set.to_vec());
-        copy.push(self.clone());
+        // Insert in canonical (type-name) order so the set stays sorted.
+        let at = copy
+            .iter()
+            .position(|m| m.type_name() > self.type_name())
+            .unwrap_or(copy.len());
+        copy.insert(at, self.clone());
         copy
     }
 
