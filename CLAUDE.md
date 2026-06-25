@@ -705,6 +705,46 @@ The editor ships its own default light/dark stylesheet (`editor/styles.rs`, inje
 | `crates/rinch/src/editor/virtual_window.rs` | Block virtualization for large docs |
 | `crates/rinch-editable/src/` | The separate single-line `<input>`/`<textarea>` engine (`EditCommand`, `InputHandler`) — unrelated to the rich editor |
 
+### Collaboration (optional, opt-in — M9)
+
+Real-time collaborative editing is a feature-gated adapter, **not** part of the model. The pure `rinch-editor-core` model stays renderer- and CRDT-agnostic; `rinch-editor-collab` projects it onto an **Automerge** CRDT so concurrent edits converge, then translates remote CRDT changes back into editor `Step`s. This crate is the **only** thing in the workspace that links `automerge`.
+
+It is gated purely behind the optional `collaboration` feature, so **default builds — desktop AND web — link zero automerge**. The adapter itself is pure model↔CRDT logic with no platform deps and is **wasm-compatible** (a wasm app supplies a randomness source for the transitive `automerge → uuid`, e.g. `uuid`/`getrandom` `js` feature), so a future Rust web editor view can reuse this *same* adapter rather than bridging to a separate JS CRDT.
+
+Enable with `features = ["collaboration"]` on the `rinch` facade (or depend on `rinch-editor-collab` directly).
+
+The design rests on one invariant — **`model ≡ project(model)`**: every local step is projected onto the CRDT, every remote CRDT change is rebuilt into the model. Convergence then follows from Automerge's own convergence.
+
+**Staged scope (design A22):** the first milestone covers **flat text-blocks + marks** (`paragraph`/`heading`/`code_block` with text + bold/italic/link/… marks). Anything outside that scope — a nested block (blockquote, list, table), an inline atom (`image`, `hard_break`) — is `CollabError::Unsupported`: the adapter **fails loud** rather than silently dropping a change (a silent drop would reintroduce the exact divergence class the editor rewrite killed).
+
+```rust
+use rinch_editor_collab::CollabSession;
+
+// One session per editor. Peer B joins from peer A's snapshot.
+let mut a = CollabSession::new(&state)?;            // project state.doc onto a fresh CRDT
+let mut b = CollabSession::from_bytes(&a.snapshot())?;
+
+// After the editor applies a local transaction, project before→after onto the CRDT:
+a.record_local(&old_state.doc, &new_state.doc)?;
+
+// Broadcast a delta (or use the full sync protocol: generate/integrate_sync_message):
+let delta = a.save_incremental();
+if let Some(next) = b.integrate_incremental(&b_state, &delta)? { b_state = next; }
+// `next` applies the remote change as a non-undoable `origin=remote` transaction.
+```
+
+`CollabPlugin` (key `"collab"`) folds collab bookkeeping (version + unconfirmed local steps) into `EditorState`; `rebase_steps(steps, &mapping)` is the ProseMirror rebase primitive (`Step::map`); `CollabDoc::patches_to_remote_ops` / `remote_ops_since` expose the surgical patch→`RemoteOp` translation. The session itself integrates via converged rebuild (`to_doc`), which is provably convergent.
+
+| File | Purpose |
+|------|---------|
+| `crates/rinch-editor-collab/src/projection.rs` | `CollabDoc` — the Automerge wire shape (`content: List<Block{type,attrs,text:Text}>`, marks over the Text), `from_doc`/`to_doc`, fail-loud validation |
+| `crates/rinch-editor-collab/src/project.rs` | Local: `project_change` — block-list diff (Rc-identity prefix/suffix, minimal text splice) |
+| `crates/rinch-editor-collab/src/remote.rs` | Remote: `patches_to_remote_ops` (salvaged shape) + `build_remote_transaction` (converged rebuild) |
+| `crates/rinch-editor-collab/src/session.rs` | `CollabSession` — the imperative model↔CRDT lifecycle |
+| `crates/rinch-editor-collab/src/sync.rs` | Salvaged Automerge sync transport (sync protocol + incremental broadcast) |
+| `crates/rinch-editor-collab/src/plugin.rs` | `CollabPlugin` + `CollabState` |
+| `crates/rinch-editor-collab/src/rebase.rs` | `rebase_steps` — local steps rebased over a remote mapping |
+
 ## Drag and Drop
 
 Rinch has two drag systems: **DOM drag attributes** for element-to-element DnD, and the **`Drag` builder** for pointer capture (sliders, panel dragging, resize handles).
