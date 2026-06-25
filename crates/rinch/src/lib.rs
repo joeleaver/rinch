@@ -172,6 +172,11 @@ pub mod prelude {
     #[cfg(feature = "desktop")]
     pub use crate::editor::{Editor, EditorHandle, create_editor};
 
+    // Collaborative editing (M9): the editor's collab error type + the thread-safe
+    // inbound route a network transport posts received deltas through.
+    #[cfg(feature = "collaboration")]
+    pub use crate::editor::{CollabError, collab_receive_for, post_remote_delta};
+
     // Desktop-only GPU types for render surfaces
     #[cfg(feature = "gpu")]
     pub use crate::render_surface::{GpuTextureRegistrar, TextureSource};

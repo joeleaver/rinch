@@ -27,6 +27,11 @@ use rinch_editor_core::{
     EditorState, EditorView, Node, Plugin, Pos, Schema, Selection, Transaction,
 };
 
+#[cfg(feature = "collaboration")]
+use rinch_editor_collab::{CollabError, CollabSession};
+
+#[cfg(feature = "collaboration")]
+use super::collab::CollabBridge;
 use super::view::RinchDomEditorView;
 
 /// The owned editor: its state, its desktop projection, and the schema/plugins
@@ -43,6 +48,58 @@ struct EditorCore {
     view: Option<RinchDomEditorView>,
     schema: Rc<Schema>,
     plugins: Vec<Rc<dyn Plugin>>,
+    /// The collaboration session + outbound delta sink, when this editor is
+    /// collaborating (design M9). `None` for a non-collaborative editor — the
+    /// common case — so the mutation path's collab hook is a cheap early return.
+    #[cfg(feature = "collaboration")]
+    collab: Option<CollabBridge>,
+}
+
+impl EditorCore {
+    /// Commit a freshly-applied `next` state over `prev`: store it, re-project the
+    /// host, and — when collaborating — record the local change onto the CRDT and
+    /// broadcast the resulting delta. The single landing spot for every **local**
+    /// edit (`update`/`command`/`load_doc`/`insert_image` all funnel through here).
+    ///
+    /// The remote integration path
+    /// ([`EditorHandle::collab_receive`]) deliberately does **not** go through this
+    /// helper: a remote change is already in the shared CRDT, so it must be stored
+    /// and re-projected *without* recording it back onto the CRDT (which would echo
+    /// it to peers and double-apply).
+    fn commit(&mut self, prev: EditorState, next: EditorState) {
+        self.state = next.clone();
+        if let Some(view) = self.view.as_mut() {
+            view.update_dom(&prev, &next);
+        }
+        #[cfg(feature = "collaboration")]
+        self.record_local(&prev, &next);
+    }
+
+    /// Project a just-applied local change onto the CRDT and broadcast the delta to
+    /// peers. A no-op when not collaborating, or for a selection-only edit (the
+    /// document is the same `Rc`, so there is nothing to project).
+    #[cfg(feature = "collaboration")]
+    fn record_local(&mut self, prev: &EditorState, next: &EditorState) {
+        let Some(bridge) = self.collab.as_mut() else {
+            return;
+        };
+        if prev.doc.same_ref(&next.doc) {
+            return;
+        }
+        match bridge.session.record_local(&prev.doc, &next.doc) {
+            Ok(()) => {
+                let delta = bridge.session.save_incremental();
+                if !delta.is_empty() {
+                    (bridge.outbound)(delta);
+                }
+            }
+            // Design A22 fail-loud: an edit outside the staged flat-text scope
+            // (a table, a nested block) cannot be projected. Surface it rather than
+            // silently diverging; apps should keep such edits out of a collab
+            // session for now.
+            Err(e) => bridge.last_error = Some(e),
+        }
+    }
 }
 
 /// A cloneable handle to an editor (design A7). Cheap to [`Clone`] (an `Rc`), so a
@@ -79,6 +136,8 @@ impl EditorHandle {
                 view: None,
                 schema,
                 plugins,
+                #[cfg(feature = "collaboration")]
+                collab: None,
             })),
         }
     }
@@ -102,6 +161,8 @@ impl EditorHandle {
                 view: Some(view),
                 schema,
                 plugins,
+                #[cfg(feature = "collaboration")]
+                collab: None,
             })),
         }
     }
@@ -141,10 +202,7 @@ impl EditorHandle {
         };
         let prev = core.state.clone();
         let next = core.state.apply(tr);
-        core.state = next.clone();
-        if let Some(view) = core.view.as_mut() {
-            view.update_dom(&prev, &next);
-        }
+        core.commit(prev, next);
         true
     }
 
@@ -156,10 +214,7 @@ impl EditorHandle {
             return false;
         };
         let prev = core.state.clone();
-        core.state = next.clone();
-        if let Some(view) = core.view.as_mut() {
-            view.update_dom(&prev, &next);
-        }
+        core.commit(prev, next);
         true
     }
 
@@ -317,10 +372,7 @@ impl EditorHandle {
         let mut core = self.inner.borrow_mut();
         let prev = core.state.clone();
         let next = EditorState::create(core.schema.clone(), doc, core.plugins.clone());
-        core.state = next.clone();
-        if let Some(view) = core.view.as_mut() {
-            view.update_dom(&prev, &next);
-        }
+        core.commit(prev, next);
     }
 
     /// Parse `html` (schema-whitelisted) and load it as the document. Returns
@@ -379,10 +431,7 @@ impl EditorHandle {
             return false;
         };
         let prev = core.state.clone();
-        core.state = next.clone();
-        if let Some(view) = core.view.as_mut() {
-            view.update_dom(&prev, &next);
-        }
+        core.commit(prev, next);
         true
     }
 
@@ -522,6 +571,146 @@ impl EditorHandle {
             tr.delete(from, to).ok()?;
             Some(tr)
         });
+    }
+}
+
+// ── Collaboration (design M9, the `collaboration` feature) ───────────────────
+//
+// One [`CollabSession`] per editor. A local edit is projected onto the CRDT and
+// broadcast (the `commit` → `record_local` path above); a peer's delta arrives via
+// `collab_receive`, which integrates it and re-projects without re-broadcasting. The
+// transport is the caller's concern: `outbound` carries bytes out, `collab_receive`
+// (or the thread-safe [`post_remote_delta`](super::post_remote_delta)) carries them
+// back in.
+#[cfg(feature = "collaboration")]
+impl EditorHandle {
+    /// Start collaborating as the **host** of a fresh session: project this
+    /// editor's current document onto a new CRDT and return a snapshot peers join
+    /// from (via [`Self::start_collaboration_guest`]). `outbound` carries each delta
+    /// produced by a *local* edit to peers; it is invoked on the main thread right
+    /// after the edit is projected. Returns the join snapshot, or a [`CollabError`]
+    /// if the current document is outside the staged flat-text scope (design A22).
+    ///
+    /// `outbound` runs while this handle is borrowed, so it must **not** synchronously
+    /// re-enter the *same* handle — forward the bytes to a transport/channel or to a
+    /// *peer* handle ([`Self::collab_receive`] is borrow-soft, but the mutation
+    /// methods are not).
+    pub fn start_collaboration_host(
+        &self,
+        outbound: impl Fn(Vec<u8>) + 'static,
+    ) -> Result<Vec<u8>, CollabError> {
+        let mut core = self.inner.borrow_mut();
+        let mut session = CollabSession::new(&core.state)?;
+        let snapshot = session.snapshot();
+        core.collab = Some(CollabBridge::new(session, Box::new(outbound)));
+        Ok(snapshot)
+    }
+
+    /// Join an existing collaboration as a **guest** from a host's `snapshot` (from
+    /// [`Self::start_collaboration_host`]): adopt the host's converged document and
+    /// attach a session whose CRDT already matches it, so both peers start from the
+    /// same content. `outbound` carries this guest's local deltas back to peers.
+    /// Returns a [`CollabError`] if the snapshot is unreadable or its content is
+    /// outside the staged scope.
+    pub fn start_collaboration_guest(
+        &self,
+        snapshot: &[u8],
+        outbound: impl Fn(Vec<u8>) + 'static,
+    ) -> Result<(), CollabError> {
+        let session = CollabSession::from_bytes(snapshot)?;
+        // Adopt the host's document first (no session attached yet, so this load is
+        // not recorded back onto the CRDT), then attach the matching session.
+        let schema = self.inner.borrow().schema.clone();
+        let doc = session.projected_doc(&schema)?;
+        self.load_doc(doc);
+        self.inner.borrow_mut().collab = Some(CollabBridge::new(session, Box::new(outbound)));
+        Ok(())
+    }
+
+    /// Integrate a remote `delta` from a peer: merge it into the CRDT, rebuild the
+    /// model from the *converged* CRDT, and re-project the host. The change is
+    /// applied as a non-undoable, remote-origin transaction and is **not**
+    /// re-broadcast (it is already in the shared CRDT). Returns whether the document
+    /// changed. A no-op (returns `false`) if this editor isn't collaborating.
+    ///
+    /// Must run on the main thread — a network transport should marshal received
+    /// bytes through [`post_remote_delta`](super::post_remote_delta) rather than
+    /// calling this directly off-thread.
+    ///
+    /// Uses `try_borrow_mut`, so the degenerate case of an `outbound` sink wired to
+    /// re-enter the *same* handle (instead of the peer / a channel) degrades to a
+    /// no-op `false` rather than panicking.
+    pub fn collab_receive(&self, delta: &[u8]) -> bool {
+        // `outbound` runs while a local edit holds this handle's borrow; a self-
+        // wired sink that calls back in here would otherwise hit an already-borrowed
+        // panic. Fail soft instead.
+        let Ok(mut core) = self.inner.try_borrow_mut() else {
+            return false;
+        };
+        if core.collab.is_none() {
+            return false;
+        }
+        let prev = core.state.clone();
+        // `prev` is an owned clone, so borrowing the bridge mutably here doesn't
+        // conflict with reading/writing `core.state`/`core.view` afterwards.
+        let result = core
+            .collab
+            .as_mut()
+            .unwrap()
+            .session
+            .integrate_incremental(&prev, delta);
+        match result {
+            Ok(Some(next)) => {
+                core.state = next.clone();
+                if let Some(view) = core.view.as_mut() {
+                    view.update_dom(&prev, &next);
+                }
+                true
+            }
+            Ok(None) => false,
+            Err(e) => {
+                if let Some(bridge) = core.collab.as_mut() {
+                    bridge.last_error = Some(e);
+                }
+                false
+            }
+        }
+    }
+
+    /// Whether this editor currently has a collaboration session attached.
+    pub fn is_collaborating(&self) -> bool {
+        self.inner.borrow().collab.is_some()
+    }
+
+    /// A snapshot of the shared document **as it stands now**, for a *late-joining*
+    /// peer: hand it to a new guest's [`Self::start_collaboration_guest`] so they
+    /// adopt the current content (not just the host's original document). `None`
+    /// when this editor isn't collaborating. Assumes a reliable, ordered delta
+    /// transport between existing peers — the full Automerge sync protocol (for
+    /// lossy / out-of-order reconciliation) is not yet exposed through the handle.
+    pub fn collab_snapshot(&self) -> Option<Vec<u8>> {
+        self.inner
+            .borrow_mut()
+            .collab
+            .as_mut()
+            .map(|b| b.session.snapshot())
+    }
+
+    /// Detach the collaboration session (stop projecting and broadcasting). The
+    /// document is unchanged; subsequent edits are local-only again.
+    pub fn stop_collaboration(&self) {
+        self.inner.borrow_mut().collab = None;
+    }
+
+    /// Take (and clear) the most recent collaboration error — e.g. an edit outside
+    /// the staged flat-text scope that could not be projected (design A22). `None`
+    /// when not collaborating or no error is pending.
+    pub fn collab_take_error(&self) -> Option<CollabError> {
+        self.inner
+            .borrow_mut()
+            .collab
+            .as_mut()
+            .and_then(|b| b.last_error.take())
     }
 }
 
@@ -1024,5 +1213,274 @@ mod tests {
             doc.borrow().text_content(blocks[0]).as_deref(),
             Some("before mount")
         );
+    }
+
+    // ── Collaboration (design M9, the `collaboration` feature) ───────────────
+    //
+    // Two real `EditorHandle`s (each over its own mock host) wired into a single
+    // in-process loopback — the exact seam the two-pane demo uses. The convergence
+    // assertions exercise the whole wiring: a local edit's `record_local` →
+    // `save_incremental` → `outbound`, and the peer's `collab_receive` →
+    // `integrate_incremental` → re-projection.
+    #[cfg(feature = "collaboration")]
+    mod collab {
+        use super::*;
+        use std::cell::Cell;
+
+        /// The concatenated text of every block in a handle's document, blocks
+        /// joined by `\n` — a cheap, layout-free convergence probe.
+        fn doc_text(h: &EditorHandle) -> String {
+            fn collect(n: &Node, out: &mut String) {
+                if let Some(t) = n.text() {
+                    out.push_str(t);
+                    return;
+                }
+                for i in 0..n.child_count() {
+                    collect(n.child(i), out);
+                }
+            }
+            let doc = h.doc();
+            let mut s = String::new();
+            for i in 0..doc.child_count() {
+                if i > 0 {
+                    s.push('\n');
+                }
+                collect(doc.child(i), &mut s);
+            }
+            s
+        }
+
+        /// Wire `host` and `guest` into a synchronous in-process loopback: each
+        /// side's outbound delta is delivered straight to the other's
+        /// `collab_receive`. Returns after the guest has adopted the host's
+        /// document.
+        fn loopback(host: &EditorHandle, guest: &EditorHandle) {
+            let guest_in = guest.clone();
+            let snapshot = host
+                .start_collaboration_host(move |delta| {
+                    guest_in.collab_receive(&delta);
+                })
+                .expect("host projects its document");
+            let host_in = host.clone();
+            guest
+                .start_collaboration_guest(&snapshot, move |delta| {
+                    host_in.collab_receive(&delta);
+                })
+                .expect("guest joins from the snapshot");
+        }
+
+        #[test]
+        fn guest_adopts_host_document_on_join() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "shared title")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "stale local")])).handle;
+            loopback(&host, &guest);
+            assert_eq!(
+                doc_text(&guest),
+                "shared title",
+                "the guest adopts the host's converged document"
+            );
+            assert!(host.is_collaborating() && guest.is_collaborating());
+        }
+
+        #[test]
+        fn local_edits_converge_both_directions() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "hello")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            loopback(&host, &guest);
+
+            // Type in the host → the guest converges.
+            host.set_selection(Selection::cursor(Pos(6))); // end of "hello"
+            assert!(host.insert_text(" world"));
+            assert_eq!(doc_text(&host), "hello world");
+            assert_eq!(
+                doc_text(&guest),
+                "hello world",
+                "host edit reached the guest"
+            );
+
+            // Type in the guest → the host converges.
+            guest.set_selection(Selection::cursor(Pos(1))); // start of the block
+            assert!(guest.insert_text("X"));
+            assert_eq!(doc_text(&guest), "Xhello world");
+            assert_eq!(
+                doc_text(&host),
+                "Xhello world",
+                "guest edit reached the host"
+            );
+        }
+
+        #[test]
+        fn marks_converge() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "abcd")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            loopback(&host, &guest);
+
+            host.set_selection(Selection::text(Pos(1), Pos(5)));
+            assert!(host.command("toggleBold"));
+            // The guest's projected document carries the bold mark on the run.
+            let guest_doc = guest.doc();
+            let run = guest_doc.child(0).child(0);
+            assert_eq!(run.text(), Some("abcd"));
+            assert!(
+                !run.marks().is_empty(),
+                "the bold mark projected through the CRDT to the guest"
+            );
+        }
+
+        #[test]
+        fn concurrent_edits_converge() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "hello")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+
+            // Buffer deltas instead of delivering them, so both peers edit against
+            // the same base — a genuine concurrent edit.
+            let to_guest: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+            let to_host: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+            let tg = to_guest.clone();
+            let snapshot = host
+                .start_collaboration_host(move |d| tg.borrow_mut().push(d))
+                .unwrap();
+            let th = to_host.clone();
+            guest
+                .start_collaboration_guest(&snapshot, move |d| th.borrow_mut().push(d))
+                .unwrap();
+
+            // Concurrent: host appends, guest prepends — neither has seen the other.
+            host.set_selection(Selection::cursor(Pos(6)));
+            assert!(host.insert_text("H"));
+            guest.set_selection(Selection::cursor(Pos(1)));
+            assert!(guest.insert_text("G"));
+
+            // Exchange both deltas.
+            for d in to_guest.borrow_mut().drain(..) {
+                guest.collab_receive(&d);
+            }
+            for d in to_host.borrow_mut().drain(..) {
+                host.collab_receive(&d);
+            }
+
+            // Automerge convergence: identical documents on both peers.
+            let h = doc_text(&host);
+            let g = doc_text(&guest);
+            assert_eq!(h, g, "concurrent edits converge to one document");
+            assert!(
+                h.contains('H') && h.contains('G'),
+                "both edits survived: {h}"
+            );
+        }
+
+        #[test]
+        fn integrating_a_remote_delta_does_not_echo() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "ab")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+
+            let guest_in = guest.clone();
+            let snapshot = host
+                .start_collaboration_host(move |d| {
+                    guest_in.collab_receive(&d);
+                })
+                .unwrap();
+            // Count the guest's outbound emissions: integrating the host's delta
+            // must NOT produce one (no echo / infinite loop).
+            let guest_emits = Rc::new(Cell::new(0usize));
+            let ge = guest_emits.clone();
+            guest
+                .start_collaboration_guest(&snapshot, move |_d| ge.set(ge.get() + 1))
+                .unwrap();
+
+            host.set_selection(Selection::cursor(Pos(3)));
+            assert!(host.insert_text("c"));
+            assert_eq!(doc_text(&guest), "abc", "host edit applied on the guest");
+            assert_eq!(
+                guest_emits.get(),
+                0,
+                "integrating a remote delta must not broadcast one back"
+            );
+        }
+
+        #[test]
+        fn selection_only_change_broadcasts_nothing() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "abc")])).handle;
+            let emits = Rc::new(Cell::new(0usize));
+            let e = emits.clone();
+            host.start_collaboration_host(move |_d| e.set(e.get() + 1))
+                .unwrap();
+
+            host.set_selection(Selection::cursor(Pos(2)));
+            assert_eq!(emits.get(), 0, "moving the cursor broadcasts nothing");
+            assert!(host.insert_text("X"));
+            assert_eq!(emits.get(), 1, "a text edit broadcasts exactly one delta");
+        }
+
+        #[test]
+        fn stop_collaboration_silences_broadcasts() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "ab")])).handle;
+            let emits = Rc::new(Cell::new(0usize));
+            let e = emits.clone();
+            host.start_collaboration_host(move |_d| e.set(e.get() + 1))
+                .unwrap();
+            assert!(host.is_collaborating());
+
+            host.stop_collaboration();
+            assert!(!host.is_collaborating());
+            host.set_selection(Selection::cursor(Pos(3)));
+            assert!(host.insert_text("c"));
+            assert_eq!(emits.get(), 0, "a detached editor broadcasts nothing");
+        }
+
+        #[test]
+        fn late_joiner_adopts_current_content_via_snapshot() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "hello")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            loopback(&host, &guest);
+
+            // Edit AFTER the original join snapshot.
+            host.set_selection(Selection::cursor(Pos(6)));
+            assert!(host.insert_text(" world"));
+            assert_eq!(doc_text(&guest), "hello world");
+
+            // A third peer joins late from the host's CURRENT snapshot — it must
+            // adopt the edited content, not the host's original document.
+            let late = mount(doc_node(&s, vec![para(&s, "stale")])).handle;
+            let snapshot = host.collab_snapshot().expect("host is collaborating");
+            late.start_collaboration_guest(&snapshot, |_d| {}).unwrap();
+            assert_eq!(
+                doc_text(&late),
+                "hello world",
+                "a late joiner adopts the current shared document"
+            );
+        }
+
+        #[test]
+        fn unsupported_local_edit_fails_loud_without_touching_the_peer() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "ok")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            loopback(&host, &guest);
+            assert_eq!(doc_text(&guest), "ok");
+
+            // A bullet list is a nested block — outside the staged flat-text scope.
+            assert!(host.load_html("<ul><li><p>item</p></li></ul>"));
+
+            // The host's model changed locally, but the projection failed loud (the
+            // CRDT was left untouched, all-or-nothing) so the peer received nothing.
+            assert!(
+                host.collab_take_error().is_some(),
+                "an unsupported edit surfaces a fail-loud error"
+            );
+            assert_eq!(
+                doc_text(&guest),
+                "ok",
+                "the peer is untouched by an unsupported local edit (no partial sync)"
+            );
+        }
     }
 }

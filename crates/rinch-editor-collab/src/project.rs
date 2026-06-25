@@ -62,23 +62,38 @@ impl CollabDoc {
         let post_mid = an - prefix - suffix; // changed post blocks
         let common = pre_mid.min(post_mid);
 
-        // Reconcile the overlapping changed blocks in place (keeps identity).
-        for k in 0..common {
-            let target = read_block(after.child(prefix + k))?;
-            self.reconcile_block(prefix + k, &target)?;
+        // Validation pre-pass (design A22 fail-loud must be all-or-nothing): read and
+        // validate EVERY block this change will touch — the `after` blocks to
+        // reconcile/insert, and the `before` blocks to delete — BEFORE issuing any
+        // CRDT write. A mixed flat/non-flat change (e.g. pasting or loading a list
+        // while collaborating) then leaves the CRDT *exactly* at the prior converged
+        // state and returns `Unsupported`, instead of partially mutating it and
+        // wedging the session in a half-projected state.
+        let mut targets = Vec::with_capacity(post_mid);
+        for k in 0..post_mid {
+            targets.push(read_block(after.child(prefix + k))?);
         }
-        // Insert the extra post blocks (e.g. the tail of a split).
-        for k in common..post_mid {
-            let target = read_block(after.child(prefix + k))?;
-            self.insert_block(prefix + k, &target)?;
+        for idx in prefix + common..prefix + pre_mid {
+            // Validate (and discard) each block being deleted — fail loud if non-flat.
+            read_block(before.child(idx))?;
+        }
+
+        // Writes — past here only an automerge I/O error can fail, not a content one.
+        // Reconcile the overlapping changed blocks in place (keeps identity).
+        for (k, target) in targets.iter().take(common).enumerate() {
+            self.reconcile_block(prefix + k, target)?;
+        }
+        // Insert the extra post blocks (e.g. the tail of a split). `targets` has
+        // exactly `post_mid` entries, so skipping `common` yields indices
+        // `common..post_mid`.
+        for (k, target) in targets.iter().enumerate().skip(common) {
+            self.insert_block(prefix + k, target)?;
         }
         // Delete the extra pre blocks (e.g. a join, or a block deletion). `common` is
         // the min, so at most one of insert/delete runs; when this runs the CRDT
         // indices still match `before`'s. Delete from the end so earlier indices stay
         // valid.
         for idx in (prefix + common..prefix + pre_mid).rev() {
-            // Validate the deleted block was itself flat (fail loud, not silent).
-            let _ = read_block(before.child(idx))?;
             self.delete_block(idx)?;
         }
         Ok(())

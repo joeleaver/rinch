@@ -143,8 +143,10 @@ image-network = ["dep:ureq"]
 a11y = ["desktop", "rinch-editor-core/a11y", "dep:accesskit", "dep:accesskit_unix"]
 # Derive serde on the editor's durable wire shape (DocNode / BlockData).
 serde = ["rinch-editor-core/serde"]
-# Collaborative editing (M9): the Step↔Automerge adapter (rinch-editor-collab). The
-# ONLY thing in the workspace that links automerge — opt-in, so it stays out of every
-# default build (desktop AND web). The adapter is wasm-compatible, so a future Rust web
-# view can reuse it (the web app supplies a wasm randomness source for automerge→uuid).
-collaboration = ["dep:rinch-editor-collab"]
+# Collaborative editing (M9): the Step↔Automerge adapter (rinch-editor-collab) wired
+# into the desktop editor's `EditorHandle`. The ONLY thing in the workspace that links
+# automerge — opt-in, so it stays out of every default build (desktop AND web). Implies
+# `desktop` because the wiring lives in the desktop editor; the adapter crate itself is
+# desktop-independent and wasm-compatible, so a future Rust web view can reuse it (the
+# web app supplies a wasm randomness source for automerge→uuid).
+collaboration = ["desktop", "dep:rinch-editor-collab"]

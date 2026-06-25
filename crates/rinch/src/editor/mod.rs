@@ -13,6 +13,8 @@
 #[cfg(feature = "a11y")]
 pub(crate) mod a11y;
 mod blink;
+#[cfg(feature = "collaboration")]
+mod collab;
 mod component;
 mod handle;
 mod registry;
@@ -26,6 +28,12 @@ pub use handle::EditorHandle;
 pub use registry::{
     begin_drag, drag_anchor, editor_for, end_drag, unregister_editor, update_all_carets,
 };
+#[cfg(feature = "collaboration")]
+pub use registry::{collab_receive_for, post_remote_delta};
+/// The collaboration error type (re-exported from `rinch-editor-collab`) returned by
+/// the [`EditorHandle`] collaboration methods.
+#[cfg(feature = "collaboration")]
+pub use rinch_editor_collab::CollabError;
 pub use view::RinchDomEditorView;
 pub(crate) use virtualization::{
     post_layout as virtualization_post_layout, pre_layout as virtualization_pre_layout,
