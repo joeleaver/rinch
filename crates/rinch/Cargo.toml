@@ -48,6 +48,13 @@ rinch-debug = { path = "../rinch-debug", optional = true }
 # ProseMirror-style editor core. Pulled in by the `desktop` feature (the desktop
 # rich-text editor view lives in this crate's `editor` module).
 rinch-editor-core = { workspace = true, optional = true }
+# Collaborative editing adapter (M9) — the only first-party automerge dependency.
+# Gated purely behind the optional `collaboration` feature, so default builds (desktop
+# AND web) link zero automerge. The crate is wasm-compatible (its only non-wasm-clean
+# transitive dep, automerge→uuid, just needs the app to supply a randomness source via
+# `uuid`/`getrandom` `js` feature), so a future Rust web editor view can reuse the
+# SAME adapter rather than bridging to a separate JS CRDT.
+rinch-editor-collab = { workspace = true, optional = true }
 rinch-video = { workspace = true, optional = true }
 ureq = { version = "3", optional = true }
 memory-stats = { version = "1.2", optional = true }
@@ -136,3 +143,8 @@ image-network = ["dep:ureq"]
 a11y = ["desktop", "rinch-editor-core/a11y", "dep:accesskit", "dep:accesskit_unix"]
 # Derive serde on the editor's durable wire shape (DocNode / BlockData).
 serde = ["rinch-editor-core/serde"]
+# Collaborative editing (M9): the Step↔Automerge adapter (rinch-editor-collab). The
+# ONLY thing in the workspace that links automerge — opt-in, so it stays out of every
+# default build (desktop AND web). The adapter is wasm-compatible, so a future Rust web
+# view can reuse it (the web app supplies a wasm randomness source for automerge→uuid).
+collaboration = ["dep:rinch-editor-collab"]

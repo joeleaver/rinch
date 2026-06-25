@@ -1,0 +1,21 @@
+[package]
+name = "rinch-editor-collab"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Optional collaborative-editing adapter for the Rinch editor: projects the pure rinch-editor-core model onto an Automerge CRDT, translates remote patches back into Steps, and salvages the Automerge sync transport. The ONLY first-party home of automerge in the workspace. Opt-in (off by default); wasm-compatible so the desktop and a future web view can share one adapter."
+
+[dependencies]
+rinch-editor-core = { workspace = true }
+# The ONLY first-party automerge dependency in the workspace (design §2). Pinned to
+# the line the salvaged sync transport was written against. Pure model↔CRDT logic with
+# no platform deps — wasm-compatible (a wasm app supplies a randomness source for the
+# transitive automerge→uuid), so a future Rust web editor view can reuse this adapter.
+automerge = "0.5"
+# Compact, deterministic encoding of mark/attr values into the CRDT (mark values are
+# a single scalar; attr-bearing marks ride as a JSON object string). Non-wasm.
+serde_json = "1"
+thiserror.workspace = true
+
+[dev-dependencies]
+pretty_assertions = "1"
