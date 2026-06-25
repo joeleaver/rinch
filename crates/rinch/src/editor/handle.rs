@@ -19,7 +19,7 @@ use std::rc::{Rc, Weak};
 
 use rinch_core::dom::{DomDocument, NodeHandle, RenderScope};
 use rinch_editor_core::commands::{current_block_type, in_node_type, is_mark_active};
-use rinch_editor_core::model::Slice;
+use rinch_editor_core::model::{Fragment, Slice};
 use rinch_editor_core::serialize::{
     slice_from_html, slice_from_text, slice_to_html, slice_to_text,
 };
@@ -100,6 +100,15 @@ impl EditorCore {
             Err(e) => bridge.last_error = Some(e),
         }
     }
+}
+
+/// A minimal valid document — `doc(paragraph())` — used to keep the editor in a
+/// renderable, editable state when a load would otherwise yield a block-less doc.
+/// `None` only if the schema lacks `paragraph`/`doc` (not the case for the starter
+/// kit), in which case the caller keeps the original doc.
+fn empty_paragraph_doc(schema: &Schema) -> Option<Node> {
+    let para = schema.branch("paragraph", Fragment::empty()).ok()?;
+    schema.branch("doc", Fragment::from_node(para)).ok()
 }
 
 /// A cloneable handle to an editor (design A7). Cheap to [`Clone`] (an `Rc`), so a
@@ -368,15 +377,26 @@ impl EditorHandle {
     /// Replace the document with `doc`, resetting selection and history (a fresh
     /// load, not an undoable edit). The host diffs from the old content to the new,
     /// so unchanged leading blocks are reused. Works before focus.
+    ///
+    /// A **block-less** `doc` (zero children — e.g. from parsing empty/whitespace
+    /// HTML, since `Schema::branch` does not fill required content) is repaired to a
+    /// single empty paragraph, so the editor is never left with no textblock to
+    /// render or place a caret in.
     pub fn load_doc(&self, doc: Node) {
         let mut core = self.inner.borrow_mut();
+        let doc = if doc.child_count() == 0 {
+            empty_paragraph_doc(&core.schema).unwrap_or(doc)
+        } else {
+            doc
+        };
         let prev = core.state.clone();
         let next = EditorState::create(core.schema.clone(), doc, core.plugins.clone());
         core.commit(prev, next);
     }
 
-    /// Parse `html` (schema-whitelisted) and load it as the document. Returns
-    /// `false` if it does not parse into valid top-level document content.
+    /// Parse `html` (schema-whitelisted) and load it as the document. Empty or
+    /// whitespace-only `html` loads a single empty paragraph (via [`Self::load_doc`]),
+    /// not a block-less doc. Returns `false` only if `html` fails to parse at all.
     pub fn load_html(&self, html: &str) -> bool {
         let schema = self.inner.borrow().schema.clone();
         let Ok(slice) = slice_from_html(&schema, html) else {
@@ -846,6 +866,46 @@ mod tests {
             .iter()
             .any(|&c| tag(&h, c).as_deref() == Some("strong"));
         assert!(has_strong, "bold inline survived the load");
+    }
+
+    #[test]
+    fn load_html_empty_keeps_one_empty_paragraph() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "old")]));
+        // Empty HTML must NOT leave a block-less doc (no textblock to render or
+        // place a caret in) — it loads a single empty paragraph instead.
+        assert!(h.handle.load_html(""));
+        let doc = h.handle.doc();
+        assert_eq!(doc.child_count(), 1, "one block, not zero");
+        assert_eq!(doc.child(0).type_name(), "paragraph");
+        assert_eq!(doc.child(0).child_count(), 0, "the paragraph is empty");
+
+        // The host re-projected to exactly one (empty) <p>.
+        let blocks = children(&h, h.container_id);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(tag(&h, blocks[0]).as_deref(), Some("p"));
+
+        // And the cursor can be placed in it (a block-less doc would have no valid
+        // position here).
+        h.handle.set_selection(Selection::cursor(Pos(1)));
+        assert!(h.handle.insert_text("x"));
+        assert_eq!(
+            text(&h, children(&h, h.container_id)[0]).as_deref(),
+            Some("x")
+        );
+    }
+
+    #[test]
+    fn load_doc_blockless_is_repaired() {
+        // A directly-constructed block-less doc (Schema::branch does not fill
+        // required content) is repaired to one empty paragraph by load_doc.
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "old")]));
+        let blockless = s.branch("doc", Fragment::empty()).unwrap();
+        assert_eq!(blockless.child_count(), 0);
+        h.handle.load_doc(blockless);
+        assert_eq!(h.handle.doc().child_count(), 1);
+        assert_eq!(h.handle.doc().child(0).type_name(), "paragraph");
     }
 
     #[test]
@@ -1481,6 +1541,117 @@ mod tests {
                 "ok",
                 "the peer is untouched by an unsupported local edit (no partial sync)"
             );
+        }
+
+        /// Seeded fuzz over the real `EditorHandle` wiring: two handles relay random
+        /// edits (via the `outbound` sink) and integrate them (`collab_receive`) in
+        /// interleaved order, then must converge to the *identical* document
+        /// (structural — marks included, which is what the mark-order fix guarantees).
+        #[test]
+        fn fuzz_handle_wiring_converges() {
+            struct Rng(u64);
+            impl Rng {
+                fn new(s: u64) -> Rng {
+                    Rng(s ^ 0x9E37_79B9_7F4A_7C15)
+                }
+                fn next(&mut self) -> u64 {
+                    let mut x = self.0;
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    self.0 = x;
+                    x
+                }
+                fn below(&mut self, n: usize) -> usize {
+                    if n == 0 {
+                        0
+                    } else {
+                        (self.next() % n as u64) as usize
+                    }
+                }
+            }
+
+            for seed in 0..6u64 {
+                let s = schema();
+                let host = mount(doc_node(&s, vec![para(&s, "start")])).handle;
+                let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+                // Each peer's outbound pushes into the OTHER peer's inbox.
+                let to_host: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+                let to_guest: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+                let tg = to_guest.clone();
+                let snap = host
+                    .start_collaboration_host(move |d| tg.borrow_mut().push(d))
+                    .unwrap();
+                let th = to_host.clone();
+                guest
+                    .start_collaboration_guest(&snap, move |d| th.borrow_mut().push(d))
+                    .unwrap();
+
+                let peers = [&host, &guest];
+                let inbox = [&to_host, &to_guest]; // inbox[p] = deltas destined for peer p
+                let mut seen = [0usize, 0usize];
+                let mut rng = Rng::new(seed);
+
+                let deliver = |p: usize, seen: &mut [usize; 2]| {
+                    let delta = {
+                        let q = inbox[p].borrow();
+                        (seen[p] < q.len()).then(|| q[seen[p]].clone())
+                    };
+                    if let Some(d) = delta {
+                        seen[p] += 1;
+                        peers[p].collab_receive(&d);
+                    }
+                };
+
+                for _ in 0..140 {
+                    if rng.below(100) < 65 {
+                        let p = rng.below(2);
+                        let h = peers[p];
+                        let doc = h.doc();
+                        let size = doc.content().size();
+                        let pos = 1 + rng.below(size.max(1));
+                        h.set_selection(Selection::near(&doc, Pos(pos.min(size)), 1));
+                        match rng.below(5) {
+                            0..=2 => {
+                                h.insert_text(["a", "b", " ", "猫", "Z"][rng.below(5)]);
+                            }
+                            3 => {
+                                h.command(
+                                    ["toggleBold", "toggleItalic", "toggleStrike", "toggleCode"]
+                                        [rng.below(4)],
+                                );
+                            }
+                            _ => {
+                                h.command(
+                                    ["setHeading1", "setParagraph", "splitBlock"][rng.below(3)],
+                                );
+                            }
+                        }
+                    } else {
+                        deliver(rng.below(2), &mut seen);
+                    }
+                }
+                // Flush both inboxes.
+                for p in 0..2 {
+                    while seen[p] < inbox[p].borrow().len() {
+                        deliver(p, &mut seen);
+                    }
+                }
+
+                // Compare via HTML, not `Node` equality: each handle has its OWN
+                // `Schema` instance (`create_editor`/`mount` make one per editor), and
+                // `Node` equality compares `NodeType` by interned-pointer identity, so
+                // structurally-identical docs from different schemas compare unequal.
+                // HTML is schema-independent and captures text + marks + block type, so
+                // it's the faithful cross-handle convergence check. (Full structural
+                // convergence under one schema is proven by the adapter fuzz.)
+                use rinch_editor_core::serialize::node_to_html;
+                assert_eq!(
+                    node_to_html(&host.doc()),
+                    node_to_html(&guest.doc()),
+                    "handles diverged (seed={seed})"
+                );
+            }
         }
     }
 }

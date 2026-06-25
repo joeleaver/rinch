@@ -349,11 +349,13 @@ impl RinchDomEditorView {
         // polished out of the box — injected once per document.
         super::styles::ensure_default_styles(&doc);
         container.set_attribute("data-pm-type", state.doc.type_name());
-        // The caret and selection overlays are positioned absolutely relative to the
-        // container. A non-`auto` `z-index` makes the container a CSS stacking
-        // context, so the selection rects (`z-index: -1`) paint *behind* the in-flow
-        // text and the caret (`z-index: 1`) paints in front of it.
-        container.set_styles(&[("position", "relative"), ("z-index", "0")]);
+        // `position: relative` + `z-index: 0` (the containing block + stacking
+        // context the caret/selection overlays need) live in the default stylesheet
+        // on `[data-pm-editor]`, NOT as inline styles here — otherwise a consumer's
+        // `style:` prop on the `Editor {}` component would replace the container's
+        // inline `style` attribute and silently break overlay positioning. The
+        // selection rects (`z-index: -1`) then paint *behind* the in-flow text and
+        // the caret (`z-index: 1`) in front.
         let mut children = Vec::with_capacity(state.doc.child_count());
         for i in 0..state.doc.child_count() {
             if let Some(child) = ViewDesc::build(state.doc.child(i), &doc) {

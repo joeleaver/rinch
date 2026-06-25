@@ -419,6 +419,11 @@ fn marks_at(schema: &Schema, spans: &[SpanMark], i: usize) -> Result<Vec<Mark>> 
             out.push(Mark::new(mt.clone(), attrs));
         }
     }
+    // Canonical (mark-type-name) order, matching `Mark::add_to_set`. `spans` is sorted
+    // by `(start, end, name)`, so a char covered by two marks with *different* extents
+    // would otherwise come out in span-start order, not name order — and the rebuilt
+    // node would compare unequal (mark-`Vec` order) to the edited model.
+    out.sort_by(|a, b| a.type_name().cmp(b.type_name()));
     Ok(out)
 }
 
