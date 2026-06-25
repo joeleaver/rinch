@@ -92,3 +92,27 @@ pub fn update_all_carets(focused: Option<usize>) -> bool {
     }
     moved
 }
+
+/// Deliver a remote collaboration `delta` to the editor mounted at `container_id`
+/// (design M9). A no-op if no such editor is mounted or it isn't collaborating.
+/// **Must be called on the main thread** — use [`post_remote_delta`] from a
+/// transport thread. Returns whether the editor's document changed.
+#[cfg(feature = "collaboration")]
+pub fn collab_receive_for(container_id: usize, delta: &[u8]) -> bool {
+    match editor_for(container_id) {
+        Some(handle) => handle.collab_receive(delta),
+        None => false,
+    }
+}
+
+/// Post a remote collaboration `delta` to the editor at `container_id` from **any**
+/// thread — the `Send`-safe inbound entry point for a network transport. The delta
+/// is marshalled onto the main thread (via
+/// [`run_on_main_thread`](crate::shell::run_on_main_thread)), where it is integrated
+/// and the editor re-projected; the runtime is woken so the change paints promptly.
+#[cfg(feature = "collaboration")]
+pub fn post_remote_delta(container_id: usize, delta: Vec<u8>) {
+    crate::shell::run_on_main_thread(move || {
+        collab_receive_for(container_id, &delta);
+    });
+}

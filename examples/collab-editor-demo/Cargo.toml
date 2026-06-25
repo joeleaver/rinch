@@ -1,0 +1,8 @@
+[package]
+name = "collab-editor-demo"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop", "collaboration", "debug"] }
+rinch-editor-core = { workspace = true }

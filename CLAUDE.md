@@ -709,7 +709,7 @@ The editor ships its own default light/dark stylesheet (`editor/styles.rs`, inje
 
 Real-time collaborative editing is a feature-gated adapter, **not** part of the model. The pure `rinch-editor-core` model stays renderer- and CRDT-agnostic; `rinch-editor-collab` projects it onto an **Automerge** CRDT so concurrent edits converge, then translates remote CRDT changes back into editor `Step`s. This crate is the **only** thing in the workspace that links `automerge`.
 
-It is gated purely behind the optional `collaboration` feature, so **default builds — desktop AND web — link zero automerge**. The adapter itself is pure model↔CRDT logic with no platform deps and is **wasm-compatible** (a wasm app supplies a randomness source for the transitive `automerge → uuid`, e.g. `uuid`/`getrandom` `js` feature), so a future Rust web editor view can reuse this *same* adapter rather than bridging to a separate JS CRDT.
+It is gated behind the optional `collaboration` feature (which implies `desktop`, since the editor wiring lives there), so **default builds — desktop AND web — link zero automerge**. The adapter itself is pure model↔CRDT logic with no platform deps and is **wasm-compatible** (a wasm app supplies a randomness source for the transitive `automerge → uuid`, e.g. `uuid`/`getrandom` `js` feature), so a future Rust web editor view can reuse this *same* adapter rather than bridging to a separate JS CRDT.
 
 Enable with `features = ["collaboration"]` on the `rinch` facade (or depend on `rinch-editor-collab` directly).
 
@@ -732,6 +732,28 @@ let delta = a.save_incremental();
 if let Some(next) = b.integrate_incremental(&b_state, &delta)? { b_state = next; }
 // `next` applies the remote change as a non-undoable `origin=remote` transaction.
 ```
+
+**The desktop editor wires this in for you** (M9) — you do not drive `CollabSession` directly. Every local edit through an `EditorHandle` projects + broadcasts automatically; a peer's delta integrates + re-projects through `collab_receive`. One peer **hosts** (owns the starting document), the others **join** from its snapshot. The transport is the app's concern — `outbound` carries bytes out, `post_remote_delta` carries them back in from any thread:
+
+```rust
+// Host: project the current doc onto a fresh CRDT, hand peers a join snapshot.
+let snapshot = host.start_collaboration_host(move |delta| transport.send(delta))?;
+// Guest: adopt the host's document and collaborate.
+guest.start_collaboration_guest(&snapshot, move |delta| transport.send(delta))?;
+// Inbound from a network thread (marshals onto the main thread); from the prelude:
+post_remote_delta(container_id, delta_bytes);
+```
+
+| `EditorHandle` collab method | Purpose |
+|---|---|
+| `start_collaboration_host(outbound) -> Result<Vec<u8>, CollabError>` | Host a fresh session; returns the join snapshot |
+| `start_collaboration_guest(&snapshot, outbound) -> Result<(), CollabError>` | Join from a host snapshot (adopts its document) |
+| `collab_receive(&delta) -> bool` | Integrate a peer's delta (main thread, `try_borrow_mut`-soft); re-projects, does **not** re-broadcast |
+| `is_collaborating()` / `stop_collaboration()` | Query / detach the session |
+| `collab_snapshot() -> Option<Vec<u8>>` | Current shared-doc snapshot for a *late*-joining guest |
+| `collab_take_error() -> Option<CollabError>` | Take a fail-loud A22 projection error (the CRDT is left untouched — projection is all-or-nothing) |
+
+Free functions `collab_receive_for(container_id, &delta)` (main thread) and `post_remote_delta(container_id, delta)` (any thread) route an inbound delta to a registered editor. Runnable two-pane in-process loopback: `examples/collab-editor-demo`.
 
 `CollabPlugin` (key `"collab"`) folds collab bookkeeping (version + unconfirmed local steps) into `EditorState`; `rebase_steps(steps, &mapping)` is the ProseMirror rebase primitive (`Step::map`); `CollabDoc::patches_to_remote_ops` / `remote_ops_since` expose the surgical patch→`RemoteOp` translation. The session itself integrates via converged rebuild (`to_doc`), which is provably convergent.
 

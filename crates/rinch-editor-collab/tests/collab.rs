@@ -472,6 +472,42 @@ fn nested_content_fails_loud() {
     );
 }
 
+#[test]
+fn unsupported_change_does_not_partially_mutate() {
+    // design A22 fail-loud must be all-or-nothing: a mixed flat/non-flat change
+    // (the kind a paste / load-html produces while collaborating) must leave the
+    // CRDT EXACTLY at the prior converged state, not half-projected.
+    let schema = Rc::new(Schema::starter_kit());
+    let before = doc_of(&schema, vec![para(&schema, "alpha"), para(&schema, "beta")]);
+    let mut cdoc = rinch_editor_collab::CollabDoc::from_doc(&before).unwrap();
+    let original = norm(&cdoc.to_doc(&schema).unwrap());
+
+    // `after` mutates the FIRST (reconcilable) block AND appends a non-flat block —
+    // so a naive in-order projection would write block 0 before failing on the
+    // blockquote, leaving the CRDT half-mutated.
+    let inner = schema
+        .branch("paragraph", Fragment::from_node(schema.text("q").unwrap()))
+        .unwrap();
+    let bq = schema
+        .branch("blockquote", Fragment::from_node(inner))
+        .unwrap();
+    let after = doc_of(
+        &schema,
+        vec![para(&schema, "ALPHA"), para(&schema, "beta"), bq],
+    );
+
+    let err = cdoc.project_change(&before, &after).unwrap_err();
+    assert!(
+        matches!(err, rinch_editor_collab::CollabError::Unsupported(_)),
+        "the blockquote must fail loud, got {err:?}"
+    );
+    assert_eq!(
+        original,
+        norm(&cdoc.to_doc(&schema).unwrap()),
+        "an unsupported change must not partially mutate the CRDT (block 0 stays \"alpha\")"
+    );
+}
+
 fn all_text(node: &Node) -> String {
     if let Some(t) = node.text() {
         return t.to_string();
