@@ -1,8 +1,13 @@
-//! Build script that downloads Tabler Icons SVG data and generates Rust code.
+//! Build script that turns Tabler Icons SVG data into generated Rust code.
 //!
-//! Downloads from: https://unpkg.com/@tabler/icons@latest/
+//! Icon data is read from the vendored copies under `data/` (committed to the
+//! crate) so the build works with no network — required by sealed/offline build
+//! environments such as buildpack platforms, where build scripts cannot reach
+//! the internet. If a vendored file is missing or invalid it falls back to
+//! downloading from https://unpkg.com/@tabler/icons@3.36.1/.
 //! - tabler-nodes-outline.json (outline style icons)
 //! - tabler-nodes-filled.json (filled style icons)
+//! - icons.json (per-icon metadata, e.g. category)
 
 use heck::ToUpperCamelCase;
 use serde_json::Value;
@@ -16,6 +21,12 @@ const OUTLINE_URL: &str = "https://unpkg.com/@tabler/icons@3.36.1/tabler-nodes-o
 const FILLED_URL: &str = "https://unpkg.com/@tabler/icons@3.36.1/tabler-nodes-filled.json";
 const ICONS_JSON_URL: &str = "https://unpkg.com/@tabler/icons@3.36.1/icons.json";
 
+// Vendored copies of the above, committed under `data/`. The build reads these
+// first so it needs no network; the URLs are only a fallback (see `load`).
+const OUTLINE_FILE: &str = "tabler-nodes-outline.json";
+const FILLED_FILE: &str = "tabler-nodes-filled.json";
+const ICONS_JSON_FILE: &str = "icons.json";
+
 /// Type alias for icon path data: (outline_paths, filled_paths)
 type IconPaths = (Option<Vec<String>>, Option<Vec<String>>);
 
@@ -25,12 +36,12 @@ fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();
     let dest_path = Path::new(&out_dir).join("generated.rs");
 
-    // Download icon data
-    eprintln!("Downloading Tabler Icons data...");
+    // Load icon data: prefer the vendored files (offline), download as fallback.
+    eprintln!("Loading Tabler Icons data...");
 
-    let outline_json = download(OUTLINE_URL).expect("Failed to download outline icons");
-    let filled_json = download(FILLED_URL).expect("Failed to download filled icons");
-    let icons_meta_json = download(ICONS_JSON_URL).expect("Failed to download icons metadata");
+    let outline_json = load(OUTLINE_URL, OUTLINE_FILE).expect("Failed to load outline icons");
+    let filled_json = load(FILLED_URL, FILLED_FILE).expect("Failed to load filled icons");
+    let icons_meta_json = load(ICONS_JSON_URL, ICONS_JSON_FILE).expect("Failed to load icons metadata");
 
     // Parse JSON using flexible Value type
     let outline: BTreeMap<String, Value> =
@@ -389,6 +400,25 @@ fn extract_paths(elements: &Value) -> Option<Vec<String>> {
     }
 
     if paths.is_empty() { None } else { Some(paths) }
+}
+
+/// Load icon JSON, preferring the vendored copy under `$CARGO_MANIFEST_DIR/data/`
+/// and only downloading from `url` if that file is missing or not valid JSON.
+/// Reading the committed file is what lets this crate build in sealed/offline
+/// build VMs (e.g. buildpack platforms) where build scripts have no network.
+fn load(url: &str, filename: &str) -> Result<String, Box<dyn std::error::Error>> {
+    println!("cargo:rerun-if-changed=data/{filename}");
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let path = Path::new(&manifest_dir).join("data").join(filename);
+    match fs::read_to_string(&path) {
+        Ok(body) if serde_json::from_str::<Value>(&body).is_ok() => {
+            eprintln!("Using vendored {filename} ({} bytes)", body.len());
+            return Ok(body);
+        }
+        Ok(_) => eprintln!("Vendored {filename} is not valid JSON; downloading {url}"),
+        Err(_) => eprintln!("Vendored {filename} not found; downloading {url}"),
+    }
+    download(url)
 }
 
 fn download(url: &str) -> Result<String, Box<dyn std::error::Error>> {
