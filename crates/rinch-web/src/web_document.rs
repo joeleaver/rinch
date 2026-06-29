@@ -662,6 +662,20 @@ impl DomDocument for WebDocument {
         ))
     }
 
+    fn content_origin_inset(&self, node_id: u64) -> (f32, f32) {
+        // clientLeft/clientTop = the node's left/top border width. The editor's overlay
+        // container is position:relative with a border, so an absolutely-positioned
+        // overlay anchors to its padding box; the block offset (computed from border-box
+        // getBoundingClientRect differences) must subtract this to land on the glyphs.
+        let Some(n) = self.nodes.get(&(node_id as usize)) else {
+            return (0.0, 0.0);
+        };
+        match n.clone().dyn_into::<web_sys::Element>() {
+            Ok(el) => (el.client_left() as f32, el.client_top() as f32),
+            Err(_) => (0.0, 0.0),
+        }
+    }
+
     fn query_selection_rects(
         &self,
         node_id: u64,

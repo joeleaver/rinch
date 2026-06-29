@@ -27,10 +27,9 @@ js-sys = "0.3"
 web-sys = { version = "0.3", features = [
     "Window", "Document", "Element", "HtmlElement", "HtmlInputElement",
     "HtmlTextAreaElement", "HtmlHeadElement",
-    "Node", "NodeList", "Text", "Comment", "CharacterData",
+    "Node", "NodeList", "Text", "Comment",
     "CssStyleDeclaration", "DomRect", "DomRectList",
-    "Event", "MouseEvent", "KeyboardEvent", "CompositionEvent", "InputEvent",
-    "ClipboardEvent", "DataTransfer",
-    "EventTarget", "Selection",
+    "Event", "MouseEvent", "KeyboardEvent",
+    "EventTarget",
     "Range",
 ] }
