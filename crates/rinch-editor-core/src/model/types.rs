@@ -312,10 +312,10 @@ mod tests {
     #[test]
     fn compute_attrs_empty_for_attrless_type() {
         let s = Schema::starter_kit();
-        // paragraph declares no attrs → empty result even if junk is provided
+        // blockquote declares no attrs → empty result even if junk is provided
         let provided = Attrs::from_iter([("junk", AttrValue::Bool(true))]);
         let computed = s
-            .node_type("paragraph")
+            .node_type("blockquote")
             .unwrap()
             .compute_attrs(&provided)
             .unwrap();

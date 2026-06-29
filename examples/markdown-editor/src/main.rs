@@ -139,9 +139,9 @@ fn editor_toolbar(editor: EditorHandle) -> NodeHandle {
 
             {separator(__scope)}
 
-            // Indent / outdent (list items)
-            {toolbar_button(__scope, TablerIcon::IndentIncrease, "Indent (sinkListItem)", move || { ed_indent.command("sinkListItem"); })}
-            {toolbar_button(__scope, TablerIcon::IndentDecrease, "Outdent (liftListItem)", move || { ed_outdent.command("liftListItem"); })}
+            // Indent / outdent — nests list items in a list, else indents the paragraph
+            {toolbar_button(__scope, TablerIcon::IndentIncrease, "Indent", move || { ed_indent.command("indent"); })}
+            {toolbar_button(__scope, TablerIcon::IndentDecrease, "Outdent", move || { ed_outdent.command("outdent"); })}
 
             {separator(__scope)}
 

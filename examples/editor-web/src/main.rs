@@ -26,6 +26,8 @@ fn app() -> NodeHandle {
     let ed_ul = editor.clone();
     let ed_ol = editor.clone();
     let ed_quote = editor.clone();
+    let ed_indent = editor.clone();
+    let ed_outdent = editor.clone();
     let ed_undo = editor.clone();
     let ed_redo = editor.clone();
 
@@ -51,6 +53,8 @@ fn app() -> NodeHandle {
                 button { id: "tb-ul",        style: btn, onclick: move || { ed_ul.command("toggleBulletList"); },    "• List" }
                 button { id: "tb-ol",        style: btn, onclick: move || { ed_ol.command("toggleOrderedList"); },   "1. List" }
                 button { id: "tb-quote",     style: btn, onclick: move || { ed_quote.command("wrapInBlockquote"); }, "Quote" }
+                button { id: "tb-indent",    style: btn, onclick: move || { ed_indent.command("indent"); },          "Indent" }
+                button { id: "tb-outdent",   style: btn, onclick: move || { ed_outdent.command("outdent"); },        "Outdent" }
                 button { id: "tb-undo",      style: btn, onclick: move || { ed_undo.command("undo"); },              "Undo" }
                 button { id: "tb-redo",      style: btn, onclick: move || { ed_redo.command("redo"); },              "Redo" }
             }

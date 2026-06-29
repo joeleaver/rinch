@@ -100,9 +100,12 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 
 /* ── Lists ─────────────────────────────────────────────────────────────── */
 /* `li` is flex so the bullet/number aligns with the first line of its content
-   (rinch-dom renders list markers as block siblings otherwise). */
+   (rinch-dom renders list markers as block siblings otherwise). `flex-wrap: wrap`
+   plus `flex-basis: 100%` on a *nested* list make the sublist break onto its own
+   full-width line and indent below the item, instead of floating beside it. */
 [data-pm-editor] ul, [data-pm-editor] ol { padding-left: 1.6em; margin: 0 0 0.75em; }
-[data-pm-editor] li { display: flex; align-items: baseline; gap: 0.4em; margin: 0.15em 0; }
+[data-pm-editor] li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4em; margin: 0.15em 0; }
+[data-pm-editor] li > ul, [data-pm-editor] li > ol { flex-basis: 100%; margin: 0.15em 0 0; }
 
 /* ── Horizontal rule ───────────────────────────────────────────────────── */
 [data-pm-editor] hr { border: none; border-top: 2px solid #e1e4e8; margin: 1.2em 0; height: 0; }

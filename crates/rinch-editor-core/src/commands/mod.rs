@@ -369,6 +369,69 @@ fn build_sink(state: &EditorState, item_type: &str) -> Option<Transaction> {
     tr.doc_changed().then_some(tr)
 }
 
+/// Maximum textblock indent depth (a defensive clamp).
+const MAX_INDENT: i64 = 12;
+
+/// Increase (`delta > 0`) or decrease (`delta < 0`) the `indent` attribute of every
+/// indentable textblock (paragraph / heading) overlapping the selection, clamped to
+/// `[0, MAX_INDENT]`. Applies only when at least one block's indent actually changes,
+/// so outdent at indent 0 is a no-op (the toolbar button stays disabled). Blocks
+/// without an `indent` attr (e.g. code blocks) are skipped.
+fn adjust_indent(delta: i64) -> Command {
+    command_tr(move |state| {
+        let (from, to) = (state.selection.from().0, state.selection.to().0);
+        // `(position-before-block, current indent)` for each indentable textblock
+        // (paragraph / heading — the types that declare an `indent` attr).
+        let mut targets: Vec<(usize, i64)> = Vec::new();
+        state
+            .doc
+            .nodes_between(from, to, &mut |node, pos, _parent| {
+                if matches!(node.type_name(), "paragraph" | "heading") {
+                    targets.push((pos, node.attrs().get_int("indent").unwrap_or(0)));
+                }
+                true
+            });
+        if targets.is_empty() {
+            return None;
+        }
+        let mut tr = state.tr();
+        // `SetNodeAttrStep` has an empty position map, so the collected `pos` values
+        // stay valid across every step — no remapping needed.
+        for (pos, cur) in targets {
+            let next = (cur + delta).clamp(0, MAX_INDENT);
+            if next != cur {
+                tr.set_node_attr(pos, "indent", crate::AttrValue::Int(next))
+                    .ok()?;
+            }
+        }
+        tr.doc_changed().then_some(tr)
+    })
+}
+
+/// Lift the selected block range out of its enclosing **list** — like [`lift`], but
+/// gated on being inside a `list_item`, so it never lifts a paragraph out of a
+/// blockquote (that surprise is what made a bare outdent "un-quote" text).
+fn lift_list_item() -> Command {
+    command_tr(|state| {
+        if !in_node_type(state, "list_item") {
+            return None;
+        }
+        build_lift(state)
+    })
+}
+
+/// **Indent**: nest the current list item under its previous sibling when inside a
+/// list, otherwise increase the textblock's indent level.
+pub fn indent() -> Command {
+    chain(vec![sink_list_item("list_item"), adjust_indent(1)])
+}
+
+/// **Outdent**: un-nest the current list item when inside a list, otherwise decrease
+/// the textblock's indent level. Unlike a bare [`lift`], it leaves blockquotes alone.
+pub fn outdent() -> Command {
+    chain(vec![lift_list_item(), adjust_indent(-1)])
+}
+
 // ===================================================================
 // Structure & deletion
 // ===================================================================
@@ -871,9 +934,9 @@ impl Plugin for BaseCommandsPlugin {
             ("toggleOrderedList", toggle_list("ordered_list")),
             ("wrapInBlockquote", wrap_in("blockquote")),
             ("liftListItem", lift()),
-            ("outdent", lift()),
+            ("outdent", outdent()),
             ("sinkListItem", sink_list_item("list_item")),
-            ("indent", sink_list_item("list_item")),
+            ("indent", indent()),
             ("insertHorizontalRule", insert_horizontal_rule()),
             ("insertHardBreak", insert_hard_break()),
             ("insertTable", insert_table(3, 3)),
@@ -1509,6 +1572,40 @@ mod tests {
         let tbl = s.run("insertTable").expect("table mid para");
         assert_eq!(tbl.doc.child_count(), 3);
         assert_eq!(tbl.doc.child(1).type_name(), "table");
+    }
+
+    #[test]
+    fn indent_and_outdent_a_paragraph() {
+        let mut s = editor("hello");
+        s.selection = Selection::cursor(Pos(2));
+        // Indent bumps the paragraph's `indent` attr 0 → 1 → 2.
+        let i1 = s.run("indent").expect("indent applies");
+        assert_eq!(i1.doc.child(0).attrs().get_int("indent"), Some(1));
+        let i2 = i1.run("indent").expect("indent applies again");
+        assert_eq!(i2.doc.child(0).attrs().get_int("indent"), Some(2));
+        // Outdent steps it back down to 0.
+        let o1 = i2.run("outdent").expect("outdent applies");
+        assert_eq!(o1.doc.child(0).attrs().get_int("indent"), Some(1));
+        let o2 = o1.run("outdent").expect("outdent applies");
+        assert_eq!(o2.doc.child(0).attrs().get_int("indent"), Some(0));
+        // Outdent at indent 0 is a no-op (so the toolbar button can stay disabled).
+        assert!(o2.run("outdent").is_none());
+    }
+
+    #[test]
+    fn outdent_does_not_unquote_a_blockquote() {
+        let mut s = editor("quoted");
+        s.selection = Selection::cursor(Pos(2));
+        let bq = s.run("wrapInBlockquote").expect("wrap applies");
+        assert!(
+            bq.doc
+                .content()
+                .iter()
+                .any(|n| n.type_name() == "blockquote")
+        );
+        // Outdent inside the (un-indented) blockquote must do nothing — not lift the
+        // paragraph out of the quote (the old generic-`lift` surprise).
+        assert!(bq.run("outdent").is_none());
     }
 
     #[test]
