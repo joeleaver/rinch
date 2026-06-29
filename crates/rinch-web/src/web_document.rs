@@ -34,9 +34,28 @@ pub struct WebDocument {
     body_id: NodeId,
 }
 
+thread_local! {
+    /// Reverse map (`NodeId.0` → browser node) populated for every node `set_nid`
+    /// tags. Lets non-`DomDocument` code — the editor input glue — resolve a rinch
+    /// node id back to its DOM node for caret/selection geometry. Entries are not
+    /// eagerly pruned (node *creation* is structural, so growth is bounded);
+    /// [`node_by_nid`] returns `None` for a node detached from the document.
+    static NODE_REGISTRY: std::cell::RefCell<HashMap<usize, web_sys::Node>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Resolve a rinch `NodeId.0` to its live browser node — the editor glue uses this to
+/// read caret/selection geometry for a model position. `None` if unknown or detached.
+pub(crate) fn node_by_nid(nid: usize) -> Option<web_sys::Node> {
+    NODE_REGISTRY
+        .with(|m| m.borrow().get(&nid).cloned())
+        .filter(|n| n.is_connected())
+}
+
 /// Set the `__nid` JS property on a browser node for reverse lookups.
 fn set_nid(node: &web_sys::Node, id: NodeId) {
     let _ = js_sys::Reflect::set(node, &"__nid".into(), &JsValue::from(id.0 as u32));
+    NODE_REGISTRY.with(|m| m.borrow_mut().insert(id.0, node.clone()));
 }
 
 /// Returns true if the tag name is an SVG element.
@@ -86,7 +105,7 @@ fn is_svg_tag(tag: &str) -> bool {
 }
 
 /// Get the `__nid` JS property from a browser node.
-fn get_nid(node: &web_sys::Node) -> Option<NodeId> {
+pub(crate) fn get_nid(node: &web_sys::Node) -> Option<NodeId> {
     js_sys::Reflect::get(node, &"__nid".into())
         .ok()
         .and_then(|v| v.as_f64())
@@ -233,7 +252,7 @@ impl WebDocument {
 
 /// Walk a DOM subtree depth-first to find the text node containing the given UTF-8 byte offset.
 /// Returns `(text_node, utf16_offset_within_node)`.
-fn find_text_node_at_byte_offset(
+pub(crate) fn find_text_node_at_byte_offset(
     node: &web_sys::Node,
     byte_offset: usize,
 ) -> Option<(web_sys::Node, u32)> {
@@ -620,24 +639,76 @@ impl DomDocument for WebDocument {
 
     fn query_node_layout(&self, node_id: u64) -> Option<(f32, f32, f32, f32)> {
         let n = self.nodes.get(&(node_id as usize))?;
-        // Try HtmlElement.offset* for parent-relative coordinates (needed by editor)
-        if let Ok(el) = n.clone().dyn_into::<web_sys::HtmlElement>() {
-            Some((
-                el.offset_left() as f32,
-                el.offset_top() as f32,
-                el.offset_width() as f32,
-                el.offset_height() as f32,
-            ))
-        } else {
-            // Fallback for non-HTML elements (SVG, etc.)
-            let el: web_sys::Element = n.clone().dyn_into().ok()?;
-            let rect = el.get_bounding_client_rect();
-            Some((
-                rect.x() as f32,
-                rect.y() as f32,
-                rect.width() as f32,
-                rect.height() as f32,
-            ))
+        let el: web_sys::Element = n.clone().dyn_into().ok()?;
+        let rect = el.get_bounding_client_rect();
+        // The trait contract is **immediate-parent-relative** `(x, y)` (the desktop
+        // Taffy backend returns this, and the editor's `block_offset_in_container`
+        // sums it up the ancestor chain). `offsetLeft/offsetTop` would be
+        // *offsetParent*-relative, which double-counts for a nested block (a
+        // paragraph inside a blockquote/list, whose offsetParent is the editor
+        // container, not its immediate parent). Use border-box differences instead.
+        let (px, py) = match el.parent_element() {
+            Some(parent) => {
+                let pr = parent.get_bounding_client_rect();
+                (pr.x(), pr.y())
+            }
+            None => (0.0, 0.0),
+        };
+        Some((
+            (rect.x() - px) as f32,
+            (rect.y() - py) as f32,
+            rect.width() as f32,
+            rect.height() as f32,
+        ))
+    }
+
+    fn query_selection_rects(
+        &self,
+        node_id: u64,
+        byte_a: usize,
+        byte_b: usize,
+    ) -> Vec<(f32, f32, f32, f32)> {
+        // Per-line selection rectangles for the flat UTF-8 byte range `[a, b)` within
+        // the block's concatenated inline text, returned **block-local** (relative to
+        // the block element's top-left) — the editor view adds the block's container
+        // offset itself. Mirrors `query_caret_position`'s coordinate convention.
+        if byte_a >= byte_b {
+            return Vec::new();
         }
+        let Some(n) = self.nodes.get(&(node_id as usize)) else {
+            return Vec::new();
+        };
+        let resolve = || -> Option<web_sys::DomRectList> {
+            let (start_node, start_off) = find_text_node_at_byte_offset(n, byte_a)?;
+            let (end_node, end_off) = find_text_node_at_byte_offset(n, byte_b)?;
+            let range = self.browser_doc.create_range().ok()?;
+            range.set_start(&start_node, start_off).ok()?;
+            range.set_end(&end_node, end_off).ok()?;
+            range.get_client_rects()
+        };
+        let Some(rects) = resolve() else {
+            return Vec::new();
+        };
+        let Ok(el) = n.clone().dyn_into::<web_sys::Element>() else {
+            return Vec::new();
+        };
+        let block = el.get_bounding_client_rect();
+        let (bx, by) = (block.x(), block.y());
+        let mut out = Vec::with_capacity(rects.length() as usize);
+        for i in 0..rects.length() {
+            if let Some(r) = rects.get(i) {
+                // Skip zero-area rects (collapsed line fragments) the browser can emit.
+                if r.width() <= 0.0 || r.height() <= 0.0 {
+                    continue;
+                }
+                out.push((
+                    (r.x() - bx) as f32,
+                    (r.y() - by) as f32,
+                    r.width() as f32,
+                    r.height() as f32,
+                ));
+            }
+        }
+        out
     }
 }

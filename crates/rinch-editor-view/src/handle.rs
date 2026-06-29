@@ -597,7 +597,7 @@ impl EditorHandle {
     /// half-period). Returns `None` if there is no caret to blink (no collapsed
     /// cursor), `Some(true)` if the caret's visibility actually toggled (repaint
     /// needed), or `Some(false)` if the phase was already applied.
-    pub(crate) fn set_caret_blink(&self, visible: bool) -> Option<bool> {
+    pub fn set_caret_blink(&self, visible: bool) -> Option<bool> {
         self.inner
             .borrow_mut()
             .view
