@@ -371,7 +371,7 @@ fn resolve_text_hit(
 }
 
 /// Compute the UTF-8 byte offset within a block element by walking text nodes.
-fn compute_byte_offset_in_block(
+pub(crate) fn compute_byte_offset_in_block(
     block_el: &web_sys::Element,
     target_text_node: &web_sys::Node,
     utf16_offset_in_target: u32,

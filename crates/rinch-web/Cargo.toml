@@ -12,6 +12,14 @@ description = "Browser-native DOM backend for rinch (WASM target): WebDocument, 
 # browser handles layout, text, CSS, and painting natively.
 rinch-core = { workspace = true, features = ["theme"] }
 rinch = { workspace = true, default-features = false, features = ["components", "theme"] }
+# Pure model types (CursorMotion/Pos/Selection) the editor input glue speaks; the
+# wasm-clean model crate, no platform deps.
+rinch-editor-core = { workspace = true }
+# The renderer-agnostic rich-text editor (RinchDomEditorView/EditorHandle/Editor),
+# shared with the desktop editor. It projects onto WebDocument's DomDocument impl, so
+# the browser editor is the *same* model-first view — no contentEditable. Default
+# features only (collaboration is opt-in and links automerge; off here).
+rinch-editor-view = { workspace = true }
 
 # WASM bindings
 wasm-bindgen = "0.2"
@@ -20,7 +28,7 @@ web-sys = { version = "0.3", features = [
     "Window", "Document", "Element", "HtmlElement", "HtmlInputElement",
     "HtmlTextAreaElement", "HtmlHeadElement",
     "Node", "NodeList", "Text", "Comment",
-    "CssStyleDeclaration", "DomRect",
+    "CssStyleDeclaration", "DomRect", "DomRectList",
     "Event", "MouseEvent", "KeyboardEvent",
     "EventTarget",
     "Range",

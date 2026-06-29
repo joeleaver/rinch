@@ -24,7 +24,7 @@ use rinch_editor_core::serialize::{
     slice_from_html, slice_from_text, slice_to_html, slice_to_text,
 };
 use rinch_editor_core::{
-    EditorState, EditorView, Node, Plugin, Pos, Schema, Selection, Transaction,
+    CursorMotion, EditorState, EditorView, Node, Plugin, Pos, Schema, Selection, Transaction,
 };
 
 #[cfg(feature = "collaboration")]
@@ -365,6 +365,82 @@ impl EditorHandle {
         });
     }
 
+    /// Select the entire document (the textblock-spanning range from start to end) —
+    /// the Ctrl/Cmd+A path, shared by every platform's keyboard glue.
+    pub fn select_all(&self) {
+        let doc = self.doc();
+        let sel = Selection::text(
+            Selection::at_start(&doc).head(),
+            Selection::at_end(&doc).head(),
+        );
+        self.set_selection(sel);
+    }
+
+    /// Select the word around model `pos` (the double-click gesture). Returns whether
+    /// it resolved to a non-empty range.
+    pub fn select_word_at(&self, pos: Pos) -> bool {
+        let doc = self.doc();
+        let (from, to) = rinch_editor_core::word_range_at(&doc, pos);
+        self.set_selection(Selection::text(from, to));
+        from != to
+    }
+
+    /// Select the whole textblock around model `pos` (the triple-click gesture).
+    /// Returns whether it resolved to a non-empty range.
+    pub fn select_block_at(&self, pos: Pos) -> bool {
+        let doc = self.doc();
+        let (from, to) = rinch_editor_core::block_range_at(&doc, pos);
+        self.set_selection(Selection::text(from, to));
+        from != to
+    }
+
+    /// Apply a model caret `motion` (the horizontal / word / model-line / document
+    /// motions — *not* vertical, which needs laid-out geometry the platform supplies).
+    /// `extend` keeps the selection anchor (shift+arrow). Returns whether the cursor
+    /// moved. Shared by every platform's keyboard glue; the desktop runtime layers
+    /// visual-line and vertical geometry on top.
+    pub fn move_cursor(&self, motion: CursorMotion, extend: bool) -> bool {
+        let st = self.state();
+        match rinch_editor_core::resolve_cursor_motion(
+            &st.doc,
+            st.selection.head(),
+            st.selection.anchor(),
+            motion,
+            extend,
+        ) {
+            Some(sel) => {
+                self.set_selection(sel);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Move the cursor to the next (`shift=false`) or previous (`shift=true`) table
+    /// cell — the Tab/Shift-Tab gesture inside a table. Forward-Tab in the last cell
+    /// appends a row first. A no-op (returns `false`) outside a table. Shared by every
+    /// platform's keyboard glue.
+    pub fn tab_cell(&self, shift: bool) -> bool {
+        use rinch_editor_core::tables;
+        let state = self.state();
+        let head = state.selection.head();
+        let dir = if shift { -1 } else { 1 };
+        if let Some(target) = tables::next_cell_in_table(&state.doc, head, dir) {
+            self.set_selection(Selection::near(&state.doc, Pos(target + 1), 1));
+            return true;
+        }
+        if dir > 0 && tables::cell_at_pos(&state.doc, head).is_some() && self.command("addRowAfter")
+        {
+            let state = self.state();
+            if let Some(target) = tables::next_cell_in_table(&state.doc, state.selection.head(), 1)
+            {
+                self.set_selection(Selection::near(&state.doc, Pos(target + 1), 1));
+            }
+            return true;
+        }
+        false
+    }
+
     /// Switch the editor between the light (default) and dark color schemes of the
     /// built-in stylesheet. A no-op before mount. The app should trigger a repaint
     /// afterward (toolbar/keyboard handlers already do).
@@ -521,7 +597,7 @@ impl EditorHandle {
     /// half-period). Returns `None` if there is no caret to blink (no collapsed
     /// cursor), `Some(true)` if the caret's visibility actually toggled (repaint
     /// needed), or `Some(false)` if the phase was already applied.
-    pub(crate) fn set_caret_blink(&self, visible: bool) -> Option<bool> {
+    pub fn set_caret_blink(&self, visible: bool) -> Option<bool> {
         self.inner
             .borrow_mut()
             .view

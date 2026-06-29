@@ -1785,7 +1785,7 @@ impl RinchApp {
             KeyCode::Enter if !ctrl => handle.command("enter"),
             // Tab / Shift-Tab move between table cells when the cursor is in a table;
             // outside a table Tab does nothing here (no focus-traversal in the editor).
-            KeyCode::Tab => self.tab_cell(handle, shift),
+            KeyCode::Tab => handle.tab_cell(shift),
             // Cursor movement / selection extension (Shift extends, Ctrl = word/doc).
             KeyCode::ArrowLeft => self.move_editor(
                 handle,
@@ -1826,12 +1826,7 @@ impl RinchApp {
                 shift,
             ),
             KeyCode::KeyA if ctrl => {
-                let state = handle.state();
-                let sel = rinch_editor_core::Selection::text(
-                    rinch_editor_core::Selection::at_start(&state.doc).head(),
-                    rinch_editor_core::Selection::at_end(&state.doc).head(),
-                );
-                handle.set_selection(sel);
+                handle.select_all();
                 true
             }
             KeyCode::KeyB if ctrl => handle.command("toggleBold"),
@@ -1867,35 +1862,6 @@ impl RinchApp {
         }
     }
 
-    /// Tab / Shift-Tab cell navigation: move the cursor to the start of the next
-    /// (or previous) table cell. A forward Tab in the last cell appends a row and
-    /// moves into it (ProseMirror behavior). Returns `false` when the cursor isn't in
-    /// a table — though the editor focus arbiter consumes the key either way (Tab
-    /// never moves focus mid-edit), so a non-table Tab is simply a no-op.
-    fn tab_cell(&mut self, handle: &crate::editor::EditorHandle, shift: bool) -> bool {
-        use rinch_editor_core::{Pos, Selection, tables};
-        let state = handle.state();
-        let head = state.selection.head();
-        let dir = if shift { -1 } else { 1 };
-        if let Some(target) = tables::next_cell_in_table(&state.doc, head, dir) {
-            handle.set_selection(Selection::near(&state.doc, Pos(target + 1), 1));
-            return true;
-        }
-        // Forward Tab at the last cell: append a row and move into its first cell.
-        if dir > 0
-            && tables::cell_at_pos(&state.doc, head).is_some()
-            && handle.command("addRowAfter")
-        {
-            let state = handle.state();
-            if let Some(target) = tables::next_cell_in_table(&state.doc, state.selection.head(), 1)
-            {
-                handle.set_selection(Selection::near(&state.doc, Pos(target + 1), 1));
-            }
-            return true;
-        }
-        false
-    }
-
     /// Apply a cursor [`Motion`] to the focused editor: compute the new head and
     /// either collapse the cursor there or, when `extend` (Shift), keep the anchor
     /// and move only the head (extending the selection).
@@ -1905,42 +1871,35 @@ impl RinchApp {
         motion: Motion,
         extend: bool,
     ) -> bool {
-        use rinch_editor_core::{Pos, Selection};
+        use rinch_editor_core::{CursorMotion, Pos, Selection, motion as core_motion};
+        // Horizontal / word / document motions resolve entirely in the shared
+        // editor-core model path (identical on desktop and web — see
+        // `EditorHandle::move_cursor`). Only visual-line edges and vertical motion
+        // need the renderer's laid-out geometry, handled below.
+        let model_motion = match motion {
+            Motion::CharLeft => Some(CursorMotion::CharLeft),
+            Motion::CharRight => Some(CursorMotion::CharRight),
+            Motion::WordLeft => Some(CursorMotion::WordLeft),
+            Motion::WordRight => Some(CursorMotion::WordRight),
+            Motion::DocStart => Some(CursorMotion::DocStart),
+            Motion::DocEnd => Some(CursorMotion::DocEnd),
+            Motion::LineStart | Motion::LineEnd | Motion::LineUp | Motion::LineDown => None,
+        };
+        if let Some(cm) = model_motion {
+            return handle.move_cursor(cm, extend);
+        }
         let state = handle.state();
         let doc = state.doc.clone();
         let head = state.selection.head();
         let new_head: Option<Pos> = match motion {
-            Motion::CharLeft => {
-                let near = Selection::near(&doc, Pos(head.0.saturating_sub(1)), -1);
-                // A char move that lands on a selectable block atom (a horizontal
-                // rule) is a node selection, not a cursor. Honor it when collapsing
-                // (not extending) so the leaf is keyboard-reachable and deletable.
-                if !extend && matches!(near, Selection::Node(_)) {
-                    handle.set_selection(near);
-                    return true;
-                }
-                Some(near.head())
-            }
-            Motion::CharRight => {
-                let near = Selection::near(&doc, Pos((head.0 + 1).min(doc.content_size())), 1);
-                if !extend && matches!(near, Selection::Node(_)) {
-                    handle.set_selection(near);
-                    return true;
-                }
-                Some(near.head())
-            }
-            Motion::WordLeft => word_boundary(&doc, head, false),
-            Motion::WordRight => word_boundary(&doc, head, true),
             // Visual-line edge for wrapped paragraphs (geometry), falling back to
             // the block edge when the caret has no Parley layout (an empty block).
             Motion::LineStart => self
                 .visual_line_bound(handle, head, false)
-                .or_else(|| line_bound(&doc, head, false)),
+                .or_else(|| core_motion::line_boundary(&doc, head, false)),
             Motion::LineEnd => self
                 .visual_line_bound(handle, head, true)
-                .or_else(|| line_bound(&doc, head, true)),
-            Motion::DocStart => Some(Selection::at_start(&doc).head()),
-            Motion::DocEnd => Some(Selection::at_end(&doc).head()),
+                .or_else(|| core_motion::line_boundary(&doc, head, true)),
             Motion::LineUp | Motion::LineDown => {
                 // Establish the goal column from the current caret on the first
                 // vertical step, then reuse it so the cursor keeps its horizontal
@@ -1952,6 +1911,8 @@ impl RinchApp {
                 self.vertical_step(handle, head, matches!(motion, Motion::LineDown), goal_x)
                     .map(|sel| sel.head())
             }
+            // The model motions returned early via `handle.move_cursor` above.
+            _ => None,
         };
         match new_head {
             Some(nh) => {
@@ -2388,7 +2349,7 @@ impl RinchApp {
     /// not the whole block's. Hit-tests the far-left / far-right of the caret's line
     /// box via the same geometry as [`Self::vertical_step`]. `None` when the caret
     /// has no Parley geometry (an empty block); the caller falls back to the
-    /// block-level [`line_bound`].
+    /// block-level `rinch_editor_core::motion::line_boundary`.
     fn visual_line_bound(
         &self,
         handle: &crate::editor::EditorHandle,
@@ -2561,11 +2522,11 @@ impl RinchApp {
             let prior_anchor = handle.selection().anchor();
             let (selection, drag_anchor) = match click_count {
                 2 => {
-                    let (from, to) = word_range_at(&doc, clicked);
+                    let (from, to) = rinch_editor_core::word_range_at(&doc, clicked);
                     (Selection::text(from, to), None)
                 }
                 3 => {
-                    let (from, to) = block_range_at(&doc, clicked);
+                    let (from, to) = rinch_editor_core::block_range_at(&doc, clicked);
                     (Selection::text(from, to), None)
                 }
                 _ if shift => (Selection::text(prior_anchor, clicked), Some(prior_anchor)),
@@ -2630,141 +2591,6 @@ impl RinchApp {
     }
 }
 
-/// The model position at the start (`end=false`) or end (`end=true`) of the
-/// textblock `head` is in. (Visual-line Home/End for wrapped lines is a later
-/// refinement; this is block start/end.)
-#[cfg(feature = "desktop")]
-fn line_bound(
-    doc: &rinch_editor_core::Node,
-    head: rinch_editor_core::Pos,
-    end: bool,
-) -> Option<rinch_editor_core::Pos> {
-    let r = doc.resolve(head).ok()?;
-    if !r.parent().is_textblock() {
-        return None;
-    }
-    let content_start = head.0 - r.parent_offset();
-    Some(rinch_editor_core::Pos(if end {
-        content_start + r.parent().content().size()
-    } else {
-        content_start
-    }))
-}
-
-/// The model position at the previous/next word boundary within `head`'s
-/// textblock (a simple whitespace/word-character scan; cross-block word motion is
-/// a later refinement).
-#[cfg(feature = "desktop")]
-fn word_boundary(
-    doc: &rinch_editor_core::Node,
-    head: rinch_editor_core::Pos,
-    forward: bool,
-) -> Option<rinch_editor_core::Pos> {
-    let r = doc.resolve(head).ok()?;
-    if !r.parent().is_textblock() {
-        return None;
-    }
-    let chars: Vec<char> = block_text(r.parent()).chars().collect();
-    let content_start = head.0 - r.parent_offset();
-    let mut i = r.parent_offset();
-    if forward {
-        while i < chars.len() && chars[i].is_whitespace() {
-            i += 1;
-        }
-        while i < chars.len() && !chars[i].is_whitespace() {
-            i += 1;
-        }
-    } else {
-        i = i.saturating_sub(1);
-        while i > 0 && chars[i].is_whitespace() {
-            i -= 1;
-        }
-        while i > 0 && !chars[i - 1].is_whitespace() {
-            i -= 1;
-        }
-    }
-    Some(rinch_editor_core::Pos(content_start + i))
-}
-
-/// The concatenated inline text of a textblock, with each non-text leaf counted as
-/// one placeholder char (so word/line offsets line up with the position space).
-#[cfg(feature = "desktop")]
-fn block_text(block: &rinch_editor_core::Node) -> String {
-    let mut s = String::new();
-    for i in 0..block.child_count() {
-        let child = block.child(i);
-        match child.text() {
-            Some(t) => s.push_str(t),
-            None => s.push(' '),
-        }
-    }
-    s
-}
-
-/// The model word range `(start, end)` around `pos` — the contiguous run of
-/// like-classed characters (word vs. whitespace) under a double-click, classified
-/// by the character to the right of the gap (or the last character at block end).
-/// Falls back to a collapsed range at `pos` when it is not inside a textblock or
-/// the block is empty.
-#[cfg(feature = "desktop")]
-fn word_range_at(
-    doc: &rinch_editor_core::Node,
-    pos: rinch_editor_core::Pos,
-) -> (rinch_editor_core::Pos, rinch_editor_core::Pos) {
-    use rinch_editor_core::Pos;
-    let Ok(r) = doc.resolve(pos) else {
-        return (pos, pos);
-    };
-    if !r.parent().is_textblock() {
-        return (pos, pos);
-    }
-    let chars: Vec<char> = block_text(r.parent()).chars().collect();
-    if chars.is_empty() {
-        return (pos, pos);
-    }
-    let content_start = pos.0 - r.parent_offset();
-    let off = r.parent_offset().min(chars.len());
-    let is_word_char = |c: char| !c.is_whitespace();
-    // Classify the run to select. Normally use the char to the right of the gap, but
-    // at a word's *trailing* edge (the right char is whitespace, or we're at block
-    // end, while the left char is a word char) prefer the word — a double-click just
-    // after a word selects the word, not the following space. A click genuinely
-    // inside a whitespace run (whitespace on both sides) still selects the whitespace.
-    let classify_right = off < chars.len()
-        && (is_word_char(chars[off]) || off == 0 || !is_word_char(chars[off - 1]));
-    let class_idx = if classify_right { off } else { off - 1 };
-    let target = is_word_char(chars[class_idx]);
-    let mut start = off;
-    while start > 0 && is_word_char(chars[start - 1]) == target {
-        start -= 1;
-    }
-    let mut end = off;
-    while end < chars.len() && is_word_char(chars[end]) == target {
-        end += 1;
-    }
-    (Pos(content_start + start), Pos(content_start + end))
-}
-
-/// The model content range `(start, end)` of the textblock containing `pos` — the
-/// whole-block selection a triple-click makes. Falls back to a collapsed range at
-/// `pos` when it is not inside a textblock.
-#[cfg(feature = "desktop")]
-fn block_range_at(
-    doc: &rinch_editor_core::Node,
-    pos: rinch_editor_core::Pos,
-) -> (rinch_editor_core::Pos, rinch_editor_core::Pos) {
-    use rinch_editor_core::Pos;
-    let Ok(r) = doc.resolve(pos) else {
-        return (pos, pos);
-    };
-    if !r.parent().is_textblock() {
-        return (pos, pos);
-    }
-    let content_start = pos.0 - r.parent_offset();
-    let content_end = content_start + r.parent().content().size();
-    (Pos(content_start), Pos(content_end))
-}
-
 /// Encode `width`×`height` RGBA8 pixels (the clipboard bitmap format) as a
 /// `data:image/png;base64,…` URL for an image node `src`. Returns `None` if the
 /// buffer isn't exactly `width * height * 4` bytes or PNG encoding fails.
@@ -2816,96 +2642,5 @@ mod paste_image_tests {
         // 2×2 RGBA needs 16 bytes; give it 8 → None (not a panic).
         assert!(image_rgba_to_png_data_url(2, 2, &[0; 8]).is_none());
         assert!(image_rgba_to_png_data_url(0, 0, &[]).is_none());
-    }
-}
-
-#[cfg(all(test, feature = "desktop"))]
-mod editor_selection_tests {
-    use super::{block_range_at, word_range_at};
-    use rinch_editor_core::model::Fragment;
-    use rinch_editor_core::{Node, Pos, Schema};
-
-    fn paragraph_doc(text: &str) -> Node {
-        let s = Schema::starter_kit();
-        let p = s
-            .branch("paragraph", Fragment::from_node(s.text(text).unwrap()))
-            .unwrap();
-        s.branch("doc", Fragment::from_node(p)).unwrap()
-    }
-
-    #[test]
-    fn word_range_selects_word_under_pos() {
-        let doc = paragraph_doc("hello world");
-        // Positions: 0[p 1 'hello world'(11) 12]13.
-        assert_eq!(
-            word_range_at(&doc, Pos(3)),
-            (Pos(1), Pos(6)),
-            "inside 'hello'"
-        );
-        assert_eq!(
-            word_range_at(&doc, Pos(9)),
-            (Pos(7), Pos(12)),
-            "inside 'world'"
-        );
-    }
-
-    #[test]
-    fn word_range_at_block_end_selects_last_word() {
-        let doc = paragraph_doc("hello world");
-        // The gap at block end classifies by the last char ('d').
-        assert_eq!(word_range_at(&doc, Pos(12)), (Pos(7), Pos(12)));
-    }
-
-    #[test]
-    fn word_range_on_whitespace_selects_whitespace_run() {
-        let doc = paragraph_doc("a  b");
-        // chars a,_,_,b — a click *between* the two spaces (both neighbours
-        // whitespace) selects the run of spaces.
-        assert_eq!(word_range_at(&doc, Pos(3)), (Pos(2), Pos(4)));
-    }
-
-    #[test]
-    fn word_range_at_word_trailing_edge_selects_the_word() {
-        let doc = paragraph_doc("a  b");
-        // A click in the gap just *after* 'a' (right char is whitespace, left char is
-        // a word char) selects the word 'a', not the following space.
-        assert_eq!(word_range_at(&doc, Pos(2)), (Pos(1), Pos(2)));
-        // And the gap just before 'b' selects 'b'.
-        assert_eq!(word_range_at(&doc, Pos(4)), (Pos(4), Pos(5)));
-    }
-
-    #[test]
-    fn word_range_empty_block_is_collapsed() {
-        let s = Schema::starter_kit();
-        let doc = s
-            .branch(
-                "doc",
-                Fragment::from_node(s.branch("paragraph", Fragment::empty()).unwrap()),
-            )
-            .unwrap();
-        assert_eq!(word_range_at(&doc, Pos(1)), (Pos(1), Pos(1)));
-    }
-
-    #[test]
-    fn block_range_selects_whole_textblock() {
-        let doc = paragraph_doc("hello world");
-        assert_eq!(block_range_at(&doc, Pos(3)), (Pos(1), Pos(12)));
-        assert_eq!(block_range_at(&doc, Pos(8)), (Pos(1), Pos(12)));
-    }
-
-    #[test]
-    fn block_range_targets_the_clicked_block() {
-        let s = Schema::starter_kit();
-        let p1 = s
-            .branch("paragraph", Fragment::from_node(s.text("ab").unwrap()))
-            .unwrap();
-        let p2 = s
-            .branch("paragraph", Fragment::from_node(s.text("cdef").unwrap()))
-            .unwrap();
-        let doc = s
-            .branch("doc", Fragment::from_children(vec![p1, p2]))
-            .unwrap();
-        // Positions: 0[p 1 ab 3]4[p 5 cdef 9]10 — second block content is [5, 9).
-        assert_eq!(block_range_at(&doc, Pos(7)), (Pos(5), Pos(9)));
     }
 }

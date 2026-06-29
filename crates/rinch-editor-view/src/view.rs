@@ -590,7 +590,12 @@ impl RinchDomEditorView {
             }
             cur = d.parent_node(rinch_core::dom::NodeId(id)).map(|n| n.0);
         }
-        (x, y)
+        // The overlays are absolutely-positioned children of the container, so they
+        // anchor to its *padding* box; the summed offsets are border-box-relative.
+        // Subtract the container's border inset once so caret/selection land on glyphs
+        // (a no-op on the desktop renderer — default `(0, 0)`).
+        let (ix, iy) = d.content_origin_inset(container_id as u64);
+        (x - ix, y - iy)
     }
 
     /// Caret geometry for an *empty* textblock (which has no Parley layout, so

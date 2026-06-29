@@ -37,6 +37,7 @@
 //! }
 //! ```
 
+mod editor_input;
 mod event_delegation;
 pub mod web_document;
 
@@ -50,6 +51,12 @@ use rinch_core::events;
 
 pub use event_delegation::setup_event_delegation;
 pub use web_document::WebDocument;
+
+// The renderer-agnostic rich-text editor, re-exported so a web app uses the *same*
+// API as desktop: `create_editor()` → `EditorHandle`, mounted via `Editor {}`. The
+// browser input glue (keyboard/pointer/IME/clipboard → the handle) lives in
+// `editor_input`, installed once alongside event delegation.
+pub use rinch_editor_view::{Editor, EditorHandle, create_editor};
 
 // ============================================================================
 // Mounted-root registry + per-page guards
@@ -180,6 +187,7 @@ where
     }
 
     ensure_event_delegation(&web_doc.borrow());
+    editor_input::install(web_doc.borrow().browser_document());
 
     let id = NEXT_ROOT_ID.with(|c| {
         let id = c.get();

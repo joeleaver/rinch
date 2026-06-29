@@ -10,6 +10,7 @@ exclude = [
     "examples/paint-web",
     "examples/events-web",
     "examples/islands-web",
+    "examples/editor-web",
 ]
 
 [workspace.package]
