@@ -35,6 +35,13 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
   padding: 16px 20px;
   border: 1px solid #d0d7de;
   border-radius: 10px;
+  /* Preserve the model's whitespace exactly (inherited by every textblock). Without
+     this the browser collapses trailing spaces and runs of spaces, so a space typed
+     at end of line is invisible until the next character, and — worse — the rendered
+     text no longer matches the model 1:1, throwing off the DOM-offset → model-byte
+     caret mapping. `pre-wrap` still wraps at spaces; `break-word` wraps long words. */
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
   /* The caret and selection overlays are children positioned absolutely relative
      to the container, so it must be a positioned stacking context. These live here
      (not as inline styles set by the view) so a consumer's `style:` prop on the
@@ -54,6 +61,18 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 /* ── Body text ─────────────────────────────────────────────────────────── */
 [data-pm-editor] p { margin: 0 0 0.75em; }
 [data-pm-editor] a { color: #0969da; text-decoration: underline; }
+
+/* An *empty* textblock (e.g. the paragraph created by pressing Enter on a blank
+   line) has no inline content, so the browser gives it no line box and it collapses
+   to zero height — the new line is invisible until a character is typed. Reserve one
+   line height so an empty block occupies a line and its caret lands correctly. `1lh`
+   is the element's own line height, so headings reserve their (taller) line. */
+[data-pm-editor] p:empty,
+[data-pm-editor] h1:empty, [data-pm-editor] h2:empty, [data-pm-editor] h3:empty,
+[data-pm-editor] h4:empty, [data-pm-editor] h5:empty, [data-pm-editor] h6:empty,
+[data-pm-editor] blockquote:empty, [data-pm-editor] li:empty,
+[data-pm-editor] td:empty, [data-pm-editor] th:empty,
+[data-pm-editor] pre:empty { min-height: 1lh; }
 
 /* ── Inline marks ──────────────────────────────────────────────────────── */
 [data-pm-editor] strong, [data-pm-editor] b { font-weight: 700; }
