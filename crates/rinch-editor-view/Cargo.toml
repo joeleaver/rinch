@@ -1,0 +1,23 @@
+[package]
+name = "rinch-editor-view"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Renderer-agnostic rich-text editor view for Rinch: projects the pure rinch-editor-core model onto any rinch-core DomDocument (desktop rinch-dom or browser web_sys), with the imperative EditorHandle, the Editor component, the mounted-editor registry, and the caret-blink clock. Shared by the desktop (rinch) and web (rinch-web) editors. wasm-clean; collaboration is opt-in."
+
+[dependencies]
+rinch-core = { workspace = true }
+rinch-editor-core = { workspace = true }
+# The Step↔Automerge collaboration adapter — opt-in, so default (desktop AND web)
+# builds link zero automerge. Enabled by the desktop `rinch`/`rinch-web` facades
+# only when their own `collaboration` feature is on.
+rinch-editor-collab = { workspace = true, optional = true }
+
+[features]
+# Collaborative editing (M9): wires the rinch-editor-collab adapter into EditorHandle.
+collaboration = ["dep:rinch-editor-collab"]
+
+[dev-dependencies]
+# The MockDomDocument the view/handle tests project onto (proof the seam is
+# renderer-agnostic — no rinch-dom/Parley needed).
+rinch-core = { workspace = true, features = ["test-util"] }

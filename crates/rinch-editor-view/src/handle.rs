@@ -507,7 +507,7 @@ impl EditorHandle {
     /// focused. The runtime's focus-aware caret pass calls this for every editor
     /// that isn't the focused one. A no-op before mount. Returns whether an overlay
     /// was actually cleared (so the runtime can force a full repaint).
-    pub(crate) fn hide_overlays(&self) -> bool {
+    pub fn hide_overlays(&self) -> bool {
         match self.inner.borrow_mut().view.as_mut() {
             Some(view) => {
                 view.hide_overlays();
@@ -541,7 +541,7 @@ impl EditorHandle {
     /// `cursor` is the candidate cursor within `text`; the overlay ignores it for
     /// now (the platform candidate box is placed from the model caret instead). A
     /// no-op before mount.
-    pub(crate) fn ime_set_preedit(&self, text: &str, _cursor: Option<(usize, usize)>) {
+    pub fn ime_set_preedit(&self, text: &str, _cursor: Option<(usize, usize)>) {
         if let Some(view) = self.inner.borrow_mut().view.as_mut() {
             view.set_preedit(text);
         }
@@ -549,7 +549,7 @@ impl EditorHandle {
 
     /// Clear the IME composition overlay without inserting anything (composition
     /// cancelled / disabled). A no-op before mount.
-    pub(crate) fn ime_clear_preedit(&self) {
+    pub fn ime_clear_preedit(&self) {
         if let Some(view) = self.inner.borrow_mut().view.as_mut() {
             view.set_preedit("");
         }
@@ -558,7 +558,7 @@ impl EditorHandle {
     /// Commit composed `text`: clear the preedit overlay, then insert the text at
     /// the selection as one ordinary edit (so it joins the undo history like
     /// typing). An empty commit just clears the overlay.
-    pub(crate) fn ime_commit(&self, text: &str) {
+    pub fn ime_commit(&self, text: &str) {
         if let Some(view) = self.inner.borrow_mut().view.as_mut() {
             view.set_preedit("");
         }
@@ -573,7 +573,7 @@ impl EditorHandle {
     /// A defensive no-op if the range is empty or the delete is invalid (e.g. it
     /// would cross a block boundary the schema rejects). Only reached once a backend
     /// advertises surrounding-text support.
-    pub(crate) fn ime_delete_surrounding(&self, before: usize, after: usize) {
+    pub fn ime_delete_surrounding(&self, before: usize, after: usize) {
         if let Some(view) = self.inner.borrow_mut().view.as_mut() {
             view.set_preedit("");
         }
@@ -600,7 +600,7 @@ impl EditorHandle {
 // broadcast (the `commit` → `record_local` path above); a peer's delta arrives via
 // `collab_receive`, which integrates it and re-projects without re-broadcasting. The
 // transport is the caller's concern: `outbound` carries bytes out, `collab_receive`
-// (or the thread-safe [`post_remote_delta`](super::post_remote_delta)) carries them
+// (or the platform runtime's thread-safe `post_remote_delta`) carries them
 // back in.
 #[cfg(feature = "collaboration")]
 impl EditorHandle {
@@ -654,7 +654,7 @@ impl EditorHandle {
     /// changed. A no-op (returns `false`) if this editor isn't collaborating.
     ///
     /// Must run on the main thread — a network transport should marshal received
-    /// bytes through [`post_remote_delta`](super::post_remote_delta) rather than
+    /// bytes through the platform runtime's `post_remote_delta` rather than
     /// calling this directly off-thread.
     ///
     /// Uses `try_borrow_mut`, so the degenerate case of an `outbound` sink wired to
