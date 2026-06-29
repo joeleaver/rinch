@@ -504,7 +504,7 @@ pub fn insert_horizontal_rule() -> Command {
             .create_node("horizontal_rule", Attrs::new(), Fragment::empty())
             .ok()?;
         let mut tr = state.tr();
-        tr.replace_selection_with(hr).ok()?;
+        tr.insert_block(hr).ok()?;
         Some(tr)
     })
 }
@@ -546,7 +546,7 @@ pub fn insert_table(rows: usize, cols: usize) -> Command {
     command_tr(move |state| {
         let table = build_table(state.schema(), rows, cols)?;
         let mut tr = state.tr();
-        tr.replace_selection_with(table).ok()?;
+        tr.insert_block(table).ok()?;
         Some(tr)
     })
 }
@@ -1470,6 +1470,45 @@ mod tests {
                 .iter()
                 .any(|n| n.type_name() == "horizontal_rule")
         );
+    }
+
+    #[test]
+    fn insert_block_at_a_cursor_inside_a_textblock() {
+        // End of the paragraph → the rule goes after it: [p "ab"][hr].
+        let mut s = editor("ab");
+        s.selection = Selection::cursor(Pos(3));
+        let end = s.run("insertHorizontalRule").expect("hr at para end");
+        assert_eq!(end.doc.child_count(), 2);
+        assert_eq!(end.doc.child(0).type_name(), "paragraph");
+        assert_eq!(end.doc.child(1).type_name(), "horizontal_rule");
+        assert_eq!(all_text(end.doc.child(0)), "ab");
+
+        // Start of the paragraph → the rule goes before it: [hr][p "ab"].
+        let mut s = editor("ab");
+        s.selection = Selection::cursor(Pos(1));
+        let start = s.run("insertHorizontalRule").expect("hr at para start");
+        assert_eq!(start.doc.child_count(), 2);
+        assert_eq!(start.doc.child(0).type_name(), "horizontal_rule");
+        assert_eq!(start.doc.child(1).type_name(), "paragraph");
+        assert_eq!(all_text(start.doc.child(1)), "ab");
+
+        // Interior → split the paragraph around the rule: [p "a"][hr][p "b"].
+        let mut s = editor("ab");
+        s.selection = Selection::cursor(Pos(2));
+        let mid = s.run("insertHorizontalRule").expect("hr mid para");
+        assert_eq!(mid.doc.child_count(), 3);
+        assert_eq!(mid.doc.child(0).type_name(), "paragraph");
+        assert_eq!(mid.doc.child(1).type_name(), "horizontal_rule");
+        assert_eq!(mid.doc.child(2).type_name(), "paragraph");
+        assert_eq!(all_text(mid.doc.child(0)), "a");
+        assert_eq!(all_text(mid.doc.child(2)), "b");
+
+        // A table inserts the same way at an interior cursor (the user's bug).
+        let mut s = editor("ab");
+        s.selection = Selection::cursor(Pos(2));
+        let tbl = s.run("insertTable").expect("table mid para");
+        assert_eq!(tbl.doc.child_count(), 3);
+        assert_eq!(tbl.doc.child(1).type_name(), "table");
     }
 
     #[test]
