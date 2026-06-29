@@ -676,6 +676,26 @@ impl DomDocument for WebDocument {
         }
     }
 
+    fn node_font(&self, node_id: u64) -> Option<rinch_core::dom::NodeFont> {
+        // `getComputedStyle` so the IME preedit overlay (an absolutely-positioned span
+        // in the editor container, which inherits only the container's default font)
+        // can match the block it composes into — e.g. a 32px heading, not 16px body.
+        let el: web_sys::Element = self
+            .nodes
+            .get(&(node_id as usize))?
+            .clone()
+            .dyn_into()
+            .ok()?;
+        let cs = web_sys::window()?.get_computed_style(&el).ok().flatten()?;
+        let get = |p: &str| cs.get_property_value(p).unwrap_or_default();
+        Some(rinch_core::dom::NodeFont {
+            family: get("font-family"),
+            size: get("font-size"),
+            weight: get("font-weight"),
+            style: get("font-style"),
+        })
+    }
+
     fn query_selection_rects(
         &self,
         node_id: u64,

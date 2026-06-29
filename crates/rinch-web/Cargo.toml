@@ -30,6 +30,12 @@ web-sys = { version = "0.3", features = [
     "Node", "NodeList", "Text", "Comment",
     "CssStyleDeclaration", "DomRect", "DomRectList",
     "Event", "MouseEvent", "KeyboardEvent",
-    "EventTarget",
+    "EventTarget", "FocusOptions",
     "Range",
+    # Clipboard + IME on the editor's hidden capture textarea: clipboard read/write
+    # (paste prefers text/html, falls back to an image file then text/plain) and the
+    # composition events that drive the IME preedit overlay.
+    "ClipboardEvent", "CompositionEvent",
+    "DataTransfer", "DataTransferItem", "DataTransferItemList",
+    "Blob", "File", "FileReader",
 ] }

@@ -90,6 +90,17 @@ pub struct GlyphBounds {
     pub height: f32,
 }
 
+/// The resolved font of a node, as CSS-ready strings — used by the IME preedit
+/// overlay so the composing text matches the text it composes into (a large
+/// heading vs. body text). Each field is a CSS value (e.g. `size = "32px"`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NodeFont {
+    pub family: String,
+    pub size: String,
+    pub weight: String,
+    pub style: String,
+}
+
 /// Trait for DOM documents that support mutation operations.
 ///
 /// This trait abstracts the DOM mutation API, allowing different
@@ -259,6 +270,14 @@ pub trait DomDocument {
     /// lays children out against.
     fn content_origin_inset(&self, _node_id: u64) -> (f32, f32) {
         (0.0, 0.0)
+    }
+
+    /// The resolved font of `node_id` ([`NodeFont`]), so the IME preedit overlay can
+    /// match the text it composes into (e.g. a 32px heading vs. 16px body). Default
+    /// `None` — the overlay keeps its inherited font. Backends that can read computed
+    /// styles (the browser's `getComputedStyle`) override this.
+    fn node_font(&self, _node_id: u64) -> Option<NodeFont> {
+        None
     }
 
     /// Per-line selection rectangles `(x, y, width, height)`, layout-local to the

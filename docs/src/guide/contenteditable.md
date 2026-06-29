@@ -229,11 +229,18 @@ and painting.
 
 **Supported today:** typing, the full command/toolbar surface, keyboard shortcuts,
 caret + selection rendering (pixel-accurate overlays), click / double-click (word) /
-triple-click (block) / shift-click / drag selection, and arrow / word / Home-End /
-vertical navigation. **Clipboard and IME composition are a planned follow-up** —
-without `contenteditable` the browser dispatches no `paste`/`cut`/`compositionstart`
-events to a plain `<div>`, so both need a focused hidden-textarea capture target (one
-addition unblocks both).
+triple-click (block) / shift-click / drag selection, arrow / word / Home-End /
+vertical navigation, **clipboard (copy / cut / paste — rich `text/html`, image, or
+plain text)**, and **IME composition** (the preedit overlay matches the composing
+block's font).
+
+Clipboard and IME ride a focused, off-screen **hidden `<textarea>`** capture target
+(created on first editor focus): a plain non-`contenteditable` `<div>` receives no
+`paste`/`cut`/`compositionstart` events, so the editor focuses the textarea to make
+the browser route those native events to it — which also makes focus browser-native
+so keys can't reach the wrong control. Typed characters are still consumed by the
+editor's key handler (and never reach the textarea); only IME composition flows
+through it. This mirrors the CodeMirror / ProseMirror hidden-input technique.
 
 ## Collaboration (optional, `collaboration` feature)
 
