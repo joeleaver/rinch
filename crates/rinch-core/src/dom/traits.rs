@@ -249,6 +249,18 @@ pub trait DomDocument {
     /// Returns the (x, y, width, height) of the node's layout box.
     fn query_node_layout(&self, node_id: u64) -> Option<(f32, f32, f32, f32)>;
 
+    /// The `(left, top)` inset from a node's box origin (the origin
+    /// [`query_node_layout`](Self::query_node_layout) reports against) to the origin an
+    /// absolutely-positioned child anchors to. On the web that is the node's border
+    /// width (`clientLeft`/`clientTop`): CSS positions an `absolute` child against the
+    /// padding box, while `getBoundingClientRect` differences report against the border
+    /// box, so the editor's overlay container offset must subtract this once. Default
+    /// `(0, 0)` — the desktop renderer positions overlays against the same origin it
+    /// lays children out against.
+    fn content_origin_inset(&self, _node_id: u64) -> (f32, f32) {
+        (0.0, 0.0)
+    }
+
     /// Per-line selection rectangles `(x, y, width, height)`, layout-local to the
     /// node's inline layout, covering the byte range `[a, b)`. Used to render a
     /// text selection's highlight. Default: empty (no inline layout / mock).

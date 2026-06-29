@@ -194,6 +194,47 @@ shows the same pattern inside the component showcase. The shape is always:
 `create_editor()` once, clone the handle into each button's `onclick`, and place a
 single `Editor {}` for the surface.
 
+## On the web (rinch-web)
+
+The editor runs in the browser too — the **same** `Editor {}` / `EditorHandle` /
+`create_editor()`, with **identical app code**. The renderer-agnostic view lives in
+`rinch-editor-view` and projects onto `rinch-web`'s `web_sys` DOM (the model is the
+single source of truth; the container is deliberately **not** `contenteditable`).
+`rinch-web` re-exports the editor, so a web app just imports it:
+
+```rust
+use rinch_web::{Editor, create_editor};
+
+#[component]
+fn app() -> NodeHandle {
+    let editor = create_editor();
+    let ed_bold = editor.clone();
+    rsx! {
+        div {
+            button { onclick: move || { ed_bold.command("toggleBold"); }, "Bold" }
+            Editor { editor: editor.clone(), content: "<p>Edit me in the browser.</p>" }
+        }
+    }
+}
+
+#[wasm_bindgen(start)]
+pub fn start() {
+    rinch_web::mount(ThemeProviderProps::default(), app);
+}
+```
+
+A runnable demo is `examples/editor-web` (built with `trunk serve`). The browser
+build links **no** `rinch-dom`/Parley/automerge — the browser handles layout, text,
+and painting.
+
+**Supported today:** typing, the full command/toolbar surface, keyboard shortcuts,
+caret + selection rendering (pixel-accurate overlays), click / double-click (word) /
+triple-click (block) / shift-click / drag selection, and arrow / word / Home-End /
+vertical navigation. **Clipboard and IME composition are a planned follow-up** —
+without `contenteditable` the browser dispatches no `paste`/`cut`/`compositionstart`
+events to a plain `<div>`, so both need a focused hidden-textarea capture target (one
+addition unblocks both).
+
 ## Collaboration (optional, `collaboration` feature)
 
 Two editors can share one live document. Enable the `collaboration` feature and the

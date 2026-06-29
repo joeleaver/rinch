@@ -15,10 +15,14 @@
 //!
 //! **Focus is click-driven** (design A10, like desktop): a `mousedown` inside a
 //! `[data-pm-editor]` focuses that editor; a `mousedown` into another text field blurs
-//! it. There is no `contenteditable`, so this v1 handles physical keys (all Latin text,
-//! shortcuts, navigation, selection, paste/copy/cut). **IME composition is a documented
-//! follow-up** — it needs a focused editable capture target (a hidden textarea), a
-//! separate piece of work.
+//! it. This v1 handles physical keys (all Latin text, shortcuts, navigation, selection)
+//! via document-level listeners — no `contenteditable` needed.
+//!
+//! **Clipboard and IME composition are a documented follow-up.** Both require a focused
+//! *editable* capture target (a hidden off-screen textarea): without one the browser
+//! dispatches no `paste`/`cut`/`compositionstart` events to a plain `<div>`. That one
+//! capture target unblocks both at once, plus makes focus browser-native (so keys can't
+//! be routed to the wrong control) — a self-contained next piece of work.
 
 use std::cell::Cell;
 
@@ -215,6 +219,12 @@ fn handle_mousemove(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
     let Some((container_nid, anchor)) = registry::drag_anchor() else {
         return false;
     };
+    // If the primary button is no longer held (a mouseup was missed — e.g. released
+    // outside the window), the drag is stale: end it instead of following the cursor.
+    if event.buttons() & 1 == 0 {
+        registry::end_drag();
+        return false;
+    }
     let Some(handle) = registry::editor_for(container_nid) else {
         return false;
     };
@@ -233,10 +243,21 @@ fn handle_mousemove(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
 // ── Keyboard ─────────────────────────────────────────────────────────────────
 
 /// Handle a `keydown`. Returns whether the editor consumed the key (so the listener
-/// `preventDefault`s + stops it). Mirrors `dispatch_new_editor_key`. Clipboard keys
-/// (Ctrl+C/X/V) are intentionally *not* consumed here — the browser fires dedicated
-/// `copy`/`cut`/`paste` events that carry the clipboard payload.
+/// `preventDefault`s + stops it). Mirrors `dispatch_new_editor_key`.
 fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bool {
+    // Never hijack a key destined for a real form control / editable element (e.g. a
+    // search box the user clicked) even while an editor is still logically focused —
+    // focus is click-tracked, not browser-native, so guard on the event target.
+    if let Some(t) = event
+        .target()
+        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        && t.closest("input, textarea, select, [contenteditable]")
+            .ok()
+            .flatten()
+            .is_some()
+    {
+        return false;
+    }
     let Some((container_nid, handle)) = focused_handle() else {
         return false;
     };
@@ -353,8 +374,9 @@ fn vertical_step(
     true
 }
 
-/// The viewport `(x, y, height)` of the caret at model `pos`, via a collapsed `Range`
-/// at the host text node. `None` for an empty block (no text node).
+/// The viewport `(x, y, height)` of the caret at model `pos`. Prefers a collapsed
+/// `Range` at the host text node; for an *empty* block (no text node) falls back to the
+/// block element's own box so vertical motion off a blank line still works.
 fn head_screen_rect(
     handle: &EditorHandle,
     doc: &web_sys::Document,
@@ -362,59 +384,24 @@ fn head_screen_rect(
 ) -> Option<(f32, f32, f32)> {
     let (tb_nid, byte) = handle.caret_address(pos)?;
     let block = node_by_nid(tb_nid)?;
-    let (text_node, off) = find_text_node_at_byte_offset(&block, byte)?;
-    let range = doc.create_range().ok()?;
-    range.set_start(&text_node, off).ok()?;
-    range.set_end(&text_node, off).ok()?;
-    let r = range.get_bounding_client_rect();
+    if let Some((text_node, off)) = find_text_node_at_byte_offset(&block, byte)
+        && let Ok(range) = doc.create_range()
+        && range.set_start(&text_node, off).is_ok()
+        && range.set_end(&text_node, off).is_ok()
+    {
+        let r = range.get_bounding_client_rect();
+        if r.height() > 0.0 {
+            return Some((r.x() as f32, r.y() as f32, r.height() as f32));
+        }
+    }
+    let el = block.dyn_into::<web_sys::Element>().ok()?;
+    let r = el.get_bounding_client_rect();
     let h = if r.height() > 0.0 {
         r.height() as f32
     } else {
         18.0
     };
     Some((r.x() as f32, r.y() as f32, h))
-}
-
-// ── Clipboard ────────────────────────────────────────────────────────────────
-
-/// Handle a `paste`: prefer rich HTML, else plain text. Returns whether the editor is
-/// focused (so the listener `preventDefault`s the browser's own paste).
-fn handle_paste(event: &web_sys::ClipboardEvent) -> bool {
-    let Some((_, handle)) = focused_handle() else {
-        return false;
-    };
-    if let Some(data) = event.clipboard_data() {
-        let html = data.get_data("text/html").unwrap_or_default();
-        let changed = if !html.trim().is_empty() {
-            handle.replace_selection_with_html(&html)
-        } else {
-            let text = data.get_data("text/plain").unwrap_or_default();
-            !text.is_empty() && handle.replace_selection_with_text(&text)
-        };
-        if changed {
-            refresh_caret();
-        }
-    }
-    true
-}
-
-/// Handle `copy`/`cut`: write the selection as HTML + text, and (cut) delete it. Returns
-/// whether the editor is focused (so the listener `preventDefault`s the default copy).
-fn handle_copy(event: &web_sys::ClipboardEvent, cut: bool) -> bool {
-    let Some((_, handle)) = focused_handle() else {
-        return false;
-    };
-    if let Some((html, text)) = handle.selection_clipboard()
-        && let Some(data) = event.clipboard_data()
-    {
-        let _ = data.set_data("text/html", &html);
-        let _ = data.set_data("text/plain", &text);
-        if cut {
-            handle.command("deleteSelection");
-            refresh_caret();
-        }
-    }
-    true
 }
 
 // ── Caret blink ──────────────────────────────────────────────────────────────
@@ -475,21 +462,6 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
     });
     add_capture(browser_doc, "mouseup", move |_e: web_sys::MouseEvent| {
         registry::end_drag();
-    });
-    add_capture(browser_doc, "paste", move |e: web_sys::ClipboardEvent| {
-        if handle_paste(&e) {
-            e.prevent_default();
-        }
-    });
-    add_capture(browser_doc, "copy", move |e: web_sys::ClipboardEvent| {
-        if handle_copy(&e, false) {
-            e.prevent_default();
-        }
-    });
-    add_capture(browser_doc, "cut", move |e: web_sys::ClipboardEvent| {
-        if handle_copy(&e, true) {
-            e.prevent_default();
-        }
     });
 
     // Bubble-phase refresh: after an *outside* click that wasn't consumed in capture
