@@ -296,6 +296,36 @@ impl EditorHandle {
             .pos_at(textblock_dom_id, ifc_byte)
     }
 
+    /// Model-based vertical fallback for the geometry-driven Up/Down caret step: the
+    /// caret position in the **adjacent textblock** — just before (`down = false`) or
+    /// after (`down = true`) the current textblock. Used when geometry can't resolve
+    /// the next visual line: the target line is an *empty* block (no text to hit-test)
+    /// or a block atom is in the way, so the screen-space probe snaps back to the
+    /// current line. Stepping in the model lets the caret still land on a blank line /
+    /// past an atom. `None` at the document edge. Mirrors the desktop `vertical_step`
+    /// stuck-path so both platforms behave the same.
+    pub fn vertical_block_fallback(&self, down: bool) -> Option<Selection> {
+        let core = self.inner.borrow();
+        let doc = &core.state.doc;
+        let head = core.state.selection.head();
+        let r = doc.resolve(head).ok()?;
+        let probe = if r.parent().is_textblock() {
+            let content_start = head.0 - r.parent_offset();
+            if down {
+                content_start + r.parent().content().size() + 1
+            } else {
+                content_start.checked_sub(1)?
+            }
+        } else {
+            head.0
+        };
+        Selection::near_text(
+            doc,
+            Pos(probe.min(doc.content_size())),
+            if down { 1 } else { -1 },
+        )
+    }
+
     /// A [`Selection::Node`] for the leaf node (image / horizontal rule) whose host
     /// element is `host_id` — the pointer hit-test path for node-selecting a leaf the
     /// user clicks. `None` if `host_id` isn't a placed node, or its node isn't

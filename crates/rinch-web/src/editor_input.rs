@@ -607,15 +607,35 @@ fn vertical_step(
     let gx = goal_x().unwrap_or(hx);
     set_goal_x(Some(gx));
     let ty = if down { hy + hh * 1.5 } else { hy - hh * 0.5 };
-    let Some(hit) = resolve_editor_point(doc, gx, ty) else {
+
+    // First, the geometry probe at the goal column. Accept it only if the caret
+    // genuinely changed visual line: a move to a *different* textblock, or — within a
+    // wrapped block — a caret whose new screen y actually crossed the half-line
+    // threshold. Otherwise the probe snapped back to the current line (the target line
+    // is an empty block with no text to hit-test, or a block atom is in the way).
+    let head_tb = handle.caret_address(head).map(|(t, _)| t);
+    let geo_head = resolve_editor_point(doc, gx, ty)
+        .filter(|hit| hit.container_nid == container_nid)
+        .and_then(|hit| handle.pos_at(hit.textblock_nid, hit.byte))
+        .filter(|&p| {
+            if handle.caret_address(p).map(|(t, _)| t) != head_tb {
+                return true; // different textblock — a real line change
+            }
+            match head_screen_rect(handle, doc, p) {
+                Some((_, py, _)) if down => py > hy + hh * 0.5,
+                Some((_, py, _)) => py < hy - hh * 0.5,
+                None => false,
+            }
+        });
+
+    // Stuck — step to the adjacent textblock in the model so the caret can still land
+    // on a blank line above/below (or past a block atom). Mirrors the desktop fallback.
+    let Some(new_head) =
+        geo_head.or_else(|| handle.vertical_block_fallback(down).map(|s| s.head()))
+    else {
         return false;
     };
-    if hit.container_nid != container_nid {
-        return false;
-    }
-    let Some(new_head) = handle.pos_at(hit.textblock_nid, hit.byte) else {
-        return false;
-    };
+
     let sel = if extend {
         Selection::text(handle.selection().anchor(), new_head)
     } else {
@@ -703,12 +723,46 @@ fn add_target_listener<E: JsCast + 'static>(
     closure.forget();
 }
 
+/// A small web-only override of the shared editor default stylesheet. The shared
+/// stylesheet (`rinch_editor_view`'s `styles.rs`) sets `li { display: flex }` so the
+/// *desktop* renderer (rinch-dom, which emits list markers as block siblings) can align
+/// them inline with their content. On the web the browser draws the native `::marker`,
+/// which `display: flex` suppresses — so bullets and numbers vanish. Restoring
+/// `display: list-item` brings them back. Scoped one level deeper (`ul/ol > li`) than the
+/// base `li` rule so it wins by specificity regardless of `<style>` source order.
+const EDITOR_WEB_CSS: &str =
+    "[data-pm-editor] ul > li, [data-pm-editor] ol > li { display: list-item; }";
+
+/// Inject [`EDITOR_WEB_CSS`] into the document head once (idempotent), so the browser
+/// renders native list markers despite the shared stylesheet's desktop `li` flex rule.
+fn ensure_editor_web_styles(doc: &web_sys::Document) {
+    if doc
+        .query_selector("style[data-rinch-editor-web]")
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return;
+    }
+    let Ok(style) = doc.create_element("style") else {
+        return;
+    };
+    let _ = style.set_attribute("data-rinch-editor-web", "true");
+    style.set_text_content(Some(EDITOR_WEB_CSS));
+    if let Some(head) = doc.head() {
+        let _ = head.append_child(&style);
+    }
+}
+
 /// Install the editor input listeners once. Called from `mount_tree` alongside
 /// `ensure_event_delegation`. Idempotent.
 pub(crate) fn install(browser_doc: &web_sys::Document) {
     if INSTALLED.with(|c| c.replace(true)) {
         return;
     }
+
+    // Patch the one editor default-stylesheet rule that is desktop-specific (see below).
+    ensure_editor_web_styles(browser_doc);
 
     let doc = browser_doc.clone();
     add_capture(browser_doc, "keydown", move |e: web_sys::KeyboardEvent| {
