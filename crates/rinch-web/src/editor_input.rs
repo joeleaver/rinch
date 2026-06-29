@@ -703,12 +703,46 @@ fn add_target_listener<E: JsCast + 'static>(
     closure.forget();
 }
 
+/// A small web-only override of the shared editor default stylesheet. The shared
+/// stylesheet (`rinch_editor_view`'s `styles.rs`) sets `li { display: flex }` so the
+/// *desktop* renderer (rinch-dom, which emits list markers as block siblings) can align
+/// them inline with their content. On the web the browser draws the native `::marker`,
+/// which `display: flex` suppresses — so bullets and numbers vanish. Restoring
+/// `display: list-item` brings them back. Scoped one level deeper (`ul/ol > li`) than the
+/// base `li` rule so it wins by specificity regardless of `<style>` source order.
+const EDITOR_WEB_CSS: &str =
+    "[data-pm-editor] ul > li, [data-pm-editor] ol > li { display: list-item; }";
+
+/// Inject [`EDITOR_WEB_CSS`] into the document head once (idempotent), so the browser
+/// renders native list markers despite the shared stylesheet's desktop `li` flex rule.
+fn ensure_editor_web_styles(doc: &web_sys::Document) {
+    if doc
+        .query_selector("style[data-rinch-editor-web]")
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return;
+    }
+    let Ok(style) = doc.create_element("style") else {
+        return;
+    };
+    let _ = style.set_attribute("data-rinch-editor-web", "true");
+    style.set_text_content(Some(EDITOR_WEB_CSS));
+    if let Some(head) = doc.head() {
+        let _ = head.append_child(&style);
+    }
+}
+
 /// Install the editor input listeners once. Called from `mount_tree` alongside
 /// `ensure_event_delegation`. Idempotent.
 pub(crate) fn install(browser_doc: &web_sys::Document) {
     if INSTALLED.with(|c| c.replace(true)) {
         return;
     }
+
+    // Patch the one editor default-stylesheet rule that is desktop-specific (see below).
+    ensure_editor_web_styles(browser_doc);
 
     let doc = browser_doc.clone();
     add_capture(browser_doc, "keydown", move |e: web_sys::KeyboardEvent| {
