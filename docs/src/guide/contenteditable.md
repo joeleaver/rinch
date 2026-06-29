@@ -290,6 +290,30 @@ edit outside that scope fails loud rather than silently diverging —
 not projected). A runnable two-pane loopback (both editors in one window, no network)
 lives at `examples/collab-editor-demo/src/main.rs`.
 
+### On the web
+
+The **same** adapter runs in the browser — Automerge compiled to wasm. Enable the
+`collaboration` feature on `rinch-web`:
+
+```toml
+rinch-web = { path = "...", features = ["collaboration"] }
+```
+
+The `EditorHandle` collab API is identical to desktop, with two web specifics:
+
+- **Inbound is a direct call.** Wasm is single-threaded, so a transport callback
+  (e.g. a `WebSocket` `onmessage`) already runs on the main thread — call
+  `handle.collab_receive(&bytes)` (or `collab_receive_for(container_id, &bytes)`)
+  directly. There is no `post_remote_delta` on web (that is the desktop runtime's
+  off-thread marshaller).
+- **Randomness.** Automerge mints actor ids via `uuid`, which needs a randomness
+  source on `wasm32-unknown-unknown`. Add `uuid = { version = "1", features = ["js"] }`
+  to your app (it routes to the Web Crypto API); without it the wasm build won't
+  compile. `rinch-web` deliberately does not pin this — it is the app's choice.
+
+A runnable two-pane web loopback is `examples/collab-editor-web` (built with
+`trunk serve`), the browser counterpart of `collab-editor-demo`.
+
 ## Where to go next
 
 - [Rich-Text Editor](./editor.md) — the document model, schema, transactions,

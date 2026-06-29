@@ -11,6 +11,7 @@ exclude = [
     "examples/events-web",
     "examples/islands-web",
     "examples/editor-web",
+    "examples/collab-editor-web",
 ]
 
 [workspace.package]
