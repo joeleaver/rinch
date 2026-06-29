@@ -325,6 +325,53 @@ impl Transaction {
         Ok(self)
     }
 
+    /// Insert a **block-level** `node` (horizontal rule, table) at the current
+    /// selection, opening a block gap for it: delete any selected range, then place
+    /// the node before or after the enclosing textblock — splitting the textblock when
+    /// the cursor is in its interior. Unlike [`Self::replace_selection_with`] (which
+    /// drops the node *at* the selection, so a block node only fits when the selection
+    /// already spans a doc-level block gap), this handles the common case of a collapsed
+    /// cursor inside a paragraph. Leaves the cursor just after the inserted node.
+    pub fn insert_block(&mut self, node: Node) -> Result<&mut Self, StepError> {
+        let from = self.cur_selection.from().0;
+        let to = self.cur_selection.to().0;
+        if from != to {
+            self.delete(from, to)?;
+        }
+        let size = node.node_size();
+        // `from` is the (post-delete) collapsed cursor — the deletion start is invariant
+        // under its own delete, so it stays valid.
+        let r = self
+            .doc
+            .resolve(Pos(from))
+            .map_err(|e| StepError::new(e.to_string()))?;
+        let gap = if r.depth() < 1 {
+            // Already a doc-level gap (no enclosing textblock).
+            from
+        } else if r.parent_offset() == 0 {
+            // Start of the textblock — insert directly before it (no split).
+            r.before(r.depth())
+                .ok_or_else(|| StepError::new("no position before block"))?
+        } else if r.parent_offset() == r.parent().content().size() {
+            // End of the textblock — insert directly after it (no split).
+            r.after(r.depth())
+                .ok_or_else(|| StepError::new("no position after block"))?
+        } else {
+            // Interior — split the textblock; the gap is just before the second half.
+            self.split(from, 1, None)?;
+            let mapped = self.mapping().map(from, 1);
+            let r2 = self
+                .doc
+                .resolve(Pos(mapped))
+                .map_err(|e| StepError::new(e.to_string()))?;
+            r2.before(r2.depth())
+                .ok_or_else(|| StepError::new("no position at split boundary"))?
+        };
+        self.replace_with(gap, gap, Fragment::from_node(node))?;
+        self.set_selection(Selection::near(&self.doc, Pos(gap + size), 1));
+        Ok(self)
+    }
+
     /// Delete the current (non-empty) selection. A no-op for a collapsed cursor.
     pub fn delete_selection(&mut self) -> Result<&mut Self, StepError> {
         let from = self.cur_selection.from().0;
