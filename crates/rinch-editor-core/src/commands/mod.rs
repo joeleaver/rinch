@@ -432,34 +432,89 @@ pub fn outdent() -> Command {
     })
 }
 
-/// The **Paragraph** command: set the selected textblock(s) to a plain paragraph and,
-/// because "Paragraph" reads as "normal text", also lift them out of an enclosing
-/// blockquote (un-quote). A heading becomes a paragraph; a quoted paragraph drops out
-/// of the quote. A plain paragraph that is already un-quoted is a no-op.
+/// The **Paragraph** command — "reset to normal text". It strips *every* kind of
+/// formatting off the selection so the result is plain paragraph text:
+///
+/// 1. removes all inline marks (bold/italic/underline/link/…),
+/// 2. converts the block(s) to paragraphs (heading / code block → paragraph),
+/// 3. resets the indent level to 0,
+/// 4. lifts the block(s) out of every wrapper (blockquote, list) to the top level.
+///
+/// A no-op (returns `None`) only when the selection is already plain top-level
+/// paragraph text with no marks.
 pub fn set_paragraph() -> Command {
     command_tr(|state| {
         let para_ty = state.schema().node_type("paragraph")?.clone();
         let (from, to) = (state.selection.from().0, state.selection.to().0);
         let mut tr = state.tr();
-        let _ = tr.set_block_type(from, to, para_ty, Attrs::new());
-        // Un-quote: lift the block(s) out of an enclosing blockquote. The range is
-        // resolved against a snapshot so it doesn't borrow the `tr` we then mutate.
-        if in_node_type(state, "blockquote") {
-            let (from_pos, to_pos) = (tr.selection().from(), tr.selection().to());
-            let doc = tr.doc().clone();
-            if let (Ok(r_from), Ok(r_to)) = (doc.resolve(from_pos), doc.resolve(to_pos))
-                && let Some(range) = block_range_simple(&r_from, &r_to)
-            {
-                for target in (0..range.depth).rev() {
-                    let before = tr.doc().clone();
-                    if tr.lift(&range, target).is_ok() && tr.doc() != &before {
-                        break;
-                    }
-                }
+
+        // 1. Strip every inline mark over the selection. Mark steps don't shift
+        //    positions, so `from`/`to` stay valid for the block ops below. Iterate the
+        //    schema's marks in a deterministic (sorted) order.
+        let mut mark_names: Vec<String> = state.schema().marks.keys().cloned().collect();
+        mark_names.sort();
+        for name in &mark_names {
+            if let Some(mt) = state.schema().mark_type(name) {
+                remove_marks_of_type(&mut tr, &state.doc, from, to, mt).ok()?;
             }
         }
+
+        // 2. Convert the selected textblock(s) to plain paragraphs. `set_block_type`
+        //    preserves block-boundary positions (same open/close token count).
+        let _ = tr.set_block_type(from, to, para_ty, Attrs::new());
+
+        // 3. Reset the indent attribute to 0 on the (now-)paragraphs in range.
+        let mut indent_targets: Vec<usize> = Vec::new();
+        state
+            .doc
+            .nodes_between(from, to, &mut |node, pos, _parent| {
+                if matches!(node.type_name(), "paragraph" | "heading") {
+                    indent_targets.push(pos);
+                }
+                true
+            });
+        for pos in indent_targets {
+            let _ = tr.set_node_attr(pos, "indent", crate::AttrValue::Int(0));
+        }
+
+        // 4. Lift out of every wrapper (blockquote, list) to the document top level.
+        lift_to_top(&mut tr);
+
         tr.doc_changed().then_some(tr)
     })
+}
+
+/// Lift the current selection's block range out of every enclosing wrapper until it is
+/// a direct child of the document — one wrapper per pass. The transaction maps its
+/// selection forward through each lift, so re-reading `tr.selection()` each pass is
+/// correct. Stops at the top level or when a wrapper can't be lifted.
+fn lift_to_top(tr: &mut Transaction) {
+    loop {
+        let (from, to) = (tr.selection().from(), tr.selection().to());
+        let doc = tr.doc().clone();
+        let (r_from, r_to) = match (doc.resolve(from), doc.resolve(to)) {
+            (Ok(a), Ok(b)) => (a, b),
+            _ => break,
+        };
+        if r_from.depth() <= 1 {
+            break; // already a top-level block
+        }
+        let range = match block_range_simple(&r_from, &r_to) {
+            Some(r) if r.depth > 0 => r,
+            _ => break,
+        };
+        let before = tr.doc().clone();
+        let mut lifted = false;
+        for target in (0..range.depth).rev() {
+            if tr.lift(&range, target).is_ok() && tr.doc() != &before {
+                lifted = true;
+                break;
+            }
+        }
+        if !lifted {
+            break;
+        }
+    }
 }
 
 // ===================================================================
@@ -1049,6 +1104,18 @@ mod tests {
             return t.to_string();
         }
         node.content().iter().map(all_text).collect()
+    }
+
+    /// Whether any inline node in `doc` carries a mark named `name`.
+    fn doc_has_mark(doc: &Node, name: &str) -> bool {
+        let mut found = false;
+        doc.nodes_between(0, doc.content_size(), &mut |node, _, _| {
+            if node.marks().iter().any(|m| m.type_name() == name) {
+                found = true;
+            }
+            true
+        });
+        found
     }
 
     #[test]
@@ -1673,6 +1740,83 @@ mod tests {
             list.run("indent").is_none(),
             "indent on the first list item is a no-op"
         );
+    }
+
+    #[test]
+    fn set_paragraph_resets_each_kind_of_formatting() {
+        // (a) Inline marks are stripped.
+        let mut s = editor("abc");
+        s.selection = Selection::text(Pos(1), Pos(4));
+        let bold = s.run("toggleBold").expect("bold applies");
+        assert!(doc_has_mark(&bold.doc, "bold"));
+        let plain = bold.run("setParagraph").expect("clears marks");
+        assert!(!doc_has_mark(&plain.doc, "bold"), "marks stripped");
+
+        // (b) Heading → paragraph.
+        let mut s = editor("title");
+        s.selection = Selection::cursor(Pos(2));
+        let h = s.run("setHeading1").expect("h1 applies");
+        assert_eq!(h.doc.child(0).type_name(), "heading");
+        let p = h.run("setParagraph").expect("heading → paragraph");
+        assert_eq!(p.doc.child(0).type_name(), "paragraph");
+
+        // (c) List item → top-level paragraph (un-listed).
+        let mut s = editor("item");
+        s.selection = Selection::cursor(Pos(2));
+        let list = s.run("toggleBulletList").expect("list applies");
+        assert!(
+            list.doc
+                .content()
+                .iter()
+                .any(|n| n.type_name() == "bullet_list")
+        );
+        let p = list.run("setParagraph").expect("un-list");
+        assert!(
+            !p.doc
+                .content()
+                .iter()
+                .any(|n| n.type_name() == "bullet_list"),
+            "list removed"
+        );
+        assert_eq!(p.doc.child(0).type_name(), "paragraph");
+        assert_eq!(all_text(p.doc.child(0)), "item");
+
+        // (d) Indent reset to 0.
+        let mut s = editor("ind");
+        s.selection = Selection::cursor(Pos(2));
+        let i = s.run("indent").expect("indent applies");
+        assert_eq!(i.doc.child(0).attrs().get_int("indent"), Some(1));
+        let p = i.run("setParagraph").expect("resets indent");
+        assert_eq!(p.doc.child(0).attrs().get_int("indent"), Some(0));
+    }
+
+    #[test]
+    fn set_paragraph_resets_all_formatting_at_once() {
+        // A bold heading wrapped in a blockquote — one Paragraph click clears it all.
+        let mut s = editor("mixed");
+        s.selection = Selection::text(Pos(1), Pos(6));
+        let b = s.run("toggleBold").expect("bold");
+        let h = b.run("setHeading1").expect("h1");
+        let q = h.run("wrapInBlockquote").expect("quote");
+        assert!(
+            q.doc
+                .content()
+                .iter()
+                .any(|n| n.type_name() == "blockquote")
+        );
+        assert!(doc_has_mark(&q.doc, "bold"));
+
+        let p = q.run("setParagraph").expect("reset to normal text");
+        assert!(
+            !p.doc
+                .content()
+                .iter()
+                .any(|n| n.type_name() == "blockquote"),
+            "un-quoted"
+        );
+        assert_eq!(p.doc.child(0).type_name(), "paragraph", "is a paragraph");
+        assert!(!doc_has_mark(&p.doc, "bold"), "marks stripped");
+        assert_eq!(all_text(p.doc.child(0)), "mixed");
     }
 
     #[test]
