@@ -607,15 +607,35 @@ fn vertical_step(
     let gx = goal_x().unwrap_or(hx);
     set_goal_x(Some(gx));
     let ty = if down { hy + hh * 1.5 } else { hy - hh * 0.5 };
-    let Some(hit) = resolve_editor_point(doc, gx, ty) else {
+
+    // First, the geometry probe at the goal column. Accept it only if the caret
+    // genuinely changed visual line: a move to a *different* textblock, or — within a
+    // wrapped block — a caret whose new screen y actually crossed the half-line
+    // threshold. Otherwise the probe snapped back to the current line (the target line
+    // is an empty block with no text to hit-test, or a block atom is in the way).
+    let head_tb = handle.caret_address(head).map(|(t, _)| t);
+    let geo_head = resolve_editor_point(doc, gx, ty)
+        .filter(|hit| hit.container_nid == container_nid)
+        .and_then(|hit| handle.pos_at(hit.textblock_nid, hit.byte))
+        .filter(|&p| {
+            if handle.caret_address(p).map(|(t, _)| t) != head_tb {
+                return true; // different textblock — a real line change
+            }
+            match head_screen_rect(handle, doc, p) {
+                Some((_, py, _)) if down => py > hy + hh * 0.5,
+                Some((_, py, _)) => py < hy - hh * 0.5,
+                None => false,
+            }
+        });
+
+    // Stuck — step to the adjacent textblock in the model so the caret can still land
+    // on a blank line above/below (or past a block atom). Mirrors the desktop fallback.
+    let Some(new_head) =
+        geo_head.or_else(|| handle.vertical_block_fallback(down).map(|s| s.head()))
+    else {
         return false;
     };
-    if hit.container_nid != container_nid {
-        return false;
-    }
-    let Some(new_head) = handle.pos_at(hit.textblock_nid, hit.byte) else {
-        return false;
-    };
+
     let sel = if extend {
         Selection::text(handle.selection().anchor(), new_head)
     } else {
