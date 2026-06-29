@@ -58,6 +58,15 @@ pub use web_document::WebDocument;
 // `editor_input`, installed once alongside event delegation.
 pub use rinch_editor_view::{Editor, EditorHandle, create_editor};
 
+// Collaborative editing (M9), behind the `collaboration` feature. The collab methods
+// live on `EditorHandle` (lit up by the feature); these add the error type and the
+// by-container inbound entry point. On web there is no thread marshalling — a JS
+// transport callback runs on the main thread, so it calls `handle.collab_receive`
+// (or `collab_receive_for(container_id, ..)`) directly; there is no `post_remote_delta`
+// (that is the desktop runtime's off-thread marshaller).
+#[cfg(feature = "collaboration")]
+pub use rinch_editor_view::{CollabError, collab_receive_for};
+
 // ============================================================================
 // Mounted-root registry + per-page guards
 // ============================================================================

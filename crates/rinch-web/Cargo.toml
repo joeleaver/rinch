@@ -39,3 +39,11 @@ web-sys = { version = "0.3", features = [
     "DataTransfer", "DataTransferItem", "DataTransferItemList",
     "Blob", "File", "FileReader",
 ] }
+
+[features]
+# Collaborative editing (M9): forwards to the editor view's collab adapter, which
+# is the only thing that links Automerge. Off by default, so a default web build
+# links zero automerge. A wasm app enabling this must also supply a randomness
+# source for the transitive automerge → uuid → getrandom (the getrandom 0.3
+# `wasm_js` backend) — see `examples/collab-editor-web`.
+collaboration = ["rinch-editor-view/collaboration"]

@@ -1,0 +1,33 @@
+[package]
+name = "collab-editor-web"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Web collaborative rich-text editor demo: two editors sharing one Automerge CRDT in the browser (the same M9 adapter as desktop), in-process loopback, no contenteditable"
+
+[dependencies]
+# Rinch without desktop + the browser-native DOM backend with collaboration on (which
+# pulls in the rinch-editor-collab Automerge adapter — the same one desktop uses).
+rinch = { path = "../../crates/rinch", default-features = false, features = ["components", "theme"] }
+rinch-core = { path = "../../crates/rinch-core", features = ["theme"] }
+rinch-web = { path = "../../crates/rinch-web", features = ["collaboration"] }
+# Pure model types (Pos/Selection) for parking the initial cursor.
+rinch-editor-core = { path = "../../crates/rinch-editor-core" }
+
+# WASM bindings + console glue
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
+console_log = "0.2"
+log = "0.4"
+
+# Browser randomness for the transitive automerge → uuid. `uuid`'s `js` feature wires
+# its wasm randomness to the Web Crypto API so Automerge can mint actor ids; without a
+# randomness feature `uuid` refuses to compile on wasm32-unknown-unknown.
+uuid = { version = "1", features = ["js"] }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
