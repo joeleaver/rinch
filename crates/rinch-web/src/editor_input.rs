@@ -15,16 +15,22 @@
 //!
 //! **Focus is click-driven** (design A10, like desktop): a `mousedown` inside a
 //! `[data-pm-editor]` focuses that editor; a `mousedown` into another text field blurs
-//! it. This v1 handles physical keys (all Latin text, shortcuts, navigation, selection)
-//! via document-level listeners — no `contenteditable` needed.
+//! it. Physical keys (all Latin text, shortcuts, navigation, selection) are handled via
+//! the document-level listeners — no `contenteditable` needed.
 //!
-//! **Clipboard and IME composition are a documented follow-up.** Both require a focused
-//! *editable* capture target (a hidden off-screen textarea): without one the browser
-//! dispatches no `paste`/`cut`/`compositionstart` events to a plain `<div>`. That one
-//! capture target unblocks both at once, plus makes focus browser-native (so keys can't
-//! be routed to the wrong control) — a self-contained next piece of work.
+//! **Clipboard + IME ride a hidden capture target.** A plain `<div>` (the container is
+//! deliberately not `contenteditable`) receives no `paste`/`cut`/`copy`/
+//! `compositionstart` events, so we keep one shared, focused, off-screen `<textarea>`
+//! ([`ensure_capture_target`]) as the browser's idea of the focused editable: focusing
+//! it on editor-focus makes those native events fire (they target it), and makes focus
+//! browser-native so keys can't route to the wrong control. It is never shown and never
+//! holds document text — typed characters are consumed (and `preventDefault`ed) by the
+//! keydown handler before the textarea sees them; only IME composition flows through it,
+//! and its value is cleared on commit. This mirrors the CodeMirror / ProseMirror
+//! hidden-input technique.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -47,6 +53,13 @@ thread_local! {
     static BLINK_ON: Cell<bool> = const { Cell::new(true) };
     /// Install-once guard.
     static INSTALLED: Cell<bool> = const { Cell::new(false) };
+    /// The shared hidden capture `<textarea>` (clipboard + IME focus target), created
+    /// lazily on the first editor focus. There is only ever one focused editor, so one
+    /// shared target suffices.
+    static CAPTURE: RefCell<Option<web_sys::HtmlTextAreaElement>> = const { RefCell::new(None) };
+    /// Whether an IME composition is in progress. While set, the keydown handler yields
+    /// every key to the textarea + IME (the composed text arrives via composition events).
+    static COMPOSING: Cell<bool> = const { Cell::new(false) };
 }
 
 fn focused_editor() -> Option<usize> {
@@ -137,6 +150,234 @@ fn refresh_caret() {
     registry::update_all_carets(focused_editor());
 }
 
+// ── Hidden capture target (clipboard + IME) ───────────────────────────────────
+
+/// Get-or-create the shared hidden capture `<textarea>`, appending it to `<body>`
+/// and attaching its clipboard + composition listeners on first use. `None` only
+/// if the DOM rejects the element (e.g. no `<body>` yet).
+fn ensure_capture_target(doc: &web_sys::Document) -> Option<web_sys::HtmlTextAreaElement> {
+    if let Some(ta) = capture_target() {
+        return Some(ta);
+    }
+    let ta: web_sys::HtmlTextAreaElement = doc.create_element("textarea").ok()?.dyn_into().ok()?;
+    ta.set_attribute("data-pm-capture", "true").ok();
+    ta.set_attribute("aria-hidden", "true").ok();
+    ta.set_attribute("tabindex", "-1").ok();
+    ta.set_autocomplete("off");
+    ta.set_spellcheck(false);
+    ta.set_attribute("autocorrect", "off").ok();
+    ta.set_attribute("autocapitalize", "off").ok();
+    // Off-screen, invisible, and non-interactive (`pointer-events: none` so it never
+    // becomes a mouse target / steals a click) yet still programmatically focusable.
+    ta.set_attribute(
+        "style",
+        "position: fixed; top: 0; left: 0; width: 1px; height: 1px; padding: 0; \
+         margin: -1px; border: 0; opacity: 0; overflow: hidden; resize: none; \
+         pointer-events: none; outline: none; z-index: -1; white-space: pre;",
+    )
+    .ok();
+    doc.body()?.append_child(&ta).ok()?;
+    install_capture_listeners(&ta);
+    CAPTURE.with(|c| *c.borrow_mut() = Some(ta.clone()));
+    Some(ta)
+}
+
+/// The capture textarea, if it has been created.
+fn capture_target() -> Option<web_sys::HtmlTextAreaElement> {
+    CAPTURE.with(|c| c.borrow().clone())
+}
+
+/// Focus the capture target so the browser routes clipboard / IME events to it.
+/// `preventScroll` keeps focusing the off-screen target from jumping the page.
+fn focus_capture_target(doc: &web_sys::Document) {
+    if let Some(ta) = ensure_capture_target(doc) {
+        let opts = web_sys::FocusOptions::new();
+        opts.set_prevent_scroll(true);
+        let _ = ta.focus_with_options(&opts);
+        ta.set_value("");
+    }
+}
+
+/// Blur the capture target (when focus leaves the editor for another field).
+fn blur_capture_target() {
+    if let Some(ta) = capture_target() {
+        let _ = ta.blur();
+    }
+}
+
+/// Attach the clipboard + IME composition listeners to the capture target, once
+/// when it is created. These events only fire on the focused editable, so scoping
+/// them to our textarea avoids hijacking copy/paste for any other page input.
+fn install_capture_listeners(ta: &web_sys::HtmlTextAreaElement) {
+    let target: &web_sys::EventTarget = ta.as_ref();
+    add_target_listener(target, "copy", |e: web_sys::ClipboardEvent| on_copy(&e));
+    add_target_listener(target, "cut", |e: web_sys::ClipboardEvent| on_cut(&e));
+    add_target_listener(target, "paste", |e: web_sys::ClipboardEvent| on_paste(&e));
+    add_target_listener(
+        target,
+        "compositionstart",
+        |_e: web_sys::CompositionEvent| {
+            COMPOSING.with(|c| c.set(true));
+        },
+    );
+    add_target_listener(
+        target,
+        "compositionupdate",
+        |e: web_sys::CompositionEvent| {
+            on_composition_update(&e);
+        },
+    );
+    add_target_listener(target, "compositionend", |e: web_sys::CompositionEvent| {
+        on_composition_end(&e);
+    });
+}
+
+// ── Clipboard (copy / cut / paste) ─────────────────────────────────────────────
+//
+// Mirrors the desktop `editor_copy`/`editor_cut`/`editor_paste`, but reads/writes
+// the browser's native `ClipboardEvent.clipboardData` (synchronous, the only path
+// to `text/html`) instead of the OS clipboard crate. The model serialization
+// (`selection_clipboard` / `replace_selection_with_*`) is the shared handle API.
+
+/// Copy: write the selection's `(text/html, text/plain)` to the clipboard. Always
+/// `preventDefault` so the empty hidden textarea is never copied (which would clobber
+/// the clipboard); only write data when there is a non-empty selection.
+fn on_copy(event: &web_sys::ClipboardEvent) {
+    let Some((_, handle)) = focused_handle() else {
+        return;
+    };
+    event.prevent_default();
+    if let Some((html, text)) = handle.selection_clipboard()
+        && let Some(dt) = event.clipboard_data()
+    {
+        let _ = dt.set_data("text/html", &html);
+        let _ = dt.set_data("text/plain", &text);
+    }
+}
+
+/// Cut: copy the selection, then delete it.
+fn on_cut(event: &web_sys::ClipboardEvent) {
+    let Some((_, handle)) = focused_handle() else {
+        return;
+    };
+    event.prevent_default();
+    if let Some((html, text)) = handle.selection_clipboard()
+        && let Some(dt) = event.clipboard_data()
+    {
+        let _ = dt.set_data("text/html", &html);
+        let _ = dt.set_data("text/plain", &text);
+        if handle.command("deleteSelection") {
+            refresh_caret();
+        }
+    }
+}
+
+/// Paste over the selection, preferring rich `text/html`, then a raw image file
+/// (encoded as a `data:` URL via `FileReader`), then `text/plain`.
+fn on_paste(event: &web_sys::ClipboardEvent) {
+    let Some((_, handle)) = focused_handle() else {
+        return;
+    };
+    event.prevent_default();
+    let Some(dt) = event.clipboard_data() else {
+        return;
+    };
+    // 1. Rich HTML — preserves structure, links, marks, and URL-referenced images.
+    if let Ok(html) = dt.get_data("text/html")
+        && !html.trim().is_empty()
+        && handle.replace_selection_with_html(&html)
+    {
+        refresh_caret();
+        return;
+    }
+    // 2. A bitmap with no HTML wrapper (a screenshot / "copy image"): read the first
+    //    image file as a data URL and insert it asynchronously.
+    if paste_image_from(&dt, &handle) {
+        return;
+    }
+    // 3. Plain text.
+    if let Ok(text) = dt.get_data("text/plain")
+        && !text.is_empty()
+        && handle.replace_selection_with_text(&text)
+    {
+        refresh_caret();
+    }
+}
+
+/// Find the first image file on the clipboard and insert it (async). Returns
+/// whether an image read was started.
+fn paste_image_from(dt: &web_sys::DataTransfer, handle: &EditorHandle) -> bool {
+    let items = dt.items();
+    for i in 0..items.length() {
+        if let Some(item) = items.get(i)
+            && item.kind() == "file"
+            && item.type_().starts_with("image/")
+            && let Ok(Some(file)) = item.get_as_file()
+        {
+            read_image_file(&file, handle.clone());
+            return true;
+        }
+    }
+    false
+}
+
+/// A self-dropping slot holding a `FileReader` `onload` closure alive until it fires.
+type OnloadSlot = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
+
+/// Read `file` as a `data:` URL and insert it as an image. The `FileReader`
+/// `onload` closure keeps itself (and the reader) alive until it fires, then drops
+/// itself — no unbounded leak per paste.
+fn read_image_file(file: &web_sys::File, handle: EditorHandle) {
+    let Ok(reader) = web_sys::FileReader::new() else {
+        return;
+    };
+    let reader = Rc::new(reader);
+    let slot: OnloadSlot = Rc::new(RefCell::new(None));
+    let onload = {
+        let reader = reader.clone();
+        let slot = slot.clone();
+        Closure::wrap(Box::new(move || {
+            if let Ok(result) = reader.result()
+                && let Some(url) = result.as_string()
+                && !url.is_empty()
+                && handle.insert_image(&url, "")
+            {
+                refresh_caret();
+            }
+            slot.borrow_mut().take();
+        }) as Box<dyn FnMut()>)
+    };
+    reader.set_onload(Some(onload.as_ref().unchecked_ref()));
+    *slot.borrow_mut() = Some(onload);
+    let _ = reader.read_as_data_url(file);
+}
+
+// ── IME composition ────────────────────────────────────────────────────────────
+//
+// The preedit is a view-local overlay (design A5), never part of the document:
+// `compositionupdate` shows it at the caret, `compositionend` commits the final
+// text as one ordinary edit (so undo/history treat it like typing).
+
+fn on_composition_update(event: &web_sys::CompositionEvent) {
+    let Some((_, handle)) = focused_handle() else {
+        return;
+    };
+    handle.ime_set_preedit(&event.data().unwrap_or_default(), None);
+    refresh_caret();
+}
+
+fn on_composition_end(event: &web_sys::CompositionEvent) {
+    COMPOSING.with(|c| c.set(false));
+    if let Some((_, handle)) = focused_handle() {
+        handle.ime_commit(&event.data().unwrap_or_default());
+        refresh_caret();
+    }
+    // The textarea accumulated the composed text; clear it so it stays empty.
+    if let Some(ta) = capture_target() {
+        ta.set_value("");
+    }
+}
+
 // ── Pointer ──────────────────────────────────────────────────────────────────
 
 /// Handle a `mousedown`. Returns whether it landed in an editor (so the listener
@@ -158,6 +399,7 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
             .is_some()
         {
             set_focused_editor(None);
+            blur_capture_target();
         }
         return false;
     };
@@ -169,6 +411,9 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
     };
     set_focused_editor(Some(container_nid));
     set_goal_x(None);
+    // Focus the hidden capture target so the browser routes clipboard / IME events
+    // to this editor (a non-`contenteditable` `<div>` would receive none).
+    focus_capture_target(doc);
 
     // A click on a leaf atom (image / horizontal rule) node-selects it.
     if let Some(leaf) = target
@@ -246,16 +491,22 @@ fn handle_mousemove(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
 /// `preventDefault`s + stops it). Mirrors `dispatch_new_editor_key`.
 fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bool {
     // Never hijack a key destined for a real form control / editable element (e.g. a
-    // search box the user clicked) even while an editor is still logically focused —
-    // focus is click-tracked, not browser-native, so guard on the event target.
+    // search box the user clicked) — but our own hidden capture textarea
+    // (`data-pm-capture`) IS the editor's focus target, so let its keys through.
     if let Some(t) = event
         .target()
         .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        && !t.has_attribute("data-pm-capture")
         && t.closest("input, textarea, select, [contenteditable]")
             .ok()
             .flatten()
             .is_some()
     {
+        return false;
+    }
+    // During an IME composition, yield every key to the textarea + IME — the composed
+    // text arrives via the composition events, so inserting here would double up.
+    if event.is_composing() || COMPOSING.with(|c| c.get()) {
         return false;
     }
     let Some((container_nid, handle)) = focused_handle() else {
@@ -429,6 +680,25 @@ fn add_capture<E: JsCast + 'static>(
         }
     }) as Box<dyn FnMut(web_sys::Event)>);
     doc.add_event_listener_with_callback_and_bool(name, closure.as_ref().unchecked_ref(), true)
+        .ok();
+    closure.forget();
+}
+
+/// Add a (bubble-phase) listener to a specific `target`, leaked for its lifetime.
+/// Used for the capture textarea's clipboard / composition events, which target it
+/// directly (no need for document-level capture).
+fn add_target_listener<E: JsCast + 'static>(
+    target: &web_sys::EventTarget,
+    name: &str,
+    handler: impl Fn(E) + 'static,
+) {
+    let closure = Closure::wrap(Box::new(move |e: web_sys::Event| {
+        if let Ok(ev) = e.dyn_into::<E>() {
+            handler(ev);
+        }
+    }) as Box<dyn FnMut(web_sys::Event)>);
+    target
+        .add_event_listener_with_callback(name, closure.as_ref().unchecked_ref())
         .ok();
     closure.forget();
 }

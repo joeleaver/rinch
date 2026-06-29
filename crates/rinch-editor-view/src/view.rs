@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::rc::Weak;
 
-use rinch_core::dom::{DomDocument, NodeHandle};
+use rinch_core::dom::{DomDocument, NodeFont, NodeHandle};
 use rinch_editor_core::decoration::DecorationSet;
 use rinch_editor_core::serialize::{mark_dom_tag, node_dom_tag};
 use rinch_editor_core::{EditorState, EditorView, Mark, Node, Pos, ViewRequest};
@@ -487,8 +487,15 @@ impl EditorView for RinchDomEditorView {
         // no Parley layout, so `query_caret_position` returns `None` there — fall
         // back to the block's content origin with a sensible line height, so the
         // caret is still visible on a blank line.
+        // The composing block's font, so the preedit overlay (a container child that
+        // would otherwise inherit only the container's default font) matches the text
+        // it composes into — a 32px heading vs. 16px body. Queried only while composing.
+        let mut preedit_font = None;
         let geometry = {
             let d = doc.borrow();
+            if self.preedit.is_some() {
+                preedit_font = d.node_font(block_id as u64);
+            }
             let from_parley =
                 d.query_caret_position(block_id as u64, flat_byte)
                     .map(|(local_x, local_y)| {
@@ -508,7 +515,7 @@ impl EditorView for RinchDomEditorView {
                 // the cursor — show it and hide the blinking caret. Otherwise place
                 // the caret as usual.
                 if let Some(text) = self.preedit.clone() {
-                    self.position_preedit(x, y, height, &text);
+                    self.position_preedit(x, y, height, &text, preedit_font.as_ref());
                     self.hide_caret();
                 } else {
                     self.hide_preedit();
@@ -1024,7 +1031,14 @@ impl RinchDomEditorView {
     /// to size the overlay box. Reuses one span (created lazily) and skips the
     /// writes when the composition and caret are unchanged (mirrors
     /// [`Self::position_caret`]).
-    fn position_preedit(&mut self, x: f32, y: f32, height: f32, text: &str) {
+    fn position_preedit(
+        &mut self,
+        x: f32,
+        y: f32,
+        height: f32,
+        text: &str,
+        font: Option<&NodeFont>,
+    ) {
         let key = (x.round() as i32, y.round() as i32, text.to_string());
         if self.last_preedit.as_ref() == Some(&key) {
             return;
@@ -1070,6 +1084,18 @@ impl RinchDomEditorView {
                 ("line-height", &lh),
                 ("display", "inline-block"),
             ]);
+            // Match the composing block's font so the preedit reads as the text being
+            // typed (a heading composes large, body text composes at body size) rather
+            // than the container's default. Backends without computed-style access
+            // return `None` and the overlay keeps its inherited font.
+            if let Some(f) = font {
+                span.set_styles(&[
+                    ("font-family", &f.family),
+                    ("font-size", &f.size),
+                    ("font-weight", &f.weight),
+                    ("font-style", &f.style),
+                ]);
+            }
         }
     }
 
