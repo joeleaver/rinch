@@ -4983,6 +4983,8 @@ dependencies = [
  "js-sys",
  "rinch",
  "rinch-core",
+ "rinch-editor-core",
+ "rinch-editor-view",
  "wasm-bindgen",
  "web-sys",
 ]
