@@ -373,63 +373,93 @@ fn build_sink(state: &EditorState, item_type: &str) -> Option<Transaction> {
 const MAX_INDENT: i64 = 12;
 
 /// Increase (`delta > 0`) or decrease (`delta < 0`) the `indent` attribute of every
-/// indentable textblock (paragraph / heading) overlapping the selection, clamped to
-/// `[0, MAX_INDENT]`. Applies only when at least one block's indent actually changes,
-/// so outdent at indent 0 is a no-op (the toolbar button stays disabled). Blocks
-/// without an `indent` attr (e.g. code blocks) are skipped.
-fn adjust_indent(delta: i64) -> Command {
-    command_tr(move |state| {
-        let (from, to) = (state.selection.from().0, state.selection.to().0);
-        // `(position-before-block, current indent)` for each indentable textblock
-        // (paragraph / heading — the types that declare an `indent` attr).
-        let mut targets: Vec<(usize, i64)> = Vec::new();
-        state
-            .doc
-            .nodes_between(from, to, &mut |node, pos, _parent| {
-                if matches!(node.type_name(), "paragraph" | "heading") {
-                    targets.push((pos, node.attrs().get_int("indent").unwrap_or(0)));
-                }
-                true
-            });
-        if targets.is_empty() {
-            return None;
+/// indentable textblock overlapping the selection, clamped to `[0, MAX_INDENT]`.
+/// Applies only when at least one block's indent actually changes, so outdent at
+/// indent 0 is a no-op. **Skips a textblock inside a `list_item`** — a list's depth is
+/// controlled by nesting, not a margin (otherwise the bullet would split from its
+/// text). Returns the transaction, or `None` when nothing changed.
+fn build_adjust_indent(state: &EditorState, delta: i64) -> Option<Transaction> {
+    let (from, to) = (state.selection.from().0, state.selection.to().0);
+    // `(position-before-block, current indent)` for each indentable textblock.
+    let mut targets: Vec<(usize, i64)> = Vec::new();
+    state.doc.nodes_between(from, to, &mut |node, pos, parent| {
+        let in_list_item = parent.is_some_and(|p| p.type_name() == "list_item");
+        if matches!(node.type_name(), "paragraph" | "heading") && !in_list_item {
+            targets.push((pos, node.attrs().get_int("indent").unwrap_or(0)));
         }
+        true
+    });
+    if targets.is_empty() {
+        return None;
+    }
+    let mut tr = state.tr();
+    // `SetNodeAttrStep` has an empty position map, so the collected `pos` values stay
+    // valid across every step — no remapping needed.
+    for (pos, cur) in targets {
+        let next = (cur + delta).clamp(0, MAX_INDENT);
+        if next != cur {
+            tr.set_node_attr(pos, "indent", crate::AttrValue::Int(next))
+                .ok()?;
+        }
+    }
+    tr.doc_changed().then_some(tr)
+}
+
+/// **Indent**: when the cursor is in a list, nest the current item under its previous
+/// sibling (a no-op for the first item — there is nothing to nest under). Otherwise
+/// increase the textblock's indent level. Indenting in a list never margin-indents the
+/// item's paragraph; list depth is purely nesting.
+pub fn indent() -> Command {
+    command_tr(|state| {
+        if in_node_type(state, "list_item") {
+            build_sink(state, "list_item")
+        } else {
+            build_adjust_indent(state, 1)
+        }
+    })
+}
+
+/// **Outdent**: when the cursor is in a list, un-nest the current item (lifting it out
+/// of the list entirely at the top level). Otherwise decrease the textblock's indent
+/// level. It leaves blockquotes alone (that un-quote is the Paragraph button's job).
+pub fn outdent() -> Command {
+    command_tr(|state| {
+        if in_node_type(state, "list_item") {
+            build_lift(state)
+        } else {
+            build_adjust_indent(state, -1)
+        }
+    })
+}
+
+/// The **Paragraph** command: set the selected textblock(s) to a plain paragraph and,
+/// because "Paragraph" reads as "normal text", also lift them out of an enclosing
+/// blockquote (un-quote). A heading becomes a paragraph; a quoted paragraph drops out
+/// of the quote. A plain paragraph that is already un-quoted is a no-op.
+pub fn set_paragraph() -> Command {
+    command_tr(|state| {
+        let para_ty = state.schema().node_type("paragraph")?.clone();
+        let (from, to) = (state.selection.from().0, state.selection.to().0);
         let mut tr = state.tr();
-        // `SetNodeAttrStep` has an empty position map, so the collected `pos` values
-        // stay valid across every step — no remapping needed.
-        for (pos, cur) in targets {
-            let next = (cur + delta).clamp(0, MAX_INDENT);
-            if next != cur {
-                tr.set_node_attr(pos, "indent", crate::AttrValue::Int(next))
-                    .ok()?;
+        let _ = tr.set_block_type(from, to, para_ty, Attrs::new());
+        // Un-quote: lift the block(s) out of an enclosing blockquote. The range is
+        // resolved against a snapshot so it doesn't borrow the `tr` we then mutate.
+        if in_node_type(state, "blockquote") {
+            let (from_pos, to_pos) = (tr.selection().from(), tr.selection().to());
+            let doc = tr.doc().clone();
+            if let (Ok(r_from), Ok(r_to)) = (doc.resolve(from_pos), doc.resolve(to_pos))
+                && let Some(range) = block_range_simple(&r_from, &r_to)
+            {
+                for target in (0..range.depth).rev() {
+                    let before = tr.doc().clone();
+                    if tr.lift(&range, target).is_ok() && tr.doc() != &before {
+                        break;
+                    }
+                }
             }
         }
         tr.doc_changed().then_some(tr)
     })
-}
-
-/// Lift the selected block range out of its enclosing **list** — like [`lift`], but
-/// gated on being inside a `list_item`, so it never lifts a paragraph out of a
-/// blockquote (that surprise is what made a bare outdent "un-quote" text).
-fn lift_list_item() -> Command {
-    command_tr(|state| {
-        if !in_node_type(state, "list_item") {
-            return None;
-        }
-        build_lift(state)
-    })
-}
-
-/// **Indent**: nest the current list item under its previous sibling when inside a
-/// list, otherwise increase the textblock's indent level.
-pub fn indent() -> Command {
-    chain(vec![sink_list_item("list_item"), adjust_indent(1)])
-}
-
-/// **Outdent**: un-nest the current list item when inside a list, otherwise decrease
-/// the textblock's indent level. Unlike a bare [`lift`], it leaves blockquotes alone.
-pub fn outdent() -> Command {
-    chain(vec![lift_list_item(), adjust_indent(-1)])
 }
 
 // ===================================================================
@@ -928,7 +958,7 @@ impl Plugin for BaseCommandsPlugin {
             ("toggleSuperscript", toggle_mark("superscript")),
             ("toggleHighlight", toggle_mark("highlight")),
             ("removeLink", remove_link()),
-            ("setParagraph", set_block_type("paragraph", Attrs::new())),
+            ("setParagraph", set_paragraph()),
             ("setCodeBlock", set_block_type("code_block", Attrs::new())),
             ("toggleBulletList", toggle_list("bullet_list")),
             ("toggleOrderedList", toggle_list("ordered_list")),
@@ -1606,6 +1636,43 @@ mod tests {
         // Outdent inside the (un-indented) blockquote must do nothing — not lift the
         // paragraph out of the quote (the old generic-`lift` surprise).
         assert!(bq.run("outdent").is_none());
+    }
+
+    #[test]
+    fn set_paragraph_unquotes_a_blockquote() {
+        let mut s = editor("quoted");
+        s.selection = Selection::cursor(Pos(2));
+        let bq = s.run("wrapInBlockquote").expect("wrap applies");
+        assert!(
+            bq.doc
+                .content()
+                .iter()
+                .any(|n| n.type_name() == "blockquote")
+        );
+        // The Paragraph button lifts the block out of the quote (un-quote).
+        let out = bq.run("setParagraph").expect("setParagraph un-quotes");
+        assert!(
+            !out.doc
+                .content()
+                .iter()
+                .any(|n| n.type_name() == "blockquote"),
+            "blockquote should be gone"
+        );
+        assert_eq!(out.doc.child(0).type_name(), "paragraph");
+        assert_eq!(all_text(out.doc.child(0)), "quoted");
+    }
+
+    #[test]
+    fn indent_first_list_item_is_a_noop() {
+        let mut s = editor("a");
+        s.selection = Selection::cursor(Pos(2));
+        let list = s.run("toggleBulletList").expect("make a list");
+        // The first (only) item has no previous sibling to nest under — indent must do
+        // nothing, and in particular must NOT margin-indent the item's paragraph.
+        assert!(
+            list.run("indent").is_none(),
+            "indent on the first list item is a no-op"
+        );
     }
 
     #[test]
