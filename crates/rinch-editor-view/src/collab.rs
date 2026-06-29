@@ -17,7 +17,7 @@
 //!
 //! The transport itself is left to the caller (design §2: "transport is the app's
 //! concern"). The seam is a pair of closures/calls: `outbound` carries bytes out,
-//! [`post_remote_delta`](super::post_remote_delta) carries bytes back in from any
+//! and each platform runtime's `post_remote_delta` carries bytes back in from any
 //! thread. The in-process loopback in `examples/collab-editor-demo` wires two
 //! handles to each other directly; a network transport forwards the same bytes over
 //! a socket / data channel.

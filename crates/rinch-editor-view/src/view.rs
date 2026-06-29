@@ -1329,14 +1329,14 @@ mod tests {
         let mut view_b = RinchDomEditorView::new(container_b, doc_ref(&h), &st_b);
 
         // Editor A is the focused / blink-target editor.
-        crate::editor::blink::set_target(Some(view_a.container_id()));
-        crate::editor::blink::reset();
-        let anchor0 = crate::editor::blink::anchor_for_test();
+        crate::blink::set_target(Some(view_a.container_id()));
+        crate::blink::reset();
+        let anchor0 = crate::blink::anchor_for_test();
 
         // A caret move in the UNFOCUSED editor B must NOT re-anchor the clock.
         view_b.position_caret(1.0, 2.0, 18.0);
         assert_eq!(
-            crate::editor::blink::anchor_for_test(),
+            crate::blink::anchor_for_test(),
             anchor0,
             "an unfocused editor's caret move stomped the focused editor's blink phase",
         );
@@ -1344,12 +1344,12 @@ mod tests {
         // A caret move in the FOCUSED editor A re-anchors it (caret back to solid).
         view_a.position_caret(1.0, 2.0, 18.0);
         assert_ne!(
-            crate::editor::blink::anchor_for_test(),
+            crate::blink::anchor_for_test(),
             anchor0,
             "the focused editor's caret move failed to reset its own blink phase",
         );
 
-        crate::editor::blink::set_target(None);
+        crate::blink::set_target(None);
     }
 
     #[test]

@@ -1,13 +1,12 @@
 //! The caret blink clock.
 //!
-//! The runtime is event-driven ([`ControlFlow::Wait`](winit::event_loop::ControlFlow)):
-//! it only wakes for input, so there is no free-running animation tick. To blink
-//! the focused editor's caret, [`RinchRuntime::about_to_wait`](crate::shell) calls
-//! [`caret_blink_tick`](super::caret_blink_tick) every iteration, which consults
-//! this clock to decide the current phase and how long until the next toggle —
-//! the runtime then arms `ControlFlow::WaitUntil` for exactly that long. When no
-//! caret is blinking the clock reports nothing and the loop returns to `Wait`
-//! (zero idle CPU).
+//! The desktop runtime is event-driven (winit `ControlFlow::Wait`): it only wakes
+//! for input, so there is no free-running animation tick. To blink the focused
+//! editor's caret, the runtime calls [`caret_blink_tick`](crate::caret_blink_tick)
+//! every iteration, which consults this clock to decide the current phase and how
+//! long until the next toggle — the runtime then arms `ControlFlow::WaitUntil` for
+//! exactly that long. When no caret is blinking the clock reports nothing and the
+//! loop returns to `Wait` (zero idle CPU).
 //!
 //! The phase is anchored at the last [`reset`] (a caret move or edit), so the
 //! caret is always solid immediately after an interaction — standard text-editor

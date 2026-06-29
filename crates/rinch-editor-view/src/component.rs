@@ -1,12 +1,11 @@
 //! The [`Editor`] component — declarative placement of a rich-text editor in
-//! `rsx!`, mirroring the [`RenderSurface`](crate::render_surface::RenderSurface)
-//! "factory handle + component" pattern.
+//! `rsx!`, mirroring the `RenderSurface` "factory handle + component" pattern.
 
 use rinch_core::Component;
 use rinch_core::dom::{NodeHandle, RenderScope};
 
-use super::create_editor;
-use super::handle::EditorHandle;
+use crate::create_editor;
+use crate::handle::EditorHandle;
 
 /// A rich-text editor placed declaratively in `rsx!`.
 ///

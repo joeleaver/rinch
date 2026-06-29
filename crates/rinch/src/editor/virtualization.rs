@@ -18,8 +18,9 @@ use rinch_core::dom::DomDocument; // take_dirty_nodes / resolve_layout trait met
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::OverflowValue;
 
-use super::handle::EditorHandle;
-use super::registry;
+use rinch_editor_view::EditorHandle;
+use rinch_editor_view::registry;
+
 use super::virtual_window::CeVirtualWindow;
 
 thread_local! {
@@ -93,11 +94,6 @@ pub(crate) fn post_layout(doc: &mut RinchDocument, focused: Option<usize>, vw_w:
             }
         }
     });
-}
-
-/// Forget the window for an unmounted editor (called from `unregister_editor`).
-pub(crate) fn forget(container: usize) {
-    WINDOWS.with(|w| w.borrow_mut().retain(|(id, _)| *id != container));
 }
 
 /// The cursor's top-level block (must never be collapsed) for the focused editor.

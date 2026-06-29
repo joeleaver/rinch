@@ -2,19 +2,18 @@
 //! editor's post-layout caret pass and look one up by container id.
 //!
 //! This is the cleaner successor to the old CE thread-local API registry
-//! (`set_ce_api_factory`/`with_active_ce_api`): an [`Editor`](super::Editor)
+//! (`set_ce_api_factory`/`with_active_ce_api`): an [`Editor`](crate::Editor)
 //! registers its [`EditorHandle`] keyed by its container node id when it mounts,
 //! and the runtime looks editors up by container id (for input) or sweeps them
 //! all (for the caret pass).
 //!
-//! Keyboard focus is **not** tracked here — that is the runtime's single
-//! [`FocusTarget`](crate::app) authority (design A10). The runtime holds
-//! `FocusTarget::Editor(container_id)` and resolves it to a handle via
-//! [`editor_for`].
+//! Keyboard focus is **not** tracked here — that is the platform runtime's single
+//! focus-arbiter authority (design A10). The runtime holds the focused editor's
+//! container id and resolves it to a handle via [`editor_for`].
 
 use std::cell::RefCell;
 
-use super::handle::EditorHandle;
+use crate::handle::EditorHandle;
 
 thread_local! {
     /// `(container node id, handle)` for every mounted editor.
@@ -49,14 +48,18 @@ pub fn register_editor(container_id: usize, handle: EditorHandle) {
 }
 
 /// Forget the editor mounted at `container_id`.
+///
+/// Desktop block-virtualization state is *not* freed here: its per-editor window
+/// driver already drops windows for editors no longer in [`all_editors`] on its
+/// next sweep, and a stale window is never read in between (it is only consulted
+/// for currently-registered editors). So removal from the registry is sufficient.
 pub fn unregister_editor(container_id: usize) {
     EDITORS.with(|e| e.borrow_mut().retain(|(id, _)| *id != container_id));
-    super::virtualization::forget(container_id);
 }
 
-/// Every mounted editor as `(container id, handle)`. The virtualization driver
-/// sweeps these each layout to maintain a per-editor block window.
-pub(crate) fn all_editors() -> Vec<(usize, EditorHandle)> {
+/// Every mounted editor as `(container id, handle)`. The desktop virtualization
+/// driver sweeps these each layout to maintain a per-editor block window.
+pub fn all_editors() -> Vec<(usize, EditorHandle)> {
     EDITORS.with(|e| e.borrow().iter().map(|(id, h)| (*id, h.clone())).collect())
 }
 
@@ -95,24 +98,13 @@ pub fn update_all_carets(focused: Option<usize>) -> bool {
 
 /// Deliver a remote collaboration `delta` to the editor mounted at `container_id`
 /// (design M9). A no-op if no such editor is mounted or it isn't collaborating.
-/// **Must be called on the main thread** — use [`post_remote_delta`] from a
-/// transport thread. Returns whether the editor's document changed.
+/// **Must be called on the main thread** — each platform runtime supplies its own
+/// `Send`-safe `post_remote_delta` that marshals a transport-thread delta onto the
+/// main thread and calls this. Returns whether the editor's document changed.
 #[cfg(feature = "collaboration")]
 pub fn collab_receive_for(container_id: usize, delta: &[u8]) -> bool {
     match editor_for(container_id) {
         Some(handle) => handle.collab_receive(delta),
         None => false,
     }
-}
-
-/// Post a remote collaboration `delta` to the editor at `container_id` from **any**
-/// thread — the `Send`-safe inbound entry point for a network transport. The delta
-/// is marshalled onto the main thread (via
-/// [`run_on_main_thread`](crate::shell::run_on_main_thread)), where it is integrated
-/// and the editor re-projected; the runtime is woken so the change paints promptly.
-#[cfg(feature = "collaboration")]
-pub fn post_remote_delta(container_id: usize, delta: Vec<u8>) {
-    crate::shell::run_on_main_thread(move || {
-        collab_receive_for(container_id, &delta);
-    });
 }

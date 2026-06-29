@@ -45,16 +45,17 @@ tray-icon = { workspace = true, optional = true }
 rinch-theme = { workspace = true, optional = true }
 rinch-components = { workspace = true, optional = true }
 rinch-debug = { path = "../rinch-debug", optional = true }
-# ProseMirror-style editor core. Pulled in by the `desktop` feature (the desktop
-# rich-text editor view lives in this crate's `editor` module).
+# ProseMirror-style editor core. Pulled in by the `desktop` feature; the desktop
+# runtime's input/IME/focus glue (in `app`/`shell`) reads its `Selection`/`Pos`/
+# command types directly.
 rinch-editor-core = { workspace = true, optional = true }
-# Collaborative editing adapter (M9) — the only first-party automerge dependency.
-# Gated purely behind the optional `collaboration` feature, so default builds (desktop
-# AND web) link zero automerge. The crate is wasm-compatible (its only non-wasm-clean
-# transitive dep, automerge→uuid, just needs the app to supply a randomness source via
-# `uuid`/`getrandom` `js` feature), so a future Rust web editor view can reuse the
-# SAME adapter rather than bridging to a separate JS CRDT.
-rinch-editor-collab = { workspace = true, optional = true }
+# The renderer-agnostic editor view (RinchDomEditorView, EditorHandle, the Editor
+# component, the registry, the caret-blink clock) — shared with the web editor
+# (rinch-web). This crate's `editor` module re-exports it and adds the desktop-only
+# pieces (Parley block virtualization, AccessKit a11y, the winit caret-blink driver).
+# `collaboration` forwards to this crate, which holds the only first-party automerge
+# link — so default builds (desktop AND web) link zero automerge.
+rinch-editor-view = { workspace = true, optional = true }
 rinch-video = { workspace = true, optional = true }
 ureq = { version = "3", optional = true }
 memory-stats = { version = "1.2", optional = true }
@@ -108,8 +109,9 @@ desktop = [
     "dep:bytemuck",
     "dep:softbuffer", "rinch-dom/software-renderer",
     # The ProseMirror-style rich-text editor is a first-class desktop feature
-    # (its rinch-dom view needs the desktop renderer; the web view is a follow-up).
-    "dep:rinch-editor-core",
+    # (its rinch-dom view needs the desktop renderer; the web view reuses the same
+    # renderer-agnostic rinch-editor-view crate).
+    "dep:rinch-editor-core", "dep:rinch-editor-view",
 ]
 android = [
     "dep:rinch-dom", "dep:rinch-editable", "dep:parley",
@@ -143,10 +145,10 @@ image-network = ["dep:ureq"]
 a11y = ["desktop", "rinch-editor-core/a11y", "dep:accesskit", "dep:accesskit_unix"]
 # Derive serde on the editor's durable wire shape (DocNode / BlockData).
 serde = ["rinch-editor-core/serde"]
-# Collaborative editing (M9): the Step↔Automerge adapter (rinch-editor-collab) wired
-# into the desktop editor's `EditorHandle`. The ONLY thing in the workspace that links
-# automerge — opt-in, so it stays out of every default build (desktop AND web). Implies
-# `desktop` because the wiring lives in the desktop editor; the adapter crate itself is
-# desktop-independent and wasm-compatible, so a future Rust web view can reuse it (the
-# web app supplies a wasm randomness source for automerge→uuid).
-collaboration = ["desktop", "dep:rinch-editor-collab"]
+# Collaborative editing (M9): the Step↔Automerge adapter, wired into `EditorHandle`
+# inside rinch-editor-view. The ONLY thing in the workspace that links automerge —
+# opt-in, so it stays out of every default build (desktop AND web). Implies `desktop`
+# (the editor wiring is a desktop feature); forwards to the shared view crate, which is
+# wasm-compatible, so the web view reuses the SAME adapter (the web app supplies a wasm
+# randomness source for automerge→uuid).
+collaboration = ["desktop", "rinch-editor-view/collaboration"]

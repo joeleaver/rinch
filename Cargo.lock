@@ -4679,8 +4679,8 @@ dependencies = [
  "rinch-debug",
  "rinch-dom",
  "rinch-editable",
- "rinch-editor-collab",
  "rinch-editor-core",
+ "rinch-editor-view",
  "rinch-macros",
  "rinch-platform",
  "rinch-renderer",
@@ -4827,6 +4827,15 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "rinch-editor-view"
+version = "0.1.0"
+dependencies = [
+ "rinch-core",
+ "rinch-editor-collab",
+ "rinch-editor-core",
 ]
 
 [[package]]
