@@ -6,8 +6,18 @@ license.workspace = true
 description = "Platform abstraction traits for rinch"
 
 [dependencies]
-vello = { workspace = true }
-peniko = "0.6"
+# vello + peniko are used only by the `PlatformRenderer` trait (renderer.rs), which is
+# a desktop/GPU concern. Gated behind the `renderer` feature so a web/headless build —
+# which never touches that trait — doesn't drag vello (and the whole wgpu tree) into its
+# dependency graph.
+vello = { workspace = true, optional = true }
+peniko = { version = "0.6", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-time = "1"
+
+[features]
+# The GPU-scene renderer abstraction: the `PlatformRenderer` trait (over `vello::Scene`)
+# plus its `CompositeLayer`/`RenderError` types. Enabled by `rinch`'s `desktop` feature;
+# left off for web/headless consumers so they link no vello/wgpu.
+renderer = ["dep:vello", "dep:peniko"]

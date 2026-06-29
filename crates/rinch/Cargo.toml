@@ -108,6 +108,9 @@ desktop = [
     "dep:png", "dep:base64", "dep:keyboard-types",
     "dep:bytemuck",
     "dep:softbuffer", "rinch-dom/software-renderer",
+    # The desktop shell implements + drives `PlatformRenderer` (over vello::Scene), so it
+    # needs rinch-platform's `renderer` module. (A web build leaves this off → no vello.)
+    "rinch-platform/renderer",
     # The ProseMirror-style rich-text editor is a first-class desktop feature
     # (its rinch-dom view needs the desktop renderer; the web view reuses the same
     # renderer-agnostic rinch-editor-view crate).
