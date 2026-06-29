@@ -41,7 +41,8 @@ fn main() {
 
     let outline_json = load(OUTLINE_URL, OUTLINE_FILE).expect("Failed to load outline icons");
     let filled_json = load(FILLED_URL, FILLED_FILE).expect("Failed to load filled icons");
-    let icons_meta_json = load(ICONS_JSON_URL, ICONS_JSON_FILE).expect("Failed to load icons metadata");
+    let icons_meta_json =
+        load(ICONS_JSON_URL, ICONS_JSON_FILE).expect("Failed to load icons metadata");
 
     // Parse JSON using flexible Value type
     let outline: BTreeMap<String, Value> =
