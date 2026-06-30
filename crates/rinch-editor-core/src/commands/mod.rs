@@ -20,7 +20,7 @@ use crate::plugin::{Plugin, PluginKey};
 use crate::pos::{Pos, ResolvedPos};
 use crate::state::{EditorState, Transaction};
 use crate::transform::steps::{ReplaceAroundStep, ReplaceStep};
-use crate::transform::{block_range, block_range_simple};
+use crate::transform::{NodeRange, block_range, block_range_simple};
 
 // ===================================================================
 // Toolbar queries — read state, never the host (A6)
@@ -90,7 +90,7 @@ pub fn in_node_type(state: &EditorState, type_name: &str) -> bool {
 
 /// Whether the outdent (lift) command currently applies.
 pub fn can_lift(state: &EditorState) -> bool {
-    build_lift(state).is_some()
+    build_lift_dispatch(state).is_some()
 }
 
 /// Whether the indent (sink list item) command currently applies.
@@ -294,10 +294,11 @@ fn build_wrap_in_list(state: &EditorState, list_type: &str) -> Option<Transactio
     tr.doc_changed().then_some(tr)
 }
 
-/// The outdent / lift command: lift the selected block range out of its enclosing
-/// wrapper (list, blockquote). Tries the deepest valid target first.
+/// The outdent / lift command: lift the selected block out of its enclosing wrapper.
+/// A list/task item is lifted as a whole item (to the outer list, or un-listed at the
+/// outermost level); other blocks (e.g. inside a blockquote) use the generic lift.
 pub fn lift() -> Command {
-    command_tr(build_lift)
+    command_tr(build_lift_dispatch)
 }
 
 /// Build the lift transaction, choosing the shallowest schema-valid target depth.
@@ -319,9 +320,135 @@ fn build_lift(state: &EditorState) -> Option<Transaction> {
     None
 }
 
+/// Outdent / lift for a **list item** — the list-aware port of PM's `liftListItem`.
+///
+/// The generic [`build_lift`] uses a *paragraph*-level range, so lifting a nested
+/// item drops its paragraph into the previous item as a bullet-less continuation
+/// block. This instead uses a *list*-level range (parent = the list, the range covers
+/// the whole item), then dispatches like PM:
+///
+/// * **Nested in a parent list** (`liftToOuterList`): lift the item out by one list,
+///   so it becomes a sibling in the outer list — the schema gate rejects the invalid
+///   targets (a `list_item` can't hold a `list_item`) and keeps the one that lands it
+///   in the outer list.
+/// * **In the outermost list** (`liftOutOfList`): un-list it to top-level block(s) —
+///   the generic paragraph-level lift already does exactly this, so reuse it.
+fn build_lift_list_item(state: &EditorState, item_type: &str) -> Option<Transaction> {
+    let item_ty = state.schema().node_type(item_type)?.clone();
+    let r_from = state.doc.resolve(state.selection.from()).ok()?;
+    let r_to = state.doc.resolve(state.selection.to()).ok()?;
+    let range = block_range(&r_from, &r_to, |n| {
+        n.child_count() > 0 && n.child(0).node_type() == &item_ty
+    })?;
+    if range.depth == 0 {
+        return None;
+    }
+    // PM's dispatch: is the list itself wrapped in another item of the same type? If
+    // not, this is the outermost list — un-list to the top level (generic lift). If so
+    // (`in_parent_list`), the list nests inside an item inside an outer list, so
+    // `range.depth >= 2` is guaranteed below.
+    if r_from.node(range.depth - 1).node_type() != &item_ty {
+        return build_lift(state);
+    }
+
+    // liftToOuterList. If the lifted item has trailing siblings in the same list,
+    // first wrap them into a fresh item so they ride along NESTED under the lifted
+    // item — otherwise the plain lift orphans them into a bullet-less wrapper. The
+    // gap content (the trailing siblings) is dropped into the new item's empty
+    // sublist at insert offset 1. Port of PM's `liftToOuterList`.
+    let list_ty = range.parent().node_type().clone();
+    let list_attrs = range.parent().attrs().clone();
+    let from_pos = range.from.pos();
+    let end = range.end();
+    let end_of_list = r_to.end(range.depth);
+
+    let mut tr = state.tr();
+    let work = if end < end_of_list {
+        let inner_list = Node::new_branch(list_ty, list_attrs, Fragment::empty());
+        let new_item = Node::new_branch(
+            item_ty.clone(),
+            Attrs::new(),
+            Fragment::from_node(inner_list),
+        );
+        let slice = crate::Slice::new(Fragment::from_node(new_item), 1, 0);
+        tr.step(Box::new(ReplaceAroundStep::new(
+            end - 1,
+            end_of_list,
+            end,
+            end_of_list,
+            slice,
+            1,
+            true,
+        )))
+        .ok()?;
+        // Re-span the range over the lifted item plus its now-nested trailing siblings.
+        // PM keeps the original `depth` and re-resolves the *raw* endpoints (the wrap
+        // is balanced, so `end_of_list` still bounds the list's content).
+        let nf = tr.doc().resolve(from_pos).ok()?;
+        let nt = tr.doc().resolve(Pos(end_of_list)).ok()?;
+        NodeRange {
+            from: nf,
+            to: nt,
+            depth: range.depth,
+        }
+    } else {
+        range
+    };
+
+    // Lift the (possibly extended) item range out by one list — `depth - 2` is the
+    // outer list, so the item lands there as a sibling.
+    let target = work.depth - 2;
+    tr.lift(&work, target).ok()?;
+
+    // After the lift, an item that had its OWN trailing sublist now sits directly
+    // before the wrapped trailing-siblings' sublist — two adjacent lists of the same
+    // type. Join them into one (PM's `canJoin` + `join`) so repeated outdents don't
+    // fragment the list. The structural step self-guards against overwriting content.
+    let boundary = tr.mapping().map(end, -1).saturating_sub(1);
+    if can_join_sublists(tr.doc(), boundary) {
+        let _ = tr.step(Box::new(ReplaceStep::structural(
+            boundary - 1,
+            boundary + 1,
+            crate::Slice::empty(),
+        )));
+    }
+
+    tr.doc_changed().then_some(tr)
+}
+
+/// PM's `canJoin`, specialised to the list-merge case: the block boundary at `pos`
+/// sits between two same-type, non-textblock, non-leaf nodes (i.e. two adjacent
+/// sublists). The structural join step itself rejects a schema-invalid merge, so this
+/// only has to gate out unrelated boundaries (text, leaves, mismatched types).
+fn can_join_sublists(doc: &Node, pos: usize) -> bool {
+    let Ok(r) = doc.resolve(Pos(pos)) else {
+        return false;
+    };
+    match (r.node_before(), r.node_after()) {
+        (Some(before), Some(after)) => {
+            !before.is_textblock() && !before.is_leaf() && before.type_name() == after.type_name()
+        }
+        _ => false,
+    }
+}
+
+/// The list-aware lift used by both the `liftListItem` keymap and the Outdent button:
+/// a real list/task item is lifted with [`build_lift_list_item`]; anything else
+/// (e.g. a paragraph in a blockquote) falls back to the generic [`build_lift`].
+fn build_lift_dispatch(state: &EditorState) -> Option<Transaction> {
+    if in_node_type(state, "list_item") {
+        build_lift_list_item(state, "list_item")
+    } else if in_node_type(state, "task_item") {
+        build_lift_list_item(state, "task_item")
+    } else {
+        build_lift(state)
+    }
+}
+
 /// The indent / sink-list-item command: nest the current list item under its
-/// previous sibling. Port of PM's `sinkListItem` (without the `nestedBefore`
-/// merge optimization).
+/// previous sibling. Faithful port of PM's `sinkListItem`, including the
+/// `nestedBefore` merge so repeated indents keep nesting deeper instead of piling
+/// up sibling sublists.
 pub fn sink_list_item(item_type: &'static str) -> Command {
     command_tr(move |state| build_sink(state, item_type))
 }
@@ -343,21 +470,39 @@ fn build_sink(state: &EditorState, item_type: &str) -> Option<Transaction> {
     if node_before.node_type() != &item_ty {
         return None;
     }
-    // Build a `list_item(list())` shell; the ReplaceAroundStep drops the current
-    // item into the inner list, joining onto the previous item.
     let list_ty = parent.node_type().clone();
-    let inner_list = Node::new_branch(list_ty, parent.attrs().clone(), Fragment::empty());
+    // If the previous item already ends with a sublist of this same list type, merge
+    // the current item INTO that existing sublist rather than wrapping it in a fresh
+    // adjacent one (PM's `nestedBefore`). Without this, a second indent leaves the
+    // item the lone child of its own sublist — so it can never nest deeper, and the
+    // doc grows a pile of sibling sublists instead of a clean tree.
+    let nested_before = node_before.child_count() > 0
+        && node_before.child(node_before.child_count() - 1).node_type() == &list_ty;
+    // Slice shell: `item( list( inner ) )`. When merging, `inner` is a fresh empty
+    // item and the slice opens 3 deep (item/list/item) so the gap content drops into
+    // the previous item's existing sublist; otherwise it opens 1 deep (item).
+    let inner = if nested_before {
+        Fragment::from_node(Node::new_branch(
+            item_ty.clone(),
+            Attrs::new(),
+            Fragment::empty(),
+        ))
+    } else {
+        Fragment::empty()
+    };
+    let inner_list = Node::new_branch(list_ty, parent.attrs().clone(), inner);
     let new_item = Node::new_branch(
         item_ty.clone(),
         Attrs::new(),
         Fragment::from_node(inner_list),
     );
-    let slice = crate::Slice::new(Fragment::from_node(new_item), 1, 0);
+    let open_start = if nested_before { 3 } else { 1 };
+    let slice = crate::Slice::new(Fragment::from_node(new_item), open_start, 0);
     let before = range.start();
     let after = range.end();
     let mut tr = state.tr();
     tr.step(Box::new(ReplaceAroundStep::new(
-        before - 1,
+        before - open_start,
         after,
         before,
         after,
@@ -375,16 +520,24 @@ const MAX_INDENT: i64 = 12;
 /// Increase (`delta > 0`) or decrease (`delta < 0`) the `indent` attribute of every
 /// indentable textblock overlapping the selection, clamped to `[0, MAX_INDENT]`.
 /// Applies only when at least one block's indent actually changes, so outdent at
-/// indent 0 is a no-op. **Skips a textblock inside a `list_item`** — a list's depth is
-/// controlled by nesting, not a margin (otherwise the bullet would split from its
-/// text). Returns the transaction, or `None` when nothing changed.
+/// indent 0 is a no-op. **Skips a textblock inside a list/task item** (depth is
+/// controlled by nesting, not a margin — otherwise the bullet/checkbox would split
+/// from its text) **or a table cell**. Returns the transaction, or `None` when nothing
+/// changed.
 fn build_adjust_indent(state: &EditorState, delta: i64) -> Option<Transaction> {
     let (from, to) = (state.selection.from().0, state.selection.to().0);
     // `(position-before-block, current indent)` for each indentable textblock.
     let mut targets: Vec<(usize, i64)> = Vec::new();
     state.doc.nodes_between(from, to, &mut |node, pos, parent| {
-        let in_list_item = parent.is_some_and(|p| p.type_name() == "list_item");
-        if matches!(node.type_name(), "paragraph" | "heading") && !in_list_item {
+        // A textblock inside a list/task item (depth via nesting) or a table cell (Tab
+        // is cell navigation there) isn't margin-indented.
+        let excluded_parent = parent.is_some_and(|p| {
+            matches!(
+                p.type_name(),
+                "list_item" | "task_item" | "table_cell" | "table_header_cell"
+            )
+        });
+        if matches!(node.type_name(), "paragraph" | "heading") && !excluded_parent {
             targets.push((pos, node.attrs().get_int("indent").unwrap_or(0)));
         }
         true
@@ -405,27 +558,32 @@ fn build_adjust_indent(state: &EditorState, delta: i64) -> Option<Transaction> {
     tr.doc_changed().then_some(tr)
 }
 
-/// **Indent**: when the cursor is in a list, nest the current item under its previous
-/// sibling (a no-op for the first item — there is nothing to nest under). Otherwise
-/// increase the textblock's indent level. Indenting in a list never margin-indents the
-/// item's paragraph; list depth is purely nesting.
+/// **Indent**: when the cursor is in a list or task list, nest the current item under
+/// its previous sibling (a no-op for the first item — there is nothing to nest under).
+/// Otherwise increase the textblock's indent level. Indenting in a (task) list never
+/// margin-indents the item's paragraph; list depth is purely nesting.
 pub fn indent() -> Command {
     command_tr(|state| {
         if in_node_type(state, "list_item") {
             build_sink(state, "list_item")
+        } else if in_node_type(state, "task_item") {
+            build_sink(state, "task_item")
         } else {
             build_adjust_indent(state, 1)
         }
     })
 }
 
-/// **Outdent**: when the cursor is in a list, un-nest the current item (lifting it out
-/// of the list entirely at the top level). Otherwise decrease the textblock's indent
-/// level. It leaves blockquotes alone (that un-quote is the Paragraph button's job).
+/// **Outdent**: when the cursor is in a list or task list, un-nest the current item
+/// (lifting it out of the list entirely at the top level). Otherwise decrease the
+/// textblock's indent level. It leaves blockquotes alone (that un-quote is the
+/// Paragraph button's job).
 pub fn outdent() -> Command {
     command_tr(|state| {
         if in_node_type(state, "list_item") {
-            build_lift(state)
+            build_lift_list_item(state, "list_item")
+        } else if in_node_type(state, "task_item") {
+            build_lift_list_item(state, "task_item")
         } else {
             build_adjust_indent(state, -1)
         }
@@ -463,12 +621,15 @@ pub fn set_paragraph() -> Command {
         //    preserves block-boundary positions (same open/close token count).
         let _ = tr.set_block_type(from, to, para_ty, Attrs::new());
 
-        // 3. Reset the indent attribute to 0 on the (now-)paragraphs in range.
+        // 3. Reset the indent attribute to 0 on the (now-)paragraphs in range — but
+        //    only where it isn't already 0, so a plain paragraph stays a true no-op.
         let mut indent_targets: Vec<usize> = Vec::new();
         state
             .doc
             .nodes_between(from, to, &mut |node, pos, _parent| {
-                if matches!(node.type_name(), "paragraph" | "heading") {
+                if matches!(node.type_name(), "paragraph" | "heading")
+                    && node.attrs().get_int("indent").unwrap_or(0) != 0
+                {
                     indent_targets.push(pos);
                 }
                 true
@@ -477,30 +638,54 @@ pub fn set_paragraph() -> Command {
             let _ = tr.set_node_attr(pos, "indent", crate::AttrValue::Int(0));
         }
 
-        // 4. Lift out of every wrapper (blockquote, list) to the document top level.
-        lift_to_top(&mut tr);
+        // 4. Lift every selected block out of its blockquote/list wrappers to the top
+        //    level (never out of a table cell — see `lift_blocks_to_top`).
+        lift_blocks_to_top(&mut tr);
 
         tr.doc_changed().then_some(tr)
     })
 }
 
-/// Lift the current selection's block range out of every enclosing wrapper until it is
-/// a direct child of the document — one wrapper per pass. The transaction maps its
-/// selection forward through each lift, so re-reading `tr.selection()` each pass is
-/// correct. Stops at the top level or when a wrapper can't be lifted.
-fn lift_to_top(tr: &mut Transaction) {
+/// A wrapper the Paragraph reset is allowed to peel off — a blockquote or any list
+/// node. Notably NOT a table cell (or any other isolating container): lifting a
+/// paragraph out of a cell would hoist it out of the table and corrupt the structure.
+fn is_liftable_wrapper(type_name: &str) -> bool {
+    matches!(
+        type_name,
+        "blockquote" | "bullet_list" | "ordered_list" | "list_item" | "task_list" | "task_item"
+    )
+}
+
+/// Lift every textblock in the selection out of its enclosing blockquote/list wrappers
+/// until it is a direct child of the document. Works block-by-block (so a multi-block
+/// selection spanning different wrappers is fully reset), peeling one wrapper per pass
+/// and re-scanning — the transaction maps its selection forward through each lift.
+/// A block whose ancestor chain includes a non-liftable container (e.g. a table cell)
+/// is left untouched, so the Paragraph button never breaks a table.
+fn lift_blocks_to_top(tr: &mut Transaction) {
     loop {
-        let (from, to) = (tr.selection().from(), tr.selection().to());
+        let (from, to) = (tr.selection().from().0, tr.selection().to().0);
         let doc = tr.doc().clone();
-        let (r_from, r_to) = match (doc.resolve(from), doc.resolve(to)) {
-            (Ok(a), Ok(b)) => (a, b),
-            _ => break,
+        // The first textblock in range that is still wrapped (depth >= 2) and whose
+        // every wrapper is liftable. Resolve a point *inside* the block (pos + 1).
+        let mut inside: Option<usize> = None;
+        doc.nodes_between(from, to, &mut |node, pos, _parent| {
+            if inside.is_none()
+                && node.is_textblock()
+                && let Ok(r) = doc.resolve(Pos(pos + 1))
+                && r.depth() >= 2
+                && (1..r.depth()).all(|d| is_liftable_wrapper(r.node(d).type_name()))
+            {
+                inside = Some(pos + 1);
+            }
+            true
+        });
+        let Some(inside) = inside else { break };
+        let Ok(r) = doc.resolve(Pos(inside)) else {
+            break;
         };
-        if r_from.depth() <= 1 {
-            break; // already a top-level block
-        }
-        let range = match block_range_simple(&r_from, &r_to) {
-            Some(r) if r.depth > 0 => r,
+        let range = match block_range_simple(&r, &r) {
+            Some(x) if x.depth > 0 => x,
             _ => break,
         };
         let before = tr.doc().clone();
@@ -1817,6 +2002,460 @@ mod tests {
         assert_eq!(p.doc.child(0).type_name(), "paragraph", "is a paragraph");
         assert!(!doc_has_mark(&p.doc, "bold"), "marks stripped");
         assert_eq!(all_text(p.doc.child(0)), "mixed");
+    }
+
+    /// Position just inside the first `paragraph` whose flattened text equals `text`.
+    fn cursor_in_para(doc: &Node, text: &str) -> usize {
+        let mut found = None;
+        doc.nodes_between(0, doc.content_size(), &mut |node, pos, _| {
+            if found.is_none() && node.type_name() == "paragraph" && all_text(node) == text {
+                found = Some(pos + 1);
+            }
+            true
+        });
+        found.expect("no paragraph with that text")
+    }
+
+    /// True if any paragraph in `doc` carries a non-zero margin `indent` attribute.
+    fn any_margin_indent(doc: &Node) -> bool {
+        let mut found = false;
+        doc.nodes_between(0, doc.content_size(), &mut |node, _, _| {
+            if node.type_name() == "paragraph" && node.attrs().get_int("indent").unwrap_or(0) != 0 {
+                found = true;
+            }
+            true
+        });
+        found
+    }
+
+    /// The single direct sublist child (a list node) of `item`, if any.
+    fn sublist_of<'a>(item: &'a Node, list_ty: &str) -> Option<&'a Node> {
+        item.content().iter().find(|n| n.type_name() == list_ty)
+    }
+
+    fn li(s: &Rc<Schema>, t: &str) -> Node {
+        s.branch("list_item", Fragment::from_node(p_of(s, t)))
+            .unwrap()
+    }
+    fn ul(s: &Rc<Schema>, items: Vec<Node>) -> Node {
+        s.branch("bullet_list", Fragment::from_children(items))
+            .unwrap()
+    }
+
+    #[test]
+    fn outdent_merges_the_lifted_items_own_sublist_with_its_trailing_siblings() {
+        // doc( ul( li(A, ul( li(B, ul(li C)), li D )) ) ): B owns a sublist [C] AND has a
+        // trailing sibling D. Outdenting B would leave B with two adjacent sublists
+        // (ul[C] then ul[D]); the canJoin/join polish merges them into one ul[C, D].
+        let s = Rc::new(Schema::starter_kit());
+        let b = s
+            .branch(
+                "list_item",
+                Fragment::from_children(vec![p_of(&s, "B"), ul(&s, vec![li(&s, "C")])]),
+            )
+            .unwrap();
+        let a = s
+            .branch(
+                "list_item",
+                Fragment::from_children(vec![p_of(&s, "A"), ul(&s, vec![b, li(&s, "D")])]),
+            )
+            .unwrap();
+        let doc = s
+            .branch("doc", Fragment::from_node(ul(&s, vec![a])))
+            .unwrap();
+        let mut st = EditorState::create(s, doc, default_plugins());
+        st.selection = Selection::cursor(Pos(cursor_in_para(&st.doc, "B")));
+
+        let out = st.run("outdent").expect("outdent lifts B");
+        let b_item = out.doc.child(0).child(1); // top list: [A, B]
+        assert_eq!(all_text(b_item.child(0)), "B");
+        // Exactly ONE sublist under B, holding both C and D in order — not two.
+        let sublists: Vec<&Node> = b_item
+            .content()
+            .iter()
+            .filter(|n| n.type_name() == "bullet_list")
+            .collect();
+        assert_eq!(
+            sublists.len(),
+            1,
+            "the two adjacent sublists were joined into one"
+        );
+        assert_eq!(
+            sublists[0].child_count(),
+            2,
+            "C and D share the merged sublist"
+        );
+        assert_eq!(all_text(sublists[0].child(0)), "C");
+        assert_eq!(all_text(sublists[0].child(1)), "D");
+    }
+
+    #[test]
+    fn outdent_nested_list_item_lifts_to_a_sibling_not_a_continuation_paragraph() {
+        // doc( ul( li(A, ul(li B)) ) ); outdent B. B must become a SIBLING list item of
+        // A in the outer list — NOT a bullet-less continuation paragraph of A.
+        let s = Rc::new(Schema::starter_kit());
+        let item_a = s
+            .branch(
+                "list_item",
+                Fragment::from_children(vec![p_of(&s, "A"), ul(&s, vec![li(&s, "B")])]),
+            )
+            .unwrap();
+        let doc = s
+            .branch("doc", Fragment::from_node(ul(&s, vec![item_a])))
+            .unwrap();
+        let mut st = EditorState::create(s, doc, default_plugins());
+        st.selection = Selection::cursor(Pos(cursor_in_para(&st.doc, "B")));
+
+        let out = st.run("outdent").expect("outdent lifts B to a sibling");
+        let top = out.doc.child(0);
+        assert_eq!(top.child_count(), 2, "A and B are now sibling items");
+        for i in 0..2 {
+            let item = top.child(i);
+            assert_eq!(item.type_name(), "list_item");
+            assert_eq!(
+                item.child(0).type_name(),
+                "paragraph",
+                "each item keeps a bullet"
+            );
+        }
+        assert_eq!(all_text(top.child(1)), "B");
+    }
+
+    #[test]
+    fn outdent_nested_item_keeps_its_trailing_siblings_nested_under_it() {
+        // doc( ul( li(A, ul(li C, li D)) ) ); outdent C. C lifts to a sibling of A, and
+        // its trailing sibling D rides along NESTED under C (PM's liftToOuterList) —
+        // never orphaned into a bullet-less wrapper.
+        let s = Rc::new(Schema::starter_kit());
+        let item_a = s
+            .branch(
+                "list_item",
+                Fragment::from_children(vec![
+                    p_of(&s, "A"),
+                    ul(&s, vec![li(&s, "C"), li(&s, "D")]),
+                ]),
+            )
+            .unwrap();
+        let doc = s
+            .branch("doc", Fragment::from_node(ul(&s, vec![item_a])))
+            .unwrap();
+        let mut st = EditorState::create(s, doc, default_plugins());
+        st.selection = Selection::cursor(Pos(cursor_in_para(&st.doc, "C")));
+
+        let out = st.run("outdent").expect("outdent lifts C");
+        let top = out.doc.child(0);
+        assert_eq!(top.child_count(), 2, "A and C are sibling items");
+        let c = top.child(1);
+        assert_eq!(c.child(0).type_name(), "paragraph", "C keeps its bullet");
+        assert_eq!(all_text(c.child(0)), "C");
+        let d_sub = sublist_of(c, "bullet_list").expect("D nested under C");
+        assert_eq!(all_text(d_sub), "D");
+    }
+
+    #[test]
+    fn outdent_outermost_list_item_unlists_it_to_the_top_level() {
+        // doc( ul(li X, li Y) ); outdent Y → Y becomes a top-level paragraph (un-listed).
+        let s = Rc::new(Schema::starter_kit());
+        let doc = s
+            .branch(
+                "doc",
+                Fragment::from_node(ul(&s, vec![li(&s, "X"), li(&s, "Y")])),
+            )
+            .unwrap();
+        let mut st = EditorState::create(s, doc, default_plugins());
+        st.selection = Selection::cursor(Pos(cursor_in_para(&st.doc, "Y")));
+
+        let out = st.run("outdent").expect("outdent un-lists Y");
+        assert_eq!(
+            out.doc.child_count(),
+            2,
+            "the list, then the lifted paragraph"
+        );
+        assert_eq!(out.doc.child(0).type_name(), "bullet_list");
+        assert_eq!(all_text(out.doc.child(0)), "X", "X stays in the list");
+        assert_eq!(out.doc.child(1).type_name(), "paragraph");
+        assert_eq!(all_text(out.doc.child(1)), "Y");
+    }
+
+    #[test]
+    fn indent_then_outdent_round_trips_a_list_item() {
+        // Indent twice to nest deep, then outdent twice — the document returns to a flat
+        // three-item list (the indent merge and the list-aware lift are inverses here).
+        let s = Rc::new(Schema::starter_kit());
+        let doc = s
+            .branch(
+                "doc",
+                Fragment::from_node(ul(&s, vec![li(&s, "A"), li(&s, "B"), li(&s, "C")])),
+            )
+            .unwrap();
+        let mut st = EditorState::create(s, doc, default_plugins());
+        // Indent B under A, then C under A (merges), then C under B (deeper).
+        st.selection = Selection::cursor(Pos(cursor_in_para(&st.doc, "B")));
+        let st = st.run("indent").expect("indent B");
+        let mut st = st;
+        st.selection = Selection::cursor(Pos(cursor_in_para(&st.doc, "C")));
+        let st = st.run("indent").expect("indent C once");
+        let mut st = st;
+        st.selection = Selection::cursor(Pos(cursor_in_para(&st.doc, "C")));
+        let st = st.run("indent").expect("indent C twice");
+        // Now outdent C twice back out to the top level.
+        let mut st = st;
+        st.selection = Selection::cursor(Pos(cursor_in_para(&st.doc, "C")));
+        let st = st.run("outdent").expect("outdent C once");
+        let mut st = st;
+        st.selection = Selection::cursor(Pos(cursor_in_para(&st.doc, "C")));
+        let st = st.run("outdent").expect("outdent C twice");
+
+        let top = st.doc.child(0);
+        assert_eq!(top.type_name(), "bullet_list");
+        // B is still nested under A (we only outdented C); C is back at the top list.
+        let texts: Vec<String> = top.content().iter().map(all_text).collect();
+        assert!(
+            texts.iter().any(|t| t == "C"),
+            "C returned to the top-level list, got {texts:?}"
+        );
+    }
+
+    #[test]
+    fn indent_merges_into_previous_sublist_and_then_nests_deeper() {
+        // doc( bullet_list( list_item(pA, bullet_list(list_item pB)), list_item(pC) ) ):
+        // "A" already owns a sublist holding "B"; "C" is its top-level sibling.
+        let s = Rc::new(Schema::starter_kit());
+        let inner_b = s
+            .branch("list_item", Fragment::from_node(p_of(&s, "B")))
+            .unwrap();
+        let inner_list = s
+            .branch("bullet_list", Fragment::from_node(inner_b))
+            .unwrap();
+        let item_a = s
+            .branch(
+                "list_item",
+                Fragment::from_children(vec![p_of(&s, "A"), inner_list]),
+            )
+            .unwrap();
+        let item_c = s
+            .branch("list_item", Fragment::from_node(p_of(&s, "C")))
+            .unwrap();
+        let bl = s
+            .branch("bullet_list", Fragment::from_children(vec![item_a, item_c]))
+            .unwrap();
+        let doc = s.branch("doc", Fragment::from_node(bl)).unwrap();
+        let mut state = EditorState::create(s, doc, default_plugins());
+
+        // Indent #1: "C" joins "A"'s EXISTING sublist (merge) — not a new adjacent one.
+        state.selection = Selection::cursor(Pos(cursor_in_para(&state.doc, "C")));
+        let s1 = state.run("indent").expect("first indent merges C under A");
+        let top = s1.doc.child(0);
+        assert_eq!(top.child_count(), 1, "C lifted out of the top-level list");
+        let a = top.child(0);
+        let a_sublists = a
+            .content()
+            .iter()
+            .filter(|n| n.type_name() == "bullet_list")
+            .count();
+        assert_eq!(
+            a_sublists, 1,
+            "C merged into A's one sublist, not an adjacent one"
+        );
+        let sub = sublist_of(a, "bullet_list").unwrap();
+        assert_eq!(sub.child_count(), 2, "the sublist now holds both B and C");
+
+        // Indent #2: with B as its previous sibling, "C" now nests DEEPER under B —
+        // proving an item can be indented more than once (the reported bug).
+        let mut s1 = s1;
+        s1.selection = Selection::cursor(Pos(cursor_in_para(&s1.doc, "C")));
+        let s2 = s1.run("indent").expect("second indent nests C under B");
+        let sub = sublist_of(s2.doc.child(0).child(0), "bullet_list").unwrap();
+        assert_eq!(sub.child_count(), 1, "only B remains at the first sublevel");
+        let nested = sublist_of(sub.child(0), "bullet_list").expect("C nested under B");
+        assert_eq!(all_text(nested), "C");
+    }
+
+    #[test]
+    fn indent_in_task_list_nests_and_never_margin_indents() {
+        // doc( task_list( task_item(p"a"), task_item(p"b") ) ); cursor in the 2nd item.
+        let s = Rc::new(Schema::starter_kit());
+        let item_a = s
+            .branch("task_item", Fragment::from_node(p_of(&s, "a")))
+            .unwrap();
+        let item_b = s
+            .branch("task_item", Fragment::from_node(p_of(&s, "b")))
+            .unwrap();
+        let tl = s
+            .branch("task_list", Fragment::from_children(vec![item_a, item_b]))
+            .unwrap();
+        let doc = s.branch("doc", Fragment::from_node(tl)).unwrap();
+        let mut state = EditorState::create(s, doc, default_plugins());
+        state.selection = Selection::cursor(Pos(cursor_in_para(&state.doc, "b")));
+
+        // Indent nests item "b" under item "a" — the top task_list now holds ONE item,
+        // and crucially NO paragraph receives a left margin (the checkbox-split bug).
+        let nested = state.run("indent").expect("indent nests the task item");
+        let tl = nested.doc.child(0);
+        assert_eq!(tl.type_name(), "task_list");
+        assert_eq!(tl.child_count(), 1, "second item nested under the first");
+        assert!(
+            !any_margin_indent(&nested.doc),
+            "task-list indent nests, never margin-indents"
+        );
+    }
+
+    #[test]
+    fn indent_first_task_item_is_a_noop() {
+        // The first (only) task item has no previous sibling to nest under. Indent must be
+        // a true no-op — in particular it must NOT margin-indent the item's paragraph.
+        let s = Rc::new(Schema::starter_kit());
+        let tl = s
+            .branch(
+                "task_list",
+                Fragment::from_node(
+                    s.branch("task_item", Fragment::from_node(p_of(&s, "a")))
+                        .unwrap(),
+                ),
+            )
+            .unwrap();
+        let doc = s.branch("doc", Fragment::from_node(tl)).unwrap();
+        let mut state = EditorState::create(s, doc, default_plugins());
+        state.selection = Selection::cursor(Pos(cursor_in_para(&state.doc, "a")));
+        assert!(
+            state.run("indent").is_none(),
+            "indent on the first task item is a no-op"
+        );
+    }
+
+    #[test]
+    fn outdent_in_task_list_lifts_the_item_out() {
+        // Outdent un-task-lists the item (lifts it to a top-level paragraph) rather than
+        // adjusting a margin — consistent with how setParagraph treats task lists.
+        let s = Rc::new(Schema::starter_kit());
+        let tl = s
+            .branch(
+                "task_list",
+                Fragment::from_node(
+                    s.branch("task_item", Fragment::from_node(p_of(&s, "a")))
+                        .unwrap(),
+                ),
+            )
+            .unwrap();
+        let doc = s.branch("doc", Fragment::from_node(tl)).unwrap();
+        let mut state = EditorState::create(s, doc, default_plugins());
+        state.selection = Selection::cursor(Pos(cursor_in_para(&state.doc, "a")));
+        let out = state
+            .run("outdent")
+            .expect("outdent lifts the task item out");
+        assert!(
+            out.doc
+                .content()
+                .iter()
+                .all(|n| n.type_name() != "task_list"),
+            "task list removed"
+        );
+        assert_eq!(out.doc.child(0).type_name(), "paragraph");
+        assert_eq!(all_text(out.doc.child(0)), "a");
+    }
+
+    #[test]
+    fn indent_paragraph_in_table_cell_is_a_noop() {
+        // The Indent toolbar button must never margin-indent a paragraph that lives in a
+        // table cell (a left margin there would split the text from the cell layout).
+        let s = Rc::new(Schema::starter_kit());
+        let cell = s
+            .branch("table_cell", Fragment::from_node(p_of(&s, "c")))
+            .unwrap();
+        let table = s
+            .branch(
+                "table",
+                Fragment::from_node(s.branch("table_row", Fragment::from_node(cell)).unwrap()),
+            )
+            .unwrap();
+        let doc = s.branch("doc", Fragment::from_node(table)).unwrap();
+        let mut state = EditorState::create(s, doc, default_plugins());
+        state.selection = Selection::cursor(Pos(cursor_in_para(&state.doc, "c")));
+        assert!(
+            state.run("indent").is_none(),
+            "indenting a paragraph inside a table cell is a no-op"
+        );
+    }
+
+    #[test]
+    fn set_paragraph_in_a_table_cell_resets_without_breaking_the_table() {
+        // Paragraph reset inside a cell strips the heading/marks but must keep the cell's
+        // block INSIDE the table — never lift it out (which would corrupt the table).
+        let s = Rc::new(Schema::starter_kit());
+        let cell = s
+            .branch("table_cell", Fragment::from_node(p_of(&s, "c")))
+            .unwrap();
+        let table = s
+            .branch(
+                "table",
+                Fragment::from_node(s.branch("table_row", Fragment::from_node(cell)).unwrap()),
+            )
+            .unwrap();
+        let doc = s.branch("doc", Fragment::from_node(table)).unwrap();
+        let mut state = EditorState::create(s, doc, default_plugins());
+        state.selection = Selection::cursor(Pos(cursor_in_para(&state.doc, "c")));
+
+        let h = state.run("setHeading1").expect("heading in the cell");
+        let reset = h.run("setParagraph").expect("reset in the cell");
+        // The table survives and the cell holds a plain paragraph again.
+        let table = reset
+            .doc
+            .content()
+            .iter()
+            .find(|n| n.type_name() == "table")
+            .expect("table preserved");
+        let cell_block = table.child(0).child(0).child(0);
+        assert_eq!(cell_block.type_name(), "paragraph");
+        assert_eq!(all_text(cell_block), "c");
+    }
+
+    #[test]
+    fn set_paragraph_across_a_table_lifts_outside_blocks_but_keeps_the_table() {
+        // A selection from a top-level blockquote INTO a table cell: the blockquote block
+        // un-quotes to the top level, while the cell's block stays trapped in the table.
+        let s = Rc::new(Schema::starter_kit());
+        let bq = s
+            .branch("blockquote", Fragment::from_node(p_of(&s, "q")))
+            .unwrap();
+        let cell = s
+            .branch("table_cell", Fragment::from_node(p_of(&s, "c")))
+            .unwrap();
+        let table = s
+            .branch(
+                "table",
+                Fragment::from_node(s.branch("table_row", Fragment::from_node(cell)).unwrap()),
+            )
+            .unwrap();
+        let doc = s
+            .branch("doc", Fragment::from_children(vec![bq, table]))
+            .unwrap();
+        let mut state = EditorState::create(s, doc, default_plugins());
+        let from = cursor_in_para(&state.doc, "q");
+        let to = cursor_in_para(&state.doc, "c");
+        state.selection = Selection::text(Pos(from), Pos(to));
+
+        let reset = state.run("setParagraph").expect("setParagraph applies");
+        assert!(
+            reset
+                .doc
+                .content()
+                .iter()
+                .all(|n| n.type_name() != "blockquote"),
+            "blockquote lifted out to the top level"
+        );
+        let table = reset
+            .doc
+            .content()
+            .iter()
+            .find(|n| n.type_name() == "table")
+            .expect("table preserved");
+        let cell_block = table.child(0).child(0).child(0);
+        assert_eq!(
+            cell_block.type_name(),
+            "paragraph",
+            "cell stays in the table"
+        );
+        assert_eq!(all_text(cell_block), "c");
     }
 
     #[test]
