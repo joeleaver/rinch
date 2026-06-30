@@ -93,9 +93,10 @@ pub fn can_lift(state: &EditorState) -> bool {
     build_lift_dispatch(state).is_some()
 }
 
-/// Whether the indent (sink list item) command currently applies.
+/// Whether the indent (sink list item) command currently applies — in a list or task
+/// list.
 pub fn can_sink(state: &EditorState) -> bool {
-    build_sink(state, "list_item").is_some()
+    build_sink_dispatch(state).is_some()
 }
 
 // ===================================================================
@@ -309,9 +310,17 @@ fn build_lift(state: &EditorState) -> Option<Transaction> {
     if range.depth == 0 {
         return None;
     }
-    // Try lifting to each target from one level out (depth-1) down to the doc;
-    // the schema gate rejects invalid targets, so the first that applies wins.
-    for target in (0..range.depth).rev() {
+    // Never lift across an isolating boundary (a table cell): content lifted out of a
+    // cell would tear it from its table. The floor is the deepest isolating ancestor
+    // at-or-above the range's parent; only targets below that are allowed. If the
+    // range's own parent is isolating, no lift applies. Mirrors PM's `liftTarget`.
+    let floor = (1..=range.depth)
+        .filter(|&d| r_from.node(d).node_type().is_isolating())
+        .max()
+        .unwrap_or(0);
+    // Try lifting to each target from one level out (depth-1) down to `floor`; the
+    // schema gate rejects invalid targets, so the first that applies wins.
+    for target in (floor..range.depth).rev() {
         let mut tr = state.tr();
         if tr.lift(&range, target).is_ok() && tr.doc_changed() {
             return Some(tr);
@@ -451,6 +460,26 @@ fn build_lift_dispatch(state: &EditorState) -> Option<Transaction> {
 /// up sibling sublists.
 pub fn sink_list_item(item_type: &'static str) -> Command {
     command_tr(move |state| build_sink(state, item_type))
+}
+
+/// The Tab / sink-list-item command: nest the current list **or task** item under its
+/// previous sibling. Unlike the Indent button (`indent`), a plain paragraph is left
+/// untouched — Tab never margin-indents a textblock outside a list.
+pub fn sink_list_item_any() -> Command {
+    command_tr(build_sink_dispatch)
+}
+
+/// Sink the current item, picking `list_item` vs `task_item` from context. Returns
+/// `None` outside any list (so Tab is a no-op there) or on a first item with nothing to
+/// nest under.
+fn build_sink_dispatch(state: &EditorState) -> Option<Transaction> {
+    if in_node_type(state, "list_item") {
+        build_sink(state, "list_item")
+    } else if in_node_type(state, "task_item") {
+        build_sink(state, "task_item")
+    } else {
+        None
+    }
 }
 
 /// Build the sink (indent) transaction.
@@ -1205,7 +1234,7 @@ impl Plugin for BaseCommandsPlugin {
             ("wrapInBlockquote", wrap_in("blockquote")),
             ("liftListItem", lift()),
             ("outdent", outdent()),
-            ("sinkListItem", sink_list_item("list_item")),
+            ("sinkListItem", sink_list_item_any()),
             ("indent", indent()),
             ("insertHorizontalRule", insert_horizontal_rule()),
             ("insertHardBreak", insert_hard_break()),
@@ -2301,6 +2330,44 @@ mod tests {
     }
 
     #[test]
+    fn tab_sink_list_item_nests_a_task_item_and_skips_plain_paragraphs() {
+        // Tab (sinkListItem) and can_sink must handle task lists, matching the Indent
+        // button / Shift-Tab — but Tab must still be a no-op (never margin-indent) on a
+        // plain paragraph.
+        let s = Rc::new(Schema::starter_kit());
+        let item_a = s
+            .branch("task_item", Fragment::from_node(p_of(&s, "a")))
+            .unwrap();
+        let item_b = s
+            .branch("task_item", Fragment::from_node(p_of(&s, "b")))
+            .unwrap();
+        let tl = s
+            .branch("task_list", Fragment::from_children(vec![item_a, item_b]))
+            .unwrap();
+        let doc = s.branch("doc", Fragment::from_node(tl)).unwrap();
+        let mut state = EditorState::create(s, doc, default_plugins());
+        state.selection = Selection::cursor(Pos(cursor_in_para(&state.doc, "b")));
+
+        assert!(can_sink(&state), "can_sink is true inside a task list");
+        let nested = state.run("sinkListItem").expect("Tab nests the task item");
+        assert_eq!(nested.doc.child(0).type_name(), "task_list");
+        assert_eq!(nested.doc.child(0).child_count(), 1, "b nested under a");
+        assert!(
+            !any_margin_indent(&nested.doc),
+            "Tab nests, never margin-indents"
+        );
+
+        // Tab in a plain paragraph does nothing (the button would margin-indent; Tab won't).
+        let mut plain = editor("hi");
+        plain.selection = Selection::cursor(Pos(2));
+        assert!(!can_sink(&plain), "can_sink is false outside a list");
+        assert!(
+            plain.run("sinkListItem").is_none(),
+            "Tab is a no-op in a plain paragraph"
+        );
+    }
+
+    #[test]
     fn indent_first_task_item_is_a_noop() {
         // The first (only) task item has no previous sibling to nest under. Indent must be
         // a true no-op — in particular it must NOT margin-indent the item's paragraph.
@@ -2375,6 +2442,20 @@ mod tests {
             state.run("indent").is_none(),
             "indenting a paragraph inside a table cell is a no-op"
         );
+        // Shift-Tab in the first cell makes tab_cell fall through to liftListItem, and
+        // sinkListItem likewise — both MUST be no-ops in a cell. liftListItem in
+        // particular previously unwrapped the paragraph out of the cell and DELETED the
+        // whole table; the isolating-boundary guard in `build_lift` now forbids it.
+        assert!(
+            state.run("liftListItem").is_none(),
+            "liftListItem must not lift a paragraph out of a table cell"
+        );
+        assert!(
+            state.run("sinkListItem").is_none(),
+            "sinkListItem is a no-op inside a table cell"
+        );
+        // The starting doc is unchanged — the table is intact.
+        assert_eq!(state.doc.child(0).type_name(), "table");
     }
 
     #[test]
