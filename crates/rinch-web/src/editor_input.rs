@@ -526,8 +526,15 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
         "Delete" => handle.command("deleteCharForward"),
         "Enter" if !ctrl => handle.command("enter"),
         "Tab" => {
-            handle.tab_cell(shift);
-            true // consume Tab either way — no focus traversal mid-edit
+            // In a table, Tab navigates cells; otherwise it indents / outdents the
+            // current list (or task) item. Consume Tab either way — no focus traversal.
+            let _ = handle.tab_cell(shift)
+                || handle.command(if shift {
+                    "liftListItem"
+                } else {
+                    "sinkListItem"
+                });
+            true
         }
         "ArrowLeft" => handle.move_cursor(
             if ctrl {

@@ -1784,8 +1784,16 @@ impl RinchApp {
             KeyCode::Delete => handle.command("deleteCharForward"),
             KeyCode::Enter if !ctrl => handle.command("enter"),
             // Tab / Shift-Tab move between table cells when the cursor is in a table;
-            // outside a table Tab does nothing here (no focus-traversal in the editor).
-            KeyCode::Tab => handle.tab_cell(shift),
+            // outside a table they indent / outdent the current list (or task) item.
+            // No focus-traversal in the editor either way.
+            KeyCode::Tab => {
+                handle.tab_cell(shift)
+                    || handle.command(if shift {
+                        "liftListItem"
+                    } else {
+                        "sinkListItem"
+                    })
+            }
             // Cursor movement / selection extension (Shift extends, Ctrl = word/doc).
             KeyCode::ArrowLeft => self.move_editor(
                 handle,

@@ -129,6 +129,13 @@ impl NodeType {
         self.0.spec.group.as_deref()
     }
 
+    /// Whether this type is *isolating* — a hard boundary that structural edits
+    /// (lift/wrap/join/delete) must not cross. Table cells are isolating, so content
+    /// can never be lifted out of them (which would tear the cell from its table).
+    pub fn is_isolating(&self) -> bool {
+        self.0.spec.isolating
+    }
+
     /// Whether content of this type may be joined with content of `other` — true
     /// for identical types, or when their content expressions share at least one
     /// acceptable child type. Used by the replace algorithm when merging the open
@@ -312,10 +319,10 @@ mod tests {
     #[test]
     fn compute_attrs_empty_for_attrless_type() {
         let s = Schema::starter_kit();
-        // paragraph declares no attrs → empty result even if junk is provided
+        // blockquote declares no attrs → empty result even if junk is provided
         let provided = Attrs::from_iter([("junk", AttrValue::Bool(true))]);
         let computed = s
-            .node_type("paragraph")
+            .node_type("blockquote")
             .unwrap()
             .compute_attrs(&provided)
             .unwrap();

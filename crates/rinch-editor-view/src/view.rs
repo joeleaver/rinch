@@ -79,6 +79,17 @@ fn apply_element_attrs(dom: &NodeHandle, node: &Node) {
                 }),
             );
         }
+        // The indent level (set by the indent / outdent commands) renders as a left
+        // margin — 2em per level. Always written (resetting to 0) so outdent clears
+        // the previous value, like the table spans above.
+        "paragraph" | "heading" => {
+            let indent = node.attrs().get_int("indent").unwrap_or(0).max(0);
+            if indent > 0 {
+                dom.set_style("margin-left", &format!("{}em", indent * 2));
+            } else {
+                dom.set_style("margin-left", "0");
+            }
+        }
         _ => {}
     }
 }
