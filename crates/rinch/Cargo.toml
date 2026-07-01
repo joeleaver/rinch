@@ -82,7 +82,9 @@ web-sys = { version = "0.3", features = [
     "Window", "Document", "Element",
     "HtmlCanvasElement", "CanvasRenderingContext2d",
     "ImageData",
-    "MouseEvent", "WheelEvent",
+    # PointerEvent (derefs to MouseEvent) drives the render-surface canvas input
+    # on mouse, touch, and pen alike.
+    "MouseEvent", "WheelEvent", "PointerEvent",
     "EventTarget", "AddEventListenerOptions",
     "ResizeObserver", "ResizeObserverEntry", "ResizeObserverSize", "DomRectReadOnly",
 ] }

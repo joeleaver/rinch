@@ -1047,7 +1047,11 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // Pointerup delegation: stop active drag operations and fire data-onmouseup.
     let browser_doc_for_up = browser_doc.clone();
     let pointerup_closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
-        rinch_core::Drag::cancel();
+        // Finish (not cancel) any pointer-capture Drag so its `on_end` fires with
+        // the release position — matching the desktop backend
+        // (`app::event_dispatch` calls `finish_drag` on mouseup). A no-op when no
+        // drag is active. pointercancel still uses `Drag::cancel()` (no commit).
+        rinch_core::finish_drag(event.client_x() as f32, event.client_y() as f32);
         release_drag_pointer_capture();
         if let Some(el) = pointer_hit_element(&event) {
             dispatch_mouse_attr(&el, "data-onmouseup", &event);
