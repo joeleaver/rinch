@@ -1,0 +1,13 @@
+[package]
+name = "gpu-device-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# `gpu` enables the wgpu/Vello compositor; `debug` exposes the MCP bridge.
+rinch = { workspace = true, features = ["desktop", "gpu", "debug", "components", "theme"] }
+# Only needed for the `external` mode's block_on device creation. `wgpu` itself
+# comes from rinch::wgpu (the exact patched fork rinch links).
+pollster = "0.4"

@@ -10,23 +10,26 @@ use peniko::Color;
 use rinch_platform::{CompositeLayer, PlatformRenderer, PlatformWindow, RenderError};
 use vello::{AaConfig, AaSupport, RenderParams, Renderer as VelloRenderer, RendererOptions, Scene};
 use wgpu::{
-    Backends, CommandEncoderDescriptor, Device, Extent3d, Instance, InstanceDescriptor, Limits,
-    MemoryHints, PresentMode, Queue, Surface, SurfaceConfiguration, Texture, TextureDescriptor,
-    TextureDimension, TextureFormat, TextureUsages, TextureView,
+    Adapter, Backends, CommandEncoderDescriptor, Device, Extent3d, Features, Instance,
+    InstanceDescriptor, Limits, MemoryHints, PresentMode, Queue, Surface, SurfaceConfiguration,
+    Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
 };
 use winit::window::Window;
 
 // ── GpuHandle ────────────────────────────────────────────────────────────────
 
-/// Shared GPU device and queue handle.
+/// Shared GPU device, queue, and adapter handle.
 ///
-/// Exposed after rinch creates the wgpu renderer so external code (e.g., a game
-/// engine running on a background thread) can share the same GPU device for
-/// zero-copy texture compositing.
+/// Exposed after rinch creates (or adopts) the wgpu renderer so external code
+/// (e.g., a game engine running on a background thread) can share the same GPU
+/// device for zero-copy texture compositing. The `adapter` is included so an
+/// embedder can introspect real device features/limits (e.g. to clamp buffer
+/// sizes against `adapter.limits()`).
 #[derive(Clone)]
 pub struct GpuHandle {
     pub device: Arc<Device>,
     pub queue: Arc<Queue>,
+    pub adapter: Arc<Adapter>,
 }
 
 static GPU_HANDLE: OnceLock<GpuHandle> = OnceLock::new();
@@ -34,10 +37,70 @@ static GPU_HANDLE: OnceLock<GpuHandle> = OnceLock::new();
 /// Get the shared GPU handle, if the renderer has been initialized.
 ///
 /// Returns `None` before `rinch::shell::run()` creates the wgpu device.
-/// After that, returns the `Arc<Device>` and `Arc<Queue>` that rinch uses
-/// internally, allowing external renderers to share the same GPU device.
+/// After that, returns the `Arc<Device>`, `Arc<Queue>`, and `Arc<Adapter>` that
+/// rinch uses internally, allowing external renderers to share the same GPU
+/// device.
 pub fn gpu_handle() -> Option<&'static GpuHandle> {
     GPU_HANDLE.get()
+}
+
+// ── GPU device injection (issue #57) ──────────────────────────────────────────
+
+/// Extra GPU device requirements for rinch's desktop compositor.
+///
+/// By default rinch requests its wgpu device with `Features::default()` /
+/// `Limits::default()`. An embedding application whose own renderer needs a
+/// higher-capability device (extra features, larger storage buffers, more bind
+/// groups, …) can raise those requirements here so that the device rinch
+/// composites with — the one published via [`gpu_handle`] — can also host the
+/// embedder's pipelines and textures for **zero-copy** present.
+///
+/// rinch still creates the instance, picks a surface-compatible adapter, and
+/// owns the device, so surface presentation is always correct. Use this via
+/// [`crate::run_with_gpu_config`]. The requested features/limits are passed
+/// through verbatim — if the adapter cannot satisfy them, device creation fails
+/// loudly rather than silently dropping a capability.
+#[derive(Clone, Default)]
+pub struct RinchGpuConfig {
+    /// Device features to require in addition to rinch's defaults.
+    pub required_features: Features,
+    /// Device limits to require (replaces `Limits::default()`).
+    pub required_limits: Limits,
+}
+
+/// A fully embedder-provided GPU stack for zero-copy present.
+///
+/// When an embedder would rather own device creation with its exact
+/// `DeviceDescriptor`, it can hand the whole stack to rinch via
+/// [`crate::run_with_external_device`]. rinch creates only the window surface
+/// (from the provided `instance`) and validates that `adapter` can present to
+/// it; it does **not** call `request_device`. The provided device becomes the
+/// one published through [`gpu_handle`].
+///
+/// The `instance` must be the one the `adapter`/`device` were created from, so
+/// that the window surface rinch creates is compatible with them.
+#[derive(Clone)]
+pub struct ExternalGpu {
+    pub instance: Instance,
+    pub adapter: Arc<Adapter>,
+    pub device: Arc<Device>,
+    pub queue: Arc<Queue>,
+}
+
+/// How the desktop `WgpuRenderer` should obtain its GPU device.
+pub(crate) enum GpuInit {
+    /// rinch creates the device with the given extra features/limits.
+    Config(RinchGpuConfig),
+    /// The embedder supplies the whole GPU stack.
+    External(ExternalGpu),
+}
+
+static GPU_INIT: OnceLock<GpuInit> = OnceLock::new();
+
+/// Install the GPU initialization strategy. Must be called before the runtime
+/// creates its window (i.e. before `run_*`). A second call is ignored.
+pub(crate) fn set_gpu_init(init: GpuInit) {
+    let _ = GPU_INIT.set(init);
 }
 
 /// A GPU texture layer for zero-copy compositing.
@@ -168,17 +231,28 @@ impl WgpuRenderer {
         let width = width.max(1);
         let height = height.max(1);
 
+        let gpu_init = GPU_INIT.get();
+
+        // Instance: reuse the embedder's when an external device is supplied
+        // (the surface must come from the instance the adapter/device belong to);
+        // otherwise create rinch's own.
+        //
         // Default to GPU-only backends (Vulkan/Metal/DX12). Skip GL/GLES probing
         // which loads Mesa gallium + LLVM (~70MB RSS) but can't run Vello anyway
         // (Vello requires compute shaders). WGPU_BACKEND env var still overrides.
-        let backends =
-            Backends::from_env().unwrap_or(Backends::VULKAN | Backends::METAL | Backends::DX12);
-        let instance = Instance::new(&InstanceDescriptor {
-            backends,
-            flags: wgpu::InstanceFlags::from_build_config().with_env(),
-            backend_options: wgpu::BackendOptions::from_env_or_default(),
-            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-        });
+        let instance = match gpu_init {
+            Some(GpuInit::External(g)) => g.instance.clone(),
+            _ => {
+                let backends = Backends::from_env()
+                    .unwrap_or(Backends::VULKAN | Backends::METAL | Backends::DX12);
+                Instance::new(&InstanceDescriptor {
+                    backends,
+                    flags: wgpu::InstanceFlags::from_build_config().with_env(),
+                    backend_options: wgpu::BackendOptions::from_env_or_default(),
+                    memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+                })
+            }
+        };
 
         // SAFETY: The window outlives the surface — drop order in WgpuRenderer
         // ensures surface is dropped before the window.
@@ -193,12 +267,27 @@ impl WgpuRenderer {
                 .expect("Failed to create surface")
         };
 
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-        }))
-        .expect("Failed to find adapter");
+        // Adapter: adopt the embedder's, or pick a surface-compatible one.
+        let adapter: Arc<Adapter> = match gpu_init {
+            Some(GpuInit::External(g)) => {
+                assert!(
+                    g.adapter.is_surface_supported(&surface),
+                    "run_with_external_device: the supplied adapter cannot present to \
+                     rinch's window surface. The adapter/device must be created from an \
+                     adapter that supports the target window (create the adapter with a \
+                     compatible surface, or use run_with_gpu_config to let rinch own the device)."
+                );
+                g.adapter.clone()
+            }
+            _ => Arc::new(
+                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: Some(&surface),
+                    force_fallback_adapter: false,
+                }))
+                .expect("Failed to find adapter"),
+            ),
+        };
 
         let caps = surface.get_capabilities(&adapter);
 
@@ -210,24 +299,39 @@ impl WgpuRenderer {
             caps.formats[0]
         };
 
-        let (raw_device, raw_queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("rinch-dom device"),
-                required_features: wgpu::Features::default(),
-                required_limits: Limits::default(),
-                memory_hints: MemoryHints::MemoryUsage,
-                trace: wgpu::Trace::default(),
-                experimental_features: wgpu::ExperimentalFeatures::default(),
-            }))
-            .expect("Failed to create device");
-
-        let device = Arc::new(raw_device);
-        let queue = Arc::new(raw_queue);
+        // Device/Queue: adopt the embedder's, or create one — optionally with
+        // the embedder's extra features/limits (issue #57).
+        let (device, queue) = match gpu_init {
+            Some(GpuInit::External(g)) => (g.device.clone(), g.queue.clone()),
+            other => {
+                let (features, limits) = match other {
+                    Some(GpuInit::Config(cfg)) => {
+                        (cfg.required_features, cfg.required_limits.clone())
+                    }
+                    _ => (Features::default(), Limits::default()),
+                };
+                let (raw_device, raw_queue) =
+                    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                        label: Some("rinch-dom device"),
+                        required_features: features,
+                        required_limits: limits,
+                        memory_hints: MemoryHints::MemoryUsage,
+                        trace: wgpu::Trace::default(),
+                        experimental_features: wgpu::ExperimentalFeatures::default(),
+                    }))
+                    .expect(
+                        "Failed to create device (the adapter may not support the \
+                         features/limits requested via run_with_gpu_config)",
+                    );
+                (Arc::new(raw_device), Arc::new(raw_queue))
+            }
+        };
 
         // Publish the shared GPU handle for external renderers
         let _ = GPU_HANDLE.set(GpuHandle {
             device: device.clone(),
             queue: queue.clone(),
+            adapter: adapter.clone(),
         });
 
         let surface_config = SurfaceConfiguration {
