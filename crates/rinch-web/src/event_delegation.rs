@@ -812,10 +812,21 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // We use pointerdown (not click) so drag operations (sliders, element DnD)
     // can begin tracking movement immediately, on mouse and touch alike.
     let pointerdown_closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
-        // Multi-touch guard: while one drag is in progress, ignore any further
-        // pointerdowns (secondary fingers). Only the primary pointer drives DnD.
+        // A drag is owned by a single pointer. A *primary* pointerdown means no
+        // primary contact is currently down, so any drag still recorded is stale
+        // — its pointerup/pointercancel was missed (e.g. a dropped mobile
+        // system-gesture interruption, or the source removed mid-drag). Clear it
+        // and proceed, so a stuck drag can't wedge all pointer input (the guarded
+        // pointerdown + owns-gated move/up would otherwise leave no recovery path
+        // on a touch device). A *secondary* (non-primary) pointerdown is a
+        // concurrent finger during a live drag: ignore it so it neither starts a
+        // second DnD nor disturbs the owning one.
         if WEB_DRAG.with(|d| d.borrow().is_some()) {
-            return;
+            if event.is_primary() {
+                cancel_web_drag();
+            } else {
+                return;
+            }
         }
 
         if let Some(target) = event.target()

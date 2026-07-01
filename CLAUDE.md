@@ -782,12 +782,18 @@ Set these attributes on elements to participate in element-to-element drag-and-d
 | Attribute | Fires on | When |
 |-----------|----------|------|
 | `data-ondragstart` | Source | Drag begins |
-| `data-ondragmove` | Source | Mouse moves during drag |
+| `data-ondragmove` | Source | Pointer moves during drag |
 | `data-ondragenter` | Target | Drag enters a drop target |
-| `data-ondragover` | Target | Mouse moves over drop target (every motion event) |
+| `data-ondragover` | Target | Pointer moves over drop target (every motion event) |
 | `data-ondragleave` | Target | Drag leaves a drop target |
 | `data-ondrop` | Target | Drop on target |
 | `data-ondragend` | Source | Drag finishes |
+
+**Input & activation (mouse, touch, pen).** This suite is driven by Pointer Events on both backends, so it works with a mouse, a finger, or a pen. Activation differs by input so touch doesn't hijack scrolling:
+- **Mouse:** activates as soon as the pointer moves past ~5px — snappy, unchanged.
+- **Touch / pen:** activates on a short **long-press** hold (~350ms) while the contact stays roughly stationary. Moving before the hold completes is treated as a scroll/pan and the drag is abandoned (the page scrolls normally). This is the standard mobile reorder gesture.
+
+Because there's no built-in drag ghost (the app renders its own from `data-ondragmove`), **set `pointer-events: none` on your ghost element** — on touch the drop target is resolved via `elementFromPoint`, so a ghost under the finger would otherwise intercept the hit and drops would silently fail.
 
 Handlers can read `get_click_context()` for cursor position and element bounds. Use `DragContext<T>` to pass typed data between source and target:
 
