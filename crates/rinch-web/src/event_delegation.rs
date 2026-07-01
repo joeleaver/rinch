@@ -329,6 +329,24 @@ struct WebDragState {
 thread_local! {
     static WEB_DRAG: std::cell::RefCell<Option<WebDragState>> =
         const { std::cell::RefCell::new(None) };
+
+    /// Pointer capture taken for an active pointer-capture `Drag` (slider, panel,
+    /// resize handle). Held as `(element, pointer_id)` so touch/pen moves keep
+    /// tracking on the element (and the pointermove handler can `preventDefault`
+    /// the scroll) instead of the browser panning the page. Released on
+    /// pointerup/pointercancel. Independent of `WEB_DRAG` (the element-DnD suite).
+    static DRAG_POINTER_CAPTURE: std::cell::RefCell<Option<(web_sys::Element, i32)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Release any pointer capture taken for an active `Drag` (slider/panel/resize).
+/// Idempotent; safe to call when none was taken.
+fn release_drag_pointer_capture() {
+    DRAG_POINTER_CAPTURE.with(|c| {
+        if let Some((el, pointer_id)) = c.borrow_mut().take() {
+            let _ = el.release_pointer_capture(pointer_id);
+        }
+    });
 }
 
 /// Clear a pending long-press timer (if any) on the given state, dropping the
@@ -468,6 +486,25 @@ fn element_from_point(x: f32, y: f32) -> Option<web_sys::Element> {
     web_sys::window()?.document()?.element_from_point(x, y)
 }
 
+/// The element under the pointer for `data-onmouse*` dispatch. While a captured
+/// (touch/pen) element drag owns this pointer, the raw `event.target()` is the
+/// capturing source, so resolve the real element under the finger via
+/// `elementFromPoint`; otherwise use the raw target (mouse — unchanged).
+fn pointer_hit_element(event: &web_sys::PointerEvent) -> Option<web_sys::Element> {
+    let captured = WEB_DRAG.with(|d| {
+        d.borrow()
+            .as_ref()
+            .is_some_and(|s| s.captured && s.pointer_id == event.pointer_id())
+    });
+    if captured {
+        element_from_point(event.client_x() as f32, event.client_y() as f32)
+    } else {
+        event
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+    }
+}
+
 /// Transition the current *pending* drag to *active*: fire data-ondragstart, and
 /// for touch/pen grab pointer capture + suppress scrolling on the source, then
 /// process the drop target under the current cursor. No-op if there is no pending
@@ -525,11 +562,13 @@ fn handle_web_pointer_move(event: &web_sys::PointerEvent) -> bool {
     let x = event.client_x() as f32;
     let y = event.client_y() as f32;
 
-    // Snapshot; ignore events from a non-owning pointer (secondary touch).
-    let Some((source, kind, was_active, captured, start, owns)) = WEB_DRAG.with(|d| {
+    // Snapshot; ignore events from a non-owning pointer (secondary touch). The
+    // source Element is fetched lazily in the active branch below, so a jittery
+    // long-press hold (many Ignore moves) and secondary-finger moves don't clone
+    // it each frame.
+    let Some((kind, was_active, captured, start, owns)) = WEB_DRAG.with(|d| {
         d.borrow().as_ref().map(|s| {
             (
-                s.source.clone(),
                 s.kind,
                 s.active,
                 s.captured,
@@ -583,6 +622,9 @@ fn handle_web_pointer_move(event: &web_sys::PointerEvent) -> bool {
             .target()
             .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
     };
+    let Some(source) = WEB_DRAG.with(|d| d.borrow().as_ref().map(|s| s.source.clone())) else {
+        return false;
+    };
     process_drag_target(&source, hit, x, y);
 
     // While a captured touch/pen drag is live, block the browser from scrolling.
@@ -604,12 +646,23 @@ fn cancel_web_drag() -> bool {
     release_capture_and_scroll(&mut state);
     if state.active {
         let (x, y) = state.cursor;
-        if let Some(t) = &state.over_target {
-            dispatch_plain_attr(t, "data-ondragleave");
-        }
-        dispatch_drag_cursor_only(&state.source, "data-ondragend", x, y);
+        finish_active_drag(&state, x, y, false);
     }
     true
+}
+
+/// Fire the terminal events for an *active* drag at `(x, y)`: `data-ondrop` (only
+/// when `do_drop`) then `data-ondragleave` on the current target, then
+/// `data-ondragend` on the source. Shared by the pointerup (drop) and
+/// cancel/Escape (no drop) paths so the teardown stays in one place.
+fn finish_active_drag(state: &WebDragState, x: f32, y: f32, do_drop: bool) {
+    if let Some(t) = &state.over_target {
+        if do_drop {
+            dispatch_plain_attr(t, "data-ondrop");
+        }
+        dispatch_plain_attr(t, "data-ondragleave");
+    }
+    dispatch_drag_cursor_only(&state.source, "data-ondragend", x, y);
 }
 
 /// Convert a UTF-16 code unit offset within a string to a UTF-8 byte offset.
@@ -906,6 +959,18 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             // pointerup above).
             if click_allowed {
                 dispatch_click_at(&el, &browser_doc_for_click, &event);
+
+                // If that click armed a pointer-capture `Drag` (slider, panel,
+                // resize handle — started from the handler via `Drag::start()`),
+                // capture the pointer on the element so touch/pen moves keep
+                // tracking on it and the pointermove handler's `preventDefault`
+                // can stop the page from scrolling out from under the drag.
+                // Released on pointerup/pointercancel.
+                if rinch_core::Drag::is_active() {
+                    let _ = el.set_pointer_capture(event.pointer_id());
+                    DRAG_POINTER_CAPTURE
+                        .with(|c| *c.borrow_mut() = Some((el.clone(), event.pointer_id())));
+                }
             }
         }
     }) as Box<dyn FnMut(_)>);
@@ -925,9 +990,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             event.prevent_default();
         }
 
-        if let Some(target) = event.target()
-            && let Ok(el) = target.dyn_into::<web_sys::Element>()
-        {
+        if let Some(el) = pointer_hit_element(&event) {
             dispatch_mouse_attr(&el, "data-onmousemove", &event);
 
             // Element drag-and-drop: if a drag is pending/active, advance it and
@@ -985,9 +1048,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     let browser_doc_for_up = browser_doc.clone();
     let pointerup_closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
         rinch_core::Drag::cancel();
-        if let Some(target) = event.target()
-            && let Ok(el) = target.dyn_into::<web_sys::Element>()
-        {
+        release_drag_pointer_capture();
+        if let Some(el) = pointer_hit_element(&event) {
             dispatch_mouse_attr(&el, "data-onmouseup", &event);
         }
 
@@ -1006,16 +1068,23 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             if state.active {
                 let x = event.client_x() as f32;
                 let y = event.client_y() as f32;
-                if let Some(t) = &state.over_target {
-                    dispatch_plain_attr(t, "data-ondrop");
-                    dispatch_plain_attr(t, "data-ondragleave");
-                }
-                dispatch_drag_cursor_only(&state.source, "data-ondragend", x, y);
+                finish_active_drag(&state, x, y, true);
             } else {
                 // Never activated (a quick tap / sub-threshold press) — treat as a
-                // click on the draggable, with the same full click semantics as
-                // the pointerdown path.
-                dispatch_click_at(&state.source, &browser_doc_for_up, &event);
+                // click on the draggable, with the same right-click/contextmenu
+                // gate as the pointerdown path (a right-press under a
+                // data-oncontextmenu ancestor is suppressed, not doubled with the
+                // contextmenu).
+                let click_allowed = event.button() == 0
+                    || state
+                        .source
+                        .closest("[data-oncontextmenu]")
+                        .ok()
+                        .flatten()
+                        .is_none();
+                if click_allowed {
+                    dispatch_click_at(&state.source, &browser_doc_for_up, &event);
+                }
             }
         }
     }) as Box<dyn FnMut(_)>);
@@ -1038,6 +1107,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             cancel_web_drag();
         }
         rinch_core::Drag::cancel();
+        release_drag_pointer_capture();
     }) as Box<dyn FnMut(_)>);
     browser_doc
         .add_event_listener_with_callback(
