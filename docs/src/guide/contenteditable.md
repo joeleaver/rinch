@@ -170,21 +170,31 @@ button {
 
 ## Keyboard shortcuts
 
-The editor handles its own keyboard input. Built-in shortcuts include:
+The editor handles its own keyboard input. Every shortcut below comes from the
+**editor-core keymap** (`BaseCommandsPlugin`/`HistoryPlugin`), which both the desktop
+and web views consult through one path — add a binding there and it works on every
+platform. `Mod` = Ctrl on Windows/Linux, Cmd on macOS.
 
 | Shortcut | Action |
 |----------|--------|
-| Ctrl/Cmd+B | Toggle **bold** |
-| Ctrl/Cmd+I | Toggle *italic* |
-| Ctrl/Cmd+U | Toggle underline |
-| Ctrl/Cmd+Z | Undo |
-| Ctrl/Cmd+Shift+Z / Ctrl+Y | Redo |
+| Mod+B / Mod+I / Mod+U | Toggle **bold** / *italic* / underline |
+| Mod+E | Toggle inline `code` |
+| Mod+Shift+S | Toggle ~~strikethrough~~ |
+| Mod+A | Select all |
+| Mod+Alt+1…6 | Heading 1–6 |
+| Mod+Shift+0 | Paragraph |
+| Mod+Shift+7 / 8 / 9 | Task / bullet / ordered list |
+| Mod+Shift+B | Blockquote |
+| Mod+Z / Mod+Shift+Z / Mod+Y | Undo / redo |
 | Enter | Split block / new list item |
-| Tab / Shift+Tab | Move between table cells |
+| Shift+Enter | Insert a hard break (line break within the block) |
+| Tab / Shift+Tab | Move between table cells, else indent / outdent a list item |
 | Backspace / Delete | Delete backward / forward |
 
-Undo/redo is a single, exact history: each undo reverses one logical edit (typing
-is merged into a group), because every edit is an invertible step.
+(Copy/cut/paste — Mod+C/X/V, and Mod+Shift+V for paste-as-plain — are handled by the
+platform clipboard, not the keymap.) Undo/redo is a single, exact history: each undo
+reverses one logical edit (typing is merged into a group), because every edit is an
+invertible step.
 
 ## Markdown shortcuts
 

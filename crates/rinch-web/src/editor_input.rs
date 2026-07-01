@@ -505,6 +505,69 @@ fn handle_mousemove(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
 
 // ── Keyboard ─────────────────────────────────────────────────────────────────
 
+/// Translate a `keydown` (its logical `key` and physical `code`) + modifier state into
+/// an editor-core `KeyBinding` for keymap lookup.
+///
+/// **Letters resolve LOGICALLY** (`event.key()`), so `Mod-b` is correct on every layout
+/// — on Dvorak/AZERTY the key that types `b` fires bold, not the physical QWERTY-B
+/// position. **Digits, symbols, and named keys resolve PHYSICALLY** (`event.code()`),
+/// because the logical key for e.g. `Shift+8` is `"*"`, not `"8"` — the physical
+/// `Digit8` is what the keymap's `Mod-Shift-8` binding needs. `None` for keys with no
+/// bindable identity (they fall through to text insertion / native clipboard).
+///
+/// (Desktop keys everything physically off the platform `KeyCode`; unifying that for
+/// letters would mean plumbing winit's logical key through `PlatformEvent::KeyDown`.)
+fn editor_key_binding(
+    key: &str,
+    code: &str,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+) -> Option<rinch_editor_core::KeyBinding> {
+    use rinch_editor_core::{Key, KeyBinding, Modifiers};
+    // A single ASCII letter from the *logical* key (layout-correct).
+    let logical_letter = {
+        let mut it = key.chars();
+        match (it.next(), it.next()) {
+            (Some(c), None) if c.is_ascii_alphabetic() => Some(c.to_ascii_lowercase()),
+            _ => None,
+        }
+    };
+    let k = if let Some(c) = logical_letter {
+        Key::Char(c)
+    } else if let Some(d) = code.strip_prefix("Digit").filter(|s| s.len() == 1) {
+        Key::Char(d.as_bytes()[0] as char)
+    } else {
+        match code {
+            "Enter" | "NumpadEnter" => Key::Enter,
+            "Backspace" => Key::Backspace,
+            "Delete" => Key::Delete,
+            "Tab" => Key::Tab,
+            "Escape" => Key::Escape,
+            "Space" => Key::Space,
+            "ArrowLeft" => Key::ArrowLeft,
+            "ArrowRight" => Key::ArrowRight,
+            "ArrowUp" => Key::ArrowUp,
+            "ArrowDown" => Key::ArrowDown,
+            "Home" => Key::Home,
+            "End" => Key::End,
+            "PageUp" => Key::PageUp,
+            "PageDown" => Key::PageDown,
+            "Minus" => Key::Char('-'),
+            "Equal" => Key::Char('='),
+            _ => return None,
+        }
+    };
+    Some(KeyBinding::new(
+        k,
+        Modifiers {
+            primary: ctrl,
+            shift,
+            alt,
+        },
+    ))
+}
+
 /// Handle a `keydown`. Returns whether the editor consumed the key (so the listener
 /// `preventDefault`s + stops it). Mirrors `dispatch_new_editor_key`.
 fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bool {
@@ -531,6 +594,9 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
         return false;
     };
     let key = event.key();
+    // The PHYSICAL key, for keymap lookup — `event.key()` is the *resolved* char ("*" for
+    // Shift+8, "¡" for Alt+1) which would never match the keymap's physical-key bindings.
+    let code = event.code();
     let ctrl = event.ctrl_key() || event.meta_key();
     let shift = event.shift_key();
     let alt = event.alt_key();
@@ -540,20 +606,10 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
     }
 
     let handled = match key.as_str() {
-        "Backspace" => handle.command("deleteCharBackward"),
-        "Delete" => handle.command("deleteCharForward"),
-        "Enter" if !ctrl => handle.command("enter"),
-        "Tab" => {
-            // In a table, Tab navigates cells; otherwise it indents / outdents the
-            // current list (or task) item. Consume Tab either way — no focus traversal.
-            let _ = handle.tab_cell(shift)
-                || handle.command(if shift {
-                    "liftListItem"
-                } else {
-                    "sinkListItem"
-                });
-            true
-        }
+        // 1. Cursor movement / selection extension — geometry-dependent (browser layout),
+        //    so it stays view-owned and never touches the keymap.
+        "ArrowUp" => vertical_step(&handle, container_nid, doc, false, shift),
+        "ArrowDown" => vertical_step(&handle, container_nid, doc, true, shift),
         "ArrowLeft" => handle.move_cursor(
             if ctrl {
                 CursorMotion::WordLeft
@@ -570,8 +626,6 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
             },
             shift,
         ),
-        "ArrowUp" => vertical_step(&handle, container_nid, doc, false, shift),
-        "ArrowDown" => vertical_step(&handle, container_nid, doc, true, shift),
         "Home" => handle.move_cursor(
             if ctrl {
                 CursorMotion::DocStart
@@ -588,20 +642,23 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
             },
             shift,
         ),
-        "a" | "A" if ctrl => {
-            handle.select_all();
-            true
-        }
-        "b" | "B" if ctrl => handle.command("toggleBold"),
-        "i" | "I" if ctrl => handle.command("toggleItalic"),
-        "u" | "U" if ctrl => handle.command("toggleUnderline"),
-        "z" | "Z" if ctrl && shift => handle.command("redo"),
-        "z" | "Z" if ctrl => handle.command("undo"),
-        "y" | "Y" if ctrl => handle.command("redo"),
+        // 2. Tab: table cell-nav (shared) first; else the keymap resolves
+        //    `Tab`→sinkListItem / `Shift-Tab`→liftListItem below. Consumed either way.
+        "Tab" if handle.tab_cell(shift) => true,
         _ => {
-            // Printable text input: a single non-control character with no Ctrl/Meta/Alt.
-            // (Clipboard and other Ctrl shortcuts fall through unconsumed.)
-            if ctrl || alt {
+            // 3. THE KEYMAP — the single source of truth for every command key. Letters
+            //    resolve logically (`key`, layout-correct), digits/symbols physically
+            //    (`code`). A matched binding is always consumed (never falls through),
+            //    even if the command no-op'd here.
+            if let Some(binding) = editor_key_binding(&key, &code, ctrl, shift, alt)
+                && handle.dispatch_key(binding).is_some()
+            {
+                true
+            }
+            // 4. Plain text insertion — a single non-control char, no modifier. Ctrl/Alt
+            //    combos (incl. Ctrl+C/X/V) stay UNCONSUMED so the browser fires its native
+            //    ClipboardEvent — never bind clipboard keys in any plugin keymap.
+            else if ctrl || alt {
                 false
             } else if key.chars().count() == 1 && !key.chars().next().unwrap().is_control() {
                 handle.insert_text(&key)

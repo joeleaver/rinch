@@ -1759,6 +1759,89 @@ pub(crate) enum Motion {
     DocEnd,
 }
 
+/// Translate a platform [`KeyCode`] + modifier state into an editor-core `KeyBinding`
+/// for keymap lookup. Keyed by the **physical** key: `Mod-Shift-8` matches the `8` key
+/// regardless of the shifted glyph, and `Mod-b` matches the physical B position. Returns
+/// `None` for keys with no bindable identity (function/modifier keys), which then fall
+/// through to text input.
+///
+/// (The winit event carries only the physical `KeyCode` here; the web view resolves
+/// *letters* via the logical `event.key()` so `Mod-b` is layout-correct on Dvorak/AZERTY.
+/// Matching that on desktop would mean plumbing winit's logical key through
+/// `PlatformEvent::KeyDown` — a follow-up; on QWERTY the two are identical.)
+#[cfg(feature = "desktop")]
+fn editor_key_binding(
+    key: KeyCode,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+) -> Option<rinch_editor_core::KeyBinding> {
+    use rinch_editor_core::{Key, KeyBinding, Modifiers};
+    let k = match key {
+        KeyCode::KeyA => Key::Char('a'),
+        KeyCode::KeyB => Key::Char('b'),
+        KeyCode::KeyC => Key::Char('c'),
+        KeyCode::KeyD => Key::Char('d'),
+        KeyCode::KeyE => Key::Char('e'),
+        KeyCode::KeyF => Key::Char('f'),
+        KeyCode::KeyG => Key::Char('g'),
+        KeyCode::KeyH => Key::Char('h'),
+        KeyCode::KeyI => Key::Char('i'),
+        KeyCode::KeyJ => Key::Char('j'),
+        KeyCode::KeyK => Key::Char('k'),
+        KeyCode::KeyL => Key::Char('l'),
+        KeyCode::KeyM => Key::Char('m'),
+        KeyCode::KeyN => Key::Char('n'),
+        KeyCode::KeyO => Key::Char('o'),
+        KeyCode::KeyP => Key::Char('p'),
+        KeyCode::KeyQ => Key::Char('q'),
+        KeyCode::KeyR => Key::Char('r'),
+        KeyCode::KeyS => Key::Char('s'),
+        KeyCode::KeyT => Key::Char('t'),
+        KeyCode::KeyU => Key::Char('u'),
+        KeyCode::KeyV => Key::Char('v'),
+        KeyCode::KeyW => Key::Char('w'),
+        KeyCode::KeyX => Key::Char('x'),
+        KeyCode::KeyY => Key::Char('y'),
+        KeyCode::KeyZ => Key::Char('z'),
+        KeyCode::Digit0 => Key::Char('0'),
+        KeyCode::Digit1 => Key::Char('1'),
+        KeyCode::Digit2 => Key::Char('2'),
+        KeyCode::Digit3 => Key::Char('3'),
+        KeyCode::Digit4 => Key::Char('4'),
+        KeyCode::Digit5 => Key::Char('5'),
+        KeyCode::Digit6 => Key::Char('6'),
+        KeyCode::Digit7 => Key::Char('7'),
+        KeyCode::Digit8 => Key::Char('8'),
+        KeyCode::Digit9 => Key::Char('9'),
+        KeyCode::Minus => Key::Char('-'),
+        KeyCode::Equal => Key::Char('='),
+        KeyCode::Enter => Key::Enter,
+        KeyCode::Backspace => Key::Backspace,
+        KeyCode::Delete => Key::Delete,
+        KeyCode::Tab => Key::Tab,
+        KeyCode::Escape => Key::Escape,
+        KeyCode::Space => Key::Space,
+        KeyCode::ArrowLeft => Key::ArrowLeft,
+        KeyCode::ArrowRight => Key::ArrowRight,
+        KeyCode::ArrowUp => Key::ArrowUp,
+        KeyCode::ArrowDown => Key::ArrowDown,
+        KeyCode::Home => Key::Home,
+        KeyCode::End => Key::End,
+        KeyCode::PageUp => Key::PageUp,
+        KeyCode::PageDown => Key::PageDown,
+        _ => return None,
+    };
+    Some(KeyBinding::new(
+        k,
+        Modifiers {
+            primary: ctrl,
+            shift,
+            alt,
+        },
+    ))
+}
+
 /// Rich-text editor keyboard handling (desktop).
 #[cfg(feature = "desktop")]
 impl RinchApp {
@@ -1772,102 +1855,107 @@ impl RinchApp {
         text: Option<&str>,
         shift: bool,
         ctrl: bool,
-        _alt: bool,
+        alt: bool,
     ) -> bool {
         // The vertical "goal column" survives only a run of Up/Down — any other key
         // (typing, horizontal arrows, Home/End, edits) abandons it.
         if !matches!(key, KeyCode::ArrowUp | KeyCode::ArrowDown) {
             self.editor_goal_x = None;
         }
+        // 1. Cursor movement / selection extension — geometry-dependent (visual lines,
+        //    goal column), so it stays view-owned and never touches the keymap. (Shift
+        //    extends, Ctrl = word/doc.)
         match key {
-            KeyCode::Backspace => handle.command("deleteCharBackward"),
-            KeyCode::Delete => handle.command("deleteCharForward"),
-            KeyCode::Enter if !ctrl => handle.command("enter"),
-            // Tab / Shift-Tab move between table cells when the cursor is in a table;
-            // outside a table they indent / outdent the current list (or task) item.
-            // No focus-traversal in the editor either way.
-            KeyCode::Tab => {
-                handle.tab_cell(shift)
-                    || handle.command(if shift {
-                        "liftListItem"
+            KeyCode::ArrowLeft => {
+                return self.move_editor(
+                    handle,
+                    if ctrl {
+                        Motion::WordLeft
                     } else {
-                        "sinkListItem"
-                    })
+                        Motion::CharLeft
+                    },
+                    shift,
+                );
             }
-            // Cursor movement / selection extension (Shift extends, Ctrl = word/doc).
-            KeyCode::ArrowLeft => self.move_editor(
-                handle,
-                if ctrl {
-                    Motion::WordLeft
-                } else {
-                    Motion::CharLeft
-                },
-                shift,
-            ),
-            KeyCode::ArrowRight => self.move_editor(
-                handle,
-                if ctrl {
-                    Motion::WordRight
-                } else {
-                    Motion::CharRight
-                },
-                shift,
-            ),
-            KeyCode::ArrowUp => self.move_editor(handle, Motion::LineUp, shift),
-            KeyCode::ArrowDown => self.move_editor(handle, Motion::LineDown, shift),
-            KeyCode::Home => self.move_editor(
-                handle,
-                if ctrl {
-                    Motion::DocStart
-                } else {
-                    Motion::LineStart
-                },
-                shift,
-            ),
-            KeyCode::End => self.move_editor(
-                handle,
-                if ctrl {
-                    Motion::DocEnd
-                } else {
-                    Motion::LineEnd
-                },
-                shift,
-            ),
-            KeyCode::KeyA if ctrl => {
-                handle.select_all();
-                true
+            KeyCode::ArrowRight => {
+                return self.move_editor(
+                    handle,
+                    if ctrl {
+                        Motion::WordRight
+                    } else {
+                        Motion::CharRight
+                    },
+                    shift,
+                );
             }
-            KeyCode::KeyB if ctrl => handle.command("toggleBold"),
-            KeyCode::KeyI if ctrl => handle.command("toggleItalic"),
-            KeyCode::KeyU if ctrl => handle.command("toggleUnderline"),
-            #[cfg(feature = "clipboard")]
-            KeyCode::KeyC if ctrl => {
-                self.editor_copy(handle);
-                false // copy doesn't change the document or selection
+            KeyCode::ArrowUp => return self.move_editor(handle, Motion::LineUp, shift),
+            KeyCode::ArrowDown => return self.move_editor(handle, Motion::LineDown, shift),
+            KeyCode::Home => {
+                return self.move_editor(
+                    handle,
+                    if ctrl {
+                        Motion::DocStart
+                    } else {
+                        Motion::LineStart
+                    },
+                    shift,
+                );
             }
-            #[cfg(feature = "clipboard")]
-            KeyCode::KeyX if ctrl => self.editor_cut(handle),
-            // Paste-and-match-style (Ctrl+Shift+V) must precede plain Ctrl+V — the
-            // `if ctrl` arm below would otherwise also match with Shift held.
-            #[cfg(feature = "clipboard")]
-            KeyCode::KeyV if ctrl && shift => self.editor_paste_plain(handle),
-            #[cfg(feature = "clipboard")]
-            KeyCode::KeyV if ctrl => self.editor_paste(handle),
-            KeyCode::KeyZ if ctrl && shift => handle.command("redo"),
-            KeyCode::KeyZ if ctrl => handle.command("undo"),
-            KeyCode::KeyY if ctrl => handle.command("redo"),
-            _ => {
-                if ctrl {
-                    return false;
+            KeyCode::End => {
+                return self.move_editor(
+                    handle,
+                    if ctrl {
+                        Motion::DocEnd
+                    } else {
+                        Motion::LineEnd
+                    },
+                    shift,
+                );
+            }
+            _ => {}
+        }
+        // 2. Tab: navigate table cells when in a table (shared handle method); otherwise
+        //    fall through to the keymap, which binds `Tab`→sinkListItem /
+        //    `Shift-Tab`→liftListItem. Consumed either way — no editor focus traversal.
+        if matches!(key, KeyCode::Tab) && handle.tab_cell(shift) {
+            return true;
+        }
+        // 3. Clipboard (Ctrl+C/X/V, Ctrl+Shift+V) — needs the platform clipboard, so it
+        //    can't be an editor-core command. Runs before the keymap, which never binds
+        //    these keys. (Ctrl+Shift+V — paste-and-match-style — precedes plain Ctrl+V.)
+        #[cfg(feature = "clipboard")]
+        if ctrl {
+            match key {
+                KeyCode::KeyC if !shift => {
+                    self.editor_copy(handle);
+                    return false; // copy changes neither the document nor the selection
                 }
-                match text {
-                    Some(t) if !t.is_empty() && t.chars().all(|c| !c.is_control()) => {
-                        handle.insert_text(t)
-                    }
-                    _ => false,
-                }
+                KeyCode::KeyX if !shift => return self.editor_cut(handle),
+                KeyCode::KeyV if shift => return self.editor_paste_plain(handle),
+                KeyCode::KeyV => return self.editor_paste(handle),
+                _ => {}
             }
         }
+        // 4. THE KEYMAP — the single source of truth for every command key (marks, block
+        //    types, lists, blockquote, headings, hr / hard break, enter, backspace /
+        //    delete, undo / redo, select-all). A matched binding is always consumed, even
+        //    if the command no-op'd at this position (so e.g. Tab at top level never
+        //    falls through to text insertion / focus traversal).
+        if let Some(binding) = editor_key_binding(key, ctrl, shift, alt)
+            && handle.dispatch_key(binding).is_some()
+        {
+            return true;
+        }
+        // 5. Plain text insertion (never with the primary modifier) — the resolved char,
+        //    which runs the markdown input rules.
+        if !ctrl
+            && let Some(t) = text
+            && !t.is_empty()
+            && t.chars().all(|c| !c.is_control())
+        {
+            return handle.insert_text(t);
+        }
+        false
     }
 
     /// Apply a cursor [`Motion`] to the focused editor: compute the new head and

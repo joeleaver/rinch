@@ -24,8 +24,8 @@ use rinch_editor_core::serialize::{
     slice_from_html, slice_from_text, slice_to_html, slice_to_text,
 };
 use rinch_editor_core::{
-    CursorMotion, EditorState, EditorView, Node, Plugin, Pos, Schema, Selection, Transaction,
-    apply_input_rules,
+    CursorMotion, EditorState, EditorView, KeyBinding, Node, Plugin, Pos, Schema, Selection,
+    Transaction, apply_input_rules,
 };
 
 #[cfg(feature = "collaboration")]
@@ -233,6 +233,25 @@ impl EditorHandle {
         self.inner.borrow().state.can_run(name)
     }
 
+    /// Look up `binding` in the editor's aggregated keymap and run the bound command.
+    /// Returns `Some(applied)` when a binding matched (the key is **consumed** either
+    /// way — the caller must key "consumed" on `is_some()`, not on the bool, so a no-op
+    /// binding like `Tab` at top level never falls through to text insertion), or `None`
+    /// when nothing is bound. This is the single keymap entry point: both the desktop
+    /// and web key dispatchers translate their native event into a platform-agnostic
+    /// [`KeyBinding`] and route through here, so a binding added in editor-core works on
+    /// every platform (design §5).
+    pub fn dispatch_key(&self, binding: KeyBinding) -> Option<bool> {
+        let name = self
+            .inner
+            .borrow()
+            .state
+            .keymap()
+            .command_for(&binding)
+            .map(str::to_string);
+        name.map(|n| self.command(&n))
+    }
+
     /// Whether the mark named `mark` is active for the current selection (toolbar
     /// "on" state) — reads **state**, never the host.
     pub fn is_mark_active(&self, mark: &str) -> bool {
@@ -431,17 +450,6 @@ impl EditorHandle {
             tr.set_selection(selection.clone());
             Some(tr)
         });
-    }
-
-    /// Select the entire document (the textblock-spanning range from start to end) —
-    /// the Ctrl/Cmd+A path, shared by every platform's keyboard glue.
-    pub fn select_all(&self) {
-        let doc = self.doc();
-        let sel = Selection::text(
-            Selection::at_start(&doc).head(),
-            Selection::at_end(&doc).head(),
-        );
-        self.set_selection(sel);
     }
 
     /// Select the word around model `pos` (the double-click gesture). Returns whether
@@ -1047,6 +1055,34 @@ mod tests {
         assert!(
             !h.handle.toggle_task_checked_at(2),
             "no task item at the cursor"
+        );
+    }
+
+    #[test]
+    fn dispatch_key_runs_a_bound_command() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "abcd")]));
+        h.handle.set_selection(Selection::text(Pos(1), Pos(5)));
+        // Mod-b → toggleBold, from the aggregated keymap.
+        let b = KeyBinding::parse("Mod-b").unwrap();
+        assert_eq!(
+            h.handle.dispatch_key(b),
+            Some(true),
+            "a bound key runs its command"
+        );
+        assert!(h.handle.is_mark_active("bold"));
+    }
+
+    #[test]
+    fn dispatch_key_returns_none_when_unbound() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "x")]));
+        // A bare 'q' has no binding — the caller falls through to text insertion.
+        assert_eq!(h.handle.dispatch_key(KeyBinding::parse("q").unwrap()), None);
+        // selectAll is bound via Mod-a and always applies (consumes the key).
+        assert_eq!(
+            h.handle.dispatch_key(KeyBinding::parse("Mod-a").unwrap()),
+            Some(true)
         );
     }
 

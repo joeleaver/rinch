@@ -192,6 +192,19 @@ pub fn remove_link() -> Command {
     })
 }
 
+/// Select the entire document — the `Ctrl/Cmd+A` command. Returns a selection-only
+/// transaction **unconditionally** (never gated on a change), so the key binding is
+/// always consumed even when the whole document is already selected.
+pub fn select_all() -> Command {
+    command_tr(|state| {
+        let from = crate::selection::Selection::at_start(&state.doc).head();
+        let to = crate::selection::Selection::at_end(&state.doc).head();
+        let mut tr = state.tr();
+        tr.set_selection(crate::selection::Selection::text(from, to));
+        Some(tr)
+    })
+}
+
 /// Remove every mark of `mark_type` (any attrs) from `from..to`.
 fn remove_marks_of_type(
     tr: &mut Transaction,
@@ -1232,6 +1245,7 @@ impl Plugin for BaseCommandsPlugin {
             ("toggleSuperscript", toggle_mark("superscript")),
             ("toggleHighlight", toggle_mark("highlight")),
             ("removeLink", remove_link()),
+            ("selectAll", select_all()),
             ("setParagraph", set_paragraph()),
             ("setCodeBlock", set_block_type("code_block", Attrs::new())),
             ("toggleBulletList", toggle_list("bullet_list")),
@@ -1279,6 +1293,10 @@ impl Plugin for BaseCommandsPlugin {
 
     fn keymap(&self) -> Vec<(KeyBinding, &'static str)> {
         [
+            // NOTE: never bind a clipboard key (Mod-c/x/v) here — the web keydown
+            // handler must return `false` for those so the browser fires its native
+            // ClipboardEvent; a binding would consume the key and break web copy/paste.
+            ("Mod-a", "selectAll"),
             ("Mod-b", "toggleBold"),
             ("Mod-i", "toggleItalic"),
             ("Mod-u", "toggleUnderline"),
@@ -1290,6 +1308,7 @@ impl Plugin for BaseCommandsPlugin {
             ("Delete", "deleteCharForward"),
             ("Tab", "sinkListItem"),
             ("Shift-Tab", "liftListItem"),
+            ("Mod-Shift-7", "toggleTaskList"),
             ("Mod-Shift-8", "toggleBulletList"),
             ("Mod-Shift-9", "toggleOrderedList"),
             ("Mod-Shift-b", "wrapInBlockquote"),
@@ -1297,6 +1316,9 @@ impl Plugin for BaseCommandsPlugin {
             ("Mod-Alt-1", "setHeading1"),
             ("Mod-Alt-2", "setHeading2"),
             ("Mod-Alt-3", "setHeading3"),
+            ("Mod-Alt-4", "setHeading4"),
+            ("Mod-Alt-5", "setHeading5"),
+            ("Mod-Alt-6", "setHeading6"),
         ]
         .into_iter()
         .filter_map(|(b, cmd)| KeyBinding::parse(b).map(|kb| (kb, cmd)))
@@ -1336,6 +1358,16 @@ mod tests {
             true
         });
         found
+    }
+
+    #[test]
+    fn select_all_spans_the_document() {
+        let state = editor("hello");
+        let out = state.run("selectAll").expect("selectAll always applies");
+        // doc > paragraph > "hello": content runs 1..6.
+        assert_eq!((out.selection.from().0, out.selection.to().0), (1, 6));
+        // Idempotent — still applies (consumes the key) when already fully selected.
+        assert!(out.run("selectAll").is_some());
     }
 
     #[test]
