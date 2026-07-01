@@ -275,7 +275,7 @@ impl RinchMcpServer {
     }
 
     #[tool(
-        description = "Get the DOM tree of the rinch application as JSON. Defaults to depth 3 — use max_depth to go deeper, or root_id to scope to a subtree."
+        description = "Get the DOM tree of the rinch application as JSON. Defaults to depth 3 — use max_depth to go deeper, or root_id to scope to a subtree. Each node has `layout` (parent-relative box, == the node's own layout) and `absolute` (on-screen box). Pass `absolute.x`/`absolute.y` to click()/mouse_* — `layout` x/y are NOT screen coordinates."
     )]
     async fn dom_tree(
         &self,
@@ -288,7 +288,9 @@ impl RinchMcpServer {
         .await
     }
 
-    #[tool(description = "Query DOM nodes by selector.")]
+    #[tool(
+        description = "Query DOM nodes by selector. Each result has `layout` (parent-relative box) and `absolute` (on-screen box) — pass `absolute.x`/`absolute.y` to click()/mouse_*, not `layout`."
+    )]
     async fn query_selector(
         &self,
         params: Parameters<SelectorParams>,
@@ -299,7 +301,9 @@ impl RinchMcpServer {
         .await
     }
 
-    #[tool(description = "Get detailed information about a specific DOM node by ID.")]
+    #[tool(
+        description = "Get detailed information about a specific DOM node by ID (computed styles, display mode, geometry). Geometry is reported as `layout` (parent-relative box, == the node's own layout) and `absolute` (on-screen box). Pass `absolute.x`/`absolute.y` to click()/mouse_* — `layout` x/y are NOT screen coordinates."
+    )]
     async fn get_node(&self, params: Parameters<NodeIdParams>) -> Result<CallToolResult, McpError> {
         self.forward_json_command(DebugCommandKind::GetNode {
             id: params.0.id as usize,
@@ -318,7 +322,9 @@ impl RinchMcpServer {
         .await
     }
 
-    #[tool(description = "Simulate a mouse click at the given coordinates.")]
+    #[tool(
+        description = "Simulate a mouse click at the given screen coordinates. Use the `absolute.x`/`absolute.y` of a node from get_node/query_selector (its `layout` x/y are parent-relative, not screen coordinates)."
+    )]
     async fn click(&self, params: Parameters<ClickParams>) -> Result<CallToolResult, McpError> {
         self.forward_json_command(DebugCommandKind::Click {
             x: params.0.x as f32,
