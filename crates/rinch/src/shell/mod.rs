@@ -16,8 +16,6 @@ pub mod rinch_runtime;
 pub mod screenshot;
 #[cfg(feature = "desktop")]
 pub mod softbuffer_renderer;
-#[cfg(feature = "gpu")]
-pub mod transparent_renderer;
 pub mod types;
 #[cfg(feature = "desktop")]
 pub mod window;
