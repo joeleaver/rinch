@@ -702,14 +702,14 @@ impl RinchDocument {
             ) {
                 continue;
             }
-            // A `display: contents` element generates no box, so it can't
-            // establish an inline formatting context. When it flattens into a
-            // flex container (sync_display_contents reparents its children there),
-            // those children become flex items — an IFC rooted here would fight
-            // the flattening and overlap them (issue #41). Inside a block
-            // container the existing IFC handling is left unchanged.
+            // A `display: contents` element generates no box, so it can never
+            // establish an inline formatting context — its inline children belong
+            // to the nearest real (block or flex) ancestor. In a flex container
+            // its children blockify into flex items (issue #41); in a block
+            // container that block establishes the IFC over the flattened inline
+            // content (issue #61, handled below). Either way the contents node is
+            // never an IFC root itself.
             if node.computed_style.display == crate::computed_style::values::DisplayValue::Contents
-                && Self::contents_ancestor_is_flex(&self.tree.nodes, id)
             {
                 continue;
             }
@@ -731,7 +731,13 @@ impl RinchDocument {
             // Even a single text child uses IFC — it's a degenerate case with one
             // text range. This avoids needing two measurement paths (standalone vs IFC)
             // and the sync bugs that arise when elements transition between them.
-            if !inline_children.is_empty() {
+            //
+            // `contents_wraps_only_inline` also activates the IFC when the only
+            // inline content lives *behind* `display:contents` wrapper(s) — as
+            // rsx `if`/`match` emit — so a block parent flows that wrapped text
+            // itself instead of leaving it stranded on the phantom wrapper (#61).
+            if !inline_children.is_empty() || Self::contents_wraps_only_inline(&self.tree.nodes, id)
+            {
                 ifc_roots.push(id);
             } else if node.children.is_empty() {
                 // CSS spec: an empty block container that would establish an IFC
@@ -765,30 +771,15 @@ impl RinchDocument {
         }
 
         for root_id in ifc_roots {
-            let children: Vec<usize> = self.tree.nodes[root_id].children.clone();
             let root_taffy = match self.tree.nodes[root_id].taffy_id {
                 Some(t) => t,
                 None => continue,
             };
 
-            // Remove inline children from Taffy (Parley will handle their layout)
-            for &child_id in &children {
-                let child = match self.tree.nodes.get(child_id) {
-                    Some(c) => c,
-                    None => continue,
-                };
-                if child.is_inline() {
-                    if let Some(child_taffy) = child.taffy_id
-                        && let Ok(taffy_children) = self.tree.taffy.children(root_taffy)
-                        && taffy_children.contains(&child_taffy)
-                    {
-                        let _ = self.tree.taffy.remove_child(root_taffy, child_taffy);
-                    }
-                    if let Some(c) = self.tree.nodes.get_mut(child_id) {
-                        c.ifc_root = Some(root_id);
-                    }
-                }
-            }
+            // Remove inline children from Taffy (Parley handles their layout),
+            // flattening through any `display:contents` wrappers so their inline
+            // grandchildren join this root's IFC (issue #61).
+            self.mark_inline_descendants(root_id, root_id, root_taffy);
 
             // Set NodeContext::InlineRoot on the IFC root's Taffy node
             // so the measure function fires for it
@@ -805,23 +796,102 @@ impl RinchDocument {
         }
     }
 
-    /// Whether the nearest non-`display:contents` ancestor of `node_id` is a flex
-    /// container. Used to decide that a `display:contents` node's children are
-    /// flattened into a flex context (so the contents node must not be an IFC
-    /// root). Walks up through chained `display:contents` ancestors.
-    fn contents_ancestor_is_flex(nodes: &slab::Slab<Node>, node_id: usize) -> bool {
+    /// Whether `root_id`'s only inline-level content lives behind one or more
+    /// `display:contents` wrappers (with no block-level content mixed in).
+    ///
+    /// `display:contents` is transparent, so a block container whose children
+    /// are contents wrappers full of inline text must establish the IFC itself
+    /// (issue #61). This is only consulted when `root_id` has no *direct* inline
+    /// children. Returns false when any block-level element is found among the
+    /// flattened content — mixed inline+block behind `display:contents` is out of
+    /// scope here (it needs anonymous-block-box handling) and is left untouched
+    /// rather than regressed.
+    fn contents_wraps_only_inline(nodes: &slab::Slab<Node>, root_id: usize) -> bool {
+        let mut found_contents_inline = false;
+        if Self::scan_contents_children(nodes, root_id, &mut found_contents_inline) {
+            found_contents_inline
+        } else {
+            false
+        }
+    }
+
+    /// Recursively classify `node_id`'s children, descending only through
+    /// `display:contents` wrappers. Sets `found_inline` when inline content is
+    /// seen under a contents wrapper. Returns false as soon as a block-level
+    /// (non-contents) element is encountered.
+    fn scan_contents_children(
+        nodes: &slab::Slab<Node>,
+        node_id: usize,
+        found_inline: &mut bool,
+    ) -> bool {
         use crate::computed_style::values::DisplayValue;
-        let mut cur = nodes.get(node_id).and_then(|n| n.parent);
-        while let Some(anc_id) = cur {
-            match nodes.get(anc_id) {
-                Some(a) if a.computed_style.display == DisplayValue::Contents => {
-                    cur = a.parent;
+        for &child_id in &nodes[node_id].children {
+            let child = match nodes.get(child_id) {
+                Some(c) => c,
+                None => continue,
+            };
+            if child.is_comment() {
+                continue;
+            }
+            if child.computed_style.display == DisplayValue::Contents {
+                if !Self::scan_contents_children(nodes, child_id, found_inline) {
+                    return false;
                 }
-                Some(a) => return a.display_mode == DisplayMode::Flex,
-                None => return false,
+            } else if child.is_inline() {
+                *found_inline = true;
+            } else {
+                // A real block-level box — mixed content, not our case.
+                return false;
             }
         }
-        false
+        true
+    }
+
+    /// Detach the inline descendants of an IFC root from Taffy and mark their
+    /// `ifc_root`, flattening through `display:contents` wrappers.
+    ///
+    /// Direct inline children behave exactly as before (removed from the root's
+    /// Taffy node so Parley lays them out, `ifc_root` set). A `display:contents`
+    /// wrapper generates no box, so it is transparent: it is marked with this
+    /// root's id (so IFC discovery finds this container and paint skips the
+    /// wrapper in the normal tree walk) and recursed into, so its inline
+    /// grandchildren — which `sync_display_contents` reparented into `root_taffy`
+    /// — are detached and joined to this IFC too (issue #61).
+    fn mark_inline_descendants(
+        &mut self,
+        root_id: usize,
+        node_id: usize,
+        root_taffy: taffy::NodeId,
+    ) {
+        use crate::computed_style::values::DisplayValue;
+        let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
+        for child_id in children {
+            let (is_contents, is_inline, child_taffy) = match self.tree.nodes.get(child_id) {
+                Some(c) => (
+                    c.computed_style.display == DisplayValue::Contents,
+                    c.is_inline(),
+                    c.taffy_id,
+                ),
+                None => continue,
+            };
+            if is_contents {
+                if let Some(c) = self.tree.nodes.get_mut(child_id) {
+                    c.ifc_root = Some(root_id);
+                }
+                self.mark_inline_descendants(root_id, child_id, root_taffy);
+            } else if is_inline {
+                if let Some(child_taffy) = child_taffy
+                    && let Ok(taffy_children) = self.tree.taffy.children(root_taffy)
+                    && taffy_children.contains(&child_taffy)
+                {
+                    let _ = self.tree.taffy.remove_child(root_taffy, child_taffy);
+                }
+                if let Some(c) = self.tree.nodes.get_mut(child_id) {
+                    c.ifc_root = Some(root_id);
+                }
+            }
+            // Block-level children are left in place (existing behavior).
+        }
     }
 
     /// Pre-compute layout for inline-block children that were detached from Taffy.
@@ -1377,6 +1447,25 @@ impl RinchDocument {
                         kind: parley::InlineBoxKind::InFlow,
                     });
                     child_positions.push((child_id, LayoutResult::default()));
+                }
+                NodeKind::Element(_)
+                    if child.computed_style.display
+                        == crate::computed_style::values::DisplayValue::Contents =>
+                {
+                    // `display:contents` generates no box — it is transparent.
+                    // Recurse without pushing a style span so its inline
+                    // descendants flow into this IFC in document order (#61).
+                    Self::walk_inline_children(
+                        nodes,
+                        child_id,
+                        builder,
+                        child_positions,
+                        text_ranges,
+                        background_spans,
+                        flat_pos,
+                        scale,
+                        collapse,
+                    );
                 }
                 NodeKind::Comment(_) => {
                     // Skip comments in inline layout
