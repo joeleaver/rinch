@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGPU RenderSurface — Rinch on Web</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #111318;
+        }
+        #loading {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            font-family: system-ui, -apple-system, sans-serif;
+            color: #c1c2c5;
+            background: #111318;
+            z-index: 10;
+        }
+        #loading h1 { font-size: 22px; font-weight: 600; margin: 0 0 10px; }
+        #loading p { font-size: 13px; color: #7a8090; margin: 0; }
+    </style>
+    <link data-trunk rel="rust" data-wasm-opt="z" />
+</head>
+<body>
+    <div id="loading">
+        <h1>WebGPU RenderSurface</h1>
+        <p>Loading… (serve over localhost so <code>navigator.gpu</code> is available)</p>
+    </div>
+    <script>
+        // Hide the loading overlay once rinch has mounted its DOM.
+        const observer = new MutationObserver(() => {
+            const root = document.getElementById('rinch-root');
+            if (root && root.childNodes.length > 0) {
+                const el = document.getElementById('loading');
+                if (el) el.style.display = 'none';
+                observer.disconnect();
+            }
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+        setTimeout(() => {
+            const el = document.getElementById('loading');
+            if (el) el.style.display = 'none';
+        }, 10000);
+    </script>
+</body>
+</html>

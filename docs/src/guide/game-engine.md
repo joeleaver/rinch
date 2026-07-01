@@ -168,6 +168,42 @@ Events are dispatched to the handler set via `set_event_handler()`. Coordinates 
 
 `SurfaceKeyData` contains `key`, `code`, `ctrl`, `shift`, `alt`, `meta`.
 
+### Web (canvas viewport)
+
+The **same** `RenderSurface` + `create_render_surface()` API works on `rinch-web`, but the model is inverted. On the web the **browser** composites, so rinch only creates and manages a real `<canvas>` "viewport hole" sized by layout; the **app owns the GPU context** (rinch links no wgpu on web). This mirrors desktop symmetrically: **desktop** = rinch owns the window and you submit frames; **web** = you own the canvas surface.
+
+```rust
+use rinch::prelude::*;
+use rinch::render_surface::{create_render_surface, RenderSurface};
+
+let surface = create_render_surface();
+
+// After mount, grab the <canvas> and create your own wgpu WebGPU surface on it.
+// (canvas_element() returns None until the component has mounted.)
+if let Some(canvas) = surface.canvas_element() {
+    let wgpu_surface = instance
+        .create_surface(wgpu::SurfaceTarget::Canvas(canvas))?;
+    // request adapter/device (async on web), configure, and render each frame.
+}
+
+// Resize notification (ResizeObserver-driven). Size is PHYSICAL px
+// (CSS px × devicePixelRatio), matching desktop — HiDPI-correct out of the box.
+surface.set_resize_callback(move |w, h| reconfigure_wgpu_surface(w, h));
+
+// Per-frame tick (drives requestAnimationFrame on web).
+surface.set_render_callback(move |_writer, w, h| render_triangle(w, h));
+
+rsx! { div { style: "flex:1;", RenderSurface { surface: Some(surface) } } }
+```
+
+Notes:
+
+- **HiDPI out of the box.** `layout_size()` reports **physical** pixels (`CSS px × devicePixelRatio`), rinch sizes the canvas backing store to match, and `set_resize_callback` pushes the new physical size on every resize so you can reconfigure your wgpu/WebGL surface.
+- **Input** (pointer / wheel / keyboard incl. `KeyUp` / focus) over the canvas is delivered to `set_event_handler` — rinch does not swallow it. Click the canvas to focus it for keyboard events.
+- **CPU path still works & is portable.** `SurfaceWriter::submit_frame` blits via a lazily-created 2D context; it self-disables once you claim a WebGPU/WebGL context. So the same app can run on desktop and web.
+- **Clean teardown.** The ResizeObserver and canvas listeners are removed when the component unmounts — no leaks.
+- See `examples/webgpu-surface-web` (a WebGPU triangle in a rinch DOM UI) — the web counterpart of `examples/game-embed`. Build with `trunk serve` over `localhost` (so `navigator.gpu` is available; the `webgl` cargo feature is a fallback).
+
 ### API Reference: RenderSurface
 
 | Function / Type | Description |
@@ -186,8 +222,11 @@ Events are dispatched to the handler set via `set_event_handler()`. Coordinates 
 | `writer()` | Get a `SurfaceWriter` for CPU pixel submission |
 | `gpu_registrar()` | Get a `GpuTextureRegistrar` for GPU texture compositing |
 | `set_event_handler(handler)` | Set input event callback (main thread closure) |
-| `layout_size()` | Get current `(width, height)` from CSS layout |
-| `set_texture_source(view, w, h)` | Set GPU texture directly (main thread only) |
+| `set_render_callback(cb)` | Per-frame `FnMut(&SurfaceWriter, w, h)` — drives `requestAnimationFrame` on web |
+| `set_resize_callback(cb)` | `FnMut(w, h)` fired on backing-size change (physical px) — reconfigure a GPU surface |
+| `layout_size()` | Get current physical `(width, height)` (web: CSS px × devicePixelRatio) |
+| `canvas_element()` | **(web only)** the `<canvas>` after mount — create a WebGPU/WebGL context on it |
+| `set_texture_source(view, w, h)` | **(desktop, gpu)** Set GPU texture directly (main thread only) |
 | `has_texture_source()` | Check if a GPU texture is registered |
 | `id()` | Surface ID |
 | `viewport_name()` | Internal viewport name |
@@ -394,3 +433,4 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 
 - `examples/game-embed/` — Spinning cube with rinch HUD overlay (embed API)
 - `examples/render-surface-demo/` — Painting app with canvas and navigator (RenderSurface)
+- `examples/webgpu-surface-web/` — **(web)** WebGPU triangle in a rinch DOM UI — the app owns a wgpu `<canvas>` viewport (RenderSurface on `rinch-web`)

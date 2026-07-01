@@ -12,6 +12,7 @@ exclude = [
     "examples/islands-web",
     "examples/editor-web",
     "examples/collab-editor-web",
+    "examples/webgpu-surface-web",
 ]
 
 [workspace.package]

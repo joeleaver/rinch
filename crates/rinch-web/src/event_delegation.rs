@@ -1210,6 +1210,31 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         .unwrap();
     keydown_closure.forget();
 
+    // keyup: route to a focused render surface (games need key-release). No app
+    // keyup delegation path exists, so this only acts when a surface is focused.
+    let keyup_closure = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+        if let Some(surface_id) = rinch::render_surface::focused_surface_id() {
+            let key_data = rinch::render_surface::SurfaceKeyData {
+                key: event.key(),
+                code: event.code(),
+                ctrl: event.ctrl_key() || event.meta_key(),
+                shift: event.shift_key(),
+                alt: event.alt_key(),
+                meta: event.meta_key(),
+            };
+            rinch::render_surface::dispatch_surface_event(
+                surface_id,
+                rinch::render_surface::SurfaceEvent::KeyUp(key_data),
+            );
+            event.prevent_default();
+            event.stop_propagation();
+        }
+    }) as Box<dyn FnMut(_)>);
+    browser_doc
+        .add_event_listener_with_callback("keyup", keyup_closure.as_ref().unchecked_ref())
+        .unwrap();
+    keyup_closure.forget();
+
     // Input delegation: find [data-oninput] on the target or ancestors.
     let browser_doc2 = browser_doc.clone();
     let input_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
