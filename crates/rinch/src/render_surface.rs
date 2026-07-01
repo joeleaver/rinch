@@ -315,6 +315,24 @@ pub struct RenderSurfaceHandle {
     #[allow(clippy::type_complexity)]
     pub(crate) render_callback:
         std::rc::Rc<RefCell<Option<Box<dyn FnMut(&SurfaceWriter, u32, u32)>>>>,
+    /// Resize notification callback (main-thread only).
+    ///
+    /// Invoked whenever the surface's backing size changes, with the new size in
+    /// **physical pixels** — on web `CSS px × devicePixelRatio` (from the
+    /// `ResizeObserver`), on desktop `logical × scale_factor` (from the
+    /// compositor's per-frame layout update). Lets a GPU app reconfigure its
+    /// wgpu/WebGL surface on resize.
+    #[allow(clippy::type_complexity)]
+    pub(crate) resize_callback: std::rc::Rc<RefCell<Option<Box<dyn FnMut(u32, u32)>>>>,
+    /// Web teardown state — the `ResizeObserver` and canvas event listeners, kept
+    /// alive here (not leaked) so they can be disconnected/removed on unmount.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) web_cleanup: std::rc::Rc<RefCell<Option<WebSurfaceCleanup>>>,
+    /// Whether a `requestAnimationFrame` loop is currently driving this surface's
+    /// render callback (web only). Prevents double-starting a loop and lets a
+    /// remount restart one after the previous loop self-terminated on unmount.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) raf_running: std::rc::Rc<Cell<bool>>,
 }
 
 impl RenderSurfaceHandle {
@@ -439,7 +457,22 @@ impl RenderSurfaceHandle {
         *self.render_callback.borrow_mut() = Some(Box::new(callback));
 
         #[cfg(target_arch = "wasm32")]
-        start_raf_loop(self.id);
+        start_raf_loop(self.id, self.raf_running.clone());
+    }
+
+    /// Set a callback invoked whenever the surface's backing size changes.
+    ///
+    /// The size is reported in **physical pixels** (web: `CSS px ×
+    /// devicePixelRatio`; desktop: `logical × scale_factor`), matching
+    /// [`layout_size`](Self::layout_size). Use it to reconfigure a GPU
+    /// (wgpu / WebGL) surface on resize — HiDPI-correct out of the box.
+    ///
+    /// The callback runs on the main thread. On web it fires once with the
+    /// initial size shortly after mount (set it before/at mount to catch that
+    /// first call), and again on every subsequent resize. Only one callback per
+    /// surface.
+    pub fn set_resize_callback(&self, callback: impl FnMut(u32, u32) + 'static) {
+        *self.resize_callback.borrow_mut() = Some(Box::new(callback));
     }
 }
 
@@ -552,6 +585,11 @@ pub fn create_render_surface() -> RenderSurfaceHandle {
         #[cfg(target_arch = "wasm32")]
         canvas_ctx: std::rc::Rc::new(RefCell::new(None)),
         render_callback: std::rc::Rc::new(RefCell::new(None)),
+        resize_callback: std::rc::Rc::new(RefCell::new(None)),
+        #[cfg(target_arch = "wasm32")]
+        web_cleanup: std::rc::Rc::new(RefCell::new(None)),
+        #[cfg(target_arch = "wasm32")]
+        raf_running: std::rc::Rc::new(Cell::new(false)),
     }
 }
 
@@ -585,6 +623,11 @@ pub fn create_render_surface_with_name(viewport_name: &str) -> RenderSurfaceHand
         #[cfg(target_arch = "wasm32")]
         canvas_ctx: std::rc::Rc::new(RefCell::new(None)),
         render_callback: std::rc::Rc::new(RefCell::new(None)),
+        resize_callback: std::rc::Rc::new(RefCell::new(None)),
+        #[cfg(target_arch = "wasm32")]
+        web_cleanup: std::rc::Rc::new(RefCell::new(None)),
+        #[cfg(target_arch = "wasm32")]
+        raf_running: std::rc::Rc::new(Cell::new(false)),
     };
 
     SURFACE_REGISTRY.with(|reg| {
@@ -719,12 +762,33 @@ pub fn collect_surface_pixels_by_id()
     })
 }
 
+/// Update a surface's layout size and, if it changed, fire its resize callback.
+///
+/// Central point so both the by-id (web `ResizeObserver`) and by-name (desktop
+/// compositor) update paths deliver the same push resize notification.
+fn set_and_notify_size(surface: &RenderSurfaceHandle, width: u32, height: u32) {
+    let changed = {
+        let mut sz = surface.layout_size.lock().unwrap();
+        if *sz != (width, height) {
+            *sz = (width, height);
+            true
+        } else {
+            false
+        }
+    };
+    if changed {
+        if let Some(cb) = surface.resize_callback.borrow_mut().as_mut() {
+            cb(width, height);
+        }
+    }
+}
+
 /// Update the layout size for a render surface by ID.
 pub fn update_layout_size_by_id(surface_id: usize, width: u32, height: u32) {
     SURFACE_REGISTRY.with(|reg| {
         let reg = reg.borrow();
         if let Some(surface) = reg.iter().find(|s| s.id == surface_id) {
-            *surface.layout_size.lock().unwrap() = (width, height);
+            set_and_notify_size(surface, width, height);
         }
     });
 }
@@ -890,7 +954,7 @@ pub fn update_layout_size(viewport_name: &str, width: u32, height: u32) {
         let reg = reg.borrow();
         for surface in reg.iter() {
             if surface.viewport_name == viewport_name {
-                *surface.layout_size.lock().unwrap() = (width, height);
+                set_and_notify_size(surface, width, height);
                 return;
             }
         }
@@ -1029,10 +1093,14 @@ impl Component for RenderSurface {
             mount_render_surface(surface);
 
             // Unmount: unregister when this scope is disposed (tab switch,
-            // conditional hide, etc.) so stale surfaces aren't composited.
-            let surface_id = surface.id;
+            // conditional hide, etc.) so stale surfaces aren't composited. On web
+            // also disconnect the ResizeObserver and remove the canvas event
+            // listeners so nothing leaks.
+            let surface = surface.clone();
             scope.on_cleanup(move || {
-                unregister_render_surface(surface_id);
+                unregister_render_surface(surface.id);
+                #[cfg(target_arch = "wasm32")]
+                teardown_web_surface(&surface);
             });
         }
 
@@ -1074,13 +1142,78 @@ impl Component for RenderSurface {
 
 // ── Web-specific support ─────────────────────────────────────────────────────
 
+/// Owns the canvas event listeners and `ResizeObserver` for a mounted web
+/// surface so they can be torn down cleanly on unmount.
+///
+/// The `Closure`s are kept alive here (not `forget()`-leaked) — dropping this
+/// struct after removing the listeners frees them and their captures.
+#[cfg(target_arch = "wasm32")]
+pub(crate) struct WebSurfaceCleanup {
+    canvas: web_sys::HtmlCanvasElement,
+    observer: web_sys::ResizeObserver,
+    #[allow(clippy::type_complexity)]
+    pointer_listeners: Vec<(
+        &'static str,
+        wasm_bindgen::closure::Closure<dyn FnMut(web_sys::PointerEvent)>,
+    )>,
+    wheel_listener: (
+        &'static str,
+        wasm_bindgen::closure::Closure<dyn FnMut(web_sys::WheelEvent)>,
+    ),
+    // Kept alive so the observer's callback stays valid until we disconnect it.
+    _resize_closure:
+        wasm_bindgen::closure::Closure<dyn FnMut(js_sys::Array, wasm_bindgen::JsValue)>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl WebSurfaceCleanup {
+    /// Disconnect the observer and remove every canvas listener, then drop the
+    /// closures (freeing their captures).
+    fn teardown(self) {
+        use wasm_bindgen::JsCast;
+        self.observer.disconnect();
+        let target: &web_sys::EventTarget = self.canvas.as_ref();
+        for (ty, cb) in &self.pointer_listeners {
+            let _ = target.remove_event_listener_with_callback(ty, cb.as_ref().unchecked_ref());
+        }
+        let _ = target.remove_event_listener_with_callback(
+            self.wheel_listener.0,
+            self.wheel_listener.1.as_ref().unchecked_ref(),
+        );
+    }
+}
+
+/// Tear down a web surface's listeners/observer and drop its canvas refs.
+///
+/// Called from the [`RenderSurface`] component's cleanup when the scope is
+/// disposed. Idempotent — safe to call even if the canvas never initialized.
+#[cfg(target_arch = "wasm32")]
+fn teardown_web_surface(surface: &RenderSurfaceHandle) {
+    if let Some(cleanup) = surface.web_cleanup.borrow_mut().take() {
+        cleanup.teardown();
+    }
+    *surface.canvas.borrow_mut() = None;
+    *surface.canvas_ctx.borrow_mut() = None;
+}
+
 /// Start a `requestAnimationFrame` loop that invokes the render callback for
 /// the given surface each frame. The loop self-terminates when the surface is
 /// unregistered or its callback is removed.
+///
+/// `running` guards against two loops for the same surface: it's set here and
+/// cleared when the loop stops, so `set_render_callback` and a remount can both
+/// call this safely and only one loop exists at a time. After an unmount stops
+/// the loop, a remount (via [`schedule_canvas_init`]) restarts it — otherwise a
+/// render-callback surface would stay blank after a hide→show cycle.
 #[cfg(target_arch = "wasm32")]
-fn start_raf_loop(surface_id: usize) {
+fn start_raf_loop(surface_id: usize, running: std::rc::Rc<Cell<bool>>) {
     use std::rc::Rc;
     use wasm_bindgen::prelude::*;
+
+    if running.get() {
+        return; // a loop is already driving this surface
+    }
+    running.set(true);
 
     let closure: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
     let closure_clone = closure.clone();
@@ -1115,6 +1248,9 @@ fn start_raf_loop(surface_id: usize) {
             if let Some(ref cb) = *cb_ref {
                 let _ = window.request_animation_frame(cb.as_ref().unchecked_ref());
             }
+        } else {
+            // Allow a future remount to start a fresh loop.
+            running.set(false);
         }
     }) as Box<dyn FnMut()>));
 
@@ -1189,13 +1325,30 @@ fn schedule_canvas_init(surface: RenderSurfaceHandle) {
         let canvas_id = format!("rinch-surface-{}", surface.id);
         if let Some(el) = document.get_element_by_id(&canvas_id) {
             let canvas_el: web_sys::HtmlCanvasElement = el.dyn_into().unwrap();
-            // Set up event listeners before storing refs
-            setup_canvas_events(&canvas_el, surface.id);
-            setup_resize_observer(&canvas_el, surface.id);
+            // Set up event listeners + observer, keeping their closures alive in
+            // WebSurfaceCleanup so they can be removed on unmount (no leaks).
+            let (pointer_listeners, wheel_listener) = setup_canvas_events(&canvas_el, surface.id);
+            let (observer, resize_closure) = setup_resize_observer(&canvas_el, surface.id);
+            *surface.web_cleanup.borrow_mut() = Some(WebSurfaceCleanup {
+                canvas: canvas_el.clone(),
+                observer,
+                pointer_listeners,
+                wheel_listener,
+                _resize_closure: resize_closure,
+            });
             // Store canvas ref. The 2D context is created lazily on the first
             // submit_frame() call. This allows users to call canvas_element()
             // and create a WebGPU or WebGL context first for GPU rendering.
             *surface.canvas.borrow_mut() = Some(canvas_el);
+
+            // On a remount, the render-callback rAF loop from the previous mount
+            // has self-terminated (the surface was unregistered). Restart it if a
+            // render callback is set, so a hidden→shown surface keeps rendering.
+            // `raf_running` makes this a no-op on the first mount (the loop that
+            // set_render_callback already started is still live).
+            if surface.render_callback.borrow().is_some() {
+                start_raf_loop(surface.id, surface.raf_running.clone());
+            }
         }
     });
     let window = web_sys::window().unwrap();
@@ -1214,11 +1367,29 @@ fn mouse_button_from_i16(button: i16) -> SurfaceMouseButton {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn setup_canvas_events(canvas: &web_sys::HtmlCanvasElement, surface_id: usize) {
+#[allow(clippy::type_complexity)]
+fn setup_canvas_events(
+    canvas: &web_sys::HtmlCanvasElement,
+    surface_id: usize,
+) -> (
+    Vec<(
+        &'static str,
+        wasm_bindgen::closure::Closure<dyn FnMut(web_sys::PointerEvent)>,
+    )>,
+    (
+        &'static str,
+        wasm_bindgen::closure::Closure<dyn FnMut(web_sys::WheelEvent)>,
+    ),
+) {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
 
     let target: &web_sys::EventTarget = canvas.as_ref();
+
+    // Pointer closures are collected (not forgotten) so they can be removed on
+    // unmount. Each is stored with its event-type string for removeEventListener.
+    let mut pointer_listeners: Vec<(&'static str, Closure<dyn FnMut(web_sys::PointerEvent)>)> =
+        Vec::new();
 
     // Pointer events (deref to MouseEvent) cover mouse, touch, and pen on one
     // path — so a game/custom-render surface receives input on touch devices too.
@@ -1242,7 +1413,7 @@ fn setup_canvas_events(canvas: &web_sys::HtmlCanvasElement, surface_id: usize) {
         target
             .add_event_listener_with_callback("pointerdown", closure.as_ref().unchecked_ref())
             .unwrap();
-        closure.forget();
+        pointer_listeners.push(("pointerdown", closure));
     }
 
     // pointerup — release the capture taken on pointerdown.
@@ -1258,7 +1429,7 @@ fn setup_canvas_events(canvas: &web_sys::HtmlCanvasElement, surface_id: usize) {
         target
             .add_event_listener_with_callback("pointerup", closure.as_ref().unchecked_ref())
             .unwrap();
-        closure.forget();
+        pointer_listeners.push(("pointerup", closure));
     }
 
     // pointercancel — the browser took the pointer away; release capture and end
@@ -1275,7 +1446,7 @@ fn setup_canvas_events(canvas: &web_sys::HtmlCanvasElement, surface_id: usize) {
         target
             .add_event_listener_with_callback("pointercancel", closure.as_ref().unchecked_ref())
             .unwrap();
-        closure.forget();
+        pointer_listeners.push(("pointercancel", closure));
     }
 
     // pointermove
@@ -1288,7 +1459,7 @@ fn setup_canvas_events(canvas: &web_sys::HtmlCanvasElement, surface_id: usize) {
         target
             .add_event_listener_with_callback("pointermove", closure.as_ref().unchecked_ref())
             .unwrap();
-        closure.forget();
+        pointer_listeners.push(("pointermove", closure));
     }
 
     // pointerenter
@@ -1301,7 +1472,7 @@ fn setup_canvas_events(canvas: &web_sys::HtmlCanvasElement, surface_id: usize) {
         target
             .add_event_listener_with_callback("pointerenter", closure.as_ref().unchecked_ref())
             .unwrap();
-        closure.forget();
+        pointer_listeners.push(("pointerenter", closure));
     }
 
     // pointerleave
@@ -1312,11 +1483,11 @@ fn setup_canvas_events(canvas: &web_sys::HtmlCanvasElement, surface_id: usize) {
         target
             .add_event_listener_with_callback("pointerleave", closure.as_ref().unchecked_ref())
             .unwrap();
-        closure.forget();
+        pointer_listeners.push(("pointerleave", closure));
     }
 
     // wheel
-    {
+    let wheel_listener = {
         let closure = Closure::wrap(Box::new(move |event: web_sys::WheelEvent| {
             event.prevent_default();
             event.stop_propagation();
@@ -1345,21 +1516,60 @@ fn setup_canvas_events(canvas: &web_sys::HtmlCanvasElement, surface_id: usize) {
                 &opts,
             )
             .unwrap();
-        closure.forget();
-    }
+        ("wheel", closure)
+    };
+
+    (pointer_listeners, wheel_listener)
 }
 
 #[cfg(target_arch = "wasm32")]
-fn setup_resize_observer(canvas: &web_sys::HtmlCanvasElement, surface_id: usize) {
+#[allow(clippy::type_complexity)]
+fn setup_resize_observer(
+    canvas: &web_sys::HtmlCanvasElement,
+    surface_id: usize,
+) -> (
+    web_sys::ResizeObserver,
+    wasm_bindgen::closure::Closure<dyn FnMut(js_sys::Array, wasm_bindgen::JsValue)>,
+) {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
 
+    let canvas_for_cb = canvas.clone();
     let callback = Closure::wrap(Box::new(move |entries: js_sys::Array, _observer: JsValue| {
         if let Some(entry) = entries.get(0).dyn_ref::<web_sys::ResizeObserverEntry>() {
             let rect = entry.content_rect();
-            let width = rect.width() as u32;
-            let height = rect.height() as u32;
+            // Physical backing px = CSS px × devicePixelRatio, matching the
+            // desktop convention that layout_size is physical. This is what makes
+            // HiDPI correct out of the box for GPU (wgpu / WebGL) apps.
+            let dpr = web_sys::window()
+                .map(|w| w.device_pixel_ratio())
+                .filter(|d| *d > 0.0)
+                .unwrap_or(1.0);
+            let width = (rect.width() * dpr).round() as u32;
+            let height = (rect.height() * dpr).round() as u32;
             if width > 0 && height > 0 {
+                // Size the canvas backing store to physical px so an app-owned
+                // GPU context renders sharp. Skip when rinch owns a 2D context for
+                // CPU blitting — web_blit_surface manages that path's dimensions
+                // from the submitted frame instead.
+                let owns_2d_ctx = SURFACE_REGISTRY.with(|reg| {
+                    reg.borrow()
+                        .iter()
+                        .find(|s| s.id == surface_id)
+                        .map(|s| s.canvas_ctx.borrow().is_some())
+                        .unwrap_or(false)
+                });
+                if !owns_2d_ctx {
+                    if canvas_for_cb.width() != width {
+                        canvas_for_cb.set_width(width);
+                    }
+                    if canvas_for_cb.height() != height {
+                        canvas_for_cb.set_height(height);
+                    }
+                }
+                // Update layout size + fire the surface's resize callback on
+                // change (after the canvas is sized, so the app reconfigures its
+                // GPU surface against the correct backing store).
                 update_layout_size_by_id(surface_id, width, height);
             }
         }
@@ -1367,7 +1577,5 @@ fn setup_resize_observer(canvas: &web_sys::HtmlCanvasElement, surface_id: usize)
 
     let observer = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()).unwrap();
     observer.observe(canvas);
-    callback.forget();
-    // Keep observer alive by leaking it — canvas lifetime = app lifetime
-    std::mem::forget(observer);
+    (observer, callback)
 }

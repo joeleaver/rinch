@@ -1,0 +1,40 @@
+[package]
+name = "webgpu-surface-web"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "WebGPU RenderSurface demo for rinch-web — the app owns a wgpu <canvas> viewport inside a rinch DOM UI (issue #91)"
+
+[dependencies]
+# Rinch without desktop + the browser-native DOM backend. rinch creates and
+# manages the <canvas>; it links NO wgpu on web — the app owns the GPU context.
+rinch = { path = "../../crates/rinch", default-features = false, features = ["components", "theme"] }
+rinch-core = { path = "../../crates/rinch-core", features = ["theme"] }
+rinch-web = { path = "../../crates/rinch-web" }
+
+# The app owns wgpu on web. This is crates.io wgpu 27 — the workspace's wgpu
+# fork/patch targets desktop DX12 storage textures and does NOT apply here (this
+# example is excluded from the workspace, so it resolves wgpu straight from
+# crates.io). `webgpu` is the primary backend; `webgl` is the fallback.
+wgpu = { version = "27", features = ["webgpu", "webgl"] }
+
+# WASM bindings + async (wgpu's request_adapter/request_device are async on web).
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+# `Navigator` is used only to probe (via js_sys, no unstable web-sys WebGPU
+# bindings) whether WebGPU has a working adapter, so the app can fall back to
+# WebGL2 without tainting the canvas.
+web-sys = { version = "0.3", features = ["HtmlCanvasElement", "Navigator"] }
+
+# WASM utilities
+console_error_panic_hook = "0.1"
+console_log = "0.2"
+log = "0.4"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
