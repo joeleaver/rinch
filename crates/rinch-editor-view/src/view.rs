@@ -79,6 +79,13 @@ fn apply_element_attrs(dom: &NodeHandle, node: &Node) {
                 }),
             );
         }
+        // A task item carries its checkbox state out as `data-checked` so the default
+        // stylesheet can render a ticked vs empty box (task_item has no native HTML tag,
+        // so the box is a `::before` keyed off this attribute). Always reset when false.
+        "task_item" => match node.attrs().get_bool("checked") {
+            Some(true) => dom.set_attribute("data-checked", "true"),
+            _ => dom.remove_attribute("data-checked"),
+        },
         // The indent level (set by the indent / outdent commands) renders as a left
         // margin — 2em per level. Always written (resetting to 0) so outdent clears
         // the previous value, like the table spans above.

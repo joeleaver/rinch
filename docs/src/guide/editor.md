@@ -205,8 +205,13 @@ the full table command set, and `undo`/`redo`.
 
 The **keymap** normalizes platform keys + modifiers into a binding and looks up a
 command name (so Ctrl+B → `toggleBold`). **Input rules** are regex-driven
-transforms — markdown shortcuts like `## ` → heading, `- ` → bullet list, `> ` →
-blockquote — each returning an optional transaction.
+transforms — block shortcuts like `## ` → heading, `- ` → bullet list, `[ ] ` → task
+list, and inline mark shortcuts like `**bold**` / `==highlight==` / `` `code` `` —
+each returning an optional transaction. The view runs `apply_input_rules` inside
+`EditorHandle::insert_text` (before the plain insert) on every text-entry path, so a
+just-typed character can complete a shortcut and rewrite the text instead of being
+inserted verbatim (ProseMirror's `inputRules` plugin). They only fire at a collapsed
+cursor; paste and IME preedit don't reach this path (an IME *commit* does).
 
 ## History
 

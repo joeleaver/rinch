@@ -106,6 +106,7 @@ fn editor_toolbar(editor: EditorHandle) -> NodeHandle {
     let ed_quote = editor.clone();
     let ed_ul = editor.clone();
     let ed_ol = editor.clone();
+    let ed_tasks = editor.clone();
     let ed_indent = editor.clone();
     let ed_outdent = editor.clone();
     let ed_hr = editor.clone();
@@ -136,6 +137,7 @@ fn editor_toolbar(editor: EditorHandle) -> NodeHandle {
             {toolbar_button(__scope, TablerIcon::Blockquote, "Blockquote", move || { ed_quote.command("wrapInBlockquote"); })}
             {toolbar_button(__scope, TablerIcon::List, "Bullet list", move || { ed_ul.command("toggleBulletList"); })}
             {toolbar_button(__scope, TablerIcon::ListNumbers, "Ordered list", move || { ed_ol.command("toggleOrderedList"); })}
+            {toolbar_button(__scope, TablerIcon::ListCheck, "Task list", move || { ed_tasks.command("toggleTaskList"); })}
 
             {separator(__scope)}
 

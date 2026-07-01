@@ -2204,6 +2204,69 @@ impl RinchApp {
         Some((cont, tb, ifc_byte))
     }
 
+    /// Whether a physical click at `(x, y)` landed in a **task item's checkbox
+    /// gutter** — the strip left of the item's content where the `::before` checkbox
+    /// renders. A task item is the only block with an interactive marker (bullets and
+    /// numbers are inert), so this gates the checkbox-toggle click path. Tries raw
+    /// then scaled coordinates, matching the other physical click helpers.
+    fn editor_task_checkbox_at_physical(&self, x: f32, y: f32, scale: f64) -> bool {
+        let s = scale as f32;
+        let scaled = (s - 1.0).abs() > f32::EPSILON;
+        self.editor_task_checkbox_at(x, y) || (scaled && self.editor_task_checkbox_at(x / s, y / s))
+    }
+
+    /// The logical-coordinate core of [`Self::editor_task_checkbox_at_physical`].
+    fn editor_task_checkbox_at(&self, x: f32, y: f32) -> bool {
+        let Some(doc) = self.doc.clone() else {
+            return false;
+        };
+        let d = doc.borrow();
+        let Some(hit) = hit_test(&d.tree, x, y) else {
+            return false;
+        };
+        // Walk up to the nearest task_item element (stopping at the editor container).
+        let mut task_item = None;
+        let mut cur = Some(hit);
+        while let Some(id) = cur {
+            let Some(node) = d.tree.get(id) else {
+                return false;
+            };
+            if task_item.is_none()
+                && node.attributes.get("data-pm-type").map(String::as_str) == Some("task_item")
+            {
+                task_item = Some(id);
+            }
+            if node.attributes.get("data-pm-editor").map(String::as_str) == Some("true") {
+                break;
+            }
+            cur = node.parent;
+        }
+        let Some(item) = task_item else {
+            return false;
+        };
+        // The item's first block child is its content (e.g. the paragraph); the
+        // checkbox gutter is everything LEFT of that child's content box. A click there
+        // toggles the box; a click on/after the text is a normal caret placement.
+        let Some(item_node) = d.tree.get(item) else {
+            return false;
+        };
+        let content = item_node.children.iter().copied().find(|&c| {
+            d.tree
+                .get(c)
+                .is_some_and(|n| n.attributes.contains_key("data-pm-type"))
+        });
+        let Some(content) = content else {
+            return false;
+        };
+        let (content_x, _) = Self::compute_absolute_position(&d.tree, content);
+        let pad_l = d
+            .tree
+            .get(content)
+            .map(|n| n.computed_style.padding_left.to_px())
+            .unwrap_or(0.0);
+        x < content_x + pad_l
+    }
+
     /// Whether `id` is an editor textblock element — one that holds inline content
     /// (a `<p>`/`<h*>`/`<pre>`), as opposed to a block container (list / list item /
     /// blockquote / the editor root, which carry schema-node element children) or a
@@ -2512,6 +2575,22 @@ impl RinchApp {
         // A click places the cursor at a new column, so abandon any vertical goal
         // column from a prior Up/Down run.
         self.editor_goal_x = None;
+        // A click in a task item's checkbox gutter toggles its `checked` state instead
+        // of placing a caret (the checkbox is a CSS `::before`, so the hit is geometric,
+        // not a real element). Resolve the nearest textblock for a document position,
+        // then toggle the enclosing task item.
+        if self.editor_task_checkbox_at_physical(x, y, scale)
+            && let Some((c, tb, ifc)) = self.editor_point_address_physical(x, y, scale)
+            && c == container
+            && let Some(pos) = handle.pos_at(tb, ifc)
+            && handle.toggle_task_checked_at(pos.0)
+        {
+            crate::editor::end_drag();
+            self.refresh_editor_overlays();
+            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+            self.resolve_and_repaint(w, h);
+            return true;
+        }
         // A click on a leaf node (an image or horizontal rule) selects the node
         // itself — a `Selection::Node`, outlined by the view — rather than placing a
         // text cursor (design §6 node-views). A node-select never arms a drag.

@@ -25,6 +25,7 @@ use rinch_editor_core::serialize::{
 };
 use rinch_editor_core::{
     CursorMotion, EditorState, EditorView, Node, Plugin, Pos, Schema, Selection, Transaction,
+    apply_input_rules,
 };
 
 #[cfg(feature = "collaboration")]
@@ -373,6 +374,18 @@ impl EditorHandle {
             self.command("deleteCellSelection");
         }
         self.update(|state| {
+            // Markdown input rules (M3): at a collapsed cursor, a just-typed character
+            // may complete a shortcut (`**bold**`, `# `, `[ ] ` → task list, …) and
+            // rewrite the text instead of inserting it verbatim. Mirrors ProseMirror's
+            // `inputRules` plugin, which runs before the plain text insert. Paste and IME
+            // preedit don't reach here; an IME *commit* does (`ime_commit`), which is the
+            // intended behaviour.
+            if state.selection.is_empty() {
+                let pos = state.selection.from().0;
+                if let Some(tr) = apply_input_rules(state, state.input_rules(), pos, text) {
+                    return Some(tr);
+                }
+            }
             let mut tr = state.tr();
             if tr.insert_text(text).is_ok() {
                 return Some(tr);
@@ -382,6 +395,31 @@ impl EditorHandle {
             let mut tr = state.tr();
             tr.delete_selection().ok()?;
             tr.insert_text(text).ok()?;
+            Some(tr)
+        })
+    }
+
+    /// Toggle the `checked` state of the task item enclosing document position `pos`
+    /// — the checkbox-click path. Returns whether a task item was found and toggled
+    /// (`false` if `pos` is not inside a task item, so the caller can fall back to a
+    /// normal caret placement). Does not move the selection: ticking a box shouldn't
+    /// jump the text cursor.
+    pub fn toggle_task_checked_at(&self, pos: usize) -> bool {
+        self.update(|state| {
+            let r = state.doc.resolve(Pos(pos)).ok()?;
+            // The nearest task_item ancestor (walk up from the resolved depth).
+            let depth = (1..=r.depth())
+                .rev()
+                .find(|&d| r.node(d).type_name() == "task_item")?;
+            let item_pos = r.before(depth)?;
+            let checked = r.node(depth).attrs().get_bool("checked").unwrap_or(false);
+            let mut tr = state.tr();
+            tr.set_node_attr(
+                item_pos,
+                "checked",
+                rinch_editor_core::AttrValue::Bool(!checked),
+            )
+            .ok()?;
             Some(tr)
         })
     }
@@ -935,6 +973,93 @@ mod tests {
         assert!(applied);
         let p = children(&h, h.container_id)[0];
         assert_eq!(text(&h, p).as_deref(), Some("abc"));
+    }
+
+    fn empty_para(s: &Schema) -> Node {
+        s.branch("paragraph", Fragment::empty()).unwrap()
+    }
+
+    #[test]
+    fn insert_text_fires_block_input_rule() {
+        // Typing "# " at the block start applies the heading input rule. This proves the
+        // markdown rules are wired into the live text-input path — not merely
+        // unit-tested in editor-core (they were unreachable before this).
+        let s = schema();
+        let h = mount(doc_node(&s, vec![empty_para(&s)]));
+        h.handle.set_selection(Selection::cursor(Pos(1)));
+        h.handle.insert_text("#");
+        h.handle.insert_text(" ");
+        assert_eq!(h.handle.current_block_type().as_deref(), Some("heading"));
+        let block = children(&h, h.container_id)[0];
+        assert_eq!(tag(&h, block).as_deref(), Some("h1"));
+    }
+
+    #[test]
+    fn insert_text_fires_mark_input_rule() {
+        // "**bold**" typed at a cursor wraps "bold" in a bold mark and drops the markup —
+        // verified on the projected DOM (a <strong> wrapping the text), not just the model.
+        let s = schema();
+        let h = mount(doc_node(&s, vec![empty_para(&s)]));
+        h.handle.set_selection(Selection::cursor(Pos(1)));
+        h.handle.insert_text("**bold**");
+        let p = children(&h, h.container_id)[0];
+        let strong = children(&h, p)[0];
+        assert_eq!(tag(&h, strong).as_deref(), Some("strong"));
+        assert_eq!(text(&h, strong).as_deref(), Some("bold"));
+    }
+
+    #[test]
+    fn insert_text_fires_task_list_input_rule() {
+        // "[ ] " at the block start turns the block into a task list.
+        let s = schema();
+        let h = mount(doc_node(&s, vec![empty_para(&s)]));
+        h.handle.set_selection(Selection::cursor(Pos(1)));
+        h.handle.insert_text("[ ] ");
+        assert_eq!(h.handle.doc().child(0).type_name(), "task_list");
+    }
+
+    #[test]
+    fn toggle_task_checked_flips_the_enclosing_item() {
+        let s = schema();
+        let item = s
+            .branch("task_item", Fragment::from_node(para(&s, "x")))
+            .unwrap();
+        let list = s.branch("task_list", Fragment::from_node(item)).unwrap();
+        let h = mount(doc_node(&s, vec![list]));
+        // Cursor inside the item's paragraph (pos 3 = before "x").
+        h.handle.set_selection(Selection::cursor(Pos(3)));
+
+        let checked = |h: &Harness| h.handle.doc().child(0).child(0).attrs().get_bool("checked");
+        assert_ne!(checked(&h), Some(true), "starts unchecked");
+        assert!(
+            h.handle.toggle_task_checked_at(3),
+            "toggles the enclosing task item"
+        );
+        assert_eq!(checked(&h), Some(true), "now checked");
+        assert!(h.handle.toggle_task_checked_at(3));
+        assert_ne!(checked(&h), Some(true), "toggled back off");
+    }
+
+    #[test]
+    fn toggle_task_checked_is_a_noop_outside_a_task_item() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "plain")]));
+        assert!(
+            !h.handle.toggle_task_checked_at(2),
+            "no task item at the cursor"
+        );
+    }
+
+    #[test]
+    fn insert_text_with_a_selection_skips_input_rules() {
+        // Input rules only fire at a collapsed cursor: typing "**" over a selection just
+        // replaces it (no half-applied rule against a non-empty range).
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "abcd")]));
+        h.handle.set_selection(Selection::text(Pos(1), Pos(5)));
+        h.handle.insert_text("x");
+        let p = children(&h, h.container_id)[0];
+        assert_eq!(text(&h, p).as_deref(), Some("x"));
     }
 
     #[test]

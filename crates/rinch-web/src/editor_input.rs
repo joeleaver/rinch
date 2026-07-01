@@ -431,6 +431,24 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
 
     let x = event.client_x() as f32;
     let y = event.client_y() as f32;
+
+    // A click in a task item's checkbox gutter (left of its content, where the CSS
+    // `::before` checkbox renders) toggles its `checked` state instead of placing a
+    // caret. The checkbox is a pseudo-element, so the hit is geometric: compare the
+    // click x against the item's first child (its content block) left edge.
+    if let Some(item) = target.closest("[data-pm-type='task_item']").ok().flatten()
+        && let Some(content) = item.first_element_child()
+        && (x as f64) < content.get_bounding_client_rect().left()
+        && let Some(hit) = resolve_editor_point(doc, x, y)
+        && hit.container_nid == container_nid
+        && let Some(clicked) = handle.pos_at(hit.textblock_nid, hit.byte)
+        && handle.toggle_task_checked_at(clicked.0)
+    {
+        registry::end_drag();
+        refresh_caret();
+        return true;
+    }
+
     if let Some(hit) = resolve_editor_point(doc, x, y)
         && hit.container_nid == container_nid
         && let Some(clicked) = handle.pos_at(hit.textblock_nid, hit.byte)
