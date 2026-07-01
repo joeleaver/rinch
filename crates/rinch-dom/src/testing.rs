@@ -22,7 +22,22 @@ pub fn serialize_tree_with_options(
     root_id: Option<RawNodeId>,
 ) -> Value {
     let root = root_id.unwrap_or(tree.body_id);
-    serialize_node(tree, root, 0.0, 0.0, false, max_depth, 0)
+    // Seed the accumulator with the root's own screen position (minus its own
+    // layout, which serialize_node re-adds) so `absolute` is true on-screen
+    // coordinates even when scoped to a subtree via `root_id`.
+    let (ox, oy) = subtree_offset(tree, root);
+    serialize_node(tree, root, ox, oy, false, max_depth, 0)
+}
+
+/// The offset to seed `serialize_node` with so a subtree root's reported
+/// `absolute` equals its real on-screen position: `abs(root) - root.layout`.
+fn subtree_offset(tree: &NodeTree, root: RawNodeId) -> (f32, f32) {
+    let (ax, ay) = compute_absolute_position(tree, root);
+    let (lx, ly) = tree
+        .get(root)
+        .map(|n| (n.layout.x, n.layout.y))
+        .unwrap_or((0.0, 0.0));
+    (ax - lx, ay - ly)
 }
 
 /// Serialize the DOM tree with full computed styles on every node.
@@ -56,15 +71,12 @@ fn serialize_node(
     let sx = node.scroll_offset.0 as f32;
     let sy = node.scroll_offset.1 as f32;
 
+    let (layout, absolute) = geometry_json(node, abs_x, abs_y);
     let mut obj = json!({
         "id": node.id,
         "type": node_type,
-        "layout": {
-            "x": abs_x,
-            "y": abs_y,
-            "width": node.layout.width,
-            "height": node.layout.height,
-        },
+        "layout": layout,
+        "absolute": absolute,
     });
 
     if node.scroll_offset != (0.0, 0.0) {
@@ -222,15 +234,12 @@ pub fn get_node_summary(tree: &NodeTree, id: RawNodeId) -> Option<Value> {
         NodeKind::Comment(c) => ("comment", None, Some(c.as_str())),
     };
 
+    let (layout, absolute) = geometry_json(node, abs.0, abs.1);
     let mut obj = json!({
         "id": node.id,
         "type": node_type,
-        "layout": {
-            "x": abs.0,
-            "y": abs.1,
-            "width": node.layout.width,
-            "height": node.layout.height,
-        },
+        "layout": layout,
+        "absolute": absolute,
         "children": node.children,
         "parent": node.parent,
         "text_content": get_text_content(tree, id),
@@ -262,15 +271,12 @@ pub fn get_node_detail(tree: &NodeTree, id: RawNodeId) -> Option<Value> {
         NodeKind::Comment(c) => ("comment", None, Some(c.as_str())),
     };
 
+    let (layout, absolute) = geometry_json(node, abs.0, abs.1);
     let mut obj = json!({
         "id": node.id,
         "type": node_type,
-        "layout": {
-            "x": abs.0,
-            "y": abs.1,
-            "width": node.layout.width,
-            "height": node.layout.height,
-        },
+        "layout": layout,
+        "absolute": absolute,
         "attributes": node.attributes,
         "children": node.children,
         "parent": node.parent,
@@ -299,6 +305,25 @@ pub fn get_node_detail(tree: &NodeTree, id: RawNodeId) -> Option<Value> {
     Some(obj)
 }
 
+/// Build the two geometry objects reported for a node.
+///
+/// - `layout` mirrors the node's own `layout` box: x/y are **parent-relative**
+///   (exactly `node.layout`, the internal truth — useful for verifying a child's
+///   offset within its container).
+/// - `absolute` is the on-screen box: x/y are accumulated down the ancestor
+///   chain (minus scroll). **Pass `absolute.x`/`absolute.y` to `click()`** — the
+///   `layout` x/y are NOT screen coordinates.
+///
+/// width/height are the same in both (a box has one size).
+fn geometry_json(node: &crate::node::Node, abs_x: f32, abs_y: f32) -> (Value, Value) {
+    let w = node.layout.width;
+    let h = node.layout.height;
+    (
+        json!({ "x": node.layout.x, "y": node.layout.y, "width": w, "height": h }),
+        json!({ "x": abs_x, "y": abs_y, "width": w, "height": h }),
+    )
+}
+
 /// Compute absolute position by walking up the tree.
 fn compute_absolute_position(tree: &NodeTree, id: RawNodeId) -> (f32, f32) {
     let mut x = 0.0f32;
@@ -325,4 +350,56 @@ fn compute_absolute_position(tree: &NodeTree, id: RawNodeId) -> (f32, f32) {
         }
     }
     (x, y)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::RinchDocument;
+    use rinch_core::dom::DomDocument;
+
+    /// The MCP/debug serializers report each node's box twice: `layout` is
+    /// parent-relative (== `node.layout`) and `absolute` is the on-screen box.
+    /// A nested node offset from its parent must show the two differently, and
+    /// a `root_id`-scoped tree must still report true on-screen `absolute`.
+    #[test]
+    fn layout_is_parent_relative_and_absolute_is_on_screen() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        // Container pushed right by a margin; child pushed in by padding.
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "margin-left: 50px; padding-left: 30px; width: 200px; height: 100px",
+        );
+        doc.append_child(body, container);
+        let child = doc.create_element("div");
+        doc.set_attribute(child, "style", "width: 50px; height: 20px");
+        doc.append_child(container, child);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        let summary = super::get_node_summary(&doc.tree, child.0).unwrap();
+        // Parent-relative: child sits at the container's content-box left (padding).
+        assert_eq!(summary["layout"]["x"], 30.0, "layout.x is parent-relative");
+        // On-screen: container margin (50) + its padding (30).
+        assert_eq!(summary["absolute"]["x"], 80.0, "absolute.x is on-screen");
+        // width/height match in both.
+        assert_eq!(summary["layout"]["width"], 50.0);
+        assert_eq!(summary["absolute"]["width"], 50.0);
+
+        // get_node_detail agrees.
+        let detail = super::get_node_detail(&doc.tree, child.0).unwrap();
+        assert_eq!(detail["layout"]["x"], 30.0);
+        assert_eq!(detail["absolute"]["x"], 80.0);
+
+        // A tree scoped to the child still reports true on-screen absolute,
+        // not an origin-relative one.
+        let scoped = super::serialize_tree_with_options(&doc.tree, Some(0), Some(child.0));
+        assert_eq!(scoped["layout"]["x"], 30.0, "scoped layout stays relative");
+        assert_eq!(
+            scoped["absolute"]["x"], 80.0,
+            "scoped absolute is still on-screen"
+        );
+    }
 }

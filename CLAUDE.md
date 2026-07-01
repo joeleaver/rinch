@@ -1668,6 +1668,12 @@ type_text(text: "hello")                  → simulate keyboard input
 get_text_content(id: 42)                  → get text in subtree
 ```
 
+**Node geometry — `layout` vs `absolute`.** `dom_tree`/`query_selector`/`get_node` report each
+node's box twice: `layout` is **parent-relative** (exactly the node's own `layout`, for checking a
+child's offset within its container) and `absolute` is the **on-screen** box. **Pass `absolute.x`/
+`absolute.y` (e.g. its center) to `click()`/`mouse_*`** — the `layout` x/y are NOT screen
+coordinates. (width/height are identical in both.)
+
 **Step 3: Close the app**
 
 ```
