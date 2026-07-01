@@ -31,7 +31,16 @@ pub enum PlatformEvent {
     },
     /// Key pressed.
     KeyDown {
+        /// The **physical** key (layout-independent position).
         key: KeyCode,
+        /// The **logical** letter this key produces in the active layout, lowercased
+        /// (`Some('b')` for the Dvorak/AZERTY key labelled B), when it is a single
+        /// ASCII letter — used so `Mod`+letter shortcuts follow the layout label rather
+        /// than the physical position. `None` for non-letters or when unknown; the
+        /// consumer then falls back to `key`. Distinct from `text` (which is the text to
+        /// insert, and is suppressed by modifiers).
+        logical_key: Option<char>,
+        /// The text this keypress would insert (suppressed under Ctrl/Cmd), or `None`.
         text: Option<String>,
         modifiers: Modifiers,
     },

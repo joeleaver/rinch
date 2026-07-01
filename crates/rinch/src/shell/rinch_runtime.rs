@@ -1241,6 +1241,23 @@ impl RinchRuntime {
         }
     }
 
+    /// The single ASCII letter a winit **logical** key produces in the active layout,
+    /// lowercased — the layout-mapped identity of a letter key (e.g. the Dvorak key at
+    /// the QWERTY-N position reports `Character("b")` → `Some('b')`). `None` for
+    /// non-letters (so the editor falls back to the physical `KeyCode`). Feeds
+    /// `PlatformEvent::KeyDown::logical_key` so `Mod`+letter shortcuts follow the keycap.
+    fn winit_logical_letter(key: &winit::keyboard::Key) -> Option<char> {
+        if let winit::keyboard::Key::Character(s) = key {
+            let mut it = s.chars();
+            if let (Some(c), None) = (it.next(), it.next())
+                && c.is_ascii_alphabetic()
+            {
+                return Some(c.to_ascii_lowercase());
+            }
+        }
+        None
+    }
+
     /// Translate a winit KeyCode to a platform KeyCode.
     fn translate_key(key_code: winit::keyboard::KeyCode) -> KeyCode {
         use winit::keyboard::KeyCode as WK;
@@ -1638,6 +1655,7 @@ impl ApplicationHandler for RinchRuntime {
                     winit::event::KeyEvent {
                         physical_key: winit::keyboard::PhysicalKey::Code(key_code),
                         state: ElementState::Pressed,
+                        logical_key: ref win_logical,
                         ref text,
                         ..
                     },
@@ -1657,6 +1675,10 @@ impl ApplicationHandler for RinchRuntime {
                 let platform_key = Self::translate_key(key_code);
                 PlatformEvent::KeyDown {
                     key: platform_key,
+                    // The layout-mapped letter (so Mod+letter follows the keycap, not the
+                    // physical position) — winit's logical key carries it even when a
+                    // modifier suppresses `text`.
+                    logical_key: Self::winit_logical_letter(win_logical),
                     text: text.as_ref().map(|t| t.to_string()),
                     modifiers: mods,
                 }

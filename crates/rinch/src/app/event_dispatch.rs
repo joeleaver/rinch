@@ -804,6 +804,7 @@ impl RinchApp {
             }
             PlatformEvent::KeyDown {
                 key,
+                logical_key,
                 text,
                 modifiers,
             } => {
@@ -906,6 +907,7 @@ impl RinchApp {
                             self.dispatch_new_editor_key(
                                 &handle,
                                 key,
+                                logical_key,
                                 text.as_deref(),
                                 shift,
                                 ctrl,
@@ -1759,24 +1761,35 @@ pub(crate) enum Motion {
     DocEnd,
 }
 
-/// Translate a platform [`KeyCode`] + modifier state into an editor-core `KeyBinding`
-/// for keymap lookup. Keyed by the **physical** key: `Mod-Shift-8` matches the `8` key
-/// regardless of the shifted glyph, and `Mod-b` matches the physical B position. Returns
-/// `None` for keys with no bindable identity (function/modifier keys), which then fall
-/// through to text input.
+/// Translate a platform key event into an editor-core `KeyBinding` for keymap lookup.
 ///
-/// (The winit event carries only the physical `KeyCode` here; the web view resolves
-/// *letters* via the logical `event.key()` so `Mod-b` is layout-correct on Dvorak/AZERTY.
-/// Matching that on desktop would mean plumbing winit's logical key through
-/// `PlatformEvent::KeyDown` — a follow-up; on QWERTY the two are identical.)
+/// **Letters resolve LOGICALLY** (`logical_key`, the layout-mapped letter from winit) so
+/// `Mod-b` is correct on every layout — on Dvorak/AZERTY the key labelled B fires bold,
+/// not the physical QWERTY-B position. **Digits, symbols, and named keys resolve
+/// PHYSICALLY** (`KeyCode`), because the shifted glyph is layout-dependent — `Mod-Shift-8`
+/// must match the `8` key regardless of what Shift+8 types. This mirrors the web view
+/// (logical `event.key()` for letters, physical `event.code()` otherwise). Returns `None`
+/// for keys with no bindable identity, which then fall through to text input.
 #[cfg(feature = "desktop")]
 fn editor_key_binding(
     key: KeyCode,
+    logical_key: Option<char>,
     ctrl: bool,
     shift: bool,
     alt: bool,
 ) -> Option<rinch_editor_core::KeyBinding> {
     use rinch_editor_core::{Key, KeyBinding, Modifiers};
+    // A layout-mapped ASCII letter wins over the physical position.
+    if let Some(c) = logical_key.filter(|c| c.is_ascii_alphabetic()) {
+        return Some(KeyBinding::new(
+            Key::Char(c.to_ascii_lowercase()),
+            Modifiers {
+                primary: ctrl,
+                shift,
+                alt,
+            },
+        ));
+    }
     let k = match key {
         KeyCode::KeyA => Key::Char('a'),
         KeyCode::KeyB => Key::Char('b'),
@@ -1848,10 +1861,15 @@ impl RinchApp {
     /// Translate a key press into an action on the focused editor's
     /// [`EditorHandle`](crate::editor::EditorHandle). Returns whether the document
     /// or selection changed (and a repaint/caret refresh is needed).
+    // A key event's physical key, logical letter, insertable text, and three modifier
+    // flags are all distinct inputs — passing them individually is clearer here than a
+    // one-off struct.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn dispatch_new_editor_key(
         &mut self,
         handle: &crate::editor::EditorHandle,
         key: KeyCode,
+        logical_key: Option<char>,
         text: Option<&str>,
         shift: bool,
         ctrl: bool,
@@ -1941,7 +1959,7 @@ impl RinchApp {
         //    delete, undo / redo, select-all). A matched binding is always consumed, even
         //    if the command no-op'd at this position (so e.g. Tab at top level never
         //    falls through to text insertion / focus traversal).
-        if let Some(binding) = editor_key_binding(key, ctrl, shift, alt)
+        if let Some(binding) = editor_key_binding(key, logical_key, ctrl, shift, alt)
             && handle.dispatch_key(binding).is_some()
         {
             return true;
@@ -2817,5 +2835,46 @@ mod paste_image_tests {
         // 2×2 RGBA needs 16 bytes; give it 8 → None (not a panic).
         assert!(image_rgba_to_png_data_url(2, 2, &[0; 8]).is_none());
         assert!(image_rgba_to_png_data_url(0, 0, &[]).is_none());
+    }
+}
+
+#[cfg(all(test, feature = "desktop"))]
+mod editor_key_binding_tests {
+    use super::editor_key_binding;
+    use rinch_editor_core::{Key, KeyBinding, Modifiers};
+    use rinch_platform::KeyCode;
+
+    #[test]
+    fn logical_letter_wins_over_physical_position() {
+        // Dvorak: the key that types 'b' sits at the physical QWERTY-N position, so
+        // `key`=KeyN but `logical`=Some('b'). The logical letter must win → Mod-b.
+        let b = editor_key_binding(KeyCode::KeyN, Some('b'), true, false, false).unwrap();
+        assert_eq!(
+            b,
+            KeyBinding::new(
+                Key::Char('b'),
+                Modifiers {
+                    primary: true,
+                    shift: false,
+                    alt: false
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_physical_key_without_a_logical_letter() {
+        // No logical letter (e.g. an injected/synthetic key) → the physical KeyCode maps.
+        let b = editor_key_binding(KeyCode::KeyB, None, true, false, false).unwrap();
+        assert_eq!(b.key, Key::Char('b'));
+    }
+
+    #[test]
+    fn digits_use_the_physical_key_ignoring_a_non_letter_logical() {
+        // Shift+8 has a logical '*' (not a letter) → fall back to the physical Digit8='8'
+        // so `Mod-Shift-8` matches regardless of the shifted glyph.
+        let b = editor_key_binding(KeyCode::Digit8, Some('*'), true, true, false).unwrap();
+        assert_eq!(b.key, Key::Char('8'));
+        assert!(b.mods.primary && b.mods.shift);
     }
 }

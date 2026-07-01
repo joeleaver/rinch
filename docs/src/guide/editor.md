@@ -204,14 +204,15 @@ mark toggles, block-type setters, list/blockquote wrapping, indent/outdent, inse
 the full table command set, and `undo`/`redo`.
 
 The **keymap** is the single source of truth for command keys. Each platform view
-translates its native event into a platform-agnostic `KeyBinding` — keyed by the
-**physical** key (winit `KeyCode` on desktop, `event.code()` on web, so `Mod-Shift-8`
-matches the `8` key regardless of the shifted glyph) — and routes it through one entry
-point, `EditorHandle::dispatch_key`, which looks up the aggregated `Keymap` and runs the
-bound command (so `Mod-b` → `toggleBold` everywhere). Only keys that can't be pure
-editor-core commands stay view-owned: cursor movement (needs laid-out geometry),
-clipboard (needs the platform clipboard), and plain text insertion. **Input rules** are
-regex-driven
+translates its native event into a platform-agnostic `KeyBinding` and routes it through
+one entry point, `EditorHandle::dispatch_key`, which looks up the aggregated `Keymap` and
+runs the bound command (so `Mod-b` → `toggleBold` everywhere). **Letters** resolve by the
+*logical* key (winit's layout-mapped `logical_key` on desktop, `event.key()` on web), so
+`Mod-b` follows the keycap on Dvorak/AZERTY; **digits and symbols** resolve by the
+*physical* key (`KeyCode` / `event.code()`), so `Mod-Shift-8` matches the `8` key
+regardless of the shifted glyph. Only keys that can't be pure editor-core commands stay
+view-owned: cursor movement (needs laid-out geometry), clipboard (needs the platform
+clipboard), and plain text insertion. **Input rules** are regex-driven
 transforms — block shortcuts like `## ` → heading, `- ` → bullet list, `[ ] ` → task
 list, and inline mark shortcuts like `**bold**` / `==highlight==` / `` `code` `` —
 each returning an optional transaction. The view runs `apply_input_rules` inside

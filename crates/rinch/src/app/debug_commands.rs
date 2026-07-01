@@ -333,9 +333,11 @@ impl RinchApp {
                         '\x08' => (KeyCode::Backspace, None),
                         c => (char_to_keycode(c), Some(c.to_string())),
                     };
+                    let logical_key = ch.is_ascii_alphabetic().then(|| ch.to_ascii_lowercase());
                     actions.extend(self.handle_event(
                         PlatformEvent::KeyDown {
                             key,
+                            logical_key,
                             text: txt,
                             modifiers: rinch_platform::Modifiers::default(),
                         },
@@ -388,9 +390,18 @@ impl RinchApp {
                     k if k.chars().count() == 1 => Some(k.to_string()),
                     _ => None,
                 };
+                // A single-letter key name is its own logical letter (MCP has no layout).
+                let logical_key = {
+                    let mut it = key.chars();
+                    match (it.next(), it.next()) {
+                        (Some(c), None) if c.is_ascii_alphabetic() => Some(c.to_ascii_lowercase()),
+                        _ => None,
+                    }
+                };
                 actions.extend(self.handle_event(
                     PlatformEvent::KeyDown {
                         key: key_code,
+                        logical_key,
                         text,
                         modifiers: rinch_platform::Modifiers {
                             shift,
