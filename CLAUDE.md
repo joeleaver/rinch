@@ -1097,9 +1097,11 @@ ThemeProvider generates CSS variables:
 - Typography: `--rinch-font-size-{xs,sm,md,lg,xl}`, `--rinch-font-family`
 - Semantic: `--rinch-color-body`, `--rinch-color-text`, `--rinch-color-dimmed`
 
-## Transparent Windows (Windows)
+## Transparent Windows
 
-Rinch supports true window transparency on Windows via DX12 + DirectComposition.
+Transparent/borderless windows are configured via `WindowProps { transparent: true, borderless: true }`. The live renderer (`shell::desktop::WgpuRenderer`) uses `CompositeAlphaMode::Auto` + a transparent clear color, which the compositor honors on **Linux (Wayland/X11)**.
+
+> **Windows caveat:** true per-pixel transparency on Windows needs an alpha-capable presentation path (PreMultiplied alpha + DX12 DirectComposition + `WS_EX_NOREDIRECTIONBITMAP`) that is **not currently wired** into `WgpuRenderer` — so `transparent: true` renders opaque on Windows today. Tracked in **issue #89**. (The old `TransparentWindowRenderer` held that path but was never constructed by the runtime and has been removed as dead code.)
 
 Configure via `WindowProps`:
 
@@ -1142,10 +1144,10 @@ Borderless windows don't have native resize handles. Use `resize_inset` to enabl
 
 The `resize_inset` value should match your CSS content margin/padding to align the resize handles with the visible window edge.
 
-**Requirements for transparency:**
+**What true Windows transparency would require (see issue #89 — not yet wired):**
 - DX12 backend with DirectComposition (`WGPU_DX12_PRESENTATION_SYSTEM=DxgiFromVisual`)
 - `CompositeAlphaMode::PreMultiplied`
-- `WS_EX_NOREDIRECTIONBITMAP` window style (handled automatically)
+- `WS_EX_NOREDIRECTIONBITMAP` window style
 - Patched wgpu for Rgba8Unorm storage textures (see wgpu fork below)
 
 ### BorderlessWindow Component

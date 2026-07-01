@@ -99,6 +99,92 @@ fn app() -> NodeHandle {
     }
 }
 
+/// `RINCH_GPU_MODE=zerocopy` — prove ask #3: the same `run_with_gpu_config`
+/// device (configurable features) ALSO does zero-copy GPU layer compositing.
+///
+/// We create a texture on **rinch's shared device**, fill it with a solid color,
+/// and register it as the source for a named compositor surface bound to a
+/// `data-viewport` node. `WgpuRenderer::set_gpu_layers` samples that texture
+/// directly (no CPU readback) and composites it under the UI — on a transparent
+/// window, through the exact device we raised the limits on.
+#[component]
+fn zerocopy_app() -> NodeHandle {
+    use rinch::render_surface::create_render_surface_with_name;
+
+    let handle = gpu_handle().expect("gpu_handle available after the renderer starts");
+    let (w, h) = (320u32, 220u32);
+
+    // Texture on rinch's shared device — the zero-copy contract.
+    let texture = handle.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("zerocopy-layer"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    // Solid teal, fully opaque.
+    let pixels: Vec<u8> = std::iter::repeat_n([0x14u8, 0xb8, 0xa6, 0xff], (w * h) as usize)
+        .flatten()
+        .collect();
+    handle.queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &pixels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * w),
+            rows_per_image: Some(h),
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&Default::default());
+
+    // Named surface → matched to the data-viewport node below → composited as a
+    // zero-copy GPU layer.
+    let surface = create_render_surface_with_name("gpu-layer");
+    let registrar = surface.gpu_registrar();
+    registrar.set_texture_source(texture, view, w, h);
+    registrar.notify_frame_ready();
+    std::mem::forget(surface); // keep alive for the app's lifetime
+
+    // Transparent hole the compositor samples the texture through.
+    let viewport = __scope.create_element("div");
+    viewport.set_attribute("data-viewport", "gpu-layer");
+    viewport.set_attribute(
+        "style",
+        "width:320px; height:220px; background:transparent;",
+    );
+
+    rsx! {
+        div {
+            style: "display:flex; flex-direction:column; gap:10px; padding:20px; \
+                    font-family: system-ui, sans-serif;",
+            h1 { style: "margin:0; font-size:18px;", "Zero-copy GPU layer (issue #57 ask #3)" }
+            p {
+                style: "margin:0; color:#333; font-size:13px;",
+                "The teal box is a wgpu texture created on the run_with_gpu_config device \
+                 and composited directly by WgpuRenderer — no CPU readback."
+            }
+            {viewport}
+        }
+    }
+}
+
 /// The elevated limits both modes request (the arvx headline: 8 → 32).
 fn required_limits() -> wgpu::Limits {
     wgpu::Limits {
@@ -115,17 +201,24 @@ fn main() {
         ..Default::default()
     };
 
-    let external = std::env::var("RINCH_GPU_MODE").as_deref() == Ok("external");
-    if external {
-        run_external(app, props);
-    } else {
-        // rinch owns the device — it picks a surface-compatible adapter and
-        // requests it with our raised limits.
-        let gpu = RinchGpuConfig {
-            required_features: wgpu::Features::empty(),
-            required_limits: required_limits(),
-        };
-        run_with_gpu_config(app, props, None, gpu);
+    let gpu = RinchGpuConfig {
+        required_features: wgpu::Features::empty(),
+        required_limits: required_limits(),
+    };
+
+    match std::env::var("RINCH_GPU_MODE").as_deref() {
+        Ok("external") => run_external(app, props),
+        Ok("zerocopy") => {
+            // Transparent window + gpu_config device + zero-copy GPU layer.
+            let props = WindowProps {
+                transparent: true,
+                borderless: true,
+                ..props
+            };
+            run_with_gpu_config(zerocopy_app, props, None, gpu);
+        }
+        // Default: rinch owns the device, requested with our raised limits.
+        _ => run_with_gpu_config(app, props, None, gpu),
     }
 }
 
