@@ -1052,7 +1052,12 @@ impl Component for RenderSurface {
         #[cfg(target_arch = "wasm32")]
         {
             let canvas = scope.create_element("canvas");
-            canvas.set_attribute("style", "width: 100%; height: 100%; display: block;");
+            // `touch-action: none` so a touch/pen drag on the surface drives its
+            // input (via the pointer events below) instead of scrolling the page.
+            canvas.set_attribute(
+                "style",
+                "width: 100%; height: 100%; display: block; touch-action: none;",
+            );
 
             if let Some(ref surface) = self.surface {
                 let canvas_id = format!("rinch-surface-{}", surface.id);
@@ -1215,69 +1220,97 @@ fn setup_canvas_events(canvas: &web_sys::HtmlCanvasElement, surface_id: usize) {
 
     let target: &web_sys::EventTarget = canvas.as_ref();
 
-    // mousedown
+    // Pointer events (deref to MouseEvent) cover mouse, touch, and pen on one
+    // path — so a game/custom-render surface receives input on touch devices too.
+    // The canvas carries `touch-action: none` (set at creation) so a touch drag
+    // drives the surface instead of scrolling the page.
+
+    // pointerdown — grab pointer capture so a drag keeps delivering moves/up even
+    // if the contact leaves the canvas (SurfaceEvent names stay Mouse* for API
+    // stability).
     {
-        let closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+        let canvas = canvas.clone();
+        let closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
             event.stop_propagation();
             let x = event.offset_x() as f32;
             let y = event.offset_y() as f32;
             let button = mouse_button_from_i16(event.button());
             set_focused_surface(Some(surface_id));
+            let _ = canvas.set_pointer_capture(event.pointer_id());
             dispatch_surface_event(surface_id, SurfaceEvent::MouseDown { x, y, button });
         }) as Box<dyn FnMut(_)>);
         target
-            .add_event_listener_with_callback("mousedown", closure.as_ref().unchecked_ref())
+            .add_event_listener_with_callback("pointerdown", closure.as_ref().unchecked_ref())
             .unwrap();
         closure.forget();
     }
 
-    // mouseup
+    // pointerup — release the capture taken on pointerdown.
     {
-        let closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+        let canvas = canvas.clone();
+        let closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
             let x = event.offset_x() as f32;
             let y = event.offset_y() as f32;
             let button = mouse_button_from_i16(event.button());
+            let _ = canvas.release_pointer_capture(event.pointer_id());
             dispatch_surface_event(surface_id, SurfaceEvent::MouseUp { x, y, button });
         }) as Box<dyn FnMut(_)>);
         target
-            .add_event_listener_with_callback("mouseup", closure.as_ref().unchecked_ref())
+            .add_event_listener_with_callback("pointerup", closure.as_ref().unchecked_ref())
             .unwrap();
         closure.forget();
     }
 
-    // mousemove
+    // pointercancel — the browser took the pointer away; release capture and end
+    // the interaction like an up (so the surface isn't left mid-drag).
     {
-        let closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+        let canvas = canvas.clone();
+        let closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
+            let x = event.offset_x() as f32;
+            let y = event.offset_y() as f32;
+            let button = mouse_button_from_i16(event.button());
+            let _ = canvas.release_pointer_capture(event.pointer_id());
+            dispatch_surface_event(surface_id, SurfaceEvent::MouseUp { x, y, button });
+        }) as Box<dyn FnMut(_)>);
+        target
+            .add_event_listener_with_callback("pointercancel", closure.as_ref().unchecked_ref())
+            .unwrap();
+        closure.forget();
+    }
+
+    // pointermove
+    {
+        let closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
             let x = event.offset_x() as f32;
             let y = event.offset_y() as f32;
             dispatch_surface_event(surface_id, SurfaceEvent::MouseMove { x, y });
         }) as Box<dyn FnMut(_)>);
         target
-            .add_event_listener_with_callback("mousemove", closure.as_ref().unchecked_ref())
+            .add_event_listener_with_callback("pointermove", closure.as_ref().unchecked_ref())
             .unwrap();
         closure.forget();
     }
 
-    // mouseenter
+    // pointerenter
     {
-        let closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+        let closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
             let x = event.offset_x() as f32;
             let y = event.offset_y() as f32;
             dispatch_surface_event(surface_id, SurfaceEvent::MouseEnter { x, y });
         }) as Box<dyn FnMut(_)>);
         target
-            .add_event_listener_with_callback("mouseenter", closure.as_ref().unchecked_ref())
+            .add_event_listener_with_callback("pointerenter", closure.as_ref().unchecked_ref())
             .unwrap();
         closure.forget();
     }
 
-    // mouseleave
+    // pointerleave
     {
-        let closure = Closure::wrap(Box::new(move |_event: web_sys::MouseEvent| {
+        let closure = Closure::wrap(Box::new(move |_event: web_sys::PointerEvent| {
             dispatch_surface_event(surface_id, SurfaceEvent::MouseLeave);
         }) as Box<dyn FnMut(_)>);
         target
-            .add_event_listener_with_callback("mouseleave", closure.as_ref().unchecked_ref())
+            .add_event_listener_with_callback("pointerleave", closure.as_ref().unchecked_ref())
             .unwrap();
         closure.forget();
     }

@@ -770,6 +770,17 @@ fn blink_tick() {
 
 // ── Installation ─────────────────────────────────────────────────────────────
 
+/// True when a pointerdown lands inside a mounted editor (`[data-pm-editor]`),
+/// so the editor consumes it in the capture phase before the generic delegation
+/// (mirrors `handle_mousedown` returning `true` for an in-editor click).
+fn pointerdown_targets_editor(event: &web_sys::PointerEvent) -> bool {
+    event
+        .target()
+        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        .and_then(|el| el.closest("[data-pm-editor]").ok().flatten())
+        .is_some()
+}
+
 /// Add a capture-phase `document` listener leaked for the page lifetime.
 fn add_capture<E: JsCast + 'static>(
     doc: &web_sys::Document,
@@ -860,6 +871,25 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
             e.stop_propagation();
         }
     });
+    // Mirror the mousedown gate onto `pointerdown`. The generic event delegation
+    // (`event_delegation.rs`) now delegates on `pointerdown` (bubble phase) — a
+    // separate dispatch that the `stop_propagation()` on `mousedown` above cannot
+    // stop. Consume an in-editor pointerdown here in the capture phase (document
+    // capture fires before the generic bubble handler) so it never reaches the
+    // generic click / `data-onmousedown` dispatch — which would otherwise fire an
+    // ancestor's `onclick` when an editor is nested inside a clickable card/row.
+    // Caret placement still happens from the `mousedown` handler above; we only
+    // suppress the redundant generic delegation, never `prevent_default` (which
+    // could swallow the compatibility `mousedown` the editor relies on).
+    add_capture(
+        browser_doc,
+        "pointerdown",
+        move |e: web_sys::PointerEvent| {
+            if pointerdown_targets_editor(&e) {
+                e.stop_propagation();
+            }
+        },
+    );
     let doc = browser_doc.clone();
     add_capture(browser_doc, "mousemove", move |e: web_sys::MouseEvent| {
         if handle_mousemove(&e, &doc) {

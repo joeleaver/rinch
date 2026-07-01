@@ -1,10 +1,13 @@
 //! Global browser event delegation for the browser-native DOM backend.
 //!
-//! Installs document-level listeners (mousedown/mousemove/mouseup/keydown/input)
-//! that delegate to rinch's event-handler registry, drag system, and
-//! render-surface focus routing. Pointer events resolve text-hit positions via
-//! `caretRangeFromPoint` so contenteditable apps get accurate caret placement
-//! (a no-op for apps without `data-block-index` blocks).
+//! Installs document-level listeners (pointerdown/pointermove/pointerup/
+//! pointercancel/keydown/input) that delegate to rinch's event-handler registry,
+//! drag system, and render-surface focus routing. Using Pointer Events (instead
+//! of raw mouse events) means the same code path covers mouse, touch, and pen —
+//! so the element drag-and-drop suite works on touch devices, where no synthetic
+//! mouse-move stream arrives during a finger drag. Pointer events resolve
+//! text-hit positions via `caretRangeFromPoint` so contenteditable apps get
+//! accurate caret placement (a no-op for apps without `data-block-index` blocks).
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -101,38 +104,279 @@ fn dispatch_mouse_attr(el: &web_sys::Element, attr: &str, event: &web_sys::Mouse
 
 // ── Element-to-element drag-and-drop (the data-ondrag* attribute suite) ───────
 //
-// Synthesized from mouse events to mirror the desktop backend's DOM drag system
+// Synthesized from Pointer Events to mirror the desktop backend's DOM drag system
 // (NOT the browser's native HTML5 drag events). A `draggable="true"` element
-// under mousedown becomes a *pending* source; once the pointer moves past the
-// threshold the drag *activates* (data-ondragstart). While active, each move
-// tracks the [data-ondrop] target under the cursor (data-ondragenter/leave),
-// fires data-ondragover on it and data-ondragmove on the source; mouseup fires
-// data-ondrop + data-ondragend (Escape cancels). Typed payloads flow through the
+// under pointerdown becomes a *pending* source; once it *activates* the drag
+// fires data-ondragstart. While active, each move tracks the [data-ondrop] target
+// under the cursor (data-ondragenter/leave), fires data-ondragover on it and
+// data-ondragmove on the source; pointerup fires data-ondrop + data-ondragend
+// (Escape / pointercancel cancels). Typed payloads flow through the
 // backend-agnostic `DragContext<T>` in the app's handlers — nothing here.
 //
 // Unlike desktop there is no drag ghost (the browser owns paint); apps render
 // their own visual feedback by positioning an element from data-ondragmove.
+//
+// Activation policy (differs by pointer kind, so a mouse stays snappy while a
+// touch does not hijack scrolling):
+//   * **Mouse:** activates immediately once the pointer moves past
+//     `WEB_DRAG_THRESHOLD` (5 CSS px) — unchanged from the old mouse-only code.
+//   * **Touch / pen:** activates on a short *long-press* hold
+//     (`TOUCH_LONG_PRESS_MS`) while the contact stays within `TOUCH_MOVE_SLOP`.
+//     If the contact moves past the slop *before* the hold completes, the gesture
+//     is a scroll/pan — the pending drag is abandoned and the browser scrolls
+//     normally. This is why touch does NOT use the bare movement threshold: doing
+//     so would turn every swipe over a list of draggable rows into a drag.
+// Once a touch/pen drag activates it grabs pointer capture and suppresses
+// scrolling (preventDefault + `touch-action: none` on the source) so tracking is
+// reliable even if the finger leaves the source element.
 
-/// Movement threshold (CSS px) before a drag activates — matches desktop.
-const WEB_DRAG_THRESHOLD: f32 = 5.0;
+/// The pure activation state machine, kept free of `web_sys` so it can be
+/// unit-tested on the host target (`cargo test --workspace`).
+mod drag_machine {
+    /// Movement threshold (CSS px) before a *mouse* drag activates — matches desktop.
+    pub const WEB_DRAG_THRESHOLD: f32 = 5.0;
+    /// Hold duration (ms) before a *touch/pen* drag activates via long-press.
+    pub const TOUCH_LONG_PRESS_MS: i32 = 350;
+    /// Movement (CSS px) a touch/pen contact may drift during the long-press hold
+    /// before the gesture is reclassified as a scroll and the drag abandoned.
+    pub const TOUCH_MOVE_SLOP: f32 = 10.0;
+
+    /// Which physical input started the drag. Drives the activation policy.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum PointerKind {
+        Mouse,
+        Pen,
+        Touch,
+    }
+
+    impl PointerKind {
+        /// Map a `PointerEvent.pointerType` string onto the enum.
+        pub fn from_type(pointer_type: &str) -> Self {
+            match pointer_type {
+                "touch" => Self::Touch,
+                "pen" => Self::Pen,
+                // "mouse" and anything unrecognized behave like a mouse.
+                _ => Self::Mouse,
+            }
+        }
+
+        /// Touch and pen arm via a long-press hold; a mouse uses the movement
+        /// threshold and activates immediately past it.
+        pub fn uses_long_press(self) -> bool {
+            matches!(self, Self::Touch | Self::Pen)
+        }
+    }
+
+    /// Decision for a pointermove that arrives while the drag is still *pending*
+    /// (activation not yet reached).
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum PendingMove {
+        /// Stay pending; do nothing.
+        Ignore,
+        /// Cross the movement threshold → activate now (mouse only).
+        Activate,
+        /// A touch/pen contact moved during the hold — treat as a scroll/pan and
+        /// abandon the pending drag so the browser scrolls.
+        AbortScroll,
+    }
+
+    /// Classify a pending-state pointer move given the travel from the start point.
+    pub fn pending_move_decision(kind: PointerKind, dx: f32, dy: f32) -> PendingMove {
+        let dist_sq = dx * dx + dy * dy;
+        if kind.uses_long_press() {
+            // Long-press pointers only ever activate from the timer. Any real
+            // movement before it fires means the user is scrolling.
+            if dist_sq > TOUCH_MOVE_SLOP * TOUCH_MOVE_SLOP {
+                PendingMove::AbortScroll
+            } else {
+                PendingMove::Ignore
+            }
+        } else if dist_sq >= WEB_DRAG_THRESHOLD * WEB_DRAG_THRESHOLD {
+            PendingMove::Activate
+        } else {
+            PendingMove::Ignore
+        }
+    }
+
+    /// True when the primary button/contact is no longer down (`buttons & 1 == 0`),
+    /// i.e. a pointerup/pointercancel was missed and the drag should self-heal.
+    pub fn primary_released(buttons: u16) -> bool {
+        (buttons & 1) == 0
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn pointer_kind_from_type() {
+            assert_eq!(PointerKind::from_type("touch"), PointerKind::Touch);
+            assert_eq!(PointerKind::from_type("pen"), PointerKind::Pen);
+            assert_eq!(PointerKind::from_type("mouse"), PointerKind::Mouse);
+            // Unknown/empty pointerType falls back to mouse semantics.
+            assert_eq!(PointerKind::from_type(""), PointerKind::Mouse);
+            assert_eq!(PointerKind::from_type("stylus?"), PointerKind::Mouse);
+        }
+
+        #[test]
+        fn only_touch_and_pen_use_long_press() {
+            assert!(!PointerKind::Mouse.uses_long_press());
+            assert!(PointerKind::Touch.uses_long_press());
+            assert!(PointerKind::Pen.uses_long_press());
+        }
+
+        #[test]
+        fn mouse_activates_past_threshold_only() {
+            // Below threshold in both axes → ignore.
+            assert_eq!(
+                pending_move_decision(PointerKind::Mouse, 3.0, 3.0),
+                PendingMove::Ignore
+            );
+            // Exactly at threshold on one axis → activate (>=).
+            assert_eq!(
+                pending_move_decision(PointerKind::Mouse, WEB_DRAG_THRESHOLD, 0.0),
+                PendingMove::Activate
+            );
+            // Well past → activate; sign of travel is irrelevant.
+            assert_eq!(
+                pending_move_decision(PointerKind::Mouse, -20.0, 0.0),
+                PendingMove::Activate
+            );
+            // A mouse never aborts to scroll.
+            assert_ne!(
+                pending_move_decision(PointerKind::Mouse, 100.0, 100.0),
+                PendingMove::AbortScroll
+            );
+        }
+
+        #[test]
+        fn touch_ignores_small_drift_but_aborts_a_swipe() {
+            // Small drift within slop while holding → keep waiting for the timer.
+            assert_eq!(
+                pending_move_decision(PointerKind::Touch, 4.0, 4.0),
+                PendingMove::Ignore
+            );
+            // Past the slop → this is a scroll, not a drag.
+            assert_eq!(
+                pending_move_decision(PointerKind::Touch, TOUCH_MOVE_SLOP + 1.0, 0.0),
+                PendingMove::AbortScroll
+            );
+            // A touch move NEVER activates directly (only the long-press timer does).
+            assert_ne!(
+                pending_move_decision(PointerKind::Touch, 3.0, 0.0),
+                PendingMove::Activate
+            );
+            assert_ne!(
+                pending_move_decision(PointerKind::Touch, 500.0, 500.0),
+                PendingMove::Activate
+            );
+        }
+
+        #[test]
+        fn pen_uses_the_same_long_press_policy_as_touch() {
+            assert_eq!(
+                pending_move_decision(PointerKind::Pen, 2.0, 2.0),
+                PendingMove::Ignore
+            );
+            assert_eq!(
+                pending_move_decision(PointerKind::Pen, 40.0, 0.0),
+                PendingMove::AbortScroll
+            );
+        }
+
+        #[test]
+        fn primary_released_reads_the_low_bit() {
+            // Primary (left / first contact) held.
+            assert!(!primary_released(0b0001));
+            assert!(!primary_released(0b0011));
+            // Primary not held (e.g. only the right button, or nothing).
+            assert!(primary_released(0b0000));
+            assert!(primary_released(0b0010));
+        }
+    }
+}
+
+use drag_machine::{PendingMove, PointerKind, pending_move_decision};
 
 struct WebDragState {
     /// The `draggable="true"` source element.
     source: web_sys::Element,
-    /// Pointer position at mousedown (for the activation threshold).
+    /// The `PointerEvent.pointerId` that owns this drag. Only events carrying this
+    /// id drive it (the multi-touch guard — secondary contacts are ignored).
+    pointer_id: i32,
+    /// Which physical input started the drag (activation policy + capture).
+    kind: PointerKind,
+    /// Pointer position at pointerdown (for the activation threshold / slop).
     start_x: f32,
     start_y: f32,
-    /// Last known pointer position (used by Escape-cancel).
+    /// Last known pointer position (used by Escape-cancel and long-press activate).
     cursor: (f32, f32),
-    /// Whether the movement threshold has been crossed.
+    /// Whether the drag has activated (past threshold / long-press).
     active: bool,
     /// The current [data-ondrop] target under the pointer.
     over_target: Option<web_sys::Element>,
+    /// Whether we hold pointer capture on the source (touch/pen only).
+    captured: bool,
+    /// `setTimeout` handle for the long-press timer (touch/pen), while pending.
+    long_press_timer: Option<i32>,
+    /// Keeps the long-press timer callback alive until it fires or is cleared.
+    _long_press_closure: Option<Closure<dyn FnMut()>>,
+    /// The source's inline `touch-action` before we forced it to `none`, restored
+    /// on drag end/cancel (touch/pen only).
+    saved_touch_action: Option<String>,
 }
 
 thread_local! {
     static WEB_DRAG: std::cell::RefCell<Option<WebDragState>> =
         const { std::cell::RefCell::new(None) };
+
+    /// Pointer capture taken for an active pointer-capture `Drag` (slider, panel,
+    /// resize handle). Held as `(element, pointer_id)` so touch/pen moves keep
+    /// tracking on the element (and the pointermove handler can `preventDefault`
+    /// the scroll) instead of the browser panning the page. Released on
+    /// pointerup/pointercancel. Independent of `WEB_DRAG` (the element-DnD suite).
+    static DRAG_POINTER_CAPTURE: std::cell::RefCell<Option<(web_sys::Element, i32)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Release any pointer capture taken for an active `Drag` (slider/panel/resize).
+/// Idempotent; safe to call when none was taken.
+fn release_drag_pointer_capture() {
+    DRAG_POINTER_CAPTURE.with(|c| {
+        if let Some((el, pointer_id)) = c.borrow_mut().take() {
+            let _ = el.release_pointer_capture(pointer_id);
+        }
+    });
+}
+
+/// Clear a pending long-press timer (if any) on the given state, dropping the
+/// closure so it never fires. Safe to call when no timer is armed.
+fn clear_long_press_timer(state: &mut WebDragState) {
+    if let Some(handle) = state.long_press_timer.take()
+        && let Some(win) = web_sys::window()
+    {
+        win.clear_timeout_with_handle(handle);
+    }
+    state._long_press_closure = None;
+}
+
+/// Release pointer capture and restore the source's `touch-action`. Undoes the
+/// scroll-suppression applied at activation. Idempotent.
+fn release_capture_and_scroll(state: &mut WebDragState) {
+    if state.captured {
+        let _ = state.source.release_pointer_capture(state.pointer_id);
+        state.captured = false;
+    }
+    if let Some(prev) = state.saved_touch_action.take()
+        && let Some(html) = state.source.dyn_ref::<web_sys::HtmlElement>()
+    {
+        let style = html.style();
+        if prev.is_empty() {
+            let _ = style.remove_property("touch-action");
+        } else {
+            let _ = style.set_property("touch-action", &prev);
+        }
+    }
 }
 
 /// Walk up from `el` for the nearest ancestor with `attr` and dispatch its
@@ -198,68 +442,17 @@ fn dispatch_drag_cursor_only(el: &web_sys::Element, attr: &str, x: f32, y: f32) 
     }
 }
 
-/// Advance an in-progress element drag on pointer move: cross the activation
-/// threshold (firing data-ondragstart), then track the drop target
-/// (data-ondragenter/leave) and fire data-ondragover (target) + data-ondragmove
-/// (source). All WEB_DRAG borrows are released before dispatching handlers.
-fn handle_web_drag_move(event: &web_sys::MouseEvent) {
-    let x = event.client_x() as f32;
-    let y = event.client_y() as f32;
+/// Resolve the topmost element under `(x, y)` for an *active* drag, then track
+/// the [data-ondrop] target: fire data-ondragenter/leave when it changes,
+/// data-ondragover on the target, and data-ondragmove on the source. `hit` is the
+/// topmost element under the cursor — for a captured (touch/pen) drag this must
+/// come from `elementFromPoint` (pointer capture retargets the raw event to the
+/// source), for a mouse drag it is the raw `event.target()`. All WEB_DRAG borrows
+/// are released before dispatching handlers.
+fn process_drag_target(source: &web_sys::Element, hit: Option<web_sys::Element>, x: f32, y: f32) {
+    let old_target = WEB_DRAG.with(|d| d.borrow().as_ref().and_then(|s| s.over_target.clone()));
 
-    // Self-heal: if the primary button is no longer held, a mouseup was missed
-    // (e.g. released outside the window) — cancel rather than leave the drag
-    // stuck active across subsequent moves. (`&` binds looser than `==`, hence
-    // the parentheses.)
-    if (event.buttons() & 1) == 0 {
-        cancel_web_drag();
-        return;
-    }
-
-    // Snapshot current state; do not hold the borrow across dispatch.
-    let Some((source, was_active, old_target, start)) = WEB_DRAG.with(|d| {
-        d.borrow().as_ref().map(|s| {
-            (
-                s.source.clone(),
-                s.active,
-                s.over_target.clone(),
-                (s.start_x, s.start_y),
-            )
-        })
-    }) else {
-        return;
-    };
-
-    // Record the latest cursor (used by Escape-cancel).
-    WEB_DRAG.with(|d| {
-        if let Some(s) = d.borrow_mut().as_mut() {
-            s.cursor = (x, y);
-        }
-    });
-
-    // Pending → active once the threshold is crossed.
-    if !was_active {
-        let dx = x - start.0;
-        let dy = y - start.1;
-        if (dx * dx + dy * dy).sqrt() < WEB_DRAG_THRESHOLD {
-            return;
-        }
-        WEB_DRAG.with(|d| {
-            if let Some(s) = d.borrow_mut().as_mut() {
-                s.active = true;
-            }
-        });
-        dispatch_plain_attr(&source, "data-ondragstart");
-        // Fall through to also process the drop target on this same move, so a
-        // coarse drag (only a few pointer moves) still fires enter/over and can
-        // drop. (Desktop splits dragstart and the first target frame to render a
-        // drag ghost first; web has no ghost, so doing both here is fine.)
-    }
-
-    // Active: resolve the [data-ondrop] target under the cursor.
-    let new_target = event
-        .target()
-        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-        .and_then(|el| el.closest("[data-ondrop]").ok().flatten());
+    let new_target = hit.and_then(|el| el.closest("[data-ondrop]").ok().flatten());
 
     let changed = match (&old_target, &new_target) {
         (Some(o), Some(n)) => !same_element(o, n),
@@ -283,27 +476,193 @@ fn handle_web_drag_move(event: &web_sys::MouseEvent) {
     if let Some(t) = &new_target {
         dispatch_drag_with_bounds(t, "data-ondragover", x, y);
     }
-    dispatch_drag_cursor_only(&source, "data-ondragmove", x, y);
+    dispatch_drag_cursor_only(source, "data-ondragmove", x, y);
 }
 
-/// Cancel an in-progress element drag (Escape, or a mouseup missed outside the
-/// window). An *active* drag fires data-ondragleave on the target and
-/// data-ondragend on the source (using the last known cursor); a merely
-/// *pending* drag is just cleared. Returns true if any drag — pending or active
-/// — was in progress, so the caller can consume the key, matching the desktop
-/// backend (which swallows Escape for both pending and active drags).
-fn cancel_web_drag() -> bool {
-    let Some(state) = WEB_DRAG.with(|d| d.borrow_mut().take()) else {
+/// Topmost element under `(x, y)` via `document.elementFromPoint`. Used to resolve
+/// the drop target for captured (touch/pen) drags, where the raw pointer event is
+/// retargeted to the capturing source element.
+fn element_from_point(x: f32, y: f32) -> Option<web_sys::Element> {
+    web_sys::window()?.document()?.element_from_point(x, y)
+}
+
+/// The element under the pointer for `data-onmouse*` dispatch. While a captured
+/// (touch/pen) element drag owns this pointer, the raw `event.target()` is the
+/// capturing source, so resolve the real element under the finger via
+/// `elementFromPoint`; otherwise use the raw target (mouse — unchanged).
+fn pointer_hit_element(event: &web_sys::PointerEvent) -> Option<web_sys::Element> {
+    let captured = WEB_DRAG.with(|d| {
+        d.borrow()
+            .as_ref()
+            .is_some_and(|s| s.captured && s.pointer_id == event.pointer_id())
+    });
+    if captured {
+        element_from_point(event.client_x() as f32, event.client_y() as f32)
+    } else {
+        event
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+    }
+}
+
+/// Transition the current *pending* drag to *active*: fire data-ondragstart, and
+/// for touch/pen grab pointer capture + suppress scrolling on the source, then
+/// process the drop target under the current cursor. No-op if there is no pending
+/// drag or it is already active. Called from the movement-threshold path (mouse)
+/// and from the long-press timer (touch/pen).
+fn activate_web_drag() {
+    let Some((source, kind, pointer_id, cursor)) = WEB_DRAG.with(|d| {
+        let mut b = d.borrow_mut();
+        let s = b.as_mut()?;
+        if s.active {
+            return None;
+        }
+        s.active = true;
+        clear_long_press_timer(s);
+        Some((s.source.clone(), s.kind, s.pointer_id, s.cursor))
+    }) else {
+        return;
+    };
+
+    // Touch/pen: capture the pointer and stop the browser from scrolling/panning
+    // for the rest of the gesture. Scoped to the source element, so nothing else
+    // on the page loses its scrollability.
+    if kind.uses_long_press() {
+        let captured = source.set_pointer_capture(pointer_id).is_ok();
+        let saved_touch_action = source.dyn_ref::<web_sys::HtmlElement>().map(|html| {
+            let style = html.style();
+            let prev = style.get_property_value("touch-action").unwrap_or_default();
+            let _ = style.set_property("touch-action", "none");
+            prev
+        });
+        WEB_DRAG.with(|d| {
+            if let Some(s) = d.borrow_mut().as_mut() {
+                s.captured = captured;
+                s.saved_touch_action = saved_touch_action;
+            }
+        });
+    }
+
+    dispatch_plain_attr(&source, "data-ondragstart");
+    // Process the target at the current cursor on this same frame so a coarse
+    // drag (few moves) still fires enter/over and can drop. (Desktop splits
+    // dragstart and the first target frame to render a drag ghost first; web has
+    // no ghost, so doing both here is fine.)
+    let hit = element_from_point(cursor.0, cursor.1);
+    process_drag_target(&source, hit, cursor.0, cursor.1);
+}
+
+/// Advance an in-progress element drag on pointer move. Only the pointer that
+/// owns the drag drives it (multi-touch guard). Handles the self-heal for a
+/// missed release, the pending→active transition (mouse threshold; touch/pen
+/// abandons to scroll on real movement, activation is timer-driven), and target
+/// tracking while active. Returns whether the browser default should be
+/// suppressed (true while a captured touch/pen drag is active, to block scroll).
+fn handle_web_pointer_move(event: &web_sys::PointerEvent) -> bool {
+    let x = event.client_x() as f32;
+    let y = event.client_y() as f32;
+
+    // Snapshot; ignore events from a non-owning pointer (secondary touch). The
+    // source Element is fetched lazily in the active branch below, so a jittery
+    // long-press hold (many Ignore moves) and secondary-finger moves don't clone
+    // it each frame.
+    let Some((kind, was_active, captured, start, owns)) = WEB_DRAG.with(|d| {
+        d.borrow().as_ref().map(|s| {
+            (
+                s.kind,
+                s.active,
+                s.captured,
+                (s.start_x, s.start_y),
+                s.pointer_id == event.pointer_id(),
+            )
+        })
+    }) else {
         return false;
     };
+    if !owns {
+        return false;
+    }
+
+    // Self-heal: primary contact no longer down means a release was missed (e.g.
+    // outside the window) — cancel rather than leave the drag stuck.
+    if drag_machine::primary_released(event.buttons()) {
+        cancel_web_drag();
+        return false;
+    }
+
+    // Record the latest cursor (used by Escape-cancel and long-press activate).
+    WEB_DRAG.with(|d| {
+        if let Some(s) = d.borrow_mut().as_mut() {
+            s.cursor = (x, y);
+        }
+    });
+
+    if !was_active {
+        match pending_move_decision(kind, x - start.0, y - start.1) {
+            PendingMove::Ignore => return false,
+            PendingMove::AbortScroll => {
+                // Touch/pen swipe before the long-press fired → it's a scroll.
+                cancel_web_drag();
+                return false;
+            }
+            PendingMove::Activate => {
+                // Mouse crossed the threshold; activate and process this frame.
+                activate_web_drag();
+                return false;
+            }
+        }
+    }
+
+    // Active: resolve the target. A captured (touch/pen) drag retargets the raw
+    // event to the source, so use elementFromPoint; a mouse drag uses the raw hit.
+    let hit = if captured {
+        element_from_point(x, y)
+    } else {
+        event
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+    };
+    let Some(source) = WEB_DRAG.with(|d| d.borrow().as_ref().map(|s| s.source.clone())) else {
+        return false;
+    };
+    process_drag_target(&source, hit, x, y);
+
+    // While a captured touch/pen drag is live, block the browser from scrolling.
+    captured
+}
+
+/// Cancel an in-progress element drag (Escape, pointercancel, or a release missed
+/// outside the window). An *active* drag fires data-ondragleave on the target and
+/// data-ondragend on the source (using the last known cursor); a merely *pending*
+/// drag is just cleared. Always releases pointer capture, clears the long-press
+/// timer, and restores `touch-action`. Returns true if any drag — pending or
+/// active — was in progress, so the caller can consume the key, matching the
+/// desktop backend (which swallows Escape for both pending and active drags).
+fn cancel_web_drag() -> bool {
+    let Some(mut state) = WEB_DRAG.with(|d| d.borrow_mut().take()) else {
+        return false;
+    };
+    clear_long_press_timer(&mut state);
+    release_capture_and_scroll(&mut state);
     if state.active {
         let (x, y) = state.cursor;
-        if let Some(t) = &state.over_target {
-            dispatch_plain_attr(t, "data-ondragleave");
-        }
-        dispatch_drag_cursor_only(&state.source, "data-ondragend", x, y);
+        finish_active_drag(&state, x, y, false);
     }
     true
+}
+
+/// Fire the terminal events for an *active* drag at `(x, y)`: `data-ondrop` (only
+/// when `do_drop`) then `data-ondragleave` on the current target, then
+/// `data-ondragend` on the source. Shared by the pointerup (drop) and
+/// cancel/Escape (no drop) paths so the teardown stays in one place.
+fn finish_active_drag(state: &WebDragState, x: f32, y: f32, do_drop: bool) {
+    if let Some(t) = &state.over_target {
+        if do_drop {
+            dispatch_plain_attr(t, "data-ondrop");
+        }
+        dispatch_plain_attr(t, "data-ondragleave");
+    }
+    dispatch_drag_cursor_only(&state.source, "data-ondragend", x, y);
 }
 
 /// Convert a UTF-16 code unit offset within a string to a UTF-8 byte offset.
@@ -482,22 +841,47 @@ fn dispatch_click_at(
 
 /// Set up global event listeners that delegate to rinch's event handler registry.
 ///
-/// Wires `mousedown`/`mousemove`/`mouseup` (click dispatch, `data-onmousedown`/
-/// `up`/`move`, pointer-capture drag tracking, text-hit resolution, hover
-/// `data-onenter`/`data-onleave`, and the element drag-and-drop `data-ondrag*`
-/// suite), `keydown` (render-surface routing, keyboard interceptor,
-/// `data-onsubmit` on Enter, Escape drag-cancel), `input` (`data-oninput`),
-/// `contextmenu` (`data-oncontextmenu`), and capture-phase `scroll`
-/// (`data-onscroll`). Listeners are leaked via `Closure::forget` and live for
-/// the lifetime of the page.
+/// Wires `pointerdown`/`pointermove`/`pointerup`/`pointercancel` (click dispatch,
+/// `data-onmousedown`/`up`/`move`, slider drag tracking, text-hit resolution,
+/// hover `data-onenter`/`data-onleave`, and the element drag-and-drop
+/// `data-ondrag*` suite — which now works on touch/pen as well as mouse),
+/// `keydown` (render-surface routing, keyboard interceptor, `data-onsubmit` on
+/// Enter, Escape drag-cancel), `input` (`data-oninput`), `contextmenu`
+/// (`data-oncontextmenu`), and capture-phase `scroll` (`data-onscroll`).
+///
+/// Pointer Events are used (rather than raw mouse events) so a single code path
+/// covers mouse, touch, and pen. `web_sys::PointerEvent` derefs to `MouseEvent`,
+/// so `client_x/y`, `button`, `buttons`, and the modifier getters keep working;
+/// the mouse listeners are *replaced* (not supplemented) to avoid the double
+/// dispatch that would occur from the browser's compatibility mouse events.
+///
+/// Listeners are leaked via `Closure::forget` and live for the lifetime of the
+/// page.
 pub fn setup_event_delegation(doc: &WebDocument) {
     let browser_doc = doc.browser_document().clone();
     let browser_doc_for_click = browser_doc.clone();
 
-    // Mousedown delegation: find nearest [data-rid] ancestor and dispatch.
-    // We use mousedown instead of click so that drag operations (sliders, etc.)
-    // can begin tracking mouse movement immediately.
-    let mousedown_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+    // Pointerdown delegation: find nearest [data-rid] ancestor and dispatch.
+    // We use pointerdown (not click) so drag operations (sliders, element DnD)
+    // can begin tracking movement immediately, on mouse and touch alike.
+    let pointerdown_closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
+        // A drag is owned by a single pointer. A *primary* pointerdown means no
+        // primary contact is currently down, so any drag still recorded is stale
+        // — its pointerup/pointercancel was missed (e.g. a dropped mobile
+        // system-gesture interruption, or the source removed mid-drag). Clear it
+        // and proceed, so a stuck drag can't wedge all pointer input (the guarded
+        // pointerdown + owns-gated move/up would otherwise leave no recovery path
+        // on a touch device). A *secondary* (non-primary) pointerdown is a
+        // concurrent finger during a live drag: ignore it so it neither starts a
+        // second DnD nor disturbs the owning one.
+        if WEB_DRAG.with(|d| d.borrow().is_some()) {
+            if event.is_primary() {
+                cancel_web_drag();
+            } else {
+                return;
+            }
+        }
+
         if let Some(target) = event.target()
             && let Ok(el) = target.dyn_into::<web_sys::Element>()
         {
@@ -509,64 +893,113 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             }
 
             // Additive: fire data-onmousedown before the click dispatch below,
-            // matching DOM order (mousedown precedes click) and the desktop arm.
+            // matching DOM order (down precedes click) and the desktop arm.
             dispatch_mouse_attr(&el, "data-onmousedown", &event);
 
-            // Element drag-and-drop: a mousedown on a `draggable="true"` element
-            // starts a pending drag. Its click is deferred to mouseup (and fires
-            // only if the drag never activates), matching the desktop backend.
+            // Element drag-and-drop: a pointerdown on a `draggable="true"` element
+            // starts a pending drag (primary pointer only). Its click is deferred
+            // to pointerup (and fires only if the drag never activates), matching
+            // the desktop backend. A mouse arms on the movement threshold; a
+            // touch/pen arms on a long-press hold (see the drag_machine module).
             let drag_source = el.closest("[draggable=\"true\"]").ok().flatten();
-            if let Some(source) = &drag_source {
+            if let Some(source) = &drag_source
+                && event.is_primary()
+            {
+                let kind = PointerKind::from_type(&event.pointer_type());
                 WEB_DRAG.with(|d| {
                     *d.borrow_mut() = Some(WebDragState {
                         source: source.clone(),
+                        pointer_id: event.pointer_id(),
+                        kind,
                         start_x: event.client_x() as f32,
                         start_y: event.client_y() as f32,
                         cursor: (event.client_x() as f32, event.client_y() as f32),
                         active: false,
                         over_target: None,
+                        captured: false,
+                        long_press_timer: None,
+                        _long_press_closure: None,
+                        saved_touch_action: None,
                     });
                 });
+
+                // Touch/pen: arm the long-press timer. A stationary hold past
+                // TOUCH_LONG_PRESS_MS activates the drag; movement before then
+                // abandons it to scroll (handled in the move path). The timer is a
+                // no-op if the drag was already cancelled or activated by the time
+                // it fires (activate_web_drag guards on the current state).
+                if kind.uses_long_press()
+                    && let Some(win) = web_sys::window()
+                {
+                    let timer_cb = Closure::wrap(Box::new(activate_web_drag) as Box<dyn FnMut()>);
+                    if let Ok(handle) = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+                        timer_cb.as_ref().unchecked_ref(),
+                        drag_machine::TOUCH_LONG_PRESS_MS,
+                    ) {
+                        WEB_DRAG.with(|d| {
+                            if let Some(s) = d.borrow_mut().as_mut() {
+                                s.long_press_timer = Some(handle);
+                                s._long_press_closure = Some(timer_cb);
+                            }
+                        });
+                    }
+                }
             }
 
-            // Click dispatch (data-rid fires on mousedown). The primary (left)
+            // Click dispatch (data-rid fires on pointerdown). The primary (left)
             // button always clicks; a non-primary button clicks only when there
             // is no contextmenu handler in the ancestry — mirroring the desktop
             // right-click gate where oncontextmenu suppresses the click. Draggable
-            // sources defer their click to mouseup (above).
+            // sources defer their click to pointerup (above).
             let click_allowed = drag_source.is_none()
                 && (event.button() == 0
                     || el.closest("[data-oncontextmenu]").ok().flatten().is_none());
 
             // Dispatch the click for the nearest [data-rid] (draggables defer to
-            // mouseup above).
+            // pointerup above).
             if click_allowed {
                 dispatch_click_at(&el, &browser_doc_for_click, &event);
+
+                // If that click armed a pointer-capture `Drag` (slider, panel,
+                // resize handle — started from the handler via `Drag::start()`),
+                // capture the pointer on the element so touch/pen moves keep
+                // tracking on it and the pointermove handler's `preventDefault`
+                // can stop the page from scrolling out from under the drag.
+                // Released on pointerup/pointercancel.
+                if rinch_core::Drag::is_active() {
+                    let _ = el.set_pointer_capture(event.pointer_id());
+                    DRAG_POINTER_CAPTURE
+                        .with(|c| *c.borrow_mut() = Some((el.clone(), event.pointer_id())));
+                }
             }
         }
     }) as Box<dyn FnMut(_)>);
     browser_doc
-        .add_event_listener_with_callback("mousedown", mousedown_closure.as_ref().unchecked_ref())
+        .add_event_listener_with_callback(
+            "pointerdown",
+            pointerdown_closure.as_ref().unchecked_ref(),
+        )
         .unwrap();
-    mousedown_closure.forget();
+    pointerdown_closure.forget();
 
-    // Mousemove delegation: feed active drag operations.
-    let mousemove_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+    // Pointermove delegation: feed active drag operations.
+    let pointermove_closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
         let (drag_active, _) =
             rinch_core::update_drag(event.client_x() as f32, event.client_y() as f32);
         if drag_active {
             event.prevent_default();
         }
 
-        if let Some(target) = event.target()
-            && let Ok(el) = target.dyn_into::<web_sys::Element>()
-        {
+        if let Some(el) = pointer_hit_element(&event) {
             dispatch_mouse_attr(&el, "data-onmousemove", &event);
 
             // Element drag-and-drop: if a drag is pending/active, advance it and
-            // skip hover — an active drag owns the move (mirrors desktop).
+            // skip hover — an active drag owns the move (mirrors desktop). A live
+            // captured touch/pen drag asks us to block the browser's scroll.
             if WEB_DRAG.with(|d| d.borrow().is_some()) {
-                handle_web_drag_move(&event);
+                if handle_web_pointer_move(&event) {
+                    event.prevent_default();
+                }
                 return;
             }
 
@@ -604,48 +1037,96 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         }
     }) as Box<dyn FnMut(_)>);
     browser_doc
-        .add_event_listener_with_callback("mousemove", mousemove_closure.as_ref().unchecked_ref())
+        .add_event_listener_with_callback(
+            "pointermove",
+            pointermove_closure.as_ref().unchecked_ref(),
+        )
         .unwrap();
-    mousemove_closure.forget();
+    pointermove_closure.forget();
 
-    // Mouseup delegation: stop active drag operations and fire data-onmouseup.
+    // Pointerup delegation: stop active drag operations and fire data-onmouseup.
     let browser_doc_for_up = browser_doc.clone();
-    let mouseup_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
-        rinch_core::Drag::cancel();
-        if let Some(target) = event.target()
-            && let Ok(el) = target.dyn_into::<web_sys::Element>()
-        {
+    let pointerup_closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
+        // Finish (not cancel) any pointer-capture Drag so its `on_end` fires with
+        // the release position — matching the desktop backend
+        // (`app::event_dispatch` calls `finish_drag` on mouseup). A no-op when no
+        // drag is active. pointercancel still uses `Drag::cancel()` (no commit).
+        rinch_core::finish_drag(event.client_x() as f32, event.client_y() as f32);
+        release_drag_pointer_capture();
+        if let Some(el) = pointer_hit_element(&event) {
             dispatch_mouse_attr(&el, "data-onmouseup", &event);
         }
 
-        // Element drag-and-drop: finish drop/dragend, or fire the click that was
-        // deferred when this draggable's mousedown started a pending drag.
-        let dnd = WEB_DRAG.with(|d| d.borrow_mut().take());
-        if let Some(state) = dnd {
+        // Element drag-and-drop: only the owning pointer finishes the drag (a
+        // secondary finger lifting must not end it). Finish drop/dragend, or fire
+        // the click deferred when this draggable's pointerdown started a pending
+        // drag (a tap that never activated).
+        let owns = WEB_DRAG.with(|d| {
+            d.borrow()
+                .as_ref()
+                .is_some_and(|s| s.pointer_id == event.pointer_id())
+        });
+        if owns && let Some(mut state) = WEB_DRAG.with(|d| d.borrow_mut().take()) {
+            clear_long_press_timer(&mut state);
+            release_capture_and_scroll(&mut state);
             if state.active {
                 let x = event.client_x() as f32;
                 let y = event.client_y() as f32;
-                if let Some(t) = &state.over_target {
-                    dispatch_plain_attr(t, "data-ondrop");
-                    dispatch_plain_attr(t, "data-ondragleave");
-                }
-                dispatch_drag_cursor_only(&state.source, "data-ondragend", x, y);
+                finish_active_drag(&state, x, y, true);
             } else {
-                // Threshold never crossed — treat as a click on the draggable,
-                // with the same full click semantics as the mousedown path.
-                dispatch_click_at(&state.source, &browser_doc_for_up, &event);
+                // Never activated (a quick tap / sub-threshold press) — treat as a
+                // click on the draggable, with the same right-click/contextmenu
+                // gate as the pointerdown path (a right-press under a
+                // data-oncontextmenu ancestor is suppressed, not doubled with the
+                // contextmenu).
+                let click_allowed = event.button() == 0
+                    || state
+                        .source
+                        .closest("[data-oncontextmenu]")
+                        .ok()
+                        .flatten()
+                        .is_none();
+                if click_allowed {
+                    dispatch_click_at(&state.source, &browser_doc_for_up, &event);
+                }
             }
         }
     }) as Box<dyn FnMut(_)>);
     browser_doc
-        .add_event_listener_with_callback("mouseup", mouseup_closure.as_ref().unchecked_ref())
+        .add_event_listener_with_callback("pointerup", pointerup_closure.as_ref().unchecked_ref())
         .unwrap();
-    mouseup_closure.forget();
+    pointerup_closure.forget();
+
+    // Pointercancel delegation: the browser took the pointer away (e.g. a system
+    // gesture, or scrolling won out). Cancel the owning drag like Escape — an
+    // active drag fires dragend, a pending one is just cleared — and release any
+    // slider drag too.
+    let pointercancel_closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
+        let owns = WEB_DRAG.with(|d| {
+            d.borrow()
+                .as_ref()
+                .is_some_and(|s| s.pointer_id == event.pointer_id())
+        });
+        if owns {
+            cancel_web_drag();
+        }
+        rinch_core::Drag::cancel();
+        release_drag_pointer_capture();
+    }) as Box<dyn FnMut(_)>);
+    browser_doc
+        .add_event_listener_with_callback(
+            "pointercancel",
+            pointercancel_closure.as_ref().unchecked_ref(),
+        )
+        .unwrap();
+    pointercancel_closure.forget();
 
     // Suppress the browser's native HTML5 drag for rinch draggables: the element
-    // drag-and-drop above is synthesized from mouse events, and a native drag
-    // would otherwise hijack the gesture (suppressing mousemove/mouseup). Preventing
-    // the default on `dragstart` cancels the native drag so the mouse events keep flowing.
+    // drag-and-drop above is synthesized from pointer events, and a native drag
+    // would otherwise hijack the gesture (suppressing pointermove/pointerup).
+    // Preventing the default on `dragstart` cancels the native drag so the pointer
+    // events keep flowing. (This is the browser's own `dragstart` event for
+    // images/text/links — unrelated to our `data-ondragstart` handler attribute.)
     let dragstart_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
         if let Some(target) = event.target()
             && let Ok(el) = target.dyn_into::<web_sys::Element>()

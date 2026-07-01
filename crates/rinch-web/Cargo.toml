@@ -30,6 +30,9 @@ web-sys = { version = "0.3", features = [
     "Node", "NodeList", "Text", "Comment",
     "CssStyleDeclaration", "DomRect", "DomRectList",
     "Event", "MouseEvent", "KeyboardEvent",
+    # Pointer Events unify mouse + touch + pen so the element drag-and-drop
+    # delegation activates and tracks on touch devices (not just mouse).
+    "PointerEvent",
     "EventTarget", "FocusOptions",
     "Range",
     # Clipboard + IME on the editor's hidden capture textarea: clipboard read/write
