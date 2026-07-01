@@ -192,6 +192,19 @@ pub fn remove_link() -> Command {
     })
 }
 
+/// Select the entire document — the `Ctrl/Cmd+A` command. Returns a selection-only
+/// transaction **unconditionally** (never gated on a change), so the key binding is
+/// always consumed even when the whole document is already selected.
+pub fn select_all() -> Command {
+    command_tr(|state| {
+        let from = crate::selection::Selection::at_start(&state.doc).head();
+        let to = crate::selection::Selection::at_end(&state.doc).head();
+        let mut tr = state.tr();
+        tr.set_selection(crate::selection::Selection::text(from, to));
+        Some(tr)
+    })
+}
+
 /// Remove every mark of `mark_type` (any attrs) from `from..to`.
 fn remove_marks_of_type(
     tr: &mut Transaction,
@@ -792,17 +805,21 @@ pub fn split_list_item(item_type: &'static str) -> Command {
         }
         let pos = tr.selection().from().0;
         let r = tr.doc().resolve(Pos(pos)).ok()?;
+        // The new sibling item keeps the item type but **resets its attrs** — splitting a
+        // *checked* task item must yield a fresh *unchecked* one, never inherit the tick.
+        // (list_item has no attrs, so this is a no-op there.)
+        let item_ty = r.node(r.depth() - 1).node_type().clone();
+        let new_item = Some((item_ty, Attrs::new()));
         // At the end of the textblock the new item starts with the list item's
-        // default content (a paragraph) rather than copying a heading/code block.
+        // default content (a paragraph) rather than copying a heading/code block; mid-text
+        // the second half keeps its own textblock type (`None`).
         let at_end = r.parent_offset() == r.parent().content().size();
-        let types = if at_end {
-            let para = state.schema().node_type("paragraph")?.clone();
-            // [outer = item (keep its type), inner = the new default textblock]
-            Some(vec![None, Some((para, Attrs::new()))])
+        let inner = if at_end {
+            Some((state.schema().node_type("paragraph")?.clone(), Attrs::new()))
         } else {
             None
         };
-        tr.split(pos, 2, types).ok()?;
+        tr.split(pos, 2, Some(vec![new_item, inner])).ok()?;
         Some(tr)
     })
 }
@@ -840,6 +857,7 @@ pub fn lift_empty_block() -> Command {
 pub fn split_block_or_list_item() -> Command {
     chain(vec![
         split_list_item("list_item"),
+        split_list_item("task_item"),
         lift_empty_block(),
         split_block(),
     ])
@@ -1227,10 +1245,12 @@ impl Plugin for BaseCommandsPlugin {
             ("toggleSuperscript", toggle_mark("superscript")),
             ("toggleHighlight", toggle_mark("highlight")),
             ("removeLink", remove_link()),
+            ("selectAll", select_all()),
             ("setParagraph", set_paragraph()),
             ("setCodeBlock", set_block_type("code_block", Attrs::new())),
             ("toggleBulletList", toggle_list("bullet_list")),
             ("toggleOrderedList", toggle_list("ordered_list")),
+            ("toggleTaskList", toggle_list("task_list")),
             ("wrapInBlockquote", wrap_in("blockquote")),
             ("liftListItem", lift()),
             ("outdent", outdent()),
@@ -1273,6 +1293,10 @@ impl Plugin for BaseCommandsPlugin {
 
     fn keymap(&self) -> Vec<(KeyBinding, &'static str)> {
         [
+            // NOTE: never bind a clipboard key (Mod-c/x/v) here — the web keydown
+            // handler must return `false` for those so the browser fires its native
+            // ClipboardEvent; a binding would consume the key and break web copy/paste.
+            ("Mod-a", "selectAll"),
             ("Mod-b", "toggleBold"),
             ("Mod-i", "toggleItalic"),
             ("Mod-u", "toggleUnderline"),
@@ -1284,6 +1308,7 @@ impl Plugin for BaseCommandsPlugin {
             ("Delete", "deleteCharForward"),
             ("Tab", "sinkListItem"),
             ("Shift-Tab", "liftListItem"),
+            ("Mod-Shift-7", "toggleTaskList"),
             ("Mod-Shift-8", "toggleBulletList"),
             ("Mod-Shift-9", "toggleOrderedList"),
             ("Mod-Shift-b", "wrapInBlockquote"),
@@ -1291,6 +1316,9 @@ impl Plugin for BaseCommandsPlugin {
             ("Mod-Alt-1", "setHeading1"),
             ("Mod-Alt-2", "setHeading2"),
             ("Mod-Alt-3", "setHeading3"),
+            ("Mod-Alt-4", "setHeading4"),
+            ("Mod-Alt-5", "setHeading5"),
+            ("Mod-Alt-6", "setHeading6"),
         ]
         .into_iter()
         .filter_map(|(b, cmd)| KeyBinding::parse(b).map(|kb| (kb, cmd)))
@@ -1330,6 +1358,16 @@ mod tests {
             true
         });
         found
+    }
+
+    #[test]
+    fn select_all_spans_the_document() {
+        let state = editor("hello");
+        let out = state.run("selectAll").expect("selectAll always applies");
+        // doc > paragraph > "hello": content runs 1..6.
+        assert_eq!((out.selection.from().0, out.selection.to().0), (1, 6));
+        // Idempotent — still applies (consumes the key) when already fully selected.
+        assert!(out.run("selectAll").is_some());
     }
 
     #[test]
@@ -2456,6 +2494,139 @@ mod tests {
         );
         // The starting doc is unchanged — the table is intact.
         assert_eq!(state.doc.child(0).type_name(), "table");
+    }
+
+    #[test]
+    fn outdent_outermost_list_item_in_table_cell_keeps_the_table() {
+        // A real bullet list living *inside* a table cell. Outdenting its only (outermost)
+        // item must un-list it within the cell — never lift it past the isolating cell
+        // boundary (which would tear the table). `build_lift_list_item` routes the
+        // outermost case through `build_lift`, whose isolating floor stops at the cell.
+        let s = Rc::new(Schema::starter_kit());
+        let item = s
+            .branch("list_item", Fragment::from_node(p_of(&s, "a")))
+            .unwrap();
+        let list = s.branch("bullet_list", Fragment::from_node(item)).unwrap();
+        let cell = s.branch("table_cell", Fragment::from_node(list)).unwrap();
+        let table = s
+            .branch(
+                "table",
+                Fragment::from_node(s.branch("table_row", Fragment::from_node(cell)).unwrap()),
+            )
+            .unwrap();
+        let doc = s.branch("doc", Fragment::from_node(table)).unwrap();
+        let mut state = EditorState::create(s, doc, default_plugins());
+        state.selection = Selection::cursor(Pos(cursor_in_para(&state.doc, "a")));
+
+        // A no-op is acceptable; what is NOT acceptable is the content escaping the cell.
+        let out = state.run("liftListItem").unwrap_or(state);
+        assert_eq!(
+            out.doc.child_count(),
+            1,
+            "nothing lifted to the doc top level"
+        );
+        assert_eq!(out.doc.child(0).type_name(), "table", "table preserved");
+        assert!(
+            all_text(out.doc.child(0)).contains('a'),
+            "content kept in the cell"
+        );
+    }
+
+    #[test]
+    fn outdent_nested_list_item_in_table_cell_stays_in_cell() {
+        // A nested list item inside a cell: cell > list > item("a" + sublist > item "b").
+        // Outdenting "b" lifts it to a sibling of "a" in the cell's outer list (PM's
+        // `liftToOuterList`, target = depth-2); a second outdent un-lists it within the
+        // cell. Neither step may cross the cell boundary.
+        let s = Rc::new(Schema::starter_kit());
+        let inner_item = s
+            .branch("list_item", Fragment::from_node(p_of(&s, "b")))
+            .unwrap();
+        let inner_list = s
+            .branch("bullet_list", Fragment::from_node(inner_item))
+            .unwrap();
+        let outer_item = s
+            .branch(
+                "list_item",
+                Fragment::from_children(vec![p_of(&s, "a"), inner_list]),
+            )
+            .unwrap();
+        let outer_list = s
+            .branch("bullet_list", Fragment::from_node(outer_item))
+            .unwrap();
+        let cell = s
+            .branch("table_cell", Fragment::from_node(outer_list))
+            .unwrap();
+        let table = s
+            .branch(
+                "table",
+                Fragment::from_node(s.branch("table_row", Fragment::from_node(cell)).unwrap()),
+            )
+            .unwrap();
+        let doc = s.branch("doc", Fragment::from_node(table)).unwrap();
+        let mut state = EditorState::create(s, doc, default_plugins());
+        state.selection = Selection::cursor(Pos(cursor_in_para(&state.doc, "b")));
+
+        // First outdent: "b" rises to the cell's outer list — table intact, both in cell.
+        let once = state.run("liftListItem").expect("nested item lifts");
+        assert_eq!(
+            once.doc.child_count(),
+            1,
+            "nothing lifted to the doc top level"
+        );
+        assert_eq!(once.doc.child(0).type_name(), "table");
+        let table_text = all_text(once.doc.child(0));
+        assert!(
+            table_text.contains('a') && table_text.contains('b'),
+            "both items kept inside the table: {table_text:?}"
+        );
+
+        // Second outdent (now outermost): still confined to the cell.
+        let twice = {
+            let mut s2 = once;
+            s2.selection = Selection::cursor(Pos(cursor_in_para(&s2.doc, "b")));
+            s2.run("liftListItem").unwrap_or(s2)
+        };
+        assert_eq!(
+            twice.doc.child_count(),
+            1,
+            "still nothing at the doc top level"
+        );
+        assert_eq!(
+            twice.doc.child(0).type_name(),
+            "table",
+            "table still intact"
+        );
+        assert!(all_text(twice.doc.child(0)).contains('b'));
+    }
+
+    #[test]
+    fn enter_in_a_task_item_creates_a_new_unchecked_item() {
+        // Pressing Enter at the end of a *checked* task item must yield a fresh, separate,
+        // *unchecked* task item — not a second paragraph in the same item, and not an
+        // inherited tick. (Mirrors the list_item Enter path, made task-aware.)
+        let s = Rc::new(Schema::starter_kit());
+        let checked = Attrs::from_iter([("checked", crate::AttrValue::Bool(true))]);
+        let item = s
+            .create_node("task_item", checked, Fragment::from_node(p_of(&s, "ab")))
+            .unwrap();
+        let list = s.branch("task_list", Fragment::from_node(item)).unwrap();
+        let doc = s.branch("doc", Fragment::from_node(list)).unwrap();
+        let mut state = EditorState::create(s, doc, default_plugins());
+        // End of "ab" (cursor_in_para lands at content offset 0; +2 reaches the end).
+        state.selection = Selection::cursor(Pos(cursor_in_para(&state.doc, "ab") + 2));
+
+        let out = state.run("enter").expect("enter splits the task item");
+        let list = out.doc.child(0);
+        assert_eq!(list.type_name(), "task_list");
+        assert_eq!(list.child_count(), 2, "a new sibling task item was created");
+        let new_item = list.child(1);
+        assert_eq!(new_item.type_name(), "task_item");
+        assert_ne!(
+            new_item.attrs().get_bool("checked"),
+            Some(true),
+            "the new task item starts unchecked"
+        );
     }
 
     #[test]

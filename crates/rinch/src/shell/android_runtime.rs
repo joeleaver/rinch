@@ -229,6 +229,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                 let actions = app.handle_event(
                     PlatformEvent::KeyDown {
                         key: KeyCode::Other,
+                        logical_key: None,
                         text: Some(ch.to_string()),
                         modifiers: Modifiers::default(),
                     },
@@ -245,6 +246,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                 let actions = app.handle_event(
                     PlatformEvent::KeyDown {
                         key: KeyCode::Backspace,
+                        logical_key: None,
                         text: None,
                         modifiers: Modifiers::default(),
                     },
@@ -257,6 +259,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                 let actions = app.handle_event(
                     PlatformEvent::KeyDown {
                         key: KeyCode::Delete,
+                        logical_key: None,
                         text: None,
                         modifiers: Modifiers::default(),
                     },
@@ -497,12 +500,14 @@ fn collect_input_events(
                             if let Some(key_code) = map_android_keycode(key.key_code()) {
                                 events.push(PlatformEvent::KeyDown {
                                     key: key_code,
+                                    logical_key: None,
                                     text,
                                     modifiers,
                                 });
                             } else if let Some(text) = text {
                                 events.push(PlatformEvent::KeyDown {
                                     key: KeyCode::Other,
+                                    logical_key: None,
                                     text: Some(text),
                                     modifiers,
                                 });

@@ -1156,6 +1156,7 @@ impl ApplicationHandler for App {
                 if wants_kb {
                     self.pending_events.push(PlatformEvent::KeyDown {
                         key: key_code,
+                        logical_key: None,
                         text,
                         modifiers: mods,
                     });

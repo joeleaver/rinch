@@ -105,7 +105,29 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
    full-width line and indent below the item, instead of floating beside it. */
 [data-pm-editor] ul, [data-pm-editor] ol { padding-left: 1.6em; margin: 0 0 0.75em; }
 [data-pm-editor] li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4em; margin: 0.15em 0; }
-[data-pm-editor] li > ul, [data-pm-editor] li > ol { flex-basis: 100%; margin: 0.15em 0 0; }
+[data-pm-editor] li > ul, [data-pm-editor] li > ol,
+[data-pm-editor] li > [data-pm-type="task_list"] { flex-basis: 100%; margin: 0.15em 0 0; }
+
+/* ── Task lists ────────────────────────────────────────────────────────────
+   task_list / task_item have no native HTML tag (they render as <div>), so they
+   are styled by their `data-pm-type` marker. Each item gets a checkbox `::before`
+   (☑ when its `data-checked` is set by the view); a checked item is dimmed and
+   struck through. Nested task lists wrap onto their own indented line, like ul/ol. */
+[data-pm-editor] [data-pm-type="task_list"] { margin: 0 0 0.75em; padding-left: 0.1em; }
+[data-pm-editor] [data-pm-type="task_item"] {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5em; margin: 0.15em 0;
+}
+[data-pm-editor] [data-pm-type="task_item"]::before {
+  content: "\2610"; flex: 0 0 auto; color: #57606a; line-height: 1.4;
+}
+[data-pm-editor] [data-pm-type="task_item"][data-checked="true"]::before { content: "\2611"; color: #1a7f37; }
+/* Dim + strike the item's *own* content only — never a nested sub-list (whose items
+   carry their own checked state); `> *` would grey/strike unchecked sub-tasks. */
+[data-pm-editor] [data-pm-type="task_item"][data-checked="true"] > :not([data-pm-type="task_list"]) { color: #8c959f; text-decoration: line-through; }
+[data-pm-editor] [data-pm-type="task_item"] > * { margin-bottom: 0; }
+[data-pm-editor] [data-pm-type="task_item"] > [data-pm-type="task_list"],
+[data-pm-editor] [data-pm-type="task_item"] > ul,
+[data-pm-editor] [data-pm-type="task_item"] > ol { flex-basis: 100%; margin: 0.15em 0 0; padding-left: 1.4em; }
 
 /* ── Horizontal rule ───────────────────────────────────────────────────── */
 [data-pm-editor] hr { border: none; border-top: 2px solid #e1e4e8; margin: 1.2em 0; height: 0; }
@@ -147,6 +169,9 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 [data-pm-editor][data-pm-theme="dark"] code { background: #2d333b; }
 [data-pm-editor][data-pm-theme="dark"] blockquote { border-left-color: #3d444d; color: #9198a1; }
 [data-pm-editor][data-pm-theme="dark"] pre { background: #161b22; }
+[data-pm-editor][data-pm-theme="dark"] [data-pm-type="task_item"]::before { color: #9198a1; }
+[data-pm-editor][data-pm-theme="dark"] [data-pm-type="task_item"][data-checked="true"]::before { color: #3fb950; }
+[data-pm-editor][data-pm-theme="dark"] [data-pm-type="task_item"][data-checked="true"] > :not([data-pm-type="task_list"]) { color: #6e7681; }
 [data-pm-editor][data-pm-theme="dark"] hr { border-top-color: #30363d; }
 [data-pm-editor][data-pm-theme="dark"] table,
 [data-pm-editor][data-pm-theme="dark"] td,

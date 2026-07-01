@@ -25,6 +25,7 @@ fn app() -> NodeHandle {
     let ed_p = editor.clone();
     let ed_ul = editor.clone();
     let ed_ol = editor.clone();
+    let ed_task = editor.clone();
     let ed_quote = editor.clone();
     let ed_indent = editor.clone();
     let ed_outdent = editor.clone();
@@ -52,6 +53,7 @@ fn app() -> NodeHandle {
                 button { id: "tb-p",         style: btn, onclick: move || { ed_p.command("setParagraph"); },         "P" }
                 button { id: "tb-ul",        style: btn, onclick: move || { ed_ul.command("toggleBulletList"); },    "• List" }
                 button { id: "tb-ol",        style: btn, onclick: move || { ed_ol.command("toggleOrderedList"); },   "1. List" }
+                button { id: "tb-task",      style: btn, onclick: move || { ed_task.command("toggleTaskList"); },    "☑ Tasks" }
                 button { id: "tb-quote",     style: btn, onclick: move || { ed_quote.command("wrapInBlockquote"); }, "Quote" }
                 button { id: "tb-indent",    style: btn, onclick: move || { ed_indent.command("indent"); },          "Indent" }
                 button { id: "tb-outdent",   style: btn, onclick: move || { ed_outdent.command("outdent"); },        "Outdent" }

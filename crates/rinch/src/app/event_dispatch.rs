@@ -804,6 +804,7 @@ impl RinchApp {
             }
             PlatformEvent::KeyDown {
                 key,
+                logical_key,
                 text,
                 modifiers,
             } => {
@@ -906,6 +907,7 @@ impl RinchApp {
                             self.dispatch_new_editor_key(
                                 &handle,
                                 key,
+                                logical_key,
                                 text.as_deref(),
                                 shift,
                                 ctrl,
@@ -1759,115 +1761,219 @@ pub(crate) enum Motion {
     DocEnd,
 }
 
+/// Translate a platform key event into an editor-core `KeyBinding` for keymap lookup.
+///
+/// **Letters resolve LOGICALLY** (`logical_key`, the layout-mapped letter from winit) so
+/// `Mod-b` is correct on every layout — on Dvorak/AZERTY the key labelled B fires bold,
+/// not the physical QWERTY-B position. **Digits, symbols, and named keys resolve
+/// PHYSICALLY** (`KeyCode`), because the shifted glyph is layout-dependent — `Mod-Shift-8`
+/// must match the `8` key regardless of what Shift+8 types. This mirrors the web view
+/// (logical `event.key()` for letters, physical `event.code()` otherwise). Returns `None`
+/// for keys with no bindable identity, which then fall through to text input.
+#[cfg(feature = "desktop")]
+fn editor_key_binding(
+    key: KeyCode,
+    logical_key: Option<char>,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+) -> Option<rinch_editor_core::KeyBinding> {
+    use rinch_editor_core::{Key, KeyBinding, Modifiers};
+    // A layout-mapped ASCII letter wins over the physical position.
+    if let Some(c) = logical_key.filter(|c| c.is_ascii_alphabetic()) {
+        return Some(KeyBinding::new(
+            Key::Char(c.to_ascii_lowercase()),
+            Modifiers {
+                primary: ctrl,
+                shift,
+                alt,
+            },
+        ));
+    }
+    let k = match key {
+        KeyCode::KeyA => Key::Char('a'),
+        KeyCode::KeyB => Key::Char('b'),
+        KeyCode::KeyC => Key::Char('c'),
+        KeyCode::KeyD => Key::Char('d'),
+        KeyCode::KeyE => Key::Char('e'),
+        KeyCode::KeyF => Key::Char('f'),
+        KeyCode::KeyG => Key::Char('g'),
+        KeyCode::KeyH => Key::Char('h'),
+        KeyCode::KeyI => Key::Char('i'),
+        KeyCode::KeyJ => Key::Char('j'),
+        KeyCode::KeyK => Key::Char('k'),
+        KeyCode::KeyL => Key::Char('l'),
+        KeyCode::KeyM => Key::Char('m'),
+        KeyCode::KeyN => Key::Char('n'),
+        KeyCode::KeyO => Key::Char('o'),
+        KeyCode::KeyP => Key::Char('p'),
+        KeyCode::KeyQ => Key::Char('q'),
+        KeyCode::KeyR => Key::Char('r'),
+        KeyCode::KeyS => Key::Char('s'),
+        KeyCode::KeyT => Key::Char('t'),
+        KeyCode::KeyU => Key::Char('u'),
+        KeyCode::KeyV => Key::Char('v'),
+        KeyCode::KeyW => Key::Char('w'),
+        KeyCode::KeyX => Key::Char('x'),
+        KeyCode::KeyY => Key::Char('y'),
+        KeyCode::KeyZ => Key::Char('z'),
+        KeyCode::Digit0 => Key::Char('0'),
+        KeyCode::Digit1 => Key::Char('1'),
+        KeyCode::Digit2 => Key::Char('2'),
+        KeyCode::Digit3 => Key::Char('3'),
+        KeyCode::Digit4 => Key::Char('4'),
+        KeyCode::Digit5 => Key::Char('5'),
+        KeyCode::Digit6 => Key::Char('6'),
+        KeyCode::Digit7 => Key::Char('7'),
+        KeyCode::Digit8 => Key::Char('8'),
+        KeyCode::Digit9 => Key::Char('9'),
+        KeyCode::Minus => Key::Char('-'),
+        KeyCode::Equal => Key::Char('='),
+        KeyCode::Enter => Key::Enter,
+        KeyCode::Backspace => Key::Backspace,
+        KeyCode::Delete => Key::Delete,
+        KeyCode::Tab => Key::Tab,
+        KeyCode::Escape => Key::Escape,
+        KeyCode::Space => Key::Space,
+        KeyCode::ArrowLeft => Key::ArrowLeft,
+        KeyCode::ArrowRight => Key::ArrowRight,
+        KeyCode::ArrowUp => Key::ArrowUp,
+        KeyCode::ArrowDown => Key::ArrowDown,
+        KeyCode::Home => Key::Home,
+        KeyCode::End => Key::End,
+        KeyCode::PageUp => Key::PageUp,
+        KeyCode::PageDown => Key::PageDown,
+        _ => return None,
+    };
+    Some(KeyBinding::new(
+        k,
+        Modifiers {
+            primary: ctrl,
+            shift,
+            alt,
+        },
+    ))
+}
+
 /// Rich-text editor keyboard handling (desktop).
 #[cfg(feature = "desktop")]
 impl RinchApp {
     /// Translate a key press into an action on the focused editor's
     /// [`EditorHandle`](crate::editor::EditorHandle). Returns whether the document
     /// or selection changed (and a repaint/caret refresh is needed).
+    // A key event's physical key, logical letter, insertable text, and three modifier
+    // flags are all distinct inputs — passing them individually is clearer here than a
+    // one-off struct.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn dispatch_new_editor_key(
         &mut self,
         handle: &crate::editor::EditorHandle,
         key: KeyCode,
+        logical_key: Option<char>,
         text: Option<&str>,
         shift: bool,
         ctrl: bool,
-        _alt: bool,
+        alt: bool,
     ) -> bool {
         // The vertical "goal column" survives only a run of Up/Down — any other key
         // (typing, horizontal arrows, Home/End, edits) abandons it.
         if !matches!(key, KeyCode::ArrowUp | KeyCode::ArrowDown) {
             self.editor_goal_x = None;
         }
+        // 1. Cursor movement / selection extension — geometry-dependent (visual lines,
+        //    goal column), so it stays view-owned and never touches the keymap. (Shift
+        //    extends, Ctrl = word/doc.)
         match key {
-            KeyCode::Backspace => handle.command("deleteCharBackward"),
-            KeyCode::Delete => handle.command("deleteCharForward"),
-            KeyCode::Enter if !ctrl => handle.command("enter"),
-            // Tab / Shift-Tab move between table cells when the cursor is in a table;
-            // outside a table they indent / outdent the current list (or task) item.
-            // No focus-traversal in the editor either way.
-            KeyCode::Tab => {
-                handle.tab_cell(shift)
-                    || handle.command(if shift {
-                        "liftListItem"
+            KeyCode::ArrowLeft => {
+                return self.move_editor(
+                    handle,
+                    if ctrl {
+                        Motion::WordLeft
                     } else {
-                        "sinkListItem"
-                    })
+                        Motion::CharLeft
+                    },
+                    shift,
+                );
             }
-            // Cursor movement / selection extension (Shift extends, Ctrl = word/doc).
-            KeyCode::ArrowLeft => self.move_editor(
-                handle,
-                if ctrl {
-                    Motion::WordLeft
-                } else {
-                    Motion::CharLeft
-                },
-                shift,
-            ),
-            KeyCode::ArrowRight => self.move_editor(
-                handle,
-                if ctrl {
-                    Motion::WordRight
-                } else {
-                    Motion::CharRight
-                },
-                shift,
-            ),
-            KeyCode::ArrowUp => self.move_editor(handle, Motion::LineUp, shift),
-            KeyCode::ArrowDown => self.move_editor(handle, Motion::LineDown, shift),
-            KeyCode::Home => self.move_editor(
-                handle,
-                if ctrl {
-                    Motion::DocStart
-                } else {
-                    Motion::LineStart
-                },
-                shift,
-            ),
-            KeyCode::End => self.move_editor(
-                handle,
-                if ctrl {
-                    Motion::DocEnd
-                } else {
-                    Motion::LineEnd
-                },
-                shift,
-            ),
-            KeyCode::KeyA if ctrl => {
-                handle.select_all();
-                true
+            KeyCode::ArrowRight => {
+                return self.move_editor(
+                    handle,
+                    if ctrl {
+                        Motion::WordRight
+                    } else {
+                        Motion::CharRight
+                    },
+                    shift,
+                );
             }
-            KeyCode::KeyB if ctrl => handle.command("toggleBold"),
-            KeyCode::KeyI if ctrl => handle.command("toggleItalic"),
-            KeyCode::KeyU if ctrl => handle.command("toggleUnderline"),
-            #[cfg(feature = "clipboard")]
-            KeyCode::KeyC if ctrl => {
-                self.editor_copy(handle);
-                false // copy doesn't change the document or selection
+            KeyCode::ArrowUp => return self.move_editor(handle, Motion::LineUp, shift),
+            KeyCode::ArrowDown => return self.move_editor(handle, Motion::LineDown, shift),
+            KeyCode::Home => {
+                return self.move_editor(
+                    handle,
+                    if ctrl {
+                        Motion::DocStart
+                    } else {
+                        Motion::LineStart
+                    },
+                    shift,
+                );
             }
-            #[cfg(feature = "clipboard")]
-            KeyCode::KeyX if ctrl => self.editor_cut(handle),
-            // Paste-and-match-style (Ctrl+Shift+V) must precede plain Ctrl+V — the
-            // `if ctrl` arm below would otherwise also match with Shift held.
-            #[cfg(feature = "clipboard")]
-            KeyCode::KeyV if ctrl && shift => self.editor_paste_plain(handle),
-            #[cfg(feature = "clipboard")]
-            KeyCode::KeyV if ctrl => self.editor_paste(handle),
-            KeyCode::KeyZ if ctrl && shift => handle.command("redo"),
-            KeyCode::KeyZ if ctrl => handle.command("undo"),
-            KeyCode::KeyY if ctrl => handle.command("redo"),
-            _ => {
-                if ctrl {
-                    return false;
+            KeyCode::End => {
+                return self.move_editor(
+                    handle,
+                    if ctrl {
+                        Motion::DocEnd
+                    } else {
+                        Motion::LineEnd
+                    },
+                    shift,
+                );
+            }
+            _ => {}
+        }
+        // 2. Tab: navigate table cells when in a table (shared handle method); otherwise
+        //    fall through to the keymap, which binds `Tab`→sinkListItem /
+        //    `Shift-Tab`→liftListItem. Consumed either way — no editor focus traversal.
+        if matches!(key, KeyCode::Tab) && handle.tab_cell(shift) {
+            return true;
+        }
+        // 3. Clipboard (Ctrl+C/X/V, Ctrl+Shift+V) — needs the platform clipboard, so it
+        //    can't be an editor-core command. Runs before the keymap, which never binds
+        //    these keys. (Ctrl+Shift+V — paste-and-match-style — precedes plain Ctrl+V.)
+        #[cfg(feature = "clipboard")]
+        if ctrl {
+            match key {
+                KeyCode::KeyC if !shift => {
+                    self.editor_copy(handle);
+                    return false; // copy changes neither the document nor the selection
                 }
-                match text {
-                    Some(t) if !t.is_empty() && t.chars().all(|c| !c.is_control()) => {
-                        handle.insert_text(t)
-                    }
-                    _ => false,
-                }
+                KeyCode::KeyX if !shift => return self.editor_cut(handle),
+                KeyCode::KeyV if shift => return self.editor_paste_plain(handle),
+                KeyCode::KeyV => return self.editor_paste(handle),
+                _ => {}
             }
         }
+        // 4. THE KEYMAP — the single source of truth for every command key (marks, block
+        //    types, lists, blockquote, headings, hr / hard break, enter, backspace /
+        //    delete, undo / redo, select-all). A matched binding is always consumed, even
+        //    if the command no-op'd at this position (so e.g. Tab at top level never
+        //    falls through to text insertion / focus traversal).
+        if let Some(binding) = editor_key_binding(key, logical_key, ctrl, shift, alt)
+            && handle.dispatch_key(binding).is_some()
+        {
+            return true;
+        }
+        // 5. Plain text insertion (never with the primary modifier) — the resolved char,
+        //    which runs the markdown input rules.
+        if !ctrl
+            && let Some(t) = text
+            && !t.is_empty()
+            && t.chars().all(|c| !c.is_control())
+        {
+            return handle.insert_text(t);
+        }
+        false
     }
 
     /// Apply a cursor [`Motion`] to the focused editor: compute the new head and
@@ -2204,6 +2310,69 @@ impl RinchApp {
         Some((cont, tb, ifc_byte))
     }
 
+    /// Whether a physical click at `(x, y)` landed in a **task item's checkbox
+    /// gutter** — the strip left of the item's content where the `::before` checkbox
+    /// renders. A task item is the only block with an interactive marker (bullets and
+    /// numbers are inert), so this gates the checkbox-toggle click path. Tries raw
+    /// then scaled coordinates, matching the other physical click helpers.
+    fn editor_task_checkbox_at_physical(&self, x: f32, y: f32, scale: f64) -> bool {
+        let s = scale as f32;
+        let scaled = (s - 1.0).abs() > f32::EPSILON;
+        self.editor_task_checkbox_at(x, y) || (scaled && self.editor_task_checkbox_at(x / s, y / s))
+    }
+
+    /// The logical-coordinate core of [`Self::editor_task_checkbox_at_physical`].
+    fn editor_task_checkbox_at(&self, x: f32, y: f32) -> bool {
+        let Some(doc) = self.doc.clone() else {
+            return false;
+        };
+        let d = doc.borrow();
+        let Some(hit) = hit_test(&d.tree, x, y) else {
+            return false;
+        };
+        // Walk up to the nearest task_item element (stopping at the editor container).
+        let mut task_item = None;
+        let mut cur = Some(hit);
+        while let Some(id) = cur {
+            let Some(node) = d.tree.get(id) else {
+                return false;
+            };
+            if task_item.is_none()
+                && node.attributes.get("data-pm-type").map(String::as_str) == Some("task_item")
+            {
+                task_item = Some(id);
+            }
+            if node.attributes.get("data-pm-editor").map(String::as_str) == Some("true") {
+                break;
+            }
+            cur = node.parent;
+        }
+        let Some(item) = task_item else {
+            return false;
+        };
+        // The item's first block child is its content (e.g. the paragraph); the
+        // checkbox gutter is everything LEFT of that child's content box. A click there
+        // toggles the box; a click on/after the text is a normal caret placement.
+        let Some(item_node) = d.tree.get(item) else {
+            return false;
+        };
+        let content = item_node.children.iter().copied().find(|&c| {
+            d.tree
+                .get(c)
+                .is_some_and(|n| n.attributes.contains_key("data-pm-type"))
+        });
+        let Some(content) = content else {
+            return false;
+        };
+        let (content_x, _) = Self::compute_absolute_position(&d.tree, content);
+        let pad_l = d
+            .tree
+            .get(content)
+            .map(|n| n.computed_style.padding_left.to_px())
+            .unwrap_or(0.0);
+        x < content_x + pad_l
+    }
+
     /// Whether `id` is an editor textblock element — one that holds inline content
     /// (a `<p>`/`<h*>`/`<pre>`), as opposed to a block container (list / list item /
     /// blockquote / the editor root, which carry schema-node element children) or a
@@ -2512,6 +2681,22 @@ impl RinchApp {
         // A click places the cursor at a new column, so abandon any vertical goal
         // column from a prior Up/Down run.
         self.editor_goal_x = None;
+        // A click in a task item's checkbox gutter toggles its `checked` state instead
+        // of placing a caret (the checkbox is a CSS `::before`, so the hit is geometric,
+        // not a real element). Resolve the nearest textblock for a document position,
+        // then toggle the enclosing task item.
+        if self.editor_task_checkbox_at_physical(x, y, scale)
+            && let Some((c, tb, ifc)) = self.editor_point_address_physical(x, y, scale)
+            && c == container
+            && let Some(pos) = handle.pos_at(tb, ifc)
+            && handle.toggle_task_checked_at(pos.0)
+        {
+            crate::editor::end_drag();
+            self.refresh_editor_overlays();
+            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+            self.resolve_and_repaint(w, h);
+            return true;
+        }
         // A click on a leaf node (an image or horizontal rule) selects the node
         // itself — a `Selection::Node`, outlined by the view — rather than placing a
         // text cursor (design §6 node-views). A node-select never arms a drag.
@@ -2650,5 +2835,46 @@ mod paste_image_tests {
         // 2×2 RGBA needs 16 bytes; give it 8 → None (not a panic).
         assert!(image_rgba_to_png_data_url(2, 2, &[0; 8]).is_none());
         assert!(image_rgba_to_png_data_url(0, 0, &[]).is_none());
+    }
+}
+
+#[cfg(all(test, feature = "desktop"))]
+mod editor_key_binding_tests {
+    use super::editor_key_binding;
+    use rinch_editor_core::{Key, KeyBinding, Modifiers};
+    use rinch_platform::KeyCode;
+
+    #[test]
+    fn logical_letter_wins_over_physical_position() {
+        // Dvorak: the key that types 'b' sits at the physical QWERTY-N position, so
+        // `key`=KeyN but `logical`=Some('b'). The logical letter must win → Mod-b.
+        let b = editor_key_binding(KeyCode::KeyN, Some('b'), true, false, false).unwrap();
+        assert_eq!(
+            b,
+            KeyBinding::new(
+                Key::Char('b'),
+                Modifiers {
+                    primary: true,
+                    shift: false,
+                    alt: false
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_physical_key_without_a_logical_letter() {
+        // No logical letter (e.g. an injected/synthetic key) → the physical KeyCode maps.
+        let b = editor_key_binding(KeyCode::KeyB, None, true, false, false).unwrap();
+        assert_eq!(b.key, Key::Char('b'));
+    }
+
+    #[test]
+    fn digits_use_the_physical_key_ignoring_a_non_letter_logical() {
+        // Shift+8 has a logical '*' (not a letter) → fall back to the physical Digit8='8'
+        // so `Mod-Shift-8` matches regardless of the shifted glyph.
+        let b = editor_key_binding(KeyCode::Digit8, Some('*'), true, true, false).unwrap();
+        assert_eq!(b.key, Key::Char('8'));
+        assert!(b.mods.primary && b.mods.shift);
     }
 }

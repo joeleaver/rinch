@@ -91,7 +91,7 @@ Command names are case-sensitive. The full catalogue:
 |----------|----------|
 | **Inline marks** | `toggleBold`, `toggleItalic`, `toggleUnderline`, `toggleStrike`, `toggleCode`, `toggleHighlight`, `toggleSubscript`, `toggleSuperscript` |
 | **Block types** | `setParagraph`, `setHeading1`…`setHeading6`, `setCodeBlock` |
-| **Containers** | `toggleBulletList`, `toggleOrderedList`, `wrapInBlockquote` |
+| **Containers** | `toggleBulletList`, `toggleOrderedList`, `toggleTaskList`, `wrapInBlockquote` |
 | **Lists** | `sinkListItem` (indent), `liftListItem` (outdent) |
 | **Inserts** | `insertHorizontalRule`, `insertHardBreak`, `insertTable` |
 | **Tables** | `addRowAfter`, `addRowBefore`, `addColumnAfter`, `addColumnBefore`, `deleteRow`, `deleteColumn`, `deleteTable`, `mergeCells`, `splitCell` |
@@ -170,21 +170,57 @@ button {
 
 ## Keyboard shortcuts
 
-The editor handles its own keyboard input. Built-in shortcuts include:
+The editor handles its own keyboard input. Every shortcut below comes from the
+**editor-core keymap** (`BaseCommandsPlugin`/`HistoryPlugin`), which both the desktop
+and web views consult through one path — add a binding there and it works on every
+platform. `Mod` = Ctrl on Windows/Linux, Cmd on macOS.
 
 | Shortcut | Action |
 |----------|--------|
-| Ctrl/Cmd+B | Toggle **bold** |
-| Ctrl/Cmd+I | Toggle *italic* |
-| Ctrl/Cmd+U | Toggle underline |
-| Ctrl/Cmd+Z | Undo |
-| Ctrl/Cmd+Shift+Z / Ctrl+Y | Redo |
+| Mod+B / Mod+I / Mod+U | Toggle **bold** / *italic* / underline |
+| Mod+E | Toggle inline `code` |
+| Mod+Shift+S | Toggle ~~strikethrough~~ |
+| Mod+A | Select all |
+| Mod+Alt+1…6 | Heading 1–6 |
+| Mod+Shift+0 | Paragraph |
+| Mod+Shift+7 / 8 / 9 | Task / bullet / ordered list |
+| Mod+Shift+B | Blockquote |
+| Mod+Z / Mod+Shift+Z / Mod+Y | Undo / redo |
 | Enter | Split block / new list item |
-| Tab / Shift+Tab | Move between table cells |
+| Shift+Enter | Insert a hard break (line break within the block) |
+| Tab / Shift+Tab | Move between table cells, else indent / outdent a list item |
 | Backspace / Delete | Delete backward / forward |
 
-Undo/redo is a single, exact history: each undo reverses one logical edit (typing
-is merged into a group), because every edit is an invertible step.
+(Copy/cut/paste — Mod+C/X/V, and Mod+Shift+V for paste-as-plain — are handled by the
+platform clipboard, not the keymap.) Undo/redo is a single, exact history: each undo
+reverses one logical edit (typing is merged into a group), because every edit is an
+invertible step.
+
+## Markdown shortcuts
+
+As you type, the editor rewrites markdown shortcuts in place (the default
+`MarkdownInputRulesPlugin`, on by default). Block shortcuts fire on a space at the
+start of a line; inline mark shortcuts fire when you type the closing delimiter:
+
+| Type | Becomes |
+|------|---------|
+| `# ` … `###### ` | Heading 1–6 |
+| `` ``` `` | Code block |
+| `> ` | Blockquote |
+| `- ` / `* ` / `+ ` | Bullet list |
+| `1. ` | Ordered list |
+| `[ ] ` / `[x] ` | Task list (unchecked / checked) |
+| `**bold**` / `__bold__` | **bold** |
+| `*italic*` / `_italic_` | *italic* |
+| `~~strike~~` | ~~strike~~ |
+| `==highlight==` | highlighted |
+| `` `code` `` | inline `code` |
+
+Inside a task list, **Enter** adds a new (unchecked) item, and **Enter** on an empty
+item exits the list — just like bullet/ordered lists. **Click a task's checkbox** to
+toggle it done (works on desktop and web). To add your own shortcut, append
+a `mark_input_rule` / `wrapping_input_rule` / `textblock_type_input_rule` to
+`markdown_input_rules()` (or contribute an `input_rules()` set from your own plugin).
 
 ## A complete toolbar
 
