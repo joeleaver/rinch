@@ -97,6 +97,47 @@ registrar.notify_frame_ready();
 
 `GpuTextureRegistrar` is also `Send + Sync + Clone`. The texture must be created on the same `wgpu::Device` (available via `gpu_handle()`).
 
+> **Use `rinch::wgpu`.** rinch pins a patched `wgpu` fork. Construct every `wgpu` type you hand back to rinch (`TextureView`, config features/limits, …) from `rinch::wgpu::…`, not a separately-pinned `wgpu` dependency, or the types won't match.
+
+### Sharing a High-Capability GPU Device
+
+Zero-copy compositing requires your texture to live on **the same device rinch composites with**. By default rinch requests that device with `Features::default()` / `Limits::default()`. If your renderer needs more (extra features, larger storage buffers, more bind groups, …), raise the device's requirements at startup so the shared device — the one published via `gpu_handle()` — can host your pipelines too.
+
+**Let rinch own the device (recommended).** rinch still creates the instance, picks a *surface-compatible* adapter, and creates the device, so presentation is always correct — you only add the capabilities you need:
+
+```rust
+use rinch::prelude::*;
+use rinch::wgpu;
+
+let gpu = RinchGpuConfig {
+    required_features: wgpu::Features::FLOAT32_FILTERABLE,
+    required_limits: wgpu::Limits {
+        max_storage_buffers_per_shader_stage: 32, // wgpu default is 8
+        ..Default::default()
+    },
+};
+run_with_gpu_config(app, WindowProps::default(), None, gpu);
+```
+
+After startup, `gpu_handle()` returns the shared `device`, `queue`, **and `adapter`** (use `adapter.limits()` to clamp, e.g. `max_buffer_size = min(adapter, 2 GiB)`). The requested features/limits are passed through verbatim — if the adapter can't satisfy them, device creation fails loudly rather than silently dropping a capability.
+
+**Bring your own device.** If you must keep your renderer's exact `DeviceDescriptor`, build the whole GPU stack and hand it to rinch. rinch creates only the window surface (from your `instance`), validates that your adapter can present to it, and composites directly onto your device — no `request_device`, no CPU readback:
+
+```rust
+use std::sync::Arc;
+use rinch::prelude::*;
+
+let gpu = ExternalGpu {
+    instance,                    // rinch creates the window surface from this
+    adapter: Arc::new(adapter),  // must be able to present to the window
+    device: Arc::new(device),
+    queue: Arc::new(queue),
+};
+run_with_external_device(app, WindowProps::default(), None, gpu);
+```
+
+The provided device is published through `gpu_handle()`. On a single-GPU machine a headless adapter (`compatible_surface: None`) usually presents fine; on multi-GPU systems create the adapter from a surface-compatible one, or prefer `run_with_gpu_config` (which guarantees compatibility). See the `gpu-device-config` example for both modes.
+
 ### Layout Size
 
 Query the surface's current layout dimensions (set by CSS/Taffy) to match your render resolution:

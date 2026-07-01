@@ -1286,8 +1286,19 @@ registrar.notify_frame_ready();
 rsx! { RenderSurface { surface: Some(surface), style: "flex: 1;" } }
 ```
 
+**Sharing a high-capability GPU device (issue #57):** zero-copy compositing needs your texture on the *same* device rinch composites with (`gpu_handle()` → `device`/`queue`/**`adapter`**). By default that device is created with `Features::default()` / `Limits::default()`. To raise it:
+
+| Entry point | Ownership | Use when |
+|---|---|---|
+| `run_with_gpu_config(component, props, theme, RinchGpuConfig { required_features, required_limits })` | rinch creates the device (surface-compatible adapter) with your extra features/limits | You just need more capability — **recommended**, always presents correctly |
+| `run_with_external_device(component, props, theme, ExternalGpu { instance, adapter, device, queue })` | You create the whole stack; rinch makes only the surface, validates present-support, composites onto your device | You must keep your exact `DeviceDescriptor` |
+
+Construct `wgpu` types from **`rinch::wgpu`** (rinch pins a patched fork — a separate `wgpu` dep won't type-match). Both are `#[cfg(feature = "gpu")]`, re-exported in the prelude. Example: `examples/gpu-device-config` (`RINCH_GPU_MODE=external` toggles the two modes).
+
 **Source files:**
 - `crates/rinch/src/render_surface.rs` — All RenderSurface types and registry
+- `crates/rinch/src/shell/desktop.rs` — `GpuHandle`, `RinchGpuConfig`, `ExternalGpu`, `WgpuRenderer::new` device injection
+- `crates/rinch/src/shell/mod.rs` — `run_with_gpu_config` / `run_with_external_device`
 
 ### Embed API
 

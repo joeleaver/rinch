@@ -181,9 +181,11 @@ pub mod prelude {
     #[cfg(feature = "gpu")]
     pub use crate::render_surface::{GpuTextureRegistrar, TextureSource};
 
-    // Shared GPU handle for zero-copy compositing
+    // Shared GPU handle + device-sharing entry points for zero-copy compositing
     #[cfg(feature = "gpu")]
-    pub use crate::shell::desktop::{GpuHandle, gpu_handle};
+    pub use crate::shell::desktop::{ExternalGpu, GpuHandle, RinchGpuConfig, gpu_handle};
+    #[cfg(feature = "gpu")]
+    pub use crate::shell::{run_with_external_device, run_with_gpu_config};
 
     // Re-export theme types when the theme feature is enabled
     #[cfg(feature = "theme")]
@@ -214,6 +216,18 @@ pub use shell::{
     inject_platform_event, run, run_on_main_thread, run_rinch, run_rinch_with_window_props,
     run_with_menu, run_with_theme, run_with_window_props, run_with_window_props_and_menu,
 };
+#[cfg(feature = "gpu")]
+pub use shell::{run_with_external_device, run_with_gpu_config};
+
+/// Re-export of the exact `wgpu` rinch links against.
+///
+/// Embedders that share a GPU device with rinch (see [`run_with_gpu_config`],
+/// [`run_with_external_device`], [`gpu_handle`], and
+/// [`render_surface::GpuTextureRegistrar`]) must construct `wgpu` types from
+/// **this** `wgpu` so the types match rinch's (rinch pins a patched fork). Use
+/// `rinch::wgpu::…` rather than a separate `wgpu` dependency.
+#[cfg(feature = "gpu")]
+pub use wgpu;
 
 pub use rinch_core as core;
 /// Reactive primitives (Signal, Effect, Memo, Scope).

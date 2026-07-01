@@ -321,3 +321,76 @@ pub fn run_with_window_props_and_menu<F>(
         rinch_runtime::run_rinch_with_window_props_and_menu(component, props, native_menu);
     }
 }
+
+/// Run a rinch application, raising the compositor GPU device's features/limits.
+///
+/// By default rinch requests its wgpu device with `Features::default()` /
+/// `Limits::default()`. When an embedding application's own renderer needs a
+/// higher-capability device — so it can create its pipelines and textures on
+/// **rinch's** device and hand back a `TextureView` for zero-copy present (see
+/// [`create_render_surface`](crate::render_surface::create_render_surface) and
+/// [`GpuTextureRegistrar`](crate::render_surface::GpuTextureRegistrar)) — pass a
+/// [`RinchGpuConfig`](crate::shell::desktop::RinchGpuConfig) here.
+///
+/// rinch still owns the instance, picks a surface-compatible adapter, and
+/// creates the device, so window presentation is always correct. After startup,
+/// obtain the shared device via [`gpu_handle`](crate::gpu_handle).
+///
+/// # Example
+///
+/// ```ignore
+/// use rinch::prelude::*;
+/// use rinch::shell::desktop::RinchGpuConfig;
+///
+/// let mut limits = wgpu::Limits::default();
+/// limits.max_storage_buffers_per_shader_stage = 32;
+/// let gpu = RinchGpuConfig {
+///     required_features: wgpu::Features::FLOAT32_FILTERABLE,
+///     required_limits: limits,
+/// };
+/// run_with_gpu_config(app, WindowProps::default(), None, gpu);
+/// ```
+#[cfg(feature = "gpu")]
+pub fn run_with_gpu_config<F>(
+    component: F,
+    props: WindowProps,
+    theme: Option<ThemeProviderProps>,
+    gpu: crate::shell::desktop::RinchGpuConfig,
+) where
+    F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
+{
+    crate::shell::desktop::set_gpu_init(crate::shell::desktop::GpuInit::Config(gpu));
+    run_with_window_props(component, props, theme);
+}
+
+/// Run a rinch application on an embedder-provided GPU device.
+///
+/// The embedder creates the whole GPU stack with its own `DeviceDescriptor` and
+/// hands it to rinch via [`ExternalGpu`](crate::shell::desktop::ExternalGpu).
+/// rinch creates only the window surface (from the provided `instance`),
+/// validates that the adapter can present to it, and composites directly onto
+/// the provided device — no `request_device`, no CPU readback. The provided
+/// device is published through [`gpu_handle`](crate::gpu_handle).
+///
+/// Prefer this when the embedder must keep its exact device descriptor; prefer
+/// [`run_with_gpu_config`] when it only needs to raise features/limits and would
+/// rather let rinch own device creation (which guarantees surface
+/// compatibility).
+///
+/// # Panics
+///
+/// Panics if the supplied adapter cannot present to rinch's window surface. The
+/// adapter/device must be created from an adapter that supports the target
+/// window (on multi-GPU systems, create the adapter with a compatible surface).
+#[cfg(feature = "gpu")]
+pub fn run_with_external_device<F>(
+    component: F,
+    props: WindowProps,
+    theme: Option<ThemeProviderProps>,
+    gpu: crate::shell::desktop::ExternalGpu,
+) where
+    F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
+{
+    crate::shell::desktop::set_gpu_init(crate::shell::desktop::GpuInit::External(gpu));
+    run_with_window_props(component, props, theme);
+}
