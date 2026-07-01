@@ -86,6 +86,27 @@ fn hit_test_node(
     } else {
         offset_y + node.layout.y
     };
+
+    // Inline-block boxes positioned by an IFC (Parley) store their layout.x/y
+    // relative to the IFC root's *content box*, but `offset_x/offset_y` here is
+    // the root's *border-box* origin. Add the root's left/top padding+border so
+    // the hit rect lines up with where the box is painted (otherwise a button in
+    // a text flow only registers clicks in the sub-rect overlapping the un-padded
+    // box). Paint applies exactly this content-box offset in `paint_inline_layout`.
+    let (nx, ny) = if !is_fixed
+        && node.display_mode == rinch_dom::DisplayMode::InlineBlock
+        && let Some(root_id) = node.ifc_root
+        && let Some(root) = tree.get(root_id)
+    {
+        let cs = &root.computed_style;
+        (
+            nx + cs.padding_left.to_px() + cs.border_left_width.to_px(),
+            ny + cs.padding_top.to_px() + cs.border_top_width.to_px(),
+        )
+    } else {
+        (nx, ny)
+    };
+
     let nw = node.layout.width;
     let nh = node.layout.height;
 
@@ -183,6 +204,15 @@ fn hit_test_node(
                 if child.creates_stacking_context() {
                     continue;
                 }
+                // An IFC text node's layout is stretched to the whole container
+                // (write_inline_positions, for scroll-height) — those artificial
+                // bounds would shadow inline-block siblings laid out in the same
+                // text flow, swallowing clicks meant for e.g. a button. Skip it:
+                // the IFC root itself is returned for plain-text hits and text
+                // selection resolves by walking up to it.
+                if child.is_text() && child.ifc_root.is_some() {
+                    continue;
+                }
                 if let Some(hit) = hit_test_node(tree, child_id, nx - sx, ny - sy, x, y, false) {
                     return Some(hit);
                 }
@@ -218,6 +248,15 @@ fn hit_test_node(
                     continue;
                 };
                 if child.creates_stacking_context() {
+                    continue;
+                }
+                // An IFC text node's layout is stretched to the whole container
+                // (write_inline_positions, for scroll-height) — those artificial
+                // bounds would shadow inline-block siblings laid out in the same
+                // text flow, swallowing clicks meant for e.g. a button. Skip it:
+                // the IFC root itself is returned for plain-text hits and text
+                // selection resolves by walking up to it.
+                if child.is_text() && child.ifc_root.is_some() {
                     continue;
                 }
                 if let Some(hit) = hit_test_node(tree, child_id, nx - sx, ny - sy, x, y, false) {
@@ -673,4 +712,103 @@ pub(crate) fn compute_absolute_y(tree: &rinch_dom::NodeTree, node_id: usize) -> 
         }
     }
     y
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hit_test;
+    use rinch_core::dom::DomDocument;
+    use rinch_dom::RinchDocument;
+
+    /// Absolute (border-box) origin of a node, accumulated the same way
+    /// `hit_test` does — from `body` down (body is the hit-test root).
+    fn abs_origin(doc: &RinchDocument, node_id: usize) -> (f32, f32) {
+        let (mut x, mut y) = (0.0f32, 0.0f32);
+        let body = doc.body().0;
+        let mut cur = Some(node_id);
+        while let Some(id) = cur {
+            let n = doc.tree.get(id).unwrap();
+            x += n.layout.x;
+            y += n.layout.y;
+            if id == body {
+                break;
+            }
+            cur = n.parent;
+        }
+        (x, y)
+    }
+
+    /// Regression (found while fixing #61): an inline-block button laid out in a
+    /// text flow (an IFC) inside a padded block container must be hit-testable
+    /// across its whole *painted* box. Two pre-existing bugs conspired to swallow
+    /// its clicks: (A) the surrounding IFC text nodes have their layout stretched
+    /// to the entire container and shadowed the button, and (B) hit-testing used
+    /// the container's border-box origin while the button is painted at the
+    /// content-box origin, so the hit rect was offset up-left by the padding.
+    #[test]
+    fn inline_block_in_ifc_is_hittable_over_its_painted_box() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        // Padding is the crux of bug (B).
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 400px; padding: 20px; font-size: 16px",
+        );
+        doc.append_child(body, container);
+
+        // "Click the " <button>OK</button> " now" — text on BOTH sides so a
+        // full-container text node exists after the button in DOM order (bug A).
+        let before = doc.create_text("Click the ");
+        doc.append_child(container, before);
+        let button = doc.create_element("button"); // inline-block by default
+        doc.set_attribute(button, "style", "width: 60px; height: 24px");
+        doc.append_child(container, button);
+        let label = doc.create_text("OK");
+        doc.append_child(button, label);
+        let after = doc.create_text(" now");
+        doc.append_child(container, after);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        // The container establishes the IFC; the button is detached from Taffy
+        // and positioned by Parley relative to the *content* box.
+        assert!(
+            doc.tree.get(container.0).unwrap().text_layout.is_some(),
+            "container should be the IFC root"
+        );
+        let bl = doc.tree.get(button.0).unwrap().layout;
+        let (abs_x, abs_y) = abs_origin(&doc, button.0);
+        // Painted box origin = border-box origin + container content-box offset.
+        let paint_x = abs_x + 20.0;
+        let paint_y = abs_y + 20.0;
+
+        // Center of the painted button hits the button (not a text sibling).
+        assert_eq!(
+            hit_test(
+                &doc.tree,
+                paint_x + bl.width / 2.0,
+                paint_y + bl.height / 2.0
+            ),
+            Some(button.0),
+            "painted center of the inline-block button must hit the button"
+        );
+        // The bottom edge — the part bug (B) shifted out of the hit rect — hits too.
+        assert_eq!(
+            hit_test(
+                &doc.tree,
+                paint_x + bl.width / 2.0,
+                paint_y + bl.height - 1.0
+            ),
+            Some(button.0),
+            "bottom edge of the painted button must still hit the button"
+        );
+        // A point on the leading text well left of the button must NOT hit it.
+        assert_ne!(
+            hit_test(&doc.tree, paint_x - bl.width, paint_y + bl.height / 2.0),
+            Some(button.0),
+            "a point on the leading text must not resolve to the button"
+        );
+    }
 }
