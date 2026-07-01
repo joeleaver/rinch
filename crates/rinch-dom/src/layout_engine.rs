@@ -757,6 +757,30 @@ impl RinchDocument {
     pub(crate) fn read_layout_results(&mut self, node_id: usize) {
         let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
 
+        // A `display: contents` element generates no box. Force its layout to the
+        // origin so every parent-chain accumulation (paint tree-walk, hit-testing,
+        // compute_absolute_position) treats it as fully transparent — its
+        // children's positions are already relative to the nearest real ancestor.
+        // `sync_display_contents` detaches the wrapper's Taffy node and marks it
+        // display:none; that detached node can retain a stale non-zero `location`
+        // (or make `taffy.layout()` return `Err`, skipping the read below), either
+        // of which would otherwise be double-counted onto every descendant.
+        if self.tree.nodes[node_id].computed_style.display
+            == crate::computed_style::DisplayValue::Contents
+        {
+            let node = &mut self.tree.nodes[node_id];
+            let zero = LayoutResult::default();
+            if node.layout != zero {
+                node.prev_layout = node.layout;
+                node.layout = zero;
+                self.tree.paint_dirty_nodes.push(node_id);
+            }
+            for child_id in children {
+                self.read_layout_results(child_id);
+            }
+            return;
+        }
+
         if let Some(taffy_id) = self.tree.nodes[node_id].taffy_id
             && let Ok(taffy_layout) = self.tree.taffy.layout(taffy_id)
         {

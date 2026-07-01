@@ -682,3 +682,168 @@ fn test_display_contents_flex_gap_inline_children() {
         "c.x must account for b's width + gap (not overlap b)"
     );
 }
+
+/// Issue #61: a **block** container whose inline content lives inside a
+/// `display:contents` wrapper (as emitted by rsx `if`/`match`) must establish
+/// the inline formatting context itself and flow the wrapped text in document
+/// order. Before the fix the phantom contents wrapper was treated as the IFC
+/// root, so the surrounding text nodes were dropped entirely (only inline-block
+/// children with a real box survived).
+#[test]
+fn test_display_contents_block_parent_inline_text() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(container, "style", "width: 400px; font-size: 16px");
+    doc.append_child(body, container);
+
+    // display:contents wrapper (rsx `if`/`match` emits one of these).
+    let wrapper = doc.create_element("div");
+    doc.set_attribute(wrapper, "style", "display: contents");
+    doc.append_child(container, wrapper);
+
+    // "Hello " <span>bold</span> " world" — text before AND after the span.
+    let t1 = doc.create_text("Hello ");
+    let span = doc.create_element("span");
+    doc.set_attribute(span, "style", "font-weight: bold");
+    let t2 = doc.create_text("bold");
+    let t3 = doc.create_text(" world");
+    doc.append_child(wrapper, t1);
+    doc.append_child(wrapper, span);
+    doc.append_child(span, t2);
+    doc.append_child(wrapper, t3);
+
+    doc.resolve_layout(800.0, 600.0);
+
+    // The block CONTAINER establishes the IFC (not the phantom contents wrapper).
+    let container_node = doc.tree.get(container.0).unwrap();
+    assert!(
+        container_node.text_layout.is_some(),
+        "the block container must be the IFC root"
+    );
+    let text_content = container_node
+        .text_layout
+        .as_ref()
+        .unwrap()
+        .text_content
+        .clone();
+    assert!(
+        text_content.contains("Hello"),
+        "leading text before the span must not be dropped, got {text_content:?}"
+    );
+    assert!(
+        text_content.contains("bold"),
+        "span text must be present, got {text_content:?}"
+    );
+    assert!(
+        text_content.contains("world"),
+        "trailing text after the span must not be dropped, got {text_content:?}"
+    );
+
+    // The display:contents wrapper generates no box → never an IFC root.
+    let wrapper_node = doc.tree.get(wrapper.0).unwrap();
+    assert!(
+        wrapper_node.text_layout.is_none(),
+        "display:contents wrapper must not establish an IFC"
+    );
+}
+
+/// Issue #61: inline-block children inside a `display:contents` wrapper in a
+/// **block** parent must flow inline (adjacent, no overlap), just as they would
+/// without the wrapper.
+#[test]
+fn test_display_contents_block_parent_inline_block() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(container, "style", "width: 400px");
+    doc.append_child(body, container);
+
+    let wrapper = doc.create_element("div");
+    doc.set_attribute(wrapper, "style", "display: contents");
+    doc.append_child(container, wrapper);
+
+    let a = doc.create_element("span");
+    doc.set_attribute(
+        a,
+        "style",
+        "display: inline-block; width: 50px; height: 20px",
+    );
+    doc.append_child(wrapper, a);
+    let b = doc.create_element("span");
+    doc.set_attribute(
+        b,
+        "style",
+        "display: inline-block; width: 60px; height: 20px",
+    );
+    doc.append_child(wrapper, b);
+
+    doc.resolve_layout(800.0, 600.0);
+
+    let la = doc.tree.get(a.0).unwrap().layout;
+    let lb = doc.tree.get(b.0).unwrap().layout;
+    // Inline flow: a at x=0, b immediately after at x=50 (no gap in block flow),
+    // both on the same line — NOT overlapping.
+    assert_eq!(la.x, 0.0, "a.x");
+    assert_eq!(lb.x, 50.0, "b.x should follow a inline (not overlap)");
+    assert_eq!(la.y, lb.y, "both inline-blocks on the same line");
+    // The transparent contents wrapper must contribute ZERO offset — the
+    // grandchildren's positions are already relative to the real container, so
+    // parent-chain accumulation (paint/hit-test) must not double-count it.
+    let lw = doc.tree.get(wrapper.0).unwrap().layout;
+    assert_eq!(lw.x, 0.0, "contents wrapper must not add an x offset");
+    assert_eq!(lw.y, 0.0, "contents wrapper must not add a y offset");
+    assert!(
+        doc.tree.get(container.0).unwrap().text_layout.is_some(),
+        "the block container must be the IFC root"
+    );
+    assert!(
+        doc.tree.get(wrapper.0).unwrap().text_layout.is_none(),
+        "display:contents wrapper must not establish an IFC"
+    );
+}
+
+/// Issue #61: nested `display:contents` wrappers (as emitted by rsx `else if`
+/// chains) in a block parent must still flow their inline content through the
+/// block container's IFC.
+#[test]
+fn test_display_contents_block_parent_nested_inline() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(container, "style", "width: 400px; font-size: 16px");
+    doc.append_child(body, container);
+
+    let outer = doc.create_element("div");
+    doc.set_attribute(outer, "style", "display: contents");
+    doc.append_child(container, outer);
+    let inner = doc.create_element("div");
+    doc.set_attribute(inner, "style", "display: contents");
+    doc.append_child(outer, inner);
+
+    let t1 = doc.create_text("Nested ");
+    let t2 = doc.create_text("text");
+    doc.append_child(inner, t1);
+    doc.append_child(inner, t2);
+
+    doc.resolve_layout(800.0, 600.0);
+
+    let container_node = doc.tree.get(container.0).unwrap();
+    assert!(
+        container_node.text_layout.is_some(),
+        "the block container must be the IFC root for nested contents"
+    );
+    let text_content = &container_node.text_layout.as_ref().unwrap().text_content;
+    assert!(
+        text_content.contains("Nested") && text_content.contains("text"),
+        "nested contents text must flow through the container IFC, got {text_content:?}"
+    );
+    assert!(
+        doc.tree.get(outer.0).unwrap().text_layout.is_none(),
+        "outer contents wrapper must not establish an IFC"
+    );
+    assert!(
+        doc.tree.get(inner.0).unwrap().text_layout.is_none(),
+        "inner contents wrapper must not establish an IFC"
+    );
+}

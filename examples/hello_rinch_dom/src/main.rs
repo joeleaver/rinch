@@ -63,6 +63,32 @@ fn app() -> NodeHandle {
                 " button to proceed."
             }
 
+            // Issue #61: inline content behind an `if` (emits a display:contents
+            // wrapper) inside a BLOCK parent. The surrounding text must not be
+            // dropped, and inline-block buttons must flow inline (not overlap).
+            div { style: "background-color: #ede7f6; padding: 12px; font-size: 16px; width: 500px",
+                if count.get() >= 0 {
+                    "Behind an if: Hello "
+                    span { style: "color: #6a1b9a; font-weight: bold", "bold" }
+                    " world, then a "
+                    button { style: "width: 60px; height: 24px; background-color: #6a1b9a; color: white", "BTN" }
+                    " and "
+                    button { style: "width: 70px; height: 24px; background-color: #8e24aa; color: white", "BTN2" }
+                    " inline."
+                }
+            }
+
+            // Control: the same content placed directly (no display:contents).
+            div { style: "background-color: #f3e5f5; padding: 12px; font-size: 16px; width: 500px",
+                "Directly placed: Hello "
+                span { style: "color: #6a1b9a; font-weight: bold", "bold" }
+                " world, then a "
+                button { style: "width: 60px; height: 24px; background-color: #6a1b9a; color: white", "BTN" }
+                " and "
+                button { style: "width: 70px; height: 24px; background-color: #8e24aa; color: white", "BTN2" }
+                " inline."
+            }
+
             div { style: "display: flex; flex-direction: row; gap: 8px; align-items: center",
                 button {
                     style: "background-color: #4CAF50; padding: 8px; color: white",
