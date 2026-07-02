@@ -1187,10 +1187,12 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         if events::dispatch_keyboard_event(&key_data) {
             event.prevent_default();
             event.stop_propagation();
-        } else if event.key() == "Enter" && !event.shift_key() {
+        } else if event.key() == "Enter" && !event.shift_key() && !event.is_composing() {
             // Enter (without Shift) fires the nearest ancestor's data-onsubmit,
             // matching a native form submit. Shift+Enter is left alone so
-            // multiline inputs (a textarea) can insert a newline.
+            // multiline inputs (a textarea) can insert a newline. During an IME
+            // composition the Enter that commits the candidate is skipped
+            // (isComposing) so it confirms the text instead of submitting.
             if let Some(target) = event.target()
                 && let Ok(el) = target.dyn_into::<web_sys::Element>()
             {
