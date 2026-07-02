@@ -10,3 +10,4 @@ log = "0.4"
 jni = { version = "0.21", default-features = false }
 ndk-context = "0.1"
 android-activity = { version = "0.6", features = ["native-activity"] }
+base64 = "0.22"

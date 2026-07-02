@@ -99,6 +99,52 @@ pub fn init(android_app: &AndroidApp) {
         .expect("failed to register RinchInputConnection native methods");
 
         log::info!("RinchInputConnection native methods registered");
+
+        // Register native methods for RinchActivity (callback routing).
+        let activity_class_name = env.new_string("com.rinch.RinchActivity").unwrap();
+        let act_class = env
+            .call_method(
+                &class_loader,
+                "loadClass",
+                "(Ljava/lang/String;)Ljava/lang/Class;",
+                &[jni::objects::JValue::Object(&activity_class_name)],
+            )
+            .and_then(|v| v.l())
+            .expect("failed to load RinchActivity class");
+
+        let act_jclass = jni::objects::JClass::from(act_class);
+        env.register_native_methods(
+            act_jclass,
+            &[
+                jni::NativeMethod {
+                    name: "nativeOnActivityResult".into(),
+                    sig: "(IILjava/lang/String;)V".into(),
+                    fn_ptr: crate::callback::Java_com_rinch_RinchActivity_nativeOnActivityResult
+                        as *mut std::ffi::c_void,
+                },
+                jni::NativeMethod {
+                    name: "nativeOnPermissionsResult".into(),
+                    sig: "(IZ)V".into(),
+                    fn_ptr: crate::callback::Java_com_rinch_RinchActivity_nativeOnPermissionsResult
+                        as *mut std::ffi::c_void,
+                },
+                jni::NativeMethod {
+                    name: "nativeOnSensorChanged".into(),
+                    sig: "(I[FJ)V".into(),
+                    fn_ptr: crate::sensors::Java_com_rinch_RinchActivity_nativeOnSensorChanged
+                        as *mut std::ffi::c_void,
+                },
+                jni::NativeMethod {
+                    name: "nativeOnLocationChanged".into(),
+                    sig: "(DDDFFFJLjava/lang/String;)V".into(),
+                    fn_ptr: crate::location::Java_com_rinch_RinchActivity_nativeOnLocationChanged
+                        as *mut std::ffi::c_void,
+                },
+            ],
+        )
+        .expect("failed to register RinchActivity native methods");
+
+        log::info!("RinchActivity native methods registered");
     });
 }
 

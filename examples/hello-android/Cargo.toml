@@ -9,3 +9,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rinch = { workspace = true, features = ["android", "components", "theme"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+rinch-android = { workspace = true }

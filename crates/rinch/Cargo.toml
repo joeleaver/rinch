@@ -135,6 +135,11 @@ gpu = [
     "dep:rinch-renderer", "dep:anyrender", "dep:anyrender_vello",
     "dep:tokio", "dep:pollster", "dep:futures-util",
 ]
+android-gpu = [
+    "android",
+    "dep:vello", "dep:wgpu",
+    "dep:pollster",
+]
 file-dialogs = ["rfd"]
 clipboard = ["dep:rinch-clipboard"]
 system-tray = ["tray-icon", "gtk", "ksni"]
