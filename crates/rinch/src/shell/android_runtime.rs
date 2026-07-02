@@ -188,6 +188,12 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         REDRAW_PENDING.store(true, Ordering::Release);
                     }
                 }
+                MainEvent::Resume { .. } => {
+                    rinch_android::lifecycle::notify_resumed();
+                }
+                MainEvent::Pause => {
+                    rinch_android::lifecycle::notify_paused();
+                }
                 MainEvent::Destroy => {
                     running = false;
                 }

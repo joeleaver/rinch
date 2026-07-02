@@ -1,7 +1,5 @@
 //! Display metrics via JNI (accurate hardware DPI, safe area insets).
 
-use jni::objects::JValue;
-
 use crate::bridge;
 
 /// Safe area insets in physical pixels (accounts for status bar, navigation bar, notch).

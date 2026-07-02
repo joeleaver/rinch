@@ -104,22 +104,10 @@ public class RinchActivity extends NativeActivity {
         return new int[] { top, bottom, left, right };
     }
 
-    // ── Lifecycle ────────────────────────────────────────────────────────
-
-    @Override
-    protected void onPause() {
-        super.onPause();
-        nativeOnPause();
-    }
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-        nativeOnResume();
-    }
-
-    private native void nativeOnPause();
-    private native void nativeOnResume();
+    // Activity lifecycle (pause/resume) is delivered to the native run loop via
+    // the android-activity glue's MainEvent::Pause/Resume, so no Java override —
+    // and no direct JNI call — is needed here. Calling a native method from an
+    // override would race the native thread that registers it (cold-start crash).
 
     // ── IME ─────────────────────────────────────────────────────────────
 
@@ -323,6 +311,10 @@ public class RinchActivity extends NativeActivity {
     public void startSensor(int sensorType, int delayUs) {
         Sensor sensor = sensorManager.getDefaultSensor(sensorType);
         if (sensor == null) return;
+        // Unregister any existing listener for this type first; otherwise it
+        // leaks (keeps firing) when startSensor is called twice for the same type.
+        SensorEventListener existing = activeSensors.remove(sensorType);
+        if (existing != null) sensorManager.unregisterListener(existing);
         SensorEventListener listener = new SensorEventListener() {
             @Override
             public void onSensorChanged(SensorEvent event) {

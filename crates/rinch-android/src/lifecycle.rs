@@ -69,18 +69,14 @@ pub fn drain_lifecycle() {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_com_rinch_RinchActivity_nativeOnPause(
-    _env: jni::JNIEnv,
-    _class: jni::objects::JClass,
-) {
+/// Record that the activity was paused. Called from the runtime's event loop
+/// when the `android-activity` glue delivers `MainEvent::Pause` (main thread).
+pub fn notify_paused() {
     PENDING_EVENT.store(EVENT_PAUSED, Ordering::Relaxed);
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_com_rinch_RinchActivity_nativeOnResume(
-    _env: jni::JNIEnv,
-    _class: jni::objects::JClass,
-) {
+/// Record that the activity was resumed. Called from the runtime's event loop
+/// when the `android-activity` glue delivers `MainEvent::Resume` (main thread).
+pub fn notify_resumed() {
     PENDING_EVENT.store(EVENT_RESUMED, Ordering::Relaxed);
 }
