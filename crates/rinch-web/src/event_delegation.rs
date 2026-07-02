@@ -1246,11 +1246,26 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     let browser_doc2 = browser_doc.clone();
     let input_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
         if let Some(target) = event.target() {
-            // Try HtmlInputElement first
+            // Extract the control's user-visible value. Every native form
+            // control fires `input` on user modification, so this one listener
+            // covers text inputs, textareas, <select>, and checkbox/radio —
+            // provided we read the right property off each.
             let value = if let Ok(input) = target.clone().dyn_into::<web_sys::HtmlInputElement>() {
-                Some(input.value())
+                // Checkbox/radio carry their state in `.checked`; their `.value`
+                // is the static attribute (e.g. "on"), which never changes. Emit
+                // the boolean as "true"/"false" so a Fn(String) handler can
+                // observe toggles (a text input keeps delivering its `.value`).
+                match input.type_().as_str() {
+                    "checkbox" | "radio" => Some(input.checked().to_string()),
+                    _ => Some(input.value()),
+                }
             } else if let Ok(textarea) = target.clone().dyn_into::<web_sys::HtmlTextAreaElement>() {
                 Some(textarea.value())
+            } else if let Ok(select) = target.clone().dyn_into::<web_sys::HtmlSelectElement>() {
+                // A native <select> fires `input` on selection change; deliver
+                // the selected option's value. Without this, `oninput`/`onchange`
+                // on a <select> were silently dropped (issue #95).
+                Some(select.value())
             } else {
                 None
             };
