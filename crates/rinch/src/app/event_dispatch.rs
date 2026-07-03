@@ -1668,7 +1668,7 @@ impl RinchApp {
 
         let anchor;
 
-        #[cfg(any(feature = "gpu", feature = "android-gpu"))]
+        #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
         let snapshot = {
             let mut painter = VelloPainter::new();
             let mut d = doc.borrow_mut();
@@ -1692,7 +1692,7 @@ impl RinchApp {
             painter
         };
 
-        #[cfg(not(any(feature = "gpu", feature = "android-gpu")))]
+        #[cfg(not(any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
         let (snapshot_pixels, snapshot_width, snapshot_height) = {
             let mut d = doc.borrow_mut();
             let d = &mut *d;
@@ -1730,13 +1730,13 @@ impl RinchApp {
 
         self.active_dnd = Some(ActiveDrag {
             node_id,
-            #[cfg(any(feature = "gpu", feature = "android-gpu"))]
+            #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
             snapshot,
-            #[cfg(not(any(feature = "gpu", feature = "android-gpu")))]
+            #[cfg(not(any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
             snapshot_pixels,
-            #[cfg(not(any(feature = "gpu", feature = "android-gpu")))]
+            #[cfg(not(any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
             snapshot_width,
-            #[cfg(not(any(feature = "gpu", feature = "android-gpu")))]
+            #[cfg(not(any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
             snapshot_height,
             anchor,
             cursor,

@@ -131,6 +131,16 @@ impl ImageLoader for FileImageLoader {
 ///
 /// When complete, the result is pushed to the global pending queue.
 /// Call [`ImageCache::drain_pending()`] from the main thread to collect results.
+///
+/// On `wasm32-unknown-unknown` there are no OS threads (`std::thread::spawn` would
+/// panic), so file/remote loads are a no-op there. Synchronous `data:` URIs never
+/// reach this path — they are decoded inline via [`decode_data_uri`] — so embedded
+/// (base64) images still render on the web. (issue #97)
+#[cfg(target_arch = "wasm32")]
+pub fn request_image_load(_src: String, _loader: Arc<dyn ImageLoader>) {}
+
+/// Spawn a background thread to load and decode an image (native).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn request_image_load(src: String, loader: Arc<dyn ImageLoader>) {
     std::thread::spawn(move || {
         let result = loader.load(&src);

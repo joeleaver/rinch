@@ -140,6 +140,19 @@ android-gpu = [
     "dep:vello", "dep:wgpu",
     "dep:pollster",
 ]
+# wasm-safe GPU embed (issue #97): the platform-agnostic Embed API — `RinchApp`
+# (layout + Vello scene) + `RinchContext`/`build_scene` + wgpu/vello — WITHOUT the
+# desktop windowing stack (no winit / softbuffer / muda / tokio). The consumer owns
+# the wgpu Device/Queue/Surface and composites the returned Vello scene over its own
+# WebGPU render. Mirrors how `android` builds `app` without winit, minus native deps.
+# rinch-dom comes in with default-features off (workspace root), so tiny-skia/swash
+# (`software-renderer`) stay out — the embed path is Vello-only.
+embed = [
+    "dep:rinch-dom", "dep:rinch-editable", "dep:parley",
+    "dep:peniko",
+    "rinch-platform/renderer",
+    "dep:vello", "dep:wgpu",
+]
 file-dialogs = ["rfd"]
 clipboard = ["dep:rinch-clipboard"]
 system-tray = ["tray-icon", "gtk", "ksni"]

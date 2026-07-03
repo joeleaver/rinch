@@ -30,7 +30,7 @@ rinch-renderer = { path = "crates/rinch-renderer" }
 rinch-theme = { path = "crates/rinch-theme" }
 rinch-components = { path = "crates/rinch-components" }
 rinch-tabler-icons = { path = "crates/rinch-tabler-icons" }
-rinch-dom = { path = "crates/rinch-dom" }
+rinch-dom = { path = "crates/rinch-dom", default-features = false }
 rinch-editor-core = { path = "crates/rinch-editor-core" }
 rinch-editor-collab = { path = "crates/rinch-editor-collab" }
 rinch-editor-view = { path = "crates/rinch-editor-view" }

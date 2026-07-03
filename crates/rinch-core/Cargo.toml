@@ -16,3 +16,6 @@ test-util = []
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
+# Wall/monotonic clock that works on wasm32-unknown-unknown (JS Date/performance.now).
+# On native it re-exports std::time verbatim, so this is zero-cost off the web.
+web-time = "1"
