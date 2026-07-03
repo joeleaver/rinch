@@ -42,13 +42,13 @@
 //! | [`create_context`] | Share state across components |
 //! | [`use_context`] | Access shared context values |
 
-#[cfg(any(feature = "desktop", feature = "android"))]
+#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
 pub mod app;
 /// The ProseMirror-style desktop rich-text editor view. Part of the `desktop`
 /// feature; implements `rinch_editor_core::EditorView` over rinch-dom primitives.
 #[cfg(feature = "desktop")]
 pub mod editor;
-#[cfg(feature = "gpu")]
+#[cfg(any(feature = "gpu", feature = "embed"))]
 pub mod embed;
 #[cfg(feature = "desktop")]
 pub mod menu;
@@ -157,7 +157,7 @@ pub mod prelude {
     pub use rinch_core::virtual_list;
 
     // Embed API for game engine integration
-    #[cfg(feature = "gpu")]
+    #[cfg(any(feature = "gpu", feature = "embed"))]
     pub use crate::embed::{
         GameViewport, LayoutRect, RinchContext, RinchContextConfig, RinchOverlayRenderer,
     };
@@ -226,7 +226,7 @@ pub use shell::{run_with_external_device, run_with_gpu_config};
 /// [`render_surface::GpuTextureRegistrar`]) must construct `wgpu` types from
 /// **this** `wgpu` so the types match rinch's (rinch pins a patched fork). Use
 /// `rinch::wgpu::…` rather than a separate `wgpu` dependency.
-#[cfg(feature = "gpu")]
+#[cfg(any(feature = "gpu", feature = "embed"))]
 pub use wgpu;
 
 pub use rinch_core as core;

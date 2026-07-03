@@ -309,7 +309,7 @@ impl RinchDocument {
     /// Advance all active CSS transitions by one frame.
     /// Returns true if any transitions are still active (caller should keep polling).
     pub fn tick_transitions(&mut self) -> bool {
-        use std::time::SystemTime;
+        use web_time::SystemTime;
         let current_time_ms = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
@@ -394,7 +394,7 @@ impl RinchDocument {
     /// Advance all active CSS animations by one frame.
     /// Returns true if any animations are still active (caller should keep polling).
     pub fn tick_animations(&mut self) -> bool {
-        use std::time::SystemTime;
+        use web_time::SystemTime;
         let current_time_ms = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()

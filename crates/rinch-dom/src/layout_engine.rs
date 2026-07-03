@@ -17,7 +17,7 @@ impl RinchDocument {
     /// Text nodes are measured using Parley for accurate text layout.
     pub fn resolve_layout(&mut self, width: f32, height: f32) {
         let perf = std::env::var("RINCH_PERF").is_ok();
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
 
         let old_viewport = self.tree.viewport;
         self.tree.viewport = crate::layout::Viewport { width, height };
@@ -40,7 +40,7 @@ impl RinchDocument {
 
         // Resolve Stylo styles and apply to Taffy nodes (only if dirty)
         if self.tree.styles_dirty {
-            let t = std::time::Instant::now();
+            let t = web_time::Instant::now();
             self.resolve_styles();
             if perf {
                 eprintln!(
@@ -48,7 +48,7 @@ impl RinchDocument {
                     t.elapsed().as_secs_f64() * 1000.0
                 );
             }
-            let t = std::time::Instant::now();
+            let t = web_time::Instant::now();
             self.apply_stylo_styles_to_taffy();
             if perf {
                 eprintln!(
@@ -72,7 +72,7 @@ impl RinchDocument {
         // For these, skip Taffy but still rebuild the affected IFC text layouts.
         if !self.tree.layout_dirty {
             if !self.tree.dirty_ifc_text_roots.is_empty() {
-                let t = std::time::Instant::now();
+                let t = web_time::Instant::now();
                 self.sync_dirty_text_contexts();
                 let mut temp_layout_cx = std::mem::take(&mut self.layout_cx);
                 self.build_ifc_layouts(&mut temp_layout_cx);
@@ -114,7 +114,7 @@ impl RinchDocument {
             self.tree.dirty_ifc_text_roots.clear();
 
             // Handle display:contents by rebuilding taffy children for affected nodes
-            let t = std::time::Instant::now();
+            let t = web_time::Instant::now();
             self.sync_display_contents();
             if perf {
                 eprintln!(
@@ -124,7 +124,7 @@ impl RinchDocument {
             }
 
             // Detect and set up inline formatting contexts
-            let t = std::time::Instant::now();
+            let t = web_time::Instant::now();
             self.setup_inline_formatting_contexts();
             if perf {
                 eprintln!(
@@ -135,7 +135,7 @@ impl RinchDocument {
 
             // Pre-compute layout for inline-block children that were detached from Taffy.
             // They need their own subtree measured so walk_inline_children can read dimensions.
-            let t = std::time::Instant::now();
+            let t = web_time::Instant::now();
             self.compute_inline_block_layouts();
             if perf {
                 eprintln!(
@@ -145,7 +145,7 @@ impl RinchDocument {
             }
 
             // Sync font-size from parent elements to text node contexts
-            let t = std::time::Instant::now();
+            let t = web_time::Instant::now();
             self.sync_text_contexts();
             if perf {
                 eprintln!(
@@ -157,7 +157,7 @@ impl RinchDocument {
             self.tree.ifc_dirty = false;
         } else {
             // IFC structure unchanged — only sync text contexts for dirty nodes
-            let t = std::time::Instant::now();
+            let t = web_time::Instant::now();
             self.sync_dirty_text_contexts();
             if perf {
                 eprintln!(
@@ -187,7 +187,7 @@ impl RinchDocument {
         // Only invalidated when an IFC root's text content changes.
         let ifc_measure_cache = RefCell::new(std::mem::take(&mut self.tree.ifc_measure_cache));
 
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         self.tree
             .taffy
             .compute_layout_with_measure(
@@ -371,7 +371,7 @@ impl RinchDocument {
         }
 
         // Read layout results back into nodes
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         self.read_layout_results(self.tree.root_id);
         if perf {
             eprintln!(
@@ -388,7 +388,7 @@ impl RinchDocument {
 
         // Build inline layouts for IFC roots (rebuild with final widths and store)
         // Temporarily take layout_cx out to avoid borrow conflict
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         let mut temp_layout_cx = std::mem::take(&mut self.layout_cx);
         self.build_ifc_layouts(&mut temp_layout_cx);
         self.layout_cx = temp_layout_cx;
@@ -401,7 +401,7 @@ impl RinchDocument {
         }
 
         // Copy cached text layouts to nodes (use the exact layouts from measurement)
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         self.copy_cached_text_layouts(text_layout_cache.into_inner());
         if perf {
             eprintln!(

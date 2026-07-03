@@ -6,7 +6,7 @@ license.workspace = true
 description = "MCP-based test harness for rinch applications (Playwright for rinch)"
 
 [dependencies]
-rinch-dom = { workspace = true }
+rinch-dom = { workspace = true, features = ["software-renderer"] }
 rmcp = { version = "0.13", features = ["server", "transport-io", "macros"] }
 tokio = { workspace = true }
 serde = { version = "1", features = ["derive"] }

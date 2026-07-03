@@ -789,6 +789,8 @@ impl App {
                     primary_color: Some("blue".into()),
                     ..Default::default()
                 }),
+                // Desktop has system fonts; no embedded font needed here.
+                fonts: Vec::new(),
             },
             game_ui,
         );

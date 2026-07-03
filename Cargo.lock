@@ -4764,6 +4764,7 @@ version = "0.1.0"
 dependencies = [
  "thiserror 1.0.69",
  "tracing",
+ "web-time",
 ]
 
 [[package]]
@@ -4808,6 +4809,7 @@ dependencies = [
  "tracing",
  "url",
  "vello",
+ "web-time",
  "web_atoms",
 ]
 

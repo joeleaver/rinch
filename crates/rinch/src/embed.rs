@@ -88,6 +88,15 @@ pub struct RinchContextConfig {
     /// Optional theme configuration. When `None`, the default theme is used
     /// (if the `theme` feature is enabled).
     pub theme: Option<ThemeProviderProps>,
+    /// Fonts (TTF/OTF bytes) to register **before** the component mounts, so the
+    /// very first layout/paint pass has glyphs.
+    ///
+    /// This is the correct hook for environments with no system fonts — most
+    /// importantly **wasm32/WebGPU**, where the platform provides no fallback
+    /// font and text would otherwise render as zero glyphs. (Registering a font
+    /// *after* [`RinchContext::new`] via [`register_font`](RinchContext::register_font)
+    /// is too late for the initial mount.)
+    pub fonts: Vec<&'static [u8]>,
 }
 
 // ── RinchContext ──────────────────────────────────────────────────────────────
@@ -128,6 +137,13 @@ impl RinchContext {
         let _ = &config.theme; // suppress unused warning when theme feature is off
 
         let mut app = RinchApp::new(component);
+
+        // Register any pre-mount fonts BEFORE mounting so the initial layout/paint
+        // pass has glyphs (essential on wasm, which has no system fonts). These are
+        // drained onto the document's render font context during mount_component.
+        for font in &config.fonts {
+            app.register_font_data(font);
+        }
 
         let width = config.width.max(1);
         let height = config.height.max(1);
@@ -270,14 +286,16 @@ impl RinchContext {
         self.app.has_focused_input() || self.app.has_focused_contenteditable()
     }
 
-    /// Register font data for text rendering.
+    /// Register font data for text rendering **after** the initial mount.
     ///
     /// Useful in environments without system fonts (e.g. WASM, embedded).
-    /// Must be called **before** [`new`](RinchContext::new) returns, so
-    /// use [`RinchContext::register_font_post_init`] if you need to add
-    /// fonts after creation, or pre-register on the app before mounting.
+    /// The font applies to subsequent layout/paint passes, not the mount that
+    /// already happened inside [`new`](RinchContext::new). To have glyphs on the
+    /// **first** frame — which is mandatory on wasm/WebGPU, where there is no
+    /// system fallback font — supply the font via
+    /// [`RinchContextConfig::fonts`] instead.
     ///
-    /// For pre-init font registration, create the `RinchApp` manually.
+    /// The data should be a TrueType (`.ttf`) or OpenType (`.otf`) font file.
     pub fn register_font(&mut self, data: &'static [u8]) {
         self.app.register_font_data(data);
     }

@@ -622,7 +622,7 @@ impl RinchDocument {
 
     /// Get a monotonic timestamp in milliseconds for transition timing.
     fn current_time_ms(&self) -> f64 {
-        use std::time::SystemTime;
+        use web_time::SystemTime;
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()

@@ -5,7 +5,7 @@
 //! once per frame via [`drain_polls`].
 
 use std::cell::RefCell;
-use std::time::Instant;
+use web_time::Instant;
 
 use super::Signal;
 use super::is_main_thread;

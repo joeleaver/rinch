@@ -11,7 +11,7 @@ path = "src/main.rs"
 [dependencies]
 rinch = { workspace = true, features = ["desktop", "components", "theme"] }
 rinch-core = { workspace = true }
-rinch-dom = { workspace = true }
+rinch-dom = { workspace = true, features = ["software-renderer"] }
 png = "0.17"
 wgpu = { workspace = true, optional = true }
 pollster = { version = "0.4", optional = true }
