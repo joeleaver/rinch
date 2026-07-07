@@ -104,6 +104,86 @@ fn is_svg_tag(tag: &str) -> bool {
     )
 }
 
+/// Mirror an attribute onto the live DOM *property* for the form-control
+/// attributes that browsers reflect asymmetrically (`value`, `checked`,
+/// `selected`, `indeterminate`).
+///
+/// For `<input>`/`<textarea>`/`<select>`/`<option>` the attribute only seeds the
+/// control's *default* value. Once the user edits the control it becomes "dirty"
+/// and the browser no longer mirrors the attribute into the property, so a
+/// reactive `value:`/`checked:` binding that writes the attribute would silently
+/// stop updating the displayed value. Writing the property keeps the control in
+/// sync with the signal even after it has been typed into / toggled (issue #100).
+///
+/// The property is only written when it actually differs from the requested
+/// value. For `value` that avoids resetting the caret to the end on the common
+/// echo path (user types → `oninput` → signal → effect re-writes the same
+/// string); for the boolean properties it just skips redundant DOM writes.
+fn sync_reflected_property(node: &web_sys::Node, name: &str, value: &str) {
+    match name {
+        "value" => {
+            // Each control type exposes value()/set_value(); write only when it
+            // differs (the `!= value` guard avoids a caret reset on the echo path).
+            if let Some(input) = node.dyn_ref::<web_sys::HtmlInputElement>() {
+                // A file input's value setter throws `InvalidStateError` for any
+                // non-empty string (the browser forbids setting a file path
+                // programmatically), and web-sys' `set_value` is not a `catch`
+                // binding — the exception would unwind uncaught across the wasm
+                // boundary. Only `""` is permitted (it clears the selection), so
+                // skip any other value on a file input.
+                let settable = input.type_() != "file" || value.is_empty();
+                if settable && input.value() != value {
+                    input.set_value(value);
+                }
+            } else if let Some(textarea) = node.dyn_ref::<web_sys::HtmlTextAreaElement>()
+                && textarea.value() != value
+            {
+                textarea.set_value(value);
+            } else if let Some(select) = node.dyn_ref::<web_sys::HtmlSelectElement>()
+                && select.value() != value
+            {
+                select.set_value(value);
+            }
+        }
+        "checked" => {
+            if let Some(input) = node.dyn_ref::<web_sys::HtmlInputElement>() {
+                let on = attr_is_truthy(value);
+                if input.checked() != on {
+                    input.set_checked(on);
+                }
+            }
+        }
+        "indeterminate" => {
+            if let Some(input) = node.dyn_ref::<web_sys::HtmlInputElement>() {
+                let on = attr_is_truthy(value);
+                if input.indeterminate() != on {
+                    input.set_indeterminate(on);
+                }
+            }
+        }
+        "selected" => {
+            if let Some(option) = node.dyn_ref::<web_sys::HtmlOptionElement>() {
+                let on = attr_is_truthy(value);
+                if option.selected() != on {
+                    option.set_selected(on);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Truthiness for HTML boolean-ish attributes as rinch emits them.
+///
+/// rinch writes these via two conventions: the `rsx!` macro stringifies a `bool`
+/// closure to `"true"`/`"false"`, while components set the bare presence form
+/// (`""`, matching HTML where a present boolean attribute is true regardless of
+/// value). Treat everything as "on" except the explicit falsey strings so both
+/// conventions round-trip — in particular an empty string means *present* (true).
+fn attr_is_truthy(value: &str) -> bool {
+    !matches!(value, "false" | "0")
+}
+
 /// Get the `__nid` JS property from a browser node.
 pub(crate) fn get_nid(node: &web_sys::Node) -> Option<NodeId> {
     js_sys::Reflect::get(node, &"__nid".into())
@@ -376,22 +456,83 @@ impl DomDocument for WebDocument {
     fn set_text_content(&mut self, node: NodeId, text: &str) {
         if let Some(n) = self.nodes.get(&node.0) {
             n.set_text_content(Some(text));
+            // A <textarea>'s child text is its *default value*, which the browser
+            // stops mirroring onto the live `value` property once the control is
+            // user-edited — the same dirty-flag asymmetry `set_attribute("value")`
+            // handles for other controls (issue #100). So when a textarea's text
+            // changes — set directly on it, or (the reactive `textarea { {|| … } }`
+            // case) on one of its child text nodes — re-sync its value property.
+            let textarea = if let Some(ta) = n.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+                Some(ta.clone())
+            } else if let Some(parent) = n.parent_node() {
+                parent.dyn_into::<web_sys::HtmlTextAreaElement>().ok()
+            } else {
+                None
+            };
+            if let Some(ta) = textarea {
+                let content = ta.text_content().unwrap_or_default();
+                if ta.value() != content {
+                    ta.set_value(&content);
+                }
+            }
         }
     }
 
     fn set_attribute(&mut self, node: NodeId, name: &str, value: &str) {
-        if let Some(n) = self.nodes.get(&node.0)
-            && let Ok(el) = n.clone().dyn_into::<web_sys::Element>()
-        {
-            el.set_attribute(name, value).ok();
+        if let Some(n) = self.nodes.get(&node.0) {
+            if let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
+                match name {
+                    // Boolean content attributes follow HTML *presence* semantics:
+                    // a present attribute is true regardless of its string value.
+                    // The rsx macro stringifies a `bool` closure to `"true"`/
+                    // `"false"`, so writing the literal string would leave
+                    // `checked="false"` *present* — meaning `defaultChecked` stays
+                    // true, `[checked]` selectors match, and `form.reset()` would
+                    // re-check it, all contradicting the property synced below.
+                    // Mirror truthiness onto presence instead.
+                    "checked" | "selected" => {
+                        if attr_is_truthy(value) {
+                            el.set_attribute(name, "").ok();
+                        } else {
+                            el.remove_attribute(name).ok();
+                        }
+                    }
+                    // `indeterminate` is a property-only flag with no HTML content
+                    // attribute; don't materialize a bogus one (the property is
+                    // synced below).
+                    "indeterminate" => {}
+                    _ => {
+                        el.set_attribute(name, value).ok();
+                    }
+                }
+            }
+            // A handful of attributes are reflected *asymmetrically* onto a live
+            // DOM property on form controls (`value`, `checked`, `selected`,
+            // `indeterminate`). Writing the attribute alone only sets the
+            // control's *default*: the moment the user edits the control it goes
+            // "dirty" and the browser stops mirroring the attribute into the
+            // property. A reactive `value:`/`checked:` binding would then silently
+            // stop updating what is displayed. Mirror the property too so
+            // signal-driven updates keep working after the control has been typed
+            // into / toggled (issue #100).
+            sync_reflected_property(n, name, value);
         }
     }
 
     fn remove_attribute(&mut self, node: NodeId, name: &str) {
-        if let Some(n) = self.nodes.get(&node.0)
-            && let Ok(el) = n.clone().dyn_into::<web_sys::Element>()
-        {
-            el.remove_attribute(name).ok();
+        if let Some(n) = self.nodes.get(&node.0) {
+            if let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
+                el.remove_attribute(name).ok();
+            }
+            // Keep the reflected property in sync when the attribute is removed,
+            // otherwise a dirtied control keeps showing the stale property (#100).
+            match name {
+                "value" => sync_reflected_property(n, "value", ""),
+                "checked" | "selected" | "indeterminate" => {
+                    sync_reflected_property(n, name, "false")
+                }
+                _ => {}
+            }
         }
     }
 
@@ -744,5 +885,26 @@ impl DomDocument for WebDocument {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attr_truthiness_covers_both_emit_conventions() {
+        // The rsx! macro stringifies bool closures.
+        assert!(attr_is_truthy("true"));
+        assert!(!attr_is_truthy("false"));
+        // Components use the HTML presence form: an empty string is *present*,
+        // hence true (e.g. `input.set_attribute("checked", "")`).
+        assert!(attr_is_truthy(""));
+        // Other falsey spellings.
+        assert!(!attr_is_truthy("0"));
+        // Anything else (a stray value on a boolean attribute) is still "on",
+        // matching HTML's "present attribute = true" rule.
+        assert!(attr_is_truthy("on"));
+        assert!(attr_is_truthy("checked"));
     }
 }

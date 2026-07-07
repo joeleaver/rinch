@@ -252,10 +252,18 @@ impl Component for Radio {
             label_node.append_child(&body);
         }
 
-        // If reactive checked_fn is provided, create an Effect to toggle checked class
+        // If reactive checked_fn is provided, create an Effect that toggles both
+        // the label's checked class AND the native <input>'s `checked` state. The
+        // input is toggled by *presence* (set "" / remove) so it stays correct on
+        // both backends: on web `set_attribute` mirrors it onto the live `.checked`
+        // property (issue #100) — without this, the accessible/native checked
+        // state goes stale on a programmatic update (and, for a radio group,
+        // unchecking must clear the property so native state stays exclusive); on
+        // desktop the attribute drives `:checked`.
         if let Some(ref checked_fn) = self.checked_fn {
             let checked_fn = checked_fn.clone();
             let label_clone = label_node.clone();
+            let input_clone = input.clone();
             let base_class = self.base_class_string();
 
             __scope.create_effect(move || {
@@ -263,8 +271,10 @@ impl Component for Radio {
                 if is_checked {
                     label_clone
                         .set_attribute("class", &format!("{} rinch-radio--checked", base_class));
+                    input_clone.set_attribute("checked", "");
                 } else {
                     label_clone.set_attribute("class", &base_class);
+                    input_clone.remove_attribute("checked");
                 }
             });
         }

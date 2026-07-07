@@ -196,14 +196,6 @@ impl PasswordInput {
     }
 }
 
-/// HTML-escape a string for safe use in attributes.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
 impl Component for PasswordInput {
     fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
         let container_class = self.class_string();
@@ -258,19 +250,24 @@ impl Component for PasswordInput {
         let input_type = if initial_visible { "text" } else { "password" };
         input.set_attribute("type", input_type);
 
-        // Reactive value binding (following TextInput pattern)
+        // Reactive value binding (matching the TextInput pattern). The value is
+        // written raw, never HTML-escaped: `set_attribute` goes through the DOM
+        // API (not HTML parsing), so escaping is both unnecessary and corrupting —
+        // and on web it is now mirrored onto the live `value` *property*, where an
+        // escaped string would display literal entities and double-escape on every
+        // keystroke (issue #100).
         if let Some(ref value_fn) = self.value_fn {
             let initial_value = value_fn();
-            input.set_attribute("value", &html_escape(&initial_value));
+            input.set_attribute("value", &initial_value);
 
             let value_fn = value_fn.clone();
             let input_clone = input.clone();
             __scope.create_effect(move || {
                 let current_value = value_fn();
-                input_clone.set_attribute("value", &html_escape(&current_value));
+                input_clone.set_attribute("value", &current_value);
             });
         } else if !initial_password.is_empty() {
-            input.set_attribute("value", &html_escape(&initial_password));
+            input.set_attribute("value", &initial_password);
         }
 
         // Reactive visibility binding — toggles type attribute
@@ -284,7 +281,7 @@ impl Component for PasswordInput {
         }
 
         if !self.placeholder.is_empty() {
-            input.set_attribute("placeholder", &html_escape(&self.placeholder));
+            input.set_attribute("placeholder", &self.placeholder);
         }
         if self.disabled {
             input.set_attribute("disabled", "");
