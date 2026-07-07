@@ -161,6 +161,21 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                 #elem_var
             }
         }
+    } else if tag == "select" {
+        // A `<select>`'s `value` is a live property that only takes effect once
+        // its `<option>` children exist, and the reactive `value:` effect runs at
+        // creation — so append the children BEFORE the attribute effects, else the
+        // initial selected value is dropped on the web backend (issue #100).
+        quote! {
+            {
+                let #elem_var = __scope.create_element(#tag);
+                #(#children_code)*
+                #(#attr_code)*
+                #(#event_code)*
+                #shorthand_code
+                #elem_var
+            }
+        }
     } else {
         quote! {
             {
