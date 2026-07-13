@@ -63,6 +63,20 @@ impl IntoNode for Vec<NodeHandle> {
     }
 }
 
+impl IntoNode for Option<NodeHandle> {
+    /// A present-or-absent child: `Some(node)` renders the node, `None` renders
+    /// nothing. Routed through the `Vec<NodeHandle>` impl (a 0-or-1 list) so a
+    /// `maybe.map(|t| rsx! { … })` embeds directly as `{maybe}` — no
+    /// `.into_iter().collect::<Vec<_>>()` dance. For a child that toggles
+    /// reactively, prefer an `if`/`if let` in rsx instead.
+    #[inline]
+    fn into_node(self, scope: &mut RenderScope) -> NodeHandle {
+        self.into_iter()
+            .collect::<Vec<NodeHandle>>()
+            .into_node(scope)
+    }
+}
+
 // Implement IntoNode for numeric types
 macro_rules! impl_into_node_for_display {
     ($($ty:ty),*) => {

@@ -164,15 +164,18 @@ pub fn node_to_dom(node: &RsxNode, ctx: &mut DomCodegenContext) -> TokenStream2 
                     __scope.create_text(#text)
                 }
             } else if let Some(closure) = get_closure_expr(expr) {
-                // Closure expression - create text node and effect that updates it directly
+                // Reactive closure: create an EMPTY text node and let an effect
+                // fill it. `create_effect` runs the effect immediately (Effect::new),
+                // so the initial value is set right away — the same single-emission
+                // pattern the attribute codegen uses. Emitting the user closure
+                // once (not once for the initial value and again in the effect)
+                // avoids running its body twice on mount (double-firing side
+                // effects) and keeps reactive text consistent with reactive
+                // attributes (issue #102).
                 let text_var = ctx.next_var("text");
                 quote! {
                     {
-                        // Create text node with initial value from closure
-                        let #text_var = __scope.create_text(
-                            &::std::string::ToString::to_string(&(#closure)())
-                        );
-                        // Effect updates text node directly via DOM API
+                        let #text_var = __scope.create_text("");
                         let __text_clone = #text_var.clone();
                         __scope.create_effect(move || {
                             __text_clone.set_text(

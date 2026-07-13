@@ -92,6 +92,11 @@ use node::RsxNode;
 /// ```
 #[proc_macro]
 pub fn rsx(input: TokenStream) -> TokenStream {
+    // An empty body renders nothing — an empty text node. Lets a `match`/`if`
+    // fallback arm be `rsx! {}` instead of `rsx! { "" }` (issue #102).
+    if input.is_empty() {
+        return quote::quote! { __scope.create_text("") }.into();
+    }
     let node = syn::parse_macro_input!(input as RsxNode);
     let mut ctx = dom_codegen::DomCodegenContext::new();
     dom_codegen::node_to_dom(&node, &mut ctx).into()
@@ -143,7 +148,8 @@ pub fn rsx(input: TokenStream) -> TokenStream {
 /// - `children: &[NodeHandle]` is special — wired to Component::render's children, not a field
 /// - A manual `Default` impl is generated with per-field defaults for known types
 ///   (String, bool, Option, Vec, numeric, Callback, InputCallback).
-///   Unknown types fall back to `Default::default()`.
+///   Other types must impl `Default` (defaulted through `rinch_core::DefaultProp`,
+///   which reports a clear, field-pointed error if `Default` is missing).
 /// - `Component`, `RenderScope`, and `NodeHandle` must be in scope (via `use rinch::prelude::*`)
 #[proc_macro_attribute]
 pub fn component(_attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -286,9 +292,12 @@ fn generate_component(func: syn::ItemFn) -> TokenStream {
 /// - `Signal<T>` → `Signal::new(T::default())` (requires `T: Default`)
 /// - `Memo<T>` → `Memo::new(|| T::default())` (requires `T: Default`)
 ///
-/// Unknown types fall back to `Default::default()`.
+/// Unrecognized types are defaulted through `rinch_core::DefaultProp` (a blanket
+/// impl over `T: Default`), spanned at the field so a missing `Default` reports a
+/// clear, field-pointed error instead of a bare `E0277` in generated code.
 fn type_default_expr(ty: &syn::Type) -> proc_macro2::TokenStream {
-    use quote::quote;
+    use quote::{quote, quote_spanned};
+    use syn::spanned::Spanned;
 
     if let syn::Type::Path(type_path) = ty
         && let Some(segment) = type_path.path.segments.last()
@@ -307,15 +316,17 @@ fn type_default_expr(ty: &syn::Type) -> proc_macro2::TokenStream {
             "InputCallback" => return quote! { InputCallback::new(|_: String| {}) },
             "Signal" => {
                 if let Some(inner) = generic_arg(&segment.arguments) {
-                    return quote! {
-                        Signal::new(<#inner as ::std::default::Default>::default())
+                    // The inner `T` must impl Default (route it through DefaultProp
+                    // so a missing `Default` on `T` gets the actionable message).
+                    return quote_spanned! { inner.span() =>
+                        Signal::new(<#inner as rinch::core::DefaultProp>::default_prop())
                     };
                 }
             }
             "Memo" => {
                 if let Some(inner) = generic_arg(&segment.arguments) {
-                    return quote! {
-                        Memo::new(|| <#inner as ::std::default::Default>::default())
+                    return quote_spanned! { inner.span() =>
+                        Memo::new(|| <#inner as rinch::core::DefaultProp>::default_prop())
                     };
                 }
             }
@@ -323,10 +334,13 @@ fn type_default_expr(ty: &syn::Type) -> proc_macro2::TokenStream {
         }
     }
 
-    // Unknown type: fall back to Default trait.
-    // If the type doesn't impl Default and the user doesn't provide this prop,
-    // they'll get a compile error pointing to this specific field.
-    quote! { ::std::default::Default::default() }
+    // Unrecognized type: default it through `DefaultProp` (a blanket impl over
+    // `T: Default`). Spanning the call at the field's type means a prop type that
+    // forgets `Default` fails with rinch's `#[diagnostic::on_unimplemented]`
+    // message pointed right at the offending field, not deep in generated code.
+    quote_spanned! { ty.span() =>
+        <#ty as rinch::core::DefaultProp>::default_prop()
+    }
 }
 
 /// Extract the first generic type argument from a path-segment's `<T, ...>`.
