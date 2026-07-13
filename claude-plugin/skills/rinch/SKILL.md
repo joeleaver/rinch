@@ -157,9 +157,14 @@ use rinch::prelude::*;  // Includes all components, theme, signals, etc.
 // use rinch_theme::*;
 ```
 
-## Rule 6b: `rsx!` works in ANY crate that depends on `rinch-core`
+## Rule 6b: `rsx!`/`#[component]` come from the facade or `rinch-macros` — `rinch-core` alone is macro-free
 
-The `rsx!` macro generates code using `rinch::core::` paths. In end-user crates, `rinch` is the facade crate. In internal crates, add a shim to `lib.rs`:
+`rsx!` and `#[component]` are **defined in `rinch-macros`** and re-exported by the `rinch` facade (prelude + crate root). **`rinch-core` does not provide them** — a crate that depends only on `rinch-core` gets `NodeHandle`/`Signal`/`RenderScope`/`Component`/`show_dom`, but NOT the macros.
+
+To use rsx in an **internal** crate (one that can't pull in the whole facade) you need **two** things:
+
+1. Depend on `rinch-macros` and bring the macros into scope: `use rinch_macros::{rsx, component};`
+2. Add a shim to `lib.rs` so the macro's generated `rinch::core::…` paths resolve:
 
 ```rust
 extern crate self as rinch;
@@ -169,7 +174,9 @@ pub mod core {
 }
 ```
 
-**Do NOT fall back to imperative code** because you think rsx won't work in a particular crate.
+The shim alone is **not** enough — it only supplies the paths the *generated code* references, not the macros themselves.
+
+**Do NOT fall back to imperative code** in an app crate because you think rsx won't work — the facade gives you `rsx!` directly. (Going macro-free *is* legitimate for internal crates that implement `Component` by hand against `rinch_core::{Component, dom::{NodeHandle, RenderScope}}` — e.g. `rinch-editor-view`'s `Editor` uses no macros and no shim.)
 
 ## Rule 7: State architecture
 
@@ -235,6 +242,29 @@ input { oninput: move |value: String| name.set(value) }
 
 `onclick` takes no arguments: `button { onclick: move || do_thing() }`
 
+### Raw form controls (`<input type=checkbox/radio>`, `<select>`)
+
+- **Keyword attributes need `r#`:** write `r#type: "email"` — the macro unraws it to the real `type` attribute (same for any Rust-keyword name, e.g. `r#for`).
+- **`checked` is reactive:** `checked: {|| flag.get()}` on a raw `<input>` tracks the signal. (Under the hood the macro writes the string `"true"`/`"false"`; the web backend maps that to the attribute's presence *and* mirrors the live `.checked` property, so it stays correct even after the user toggles the box.)
+- **`oninput` is always `Fn(String)`, but the string depends on the element:**
+
+  | Element | `oninput` (and `onchange`) receives |
+  |---|---|
+  | text `<input>` / `<textarea>` | its `.value` |
+  | `<input type=checkbox>` / `radio` | `"true"` / `"false"` — the `.checked` state, **not** the `value` attribute |
+  | `<select>` | the selected option's `value` |
+
+  A radio group is handled **per-radio**: only the radio that becomes checked fires `oninput` (with `"true"`).
+
+```rust
+let agree = Signal::new(false);
+input {
+    r#type: "checkbox",
+    checked: {|| agree.get()},
+    oninput: move |v: String| agree.set(v == "true"),
+}
+```
+
 ## Rule 11: Cross-thread signals use `send()`, not `set()`
 
 `set()` and `update()` panic off the main thread.
@@ -299,6 +329,89 @@ rsx! {
 ```
 
 No special syntax needed — conditions, iterators, and scrutinees are auto-wrapped in Effects.
+
+## Rule 15: Every PascalCase `#[component]` prop must have a working default
+
+A PascalCase `#[component]` generates a props struct with a `Default` impl, and the rsx call-site fills any prop you omit via `..Default::default()`. The default for each field is chosen by the field type's name:
+
+- **Known types default for free** — `String`→`""`, `bool`→`false`, `Option<_>`→`None`, `Vec<_>`→`[]`, integers/floats→`0`, `Callback`/`InputCallback`→no-op. So `Vec<T>`/`Option<T>` props do **not** require `T: Default`.
+- **`Signal<T>` / `Memo<T>`** default to `Signal::new(T::default())`, so the **inner `T`** must impl `Default`.
+- **Anything else** — a domain enum, a custom struct, a type alias, even a fully-qualified `std::vec::Vec<_>` — **must impl `Default`** (even if you always pass the prop). If it doesn't, the compile error points right at that field and says the prop type must implement `Default` — add `#[derive(Default)]` (with `#[default]` on one enum variant).
+
+```rust
+// A domain enum used as a prop must derive Default with a #[default] variant:
+#[derive(Clone, Default, PartialEq)]
+enum Variant { #[default] Filled, Light }
+
+#[component]
+fn Badge(variant: Variant, label: String) -> NodeHandle { /* … */ }
+```
+
+(Only **PascalCase** `#[component]` fns generate a props struct. A lowercase `#[component]` fn just injects `__scope` — no struct, no `Default` requirement.)
+
+## Rule 16: Reactive `{|| }` and event closures re-run — don't consume non-`Copy` captures, and clone one per closure
+
+Rule 4 (Signals are `Copy`, never clone them) only covers `Copy` values. For **non-`Copy`** captures (`String`, `Vec`, `EditorHandle`, a domain struct), two `move`-closure facts bite — because a reactive `{|| }` compiles to `create_effect(FnMut)` that **re-runs** on every dependency change, and event handlers are `Fn`:
+
+**(a) A single reactive/handler closure must not *consume* (move out) a captured non-`Copy` value** — the next run would have nothing left. `error[E0507]: cannot move out of X, a captured variable in an FnMut/Fn closure`. Fix: clone (or borrow) it **inside** the body, per run. (Write `{|| expr}` **without** your own `move`: the macro already wraps reactive closures in a `move` effect, and a second `move` you add makes an inner closure that moves a non-`Copy` capture out of the re-running effect. `Copy` captures like `Signal`s are unaffected — that's why `{move || format!("{}", count.get())}` is fine.)
+
+```rust
+let title = String::from("Report");           // not Copy
+// `decorate(s: String) -> String` takes its argument by value (consumes it)
+// ✗ E0507 — a reactive closure re-runs, but this moves `title` out on the first run
+span { {|| decorate(title)} }
+// ✓ hand it a fresh clone each run
+span { {|| decorate(title.clone())} }
+```
+
+**(b) A non-`Copy` binding moved into one closure can't be reused in another** in the same render. `error[E0382]: use of moved value`. Fix: one `.clone()` per capturing closure.
+
+```rust
+let ed_a = editor.clone();   // EditorHandle: not Copy
+let ed_b = editor.clone();
+button { onclick: move || ed_a.command("undo"), "Undo" }
+button { onclick: move || ed_b.command("redo"), "Redo" }
+```
+
+`Signal`/`Memo`/ints/bools are `Copy` — capture and reuse them in any number of closures with no `.clone()` (Rule 4).
+
+## Rule 17: Build complex, list, or optional children in plain Rust, then embed them
+
+`match`/`if`/`for` in rsx are reactive (Rule 14), but an arm *body* is a node **expression**, not a statement block. When an arm needs setup, do the work in plain Rust and embed the result via `{…}`.
+
+**`match` dispatch** — a `match` (like `if`/`for`) arm body can do per-branch setup with a `let` block, then yield an rsx node:
+
+```rust
+rsx! {
+    div {
+        match field.widget {
+            Widget::Text   => { let k = field.key.clone(); input { oninput: move |v: String| set(&k, v) } }
+            Widget::Toggle => input { r#type: "checkbox" },
+            _              => "",   // an empty arm renders nothing (empty text node)
+        }
+    }
+}
+```
+
+(Inside an rsx `match`/`if`/`for` body you write rsx nodes directly — `input { … }`, not `rsx! { input { … } }`. You *can* still lift a complex `match` out to a plain-Rust `let control = match … { … };` returning `rsx!{…}` per arm and embed `{control}` — both work.)
+
+**Lists** — `IntoNode` is implemented for `NodeHandle` **and `Vec<NodeHandle>`** (the vec is wrapped in a `display:contents` box), so build a dynamic child list in plain Rust and embed it:
+
+```rust
+let items: Vec<NodeHandle> = data.iter().map(|d| rsx! { li { {d.name.clone()} } }).collect();
+rsx! { ul { {items} } }
+```
+
+**Optional child** — `Option<NodeHandle>` is `IntoNode` too, so a present-or-absent child embeds directly (`Some` renders, `None` renders nothing):
+
+```rust
+let note: Option<NodeHandle> = hint.map(|t| rsx! { p { class: "hint", {t} } });
+rsx! { section { {note} } }
+```
+
+(For a child that *toggles reactively*, use `if`/`if let` in rsx instead — e.g. `if let Some(x) = signal.get() { … {x} … }`, which is fine because `Signal` is `Copy`.)
+
+**"Render nothing"** — `rsx! {}` (empty) produces an empty node, so it's a valid "nothing" branch (`_ => rsx! {}` when a `match` is lifted out; inside an rsx `match`/`if`, an empty arm is just `""`). rsx also takes a **single root node** — wrap siblings in one parent.
 
 ## Iterating & Debugging: rinch-debug + MCP server
 
@@ -385,3 +498,6 @@ Before finishing any rinch code:
 - [ ] Controlled inputs have both `value_fn` and `oninput`
 - [ ] For loops have `key:` on items
 - [ ] Cross-thread updates use `send()` / `update_send()`
+- [ ] Non-`Copy` captures (`String`, `EditorHandle`, …) are cloned once per closure and never *consumed* inside a reactive/handler closure (Rule 16)
+- [ ] Custom enum/struct props derive `Default` (Rule 15)
+- [ ] `Option<NodeHandle>`/`Vec<NodeHandle>` children are embedded directly as `{node}`; `match` arms use `let` blocks inline where needed (Rule 17)

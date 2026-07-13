@@ -118,12 +118,9 @@ fn gradient_to_paint(gradient: &Gradient) -> Option<Paint<'static>> {
         }
         GradientKind::Sweep(_) => {
             // Sweep gradients not supported by tiny-skia; fall back to first stop color
-            if let Some(first) = gradient.stops.first() {
-                let color = first.color.to_alpha_color::<Srgb>();
-                tiny_skia::Shader::SolidColor(to_skia_color(color))
-            } else {
-                return None;
-            }
+            let first = gradient.stops.first()?;
+            let color = first.color.to_alpha_color::<Srgb>();
+            tiny_skia::Shader::SolidColor(to_skia_color(color))
         }
     };
 

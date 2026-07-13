@@ -180,7 +180,8 @@ pub struct RsxMatchArm {
     pub pattern: Pat,
     /// Optional `if` guard expression.
     pub guard: Option<Expr>,
-    /// RSX children for this arm (always a single-element vec from parsing).
+    /// RSX children for this arm. Usually a single node; a braced `{ let …; node }`
+    /// body yields leading statement(s) + node(s), like an `if`/`for` body.
     pub children: Vec<RsxNode>,
 }
 
@@ -219,8 +220,26 @@ impl Parse for RsxMatchArm {
         // =>
         input.parse::<Token![=>]>()?;
 
-        // Parse arm body as a single RsxNode
-        let child: RsxNode = input.parse()?;
+        // Parse the arm body. Normally one node (`0 => div { … }`), but a braced
+        // block whose content starts with `let` is parsed as rsx children
+        // (leading statements + node) so an arm can do per-branch setup — the
+        // same shape `if`/`for` bodies already accept. `generate_children_body`
+        // collapses the statements + node(s) into one NodeHandle. A non-`let`
+        // brace (`{ expr }`, `{|| … }`) keeps the single-node behavior.
+        let children = if input.peek(token::Brace) {
+            let ahead = input.fork();
+            let inner;
+            syn::braced!(inner in ahead);
+            if inner.peek(Token![let]) {
+                let content;
+                syn::braced!(content in input);
+                parse_rsx_children(&content)?
+            } else {
+                vec![input.parse::<RsxNode>()?]
+            }
+        } else {
+            vec![input.parse::<RsxNode>()?]
+        };
 
         // Optional trailing comma
         if input.peek(Token![,]) {
@@ -230,7 +249,7 @@ impl Parse for RsxMatchArm {
         Ok(RsxMatchArm {
             pattern,
             guard,
-            children: vec![child],
+            children,
         })
     }
 }
@@ -590,6 +609,41 @@ mod tests {
             RsxNode::MatchBlock(match_block) => {
                 assert_eq!(match_block.arms.len(), 2);
                 assert!(matches!(&match_block.arms[0].children[0], RsxNode::Text(_)));
+            }
+            _ => panic!("Expected MatchBlock"),
+        }
+    }
+
+    #[test]
+    fn parse_match_arm_with_let_block() {
+        // A braced arm body starting with `let` parses as statements + node,
+        // like an if/for body (issue #102 Gap 2).
+        let input = r#"match x.get() { 0 => { let k = 1; div { "a" } }, _ => "b" }"#;
+        let node = parse_str::<RsxNode>(input).unwrap();
+        match node {
+            RsxNode::MatchBlock(mb) => {
+                assert_eq!(mb.arms.len(), 2);
+                assert_eq!(mb.arms[0].children.len(), 2);
+                assert!(matches!(&mb.arms[0].children[0], RsxNode::Statement(_)));
+                assert!(matches!(&mb.arms[0].children[1], RsxNode::Element(_)));
+                // The non-block arm is unchanged (single node).
+                assert_eq!(mb.arms[1].children.len(), 1);
+                assert!(matches!(&mb.arms[1].children[0], RsxNode::Text(_)));
+            }
+            _ => panic!("Expected MatchBlock"),
+        }
+    }
+
+    #[test]
+    fn parse_match_arm_braced_expr_stays_single_node() {
+        // A braced arm body that is NOT a `let` block keeps single-node behavior
+        // (reactive embed) — no regression from the Gap 2 change.
+        let input = r#"match x.get() { 0 => {|| count.get()}, _ => div {} }"#;
+        let node = parse_str::<RsxNode>(input).unwrap();
+        match node {
+            RsxNode::MatchBlock(mb) => {
+                assert_eq!(mb.arms[0].children.len(), 1);
+                assert!(matches!(&mb.arms[0].children[0], RsxNode::Expr(_)));
             }
             _ => panic!("Expected MatchBlock"),
         }

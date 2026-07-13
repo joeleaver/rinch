@@ -1,5 +1,6 @@
 //! Core types and traits for rinch.
 
+pub mod component_prop;
 pub mod context;
 pub mod dom;
 pub mod element;
@@ -14,6 +15,7 @@ pub mod show;
 pub mod virtual_list;
 
 // Re-export image loading types
+pub use component_prop::DefaultProp;
 pub use image::{ImageLoadResult, ImageLoader};
 
 // Re-export element types for convenience
