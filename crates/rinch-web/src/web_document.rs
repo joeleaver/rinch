@@ -384,6 +384,24 @@ impl DomDocument for WebDocument {
             && let Ok(el) = n.clone().dyn_into::<web_sys::Element>()
         {
             el.set_attribute(name, value).ok();
+
+            // For form controls the `value` *attribute* only sets the default
+            // value — once the field is dirty (the user has typed in it) the
+            // browser ignores it. Also drive the live value *property* so a
+            // reactive `value_fn` update actually shows (e.g. swapping the model
+            // bound to an already-edited input). Guarded on inequality so we
+            // never reset the caret while the user is mid-type.
+            if name == "value" {
+                if let Some(input) = el.dyn_ref::<web_sys::HtmlInputElement>() {
+                    if input.value() != value {
+                        input.set_value(value);
+                    }
+                } else if let Some(textarea) = el.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+                    if textarea.value() != value {
+                        textarea.set_value(value);
+                    }
+                }
+            }
         }
     }
 
