@@ -392,14 +392,14 @@ impl DomDocument for WebDocument {
             // bound to an already-edited input). Guarded on inequality so we
             // never reset the caret while the user is mid-type.
             if name == "value" {
-                if let Some(input) = el.dyn_ref::<web_sys::HtmlInputElement>() {
-                    if input.value() != value {
-                        input.set_value(value);
-                    }
-                } else if let Some(textarea) = el.dyn_ref::<web_sys::HtmlTextAreaElement>() {
-                    if textarea.value() != value {
-                        textarea.set_value(value);
-                    }
+                if let Some(input) = el.dyn_ref::<web_sys::HtmlInputElement>()
+                    && input.value() != value
+                {
+                    input.set_value(value);
+                } else if let Some(textarea) = el.dyn_ref::<web_sys::HtmlTextAreaElement>()
+                    && textarea.value() != value
+                {
+                    textarea.set_value(value);
                 }
             }
         }
