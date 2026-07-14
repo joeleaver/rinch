@@ -204,6 +204,14 @@ mod drag_machine {
         (buttons & 1) == 0
     }
 
+    /// True when a *deferred* (touch/pen) click candidate has travelled far enough
+    /// from its press point to be reclassified as a scroll — at which point the
+    /// click is abandoned so the browser pans the container. Uses the same slop as
+    /// a pending drag, so a tap and a scroll are split at the same threshold.
+    pub fn pending_click_is_scroll(dx: f32, dy: f32) -> bool {
+        dx * dx + dy * dy > TOUCH_MOVE_SLOP * TOUCH_MOVE_SLOP
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -293,6 +301,22 @@ mod drag_machine {
             assert!(primary_released(0b0000));
             assert!(primary_released(0b0010));
         }
+
+        #[test]
+        fn deferred_click_splits_tap_from_scroll_at_the_slop() {
+            // A stationary / sub-slop tap stays a click.
+            assert!(!pending_click_is_scroll(0.0, 0.0));
+            assert!(!pending_click_is_scroll(TOUCH_MOVE_SLOP - 1.0, 0.0));
+            // Travel past the slop (in either axis, any sign) is a scroll.
+            assert!(pending_click_is_scroll(TOUCH_MOVE_SLOP + 1.0, 0.0));
+            assert!(pending_click_is_scroll(0.0, -(TOUCH_MOVE_SLOP + 1.0)));
+            // Uses the same threshold as a pending drag's abort-to-scroll.
+            assert_eq!(
+                pending_click_is_scroll(TOUCH_MOVE_SLOP + 1.0, 0.0),
+                pending_move_decision(PointerKind::Touch, TOUCH_MOVE_SLOP + 1.0, 0.0)
+                    == PendingMove::AbortScroll
+            );
+        }
     }
 }
 
@@ -326,8 +350,32 @@ struct WebDragState {
     saved_touch_action: Option<String>,
 }
 
+/// A tap on a scrollable-contained, non-draggable element whose click we deferred
+/// from pointerdown to pointerup — so a scroll drag over it pans the container
+/// instead of firing the click on contact. rinch normally dispatches clicks on
+/// pointerdown (for immediate drag arming); that makes lists of clickable rows
+/// inside an `overflow: auto` container un-scrollable on touch, because the first
+/// contact selects a row before the pan is recognised. Deferring these clicks to
+/// pointerup (and abandoning on a scroll) matches the browser's own `click`
+/// timing. Fired by pointerup if the contact never crossed the scroll slop;
+/// abandoned by pointermove (past slop) or pointercancel (the browser took over).
+struct PendingClick {
+    /// The pointerdown target; the click re-resolves its nearest `[data-rid]`.
+    target: web_sys::Element,
+    /// The owning pointer id — secondary contacts don't drive or fire it.
+    pointer_id: i32,
+    /// Press point, for the scroll-slop test in pointermove.
+    start_x: f32,
+    start_y: f32,
+}
+
 thread_local! {
     static WEB_DRAG: std::cell::RefCell<Option<WebDragState>> =
+        const { std::cell::RefCell::new(None) };
+
+    /// A click deferred from pointerdown to pointerup for a touch/pen tap on a
+    /// scrollable-contained element, so a scroll doesn't fire it. See PendingClick.
+    static PENDING_CLICK: std::cell::RefCell<Option<PendingClick>> =
         const { std::cell::RefCell::new(None) };
 
     /// Pointer capture taken for an active pointer-capture `Drag` (slider, panel,
@@ -347,6 +395,41 @@ fn release_drag_pointer_capture() {
             let _ = el.release_pointer_capture(pointer_id);
         }
     });
+}
+
+/// Discard any deferred click candidate. Idempotent.
+fn clear_pending_click() {
+    PENDING_CLICK.with(|c| *c.borrow_mut() = None);
+}
+
+/// True if `el` or one of its ancestors (up to `<html>`) can actually scroll — a
+/// computed `overflow-x`/`overflow-y` of `auto`/`scroll` with content overflowing
+/// its box. Decides whether a touch/pen tap should be deferred to pointerup so a
+/// scroll drag over the element pans the container instead of firing its click.
+fn has_scrollable_ancestor(el: &web_sys::Element) -> bool {
+    let Some(win) = web_sys::window() else {
+        return false;
+    };
+    let mut node = Some(el.clone());
+    while let Some(cur) = node {
+        let is_root = cur.tag_name().eq_ignore_ascii_case("html");
+        if let Ok(Some(style)) = win.get_computed_style(&cur) {
+            let overflow_y = style.get_property_value("overflow-y").unwrap_or_default();
+            let overflow_x = style.get_property_value("overflow-x").unwrap_or_default();
+            let scrolls_y = matches!(overflow_y.as_str(), "auto" | "scroll")
+                && cur.scroll_height() > cur.client_height();
+            let scrolls_x = matches!(overflow_x.as_str(), "auto" | "scroll")
+                && cur.scroll_width() > cur.client_width();
+            if scrolls_y || scrolls_x {
+                return true;
+            }
+        }
+        if is_root {
+            break;
+        }
+        node = cur.parent_element();
+    }
+    false
 }
 
 /// Clear a pending long-press timer (if any) on the given state, dropping the
@@ -882,6 +965,12 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             }
         }
 
+        // A fresh primary pointerdown supersedes any deferred click whose pointerup
+        // was missed (e.g. a dropped release), so a stale tap can't fire later.
+        if event.is_primary() {
+            clear_pending_click();
+        }
+
         if let Some(target) = event.target()
             && let Ok(el) = target.dyn_into::<web_sys::Element>()
         {
@@ -958,18 +1047,41 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             // Dispatch the click for the nearest [data-rid] (draggables defer to
             // pointerup above).
             if click_allowed {
-                dispatch_click_at(&el, &browser_doc_for_click, &event);
+                // Touch/pen taps on a scrollable-contained element defer their
+                // click to pointerup, so a scroll drag over the element pans the
+                // container instead of selecting a row on contact (see
+                // PendingClick). A quick tap that never scrolls still fires, on
+                // release. Mouse pointers, and elements with no scrollable
+                // ancestor (buttons, sliders, standalone controls), keep the
+                // eager pointerdown click — preserving press-to-drag arming.
+                let kind = PointerKind::from_type(&event.pointer_type());
+                let defer_to_up = kind.uses_long_press()
+                    && el.closest("[data-rid]").ok().flatten().is_some()
+                    && has_scrollable_ancestor(&el);
 
-                // If that click armed a pointer-capture `Drag` (slider, panel,
-                // resize handle — started from the handler via `Drag::start()`),
-                // capture the pointer on the element so touch/pen moves keep
-                // tracking on it and the pointermove handler's `preventDefault`
-                // can stop the page from scrolling out from under the drag.
-                // Released on pointerup/pointercancel.
-                if rinch_core::Drag::is_active() {
-                    let _ = el.set_pointer_capture(event.pointer_id());
-                    DRAG_POINTER_CAPTURE
-                        .with(|c| *c.borrow_mut() = Some((el.clone(), event.pointer_id())));
+                if defer_to_up {
+                    PENDING_CLICK.with(|c| {
+                        *c.borrow_mut() = Some(PendingClick {
+                            target: el.clone(),
+                            pointer_id: event.pointer_id(),
+                            start_x: event.client_x() as f32,
+                            start_y: event.client_y() as f32,
+                        });
+                    });
+                } else {
+                    dispatch_click_at(&el, &browser_doc_for_click, &event);
+
+                    // If that click armed a pointer-capture `Drag` (slider, panel,
+                    // resize handle — started from the handler via `Drag::start()`),
+                    // capture the pointer on the element so touch/pen moves keep
+                    // tracking on it and the pointermove handler's `preventDefault`
+                    // can stop the page from scrolling out from under the drag.
+                    // Released on pointerup/pointercancel.
+                    if rinch_core::Drag::is_active() {
+                        let _ = el.set_pointer_capture(event.pointer_id());
+                        DRAG_POINTER_CAPTURE
+                            .with(|c| *c.borrow_mut() = Some((el.clone(), event.pointer_id())));
+                    }
                 }
             }
         }
@@ -1001,6 +1113,24 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                     event.prevent_default();
                 }
                 return;
+            }
+
+            // Deferred (touch/pen) click: once the owning contact travels past the
+            // scroll slop the gesture is a scroll, not a tap — abandon the click so
+            // the browser pans and no selection fires on release.
+            let pending = PENDING_CLICK.with(|c| {
+                c.borrow()
+                    .as_ref()
+                    .map(|p| (p.pointer_id, p.start_x, p.start_y))
+            });
+            if let Some((pid, sx, sy)) = pending
+                && pid == event.pointer_id()
+                && drag_machine::pending_click_is_scroll(
+                    event.client_x() as f32 - sx,
+                    event.client_y() as f32 - sy,
+                )
+            {
+                clear_pending_click();
             }
 
             // Hover: fire data-onleave on the old element and data-onenter on the
@@ -1091,6 +1221,20 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 }
             }
         }
+
+        // A deferred (touch/pen) tap on a scrollable-contained element that never
+        // became a scroll: fire its click now, on release, matching the browser's
+        // native click timing. Only the owning pointer fires it.
+        let deferred = PENDING_CLICK.with(|c| {
+            let mut b = c.borrow_mut();
+            match b.as_ref() {
+                Some(p) if p.pointer_id == event.pointer_id() => b.take().map(|p| p.target),
+                _ => None,
+            }
+        });
+        if let Some(target) = deferred {
+            dispatch_click_at(&target, &browser_doc_for_up, &event);
+        }
     }) as Box<dyn FnMut(_)>);
     browser_doc
         .add_event_listener_with_callback("pointerup", pointerup_closure.as_ref().unchecked_ref())
@@ -1110,6 +1254,9 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         if owns {
             cancel_web_drag();
         }
+        // Scrolling won out (or a system gesture stole the contact): drop any
+        // deferred click so it doesn't fire when the pointer is taken away.
+        clear_pending_click();
         rinch_core::Drag::cancel();
         release_drag_pointer_capture();
     }) as Box<dyn FnMut(_)>);
