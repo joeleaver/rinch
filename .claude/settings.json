@@ -1,0 +1,14 @@
+{
+  "extraKnownMarketplaces": {
+    "rinch": {
+      "source": {
+        "source": "github",
+        "repo": "joeleaver/rinch"
+      },
+      "autoUpdate": true
+    }
+  },
+  "enabledPlugins": {
+    "rinch@rinch": true
+  }
+}
