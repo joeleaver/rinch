@@ -18,7 +18,8 @@ renderer-compare/
 *.swo
 
 # AI tools
-.claude/
+.claude/*
+!.claude/settings.json
 .mcp.json
 .omc/
 
