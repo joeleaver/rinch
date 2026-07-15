@@ -416,7 +416,10 @@ impl RinchApp {
             {
                 let theme_css = rinch_core::get_current_theme_css().unwrap_or_default();
                 if !theme_css.is_empty() {
-                    d.load_css(&theme_css);
+                    // Must go through the theme slot (not load_css) so a later
+                    // theme regeneration replaces this sheet instead of stacking
+                    // a second one after the app's CSS.
+                    d.set_theme_css(&theme_css);
                 }
             }
             // Set viewport size so vh/vw units resolve correctly during DOM construction
