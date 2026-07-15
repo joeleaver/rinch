@@ -74,6 +74,11 @@ impl SoftbufferRenderer {
                 } else {
                     0xFF
                 };
+            } else if !self.transparent {
+                // Source shorter than the surface (a size/scale mismatch, e.g.
+                // fractional HiDPI): the unwritten pixels must still be opaque or
+                // softbuffer's `AlphaMode::Opaque` present() assertion fails.
+                pixel.a = 0xFF;
             }
         }
         buffer.present().unwrap();
