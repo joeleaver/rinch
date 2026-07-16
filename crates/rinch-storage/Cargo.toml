@@ -1,0 +1,32 @@
+[package]
+name = "rinch-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cross-platform durable key/blob persistence for rinch (native filesystem / web IndexedDB)"
+
+[dependencies]
+thiserror.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Event",
+    "DomException",
+    "DomStringList",
+    "IdbFactory",
+    "IdbOpenDbRequest",
+    "IdbRequest",
+    "IdbDatabase",
+    "IdbObjectStore",
+    "IdbTransaction",
+    "IdbTransactionMode",
+] }
+
+# Native-only test deps. `automerge` + `tempfile` are already in the workspace
+# lockfile (dev-deps of other crates), so this adds no new third-party surface.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tempfile = "3"
+automerge = "0.5"

@@ -4992,6 +4992,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rinch-storage"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "js-sys",
+ "tempfile",
+ "thiserror 1.0.69",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "rinch-tabler-icons"
 version = "0.1.0"
 dependencies = [
