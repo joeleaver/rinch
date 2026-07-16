@@ -122,6 +122,9 @@ pub mod prelude {
     pub use android_activity::AndroidApp;
     pub use rinch_core::element::*;
     pub use rinch_core::{Memo, Scope, Signal, batch, derived, untracked};
+    // Cross-platform one-shot timers (debounce / throttle / delayed work) and the
+    // helper to run a closure on the main (UI) thread from a background thread.
+    pub use rinch_core::{TimeoutHandle, clear_timeout, run_on_main_thread, set_timeout};
     // Context and stores for sharing state across components
     pub use rinch_core::{
         create_context, create_store, try_use_context, try_use_store, use_context, use_store,

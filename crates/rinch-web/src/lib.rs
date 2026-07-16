@@ -124,6 +124,27 @@ impl RootHandle {
 // One-time page-global setup
 // ============================================================================
 
+/// The web timer backend: schedule `fire_timeout(id)` via `window.setTimeout`.
+///
+/// Only `id` is captured, so the parked callback stays in rinch-core's
+/// main-thread registry. The closure is created with `Closure::once_into_js`,
+/// which hands ownership to the JS GC and drops the boxed `FnOnce` after it fires
+/// — so, unlike `Closure::forget()`, arming thousands of timers over a long
+/// session does not leak a closure per timer. A cancelled timeout
+/// (`clear_timeout`) still wakes here, then finds nothing parked and no-ops.
+fn web_set_timeout(id: u64, delay_ms: u32) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
+
+    let cb = Closure::once_into_js(move || rinch_core::fire_timeout(id));
+    if let Some(window) = web_sys::window() {
+        let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+            cb.unchecked_ref(),
+            delay_ms as i32,
+        );
+    }
+}
+
 /// First-mount-only global init shared by every mount. Clearing handlers/context
 /// must NOT run per-root, or a second island would wipe the first.
 fn ensure_global_init() {
@@ -136,6 +157,11 @@ fn ensure_global_init() {
         // Clear stale handlers/context from any previous run of this wasm module.
         events::clear_handlers();
         rinch_core::clear_context();
+
+        // Drive `rinch_core::set_timeout` off `window.setTimeout`. The browser has
+        // no threads, so rinch-core's built-in shared-thread scheduler cannot run
+        // here — the web runtime supplies the scheduling half.
+        rinch_core::set_timer_backend(web_set_timeout);
 
         // Theme CSS is page-global (one shared `<style>`). On any signal change
         // (e.g. dark-mode toggle), refresh it once — regardless of which root
