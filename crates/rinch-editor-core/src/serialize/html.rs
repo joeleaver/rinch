@@ -84,7 +84,12 @@ fn block_tags(node: &Node) -> (String, String) {
     match node.type_name() {
         "heading" => {
             let level = node.attrs().get_int("level").unwrap_or(1).clamp(1, 6);
-            (format!("<h{level}>"), format!("</h{level}>"))
+            let align = align_style_attr(node);
+            (format!("<h{level}{align}>"), format!("</h{level}>"))
+        }
+        "paragraph" => {
+            let align = align_style_attr(node);
+            (format!("<p{align}>"), "</p>".to_string())
         }
         "ordered_list" => {
             let start = node.attrs().get_int("start").unwrap_or(1);
@@ -111,6 +116,17 @@ fn block_tags(node: &Node) -> (String, String) {
             let tag = primary_tag(node.node_type());
             (format!("<{tag}>"), format!("</{tag}>"))
         }
+    }
+}
+
+/// The ` style="text-align:…"` fragment for a textblock's `text_align` attribute,
+/// or an empty string for the default (`left`) or an unrecognized value. Whitelisted
+/// to the three non-default alignments so a hostile `text_align` from an untrusted
+/// `DocNode` can never inject arbitrary CSS into the exported markup.
+fn align_style_attr(node: &Node) -> String {
+    match node.attrs().get_str("text_align") {
+        Some(a @ ("center" | "right" | "justify")) => format!(" style=\"text-align:{a}\""),
+        _ => String::new(),
     }
 }
 
@@ -1422,6 +1438,70 @@ mod tests {
             Fragment::from_children(vec![heading, para]),
         );
         assert_eq!(node_to_html(&doc), "<h2>Title</h2><p>Body</p>");
+    }
+
+    #[test]
+    fn serialize_text_align_as_inline_style() {
+        let schema = s();
+        let block = |ty: &str, align: &str, text: &str| {
+            Node::new_branch(
+                schema.node_type(ty).unwrap().clone(),
+                Attrs::from_iter([("text_align", AttrValue::from(align))]),
+                Fragment::from_node(schema.text(text).unwrap()),
+            )
+        };
+        // Center / right / justify project to a `text-align` inline style; the default
+        // `left` (and any unrecognized value) is omitted so plain text stays clean.
+        assert_eq!(
+            node_to_html(&block("paragraph", "center", "c")),
+            r#"<p style="text-align:center">c</p>"#
+        );
+        assert_eq!(
+            node_to_html(&block("paragraph", "right", "r")),
+            r#"<p style="text-align:right">r</p>"#
+        );
+        assert_eq!(
+            node_to_html(&block("heading", "justify", "j")),
+            r#"<h1 style="text-align:justify">j</h1>"#
+        );
+        assert_eq!(node_to_html(&block("paragraph", "left", "l")), "<p>l</p>");
+        assert_eq!(
+            node_to_html(&block("paragraph", "bogus; color:red", "x")),
+            "<p>x</p>",
+            "an unrecognized alignment must never leak into the style attribute"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn text_align_round_trips_through_doc_json() {
+        use crate::serialize::doc_json::DocNode;
+        let schema = s();
+        let para = Node::new_branch(
+            schema.node_type("paragraph").unwrap().clone(),
+            Attrs::from_iter([("text_align", AttrValue::from("center"))]),
+            Fragment::from_node(schema.text("hi").unwrap()),
+        );
+        let doc = Node::new_branch(
+            schema.node_type("doc").unwrap().clone(),
+            Attrs::new(),
+            Fragment::from_node(para),
+        );
+        // Node -> DocNode -> JSON string -> DocNode -> Node preserves the alignment.
+        let wire = doc.to_doc().unwrap();
+        let json = serde_json::to_string(&wire).unwrap();
+        assert!(
+            json.contains(r#""text_align":"center""#),
+            "alignment must appear on the wire: {json}"
+        );
+        let parsed: DocNode = serde_json::from_str(&json).unwrap();
+        let back = schema.node_from_doc(&parsed).unwrap();
+        assert_eq!(
+            back.content().child(0).attrs().get_str("text_align"),
+            Some("center")
+        );
+        // And it still projects to the inline style after the round-trip.
+        assert_eq!(node_to_html(&back), r#"<p style="text-align:center">hi</p>"#);
     }
 
     #[test]

@@ -79,6 +79,10 @@ impl Schema {
                 // Indent level (0 = flush left); rendered as a left margin. Bumped by
                 // the indent / outdent commands when the cursor isn't in a list.
                 .attr("indent", AttrSpec::optional(AttrValue::Int(0)))
+                // Horizontal alignment of the block's text: "left" (default), "center",
+                // "right", or "justify". Set by the setTextAlign* commands; projects to
+                // `text-align` in the view and copy-out HTML (omitted when "left").
+                .attr("text_align", AttrSpec::optional("left"))
                 .parse_html(vec!["p".into()])
                 .build(),
         );
@@ -91,6 +95,8 @@ impl Schema {
                 .group("block")
                 .attr("level", AttrSpec::optional(AttrValue::Int(1)))
                 .attr("indent", AttrSpec::optional(AttrValue::Int(0)))
+                // Horizontal text alignment — see the paragraph node above.
+                .attr("text_align", AttrSpec::optional("left"))
                 .parse_html(vec![
                     "h1".into(),
                     "h2".into(),

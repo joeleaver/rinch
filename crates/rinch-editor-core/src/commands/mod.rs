@@ -632,12 +632,64 @@ pub fn outdent() -> Command {
     })
 }
 
+/// The alignment values the `text_align` attribute accepts. `"left"` is the
+/// default and is stored/serialized as the absence of a special alignment (it
+/// projects to no `text-align` in HTML), so only the other three ever produce
+/// visible markup.
+pub const TEXT_ALIGN_VALUES: [&str; 4] = ["left", "center", "right", "justify"];
+
+/// Set the `text_align` attribute of every alignable textblock (paragraph /
+/// heading) overlapping the selection to `align` (`setTextAlignLeft` /
+/// `setTextAlignCenter` / `setTextAlignRight` / `setTextAlignJustify`). Applies
+/// only when at least one block's alignment actually changes, so re-selecting the
+/// current alignment is a no-op (the toolbar button can stay inert). Unlike the
+/// margin indent, alignment is fine inside lists and table cells, so no block is
+/// excluded by its parent.
+pub fn set_text_align(align: &'static str) -> Command {
+    command_tr(move |state| build_set_text_align(state, align))
+}
+
+/// Build the set-alignment transaction. `align` must be one of
+/// [`TEXT_ALIGN_VALUES`]; an unknown value yields no transaction.
+fn build_set_text_align(state: &EditorState, align: &str) -> Option<Transaction> {
+    if !TEXT_ALIGN_VALUES.contains(&align) {
+        return None;
+    }
+    let (from, to) = (state.selection.from().0, state.selection.to().0);
+    // `(position-before-block, current alignment)` for each alignable textblock.
+    let mut targets: Vec<(usize, String)> = Vec::new();
+    state.doc.nodes_between(from, to, &mut |node, pos, _parent| {
+        if matches!(node.type_name(), "paragraph" | "heading") {
+            let cur = node
+                .attrs()
+                .get_str("text_align")
+                .unwrap_or("left")
+                .to_string();
+            targets.push((pos, cur));
+        }
+        true
+    });
+    if targets.is_empty() {
+        return None;
+    }
+    let mut tr = state.tr();
+    // `SetNodeAttrStep` has an empty position map, so the collected `pos` values
+    // stay valid across every step — no remapping needed (mirrors the indent cmd).
+    for (pos, cur) in targets {
+        if cur != align {
+            tr.set_node_attr(pos, "text_align", crate::AttrValue::Str(align.into()))
+                .ok()?;
+        }
+    }
+    tr.doc_changed().then_some(tr)
+}
+
 /// The **Paragraph** command — "reset to normal text". It strips *every* kind of
 /// formatting off the selection so the result is plain paragraph text:
 ///
 /// 1. removes all inline marks (bold/italic/underline/link/…),
 /// 2. converts the block(s) to paragraphs (heading / code block → paragraph),
-/// 3. resets the indent level to 0,
+/// 3. resets the indent level to 0 and the alignment back to left,
 /// 4. lifts the block(s) out of every wrapper (blockquote, list) to the top level.
 ///
 /// A no-op (returns `None`) only when the selection is already plain top-level
@@ -663,21 +715,29 @@ pub fn set_paragraph() -> Command {
         //    preserves block-boundary positions (same open/close token count).
         let _ = tr.set_block_type(from, to, para_ty, Attrs::new());
 
-        // 3. Reset the indent attribute to 0 on the (now-)paragraphs in range — but
-        //    only where it isn't already 0, so a plain paragraph stays a true no-op.
+        // 3. Reset the indent attribute to 0 and the alignment back to left on the
+        //    (now-)paragraphs in range — but only where they aren't already at their
+        //    defaults, so a plain paragraph stays a true no-op.
         let mut indent_targets: Vec<usize> = Vec::new();
+        let mut align_targets: Vec<usize> = Vec::new();
         state
             .doc
             .nodes_between(from, to, &mut |node, pos, _parent| {
-                if matches!(node.type_name(), "paragraph" | "heading")
-                    && node.attrs().get_int("indent").unwrap_or(0) != 0
-                {
-                    indent_targets.push(pos);
+                if matches!(node.type_name(), "paragraph" | "heading") {
+                    if node.attrs().get_int("indent").unwrap_or(0) != 0 {
+                        indent_targets.push(pos);
+                    }
+                    if node.attrs().get_str("text_align").unwrap_or("left") != "left" {
+                        align_targets.push(pos);
+                    }
                 }
                 true
             });
         for pos in indent_targets {
             let _ = tr.set_node_attr(pos, "indent", crate::AttrValue::Int(0));
+        }
+        for pos in align_targets {
+            let _ = tr.set_node_attr(pos, "text_align", crate::AttrValue::Str("left".into()));
         }
 
         // 4. Lift every selected block out of its blockquote/list wrappers to the top
@@ -1247,6 +1307,10 @@ impl Plugin for BaseCommandsPlugin {
             ("removeLink", remove_link()),
             ("selectAll", select_all()),
             ("setParagraph", set_paragraph()),
+            ("setTextAlignLeft", set_text_align("left")),
+            ("setTextAlignCenter", set_text_align("center")),
+            ("setTextAlignRight", set_text_align("right")),
+            ("setTextAlignJustify", set_text_align("justify")),
             ("setCodeBlock", set_block_type("code_block", Attrs::new())),
             ("toggleBulletList", toggle_list("bullet_list")),
             ("toggleOrderedList", toggle_list("ordered_list")),
@@ -1939,6 +2003,45 @@ mod tests {
         assert_eq!(o2.doc.child(0).attrs().get_int("indent"), Some(0));
         // Outdent at indent 0 is a no-op (so the toolbar button can stay disabled).
         assert!(o2.run("outdent").is_none());
+    }
+
+    #[test]
+    fn set_text_align_on_a_paragraph() {
+        let mut s = editor("hello");
+        s.selection = Selection::cursor(Pos(2));
+        // A fresh paragraph carries no explicit alignment (it reads as the "left"
+        // default; the attr only materializes on the DocNode wire via `to_doc`).
+        assert_eq!(s.doc.child(0).attrs().get_str("text_align"), None);
+        // Setting an alignment mutates the attr; re-applying the same value is a no-op.
+        let c = s
+            .run("setTextAlignCenter")
+            .expect("setTextAlignCenter applies");
+        assert_eq!(c.doc.child(0).attrs().get_str("text_align"), Some("center"));
+        assert!(
+            c.run("setTextAlignCenter").is_none(),
+            "re-selecting the current alignment must not apply"
+        );
+        // Switching to another alignment applies again.
+        let r = c.run("setTextAlignRight").expect("setTextAlignRight applies");
+        assert_eq!(r.doc.child(0).attrs().get_str("text_align"), Some("right"));
+        // Back to the default clears it, and is then a no-op.
+        let l = r.run("setTextAlignLeft").expect("setTextAlignLeft applies");
+        assert_eq!(l.doc.child(0).attrs().get_str("text_align"), Some("left"));
+        assert!(l.run("setTextAlignLeft").is_none());
+    }
+
+    #[test]
+    fn set_paragraph_resets_alignment() {
+        let mut s = editor("centered");
+        s.selection = Selection::cursor(Pos(2));
+        let c = s.run("setTextAlignCenter").expect("center");
+        assert_eq!(c.doc.child(0).attrs().get_str("text_align"), Some("center"));
+        let p = c.run("setParagraph").expect("reset to normal text");
+        assert_eq!(
+            p.doc.child(0).attrs().get_str("text_align"),
+            Some("left"),
+            "the Paragraph reset clears alignment back to left"
+        );
     }
 
     #[test]
