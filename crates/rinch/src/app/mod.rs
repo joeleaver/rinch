@@ -395,7 +395,7 @@ impl RinchApp {
         doc.borrow_mut().tree.text_scale = self.text_scale;
 
         // Set up network image loader if feature enabled (replaces default FileImageLoader)
-        #[cfg(feature = "image-network")]
+        #[cfg(all(feature = "image-network", not(target_arch = "wasm32")))]
         {
             doc.borrow_mut().tree.image_loader =
                 Some(std::sync::Arc::new(crate::image_loader::NetworkImageLoader));

@@ -57,7 +57,9 @@ rinch-editor-core = { workspace = true, optional = true }
 # link — so default builds (desktop AND web) link zero automerge.
 rinch-editor-view = { workspace = true, optional = true }
 rinch-video = { workspace = true, optional = true }
-ureq = { version = "3", optional = true }
+# HTTP client for the network image loader (image-network). Standalone, opt-in:
+# nothing else in the facade depends on it, so default builds link no HTTP stack.
+rinch-http = { workspace = true, optional = true }
 memory-stats = { version = "1.2", optional = true }
 # Accessibility (M7b) — `accesskit` core types are platform-neutral; the per-platform
 # adapter (`accesskit_unix` etc.) lives in the target tables below. Gated by `a11y`.
@@ -161,7 +163,7 @@ theme = ["dep:rinch-theme", "rinch-core/theme"]
 components = ["theme", "dep:rinch-components"]
 debug = ["dep:rinch-debug"]
 video = ["dep:rinch-video"]
-image-network = ["dep:ureq"]
+image-network = ["dep:rinch-http"]
 # Editor accessibility (M7b): derive an accesskit TreeUpdate from EditorState and
 # push it through a per-platform adapter. Linux uses accesskit_unix (AT-SPI); other
 # desktop platforms fall back to a no-op bridge until their adapters land.

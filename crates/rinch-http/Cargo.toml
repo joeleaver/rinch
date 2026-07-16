@@ -1,0 +1,20 @@
+[package]
+name = "rinch-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cross-platform callback-based HTTP client for rinch (web fetch / native ureq)"
+
+[dependencies]
+rinch-core = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ureq = { version = "3", features = ["cookies"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Request", "RequestInit", "RequestCredentials", "Response", "Headers", "Window",
+] }
