@@ -33,6 +33,14 @@ impl RinchDocument {
             }
             self.tree.style_roots.clear(); // Force full tree walk
             self.tree.styles_dirty = true;
+            // The viewport IS the root's available space. A size change must
+            // force a Taffy recompute even when no node's Taffy *style* changed
+            // (e.g. an all-`auto`/fixed tree): otherwise auto-sized content stays
+            // laid out at the previous viewport width. Without this, the early
+            // `if !layout_dirty { return }` below strands the tree at its old
+            // size — visible as prose that keeps a narrow first-layout width
+            // (often min-content) after the window grows.
+            self.tree.layout_dirty = true;
         }
 
         // Drain completed image loads and update intrinsic dimensions
