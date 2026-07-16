@@ -8,6 +8,7 @@ pub mod event;
 pub mod events;
 pub mod for_loop;
 pub mod image;
+pub mod main_thread;
 pub mod match_dom;
 pub mod reactive;
 pub mod reconcile;
@@ -34,12 +35,17 @@ pub use virtual_list::virtual_list;
 // Re-export reconciliation types
 pub use reconcile::{ListOp, diff_keyed};
 
+// Re-export the main-thread callback-parking primitive
+pub use main_thread::{
+    MainCallbackId, cancel_main_callback, park_main_callback, resume_main_callback,
+};
+
 // Re-export reactive types for convenience
 pub use reactive::{
     Effect, ElementBounds, Memo, PollRate, Scope, Signal, batch, clear_on_signal_change,
     clear_signals_changed, derived, drain_polls, poll_signal, register_bounds_signal,
-    register_main_thread, set_cross_thread_dispatcher, set_on_signal_change, signals_changed,
-    untracked, update_bounds_signals,
+    register_main_thread, run_on_main_thread, set_cross_thread_dispatcher, set_on_signal_change,
+    signals_changed, untracked, update_bounds_signals,
 };
 
 // Re-export context for sharing state across components
