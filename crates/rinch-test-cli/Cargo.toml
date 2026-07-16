@@ -8,6 +8,11 @@ description = "CLI client for the rinch test harness"
 [[bin]]
 name = "rinch-test"
 path = "src/main.rs"
+# Skip rustdoc for this CLI binary: its doc output name (`rinch_test`) collides
+# with the `rinch-test` library crate, and under `cargo doc --workspace` the two
+# doc units race on the same output file and fail the Pages build. The binary
+# name is unchanged; only its (uninteresting) rustdoc is omitted.
+doc = false
 
 [dependencies]
 serde_json = "1"
