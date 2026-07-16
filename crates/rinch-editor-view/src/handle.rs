@@ -49,6 +49,12 @@ struct EditorCore {
     view: Option<RinchDomEditorView>,
     schema: Rc<Schema>,
     plugins: Vec<Rc<dyn Plugin>>,
+    /// Invoked after a local edit changes the document — see
+    /// [`EditorHandle::on_change`]. Held behind an `Rc` so the notifier can clone
+    /// it out and invoke it with **no** borrow held: the callback commonly
+    /// re-enters the handle (an autosave reads `doc()`), which would otherwise
+    /// panic with a `RefCell` double-borrow.
+    on_change: Option<Rc<dyn Fn()>>,
     /// The collaboration session + outbound delta sink, when this editor is
     /// collaborating (design M9). `None` for a non-collaborative editor — the
     /// common case — so the mutation path's collab hook is a cheap early return.
@@ -67,13 +73,18 @@ impl EditorCore {
     /// helper: a remote change is already in the shared CRDT, so it must be stored
     /// and re-projected *without* recording it back onto the CRDT (which would echo
     /// it to peers and double-apply).
-    fn commit(&mut self, prev: EditorState, next: EditorState) {
+    ///
+    /// Returns whether the **document** changed (a selection-only edit leaves the
+    /// same doc `Rc`), which is what drives [`EditorHandle::on_change`].
+    fn commit(&mut self, prev: EditorState, next: EditorState) -> bool {
+        let doc_changed = !prev.doc.same_ref(&next.doc);
         self.state = next.clone();
         if let Some(view) = self.view.as_mut() {
             view.update_dom(&prev, &next);
         }
         #[cfg(feature = "collaboration")]
         self.record_local(&prev, &next);
+        doc_changed
     }
 
     /// Project a just-applied local change onto the CRDT and broadcast the delta to
@@ -146,6 +157,7 @@ impl EditorHandle {
                 view: None,
                 schema,
                 plugins,
+                on_change: None,
                 #[cfg(feature = "collaboration")]
                 collab: None,
             })),
@@ -171,6 +183,7 @@ impl EditorHandle {
                 view: Some(view),
                 schema,
                 plugins,
+                on_change: None,
                 #[cfg(feature = "collaboration")]
                 collab: None,
             })),
@@ -212,7 +225,11 @@ impl EditorHandle {
         };
         let prev = core.state.clone();
         let next = core.state.apply(tr);
-        core.commit(prev, next);
+        let doc_changed = core.commit(prev, next);
+        drop(core);
+        if doc_changed {
+            self.notify_change();
+        }
         true
     }
 
@@ -224,8 +241,52 @@ impl EditorHandle {
             return false;
         };
         let prev = core.state.clone();
-        core.commit(prev, next);
+        let doc_changed = core.commit(prev, next);
+        drop(core);
+        if doc_changed {
+            self.notify_change();
+        }
         true
+    }
+
+    /// Register a callback invoked after a **local edit changes the document**.
+    /// Replaces any previously registered callback.
+    ///
+    /// This is the cross-platform way to know the user edited — for autosave,
+    /// dirty-marking or word counts. There is no DOM `input` event to listen for:
+    /// the editor is model-first and deliberately never `contenteditable`.
+    ///
+    /// Fires for every edit path — [`update`](Self::update) (which typing, paste
+    /// and IME commit all funnel through), [`command`](Self::command) and
+    /// [`insert_image`](Self::insert_image). It does **not** fire for:
+    /// - selection-only changes (the document is unchanged),
+    /// - [`load_doc`](Self::load_doc) / [`load_html`](Self::load_html) — a
+    ///   programmatic load is not a user edit, and firing would make an autosave
+    ///   consumer immediately re-save freshly loaded content,
+    /// - remote collaboration integration ([`collab_receive`](Self::collab_receive)),
+    ///   which is already in the shared CRDT.
+    ///
+    /// The callback runs with no internal borrow held, so it may freely re-enter
+    /// the handle (e.g. call [`doc`](Self::doc) to serialize for a save).
+    ///
+    /// ```ignore
+    /// let editor = create_editor();
+    /// editor.on_change({
+    ///     let editor = editor.clone();
+    ///     move || schedule_autosave(editor.doc())
+    /// });
+    /// ```
+    pub fn on_change(&self, cb: impl Fn() + 'static) {
+        self.inner.borrow_mut().on_change = Some(Rc::new(cb));
+    }
+
+    /// Invoke the change callback, if any, with **no borrow held** — the callback
+    /// commonly re-enters the handle, which would otherwise double-borrow.
+    fn notify_change(&self) {
+        let cb = self.inner.borrow().on_change.clone();
+        if let Some(cb) = cb {
+            cb();
+        }
     }
 
     /// Whether the named command currently applies (toolbar enablement).
@@ -543,6 +604,9 @@ impl EditorHandle {
         };
         let prev = core.state.clone();
         let next = EditorState::create(core.schema.clone(), doc, core.plugins.clone());
+        // Deliberately does not fire `on_change`: loading a document is a
+        // programmatic replace, not a user edit. Firing here would make an
+        // autosave consumer immediately re-save freshly loaded content.
         core.commit(prev, next);
     }
 
@@ -603,7 +667,11 @@ impl EditorHandle {
             return false;
         };
         let prev = core.state.clone();
-        core.commit(prev, next);
+        let doc_changed = core.commit(prev, next);
+        drop(core);
+        if doc_changed {
+            self.notify_change();
+        }
         true
     }
 
@@ -1501,6 +1569,64 @@ mod tests {
             Fragment::from_node(s.branch("paragraph", Fragment::empty()).unwrap()),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn on_change_fires_for_edits_but_not_loads_or_selection() {
+        use std::cell::Cell;
+
+        let s = Rc::new(schema());
+        let h = EditorHandle::unmounted(s.clone(), empty_doc(&s), default_plugins());
+
+        let hits = Rc::new(Cell::new(0u32));
+        h.on_change({
+            let hits = hits.clone();
+            move || hits.set(hits.get() + 1)
+        });
+
+        // A programmatic load is not a user edit — must not fire (otherwise an
+        // autosave consumer would re-save every freshly opened document).
+        assert!(h.load_html("<p>hello world</p>"));
+        assert_eq!(hits.get(), 0, "load_doc/load_html must not fire on_change");
+
+        // Typing (funnels through `update`) is an edit → fires.
+        assert!(h.insert_text("!"));
+        assert_eq!(hits.get(), 1, "an edit must fire on_change");
+
+        // A command that changes the doc → fires.
+        h.set_selection(Selection::text(Pos(1), Pos(3)));
+        let before = hits.get();
+        assert!(h.command("toggleBold"));
+        assert_eq!(hits.get(), before + 1, "a doc-changing command must fire");
+
+        // Selection-only movement leaves the doc identical → must not fire.
+        let before = hits.get();
+        h.set_selection(Selection::cursor(Pos(2)));
+        assert_eq!(hits.get(), before, "selection-only change must not fire");
+    }
+
+    #[test]
+    fn on_change_callback_may_reenter_the_handle() {
+        use std::cell::Cell;
+
+        // The realistic autosave shape: the callback reads the document back out.
+        // This double-borrows the inner RefCell unless the notifier drops its
+        // borrow first, so this test is the regression guard for that.
+        let s = Rc::new(schema());
+        let h = EditorHandle::unmounted(s.clone(), empty_doc(&s), default_plugins());
+
+        let seen = Rc::new(Cell::new(0usize));
+        h.on_change({
+            let h = h.clone();
+            let seen = seen.clone();
+            move || seen.set(h.doc().child_count())
+        });
+
+        assert!(h.insert_text("abc"));
+        assert!(
+            seen.get() > 0,
+            "callback should have read the doc without panicking"
+        );
     }
 
     #[test]
