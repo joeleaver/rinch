@@ -5076,6 +5076,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rinch-ws"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "rinch-core",
+ "tungstenite",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6385,9 +6396,12 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.8.5",
+ "rustls",
+ "rustls-pki-types",
  "sha1",
  "thiserror 1.0.69",
  "utf-8",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -6500,7 +6514,7 @@ dependencies = [
  "ureq-proto",
  "url",
  "utf-8",
- "webpki-roots",
+ "webpki-roots 1.0.5",
 ]
 
 [[package]]
@@ -6920,6 +6934,15 @@ dependencies = [
  "phf_codegen",
  "string_cache",
  "string_cache_codegen",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.5",
 ]
 
 [[package]]
