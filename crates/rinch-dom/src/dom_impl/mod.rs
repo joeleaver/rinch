@@ -62,6 +62,11 @@ pub struct RinchDocument {
     pub layout_cx: parley::LayoutContext<Brush>,
     /// Stylo CSS engine stylist for CSS cascade and selector matching.
     pub stylist: Stylist,
+    /// The theme stylesheet, held in a stable slot before every app sheet so app
+    /// CSS always cascades over it. Managed by `set_theme_css`.
+    pub(crate) theme_stylesheet: Option<style::stylesheets::DocumentStyleSheet>,
+    /// App author stylesheets, in insertion (source) order.
+    pub(crate) author_stylesheets: Vec<style::stylesheets::DocumentStyleSheet>,
 }
 
 impl Default for RinchDocument {
@@ -103,6 +108,8 @@ impl RinchDocument {
             font_cx: parley::FontContext::new(),
             layout_cx: parley::LayoutContext::new(),
             stylist,
+            theme_stylesheet: None,
+            author_stylesheets: Vec::new(),
         };
 
         // Set up default file-based image loader

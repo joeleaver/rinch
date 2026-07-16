@@ -144,11 +144,8 @@ impl RinchDocument {
             .force_stylesheet_origins_dirty(Origin::Author.into());
     }
 
-    /// Load CSS into Stylo's stylesheet system.
-    ///
-    /// Parses the CSS string and adds it to the Stylist for CSS cascade.
-    /// This is the Stylo-based replacement for the old stylesheet system.
-    pub fn load_stylo_css(&mut self, css: &str) {
+    /// Parse a CSS string into an author-origin Stylo stylesheet.
+    fn parse_author_stylesheet(&self, css: &str) -> style::stylesheets::DocumentStyleSheet {
         use style::media_queries::MediaList;
         use style::stylesheets::{
             AllowImportRules, DocumentStyleSheet, Origin, Stylesheet, UrlExtraData,
@@ -159,7 +156,6 @@ impl RinchDocument {
             ::url::Url::parse("about:blank").expect("about:blank is a valid URL"),
         );
 
-        // Parse the CSS into a stylesheet
         let media = ServoArc::new(self.tree.guard.wrap(MediaList::empty()));
         let stylesheet = Stylesheet::from_str(
             css,
@@ -173,14 +169,71 @@ impl RinchDocument {
             AllowImportRules::Yes,
         );
 
-        // Wrap in DocumentStyleSheet for the Stylist
-        let doc_stylesheet = DocumentStyleSheet(ServoArc::new(stylesheet));
+        DocumentStyleSheet(ServoArc::new(stylesheet))
+    }
+
+    /// Load CSS into Stylo's stylesheet system.
+    ///
+    /// Parses the CSS string and appends it to the Stylist for CSS cascade.
+    /// Appended sheets cascade after everything loaded before them, matching
+    /// document source order.
+    pub fn load_stylo_css(&mut self, css: &str) {
+        use style::stylesheets::Origin;
+
+        let doc_stylesheet = self.parse_author_stylesheet(css);
 
         // Add the stylesheet to the stylist
         let guard = self.tree.guard.read();
-        self.stylist.append_stylesheet(doc_stylesheet, &guard);
+        self.stylist
+            .append_stylesheet(doc_stylesheet.clone(), &guard);
+        drop(guard);
+
+        // Track app author sheets in insertion order so the theme sheet can be
+        // re-inserted ahead of them (see `set_theme_css`).
+        self.author_stylesheets.push(doc_stylesheet);
 
         // Mark stylesheets as changed so they'll be flushed on next style computation
+        self.stylist
+            .force_stylesheet_origins_dirty(Origin::Author.into());
+    }
+
+    /// Install (or replace) the theme stylesheet.
+    ///
+    /// The theme sheet occupies a stable slot *before* every app stylesheet, so
+    /// app CSS always cascades over it. This mirrors rinch-web, where the theme
+    /// lives in a single `<style data-rinch-theme>` in `<head>` that is updated
+    /// in place — its document position never changes.
+    ///
+    /// Appending a regenerated theme sheet instead would move it *after* the
+    /// app's `<style>` rules, letting theme `:root` custom properties silently
+    /// win over an app's `:root` overrides of the same variable.
+    pub fn set_theme_css(&mut self, css: &str) {
+        use style::stylesheets::Origin;
+
+        let new_sheet = self.parse_author_stylesheet(css);
+
+        let guard = self.tree.guard.read();
+
+        // Drop the previous theme sheet, if any.
+        if let Some(old) = self.theme_stylesheet.take() {
+            self.stylist.remove_stylesheet(old, &guard);
+        }
+
+        // Re-insert ahead of the first app sheet so app CSS keeps overriding the
+        // theme. With no app sheets yet, appending puts it first anyway.
+        match self.author_stylesheets.first() {
+            Some(first_app) => {
+                self.stylist
+                    .insert_stylesheet_before(new_sheet.clone(), first_app.clone(), &guard);
+            }
+            None => {
+                self.stylist.append_stylesheet(new_sheet.clone(), &guard);
+            }
+        }
+        drop(guard);
+
+        self.theme_stylesheet = Some(new_sheet);
+
         self.stylist
             .force_stylesheet_origins_dirty(Origin::Author.into());
     }
@@ -197,9 +250,10 @@ impl RinchDocument {
 
     /// Update theme CSS variables without duplicating non-`:root` rules.
     /// After calling this, call `recompute_all_styles_full()` to apply the new variables.
+    ///
+    /// Replaces the theme sheet in its stable pre-app slot; see [`Self::set_theme_css`].
     pub fn update_theme_variables(&mut self, css: &str) {
-        // Load CSS variables into Stylo
-        self.load_stylo_css(css);
+        self.set_theme_css(css);
     }
 
     /// Recompute taffy styles for all element nodes, clearing cached style props
