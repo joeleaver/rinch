@@ -199,6 +199,23 @@ pub(crate) fn dispatch_to_main_thread(f: Box<dyn FnOnce() + Send>) {
     }
 }
 
+/// Run a closure on the main (UI) thread.
+///
+/// If called from the main thread, runs `f` immediately. Otherwise dispatches it
+/// via the registered cross-thread dispatcher (installed by the rinch runtime) to
+/// run on the next event-loop wake. Panics only if called from a background thread
+/// with no dispatcher registered.
+///
+/// This is the transport half of the main-thread callback machinery; see
+/// [`crate::main_thread`] for parking a `!Send` continuation and resuming it here.
+pub fn run_on_main_thread(f: impl FnOnce() + Send + 'static) {
+    if is_main_thread() {
+        f();
+    } else {
+        dispatch_to_main_thread(Box::new(f));
+    }
+}
+
 /// Unique identifier for an observer (effect or memo)
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct ObserverId(pub(crate) usize);
