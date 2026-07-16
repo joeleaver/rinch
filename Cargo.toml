@@ -25,6 +25,7 @@ repository = "https://github.com/user/rinch"
 # Internal crates
 rinch = { path = "crates/rinch", default-features = false }
 rinch-core = { path = "crates/rinch-core" }
+rinch-http = { path = "crates/rinch-http" }
 rinch-macros = { path = "crates/rinch-macros" }
 rinch-renderer = { path = "crates/rinch-renderer" }
 rinch-theme = { path = "crates/rinch-theme" }
