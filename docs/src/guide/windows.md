@@ -191,6 +191,33 @@ button { onclick: || close_current_window(), "×" }
 
 These functions work from onclick handlers and affect the window containing the element.
 
+### Fixed Overlays and Custom Chrome
+
+When you draw your own titlebar (or use `BorderlessWindow`, or the Linux in-app
+menu bar), that chrome is an ordinary in-flow element — so normal content sits
+below it automatically, but a `position: fixed` overlay does not. Fixed elements
+resolve against the real viewport, exactly as in a browser, so a `top: 0` drawer
+or modal renders *underneath* your titlebar and covers its close button.
+
+`BorderlessWindow` and the menu bar publish their height as
+`--rinch-window-top-inset` for this. Offset full-height overlays by it:
+
+```rust
+div { style: "position: fixed; top: var(--rinch-window-top-inset, 0px); bottom: 0;" }
+```
+
+If you hand-roll the titlebar shown above, publish the variable yourself on a
+wrapper around your content so overlays inside it inherit the value:
+
+```rust
+div { style: "--rinch-window-top-inset: 36px;",
+    // titlebar + content + any fixed overlays
+}
+```
+
+`Drawer`, `Modal`, and top-anchored `Notification`s already consume it. See
+[Theming → Window Chrome Inset](./theming.md#window-chrome-inset).
+
 ## Transparent Windows
 
 For windows with transparency (useful for rounded corners or non-rectangular shapes):

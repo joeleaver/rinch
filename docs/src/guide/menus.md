@@ -164,7 +164,23 @@ On Windows, the menu appears attached to the window's title bar.
 
 ### Linux
 
-On Linux, the menu appears in the window (similar to Windows) unless a global menu system is available.
+On Linux there is no native menu bar (muda needs a GTK window; winit uses raw
+X11/Wayland), so rinch renders the menu bar itself as ordinary DOM inside your
+window, 28px tall, from the same `Menu`/`MenuItem` API.
+
+Because it lives in the document, it reserves its space with `padding-top` on a
+wrapper around your content — **normal flow content clears it automatically**.
+
+A `position: fixed` element does not: fixed resolves against the real viewport,
+so a `top: 0` overlay slides underneath the bar. The bar publishes its height as
+`--rinch-window-top-inset`, and full-height overlays should offset by it:
+
+```rust
+div { style: "position: fixed; top: var(--rinch-window-top-inset, 0px); bottom: 0;" }
+```
+
+`Drawer`, `Modal`, and top-anchored `Notification`s already handle this. See
+[Theming → Window Chrome Inset](./theming.md#window-chrome-inset).
 
 ## Context Menus
 

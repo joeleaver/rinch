@@ -22,10 +22,16 @@ pub fn styles() -> String {
     position: relative;
 }
 
-/* Label button */
+/* Label button.
+   line-height is pinned rather than inherited so the bar's rendered height is
+   exactly MENU_BAR_HEIGHT (4 + 19 + 4 padding/line + 1px bar border = 28px).
+   Inheriting it from `body` (--rinch-line-height-md, 1.55) made the bar render
+   ~31px against 28px of reserved space, so content sat under the bar — and it
+   would silently desync again whenever the theme's line-height changed. */
 .rinch-app-menu-item__label {
     padding: 4px 8px;
     font-size: var(--rinch-font-size-sm);
+    line-height: 19px;
     cursor: pointer;
     border-radius: var(--rinch-radius-sm);
     color: var(--rinch-color-text);

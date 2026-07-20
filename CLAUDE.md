@@ -1103,6 +1103,23 @@ ThemeProvider generates CSS variables:
 - Typography: `--rinch-font-size-{xs,sm,md,lg,xl}`, `--rinch-font-family`
 - Semantic: `--rinch-color-body`, `--rinch-color-text`, `--rinch-color-dimmed`
 
+**Window chrome inset (not ThemeProvider-generated).** `--rinch-window-top-inset`
+is published at runtime by whatever chrome rinch draws above your content — the
+Linux in-app menu bar (28px) and the `BorderlessWindow` titlebar (36px, +28 when
+the menu bar sits below it). That chrome reserves space with in-document padding,
+so normal flow content clears it automatically; a `position: fixed` element does
+**not**, because fixed resolves against the real viewport (matching browsers and
+rinch-web). Full-height overlays must therefore opt in:
+
+```rust
+div { style: "position: fixed; top: var(--rinch-window-top-inset, 0px); bottom: 0;" }
+```
+
+`Drawer`, `Modal`, and the top-anchored `Notification` positions already do this.
+Backdrops that intentionally cover the whole window (`DropdownMenu`, `Select`)
+deliberately do not. Do **not** "fix" this by insetting the fixed containing
+block — that would break CSS semantics and make desktop diverge from rinch-web.
+
 ## Transparent Windows
 
 Transparent/borderless windows are configured via `WindowProps { transparent: true, borderless: true }`. The live renderer (`shell::desktop::WgpuRenderer`) uses `CompositeAlphaMode::Auto` + a transparent clear color, which the compositor honors on **Linux (Wayland/X11)**.

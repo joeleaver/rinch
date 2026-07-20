@@ -30,6 +30,26 @@ pub(crate) fn render_with_menu_bar(
     // Outer wrapper filling the viewport.
     let wrapper = scope.create_element("div");
     wrapper.set_attribute("class", "rinch-app-menu-bar-wrapper");
+    // Publish how much window chrome sits above the content. Flow content
+    // clears it via the padding-top below, but a `position: fixed` overlay
+    // resolves against the real viewport (as it does in a browser, and as it
+    // does on rinch-web), so it has no way to know. Custom properties inherit,
+    // so any fixed descendant can opt in with
+    // `top: var(--rinch-window-top-inset, 0px)`.
+    wrapper.set_attribute(
+        "style",
+        &format!(
+            "--rinch-window-top-inset: {}px;",
+            top_offset + MENU_BAR_HEIGHT
+        ),
+    );
+    // Also publish it on `body`: overlays are commonly rendered as a root-level
+    // sibling of this wrapper rather than inside it, and custom properties
+    // inherit down the DOM, not across it.
+    scope.body_handle().set_style(
+        "--rinch-window-top-inset",
+        &format!("{}px", top_offset + MENU_BAR_HEIGHT),
+    );
 
     // DOM order matters for hit testing (last child = topmost).
     // We need: content (bottom) → overlay (middle) → bar+dropdowns (top).
@@ -483,5 +503,64 @@ fn build_menu_entries_with_flyouts(
                 y_offset += ENTRY_HEIGHT;
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "components", feature = "theme"))]
+mod tests {
+    use super::MENU_BAR_HEIGHT;
+    use rinch_core::dom::DomDocument;
+    use rinch_dom::RinchDocument;
+
+    /// The bar reserves `MENU_BAR_HEIGHT` of space with `padding-top`, but its
+    /// own height is intrinsic — so if the stylesheet renders it any taller,
+    /// content silently sits underneath it. It used to: the label inherited
+    /// `line-height` from `body` (1.55) and the bar came out ~31px against 28px
+    /// of reserved space. The label now pins `line-height`, making the two
+    /// agree by construction. This asserts they still do.
+    #[test]
+    fn menu_bar_renders_exactly_menu_bar_height() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        // Theme CSS first: the bar's `border-bottom` colour comes from
+        // `var(--rinch-color-border, var(--rinch-color-gray-3))`, and with
+        // neither defined the whole declaration is invalid at computed-value
+        // time — the border drops to 0 and the bar measures 27px. `run()`
+        // always loads the theme, so the test mirrors that.
+        let theme_style = doc.create_element("style");
+        let theme_css = doc.create_text(&rinch_theme::css::generate_theme_css(
+            &rinch_theme::Theme::default(),
+        ));
+        doc.append_child(theme_style, theme_css);
+        doc.append_child(body, theme_style);
+
+        let style = doc.create_element("style");
+        let css = doc.create_text(&rinch_components::styles::generate_all_component_styles());
+        doc.append_child(style, css);
+        doc.append_child(body, style);
+
+        let bar = doc.create_element("div");
+        doc.set_attribute(bar, "class", "rinch-app-menu-bar");
+        doc.append_child(body, bar);
+
+        let item = doc.create_element("div");
+        doc.set_attribute(item, "class", "rinch-app-menu-item");
+        doc.append_child(bar, item);
+
+        let label = doc.create_element("div");
+        doc.set_attribute(label, "class", "rinch-app-menu-item__label");
+        doc.append_child(item, label);
+        let text = doc.create_text("File");
+        doc.append_child(label, text);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        let height = doc.tree.get(bar.0).unwrap().layout.height;
+        assert_eq!(
+            height, MENU_BAR_HEIGHT as f32,
+            "the rendered menu bar must match the space reserved for it \
+             (MENU_BAR_HEIGHT); content sits under the bar otherwise"
+        );
     }
 }

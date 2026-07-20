@@ -607,6 +607,8 @@ Custom Default: `animate` and `visible` default to `true`.
 
 Custom Default: `with_overlay`, `close_on_click_outside`, `close_on_escape`, `with_close_button`, `lock_scroll`, `trap_focus` all default to `true`.
 
+Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any window chrome rinch draws (the Linux in-app menu bar, the `BorderlessWindow` titlebar) and is flush with the top of a plain window. See [Theming](./theming.md#window-chrome-inset).
+
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `opened` | `bool` | `false` | |
@@ -630,6 +632,8 @@ Custom Default: `with_overlay`, `close_on_click_outside`, `close_on_escape`, `wi
 ### Drawer
 
 Custom Default: `with_overlay`, `close_on_click_outside`, `close_on_escape`, `with_close_button`, `lock_scroll`, `trap_focus` all default to `true`.
+
+Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any window chrome rinch draws (the Linux in-app menu bar, the `BorderlessWindow` titlebar) and is flush with the top of a plain window. See [Theming](./theming.md#window-chrome-inset).
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
@@ -659,7 +663,7 @@ Custom Default: `with_close_button` defaults to `true`.
 | `opened_fn` | `Option<ReactiveBool>` | `None` | Reactive open state (auto-wrapped) |
 | `title` | `Option<String>` | `None` | |
 | `color` | `Option<String>` | `None` | |
-| `position` | `Option<String>` | `None` | Toast position |
+| `position` | `Option<String>` | `None` | Toast position. The `top-*` variants offset by `--rinch-window-top-inset` so they clear window chrome |
 | `radius` | `Option<String>` | `None` | |
 | `with_close_button` | `bool` | **`true`** | |
 | `with_border` | `bool` | `false` | |

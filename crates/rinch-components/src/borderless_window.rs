@@ -28,6 +28,10 @@ use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::element::Callback;
 use std::rc::Rc;
 
+/// Titlebar height in px. Must match `height`/`min-height` on
+/// `.rinch-borderlesswindow__titlebar` in `styles/borderless_window.rs`.
+const TITLEBAR_HEIGHT: u32 = 36;
+
 /// Callback type for section renderers.
 pub type SectionRenderer = Rc<dyn Fn(&mut RenderScope) -> NodeHandle>;
 
@@ -181,6 +185,32 @@ impl Component for BorderlessWindow {
             .as_ref()
             .map(|ctx| ctx.layout == rinch_core::MenuBarLayout::InlineTitlebar)
             .unwrap_or(false);
+
+        // How much window chrome sits above the content: the titlebar always,
+        // plus the menu bar when it renders below the titlebar (inline mode
+        // draws it *inside* the titlebar, so it adds nothing). Flow content
+        // clears this via the titlebar being in-flow and the content
+        // padding-top below, but a `position: fixed` overlay resolves against
+        // the real viewport — as it does in a browser and on rinch-web — so it
+        // has no way to know. Custom properties inherit, so a fixed descendant
+        // can opt in with `top: var(--rinch-window-top-inset, 0px)`.
+        let top_inset = TITLEBAR_HEIGHT
+            + if is_inline {
+                0
+            } else {
+                menu_ctx.as_ref().map(|ctx| ctx.bar_height).unwrap_or(0)
+            };
+        let inset_decl = format!("--rinch-window-top-inset: {top_inset}px;");
+        container.set_attribute("style", &inset_decl);
+        // Also publish it on `body`. Overlays are commonly rendered as a
+        // root-level sibling of the window chrome rather than inside it (UI Zoo
+        // does exactly this), so a declaration on the container alone would
+        // never reach them — custom properties inherit down the DOM, not across
+        // it. `set_style` writes a single property, so body's other styles are
+        // left alone.
+        __scope
+            .body_handle()
+            .set_style("--rinch-window-top-inset", &format!("{top_inset}px"));
 
         // Create titlebar (draggable for window movement)
         let titlebar = rinch_macros::rsx! { div { class: "rinch-borderlesswindow__titlebar" } };
@@ -356,7 +386,7 @@ impl Component for BorderlessWindow {
             // the titlebar. The left_section (hamburger) is rendered into the items-row
             // so it stays aligned with the menu items.
             let menu_ctx = menu_ctx.unwrap();
-            container.set_attribute("style", "position: relative;");
+            container.set_attribute("style", &format!("{inset_decl}position: relative;"));
 
             let menu_layer =
                 rinch_macros::rsx! { div { class: "rinch-app-menu-bar__inline-layer" } };
@@ -408,7 +438,7 @@ impl Component for BorderlessWindow {
             container.append_child(&menu_layer);
         } else if let Some(ctx) = menu_ctx {
             // BelowTitlebar: menu bar as LAST child with absolute positioning
-            container.set_attribute("style", "position: relative;");
+            container.set_attribute("style", &format!("{inset_decl}position: relative;"));
             let menu_bar = (ctx.renderer)(__scope);
             container.append_child(&menu_bar);
         }

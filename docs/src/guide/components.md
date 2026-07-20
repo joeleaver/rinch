@@ -480,6 +480,17 @@ Stepper { active: step.get(),
 | `HoverCard` / `HoverCardTarget` / `HoverCardDropdown` | Card on hover |
 | `LoadingOverlay` | Loading overlay for containers |
 
+`Modal`, `Drawer`, and the top-anchored `Notification` positions automatically
+clear any window chrome rinch draws (the Linux in-app menu bar, the
+`BorderlessWindow` titlebar) by offsetting with `--rinch-window-top-inset`. The
+invisible click-catching backdrops behind `DropdownMenu` and `Select` deliberately
+do not — they must catch clicks on the chrome too.
+
+If you hand-roll a `position: fixed` overlay, offset it the same way
+(`top: var(--rinch-window-top-inset, 0px)`); fixed resolves against the real
+viewport, so a bare `top: 0` renders underneath the chrome. See
+[Theming → Window Chrome Inset](./theming.md#window-chrome-inset).
+
 ```rust
 // Modal
 let modal_open = Signal::new(false);
@@ -643,6 +654,14 @@ The component provides:
 - Window control buttons with hover effects
 - Left/right custom sections for menu buttons or additional controls
 - Proper theming via CSS variables
+- `--rinch-window-top-inset` published for overlays (36px for the titlebar, plus
+  the menu bar height when one sits below it)
+
+The titlebar is an in-flow element, so your content sits below it automatically.
+A `position: fixed` overlay does not — it resolves against the real viewport and
+would cover the titlebar and its close button. Offset such overlays by
+`var(--rinch-window-top-inset, 0px)`; see
+[Theming → Window Chrome Inset](./theming.md#window-chrome-inset).
 
 ## Building Custom Components
 
@@ -837,6 +856,7 @@ Leverage Rinch's theme variables for consistency:
 | `--rinch-font-size-{xs,sm,md,lg,xl}` | Font sizes |
 | `--rinch-font-family` | Default font |
 | `--rinch-font-family-monospace` | Monospace font |
+| `--rinch-window-top-inset` | Height of the window chrome rinch draws above your content. Not theme-generated — published at runtime by the in-app menu bar / `BorderlessWindow` titlebar. A `position: fixed` overlay should offset by it (`top: var(--rinch-window-top-inset, 0px)`), since fixed resolves against the real viewport and would otherwise slide underneath the chrome. See [Theming](./theming.md#window-chrome-inset) |
 
 ### 7. Use Your Component Crate
 

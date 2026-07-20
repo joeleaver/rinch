@@ -1,9 +1,14 @@
 pub fn styles() -> String {
     r#"
-/* Modal root */
+/* Modal root.
+   `top` clears any window chrome rinch draws itself (the in-app menu bar, the
+   BorderlessWindow titlebar) — those reserve space with in-document padding,
+   which a fixed element correctly ignores. Without it the modal centres against
+   the whole window and, once the window is short enough that the modal fills
+   it, the top of the dialog is hidden behind the chrome. Fallback 0px. */
 .rinch-modal__root {
     position: fixed;
-    top: 0;
+    top: var(--rinch-window-top-inset, 0px);
     left: 0;
     right: 0;
     bottom: 0;

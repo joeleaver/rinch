@@ -1,9 +1,14 @@
 pub fn styles() -> String {
     r#"
-/* Drawer root */
+/* Drawer root.
+   `top` clears any window chrome rinch draws itself (the in-app menu bar, the
+   BorderlessWindow titlebar). Those reserve space with in-document padding,
+   which a fixed element correctly ignores — so without this the drawer slides
+   up underneath them. The fallback is 0px, so a plain window is unaffected.
+   Everything inside the root is absolute, so this shifts the whole drawer. */
 .rinch-drawer__root {
     position: fixed;
-    top: 0;
+    top: var(--rinch-window-top-inset, 0px);
     left: 0;
     right: 0;
     bottom: 0;

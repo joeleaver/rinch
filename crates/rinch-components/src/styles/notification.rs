@@ -20,20 +20,25 @@ pub fn styles() -> String {
     display: none !important;
 }
 
-/* Positions */
+/* Positions.
+   The top-anchored variants offset by --rinch-window-top-inset so they clear
+   any chrome rinch draws itself (in-app menu bar, BorderlessWindow titlebar).
+   That chrome reserves space with in-document padding, which a fixed element
+   correctly ignores — so without this a top notification renders underneath it.
+   The fallback is 0px, leaving a plain window exactly as before. */
 .rinch-notification--top-left {
-    top: var(--rinch-spacing-md);
+    top: calc(var(--rinch-window-top-inset, 0px) + var(--rinch-spacing-md));
     left: var(--rinch-spacing-md);
 }
 
 .rinch-notification--top-center {
-    top: var(--rinch-spacing-md);
+    top: calc(var(--rinch-window-top-inset, 0px) + var(--rinch-spacing-md));
     left: 50%;
     transform: translateX(-50%);
 }
 
 .rinch-notification--top-right {
-    top: var(--rinch-spacing-md);
+    top: calc(var(--rinch-window-top-inset, 0px) + var(--rinch-spacing-md));
     right: var(--rinch-spacing-md);
 }
 
