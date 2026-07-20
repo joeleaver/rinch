@@ -175,8 +175,8 @@ Icon-only button. For text-based action buttons, use `Button` with compact styli
 | `disabled` | `bool` | `false` | |
 | `required` | `bool` | `false` | |
 | `autosize` | `bool` | `false` | Auto-resize textarea |
-| `min_rows` | `Option<u32>` | `None` | |
-| `max_rows` | `Option<u32>` | `None` | |
+| `min_rows` | `Option<u32>` | `None` | Visible rows; sizes the control to that many lines. Defaults to 2 (HTML default) when unset. A larger CSS `min-height` wins |
+| `max_rows` | `Option<u32>` | `None` | Upper bound on rows when `autosize` is set |
 | `value` | `Option<String>` | `None` | |
 | `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding (auto-wrapped) |
 | `oninput` | `Option<InputCallback>` | `None` | Receives `String` |

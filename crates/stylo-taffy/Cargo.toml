@@ -7,7 +7,7 @@ keywords = ["css", "layout"]
 edition.workspace = true
 
 [dependencies]
-taffy = "0.9"
+taffy = "0.12"
 stylo = { workspace = true }
 stylo_atoms = { workspace = true }
 

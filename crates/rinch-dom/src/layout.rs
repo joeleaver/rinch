@@ -488,33 +488,33 @@ pub fn build_taffy_style_full(
             "column-gap" => style.gap.width = parse_length_percentage(value),
             "align-items" => {
                 style.align_items = Some(match value.as_str() {
-                    "flex-start" | "start" => AlignItems::FlexStart,
-                    "flex-end" | "end" => AlignItems::FlexEnd,
-                    "center" => AlignItems::Center,
-                    "baseline" => AlignItems::Baseline,
-                    "stretch" => AlignItems::Stretch,
-                    _ => AlignItems::Stretch,
+                    "flex-start" | "start" => AlignItems::FLEX_START,
+                    "flex-end" | "end" => AlignItems::FLEX_END,
+                    "center" => AlignItems::CENTER,
+                    "baseline" => AlignItems::BASELINE,
+                    "stretch" => AlignItems::STRETCH,
+                    _ => AlignItems::STRETCH,
                 });
             }
             "justify-content" => {
                 style.justify_content = Some(match value.as_str() {
-                    "flex-start" | "start" => JustifyContent::FlexStart,
-                    "flex-end" | "end" => JustifyContent::FlexEnd,
-                    "center" => JustifyContent::Center,
-                    "space-between" => JustifyContent::SpaceBetween,
-                    "space-around" => JustifyContent::SpaceAround,
-                    "space-evenly" => JustifyContent::SpaceEvenly,
-                    _ => JustifyContent::FlexStart,
+                    "flex-start" | "start" => JustifyContent::FLEX_START,
+                    "flex-end" | "end" => JustifyContent::FLEX_END,
+                    "center" => JustifyContent::CENTER,
+                    "space-between" => JustifyContent::SPACE_BETWEEN,
+                    "space-around" => JustifyContent::SPACE_AROUND,
+                    "space-evenly" => JustifyContent::SPACE_EVENLY,
+                    _ => JustifyContent::FLEX_START,
                 });
             }
             "align-self" => {
                 style.align_self = Some(match value.as_str() {
-                    "flex-start" | "start" => AlignSelf::FlexStart,
-                    "flex-end" | "end" => AlignSelf::FlexEnd,
-                    "center" => AlignSelf::Center,
-                    "baseline" => AlignSelf::Baseline,
-                    "stretch" => AlignSelf::Stretch,
-                    _ => AlignSelf::Stretch,
+                    "flex-start" | "start" => AlignSelf::FLEX_START,
+                    "flex-end" | "end" => AlignSelf::FLEX_END,
+                    "center" => AlignSelf::CENTER,
+                    "baseline" => AlignSelf::BASELINE,
+                    "stretch" => AlignSelf::STRETCH,
+                    _ => AlignSelf::STRETCH,
                 });
             }
             "flex-grow" => {

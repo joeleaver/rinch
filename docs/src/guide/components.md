@@ -183,7 +183,8 @@ NumberInput {
 // Textarea
 Textarea {
     label: "Description",
-    placeholder: "Enter your message..."
+    placeholder: "Enter your message...",
+    min_rows: 4          // visible rows; defaults to 2
 }
 
 // Checkbox

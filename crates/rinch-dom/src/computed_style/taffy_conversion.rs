@@ -82,7 +82,7 @@ impl ComputedStyle {
                     self.position,
                     PositionValue::Absolute | PositionValue::Fixed
                 ) {
-                Some(taffy::AlignSelf::FlexStart)
+                Some(taffy::AlignSelf::FLEX_START)
             } else {
                 self.align_self.map(|v| v.to_taffy())
             },

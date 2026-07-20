@@ -438,11 +438,11 @@ impl AlignItemsValue {
     /// Convert to Taffy AlignItems.
     pub fn to_taffy(&self) -> taffy::AlignItems {
         match self {
-            Self::FlexStart => taffy::AlignItems::FlexStart,
-            Self::FlexEnd => taffy::AlignItems::FlexEnd,
-            Self::Center => taffy::AlignItems::Center,
-            Self::Baseline => taffy::AlignItems::Baseline,
-            Self::Stretch => taffy::AlignItems::Stretch,
+            Self::FlexStart => taffy::AlignItems::FLEX_START,
+            Self::FlexEnd => taffy::AlignItems::FLEX_END,
+            Self::Center => taffy::AlignItems::CENTER,
+            Self::Baseline => taffy::AlignItems::BASELINE,
+            Self::Stretch => taffy::AlignItems::STRETCH,
         }
     }
 }
@@ -473,11 +473,11 @@ impl AlignSelfValue {
     /// Convert to Taffy AlignSelf.
     pub fn to_taffy(&self) -> taffy::AlignSelf {
         match self {
-            Self::FlexStart => taffy::AlignSelf::FlexStart,
-            Self::FlexEnd => taffy::AlignSelf::FlexEnd,
-            Self::Center => taffy::AlignSelf::Center,
-            Self::Baseline => taffy::AlignSelf::Baseline,
-            Self::Stretch => taffy::AlignSelf::Stretch,
+            Self::FlexStart => taffy::AlignSelf::FLEX_START,
+            Self::FlexEnd => taffy::AlignSelf::FLEX_END,
+            Self::Center => taffy::AlignSelf::CENTER,
+            Self::Baseline => taffy::AlignSelf::BASELINE,
+            Self::Stretch => taffy::AlignSelf::STRETCH,
         }
     }
 }
@@ -510,12 +510,12 @@ impl JustifyContentValue {
     /// Convert to Taffy JustifyContent.
     pub fn to_taffy(&self) -> taffy::JustifyContent {
         match self {
-            Self::FlexStart => taffy::JustifyContent::FlexStart,
-            Self::FlexEnd => taffy::JustifyContent::FlexEnd,
-            Self::Center => taffy::JustifyContent::Center,
-            Self::SpaceBetween => taffy::JustifyContent::SpaceBetween,
-            Self::SpaceAround => taffy::JustifyContent::SpaceAround,
-            Self::SpaceEvenly => taffy::JustifyContent::SpaceEvenly,
+            Self::FlexStart => taffy::JustifyContent::FLEX_START,
+            Self::FlexEnd => taffy::JustifyContent::FLEX_END,
+            Self::Center => taffy::JustifyContent::CENTER,
+            Self::SpaceBetween => taffy::JustifyContent::SPACE_BETWEEN,
+            Self::SpaceAround => taffy::JustifyContent::SPACE_AROUND,
+            Self::SpaceEvenly => taffy::JustifyContent::SPACE_EVENLY,
         }
     }
 }

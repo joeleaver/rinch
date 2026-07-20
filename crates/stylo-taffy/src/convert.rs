@@ -254,17 +254,17 @@ pub fn content_alignment(input: stylo::ContentDistribution) -> Option<taffy::Ali
     match input.primary().value() {
         stylo::AlignFlags::NORMAL => None,
         stylo::AlignFlags::AUTO => None,
-        stylo::AlignFlags::START => Some(taffy::AlignContent::Start),
-        stylo::AlignFlags::END => Some(taffy::AlignContent::End),
-        stylo::AlignFlags::LEFT => Some(taffy::AlignContent::Start),
-        stylo::AlignFlags::RIGHT => Some(taffy::AlignContent::End),
-        stylo::AlignFlags::FLEX_START => Some(taffy::AlignContent::FlexStart),
-        stylo::AlignFlags::STRETCH => Some(taffy::AlignContent::Stretch),
-        stylo::AlignFlags::FLEX_END => Some(taffy::AlignContent::FlexEnd),
-        stylo::AlignFlags::CENTER => Some(taffy::AlignContent::Center),
-        stylo::AlignFlags::SPACE_BETWEEN => Some(taffy::AlignContent::SpaceBetween),
-        stylo::AlignFlags::SPACE_AROUND => Some(taffy::AlignContent::SpaceAround),
-        stylo::AlignFlags::SPACE_EVENLY => Some(taffy::AlignContent::SpaceEvenly),
+        stylo::AlignFlags::START => Some(taffy::AlignContent::START),
+        stylo::AlignFlags::END => Some(taffy::AlignContent::END),
+        stylo::AlignFlags::LEFT => Some(taffy::AlignContent::START),
+        stylo::AlignFlags::RIGHT => Some(taffy::AlignContent::END),
+        stylo::AlignFlags::FLEX_START => Some(taffy::AlignContent::FLEX_START),
+        stylo::AlignFlags::STRETCH => Some(taffy::AlignContent::STRETCH),
+        stylo::AlignFlags::FLEX_END => Some(taffy::AlignContent::FLEX_END),
+        stylo::AlignFlags::CENTER => Some(taffy::AlignContent::CENTER),
+        stylo::AlignFlags::SPACE_BETWEEN => Some(taffy::AlignContent::SPACE_BETWEEN),
+        stylo::AlignFlags::SPACE_AROUND => Some(taffy::AlignContent::SPACE_AROUND),
+        stylo::AlignFlags::SPACE_EVENLY => Some(taffy::AlignContent::SPACE_EVENLY),
         // Should never be hit. But no real reason to panic here.
         _ => None,
     }
@@ -274,18 +274,18 @@ pub fn content_alignment(input: stylo::ContentDistribution) -> Option<taffy::Ali
 pub fn item_alignment(input: stylo::AlignFlags) -> Option<taffy::AlignItems> {
     match input.value() {
         stylo::AlignFlags::AUTO => None,
-        stylo::AlignFlags::NORMAL => Some(taffy::AlignItems::Stretch),
-        stylo::AlignFlags::STRETCH => Some(taffy::AlignItems::Stretch),
-        stylo::AlignFlags::FLEX_START => Some(taffy::AlignItems::FlexStart),
-        stylo::AlignFlags::FLEX_END => Some(taffy::AlignItems::FlexEnd),
-        stylo::AlignFlags::SELF_START => Some(taffy::AlignItems::Start),
-        stylo::AlignFlags::SELF_END => Some(taffy::AlignItems::End),
-        stylo::AlignFlags::START => Some(taffy::AlignItems::Start),
-        stylo::AlignFlags::END => Some(taffy::AlignItems::End),
-        stylo::AlignFlags::LEFT => Some(taffy::AlignItems::Start),
-        stylo::AlignFlags::RIGHT => Some(taffy::AlignItems::End),
-        stylo::AlignFlags::CENTER => Some(taffy::AlignItems::Center),
-        stylo::AlignFlags::BASELINE => Some(taffy::AlignItems::Baseline),
+        stylo::AlignFlags::NORMAL => Some(taffy::AlignItems::STRETCH),
+        stylo::AlignFlags::STRETCH => Some(taffy::AlignItems::STRETCH),
+        stylo::AlignFlags::FLEX_START => Some(taffy::AlignItems::FLEX_START),
+        stylo::AlignFlags::FLEX_END => Some(taffy::AlignItems::FLEX_END),
+        stylo::AlignFlags::SELF_START => Some(taffy::AlignItems::START),
+        stylo::AlignFlags::SELF_END => Some(taffy::AlignItems::END),
+        stylo::AlignFlags::START => Some(taffy::AlignItems::START),
+        stylo::AlignFlags::END => Some(taffy::AlignItems::END),
+        stylo::AlignFlags::LEFT => Some(taffy::AlignItems::START),
+        stylo::AlignFlags::RIGHT => Some(taffy::AlignItems::END),
+        stylo::AlignFlags::CENTER => Some(taffy::AlignItems::CENTER),
+        stylo::AlignFlags::BASELINE => Some(taffy::AlignItems::BASELINE),
         // Should never be hit. But no real reason to panic here.
         _ => None,
     }
@@ -566,6 +566,18 @@ pub fn to_taffy_style(style: &stylo::ComputedValues) -> taffy::Style<Atom> {
             y: self::overflow(style.clone_overflow_y()),
         },
         scrollbar_width: 0.0,
+
+        // Added in taffy 0.12. These are set to the values taffy 0.9 behaved as
+        // if they held, so the upgrade is behaviour-preserving:
+        //   - `direction`: rinch does not map CSS `direction` yet, so LTR (RTL
+        //     support would wire this from `style.clone_direction()`).
+        //   - `float`/`clear`: rinch-dom has no float layout.
+        // Listed explicitly rather than via `..Default::default()` so that a
+        // future taffy field addition is a compile error here, not a silent
+        // default.
+        direction: taffy::Direction::Ltr,
+        float: taffy::Float::None,
+        clear: taffy::Clear::None,
 
         size: taffy::Size {
             width: self::dimension(&pos.width),

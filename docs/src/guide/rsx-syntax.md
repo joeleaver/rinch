@@ -121,6 +121,23 @@ Mouse and click handlers read per-event data from `get_click_context()`:
 (`shift`/`ctrl`/`alt`/`meta`). These behave identically on the desktop and web
 (WASM) backends.
 
+### Sizing a `<textarea>`
+
+A `<textarea>` holds its value in an attribute rather than as child text, so it
+has no content to size against. Its height comes from `rows`, which reserves
+that many lines plus padding and border — 2 rows when unset, matching HTML:
+
+```rust
+rsx! {
+    textarea { rows: "6" }                        // six lines tall
+    textarea { style: "min-height: 200px;" }      // or size it with CSS
+}
+```
+
+`min-height` and an explicit `height` both work as usual: `height` overrides the
+`rows` height outright, and `min-height` acts as a floor, so the taller of the
+two wins. The `Textarea` component exposes the same thing as `min_rows`.
+
 ## Components
 
 Components are custom UI elements written in PascalCase. They implement the `Component` trait and render directly to DOM nodes:

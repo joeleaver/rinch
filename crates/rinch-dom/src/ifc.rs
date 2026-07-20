@@ -761,8 +761,29 @@ impl RinchDocument {
                         // Elements with explicit height (e.g. separators with
                         // height: 1px) keep their size. Always call set_style
                         // for consistent Taffy invalidation.
+                        // The line-height floor must not stomp an author
+                        // `min-height` — it is a *floor*, not an override. A
+                        // childless block (a `<textarea>`, an empty spacer div)
+                        // otherwise collapses to one line no matter what the
+                        // author asked for.
                         if style.size.height.is_auto() {
-                            style.min_size.height = taffy::Dimension::length(line_h);
+                            if let Some(author_min) = style.min_size.height.into_option() {
+                                // An explicit length: the floor is the larger of
+                                // the two.
+                                style.min_size.height =
+                                    taffy::Dimension::length(line_h.max(author_min));
+                            } else if style.min_size.height.is_auto() {
+                                style.min_size.height = taffy::Dimension::length(line_h);
+                            }
+                            // A percentage/calc min-height is left untouched so
+                            // Taffy can resolve it against the containing block
+                            // (it could not before the 0.12 upgrade, which is why
+                            // this used to flatten it to `line_h`). Note the
+                            // consequence: if the containing block's height is
+                            // indefinite the percentage resolves to zero per CSS,
+                            // so such a block collapses rather than keeping the
+                            // one-line floor. That matches browsers, and an empty
+                            // block with no min-height at all still gets the floor.
                         }
                         let _ = self.tree.taffy.set_style(taffy_id, style);
                     }

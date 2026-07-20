@@ -27,7 +27,11 @@ pub struct Textarea {
     pub required: bool,
     /// Whether the textarea should auto-resize.
     pub autosize: bool,
-    /// Minimum number of rows.
+    /// Minimum number of visible text rows.
+    ///
+    /// Renders as the `rows` attribute, which sizes the control to that many
+    /// lines (plus padding and border). Defaults to 2 rows when unset, matching
+    /// HTML. A larger CSS `min-height` still wins.
     pub min_rows: Option<u32>,
     /// Maximum number of rows.
     pub max_rows: Option<u32>,

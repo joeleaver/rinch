@@ -436,6 +436,41 @@ impl RinchDocument {
                 _ => {}
             }
 
+            // `<textarea rows=N>` maps to an intrinsic height of N lines, as
+            // browsers do. A textarea holds its value in an attribute rather
+            // than as a text child, so nothing else gives it a content height —
+            // without this it collapses to a single line regardless of `rows`.
+            // The HTML default is 2 rows.
+            if node.tag() == Some("textarea") && new_style.height.is_auto() {
+                let rows = node
+                    .attributes
+                    .get("rows")
+                    .and_then(|r| r.trim().parse::<f32>().ok())
+                    .filter(|r| *r >= 1.0)
+                    .unwrap_or(2.0);
+                let line_h = match new_style.line_height {
+                    crate::computed_style::LineHeightValue::Normal => new_style.font_size * 1.2,
+                    crate::computed_style::LineHeightValue::Relative(r) => new_style.font_size * r,
+                    crate::computed_style::LineHeightValue::Absolute(px) => px,
+                };
+                // min-height is a border-box value (rinch sets a global
+                // `box-sizing: border-box`, and Taffy defaults to it), so the
+                // padding and border have to be added on top of the line boxes.
+                let intrinsic = rows * line_h
+                    + new_style.padding_top.to_px()
+                    + new_style.padding_bottom.to_px()
+                    + new_style.border_top_width.to_px()
+                    + new_style.border_bottom_width.to_px();
+                // An author `min-height` still wins when it is the larger of
+                // the two, matching `max(rows, min-height)` in browsers.
+                let author_min = match new_style.min_height {
+                    crate::computed_style::DimensionValue::Length(px) => px,
+                    _ => 0.0,
+                };
+                new_style.min_height =
+                    crate::computed_style::DimensionValue::Length(intrinsic.max(author_min));
+            }
+
             // Check inline style for user-select override (Stylo servo build
             // doesn't handle this property).
             if let Some(style_str) = node.attributes.get("style") {

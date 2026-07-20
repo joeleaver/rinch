@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 rinch-core = { workspace = true }
 slab = "0.4"
-taffy = "0.9"
+taffy = "0.12"
 bitflags = "2"
 # Monotonic/wall clock usable on wasm32-unknown-unknown (layout perf timers + CSS
 # transition/animation clocks). Re-exports std::time on native — zero cost off web.
