@@ -910,7 +910,14 @@ impl RinchDocument {
         let border_top = node.computed_style.border_top_width.to_px();
         let border_bottom = node.computed_style.border_bottom_width.to_px();
         let gap = node.computed_style.gap_row.to_px();
+        // Children stack vertically (heights sum) when the container is a block
+        // box or a flex column; a flex row lays them side by side (take the max).
+        // Without the `Block` case a `position: fixed` block with auto height —
+        // e.g. a popup/menu appended to <body> — collapses to one child's height.
         let is_column = matches!(
+            node.computed_style.display,
+            crate::computed_style::DisplayValue::Block
+        ) || matches!(
             node.computed_style.flex_direction,
             crate::computed_style::FlexDirectionValue::Column
                 | crate::computed_style::FlexDirectionValue::ColumnReverse
@@ -935,7 +942,27 @@ impl RinchDocument {
             }
         }
 
-        content_h + pad_top + pad_bottom + border_top + border_bottom
+        let mut h = content_h + pad_top + pad_bottom + border_top + border_bottom;
+
+        // Respect the element's own min/max-height (border-box, like the rest of
+        // the box model here) so a fixed scroll container clamps and scrolls its
+        // overflow instead of growing past its cap.
+        use crate::computed_style::DimensionValue;
+        let vh = self.tree.viewport.height;
+        let resolve = |d: &DimensionValue| -> Option<f32> {
+            match d {
+                DimensionValue::Length(v) => Some(*v),
+                DimensionValue::Percent(p) => Some(p * vh),
+                DimensionValue::Auto => None,
+            }
+        };
+        if let Some(max_h) = resolve(&node.computed_style.max_height) {
+            h = h.min(max_h);
+        }
+        if let Some(min_h) = resolve(&node.computed_style.min_height) {
+            h = h.max(min_h);
+        }
+        h
     }
 
     /// Handle display:contents nodes by reparenting their taffy children
