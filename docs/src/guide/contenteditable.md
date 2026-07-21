@@ -91,6 +91,7 @@ Command names are case-sensitive. The full catalogue:
 |----------|----------|
 | **Inline marks** | `toggleBold`, `toggleItalic`, `toggleUnderline`, `toggleStrike`, `toggleCode`, `toggleHighlight`, `toggleSubscript`, `toggleSuperscript` |
 | **Block types** | `setParagraph`, `setHeading1`…`setHeading6`, `setCodeBlock` |
+| **Alignment** | `setTextAlignLeft`, `setTextAlignCenter`, `setTextAlignRight`, `setTextAlignJustify` |
 | **Containers** | `toggleBulletList`, `toggleOrderedList`, `toggleTaskList`, `wrapInBlockquote` |
 | **Lists** | `sinkListItem` (indent), `liftListItem` (outdent) |
 | **Inserts** | `insertHorizontalRule`, `insertHardBreak`, `insertTable` |
@@ -101,6 +102,12 @@ Command names are case-sensitive. The full catalogue:
 > Links need a destination, so applying a link is a builder rather than a bare named
 > command — use `handle.command("removeLink")` to clear links and the lower-level
 > link API to add one with an `href`.
+
+> Alignment applies to the textblocks (`paragraph` / `heading`) overlapping the
+> selection, including ones nested in lists, blockquotes, and table cells.
+> Re-applying the alignment a block already has is a no-op, so a toolbar button
+> bound to the current alignment stays inert. `setParagraph` ("reset to normal
+> text") clears alignment back to `left` along with the rest of the formatting.
 
 ### Querying state
 

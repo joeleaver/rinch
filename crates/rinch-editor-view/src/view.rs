@@ -96,6 +96,13 @@ fn apply_element_attrs(dom: &NodeHandle, node: &Node) {
             } else {
                 dom.set_style("margin-left", "0");
             }
+            // Horizontal alignment. Always written (resetting to "left") so switching
+            // back to the default clears a previously applied alignment, like the
+            // margin above. Only the three non-default values are honoured.
+            match node.attrs().get_str("text_align") {
+                Some(a @ ("center" | "right" | "justify")) => dom.set_style("text-align", a),
+                _ => dom.set_style("text-align", "left"),
+            }
         }
         _ => {}
     }
