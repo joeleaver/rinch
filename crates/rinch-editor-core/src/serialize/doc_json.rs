@@ -5,9 +5,10 @@
 //! marks — #59). The shape is **recursive** (nesting works), **typed**
 //! (attributes carry their `AttrValue` kind, not stringly values), and **total**:
 //!
-//! - **Serialize** ([`Node::to_doc`]) walks the schema, applies attribute
-//!   defaults, and would fail (not silently emit garbage) on a node missing a
-//!   required attribute.
+//! - **Serialize** ([`Node::to_doc`]) walks the schema and would fail (not
+//!   silently emit garbage) on a node missing a required attribute. It adds
+//!   nothing: an optional attribute the node does not carry stays off the wire,
+//!   because its default belongs to the presentation layer, not the document.
 //! - **Deserialize** ([`Schema::node_from_doc`]) consults the schema: an unknown
 //!   node or mark type is a hard [`EditorError::SchemaValidation`], never a silent
 //!   drop, and a missing required attribute is an error. The boundary either
@@ -113,14 +114,15 @@ impl<'de> Deserialize<'de> for JsonAttr {
 }
 
 /// The durable wire shape for a document node. Recursive, so nesting (lists,
-/// blockquotes, tables) is expressible; total, so every node carries its schema
-/// type name and (defaults-applied) typed attributes.
+/// blockquotes, tables) is expressible, and every node carries its schema type
+/// name and typed attributes.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct DocNode {
     /// The schema node-type name (`paragraph`, `heading`, `text`, …). Always present.
     #[serde(rename = "type")]
     pub node_type: String,
-    /// Typed attributes, defaults applied. Omitted from JSON when empty.
+    /// Typed attributes, exactly those the node carries — an unset optional is
+    /// absent rather than written at its default. Omitted from JSON when empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attrs: BTreeMap<String, JsonAttr>,
     /// Child nodes (recursive). Omitted from JSON when empty.
@@ -140,7 +142,7 @@ pub struct DocMark {
     /// The schema mark-type name (`bold`, `link`, …).
     #[serde(rename = "type")]
     pub mark_type: String,
-    /// Typed mark attributes, defaults applied. Omitted from JSON when empty.
+    /// Typed mark attributes, exactly those the mark carries. Omitted when empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attrs: BTreeMap<String, JsonAttr>,
 }
@@ -148,7 +150,8 @@ pub struct DocMark {
 impl Node {
     /// Serialize this node (and its subtree) to the durable [`DocNode`] wire shape.
     ///
-    /// Attribute defaults are applied so the wire is total. Returns
+    /// Faithful in both directions: nothing is added and nothing is dropped, so
+    /// `to_doc` → [`Schema::node_from_doc`] returns an equal node. Returns
     /// [`EditorError::SchemaValidation`] if any node is missing a required
     /// attribute (such a node was never a valid document and must not be silently
     /// persisted).
@@ -496,10 +499,13 @@ mod tests {
         assert!(s.node_from_doc(&wire).is_err());
     }
 
+    /// Deserializing adds nothing. An optional attribute absent from the wire stays
+    /// absent on the node; its default is resolved by whoever reads it, so the
+    /// document carries one representation rather than two.
     #[test]
-    fn deserialize_fills_optional_defaults() {
+    fn deserialize_leaves_unset_optionals_absent() {
         let s = Schema::starter_kit();
-        // heading with no `level` on the wire → default Int(1) on the node
+        // heading with no `level` on the wire → still no `level` on the node
         let wire = DocNode {
             node_type: "heading".to_string(),
             attrs: BTreeMap::new(),
@@ -508,7 +514,41 @@ mod tests {
             marks: vec![],
         };
         let node = s.node_from_doc(&wire).unwrap();
-        assert_eq!(node.attrs().get_int("level"), Some(1));
+        assert_eq!(node.attrs().get_int("level"), None);
+        // Readers supply the default at the point of use, which is how the level
+        // still renders as 1.
+        assert_eq!(node.attrs().get_int("level").unwrap_or(1), 1);
+    }
+
+    /// The wire round-trip adds and removes nothing, for either representation.
+    ///
+    /// Filling defaults on the way through used to make these differ: a node built
+    /// with no attrs came back carrying its defaults — equal in meaning, unequal as
+    /// a value, and identical under `Debug`.
+    #[test]
+    fn round_trip_is_faithful_for_unset_and_explicit_defaults() {
+        let s = Schema::starter_kit();
+        let para = s.node_type("paragraph").unwrap().clone();
+
+        // (a) nothing set.
+        let bare = Node::new_branch(para.clone(), Attrs::new(), Fragment::empty());
+        let back = s.node_from_doc(&bare.to_doc().unwrap()).unwrap();
+        assert_eq!(back, bare, "an attrless node must round-trip unchanged");
+        assert!(back.attrs().is_empty());
+
+        // (b) an attribute explicitly set to its own default value is a real value
+        //     and must survive as one, not collapse into (a).
+        let explicit = Node::new_branch(
+            para,
+            Attrs::from_iter([("indent", AttrValue::Int(0))]),
+            Fragment::empty(),
+        );
+        let back = s.node_from_doc(&explicit.to_doc().unwrap()).unwrap();
+        assert_eq!(
+            back, explicit,
+            "an explicit default must round-trip unchanged"
+        );
+        assert_eq!(back.attrs().get_int("indent"), Some(0));
     }
 
     #[test]

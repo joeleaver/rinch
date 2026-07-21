@@ -20,20 +20,36 @@ use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-/// Compute the full, typed attribute set for a node/mark of the given spec from a
-/// (possibly partial) set of `provided` attributes — the port of ProseMirror's
-/// `computeAttrs`. For each attribute the type *declares*:
+/// Validate and normalize the attribute set for a node/mark of the given spec from
+/// a (possibly partial) set of `provided` attributes. For each attribute the type
+/// *declares*:
 ///
 /// - if `provided` carries it, keep that value;
-/// - else if the spec has a default, fill the default;
+/// - else if the spec has a default, **leave it absent**;
 /// - else (a required attribute with no default) return
 ///   [`EditorError::SchemaValidation`].
 ///
 /// Attributes present in `provided` but **not declared** by the spec are dropped
 /// (PM behavior) — a node never carries undeclared attrs, which keeps the model,
-/// equality, and serialization clean. The result is total (every declared attr is
-/// present) and deterministic (keys are ordered by [`Attrs`]'s `BTreeMap`), and
-/// the function is idempotent: `compute(compute(x)) == compute(x)`.
+/// equality, and serialization clean. The result is deterministic (keys ordered by
+/// [`Attrs`]'s `BTreeMap`) and idempotent: `compute(compute(x)) == compute(x)`.
+///
+/// # Absent means unspecified
+///
+/// An optional attribute that was never set stays **absent** rather than being
+/// materialized to its default. The default belongs to the presentation layer, not
+/// to the stored document: the view resolves a missing `text_align` to left-aligned
+/// and the HTML serializer omits it, exactly as CSS supplies an initial value
+/// without writing it onto the element. Recording it in the data would assert an
+/// intent the user never expressed, and would freeze today's default into documents
+/// that outlive it.
+///
+/// This is also what makes the wire round-trip faithful. Filling here meant a
+/// freshly built paragraph (`{}`) came back as `{indent: 0}` — equal in meaning,
+/// unequal as a value, and identical under `Debug`, which made the mismatch
+/// baffling to read. Adding nothing and removing nothing, `to_doc` → `node_from_doc`
+/// is now lossless for both an unset attribute and one explicitly set to its
+/// default value.
 fn compute_attrs(
     specs: &BTreeMap<String, AttrSpec>,
     provided: &Attrs,
@@ -47,8 +63,10 @@ fn compute_attrs(
     for (name, spec) in specs {
         if let Some(v) = provided.get(name) {
             pairs.push((name.as_str().into(), v.clone()));
-        } else if let Some(default) = &spec.default {
-            pairs.push((name.as_str().into(), default.clone()));
+        } else if spec.default.is_some() {
+            // Optional and unset: leave it absent. Readers resolve the default at
+            // the point of use, so storing it here would only add a second
+            // representation of the same document.
         } else {
             return Err(EditorError::SchemaValidation(format!(
                 "missing required attribute '{name}' on {kind} '{type_name}'"
@@ -235,21 +253,27 @@ mod tests {
     use crate::Schema;
     use crate::model::{AttrValue, Attrs};
 
+    /// An optional attribute that was never set stays **absent** — the default is
+    /// resolved by whoever reads it (the view, the serializers), not baked into the
+    /// stored document. Keeping one representation is what makes the DocNode wire
+    /// round-trip faithful.
     #[test]
-    fn compute_attrs_fills_defaults() {
+    fn compute_attrs_leaves_unset_optionals_absent() {
         let s = Schema::starter_kit();
-        // heading.level defaults to Int(1)
+        // heading.level, task_item.checked and ordered_list.start all declare
+        // defaults; none of them materialize when unset.
         let heading = s.node_type("heading").unwrap();
         let computed = heading.compute_attrs(&Attrs::new()).unwrap();
-        assert_eq!(computed.get_int("level"), Some(1));
-        // task_item.checked defaults to Bool(false), ordered_list.start to Int(1)
+        assert_eq!(computed.get_int("level"), None);
+        assert!(computed.is_empty(), "no optional default is materialized");
+
         assert_eq!(
             s.node_type("task_item")
                 .unwrap()
                 .compute_attrs(&Attrs::new())
                 .unwrap()
                 .get_bool("checked"),
-            Some(false)
+            None
         );
         assert_eq!(
             s.node_type("ordered_list")
@@ -257,8 +281,23 @@ mod tests {
                 .compute_attrs(&Attrs::new())
                 .unwrap()
                 .get_int("start"),
-            Some(1)
+            None
         );
+    }
+
+    /// A value equal to the default is still a value: if a caller sets it, it is
+    /// kept, so "explicitly default" and "unspecified" both survive a round-trip as
+    /// themselves rather than collapsing together.
+    #[test]
+    fn compute_attrs_keeps_an_explicitly_default_value() {
+        let s = Schema::starter_kit();
+        let provided = Attrs::from_iter([("level", AttrValue::Int(1))]); // == the default
+        let computed = s
+            .node_type("heading")
+            .unwrap()
+            .compute_attrs(&provided)
+            .unwrap();
+        assert_eq!(computed.get_int("level"), Some(1));
     }
 
     #[test]

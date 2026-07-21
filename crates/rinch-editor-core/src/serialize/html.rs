@@ -1534,9 +1534,10 @@ mod tests {
             align_of(r#"<p style="color:red; text-align:right">x</p>"#).as_deref(),
             Some("right")
         );
-        // Everything else reads back as the schema's `left` default — the parser
-        // attaches no `text_align`, so `make_node` fills the default in. That is the
-        // safe fallback: a value outside the whitelist is dropped, never trusted.
+        // Everything else leaves `text_align` **absent**. A value outside the
+        // whitelist is dropped rather than trusted, and an unset optional attribute
+        // is not materialized to its default — the view and the serializer resolve a
+        // missing alignment to left-aligned at the point of use.
         for html in [
             r#"<p style="text-align:left">x</p>"#, // the default, stated explicitly
             r#"<p style="text-align:end">x</p>"#,  // valid CSS, outside the whitelist
@@ -1544,9 +1545,9 @@ mod tests {
             r#"<p>x</p>"#, // no style at all
         ] {
             assert_eq!(
-                align_of(html).as_deref(),
-                Some("left"),
-                "unrecognized alignment must fall back to the default: {html}"
+                align_of(html),
+                None,
+                "an unrecognized alignment must be dropped, not stored: {html}"
             );
         }
         // A rejected alignment must also not leak into the re-serialized markup.

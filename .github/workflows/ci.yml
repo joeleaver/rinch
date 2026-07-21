@@ -54,6 +54,15 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
+      # The `serde` feature gates the durable DocNode wire format, and
+      # `cargo test --workspace` never enables it — so that surface went unrun
+      # until #123, where a lossless-round-trip test had been failing on main
+      # unnoticed. Same for `collaboration`, which gates the CRDT adapter wiring.
+      - name: Run feature-gated tests
+        run: |
+          cargo test -p rinch-editor-core --features serde
+          cargo test -p rinch-editor-view --features collaboration
+
   clippy:
     runs-on: ubuntu-latest
     steps:
