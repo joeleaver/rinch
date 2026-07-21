@@ -33,11 +33,15 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
+      # `--locked` builds these tools from their own published lockfiles. Without it
+      # cargo re-resolves their transitive deps to latest-semver-compatible, which is
+      # what broke this job: trunk pulled cssparser 0.33 and 0.37 into one graph and
+      # lightningcss failed to compile against the mismatched types.
       - name: Install mdbook
-        run: cargo install mdbook --no-default-features
+        run: cargo install mdbook --locked --no-default-features
 
       - name: Install trunk
-        run: cargo install trunk
+        run: cargo install trunk --locked
 
       - name: Cache cargo registry
         uses: actions/cache@v4
