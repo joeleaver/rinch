@@ -1256,3 +1256,123 @@ fn test_empty_block_line_height_floor_survives_percentage_work() {
     let sep = pct_doc(DEFINITE_PARENT, "height: 1px; width: 10px", None);
     assert_eq!(sep, 1.0);
 }
+// ── Viewport-resize relayout (native prose "min-content" bug) ─────────────
+//
+// The native-only bug: prose injected via `set_inner_html` and first laid out
+// at a degenerate/tiny viewport (the window before its first real resize) kept
+// its narrow first-layout width — often min-content, one word per line — after
+// the window grew. The viewport IS the layout root's available space, so a size
+// change must force a Taffy recompute even when no node's Taffy *style* changed
+// (an all-`auto`/fixed subtree produces identical Taffy styles at every size).
+// Before the fix, `resolve_layout`'s `if !layout_dirty { return }` early-out
+// stranded such trees at their first-layout width. See `resolve_layout`.
+
+/// Prose injected via `set_inner_html` and first laid out in a tiny viewport
+/// must fill the container once the viewport grows — not stay stuck at the
+/// narrow first-layout (min-content) width. This is the reader/typography-page
+/// symptom (prose wrapping at ~its longest word).
+#[test]
+fn test_prose_fills_after_viewport_grows() {
+    const PROSE: &str = "The quick brown fox jumps over the lazy dog and \
+continues running across the meadow toward the distant treeline where the \
+shadows gather at dusk.";
+
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    // width:auto — the container derives its width from the viewport.
+    doc.append_child(body, container);
+    doc.set_inner_html(container, &format!("<p>{PROSE}</p>"));
+
+    // First layout while the window is still tiny (e.g. before the first real
+    // resize event), then grow to a real size.
+    doc.resolve_layout(20.0, 600.0);
+    doc.resolve_layout(1000.0, 600.0);
+
+    let container_w = doc.tree.get(container.0).unwrap().layout.width;
+    let p_id = rinch_dom::testing::query_selector(&doc.tree, "p")[0];
+    let p_w = doc.tree.get(p_id).unwrap().layout.width;
+
+    assert!(
+        (container_w - 1000.0).abs() < 1.0,
+        "auto-width container must track the grown viewport, got {container_w}"
+    );
+    assert!(
+        p_w > 900.0,
+        "prose <p> must fill the grown container, got {p_w} (container {container_w})"
+    );
+}
+
+/// General correctness: a `grid-template-columns: 120px 1fr` grid in a
+/// definite-width block resolves the `1fr` track to the remaining space.
+/// (This path was already correct — the Stylo→Taffy `fr` translation works;
+/// see the note on the ignored test below and the investigation report.)
+#[test]
+fn test_grid_1fr_track_fills_remaining_space() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let grid = doc.create_element("div");
+    doc.set_attribute(
+        grid,
+        "style",
+        "display: grid; grid-template-columns: 120px 1fr; width: 600px; height: 40px;",
+    );
+    doc.append_child(body, grid);
+    let fixed = doc.create_element("div");
+    doc.append_child(grid, fixed);
+    let flex = doc.create_element("div");
+    doc.append_child(grid, flex);
+
+    doc.resolve_layout(1000.0, 600.0);
+
+    let fixed_w = doc.tree.get(fixed.0).unwrap().layout.width;
+    let flex_w = doc.tree.get(flex.0).unwrap().layout.width;
+    assert!((fixed_w - 120.0).abs() < 1.0, "fixed track, got {fixed_w}");
+    assert!(
+        (flex_w - 480.0).abs() < 1.0,
+        "1fr track should be 480, got {flex_w}"
+    );
+}
+
+// ── inline-block percentage width collapse (native grid "1fr → 0" bug) ─────
+//
+// PROVEN-BUG, NOT YET FIXED — tracked in issue #120.
+//
+// This test is `#[ignore]`d, so CI never runs it. #120 is the live tracker;
+// un-ignore this test as part of closing it.
+//
+// The native "grid collapses / children squeezed to ~22×14" report is an
+// *inline-block* bug, not a grid-track bug: an inline-block (an `<input>`
+// defaults to inline-block) with a percentage main-size collapses to
+// min-content. `compute_inline_block_layouts` pre-measures inline-blocks
+// detached from Taffy under `AvailableSpace::MaxContent`, so a `width: 100%`
+// has no definite containing block to resolve against and falls to ~0 (just
+// padding). A block-level `width: 100%` resolves correctly, and a *definite*
+// inline-block width (`200px`) passes through — only percentages break.
+//
+// A correct fix needs the containing block's definite inner width at
+// pre-measure time, which is not known until the main Taffy compute runs
+// (ordering hazard). That is invasive/risky, so it is deliberately left for a
+// dedicated change rather than patched with a stale-width heuristic here.
+#[test]
+#[ignore = "issue #120: inline-block percentage width collapses under MaxContent premeasure; fix is invasive (needs containing-block width before layout)"]
+fn test_inline_block_percent_width_fills_containing_block() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let cell = doc.create_element("div");
+    doc.set_attribute(cell, "style", "width: 700px; height: 40px;");
+    doc.append_child(body, cell);
+    let ib = doc.create_element("div");
+    doc.set_attribute(ib, "style", "display: inline-block; width: 100%;");
+    doc.append_child(cell, ib);
+
+    doc.resolve_layout(1000.0, 800.0);
+
+    let ib_w = doc.tree.get(ib.0).unwrap().layout.width;
+    // Desired (browser) behaviour: 100% of the 700px containing block.
+    // Currently produces ~0 — this assert fails until the bug is fixed.
+    assert!(
+        ib_w > 690.0,
+        "inline-block width:100% should fill its 700px containing block, got {ib_w}"
+    );
+}
