@@ -58,6 +58,22 @@ fn set_nid(node: &web_sys::Node, id: NodeId) {
     NODE_REGISTRY.with(|m| m.borrow_mut().insert(id.0, node.clone()));
 }
 
+/// Coerces a scroll offset to whatever `Element::set_scroll_{top,left}` expects.
+///
+/// web-sys types these setters as `i32` on stable, but as `f64` under
+/// `--cfg=web_sys_unstable_apis` (which an OPFS storage backend needs for
+/// `FileSystemSyncAccessHandle`). Converting here keeps the call sites clean and
+/// preserves sub-pixel scroll offsets on the unstable path.
+#[cfg(web_sys_unstable_apis)]
+fn scroll_px(v: f64) -> f64 {
+    v
+}
+
+#[cfg(not(web_sys_unstable_apis))]
+fn scroll_px(v: f64) -> i32 {
+    v as i32
+}
+
 /// Returns true if the tag name is an SVG element.
 ///
 /// SVG elements must be created with `createElementNS` using the SVG namespace,
@@ -642,7 +658,7 @@ impl DomDocument for WebDocument {
         if let Some(n) = self.nodes.get(&node.0)
             && let Ok(el) = n.clone().dyn_into::<web_sys::Element>()
         {
-            el.set_scroll_top(scroll_top as i32);
+            el.set_scroll_top(scroll_px(scroll_top));
         }
     }
 
@@ -666,7 +682,7 @@ impl DomDocument for WebDocument {
         if let Some(n) = self.nodes.get(&node.0)
             && let Ok(el) = n.clone().dyn_into::<web_sys::Element>()
         {
-            el.set_scroll_left(scroll_left as i32);
+            el.set_scroll_left(scroll_px(scroll_left));
         }
     }
 

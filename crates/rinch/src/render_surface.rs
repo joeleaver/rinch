@@ -1309,6 +1309,12 @@ fn web_blit_surface(surface_id: usize, buffer: &Arc<Mutex<SurfaceBuffer>>) {
             if let Ok(img) =
                 web_sys::ImageData::new_with_u8_clamped_array_and_sh(clamped, buf.width, buf.height)
             {
+                // The dx/dy args are `f64` in stable web-sys but `i32` under the
+                // `web_sys_unstable_apis` cfg (which a future OPFS storage backend
+                // needs). Pick the literal type per-cfg so both builds compile.
+                #[cfg(web_sys_unstable_apis)]
+                let _ = ctx.put_image_data(&img, 0, 0);
+                #[cfg(not(web_sys_unstable_apis))]
                 let _ = ctx.put_image_data(&img, 0.0, 0.0);
             }
         }

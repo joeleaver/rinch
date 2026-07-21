@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 description = "A lightweight cross-platform GUI library for Rust"
 
+# `web_sys_unstable_apis` is set by downstream consumers (via RUSTFLAGS) that need
+# unstable web-sys APIs such as OPFS's `FileSystemSyncAccessHandle`. It is not a
+# cargo feature, so declare it here or `unexpected_cfgs` fires on every wasm build.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(web_sys_unstable_apis)'] }
+
 [dependencies]
 # Always available (work on all platforms)
 rinch-core.workspace = true
