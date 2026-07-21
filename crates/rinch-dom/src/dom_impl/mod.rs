@@ -172,6 +172,22 @@ impl RinchDocument {
                 display: inline-block;
             }
 
+            /* A closed <select> shows the selected option's label (painted by the
+               backend) plus a dropdown arrow — its <option>/<optgroup> children are
+               not laid out. Reserve room on the right for the arrow, and a
+               min-width so an unstyled control doesn't collapse to its padding.
+               The interactive popup is drawn by the app/shell layer (issue #121). */
+            option, optgroup {
+                display: none;
+            }
+
+            select {
+                padding: 4px 24px 4px 8px;
+                min-width: 60px;
+                white-space: nowrap;
+                overflow: hidden;
+            }
+
             /* Default list indentation (matches browser default) */
             ul, ol {
                 padding-left: 40px;

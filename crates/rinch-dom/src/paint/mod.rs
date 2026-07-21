@@ -7,6 +7,7 @@ mod borders;
 mod contenteditable;
 pub mod image;
 pub mod painter;
+mod select;
 mod svg;
 mod text;
 pub mod vello_painter;
@@ -1005,6 +1006,22 @@ fn paint_node(
                 if matches!(node.tag(), Some("input" | "textarea")) {
                     paint_input_value(
                         node,
+                        painter,
+                        scale,
+                        x,
+                        y,
+                        w,
+                        h,
+                        font_cx,
+                        layout_cx,
+                        node_transform,
+                    );
+                } else if node.tag() == Some("select") {
+                    // The closed control's label + arrow. Options are display:none
+                    // (they don't lay out); the selected label is painted here.
+                    select::paint_select_value(
+                        tree,
+                        node_id,
                         painter,
                         scale,
                         x,

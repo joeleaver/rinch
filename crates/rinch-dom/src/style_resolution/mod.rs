@@ -471,6 +471,40 @@ impl RinchDocument {
                     crate::computed_style::DimensionValue::Length(intrinsic.max(author_min));
             }
 
+            // A closed `<select>` shows one option's label, so browsers size it to
+            // fit the *widest* option — the width stays stable when the selection
+            // changes. Its `<option>` children are `display:none` and give it no
+            // content, so without this the control collapses to its padding and
+            // clips the label. Only applied when the author left `width: auto`; an
+            // explicit width is respected and the label clips (the painter clips
+            // too). The text width is estimated from the label length rather than
+            // measured with Parley (not available at style-resolution time) —
+            // erring wide is harmless since the painter clips to the content box.
+            if node.tag() == Some("select") && new_style.width.is_auto() {
+                let model = crate::select::resolve_select_model(&self.tree, node_id);
+                let widest = model
+                    .options
+                    .iter()
+                    .map(|o| o.label.chars().count())
+                    .max()
+                    .unwrap_or(0);
+                if widest > 0 {
+                    let text_w = widest as f32 * new_style.font_size * 0.62;
+                    // border-box, and padding_right already reserves the arrow box.
+                    let intrinsic = text_w
+                        + new_style.padding_left.to_px()
+                        + new_style.padding_right.to_px()
+                        + new_style.border_left_width.to_px()
+                        + new_style.border_right_width.to_px();
+                    let author_min = match new_style.min_width {
+                        crate::computed_style::DimensionValue::Length(px) => px,
+                        _ => 0.0,
+                    };
+                    new_style.min_width =
+                        crate::computed_style::DimensionValue::Length(intrinsic.max(author_min));
+                }
+            }
+
             // Check inline style for user-select override (Stylo servo build
             // doesn't handle this property).
             if let Some(style_str) = node.attributes.get("style") {
