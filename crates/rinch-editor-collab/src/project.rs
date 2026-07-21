@@ -7,20 +7,22 @@
 //! 1. The unchanged leading/trailing blocks are skipped by **`Rc` identity**
 //!    ([`Node::same_ref`]) — the persistent model shares every untouched block, so
 //!    typing one character reads and re-splices exactly one block.
-//! 2. Each changed block is reconciled in place ([`CollabDoc::reconcile_block`]) with a
+//! 2. Each changed block is reconciled in place ([`CollabDoc::reconcile_node`]) with a
 //!    minimal common-prefix/suffix text splice, so the per-character CRDT identity of
 //!    unchanged text survives and concurrent edits merge.
 //! 3. The net block-count difference is inserted/deleted at the boundary, preserving
 //!    the identity of the leading reconciled blocks (so a split keeps block N's text
 //!    object and only *adds* the tail block).
 //!
-//! Any non-flat node anywhere in `before` or `after` fails loud
-//! ([`CollabError::Unsupported`], design A22).
+//! A changed top-level *list* reconciles recursively (same diff, one level down), so a
+//! keystroke inside one list item re-splices only that item's text object. Any node
+//! outside the supported scope (a non-list nested block, an inline atom) anywhere in
+//! `before` or `after` fails loud ([`CollabError::Unsupported`], design A22).
 
 use rinch_editor_core::{Node, Transaction};
 
 use crate::error::Result;
-use crate::projection::{CollabDoc, read_block};
+use crate::projection::{CollabDoc, read_node};
 
 impl CollabDoc {
     /// Project a freshly-applied local transaction onto the CRDT. A no-op for a
@@ -71,23 +73,25 @@ impl CollabDoc {
         // wedging the session in a half-projected state.
         let mut targets = Vec::with_capacity(post_mid);
         for k in 0..post_mid {
-            targets.push(read_block(after.child(prefix + k))?);
+            targets.push(read_node(after.child(prefix + k))?);
         }
         for idx in prefix + common..prefix + pre_mid {
             // Validate (and discard) each block being deleted — fail loud if non-flat.
-            read_block(before.child(idx))?;
+            read_node(before.child(idx))?;
         }
 
         // Writes — past here only an automerge I/O error can fail, not a content one.
-        // Reconcile the overlapping changed blocks in place (keeps identity).
+        // Reconcile the overlapping changed blocks in place (keeps identity). A changed
+        // top-level list reconciles recursively, touching only the edited descendant.
+        let content = self.content.clone();
         for (k, target) in targets.iter().take(common).enumerate() {
-            self.reconcile_block(prefix + k, target)?;
+            self.reconcile_node(&content, prefix + k, target)?;
         }
         // Insert the extra post blocks (e.g. the tail of a split). `targets` has
         // exactly `post_mid` entries, so skipping `common` yields indices
         // `common..post_mid`.
         for (k, target) in targets.iter().enumerate().skip(common) {
-            self.insert_block(prefix + k, target)?;
+            self.insert_node(&content, prefix + k, target)?;
         }
         // Delete the extra pre blocks (e.g. a join, or a block deletion). `common` is
         // the min, so at most one of insert/delete runs; when this runs the CRDT

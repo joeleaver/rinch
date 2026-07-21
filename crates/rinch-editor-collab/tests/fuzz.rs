@@ -1,6 +1,7 @@
 //! Seeded, deterministic fuzz/property tests for the collab adapter.
 //!
-//! Two invariants are stress-tested over thousands of random flat-text edits:
+//! Two invariants are stress-tested over thousands of random edits, spanning both
+//! flat text-blocks and list containers (nested to depth 3 in practice):
 //!
 //! 1. **`model ≡ project(model)`** — after EVERY local edit, the CRDT must read
 //!    back (`projected_doc`) as *exactly* the editor model that produced it. This is
@@ -84,12 +85,14 @@ fn random_text(rng: &mut Rng) -> String {
         .collect()
 }
 
-/// Apply one random *flat-scope* edit (insert / delete / mark / split / block-type)
-/// to `state`. Returns `None` (skip) when the random selection makes the op invalid
-/// — the fuzz tolerates skips. Never produces non-flat content, so `record_local`
-/// never hits the A22 `Unsupported` boundary.
+/// Apply one random *projectable* edit to `state` — insert / delete / mark / split /
+/// block-type, plus the list container ops (wrap, unwrap, indent, outdent). Returns
+/// `None` (skip) when the random selection makes the op invalid; the fuzz tolerates
+/// skips. Stays inside the projected scope (no task lists, blockquotes, tables, or
+/// inline atoms), so `record_local` never hits the A22 `Unsupported` boundary — a
+/// failure here is a real projection bug, not an out-of-scope node.
 fn random_edit(rng: &mut Rng, state: &EditorState) -> Option<EditorState> {
-    match rng.below(9) {
+    match rng.below(11) {
         // Insert text (weighted — the common case).
         0..=3 => {
             let p = random_pos(rng, state);
@@ -133,6 +136,29 @@ fn random_edit(rng: &mut Rng, state: &EditorState) -> Option<EditorState> {
             let mut tr = state.tr();
             tr.set_selection(Selection::cursor(p));
             state.apply(tr).run("splitBlock")
+        }
+        // Wrap/unwrap the block in a list, and nest/un-nest list items. These are the
+        // container operations — they are what makes the projection recursive, so the
+        // fuzz has to produce them or list convergence goes untested. Only the
+        // projectable containers appear here: task lists and blockquotes are still
+        // `Unsupported`, and generating one would (correctly) fail the projection
+        // assertion below rather than find a real bug.
+        9 => {
+            let p = random_pos(rng, state);
+            let mut tr = state.tr();
+            tr.set_selection(Selection::cursor(p));
+            let placed = state.apply(tr);
+            let cmd = ["toggleBulletList", "toggleOrderedList"][rng.below(2)];
+            placed.run(cmd)
+        }
+        // Indent / outdent a list item (creates and collapses nesting depth).
+        10 => {
+            let p = random_pos(rng, state);
+            let mut tr = state.tr();
+            tr.set_selection(Selection::cursor(p));
+            let placed = state.apply(tr);
+            let cmd = ["sinkListItem", "liftListItem"][rng.below(2)];
+            placed.run(cmd)
         }
         // Set the block type (paragraph / heading / code_block — all flat).
         _ => {

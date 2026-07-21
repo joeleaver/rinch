@@ -10,8 +10,8 @@ use std::rc::Rc;
 
 use rinch_editor_collab::{CollabPlugin, CollabSession, RemoteOp, rebase_steps};
 use rinch_editor_core::{
-    AttrValue, Attrs, EditorState, Fragment, Mark, Node, Plugin, Pos, Schema, Selection, Step,
-    Transaction, default_plugins,
+    AttrValue, Attrs, EditorState, Fragment, Mark, Node, Plugin, Pos, Schema, Selection, Slice,
+    Step, Transaction, default_plugins,
 };
 
 // --- harness -------------------------------------------------------------------
@@ -35,6 +35,44 @@ fn doc_of(schema: &Schema, blocks: Vec<Node>) -> Node {
     schema
         .branch("doc", Fragment::from_children(blocks))
         .unwrap()
+}
+
+fn list_item(schema: &Schema, blocks: Vec<Node>) -> Node {
+    schema
+        .branch("list_item", Fragment::from_children(blocks))
+        .unwrap()
+}
+
+fn bullet_list(schema: &Schema, items: Vec<Node>) -> Node {
+    schema
+        .branch("bullet_list", Fragment::from_children(items))
+        .unwrap()
+}
+
+fn ordered_list(schema: &Schema, start: i64, items: Vec<Node>) -> Node {
+    schema
+        .create_node(
+            "ordered_list",
+            Attrs::new().with("start", start),
+            Fragment::from_children(items),
+        )
+        .unwrap()
+}
+
+/// A fully recursive canonical string form of a document (nesting-aware), so two
+/// structurally-equal trees — however deeply nested — compare equal regardless of how
+/// text/marks/children were assembled. `norm` above is the flat-only sibling the
+/// original tests use.
+fn tree(n: &Node) -> String {
+    if let Some(t) = n.text() {
+        return format!("«{}|{}»", t, canon_marks(n).join("+"));
+    }
+    let mut s = format!("<{} {}>", n.type_name(), norm_attrs(n));
+    for i in 0..n.child_count() {
+        s.push_str(&tree(n.child(i)));
+    }
+    s.push_str("</>");
+    s
 }
 
 /// One collaborating editor: its model state plus its CRDT session.
@@ -505,6 +543,176 @@ fn unsupported_change_does_not_partially_mutate() {
         original,
         norm(&cdoc.to_doc(&schema).unwrap()),
         "an unsupported change must not partially mutate the CRDT (block 0 stays \"alpha\")"
+    );
+}
+
+// --- lists (bullet / ordered / nested list items) ------------------------------
+
+#[test]
+fn projection_round_trips_bullet_and_ordered_lists_with_nesting_and_marks() {
+    // The headline list test: a document whose content is a bullet list (with a
+    // bold+italic run and a nested bullet list inside a list item) and an ordered list
+    // (start=3) survives the CRDT round-trip byte-for-byte — structure, order, nesting
+    // depth, list attrs, and inline marks all preserved.
+    let schema = Rc::new(Schema::starter_kit());
+    let bold = Mark::simple(schema.mark_type("bold").unwrap().clone());
+    let italic = Mark::simple(schema.mark_type("italic").unwrap().clone());
+
+    // Item 1: a paragraph with a plain run + a bold+italic run.
+    let item1 = list_item(
+        &schema,
+        vec![
+            schema
+                .create_node(
+                    "paragraph",
+                    Default::default(),
+                    Fragment::from_children(vec![
+                        schema.text("plain ").unwrap(),
+                        schema
+                            .text_with_marks("strong", vec![bold.clone(), italic.clone()])
+                            .unwrap(),
+                    ]),
+                )
+                .unwrap(),
+        ],
+    );
+    // Item 2: a paragraph plus a *nested* bullet list (depth 2).
+    let nested = bullet_list(
+        &schema,
+        vec![list_item(&schema, vec![para(&schema, "nested item")])],
+    );
+    let item2 = list_item(&schema, vec![para(&schema, "outer"), nested]);
+    let bullet = bullet_list(&schema, vec![item1, item2]);
+
+    let ordered = ordered_list(
+        &schema,
+        3,
+        vec![
+            list_item(&schema, vec![para(&schema, "first")]),
+            list_item(&schema, vec![para(&schema, "second")]),
+        ],
+    );
+
+    let doc = doc_of(&schema, vec![para(&schema, "intro"), bullet, ordered]);
+
+    let cdoc = rinch_editor_collab::CollabDoc::from_doc(&doc).unwrap();
+    let back = cdoc.to_doc(&schema).unwrap();
+    assert_eq!(tree(&doc), tree(&back), "list round-trip must be lossless");
+    // Structural equality is the strongest form of the same claim.
+    assert_eq!(doc, back);
+}
+
+#[test]
+fn concurrent_edits_in_different_list_items_converge() {
+    // Two peers edit *different* items of the same bullet list. Because every text-block
+    // keeps its own Text object however deeply nested, the two edits touch different
+    // CRDT objects and must merge without loss.
+    let schema = Rc::new(Schema::starter_kit());
+    let list = bullet_list(
+        &schema,
+        vec![
+            list_item(&schema, vec![para(&schema, "one")]),
+            list_item(&schema, vec![para(&schema, "two")]),
+        ],
+    );
+    let (schema, mut a, mut b) = {
+        let _ = &schema;
+        two_peers(vec![list])
+    };
+    // Positions: doc>ul>li>p>text. "one" ends at model pos 6; "two" ends at pos 13.
+    a.type_at(6, "A"); // item 0 -> "oneA"
+    b.type_at(13, "B"); // item 1 -> "twoB"
+    sync(&mut a, &mut b);
+
+    let pa = a.session.projected_doc(&schema).unwrap();
+    let pb = b.session.projected_doc(&schema).unwrap();
+    assert_eq!(tree(&pa), tree(&pb), "list projections must converge");
+    assert_eq!(tree(&a.state.doc), tree(&pa), "peer A model ≡ projection");
+    assert_eq!(tree(&b.state.doc), tree(&pb), "peer B model ≡ projection");
+    let t = tree(&pa);
+    assert!(
+        t.contains("oneA") && t.contains("twoB"),
+        "both list-item edits kept: {t}"
+    );
+}
+
+#[test]
+fn concurrent_list_item_edit_and_appended_item_converge() {
+    // One peer edits an existing item's text; the other appends a whole new list item.
+    // Both the text edit and the structural insert must survive the merge.
+    let schema = Rc::new(Schema::starter_kit());
+    let list = bullet_list(
+        &schema,
+        vec![
+            list_item(&schema, vec![para(&schema, "alpha")]),
+            list_item(&schema, vec![para(&schema, "beta")]),
+        ],
+    );
+    let (schema, mut a, mut b) = {
+        let _ = &schema;
+        two_peers(vec![list])
+    };
+    // A edits item 0: "alpha" content is pos 3..8, so type at pos 8 -> "alphaX".
+    a.type_at(8, "X");
+    // B appends a third list item at the end of the bullet list. The list content ends
+    // just before the bullet_list close token; a block-level replace inserts a new item.
+    let li = list_item(b.state.schema(), vec![para(b.state.schema(), "gamma")]);
+    let insert_at = b.state.doc.child(0).node_size() - 1; // just inside the ul close token
+    b.local(|tr| {
+        tr.replace(
+            insert_at,
+            insert_at,
+            Slice::new(Fragment::from_node(li), 0, 0),
+        )
+        .unwrap();
+    });
+    sync(&mut a, &mut b);
+
+    let pa = a.session.projected_doc(&schema).unwrap();
+    let pb = b.session.projected_doc(&schema).unwrap();
+    assert_eq!(tree(&pa), tree(&pb), "must converge");
+    assert_eq!(tree(&a.state.doc), tree(&pa), "peer A model ≡ projection");
+    assert_eq!(tree(&b.state.doc), tree(&pb), "peer B model ≡ projection");
+    let t = tree(&pa);
+    assert!(t.contains("alphaX"), "text edit kept: {t}");
+    assert!(t.contains("gamma"), "appended item kept: {t}");
+}
+
+#[test]
+fn table_still_fails_loud() {
+    // The scope is narrowed, not removed: lists project, but a table (and its rows/cells)
+    // is still out of scope and must fail loud rather than be silently mangled.
+    let schema = Rc::new(Schema::starter_kit());
+    let cell = schema
+        .branch("table_cell", Fragment::from_node(para(&schema, "x")))
+        .unwrap();
+    let row = schema
+        .branch("table_row", Fragment::from_node(cell))
+        .unwrap();
+    let table = schema.branch("table", Fragment::from_node(row)).unwrap();
+    let doc = doc_of(&schema, vec![table]);
+    let err = rinch_editor_collab::CollabDoc::from_doc(&doc).unwrap_err();
+    assert!(
+        matches!(err, rinch_editor_collab::CollabError::Unsupported(_)),
+        "a table must still fail loud, got {err:?}"
+    );
+}
+
+#[test]
+fn unsupported_block_inside_a_list_item_fails_loud() {
+    // A supported container (list_item) holding an *unsupported* child (blockquote) must
+    // fail loud on the descendant — the recursion doesn't relax the scope for children.
+    let schema = Rc::new(Schema::starter_kit());
+    let bq = schema
+        .branch("blockquote", Fragment::from_node(para(&schema, "q")))
+        .unwrap();
+    let item = list_item(&schema, vec![bq]);
+    let list = bullet_list(&schema, vec![item]);
+    let doc = doc_of(&schema, vec![list]);
+    let err = rinch_editor_collab::CollabDoc::from_doc(&doc).unwrap_err();
+    assert!(
+        matches!(err, rinch_editor_collab::CollabError::Unsupported(_)),
+        "an unsupported block nested in a list item must fail loud, got {err:?}"
     );
 }
 
