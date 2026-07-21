@@ -7,21 +7,42 @@
 //! the base via `..`, and never collides with the internal temp files; and
 //! [`list`](Store::list) recovers the original keys by decoding the file names.
 //!
-//! Writes are **atomic**: bytes go to a hidden temp file, then `rename` into
-//! place (atomic on the same filesystem), so an interrupted write leaves the old
-//! value intact rather than a truncated one. That atomic-replace is the
-//! durability guarantee the offline-first snapshot store depends on.
+//! Writes are **atomic and durable**, which are two separate properties and need
+//! two separate mechanisms:
+//!
+//! - *Atomic*: bytes go to a hidden temp file, then `rename` into place (atomic on
+//!   the same filesystem), so an interrupted write leaves the old value intact
+//!   rather than a truncated one.
+//! - *Durable*: the temp file is `fsync`ed before the rename, and the base
+//!   directory is `fsync`ed after it. Without the first, a crash can leave the
+//!   renamed file present but empty or partially written — the rename metadata
+//!   reaching disk before the data it points at. Without the second, the rename
+//!   itself can be lost and the key reverts to its previous value.
+//!
+//! `rename` alone buys atomicity only. A store whose whole purpose is surviving
+//! restarts has to pay for the `fsync`s too.
 //!
 //! The filesystem is blocking, so each op does its work when the returned future
 //! is first polled and resolves immediately. That is fine for the small, infrequent
-//! blobs this serves (an Automerge snapshot per save); offloading to a worker
-//! thread is a possible future optimization, not needed now.
+//! blobs this serves; offloading to a worker thread is a possible future
+//! optimization, not needed now.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{StorageError, StorageFuture, StorageResult, Store};
+
+/// The longest encoded key this backend accepts, in bytes.
+///
+/// Each key maps to one file name, and every mainstream filesystem caps a single
+/// name at 255 bytes. Note this bounds the *encoded* length: a byte outside
+/// `[A-Za-z0-9_-]` costs 3 bytes, so a worst-case key is ~85 characters.
+///
+/// This is a native-only limit — IndexedDB imposes none — so a key near the bound
+/// is a portability hazard. Keys that must work on both targets should stay well
+/// under it.
+pub const MAX_ENCODED_KEY_LEN: usize = 255;
 
 /// A [`Store`] persisting each key as a file under a base directory.
 ///
@@ -51,7 +72,19 @@ impl FsStore {
         if key.is_empty() {
             return Err(StorageError::InvalidKey("empty key".to_string()));
         }
-        Ok(self.base.join(encode_key(key)))
+        let name = encode_key(key);
+        // A key becomes one file name, and file names are capped (255 bytes on
+        // ext4/APFS/NTFS). Check it here so an over-long key is a clear, testable
+        // `InvalidKey` instead of an `Io` error naming an internal temp path — the
+        // caller otherwise cannot tell "key too long" from "disk full".
+        if name.len() > MAX_ENCODED_KEY_LEN {
+            return Err(StorageError::InvalidKey(format!(
+                "key encodes to {} bytes, over the {MAX_ENCODED_KEY_LEN}-byte file-name limit \
+                 (bytes outside [A-Za-z0-9_-] encode to 3 bytes each)",
+                name.len()
+            )));
+        }
+        Ok(self.base.join(name))
     }
 }
 
@@ -75,8 +108,13 @@ impl Store for FsStore {
         Box::pin(async move {
             let path = path?;
             let tmp = base.join(temp_name());
-            std::fs::write(&tmp, &value)
-                .map_err(|e| StorageError::Io(format!("write {}: {e}", tmp.display())))?;
+            // Write + flush the contents to disk *before* the rename publishes the
+            // name. Otherwise a crash can order the rename ahead of the data and
+            // leave a present-but-empty file — losing the old value and the new one.
+            if let Err(e) = write_and_sync(&tmp, &value) {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e);
+            }
             // Atomic replace. On failure, don't leak the temp file.
             if let Err(e) = std::fs::rename(&tmp, &path) {
                 let _ = std::fs::remove_file(&tmp);
@@ -86,6 +124,8 @@ impl Store for FsStore {
                     path.display()
                 )));
             }
+            // Flush the directory entry so the rename itself survives a crash.
+            sync_dir(&base)?;
             Ok(())
         })
     }
@@ -120,8 +160,7 @@ impl Store for FsStore {
                 }
             };
             for entry in entries {
-                let entry =
-                    entry.map_err(|e| StorageError::Io(format!("dir entry: {e}")))?;
+                let entry = entry.map_err(|e| StorageError::Io(format!("dir entry: {e}")))?;
                 let name = entry.file_name();
                 let Some(name) = name.to_str() else { continue };
                 // Skip internal temp files. An encoded key never starts with '.'
@@ -138,6 +177,43 @@ impl Store for FsStore {
             Ok(keys)
         })
     }
+}
+
+/// Write `value` to `path` and flush it all the way to the storage device.
+///
+/// `std::fs::write` only hands the bytes to the page cache; `sync_all` is what
+/// makes them survive a crash.
+fn write_and_sync(path: &std::path::Path, value: &[u8]) -> StorageResult<()> {
+    use std::io::Write;
+    let mut f = std::fs::File::create(path)
+        .map_err(|e| StorageError::Io(format!("create {}: {e}", path.display())))?;
+    f.write_all(value)
+        .map_err(|e| StorageError::Io(format!("write {}: {e}", path.display())))?;
+    f.sync_all()
+        .map_err(|e| StorageError::Io(format!("sync {}: {e}", path.display())))?;
+    Ok(())
+}
+
+/// Flush a directory's entries so a `rename` into it is durable.
+///
+/// POSIX-only: a rename is a directory metadata change, and on Unix the way to
+/// commit it is to `fsync` the directory itself.
+#[cfg(unix)]
+fn sync_dir(dir: &std::path::Path) -> StorageResult<()> {
+    std::fs::File::open(dir)
+        .and_then(|d| d.sync_all())
+        .map_err(|e| StorageError::Io(format!("sync dir {}: {e}", dir.display())))
+}
+
+/// Non-Unix fallback.
+///
+/// Windows has no directory-`fsync` equivalent — a directory can't be opened as a
+/// file, and `MoveFileEx`-style replacement is journaled by the filesystem rather
+/// than flushed by the caller. The `sync_all` on the file itself (above) is the
+/// part that carries over, and is done.
+#[cfg(not(unix))]
+fn sync_dir(_dir: &std::path::Path) -> StorageResult<()> {
+    Ok(())
 }
 
 /// Reversibly encode a key to a single filesystem-safe file name.
@@ -310,10 +386,7 @@ mod tests {
             );
         }
         // ".." must be a stored key, not the parent directory.
-        assert_eq!(
-            block_on(store.get("..")).unwrap(),
-            Some(b"..".to_vec())
-        );
+        assert_eq!(block_on(store.get("..")).unwrap(), Some(b"..".to_vec()));
     }
 
     #[test]
@@ -344,44 +417,86 @@ mod tests {
         );
     }
 
-    /// The round-trip the persistence spike proved, now through `rinch-storage`:
-    /// snapshot an Automerge doc, persist the bytes, drop the store, reopen, read
-    /// the bytes back byte-identical, and reload them into a working Automerge doc.
+    /// An over-long key is rejected as `InvalidKey`, not surfaced as an opaque `Io`
+    /// error from the underlying `rename`.
+    ///
+    /// The bound is on the *encoded* name: a byte outside `[A-Za-z0-9_-]` costs 3
+    /// bytes, so a key of `:` characters hits the limit at a third the length of an
+    /// alphanumeric one. This is a native-only constraint (IndexedDB has none), so
+    /// it is also the one place a key can behave differently across targets.
     #[test]
-    fn automerge_snapshot_round_trip() {
-        use automerge::transaction::Transactable;
-        use automerge::{AutoCommit, ReadDoc, ROOT};
+    fn over_long_keys_are_rejected_as_invalid_not_io() {
+        let dir = tempdir();
+        let store = FsStore::open(dir.path()).unwrap();
 
+        // Just inside the bound, both encodings.
+        block_on(store.put(&"a".repeat(MAX_ENCODED_KEY_LEN), b"v")).unwrap();
+        block_on(store.put(&":".repeat(MAX_ENCODED_KEY_LEN / 3), b"v")).unwrap();
+
+        // Just outside it: a clear InvalidKey rather than an Io from rename.
+        for key in [
+            "a".repeat(MAX_ENCODED_KEY_LEN + 1),
+            ":".repeat(MAX_ENCODED_KEY_LEN / 3 + 1),
+        ] {
+            match block_on(store.put(&key, b"v")) {
+                Err(StorageError::InvalidKey(_)) => {}
+                other => panic!(
+                    "expected InvalidKey for a {}-char key, got {other:?}",
+                    key.len()
+                ),
+            }
+            // get/delete/`path_for` agree, so the rejection is consistent per key.
+            assert!(matches!(
+                block_on(store.get(&key)),
+                Err(StorageError::InvalidKey(_))
+            ));
+        }
+    }
+
+    /// Opaque binary blobs survive a write / drop / reopen cycle byte-identically.
+    ///
+    /// The payload is deliberately hostile for a *file-backed* store: every one of
+    /// the 256 byte values (so embedded NULs, newlines, and invalid UTF-8), plus a
+    /// leading UTF-8 BOM and a trailing byte — the shapes that get mangled by a
+    /// backend that treats values as text, trims, or NUL-terminates.
+    #[test]
+    fn arbitrary_binary_blobs_round_trip_across_reopen() {
         let dir = tempdir();
 
-        // Author a doc and snapshot it to bytes (what the editor collab seam hands us).
-        let snapshot = {
-            let mut doc = AutoCommit::new();
-            doc.put(ROOT, "title", "Chapter One").unwrap();
-            doc.put(ROOT, "body", "The lantern guttered against the fog.")
-                .unwrap();
-            doc.save()
-        };
+        let mut payload = vec![0xEF, 0xBB, 0xBF]; // UTF-8 BOM
+        payload.extend((0..=255u8).cycle().take(4096));
+        payload.push(0x00); // trailing NUL
 
-        // Persist, then fully drop the store.
         {
             let store = FsStore::open(dir.path()).unwrap();
-            block_on(store.put("chapter:one:snapshot", &snapshot)).unwrap();
+            block_on(store.put("blob", &payload)).unwrap();
         }
 
-        // Reopen and read back.
+        // A fresh store over the same directory reads the identical bytes.
         let store = FsStore::open(dir.path()).unwrap();
-        let restored = block_on(store.get("chapter:one:snapshot"))
-            .unwrap()
-            .expect("snapshot present after reopen");
+        let restored = block_on(store.get("blob")).unwrap().expect("present");
+        assert_eq!(restored, payload, "persisted bytes must be identical");
+        assert_eq!(restored.len(), payload.len(), "no truncation at a NUL");
 
-        // Contract 1: byte-identical in and out.
-        assert_eq!(restored, snapshot, "persisted bytes must be identical");
+        // Empty values are a legitimate value, distinct from an absent key.
+        block_on(store.put("empty", b"")).unwrap();
+        assert_eq!(block_on(store.get("empty")).unwrap(), Some(Vec::new()));
+        assert_eq!(block_on(store.get("never-written")).unwrap(), None);
+    }
 
-        // Contract 2: the bytes still load into a working Automerge doc.
-        let doc = AutoCommit::load(&restored).expect("reload automerge doc");
-        let title = doc.get(ROOT, "title").unwrap().unwrap().0;
-        assert_eq!(title.into_string().unwrap(), "Chapter One");
+    /// Overwriting a key replaces it wholly — no leftover tail from a longer prior
+    /// value, which is the failure mode of writing in place instead of atomically.
+    #[test]
+    fn overwrite_replaces_rather_than_patches() {
+        let dir = tempdir();
+        let store = FsStore::open(dir.path()).unwrap();
+
+        block_on(store.put("k", b"a-long-original-value")).unwrap();
+        block_on(store.put("k", b"short")).unwrap();
+        assert_eq!(block_on(store.get("k")).unwrap(), Some(b"short".to_vec()));
+
+        // And the temp files used to do it are not visible as keys.
+        assert_eq!(block_on(store.list("")).unwrap(), vec!["k".to_string()]);
     }
 
     /// A `Namespace` partitions one physical store, and its `list` is prefix-relative.
@@ -397,8 +512,14 @@ mod tests {
         block_on(ch2.put("snapshot", b"two")).unwrap();
 
         // Same relative key, no collision.
-        assert_eq!(block_on(ch1.get("snapshot")).unwrap(), Some(b"one".to_vec()));
-        assert_eq!(block_on(ch2.get("snapshot")).unwrap(), Some(b"two".to_vec()));
+        assert_eq!(
+            block_on(ch1.get("snapshot")).unwrap(),
+            Some(b"one".to_vec())
+        );
+        assert_eq!(
+            block_on(ch2.get("snapshot")).unwrap(),
+            Some(b"two".to_vec())
+        );
 
         // Namespaced list is relative (prefix stripped).
         assert_eq!(
@@ -411,7 +532,10 @@ mod tests {
         physical.sort();
         assert_eq!(
             physical,
-            vec!["chapter:1/snapshot".to_string(), "chapter:2/snapshot".to_string()]
+            vec![
+                "chapter:1/snapshot".to_string(),
+                "chapter:2/snapshot".to_string()
+            ]
         );
     }
 }

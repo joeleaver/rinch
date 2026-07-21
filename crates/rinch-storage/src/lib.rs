@@ -13,12 +13,11 @@
 //!   touching rinch's render path — see the module docs on `wasm` for why OPFS
 //!   is deferred.
 //!
-//! The store trades in **opaque bytes**. It has no knowledge of Automerge, CRDTs,
-//! or serialization — a consumer (PlotWeb) owns that and hands the store the
-//! bytes to persist: per-document snapshots, incremental change logs, per-doc
-//! sync state, a metadata index. Keeping those separate is a **key convention**,
-//! made ergonomic by [`Namespace`] (a prefix-scoped view that is itself a
-//! `Store`).
+//! The store trades in **opaque bytes**. It has no knowledge of any encoding,
+//! schema, or serialization format — the consumer owns that and hands the store
+//! the bytes to persist. Related values are kept apart by **key convention**
+//! rather than by separate stores, made ergonomic by [`Namespace`] (a
+//! prefix-scoped view that is itself a `Store`).
 //!
 //! # Async model
 //!
@@ -43,13 +42,13 @@
 //! ```ignore
 //! use rinch_storage::{Store, Namespace};
 //! # async fn go(store: impl Store) {
-//! // One store, namespaced per document so snapshots / change-logs / sync-state
+//! // One physical store, carved into per-entity namespaces so unrelated values
 //! // never collide.
-//! let doc = Namespace::new(store, "chapter:abc123/");
-//! doc.put("snapshot", &snapshot_bytes).await.unwrap();
-//! doc.put("changes/00000001", &change_bytes).await.unwrap();
-//! let restored = doc.get("snapshot").await.unwrap();      // Some(bytes)
-//! let changes = doc.list("changes/").await.unwrap();      // ["changes/00000001"]
+//! let entity = Namespace::new(store, "entity:abc123/");
+//! entity.put("state", &state_bytes).await.unwrap();
+//! entity.put("log/00000001", &entry_bytes).await.unwrap();
+//! let restored = entity.get("state").await.unwrap();      // Some(bytes)
+//! let entries = entity.list("log/").await.unwrap();       // ["log/00000001"]
 //! # }
 //! ```
 
@@ -85,7 +84,7 @@ pub type StorageFuture<T> = Pin<Box<dyn Future<Output = StorageResult<T>>>>;
 /// The whole surface: four orthogonal operations over opaque `Vec<u8>` values,
 /// keyed by opaque UTF-8 strings. Deliberately minimal — no transactions, no
 /// value typing, no CRDT awareness. Namespacing is a **key convention**: build
-/// hierarchical keys (`"chapter:{id}/snapshot"`), or wrap the store in a
+/// hierarchical keys (`"entity:{id}/state"`), or wrap the store in a
 /// [`Namespace`] for a prefix-scoped view. Enumeration is by [`list`](Store::list)
 /// with a key prefix.
 ///
@@ -112,7 +111,7 @@ pub trait Store {
 /// A prefix-scoped view over another [`Store`].
 ///
 /// Every key is transparently prefixed with `prefix` before hitting the inner
-/// store, so a consumer can carve one physical store into per-document (or
+/// store, so a consumer can carve one physical store into per-entity (or
 /// per-concern) partitions without those keys ever colliding. `Namespace` is
 /// itself a [`Store`], so it composes: pass it anywhere a `Store` is wanted, or
 /// nest it with [`namespace`](Namespace::namespace).
@@ -122,7 +121,7 @@ pub trait Store {
 /// physical ones.
 ///
 /// The `prefix` is prepended verbatim — include your own separator, e.g.
-/// `Namespace::new(store, "chapter:abc/")`.
+/// `Namespace::new(store, "entity:abc/")`.
 pub struct Namespace<S> {
     inner: S,
     prefix: String,

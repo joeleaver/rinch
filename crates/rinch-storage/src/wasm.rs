@@ -34,8 +34,8 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use web_sys::{
     Event, IdbDatabase, IdbObjectStore, IdbOpenDbRequest, IdbRequest, IdbTransaction,
     IdbTransactionMode,
@@ -98,7 +98,10 @@ impl IdbStore {
         })
     }
 
-    fn object_store(&self, mode: IdbTransactionMode) -> StorageResult<(IdbTransaction, IdbObjectStore)> {
+    fn object_store(
+        &self,
+        mode: IdbTransactionMode,
+    ) -> StorageResult<(IdbTransaction, IdbObjectStore)> {
         let tx = self
             .inner
             .db

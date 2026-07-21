@@ -25,8 +25,8 @@ web-sys = { version = "0.3", features = [
     "IdbTransactionMode",
 ] }
 
-# Native-only test deps. `automerge` + `tempfile` are already in the workspace
-# lockfile (dev-deps of other crates), so this adds no new third-party surface.
+# Native-only test deps. Deliberately just `tempfile`: a key/blob store persists
+# opaque bytes, so its tests must not depend on any particular consumer's payload
+# format. (`rinch-editor-collab` is the workspace's only automerge link.)
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tempfile = "3"
-automerge = "0.5"
