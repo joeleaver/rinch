@@ -685,6 +685,10 @@ pub fn any_surface_dirty() -> bool {
 /// Surfaces created by `create_render_surface()` have auto-generated names
 /// starting with `__render_surface_` and paint inline. Surfaces created by
 /// `create_render_surface_with_name()` have custom names and use the compositor.
+///
+/// Every caller is behind `desktop` or `gpu` (which implies `desktop`), so this is
+/// dead code on a wasm build — gate it the same way rather than warn there.
+#[cfg(feature = "desktop")]
 fn is_inline_surface(surface: &RenderSurfaceHandle) -> bool {
     surface.viewport_name.starts_with("__render_surface_")
 }
@@ -1205,6 +1209,11 @@ fn teardown_web_surface(surface: &RenderSurfaceHandle) {
 /// call this safely and only one loop exists at a time. After an unmount stops
 /// the loop, a remount (via [`schedule_canvas_init`]) restarts it — otherwise a
 /// render-callback surface would stay blank after a hide→show cycle.
+/// A `requestAnimationFrame` callback that has to reference itself in order to
+/// re-schedule, so it can only be built as a cell filled in after construction.
+#[cfg(target_arch = "wasm32")]
+type RafClosure = std::rc::Rc<RefCell<Option<wasm_bindgen::prelude::Closure<dyn FnMut()>>>>;
+
 #[cfg(target_arch = "wasm32")]
 fn start_raf_loop(surface_id: usize, running: std::rc::Rc<Cell<bool>>) {
     use std::rc::Rc;
@@ -1215,7 +1224,7 @@ fn start_raf_loop(surface_id: usize, running: std::rc::Rc<Cell<bool>>) {
     }
     running.set(true);
 
-    let closure: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
+    let closure: RafClosure = Rc::new(RefCell::new(None));
     let closure_clone = closure.clone();
 
     *closure.borrow_mut() = Some(Closure::wrap(Box::new(move || {

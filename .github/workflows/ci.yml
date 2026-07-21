@@ -8,12 +8,29 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # This workspace links wgpu, stylo, vello and parley; a full debug build with
+  # symbols overruns a runner's ~14 GB of free disk, which surfaces as a linker
+  # "Bus error" or `rustc-LLVM ERROR: IO failure ... No space left on device`
+  # rather than as a test failure (it took down the `test` job on #114). Debug
+  # info is the bulk of that and is useless in CI, where nothing runs a debugger.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # Reclaim disk before building. The runner image ships several GB of
+      # toolchains this workspace never uses, and the build needs the headroom
+      # (see the debug-info note in `env` above).
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
 
       - name: Install system dependencies
         run: |
@@ -65,6 +82,49 @@ jobs:
 
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # Lint the wasm target too. `clippy --workspace` above only ever sees the native
+  # cfg, so anything behind `cfg(target_arch = "wasm32")` — the whole rinch-web
+  # backend, the render-surface canvas path, the wasm halves of rinch-ws/http —
+  # was never linted. Two real lints and a batch of `unexpected_cfgs` warnings hid
+  # there; a green clippy meant less than it looked.
+  #
+  # Per-crate, not `--workspace`: a workspace-wide wasm build pulls
+  # rinch-editor-collab -> automerge -> uuid -> getrandom, which refuses to build
+  # for wasm32 unless a *consuming app* enables its `js` feature. That layering is
+  # deliberate (see the collaboration notes in CLAUDE.md), so the crates that are
+  # meant to stand alone on wasm are listed explicitly instead.
+  clippy-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-clippy-wasm-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-clippy-wasm-
+
+      - name: Run clippy (wasm32)
+        run: |
+          for crate in rinch-core rinch-editor-core rinch-editor-view \
+                       rinch-http rinch-ws rinch-web; do
+            echo "::group::clippy $crate (wasm32)"
+            cargo clippy -p "$crate" --target wasm32-unknown-unknown \
+              --all-targets -- -D warnings
+            echo "::endgroup::"
+          done
 
   fmt:
     runs-on: ubuntu-latest
