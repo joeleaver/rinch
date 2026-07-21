@@ -69,9 +69,9 @@ impl FsStore {
     }
 
     fn path_for(&self, key: &str) -> StorageResult<PathBuf> {
-        if key.is_empty() {
-            return Err(StorageError::InvalidKey("empty key".to_string()));
-        }
+        // Rules shared with every other backend first, then the filename-length
+        // bound that is specific to storing a key as a file.
+        crate::validate_key(key)?;
         let name = encode_key(key);
         // A key becomes one file name, and file names are capped (255 bytes on
         // ext4/APFS/NTFS). Check it here so an over-long key is a clear, testable

@@ -19,6 +19,45 @@
 //! rather than by separate stores, made ergonomic by [`Namespace`] (a
 //! prefix-scoped view that is itself a `Store`).
 //!
+//! # Atomicity: one key at a time
+//!
+//! A single [`put`](Store::put) is atomic and durable — a reader sees either the
+//! old value or the new one, never a partial write, and the new value survives a
+//! crash. **There is no multi-key atomicity**, deliberately: two `put`s can be
+//! interrupted between them, leaving the second unwritten.
+//!
+//! No `batch` operation is offered because it could not mean the same thing on
+//! both backends. IndexedDB gets it free (one transaction spans many ops), but a
+//! directory of files cannot without a write-ahead log — so a `batch` would be
+//! genuinely atomic on web and merely sequential on native. A guarantee that
+//! silently weakens per target is worse than no guarantee, because callers write
+//! against the strong reading and only find out on the other platform.
+//!
+//! Consumers that need a multi-key invariant should get it from the single-key
+//! guarantee, by making one atomic write the commit point:
+//!
+//! 1. Write the new blobs under **fresh** keys (`state/7`, `log/7/0001`, …).
+//!    Nothing reads them yet, so a crash here leaves only garbage.
+//! 2. `put` one small **manifest** key naming the live set. This single atomic
+//!    write is what publishes the whole set.
+//! 3. Readers load the manifest first and only touch the keys it names.
+//! 4. Sweep unreferenced keys whenever convenient.
+//!
+//! A crash before step 2 leaves the previous state intact; after it, the new
+//! state complete. This is the same manifest/pointer-flip trick git and LSM
+//! engines use, and it needs nothing this trait doesn't already provide.
+//!
+//! # Listing cost
+//!
+//! [`list`](Store::list) is a scan, not an index lookup. `IdbStore` pushes the
+//! prefix down into an `IDBKeyRange` so the database does the filtering, but
+//! `FsStore` must read the whole directory and decode each name — the cost is in
+//! the number of keys in the store, not the number matching. There is no
+//! pagination or cursor. That is fine for occasional listing over hundreds or
+//! thousands of keys and a poor fit for a hot path over very many; a consumer
+//! that needs cheap enumeration should keep its own index under a key (which the
+//! manifest above already is).
+//!
 //! # Async model
 //!
 //! Every operation returns a [`StorageFuture`] — a boxed, **non-`Send`** future
@@ -71,6 +110,20 @@ pub use wasm::IdbStore;
 
 /// The result of a [`Store`] operation.
 pub type StorageResult<T> = Result<T, StorageError>;
+
+/// Check the rules every backend enforces, regardless of target.
+///
+/// Backends may reject *more* than this for their own reasons — the filesystem
+/// backend also caps the encoded key at a file-name's length — but they must all
+/// reject at least this much, or the same call succeeds on one target and fails on
+/// another. (An empty key used to be rejected by `FsStore` and accepted by
+/// `IdbStore`, which a browser test caught.)
+pub(crate) fn validate_key(key: &str) -> StorageResult<()> {
+    if key.is_empty() {
+        return Err(StorageError::InvalidKey("empty key".to_string()));
+    }
+    Ok(())
+}
 
 /// The future returned by every [`Store`] operation.
 ///

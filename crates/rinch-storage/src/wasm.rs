@@ -119,6 +119,7 @@ impl Store for IdbStore {
         let this = self.clone();
         let key = key.to_string();
         Box::pin(async move {
+            crate::validate_key(&key)?;
             let (_tx, os) = this.object_store(IdbTransactionMode::Readonly)?;
             let req = os
                 .get(&JsValue::from_str(&key))
@@ -139,6 +140,7 @@ impl Store for IdbStore {
         let key = key.to_string();
         let bytes = js_sys::Uint8Array::from(value);
         Box::pin(async move {
+            crate::validate_key(&key)?;
             let (tx, os) = this.object_store(IdbTransactionMode::Readwrite)?;
             os.put_with_key(&bytes.into(), &JsValue::from_str(&key))
                 .map_err(|e| StorageError::Backend(js_err(&e)))?;
@@ -154,6 +156,7 @@ impl Store for IdbStore {
         let this = self.clone();
         let key = key.to_string();
         Box::pin(async move {
+            crate::validate_key(&key)?;
             let (tx, os) = this.object_store(IdbTransactionMode::Readwrite)?;
             os.delete(&JsValue::from_str(&key))
                 .map_err(|e| StorageError::Backend(js_err(&e)))?;
@@ -169,15 +172,29 @@ impl Store for IdbStore {
         let prefix = prefix.to_string();
         Box::pin(async move {
             let (_tx, os) = this.object_store(IdbTransactionMode::Readonly)?;
-            let req = os
-                .get_all_keys()
-                .map_err(|e| StorageError::Backend(js_err(&e)))?;
+            // Let IndexedDB do the prefix scan. `get_all_keys()` with no query
+            // materializes *every* key in the store into a JS array and marshals it
+            // across, so a selective prefix still paid for the whole store.
+            //
+            // Keys are DOMStrings, compared by UTF-16 code unit, so `prefix..=prefix
+            // + U+FFFF` is exactly the set of keys starting with `prefix`: any
+            // continuation begins with a code unit below U+FFFF (astral characters
+            // start with a high surrogate, U+D800..=U+DBFF, which is also below it).
+            let req = match key_range_for_prefix(&prefix) {
+                Some(range) => os.get_all_keys_with_key(&range),
+                // An empty prefix means "everything" — no range needed.
+                None => os.get_all_keys(),
+            }
+            .map_err(|e| StorageError::Backend(js_err(&e)))?;
             let val = request_result(req)
                 .await
                 .map_err(|e| StorageError::Backend(js_err(&e)))?;
             let arr = js_sys::Array::from(&val);
             let mut keys = Vec::new();
             for k in arr.iter() {
+                // The range above should already have excluded non-matching keys;
+                // the check stays as the authority on what `list` returns, so a
+                // range that is ever wrong costs efficiency rather than correctness.
                 if let Some(s) = k.as_string()
                     && s.starts_with(&prefix)
                 {
@@ -187,6 +204,26 @@ impl Store for IdbStore {
             Ok(keys)
         })
     }
+}
+
+/// The `IDBKeyRange` covering exactly the keys beginning with `prefix`, or `None`
+/// for an empty prefix (which matches everything, so a range would only add work).
+///
+/// Returns `None` too if the bound cannot be constructed, so `list` degrades to a
+/// full scan plus the Rust-side filter rather than failing.
+fn key_range_for_prefix(prefix: &str) -> Option<JsValue> {
+    if prefix.is_empty() {
+        return None;
+    }
+    let lower = JsValue::from_str(prefix);
+    // `prefix` + U+FFFF, built by push so the escape isn't inside a format string.
+    let mut upper_s = String::with_capacity(prefix.len() + 3);
+    upper_s.push_str(prefix);
+    upper_s.push('\u{FFFF}');
+    let upper = JsValue::from_str(&upper_s);
+    web_sys::IdbKeyRange::bound(&lower, &upper)
+        .ok()
+        .map(JsValue::from)
 }
 
 /// Shared state for [`Settle`]: the resolved value (once), plus the waker to

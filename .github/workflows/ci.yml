@@ -126,6 +126,51 @@ jobs:
             echo "::endgroup::"
           done
 
+  # Run the browser-backed wasm tests. `IdbStore` talks to a real IndexedDB, so it
+  # cannot be exercised by a native `cargo test` — it needs an actual browser.
+  # Shipping it unverified is how the crate arrived: the first run of these tests
+  # found IndexedDB accepting an empty key that the filesystem backend rejects.
+  test-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-bindgen-test-runner
+        run: |
+          # Must match the wasm-bindgen version in Cargo.lock, or the runner
+          # refuses the generated module.
+          version=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep '^version' | head -1 | cut -d'"' -f2)
+          echo "wasm-bindgen $version"
+          cargo install wasm-bindgen-cli --version "$version" --locked
+
+      - name: Install chromedriver matching the runner's Chrome
+        run: |
+          chrome_version=$(google-chrome --version | grep -oE '[0-9.]+')
+          echo "Chrome $chrome_version"
+          npx --yes @puppeteer/browsers install "chromedriver@$chrome_version"
+          echo "CHROMEDRIVER=$(find "$PWD/chromedriver" -name chromedriver -type f | head -1)" >> "$GITHUB_ENV"
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-wasm-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-wasm-
+
+      - name: Run wasm tests (headless Chrome)
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        run: cargo test -p rinch-storage --target wasm32-unknown-unknown
+
   fmt:
     runs-on: ubuntu-latest
     steps:

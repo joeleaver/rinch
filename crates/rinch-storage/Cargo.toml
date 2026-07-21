@@ -20,6 +20,7 @@ web-sys = { version = "0.3", features = [
     "IdbOpenDbRequest",
     "IdbRequest",
     "IdbDatabase",
+    "IdbKeyRange",
     "IdbObjectStore",
     "IdbTransaction",
     "IdbTransactionMode",
@@ -30,3 +31,10 @@ web-sys = { version = "0.3", features = [
 # format. (`rinch-editor-collab` is the workspace's only automerge link.)
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tempfile = "3"
+
+# Browser-driven tests for the IndexedDB backend. Run with a matching chromedriver:
+#   CHROMEDRIVER=/path/to/chromedriver \
+#     cargo test -p rinch-storage --target wasm32-unknown-unknown
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+wasm-bindgen-futures = "0.4"
