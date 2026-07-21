@@ -1336,7 +1336,10 @@ fn test_grid_1fr_track_fills_remaining_space() {
 
 // ── inline-block percentage width collapse (native grid "1fr → 0" bug) ─────
 //
-// PROVEN-BUG, NOT YET FIXED (see investigation report / commit message).
+// PROVEN-BUG, NOT YET FIXED — tracked in issue #120.
+//
+// This test is `#[ignore]`d, so CI never runs it. #120 is the live tracker;
+// un-ignore this test as part of closing it.
 //
 // The native "grid collapses / children squeezed to ~22×14" report is an
 // *inline-block* bug, not a grid-track bug: an inline-block (an `<input>`
@@ -1352,7 +1355,7 @@ fn test_grid_1fr_track_fills_remaining_space() {
 // (ordering hazard). That is invasive/risky, so it is deliberately left for a
 // dedicated change rather than patched with a stale-width heuristic here.
 #[test]
-#[ignore = "known bug: inline-block percentage width collapses under MaxContent premeasure; fix is invasive (needs containing-block width before layout)"]
+#[ignore = "issue #120: inline-block percentage width collapses under MaxContent premeasure; fix is invasive (needs containing-block width before layout)"]
 fn test_inline_block_percent_width_fills_containing_block() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
