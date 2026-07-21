@@ -823,3 +823,35 @@ fn tag_selector_matches_table_cells_and_custom_tags() {
         "an unlisted custom-element tag selector matches via dynamic interning"
     );
 }
+
+/// Removing a selector-affecting attribute must re-resolve styles (symmetric with
+/// setting one — issue #67). A `[data-x]` rule must stop applying once the
+/// attribute is gone (e.g. a popup option losing its highlight).
+#[test]
+fn removing_attribute_restyles_the_node() {
+    let blue = |bg: &BackgroundValue| {
+        matches!(bg, BackgroundValue::Color(c)
+            if c.components[2] > 0.9 && c.components[0] < 0.1)
+    };
+    let mut doc = RinchDocument::new();
+    doc.load_css(
+        "div { background-color: rgb(255, 255, 255); } \
+         div[data-hl] { background-color: rgb(0, 0, 255); }",
+    );
+    let body = doc.body();
+    let el = doc.create_element("div");
+    doc.set_attribute(el, "data-hl", "");
+    doc.append_child(body, el);
+    doc.resolve_layout(400.0, 300.0);
+    assert!(
+        blue(&doc.tree.get(el.0).unwrap().computed_style.background),
+        "with [data-hl] the option is blue"
+    );
+
+    doc.remove_attribute(el, "data-hl");
+    doc.resolve_layout(400.0, 300.0);
+    assert!(
+        !blue(&doc.tree.get(el.0).unwrap().computed_style.background),
+        "removing [data-hl] must drop the highlight background"
+    );
+}
