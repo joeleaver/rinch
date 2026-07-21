@@ -2,104 +2,18 @@
 //! in-process tungstenite echo server, exercising the full wire path
 //! (connect → open → send → receive → close) and the worker→main-thread event
 //! dispatch.
-//!
-//! Outside a running rinch app there is no cross-thread dispatcher, so this test
-//! stands one up: it registers itself as the main thread, installs a dispatcher
-//! that parks main-thread work in a global queue, and pumps that queue from the
-//! test thread — the role the winit event loop plays in the real app.
 #![cfg(not(target_arch = "wasm32"))]
 
-use std::cell::{Cell, RefCell};
-use std::net::TcpListener;
-use std::rc::Rc;
-use std::sync::{Mutex, OnceLock};
-use std::thread;
-use std::time::{Duration, Instant};
+mod common;
 
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use std::sync::Mutex;
+use std::time::Duration;
+
+use common::{PUMP, dispatcher, pump_until, spawn_echo_server};
 use rinch_core::{register_main_thread, set_cross_thread_dispatcher};
 use rinch_ws::{WsMessage, connect};
-use tungstenite::Message;
-
-type MainJob = Box<dyn FnOnce() + Send>;
-
-/// Queue of closures dispatched to the "main" (test) thread by the rinch runtime
-/// stand-in. Drained by [`drain_pump`].
-static PUMP: OnceLock<Mutex<Vec<MainJob>>> = OnceLock::new();
-
-/// The cross-thread dispatcher installed into rinch-core: park work for the main
-/// thread. Must be a plain `fn` (no captures), hence the global queue.
-fn dispatcher(f: MainJob) {
-    PUMP.get()
-        .expect("pump initialized")
-        .lock()
-        .unwrap()
-        .push(f);
-}
-
-fn drain_pump() {
-    let jobs: Vec<_> = PUMP
-        .get()
-        .expect("pump initialized")
-        .lock()
-        .unwrap()
-        .drain(..)
-        .collect();
-    for job in jobs {
-        job();
-    }
-}
-
-/// Pump the main-thread queue until `cond` holds or `timeout` elapses.
-fn pump_until(mut cond: impl FnMut() -> bool, timeout: Duration) -> bool {
-    let start = Instant::now();
-    loop {
-        drain_pump();
-        if cond() {
-            return true;
-        }
-        if start.elapsed() >= timeout {
-            drain_pump();
-            return cond();
-        }
-        thread::sleep(Duration::from_millis(5));
-    }
-}
-
-/// Spawn a WebSocket echo server on an ephemeral port; returns its `ws://` URL.
-fn spawn_echo_server() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let addr = listener.local_addr().expect("local_addr");
-    thread::spawn(move || {
-        let Ok((stream, _)) = listener.accept() else {
-            return;
-        };
-        let mut ws = match tungstenite::accept(stream) {
-            Ok(ws) => ws,
-            Err(_) => return,
-        };
-        loop {
-            match ws.read() {
-                Ok(Message::Text(t)) => {
-                    if ws.send(Message::Text(t)).is_err() {
-                        break;
-                    }
-                }
-                Ok(Message::Binary(b)) => {
-                    if ws.send(Message::Binary(b)).is_err() {
-                        break;
-                    }
-                }
-                Ok(Message::Close(_)) => {
-                    let _ = ws.close(None);
-                    break;
-                }
-                Ok(_) => {}
-                Err(_) => break,
-            }
-        }
-    });
-    format!("ws://{addr}/")
-}
 
 #[test]
 fn connect_send_receive_close() {

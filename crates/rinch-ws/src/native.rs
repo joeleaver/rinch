@@ -21,7 +21,7 @@
 use std::io;
 use std::net::TcpStream;
 use std::sync::mpsc::{self, Sender, TryRecvError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Error as TungError, Message, WebSocket};
@@ -36,6 +36,22 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Close code reported when the connection dropped without a close frame.
 const CLOSE_ABNORMAL: u16 = 1006;
+
+/// Close code reported when the closing handshake completed normally.
+const CLOSE_NORMAL: u16 = 1000;
+
+/// Reported when the peer's close frame carried no status code. RFC 6455 reserves
+/// 1005 ("no status received") for exactly this; 1006 means no close frame arrived
+/// at all, which is a different thing. Browsers surface 1005 here, so the web
+/// backend already reports it — native must match or the same server produces
+/// different close codes on desktop and web.
+const CLOSE_NO_STATUS: u16 = 1005;
+
+/// How long to keep reading after a local `close()` so the peer can complete the
+/// closing handshake. Without a grace period the first read timeout ends the
+/// connection, and every graceful close on a link slower than [`POLL_INTERVAL`]
+/// would be reported as abnormal.
+const CLOSE_GRACE: Duration = Duration::from_secs(1);
 
 /// A command from the main thread to the socket-owning worker thread.
 enum Cmd {
@@ -92,8 +108,19 @@ fn run(url: String, id: u64, cmd_rx: mpsc::Receiver<Cmd>) {
 
     let mut close_emitted = false;
     // Set once a close has been initiated locally; we then read only to drive the
-    // closing handshake to completion.
+    // closing handshake to completion. `closing_since` starts the grace period in
+    // which the peer may still send its half of the handshake.
     let mut closing = false;
+    let mut closing_since: Option<Instant> = None;
+    // A close we asked for that the peer completed is a *normal* closure; only a
+    // drop without a completed handshake is abnormal.
+    let local_close_code = |closing: bool| {
+        if closing {
+            CLOSE_NORMAL
+        } else {
+            CLOSE_ABNORMAL
+        }
+    };
 
     loop {
         // 1. Drain outgoing commands.
@@ -116,12 +143,14 @@ fn run(url: String, id: u64, cmd_rx: mpsc::Receiver<Cmd>) {
                 Ok(Cmd::Close) => {
                     let _ = socket.close(None);
                     closing = true;
+                    closing_since.get_or_insert_with(Instant::now);
                 }
                 Err(TryRecvError::Empty) => break,
                 // All senders dropped (handle dropped): close and finish.
                 Err(TryRecvError::Disconnected) => {
                     let _ = socket.close(None);
                     closing = true;
+                    closing_since.get_or_insert_with(Instant::now);
                     break;
                 }
             }
@@ -133,7 +162,12 @@ fn run(url: String, id: u64, cmd_rx: mpsc::Receiver<Cmd>) {
             Ok(()) => {}
             Err(TungError::Io(e)) if is_would_block(&e) => {}
             Err(TungError::ConnectionClosed | TungError::AlreadyClosed) => {
-                emit_close(id, CLOSE_ABNORMAL, String::new(), &mut close_emitted);
+                emit_close(
+                    id,
+                    local_close_code(closing),
+                    String::new(),
+                    &mut close_emitted,
+                );
                 return;
             }
             Err(e) => {
@@ -152,21 +186,27 @@ fn run(url: String, id: u64, cmd_rx: mpsc::Receiver<Cmd>) {
             Ok(Message::Close(frame)) => {
                 let (code, reason) = match frame {
                     Some(f) => (u16::from(f.code), f.reason.into_owned()),
-                    None => (CLOSE_ABNORMAL, String::new()),
+                    None => (CLOSE_NO_STATUS, String::new()),
                 };
                 emit_close(id, code, reason, &mut close_emitted);
                 return;
             }
             Err(TungError::Io(e)) if is_would_block(&e) => {
-                // Timed out with nothing to read. If we're closing and the peer
-                // hasn't acked, stop waiting rather than spin forever.
-                if closing {
+                // Timed out with nothing to read. While closing, keep reading for a
+                // bounded grace period so a peer slower than one poll interval can
+                // still complete the handshake; only then give up as abnormal.
+                if closing && closing_since.is_some_and(|t| t.elapsed() >= CLOSE_GRACE) {
                     emit_close(id, CLOSE_ABNORMAL, String::new(), &mut close_emitted);
                     return;
                 }
             }
             Err(TungError::ConnectionClosed | TungError::AlreadyClosed) => {
-                emit_close(id, CLOSE_ABNORMAL, String::new(), &mut close_emitted);
+                emit_close(
+                    id,
+                    local_close_code(closing),
+                    String::new(),
+                    &mut close_emitted,
+                );
                 return;
             }
             Err(e) => {

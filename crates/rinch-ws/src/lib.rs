@@ -297,7 +297,12 @@ mod tests {
 
     #[test]
     fn connect_rejects_non_ws_scheme() {
-        for url in ["http://example.com", "https://example.com/x", "example.com", ""] {
+        for url in [
+            "http://example.com",
+            "https://example.com/x",
+            "example.com",
+            "",
+        ] {
             match connect(url) {
                 Err(WsError::InvalidUrl(_)) => {}
                 Err(e) => panic!("expected InvalidUrl for {url:?}, got {e:?}"),
@@ -327,16 +332,15 @@ mod tests {
         let seen = std::rc::Rc::new(RefCell::new(Vec::<String>::new()));
         let s = seen.clone();
         HANDLERS.with(|h| {
-            h.borrow_mut().get_mut(&id).unwrap().on_message =
-                Some(Box::new(move |m| {
-                    if let WsMessage::Text(t) = m {
-                        s.borrow_mut().push(t);
-                    }
-                    // Re-enter the registry from inside the callback: must not
-                    // double-borrow.
-                    let present = HANDLERS.with(|h| h.borrow().contains_key(&id));
-                    assert!(present);
-                }));
+            h.borrow_mut().get_mut(&id).unwrap().on_message = Some(Box::new(move |m| {
+                if let WsMessage::Text(t) = m {
+                    s.borrow_mut().push(t);
+                }
+                // Re-enter the registry from inside the callback: must not
+                // double-borrow.
+                let present = HANDLERS.with(|h| h.borrow().contains_key(&id));
+                assert!(present);
+            }));
         });
 
         dispatch(id, WsEvent::Message(WsMessage::Text("a".to_string())));
