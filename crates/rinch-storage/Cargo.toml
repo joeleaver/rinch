@@ -1,0 +1,40 @@
+[package]
+name = "rinch-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cross-platform durable key/blob persistence for rinch (native filesystem / web IndexedDB)"
+
+[dependencies]
+thiserror.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Event",
+    "DomException",
+    "DomStringList",
+    "IdbFactory",
+    "IdbOpenDbRequest",
+    "IdbRequest",
+    "IdbDatabase",
+    "IdbKeyRange",
+    "IdbObjectStore",
+    "IdbTransaction",
+    "IdbTransactionMode",
+] }
+
+# Native-only test deps. Deliberately just `tempfile`: a key/blob store persists
+# opaque bytes, so its tests must not depend on any particular consumer's payload
+# format. (`rinch-editor-collab` is the workspace's only automerge link.)
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tempfile = "3"
+
+# Browser-driven tests for the IndexedDB backend. Run with a matching chromedriver:
+#   CHROMEDRIVER=/path/to/chromedriver \
+#     cargo test -p rinch-storage --target wasm32-unknown-unknown
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+wasm-bindgen-futures = "0.4"
