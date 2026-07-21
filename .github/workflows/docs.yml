@@ -12,9 +12,15 @@ permissions:
   pages: write
   id-token: write
 
-# Allow only one concurrent deployment
+# One concurrent run per ref, not one globally. A single shared "pages" group made
+# every docs run cancel every other one regardless of branch — merging to main would
+# kill an in-flight PR's build, and PRs opened close together cancelled each other,
+# so a green-looking queue was really a queue of cancellations. Keying on the ref
+# still supersedes older runs of the *same* branch (the useful behaviour) while
+# letting main and each PR build independently. Only `deploy` touches Pages, and it
+# runs on main pushes alone, so per-ref groups cannot produce concurrent deploys.
 concurrency:
-  group: "pages"
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
