@@ -922,22 +922,37 @@ impl RinchDocument {
     /// so `walk_inline_children` can read their width/height for Parley InlineBox.
     pub(crate) fn compute_inline_block_layouts(&mut self) {
         // Collect inline-block children that belong to an IFC
-        let mut ib_taffy_ids: Vec<taffy::NodeId> = Vec::new();
+        let mut ib_taffy_ids: Vec<(taffy::NodeId, Option<f32>)> = Vec::new();
         for (_id, node) in &self.tree.nodes {
             if node.ifc_root.is_some()
                 && node.display_mode == DisplayMode::InlineBlock
                 && let Some(taffy_id) = node.taffy_id
             {
-                ib_taffy_ids.push(taffy_id);
+                ib_taffy_ids.push((taffy_id, None));
             }
         }
+        self.measure_inline_blocks(&ib_taffy_ids);
+    }
 
+    /// Measure a set of detached inline-blocks.
+    ///
+    /// `available_width` is the definite inner width of the inline-block's
+    /// containing block, where it is known. Taffy resolves a *root* node's
+    /// percentage sizes against its available space — `compute_root_layout` turns
+    /// `AvailableSpace` into the `parent_size` basis — so passing `Some(w)` is what
+    /// lets a `width: 50%` inline-block resolve at all. `None` measures at
+    /// max-content, which is right for auto and definite sizes but leaves a
+    /// percentage with no basis, collapsing it to min-content (issue #120).
+    fn measure_inline_blocks(&mut self, targets: &[(taffy::NodeId, Option<f32>)]) {
         let font_cx = &mut self.font_cx;
         let layout_cx = &mut self.layout_cx;
 
-        for taffy_id in ib_taffy_ids {
+        for &(taffy_id, available_width) in targets {
             let avail = taffy::Size {
-                width: taffy::AvailableSpace::MaxContent,
+                width: match available_width {
+                    Some(w) => taffy::AvailableSpace::Definite(w),
+                    None => taffy::AvailableSpace::MaxContent,
+                },
                 height: taffy::AvailableSpace::MaxContent,
             };
             // Split-borrow so the closure captures only `self.tree.nodes`,
@@ -1049,6 +1064,99 @@ impl RinchDocument {
                 }
             }
         }
+    }
+
+    /// Whether any of this style's inline-axis sizes is a percentage, and so needs
+    /// a containing-block width to resolve against.
+    fn has_percentage_inline_size(style: &crate::computed_style::ComputedStyle) -> bool {
+        use crate::computed_style::DimensionValue::Percent;
+        matches!(style.width, Percent(_))
+            || matches!(style.min_width, Percent(_))
+            || matches!(style.max_width, Percent(_))
+    }
+
+    /// Re-measure inline-blocks whose inline size is a percentage, now that their
+    /// containing block has a computed width (issue #120).
+    ///
+    /// `compute_inline_block_layouts` runs *before* the root Taffy compute, so a
+    /// percentage width has nothing to resolve against and collapses to
+    /// min-content. This runs *after* that compute, when the containing block's
+    /// width is real, and re-measures against it.
+    ///
+    /// Returns `true` if any inline-block changed size — the caller must then
+    /// re-run the root compute so the enclosing IFCs line-break against the
+    /// corrected boxes. Returns `false` (doing no work) when no inline-block has a
+    /// percentage inline size, which is the overwhelmingly common case.
+    ///
+    /// Only the *inline* axis is corrected. A percentage height on an inline-block
+    /// resolves against a containing-block height that is itself usually content-
+    /// derived, so there is no non-circular basis to feed back here.
+    pub(crate) fn resolve_percentage_inline_blocks(&mut self) -> bool {
+        // What to re-measure, and what to compare against afterwards:
+        // targets  = (taffy id, containing block inner width)
+        // affected = (node id, IFC root id, width before, height before)
+        let mut targets: Vec<(taffy::NodeId, Option<f32>)> = Vec::new();
+        let mut affected: Vec<(usize, usize, f32, f32)> = Vec::new();
+
+        for (id, node) in &self.tree.nodes {
+            let (Some(root_id), Some(taffy_id)) = (node.ifc_root, node.taffy_id) else {
+                continue;
+            };
+            if node.display_mode != DisplayMode::InlineBlock
+                || !Self::has_percentage_inline_size(&node.computed_style)
+            {
+                continue;
+            }
+            // The IFC root is this inline-block's containing block by
+            // construction: IFC roots are never inline, inline-block or flex.
+            let Some(cb_taffy) = self.tree.nodes[root_id].taffy_id else {
+                continue;
+            };
+            let Ok(cb) = self.tree.taffy.layout(cb_taffy) else {
+                continue;
+            };
+            let inner_width = cb.size.width
+                - cb.padding.left
+                - cb.padding.right
+                - cb.border.left
+                - cb.border.right;
+            if !inner_width.is_finite() || inner_width <= 0.0 {
+                continue;
+            }
+            targets.push((taffy_id, Some(inner_width)));
+            affected.push((id, root_id, node.layout.width, node.layout.height));
+        }
+
+        if targets.is_empty() {
+            return false;
+        }
+
+        // Taffy caches per (node, available space); the first pass measured these
+        // under MaxContent, so mark them dirty to force a real re-measure.
+        for &(taffy_id, _) in &targets {
+            let _ = self.tree.taffy.mark_dirty(taffy_id);
+        }
+        self.measure_inline_blocks(&targets);
+
+        let mut changed = false;
+        for &(id, root_id, prev_w, prev_h) in &affected {
+            let node = &self.tree.nodes[id];
+            if (node.layout.width - prev_w).abs() > 0.5 || (node.layout.height - prev_h).abs() > 0.5
+            {
+                changed = true;
+                // This IFC root's inline layout was measured against the stale box.
+                if let Some(root_taffy) = self.tree.nodes[root_id].taffy_id {
+                    let _ = self.tree.taffy.mark_dirty(root_taffy);
+                }
+            }
+        }
+
+        if changed {
+            // Measures cached under the stale inline-block sizes would be served
+            // straight back on the second pass, re-introducing the collapse.
+            self.tree.ifc_measure_cache.clear();
+        }
+        changed
     }
 
     /// Build a Parley inline layout for an IFC root node.

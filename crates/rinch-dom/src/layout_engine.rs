@@ -180,6 +180,84 @@ impl RinchDocument {
             height: taffy::AvailableSpace::Definite(height),
         };
 
+        let mut text_layout_cache = self.run_taffy_compute(root_taffy, available_space, perf);
+
+        // #120: an inline-block with a percentage main size is pre-measured detached
+        // from Taffy under `MaxContent` (see `compute_inline_block_layouts`), where it
+        // has no containing block to resolve the percentage against — so it collapses
+        // to min-content. Its containing block only has a width once the compute above
+        // has run. Re-measure those inline-blocks against that width now, and if any
+        // changed size, re-run the compute so the enclosing IFCs line-break against the
+        // corrected boxes. Costs nothing when no percentage inline-block exists.
+        if self.resolve_percentage_inline_blocks() {
+            text_layout_cache = self.run_taffy_compute(root_taffy, available_space, perf);
+        }
+
+        // Read layout results back into nodes
+        let t = web_time::Instant::now();
+        self.read_layout_results(self.tree.root_id);
+        if perf {
+            eprintln!(
+                "  [PERF] read_layout: {:.2}ms",
+                t.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+
+        // Clamp scroll offsets to valid range after layout.
+        // When a scroll container shrinks (e.g., window resize makes max-height
+        // smaller) or grows (content now fits), the old scroll offset may exceed
+        // the new max. Clamping here ensures paint and hit-testing use valid values.
+        self.clamp_scroll_offsets();
+
+        // Build inline layouts for IFC roots (rebuild with final widths and store)
+        // Temporarily take layout_cx out to avoid borrow conflict
+        let t = web_time::Instant::now();
+        let mut temp_layout_cx = std::mem::take(&mut self.layout_cx);
+        self.build_ifc_layouts(&mut temp_layout_cx);
+        self.layout_cx = temp_layout_cx;
+        self.tree.dirty_ifc_text_roots.clear();
+        if perf {
+            eprintln!(
+                "  [PERF] build_ifc: {:.2}ms",
+                t.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+
+        // Copy cached text layouts to nodes (use the exact layouts from measurement)
+        let t = web_time::Instant::now();
+        self.copy_cached_text_layouts(text_layout_cache);
+        if perf {
+            eprintln!(
+                "  [PERF] copy_text_layouts: {:.2}ms",
+                t.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+
+        if perf {
+            eprintln!(
+                "  [PERF] resolve_layout TOTAL: {:.2}ms",
+                t0.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+
+        // Enable transitions after first layout completes (prevents transitions on page load)
+        if !self.tree.transitions_enabled {
+            self.tree.transitions_enabled = true;
+        }
+    }
+
+    /// Run the root Taffy compute with the Parley measure function.
+    ///
+    /// Returns the text layouts built during measurement, keyed by
+    /// `(node_id, wrap_width_bits)`, so paint can reuse the exact layouts that
+    /// measurement produced. Safe to call more than once per frame — see the
+    /// percentage inline-block second pass in `resolve_layout`.
+    fn run_taffy_compute(
+        &mut self,
+        root_taffy: taffy::NodeId,
+        available_space: taffy::Size<taffy::AvailableSpace>,
+        perf: bool,
+    ) -> HashMap<(usize, u32), parley::layout::Layout<Brush>> {
         let font_cx = &mut self.font_cx;
         let layout_cx = &mut self.layout_cx;
         let nodes = &self.tree.nodes;
@@ -378,57 +456,7 @@ impl RinchDocument {
             );
         }
 
-        // Read layout results back into nodes
-        let t = web_time::Instant::now();
-        self.read_layout_results(self.tree.root_id);
-        if perf {
-            eprintln!(
-                "  [PERF] read_layout: {:.2}ms",
-                t.elapsed().as_secs_f64() * 1000.0
-            );
-        }
-
-        // Clamp scroll offsets to valid range after layout.
-        // When a scroll container shrinks (e.g., window resize makes max-height
-        // smaller) or grows (content now fits), the old scroll offset may exceed
-        // the new max. Clamping here ensures paint and hit-testing use valid values.
-        self.clamp_scroll_offsets();
-
-        // Build inline layouts for IFC roots (rebuild with final widths and store)
-        // Temporarily take layout_cx out to avoid borrow conflict
-        let t = web_time::Instant::now();
-        let mut temp_layout_cx = std::mem::take(&mut self.layout_cx);
-        self.build_ifc_layouts(&mut temp_layout_cx);
-        self.layout_cx = temp_layout_cx;
-        self.tree.dirty_ifc_text_roots.clear();
-        if perf {
-            eprintln!(
-                "  [PERF] build_ifc: {:.2}ms",
-                t.elapsed().as_secs_f64() * 1000.0
-            );
-        }
-
-        // Copy cached text layouts to nodes (use the exact layouts from measurement)
-        let t = web_time::Instant::now();
-        self.copy_cached_text_layouts(text_layout_cache.into_inner());
-        if perf {
-            eprintln!(
-                "  [PERF] copy_text_layouts: {:.2}ms",
-                t.elapsed().as_secs_f64() * 1000.0
-            );
-        }
-
-        if perf {
-            eprintln!(
-                "  [PERF] resolve_layout TOTAL: {:.2}ms",
-                t0.elapsed().as_secs_f64() * 1000.0
-            );
-        }
-
-        // Enable transitions after first layout completes (prevents transitions on page load)
-        if !self.tree.transitions_enabled {
-            self.tree.transitions_enabled = true;
-        }
+        text_layout_cache.into_inner()
     }
 
     /// Incremental version of `sync_text_contexts` — only processes text nodes
