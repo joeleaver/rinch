@@ -658,17 +658,19 @@ fn build_set_text_align(state: &EditorState, align: &str) -> Option<Transaction>
     let (from, to) = (state.selection.from().0, state.selection.to().0);
     // `(position-before-block, current alignment)` for each alignable textblock.
     let mut targets: Vec<(usize, String)> = Vec::new();
-    state.doc.nodes_between(from, to, &mut |node, pos, _parent| {
-        if matches!(node.type_name(), "paragraph" | "heading") {
-            let cur = node
-                .attrs()
-                .get_str("text_align")
-                .unwrap_or("left")
-                .to_string();
-            targets.push((pos, cur));
-        }
-        true
-    });
+    state
+        .doc
+        .nodes_between(from, to, &mut |node, pos, _parent| {
+            if matches!(node.type_name(), "paragraph" | "heading") {
+                let cur = node
+                    .attrs()
+                    .get_str("text_align")
+                    .unwrap_or("left")
+                    .to_string();
+                targets.push((pos, cur));
+            }
+            true
+        });
     if targets.is_empty() {
         return None;
     }
@@ -2022,7 +2024,9 @@ mod tests {
             "re-selecting the current alignment must not apply"
         );
         // Switching to another alignment applies again.
-        let r = c.run("setTextAlignRight").expect("setTextAlignRight applies");
+        let r = c
+            .run("setTextAlignRight")
+            .expect("setTextAlignRight applies");
         assert_eq!(r.doc.child(0).attrs().get_str("text_align"), Some("right"));
         // Back to the default clears it, and is then a no-op.
         let l = r.run("setTextAlignLeft").expect("setTextAlignLeft applies");

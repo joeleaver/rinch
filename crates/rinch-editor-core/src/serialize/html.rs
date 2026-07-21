@@ -424,11 +424,8 @@ impl<'a> HtmlParser<'a> {
             "heading" => {
                 let level = heading_level(tag);
                 let content = self.parse_inline_children(children)?;
-                self.make_node(
-                    nt,
-                    Attrs::from_iter([("level", AttrValue::Int(level))]),
-                    content,
-                )
+                let attrs = align_attrs(attributes).with("level", AttrValue::Int(level));
+                self.make_node(nt, attrs, content)
             }
             "code_block" => {
                 let mut text = String::new();
@@ -475,9 +472,15 @@ impl<'a> HtmlParser<'a> {
             }
             _ => {
                 // Any other textblock-ish block: treat content as inline.
-                let _ = attributes;
                 let content = self.parse_inline_children(children)?;
-                self.make_node(nt, Attrs::new(), content)
+                // `text_align` is declared on paragraph (and heading, handled above);
+                // don't attach it to block types whose schema has no such attr.
+                let attrs = if nt.name() == "paragraph" {
+                    align_attrs(attributes)
+                } else {
+                    Attrs::new()
+                };
+                self.make_node(nt, attrs, content)
             }
         }
     }
@@ -854,6 +857,25 @@ fn collect_text(nodes: &[ParsedNode], out: &mut String) {
                 }
             }
         }
+    }
+}
+
+/// The `text_align` attrs implied by an element's inline `style="text-align:…"`,
+/// or empty attrs when there is no recognized alignment.
+///
+/// The inverse of [`align_style_attr`]: it lets a textblock survive an HTML
+/// round-trip (copy/paste, `load_html` of previously exported markup) with its
+/// alignment intact. Whitelisted to the same three non-default values, so a
+/// hostile `style` cannot smuggle an arbitrary value into the attribute — and
+/// `left` is skipped because it is the schema default.
+fn align_attrs(attributes: &[(String, String)]) -> Attrs {
+    let align = attr(attributes, "style")
+        .and_then(|s| parse_style(s, "text-align"))
+        .map(|a| a.trim().to_ascii_lowercase())
+        .filter(|a| matches!(a.as_str(), "center" | "right" | "justify"));
+    match align {
+        Some(a) => Attrs::from_iter([("text_align", AttrValue::Str(a.into()))]),
+        None => Attrs::new(),
     }
 }
 
@@ -1473,6 +1495,66 @@ mod tests {
     }
 
     #[test]
+    fn text_align_round_trips_through_html() {
+        let schema = s();
+        // The alignment the serializer emits must survive being parsed back — this
+        // is the copy/paste path (`selection_clipboard` -> `replace_selection_with_html`)
+        // and `load_html` of previously exported markup.
+        for (html, want) in [
+            (r#"<p style="text-align:center">hi</p>"#, Some("center")),
+            (r#"<p style="text-align:right">hi</p>"#, Some("right")),
+            (r#"<h2 style="text-align:justify">hi</h2>"#, Some("justify")),
+        ] {
+            let slice = slice_from_html(&schema, html).unwrap();
+            let block = slice.content.child(0);
+            assert_eq!(block.attrs().get_str("text_align"), want, "parsing {html}");
+            // Full round-trip: the re-serialized markup matches the input.
+            assert_eq!(node_to_html(block), html, "re-serializing {html}");
+        }
+    }
+
+    #[test]
+    fn text_align_parse_is_whitelisted_and_tolerant() {
+        let schema = s();
+        let align_of = |html: &str| {
+            slice_from_html(&schema, html)
+                .unwrap()
+                .content
+                .child(0)
+                .attrs()
+                .get_str("text_align")
+                .map(str::to_string)
+        };
+        // Tolerant of real-world CSS shapes the serializer itself never emits.
+        assert_eq!(
+            align_of(r#"<p style="text-align: CENTER;">x</p>"#).as_deref(),
+            Some("center")
+        );
+        assert_eq!(
+            align_of(r#"<p style="color:red; text-align:right">x</p>"#).as_deref(),
+            Some("right")
+        );
+        // Everything else reads back as the schema's `left` default — the parser
+        // attaches no `text_align`, so `make_node` fills the default in. That is the
+        // safe fallback: a value outside the whitelist is dropped, never trusted.
+        for html in [
+            r#"<p style="text-align:left">x</p>"#, // the default, stated explicitly
+            r#"<p style="text-align:end">x</p>"#,  // valid CSS, outside the whitelist
+            r#"<p style="text-align:inherit">x</p>"#,
+            r#"<p>x</p>"#, // no style at all
+        ] {
+            assert_eq!(
+                align_of(html).as_deref(),
+                Some("left"),
+                "unrecognized alignment must fall back to the default: {html}"
+            );
+        }
+        // A rejected alignment must also not leak into the re-serialized markup.
+        let slice = slice_from_html(&schema, r#"<p style="text-align:end">x</p>"#).unwrap();
+        assert_eq!(node_to_html(slice.content.child(0)), "<p>x</p>");
+    }
+
+    #[test]
     #[cfg(feature = "serde")]
     fn text_align_round_trips_through_doc_json() {
         use crate::serialize::doc_json::DocNode;
@@ -1501,7 +1583,10 @@ mod tests {
             Some("center")
         );
         // And it still projects to the inline style after the round-trip.
-        assert_eq!(node_to_html(&back), r#"<p style="text-align:center">hi</p>"#);
+        assert_eq!(
+            node_to_html(&back),
+            r#"<p style="text-align:center">hi</p>"#
+        );
     }
 
     #[test]
