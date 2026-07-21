@@ -53,6 +53,11 @@ impl RinchApp {
                 self.focused_input_node_id = None;
                 self.focused_input_preedit = None;
             }
+            FocusTarget::Select(_) => {
+                // Tearing down select focus dismisses its popup: remove the
+                // app-created backdrop + panel nodes.
+                self.remove_select_popup_nodes();
+            }
             #[cfg(feature = "desktop")]
             FocusTarget::Editor(prev) => {
                 // Hide the blurred editor's caret and selection highlight so an

@@ -953,6 +953,14 @@ impl RinchApp {
                         }
                         actions.push(AppAction::RequestRedraw);
                     }
+                    // A native <select> popup owns the keyboard while open:
+                    // navigate / commit / dismiss / type-ahead.
+                    FocusTarget::Select(_) => {
+                        if self.handle_select_key(key, text.as_deref(), vp_w, vp_h) {
+                            actions.push(AppAction::RequestRedraw);
+                            return actions;
+                        }
+                    }
                     // No widget owns the key, or a plain `<input>` does (its editing
                     // commands live in the global handlers, gated internally on
                     // `focused_input_state`). Falls through to DevTools / inspect /
