@@ -1920,8 +1920,9 @@ mod tests {
             loopback(&host, &guest);
             assert_eq!(doc_text(&guest), "ok");
 
-            // A bullet list is a nested block — outside the staged flat-text scope.
-            assert!(host.load_html("<ul><li><p>item</p></li></ul>"));
+            // A blockquote is still outside the projected scope (lists are supported
+            // now; blockquote / tables / task lists / inline atoms are not).
+            assert!(host.load_html("<blockquote><p>quoted</p></blockquote>"));
 
             // The host's model changed locally, but the projection failed loud (the
             // CRDT was left untouched, all-or-nothing) so the peer received nothing.
@@ -1933,6 +1934,37 @@ mod tests {
                 doc_text(&guest),
                 "ok",
                 "the peer is untouched by an unsupported local edit (no partial sync)"
+            );
+        }
+
+        #[test]
+        fn list_edits_sync_to_the_peer() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "ok")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            loopback(&host, &guest);
+            assert_eq!(doc_text(&guest), "ok");
+
+            // Lists are inside the projected scope, so this must sync rather than
+            // fail loud (the counterpart to the blockquote case above).
+            assert!(host.load_html("<ul><li><p>item</p></li></ul>"));
+            assert!(
+                host.collab_take_error().is_none(),
+                "a bullet list is supported and must not fail loud"
+            );
+            assert_eq!(
+                doc_text(&guest),
+                "item",
+                "the peer receives the list content"
+            );
+
+            // A nested list survives the round-trip too.
+            assert!(host.load_html("<ol><li><p>a</p><ul><li><p>b</p></li></ul></li></ol>"));
+            assert!(host.collab_take_error().is_none());
+            assert_eq!(
+                doc_text(&guest),
+                "ab",
+                "nested list content reaches the peer"
             );
         }
 
