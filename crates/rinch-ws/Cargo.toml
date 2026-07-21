@@ -1,0 +1,45 @@
+[package]
+name = "rinch-ws"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cross-platform callback-based WebSocket client for rinch (web WebSocket / native tungstenite)"
+
+[dependencies]
+rinch-core = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Synchronous WebSocket client; `tungstenite` is already in the tree (rinch-signaling).
+# `rustls-tls-webpki-roots` adds `wss://` support reusing the rustls stack that
+# `rinch-http`'s `ureq` already pulls in.
+tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+# rustls is not used directly — this dependency exists to enable the `ring` crypto
+# provider feature. tungstenite's `rustls-tls-webpki-roots` turns on the `rustls`
+# dependency but NO provider feature, so rustls has no compiled-in default and
+# `CryptoProvider` resolution panics on the first `wss://` handshake:
+#
+#   Could not automatically determine the process-level CryptoProvider
+#   from Rustls crate features.
+#
+# The panic happens on the connection's worker thread, so it surfaces as a silent
+# hang — no `on_error`, no `on_open`. It was previously masked whenever an app also
+# pulled `rinch-http` (ureq enables `rustls/ring`, and cargo unifies features), which
+# made `wss://` work only by accident of what else was in the graph. Enabling the
+# provider here makes it a property of this crate instead.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "WebSocket",
+    "MessageEvent",
+    "CloseEvent",
+    "BinaryType",
+] }
+
+[dev-dependencies]
+rinch-core = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
