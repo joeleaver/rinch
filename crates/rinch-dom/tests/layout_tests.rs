@@ -1374,6 +1374,60 @@ fn test_inline_block_percent_width_fills_containing_block() {
     );
 }
 
+/// A `position: fixed` block box with `height: auto` must size to the sum of its
+/// stacked block children — not collapse to one child's height. Regression for a
+/// bug that made a fixed popup/menu appended to <body> show only its first row.
+#[test]
+fn test_fixed_block_auto_height_sums_children() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let panel = doc.create_element("div");
+    doc.set_attribute(
+        panel,
+        "style",
+        "position: fixed; left: 10px; top: 10px; padding: 4px;",
+    );
+    doc.append_child(body, panel);
+    for _ in 0..8 {
+        let row = doc.create_element("div");
+        doc.set_attribute(row, "style", "height: 30px;");
+        doc.append_child(panel, row);
+    }
+    doc.resolve_layout(1000.0, 800.0);
+    let h = doc.tree.get(panel.0).unwrap().layout.height;
+    // 8 * 30 + 4 + 4 padding = 248.
+    assert!(
+        (h - 248.0).abs() < 2.0,
+        "fixed auto-height should sum children (expected ~248), got {h}"
+    );
+}
+
+/// The same fixed box clamps to its `max-height` (and scrolls the overflow)
+/// rather than growing past the cap.
+#[test]
+fn test_fixed_block_auto_height_clamps_to_max_height() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let panel = doc.create_element("div");
+    doc.set_attribute(
+        panel,
+        "style",
+        "position: fixed; left: 10px; top: 10px; max-height: 120px; overflow-y: auto; padding: 4px;",
+    );
+    doc.append_child(body, panel);
+    for _ in 0..8 {
+        let row = doc.create_element("div");
+        doc.set_attribute(row, "style", "height: 30px;");
+        doc.append_child(panel, row);
+    }
+    doc.resolve_layout(1000.0, 800.0);
+    let h = doc.tree.get(panel.0).unwrap().layout.height;
+    assert!(
+        (h - 120.0).abs() < 1.0,
+        "fixed auto-height must clamp to max-height 120, got {h}"
+    );
+}
+
 /// The percentage resolves against the containing block's *content* box, so
 /// horizontal padding on the containing block shrinks it.
 #[test]

@@ -12,6 +12,7 @@ mod debug_commands;
 mod event_dispatch;
 mod focus;
 pub(crate) mod hit_testing;
+mod select_widget;
 mod text_selection;
 
 pub(crate) use hit_testing::*;
@@ -133,6 +134,9 @@ pub(crate) enum FocusTarget {
     Surface(usize),
     /// An `<input>`/`<textarea>` (the rinch-editable engine), by DOM node id.
     Input(usize),
+    /// A native `<select>` whose popup is open, by the select's DOM node id. The
+    /// popup nodes and highlight live in [`RinchApp::open_select`] (issue #121).
+    Select(usize),
     /// A rich-text editor (`rinch-editor-core`) instance, by container node id.
     #[cfg(feature = "desktop")]
     Editor(usize),
@@ -217,6 +221,12 @@ pub struct RinchApp {
     /// (`focused_input_*`, the surface/editor registries) via
     /// [`Self::set_focus_target`].
     pub(crate) focus_target: FocusTarget,
+    /// The open native-`<select>` popup, if any. Present exactly when
+    /// `focus_target == FocusTarget::Select(_)`. Holds the app-created popup DOM
+    /// node ids and the keyboard highlight state (issue #121).
+    pub(crate) open_select: Option<select_widget::OpenSelect>,
+    /// Whether the native-select popup stylesheet has been injected (once).
+    pub(crate) select_css_injected: bool,
     /// The "goal column" (a window-space x) preserved across consecutive vertical
     /// cursor moves (Up/Down) in the focused new editor, so the caret keeps its
     /// horizontal position through short lines instead of drifting to line ends.
@@ -280,6 +290,8 @@ impl RinchApp {
             focused_input_node_id: None,
             focused_input_preedit: None,
             focus_target: FocusTarget::None,
+            open_select: None,
+            select_css_injected: false,
             #[cfg(feature = "desktop")]
             editor_goal_x: None,
             hovered_surface: None,

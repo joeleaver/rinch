@@ -480,23 +480,35 @@ impl DomDocument for RinchDocument {
 
     fn remove_attribute(&mut self, node: NodeId, name: &str) {
         self.tree.nodes[node.0].attributes.remove(name);
-        if name == "class" || name == "style" {
-            self.push_dirty_flags(
-                node.0,
-                DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT,
-            );
-            // Invalidate Stylo element data so styles are recomputed
-            *self.tree.nodes[node.0].stylo_element_data.borrow_mut() = None;
+        if name == "style" {
             self.tree.nodes[node.0].style_attribute_cache = None;
-            self.tree.style_roots.push(node.0);
-            self.tree.styles_dirty = true;
-            // Class removal affects descendant selectors
-            if name == "class" {
-                self.invalidate_descendant_styles(node.0);
-            }
-        } else {
-            self.push_dirty(node.0);
         }
+        // Invalidate IFC for style/class changes on inline-participating nodes,
+        // mirroring set_attribute.
+        if (name == "style" || name == "class")
+            && (self.tree.nodes[node.0].ifc_root.is_some()
+                || self.tree.nodes[node.0].is_inline()
+                || self.tree.nodes[node.0].text_layout.is_some())
+        {
+            self.invalidate_ifc_for_node(node.0);
+            if let Some(parent_id) = self.tree.nodes[node.0].parent {
+                self.invalidate_parent_ifc(parent_id);
+            }
+        }
+        // Symmetric with set_attribute: any attribute can participate in a
+        // selector (`[data-highlighted]`, `[aria-selected]`, …), so *removing*
+        // one must re-resolve this node and its subtree too — otherwise a style
+        // that matched only while the attribute was present stays applied (e.g. a
+        // popup option keeps its highlight background after the attribute is
+        // cleared).
+        *self.tree.nodes[node.0].stylo_element_data.borrow_mut() = None;
+        self.tree.style_roots.push(node.0);
+        self.tree.styles_dirty = true;
+        self.push_dirty_flags(
+            node.0,
+            DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT,
+        );
+        self.invalidate_descendant_styles(node.0);
     }
 
     fn get_attribute(&self, node: NodeId, name: &str) -> Option<String> {

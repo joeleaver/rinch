@@ -38,6 +38,16 @@ impl RinchApp {
         };
         let doc = &doc;
 
+        // ── Phase -1: open native <select> popup is modal ────────────
+        // While a popup is open its backdrop covers the window: the click either
+        // commits an option, no-ops on the panel, or dismisses. Handled here so it
+        // pre-empts every other phase.
+        if self.is_select_open() {
+            self.handle_open_select_click(x, y, viewport_width, viewport_height);
+            actions.push(AppAction::RequestRedraw);
+            return actions;
+        }
+
         // ── Phase 0: render surface detection ────────────────────────
         // Check if the click lands on a render surface. If so, dispatch
         // the event, set focus, and return early.
@@ -81,6 +91,22 @@ impl RinchApp {
             // teardown dispatches FocusLost). Other targets are taken below.
             if matches!(self.focus_target, FocusTarget::Surface(_)) {
                 self.set_focus_target(FocusTarget::None);
+            }
+        }
+
+        // ── Phase 0.5: open a native <select> popup ──────────────────
+        // A click on a closed `<select>` (its options are display:none, so the hit
+        // lands on the control itself) opens the combobox popup and consumes the
+        // click.
+        {
+            let select_hit = {
+                let d = doc.borrow();
+                hit_test(&d.tree, x, y).and_then(|hid| Self::select_ancestor(&d.tree, hid))
+            };
+            if let Some(select_id) = select_hit {
+                self.open_select_popup(select_id, viewport_width, viewport_height);
+                actions.push(AppAction::RequestRedraw);
+                return actions;
             }
         }
 
