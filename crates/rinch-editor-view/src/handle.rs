@@ -18,7 +18,7 @@ use std::fmt;
 use std::rc::{Rc, Weak};
 
 use rinch_core::dom::{DomDocument, NodeHandle, RenderScope};
-use rinch_editor_core::commands::{current_block_type, in_node_type, is_mark_active};
+use rinch_editor_core::commands::{current_block_type, in_node_type, is_mark_active, marks_at};
 use rinch_editor_core::model::{Fragment, Slice};
 use rinch_editor_core::serialize::{
     slice_from_html, slice_from_text, slice_to_html, slice_to_text,
@@ -321,6 +321,21 @@ impl EditorHandle {
             Some(mt) => is_mark_active(&core.state, mt),
             None => false,
         }
+    }
+
+    /// The `href` of the `link` mark active at the selection head, or `None` when
+    /// the selection isn't inside a link — for pre-filling an "edit link" dialog
+    /// (`is_mark_active("link")` only reports presence, not the target). Reads
+    /// **state**, never the host.
+    pub fn active_link_href(&self) -> Option<String> {
+        let core = self.inner.borrow();
+        let state = &core.state;
+        let mt = state.schema().mark_type("link")?;
+        marks_at(state, state.selection.head().0)
+            .iter()
+            .find(|m| &m.typ == mt)
+            .and_then(|m| m.attrs.get_str("href"))
+            .map(str::to_string)
     }
 
     /// The schema type name of the block the cursor is in (e.g. `"heading"`), or
@@ -662,6 +677,31 @@ impl EditorHandle {
     /// changed (the schema rejects an image where inline content isn't allowed).
     pub fn insert_image(&self, src: &str, alt: &str) -> bool {
         let cmd = rinch_editor_core::commands::insert_image(src.to_string(), alt.to_string());
+        let mut core = self.inner.borrow_mut();
+        let Some(next) = core.state.run_command(&cmd) else {
+            return false;
+        };
+        let prev = core.state.clone();
+        let doc_changed = core.commit(prev, next);
+        drop(core);
+        if doc_changed {
+            self.notify_change();
+        }
+        true
+    }
+
+    /// Toggle a `link` mark with `href` across the current selection — the
+    /// imperative "make link" / "unlink" path, mirroring [`insert_image`](Self::insert_image).
+    ///
+    /// Matches the `toggle_link` command semantics: if the selection already
+    /// carries a link it is removed (`href` ignored), otherwise the link is added.
+    /// A collapsed cursor is a no-op (a link needs a range) — returns `false`.
+    /// Because a link takes a runtime `href`, it can't live in the arg-less string
+    /// command registry, so — like `insert_image` — it gets a dedicated method
+    /// rather than a `command("...")` name. To read an existing link's target for
+    /// an edit dialog, use [`active_link_href`](Self::active_link_href).
+    pub fn toggle_link(&self, href: &str) -> bool {
+        let cmd = rinch_editor_core::commands::toggle_link(href.to_string());
         let mut core = self.inner.borrow_mut();
         let Some(next) = core.state.run_command(&cmd) else {
             return false;
@@ -1320,6 +1360,68 @@ mod tests {
         assert_eq!(
             h.doc.borrow().get_attribute(img, "src").as_deref(),
             Some("data:image/png;base64,AAAA")
+        );
+    }
+
+    #[test]
+    fn toggle_link_sets_and_removes_a_link_mark() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "click here")]));
+        // Select "click", then link it.
+        h.handle.set_selection(Selection::text(Pos(1), Pos(6)));
+        assert!(!h.handle.is_mark_active("link"));
+        assert!(h.handle.toggle_link("https://example.com"), "link applies");
+        assert!(h.handle.is_mark_active("link"), "state reports link active");
+        assert_eq!(
+            h.handle.active_link_href().as_deref(),
+            Some("https://example.com")
+        );
+
+        // The host re-projected: the run is now wrapped in <a href=...>.
+        let p = children(&h, h.container_id)[0];
+        let anchor = children(&h, p)
+            .into_iter()
+            .find(|&c| tag(&h, c).as_deref() == Some("a"));
+        assert!(anchor.is_some(), "anchor projected into the host");
+        assert_eq!(
+            h.doc
+                .borrow()
+                .get_attribute(anchor.unwrap(), "href")
+                .as_deref(),
+            Some("https://example.com")
+        );
+
+        // Toggling again over the same range removes the link.
+        assert!(h.handle.toggle_link("https://ignored.example"));
+        assert!(
+            !h.handle.is_mark_active("link"),
+            "link removed on re-toggle"
+        );
+        assert_eq!(h.handle.active_link_href(), None);
+    }
+
+    #[test]
+    fn toggle_link_is_a_noop_on_a_collapsed_cursor() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "abc")]));
+        h.handle.set_selection(Selection::cursor(Pos(2)));
+        // A link needs a range — the collapsed toggle changes nothing.
+        assert!(!h.handle.toggle_link("https://example.com"));
+        assert!(!h.handle.is_mark_active("link"));
+        assert_eq!(h.handle.active_link_href(), None);
+    }
+
+    #[test]
+    fn active_link_href_reads_the_target_from_inside_a_link() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "linked text")]));
+        h.handle.set_selection(Selection::text(Pos(1), Pos(12)));
+        assert!(h.handle.toggle_link("https://rust-lang.org"));
+        // Collapse the cursor inside the linked run — the href is still readable.
+        h.handle.set_selection(Selection::cursor(Pos(3)));
+        assert_eq!(
+            h.handle.active_link_href().as_deref(),
+            Some("https://rust-lang.org")
         );
     }
 

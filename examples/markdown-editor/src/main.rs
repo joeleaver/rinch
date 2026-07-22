@@ -99,6 +99,7 @@ fn editor_toolbar(editor: EditorHandle) -> NodeHandle {
     let ed_under = editor.clone();
     let ed_strike = editor.clone();
     let ed_code = editor.clone();
+    let ed_link = editor.clone();
     let ed_h1 = editor.clone();
     let ed_h2 = editor.clone();
     let ed_h3 = editor.clone();
@@ -122,6 +123,12 @@ fn editor_toolbar(editor: EditorHandle) -> NodeHandle {
             {toolbar_button(__scope, TablerIcon::Underline, "Underline (Ctrl+U)", move || { ed_under.command("toggleUnderline"); })}
             {toolbar_button(__scope, TablerIcon::Strikethrough, "Strikethrough", move || { ed_strike.command("toggleStrike"); })}
             {toolbar_button(__scope, TablerIcon::Code, "Inline code", move || { ed_code.command("toggleCode"); })}
+            // Links take a runtime href, so they can't go through command("...") —
+            // toggle_link is the dedicated imperative method (mirrors insert_image).
+            // A real app would prompt for the URL (and could pre-fill an edit dialog
+            // from ed_link.active_link_href()); this demo links to a fixed target so
+            // the wiring stays self-contained. Click again over a link to unlink.
+            {toolbar_button(__scope, TablerIcon::Link, "Toggle link → rust-lang.org", move || { ed_link.toggle_link("https://www.rust-lang.org"); })}
 
             {separator(__scope)}
 

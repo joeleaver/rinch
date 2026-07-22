@@ -100,8 +100,9 @@ Command names are case-sensitive. The full catalogue:
 | **History** | `undo`, `redo` |
 
 > Links need a destination, so applying a link is a builder rather than a bare named
-> command — use `handle.command("removeLink")` to clear links and the lower-level
-> link API to add one with an `href`.
+> command. Use `handle.toggle_link(href)` to add (or, over an existing link, remove)
+> a link, `handle.command("removeLink")` to clear one unconditionally, and
+> `handle.active_link_href()` to read the current link's target for an edit dialog.
 
 > Alignment applies to the textblocks (`paragraph` / `heading`) overlapping the
 > selection, including ones nested in lists, blockquotes, and table cells.
@@ -150,6 +151,8 @@ rsx! { Editor { editor: editor.clone() } }
 | `load_html(&str) -> bool` | Parse schema-whitelisted HTML and replace the document. Returns `false` if it doesn't parse into valid content. |
 | `doc() -> Node` | The current document (the save shape; serialize it under the `serde` feature). |
 | `insert_image(src, alt)` | Insert an image node (e.g. a `data:` URL), replacing the selection. |
+| `toggle_link(href) -> bool` | Add a `link` mark with `href` across the selection, or remove it if the selection is already linked. No-op (returns `false`) for a collapsed cursor. |
+| `active_link_href() -> Option<String>` | The `href` of the link at the selection head, for pre-filling an "edit link" dialog. `None` when not inside a link. |
 | `replace_selection_with_html(&str)` | Replace the selection with parsed HTML (the rich-paste path). |
 | `selection_clipboard()` | The current selection serialized as `(html, plain_text)` for the clipboard. |
 
