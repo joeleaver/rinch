@@ -75,8 +75,16 @@ pub(crate) struct Runtime {
     /// Counter for generating unique IDs
     next_id: usize,
 
-    /// Callback invoked when any signal changes (for UI re-render)
-    pub(crate) on_signal_change: Option<Rc<dyn Fn()>>,
+    /// Callbacks invoked when any signal changes (for UI re-render / dirty
+    /// tracking). Multi-subscriber: each entry is `(subscription id, callback)`;
+    /// a [`SignalChangeSubscription`] removes only its own entry on drop, so
+    /// several consumers (e.g. concurrent embed `RinchContext`s plus a mounted
+    /// shell/web root, issue #134) can each observe signal changes without
+    /// evicting one another.
+    pub(crate) on_signal_change: Vec<(u64, Rc<dyn Fn()>)>,
+
+    /// Counter for [`SignalChangeSubscription`] ids.
+    next_signal_change_sub: u64,
 
     /// Flag set when any signal changes (reset by `clear_signals_changed`)
     pub(crate) signals_changed: bool,
@@ -90,7 +98,8 @@ impl Runtime {
             pending_effects_set: HashSet::new(),
             batching: false,
             next_id: 0,
-            on_signal_change: None,
+            on_signal_change: Vec::new(),
+            next_signal_change_sub: 0,
             signals_changed: false,
         }
     }
@@ -102,10 +111,72 @@ impl Runtime {
     }
 }
 
-/// Register a callback to be invoked whenever any signal changes.
+/// A live signal-change subscription. Dropping it removes **only its own**
+/// callback, leaving every other subscriber attached.
 ///
-/// This is used by the UI runtime to automatically trigger re-renders
-/// when reactive state changes, without requiring manual `request_render()` calls.
+/// Returned by [`subscribe_signal_change`]. Hold it for as long as the callback
+/// should fire (typically as a field of the consumer, e.g. `RinchContext`).
+/// Thread-bound: the reactive runtime is thread-local, so the subscription must
+/// be dropped on the thread that created it.
+#[must_use = "dropping the subscription immediately detaches the callback"]
+pub struct SignalChangeSubscription {
+    id: u64,
+    /// The runtime is thread-local — keep the guard `!Send`/`!Sync`.
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+impl Drop for SignalChangeSubscription {
+    fn drop(&mut self) {
+        // `try_with`: TLS may already be torn down at thread exit; `try_borrow_mut`
+        // guards a (pathological) drop from inside a signal-change callback.
+        let _ = RUNTIME.try_with(|rt| {
+            if let Ok(mut rt) = rt.try_borrow_mut() {
+                rt.on_signal_change.retain(|(id, _)| *id != self.id);
+            }
+        });
+    }
+}
+
+/// Register a callback invoked whenever any signal changes, alongside every
+/// other subscriber. Returns a guard that detaches **only this** callback on
+/// drop.
+///
+/// This is the multi-consumer form of [`set_on_signal_change`]: use it when the
+/// consumer has a bounded lifetime (an embedded `RinchContext`, a plugin, a
+/// debug overlay) so that creating or dropping one consumer never silences
+/// another (issue #134).
+///
+/// Callbacks run on the signal's thread, after that change's effects have
+/// flushed, in subscription order.
+pub fn subscribe_signal_change(callback: impl Fn() + 'static) -> SignalChangeSubscription {
+    let id = RUNTIME.with(|rt| {
+        let mut rt = rt.borrow_mut();
+        let id = rt.next_signal_change_sub;
+        rt.next_signal_change_sub += 1;
+        rt.on_signal_change.push((id, Rc::new(callback)));
+        id
+    });
+    SignalChangeSubscription {
+        id,
+        _not_send: std::marker::PhantomData,
+    }
+}
+
+thread_local! {
+    /// Backing subscription for the legacy [`set_on_signal_change`] /
+    /// [`clear_on_signal_change`] API, preserving its historical
+    /// single-occupancy (last-write-wins) semantics for the *legacy slot only* —
+    /// guard-based [`subscribe_signal_change`] subscribers are unaffected.
+    static LEGACY_SIGNAL_CHANGE_SUB: RefCell<Option<SignalChangeSubscription>> =
+        const { RefCell::new(None) };
+}
+
+/// Register the process-wide UI re-render callback (legacy single-slot API).
+///
+/// This replaces any callback previously installed **through this function**;
+/// subscribers registered with [`subscribe_signal_change`] are not affected.
+/// Long-lived runtimes (the desktop shell, `rinch-web`) use this; consumers
+/// with a bounded lifetime should prefer [`subscribe_signal_change`].
 ///
 /// # Example
 ///
@@ -116,16 +187,37 @@ impl Runtime {
 /// });
 /// ```
 pub fn set_on_signal_change(callback: impl Fn() + 'static) {
-    RUNTIME.with(|rt| {
-        rt.borrow_mut().on_signal_change = Some(Rc::new(callback));
+    let sub = subscribe_signal_change(callback);
+    LEGACY_SIGNAL_CHANGE_SUB.with(|slot| {
+        *slot.borrow_mut() = Some(sub);
     });
 }
 
-/// Clear the signal change callback.
+/// Clear the callback installed by [`set_on_signal_change`] (legacy API).
+///
+/// Subscribers registered with [`subscribe_signal_change`] are not affected.
 pub fn clear_on_signal_change() {
-    RUNTIME.with(|rt| {
-        rt.borrow_mut().on_signal_change = None;
+    LEGACY_SIGNAL_CHANGE_SUB.with(|slot| {
+        *slot.borrow_mut() = None;
     });
+}
+
+/// Invoke every live signal-change callback, with no runtime borrow held while
+/// each runs (a callback may itself touch signals). Iterates a snapshot, but
+/// re-checks membership before each invocation so a subscription dropped by an
+/// *earlier* callback in the same notification is honored immediately — keeping
+/// the [`SignalChangeSubscription`] "dropping detaches the callback" contract
+/// exact even mid-notification.
+pub(crate) fn notify_signal_change() {
+    let snapshot: Vec<(u64, Rc<dyn Fn()>)> =
+        RUNTIME.with(|rt| rt.borrow().on_signal_change.clone());
+    for (id, cb) in snapshot {
+        let still_subscribed =
+            RUNTIME.with(|rt| rt.borrow().on_signal_change.iter().any(|(i, _)| *i == id));
+        if still_subscribed {
+            cb();
+        }
+    }
 }
 
 /// Check if any signals have changed since the last call to `clear_signals_changed`.
@@ -393,14 +485,9 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
 
     flush_effects();
 
-    // Invoke the UI re-render callback AFTER Effects have run
-    // This allows fine-grained updates to be queued before the callback checks
-    // Clone the callback first and drop the borrow before calling it
-    // to avoid borrow conflicts if the callback accesses the runtime
-    let callback = RUNTIME.with(|rt| rt.borrow().on_signal_change.clone());
-    if let Some(callback) = callback {
-        callback();
-    }
+    // Invoke the UI re-render callbacks AFTER Effects have run
+    // This allows fine-grained updates to be queued before the callbacks check
+    notify_signal_change();
 
     result
 }
@@ -441,6 +528,92 @@ mod tests {
     use super::*;
     use std::cell::Cell;
     use std::rc::Rc;
+
+    #[test]
+    fn signal_change_subscriptions_are_independent() {
+        let a = Rc::new(Cell::new(0));
+        let b = Rc::new(Cell::new(0));
+
+        let a_hits = a.clone();
+        let sub_a = subscribe_signal_change(move || a_hits.set(a_hits.get() + 1));
+        let b_hits = b.clone();
+        let sub_b = subscribe_signal_change(move || b_hits.set(b_hits.get() + 1));
+
+        // Both subscribers see every change.
+        let sig = Signal::new(0);
+        sig.set(1);
+        assert_eq!(a.get(), 1, "first subscriber fires");
+        assert_eq!(b.get(), 1, "second subscriber fires alongside the first");
+
+        // Dropping one guard detaches only its own callback (#134).
+        drop(sub_b);
+        sig.set(2);
+        assert_eq!(a.get(), 2, "surviving subscriber still fires");
+        assert_eq!(b.get(), 1, "dropped subscriber no longer fires");
+
+        drop(sub_a);
+        sig.set(3);
+        assert_eq!(a.get(), 2, "dropped subscriber no longer fires");
+    }
+
+    #[test]
+    fn subscription_dropped_mid_notification_does_not_fire() {
+        // Subscriber A (registered first) drops B's guard from inside its own
+        // callback — B must NOT fire for that same notification: the guard's
+        // contract is that dropping detaches immediately.
+        let b_hits = Rc::new(Cell::new(0));
+        let b_guard: Rc<RefCell<Option<SignalChangeSubscription>>> = Rc::new(RefCell::new(None));
+
+        let b_guard_for_a = b_guard.clone();
+        let _sub_a = subscribe_signal_change(move || {
+            *b_guard_for_a.borrow_mut() = None; // drop B mid-notification
+        });
+        let b_hits_clone = b_hits.clone();
+        *b_guard.borrow_mut() = Some(subscribe_signal_change(move || {
+            b_hits_clone.set(b_hits_clone.get() + 1);
+        }));
+
+        let sig = Signal::new(0);
+        sig.set(1);
+        assert_eq!(
+            b_hits.get(),
+            0,
+            "a subscription dropped by an earlier callback in the same \
+             notification must not fire"
+        );
+    }
+
+    #[test]
+    fn legacy_slot_is_last_write_wins_but_spares_guard_subscribers() {
+        let legacy = Rc::new(Cell::new(0));
+        let guard = Rc::new(Cell::new(0));
+
+        let guard_hits = guard.clone();
+        let _sub = subscribe_signal_change(move || guard_hits.set(guard_hits.get() + 1));
+
+        // Legacy slot: second set_on_signal_change replaces the first…
+        let first = Rc::new(Cell::new(0));
+        let first_hits = first.clone();
+        set_on_signal_change(move || first_hits.set(first_hits.get() + 1));
+        let legacy_hits = legacy.clone();
+        set_on_signal_change(move || legacy_hits.set(legacy_hits.get() + 1));
+
+        let sig = Signal::new(0);
+        sig.set(1);
+        assert_eq!(first.get(), 0, "evicted legacy callback does not fire");
+        assert_eq!(legacy.get(), 1, "current legacy callback fires");
+        assert_eq!(
+            guard.get(),
+            1,
+            "guard-based subscriber unaffected by legacy churn"
+        );
+
+        // …and clear_on_signal_change removes only the legacy slot.
+        clear_on_signal_change();
+        sig.set(2);
+        assert_eq!(legacy.get(), 1, "cleared legacy callback does not fire");
+        assert_eq!(guard.get(), 2, "guard-based subscriber survives the clear");
+    }
 
     #[test]
     fn signal_basic() {

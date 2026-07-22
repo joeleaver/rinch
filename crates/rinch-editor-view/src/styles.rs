@@ -17,7 +17,6 @@
 //! flexbox (`table` = column, `row` = row, cells = equal-width flex items). This
 //! is why the default stylesheet is load-bearing for tables, not just cosmetic.
 
-use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Weak;
 
@@ -185,24 +184,29 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 "#;
 
 thread_local! {
-    /// Whether [`DEFAULT_EDITOR_CSS`] has already been injected on this thread.
-    /// The stylesheet is global and idempotent, so one injection per UI thread
-    /// (one document) suffices; the guard stops every mounted editor from adding
-    /// its own duplicate copy.
-    static INJECTED: Cell<bool> = const { Cell::new(false) };
+    /// The [`doc_key`](rinch_core::dom::DomDocument::doc_key)s of documents that
+    /// already carry [`DEFAULT_EDITOR_CSS`]. Keyed **per document**, not per
+    /// thread: two documents on one thread (e.g. two embedded `RinchContext`s,
+    /// issue #134) each need their own copy of the stylesheet — a thread-wide
+    /// flag left the second document's editor completely unstyled. The guard
+    /// still stops every mounted editor from adding a duplicate copy to *its*
+    /// document.
+    static INJECTED: RefCell<std::collections::HashSet<u64>> =
+        RefCell::new(std::collections::HashSet::new());
 }
 
 /// Inject [`DEFAULT_EDITOR_CSS`] into the document `<body>` as a `<style>` element,
-/// once per thread. A no-op if the document is gone or the styles are already
+/// once per document. A no-op if the document is gone or the styles are already
 /// present. Called by [`RinchDomEditorView`](super::view::RinchDomEditorView) on
 /// construction so consumers never have to wire the stylesheet by hand.
 pub(crate) fn ensure_default_styles(doc: &Weak<RefCell<dyn DomDocument>>) {
-    if INJECTED.with(|f| f.get()) {
-        return;
-    }
     let Some(doc) = doc.upgrade() else {
         return;
     };
+    let doc_key = doc.borrow().doc_key();
+    if INJECTED.with(|f| f.borrow().contains(&doc_key)) {
+        return;
+    }
     let mut d = doc.borrow_mut();
     let body = d.body();
     let style = d.create_element("style");
@@ -210,5 +214,5 @@ pub(crate) fn ensure_default_styles(doc: &Weak<RefCell<dyn DomDocument>>) {
     let text = d.create_text(DEFAULT_EDITOR_CSS);
     d.append_child(style, text);
     d.append_child(body, style);
-    INJECTED.with(|f| f.set(true));
+    INJECTED.with(|f| f.borrow_mut().insert(doc_key));
 }

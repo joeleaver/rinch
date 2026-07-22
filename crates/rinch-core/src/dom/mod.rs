@@ -641,7 +641,16 @@ impl NodeHandle {
     /// }
     /// ```
     pub fn bounds_signal(&self) -> crate::reactive::Signal<crate::reactive::ElementBounds> {
-        crate::reactive::register_bounds_signal(self.node_id.0 as u64)
+        // Scope the registration to this node's document — node ids collide
+        // across documents (issue #134). A handle whose document is already
+        // gone registers under key 0 (matches no live document), yielding a
+        // signal that simply keeps its zero rect.
+        let doc_key = self
+            .doc
+            .upgrade()
+            .map(|doc| doc.borrow().doc_key())
+            .unwrap_or(0);
+        crate::reactive::register_bounds_signal(doc_key, self.node_id.0 as u64)
     }
 
     /// Get the tag name of this node (if it's an element).

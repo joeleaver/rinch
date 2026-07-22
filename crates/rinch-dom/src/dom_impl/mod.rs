@@ -54,6 +54,10 @@ impl style::servo::media_queries::FontMetricsProvider for SimpleFontMetricsProvi
 /// In later phases, this will integrate Taffy for layout,
 /// Parley for text, and Vello for painting.
 pub struct RinchDocument {
+    /// Process-unique document identity (see [`DomDocument::doc_key`]) — scopes
+    /// per-node-id state in thread-local registries so two documents on one
+    /// thread never collide (issue #134).
+    pub(crate) doc_key: u64,
     /// The node tree.
     pub tree: NodeTree,
     /// Parley font context for text shaping.
@@ -76,6 +80,14 @@ impl Default for RinchDocument {
 }
 
 impl RinchDocument {
+    /// Process-unique document identity (see
+    /// [`DomDocument::doc_key`](rinch_core::dom::DomDocument::doc_key)) —
+    /// inherent accessor so callers holding a concrete `RinchDocument` don't
+    /// need the trait in scope.
+    pub fn doc_key(&self) -> u64 {
+        self.doc_key
+    }
+
     /// Create a new document with root and body nodes.
     pub fn new() -> Self {
         // Enable CSS Grid and text-overflow support in Stylo
@@ -104,6 +116,7 @@ impl RinchDocument {
         let stylist = Stylist::new(device, QuirksMode::NoQuirks);
 
         let mut doc = Self {
+            doc_key: rinch_core::dom::next_doc_key(),
             tree: NodeTree::new(),
             font_cx: parley::FontContext::new(),
             layout_cx: parley::LayoutContext::new(),

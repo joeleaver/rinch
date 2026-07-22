@@ -114,6 +114,11 @@ pub struct RinchContext {
     size: (u32, u32),
     scale_factor: f64,
     dirty: Arc<AtomicBool>,
+    /// This context's signal-change subscription. Multi-subscriber: several
+    /// concurrent contexts (plus a mounted shell/web root) each hold their own,
+    /// and dropping this context detaches only its own callback — creating or
+    /// dropping context B never silences context A (issue #134).
+    _signal_change_sub: rinch_core::SignalChangeSubscription,
 }
 
 impl RinchContext {
@@ -157,10 +162,12 @@ impl RinchContext {
         // Register main thread for cross-thread signal dispatch
         rinch_core::register_main_thread();
 
-        // Set up signal-change callback so the game loop can detect dirty state
+        // Subscribe to signal changes so the game loop can detect dirty state.
+        // A guard-based subscription (not the legacy single slot): each context
+        // observes independently, so N contexts can coexist (issue #134).
         let dirty = Arc::new(AtomicBool::new(false));
         let dirty_clone = dirty.clone();
-        rinch_core::set_on_signal_change(move || {
+        let signal_change_sub = rinch_core::subscribe_signal_change(move || {
             dirty_clone.store(true, Ordering::Release);
         });
 
@@ -169,6 +176,7 @@ impl RinchContext {
             size: (width, height),
             scale_factor,
             dirty,
+            _signal_change_sub: signal_change_sub,
         }
     }
 
@@ -322,12 +330,6 @@ impl RinchContext {
             self.size.0 as f32 / self.scale_factor as f32,
             self.size.1 as f32 / self.scale_factor as f32,
         )
-    }
-}
-
-impl Drop for RinchContext {
-    fn drop(&mut self) {
-        rinch_core::clear_on_signal_change();
     }
 }
 

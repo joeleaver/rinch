@@ -75,6 +75,8 @@ softbuffer = { git = "https://github.com/rust-windowing/softbuffer", rev = "672d
 [dev-dependencies]
 # Test-only: the headless DomDocument double, used by the new editor view's tests.
 rinch-core = { workspace = true, features = ["test-util"] }
+# Test-only: direct tree/text queries against RinchDocument (tests/multi_context.rs).
+rinch-dom = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", optional = true }

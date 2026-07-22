@@ -210,7 +210,14 @@ impl EditorHandle {
         let container = scope.create_element("div");
         container.set_attribute("data-pm-editor", "true");
         self.attach(container.clone(), scope.doc_weak());
-        super::registry::register_editor(container.node_id().0, self.clone());
+        // Register scoped to this document — container ids collide across
+        // documents on one thread (issue #134).
+        let doc_key = scope
+            .doc_weak()
+            .upgrade()
+            .map(|d| d.borrow().doc_key())
+            .unwrap_or(0);
+        super::registry::register_editor(doc_key, container.node_id().0, self.clone());
         container
     }
 

@@ -335,7 +335,9 @@ impl RinchApp {
                     events::dispatch_event(events::EventHandlerId(handler_id));
                     // Process any pending focus request from the event handler
                     // (e.g., a handler may call request_focus on an input element).
-                    if let Some(focus_node_id) = rinch_core::take_pending_focus_request() {
+                    if let Some(focus_node_id) =
+                        rinch_core::take_pending_focus_request(self.doc_key())
+                    {
                         self.try_focus_input(focus_node_id);
                     }
                     actions.push(AppAction::RequestRedraw);

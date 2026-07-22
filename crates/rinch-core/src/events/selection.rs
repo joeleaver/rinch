@@ -173,17 +173,29 @@ pub fn take_pending_selection_clear() -> bool {
 // The runtime checks for and applies focus requests during event processing.
 
 thread_local! {
-    static PENDING_FOCUS_REQUEST: Cell<Option<usize>> = const { Cell::new(None) };
+    /// `(doc_key, node_id)` — the document key scopes the request so a runtime
+    /// driving one document never consumes (and misapplies) a focus request
+    /// posted by another document on the same thread (issue #134).
+    static PENDING_FOCUS_REQUEST: Cell<Option<(u64, usize)>> = const { Cell::new(None) };
 }
 
-/// Request that a specific element be focused.
+/// Request that a specific element be focused, identified by its document's
+/// [`doc_key`](crate::dom::DomDocument::doc_key) and node id.
 /// The runtime will apply this focus before the next event processing cycle.
-pub fn request_focus(node_id: usize) {
-    PENDING_FOCUS_REQUEST.with(|c| c.set(Some(node_id)));
+pub fn request_focus(doc_key: u64, node_id: usize) {
+    PENDING_FOCUS_REQUEST.with(|c| c.set(Some((doc_key, node_id))));
 }
 
-/// Check and consume the pending focus request.
-/// Called by the runtime during event processing.
-pub fn take_pending_focus_request() -> Option<usize> {
-    PENDING_FOCUS_REQUEST.with(|c| c.take())
+/// Consume the pending focus request **if it targets the given document**.
+/// Called by the runtime during event processing with its own document's key;
+/// a request posted by a different document is left in place for that
+/// document's runtime to pick up.
+pub fn take_pending_focus_request(doc_key: u64) -> Option<usize> {
+    PENDING_FOCUS_REQUEST.with(|c| match c.get() {
+        Some((key, node_id)) if key == doc_key => {
+            c.set(None);
+            Some(node_id)
+        }
+        _ => None,
+    })
 }

@@ -23,6 +23,8 @@ static NEXT_NODE_ID: AtomicUsize = AtomicUsize::new(0);
 /// Reverse lookups (browser node -> NodeId) use a `__nid` JS property
 /// set on each node via `Reflect::set`.
 pub struct WebDocument {
+    /// Process-unique document identity (see [`DomDocument::doc_key`]).
+    doc_key: u64,
     /// The browser's document object.
     browser_doc: web_sys::Document,
     /// Map from rinch NodeId to browser DOM node.
@@ -236,6 +238,7 @@ impl WebDocument {
     /// as body, appending root to `document.body()`.
     pub fn new(browser_doc: web_sys::Document) -> Self {
         let mut doc = Self {
+            doc_key: rinch_core::dom::next_doc_key(),
             browser_doc,
             nodes: HashMap::new(),
             root_id: NodeId(0),
@@ -280,6 +283,7 @@ impl WebDocument {
     /// any number of islands can coexist on one page without id collisions.
     pub fn new_into(browser_doc: web_sys::Document, host: web_sys::Element) -> Self {
         let mut doc = Self {
+            doc_key: rinch_core::dom::next_doc_key(),
             browser_doc,
             nodes: HashMap::new(),
             root_id: NodeId(0),
@@ -398,6 +402,10 @@ fn utf8_byte_to_utf16_offset(text: &str, byte_offset: usize) -> usize {
 }
 
 impl DomDocument for WebDocument {
+    fn doc_key(&self) -> u64 {
+        self.doc_key
+    }
+
     fn create_element(&mut self, tag: &str) -> NodeId {
         let el = if is_svg_tag(tag) {
             self.browser_doc

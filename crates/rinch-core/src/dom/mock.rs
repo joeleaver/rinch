@@ -5,6 +5,7 @@ use super::traits::{DomDocument, GlyphBounds};
 
 /// A mock DOM document for testing.
 pub struct MockDomDocument {
+    doc_key: u64,
     next_id: usize,
     nodes: std::collections::HashMap<NodeId, MockNode>,
     dirty: Vec<NodeId>,
@@ -35,6 +36,7 @@ impl Default for MockDomDocument {
 impl MockDomDocument {
     pub fn new() -> Self {
         let mut doc = Self {
+            doc_key: crate::dom::next_doc_key(),
             next_id: 0,
             nodes: std::collections::HashMap::new(),
             dirty: Vec::new(),
@@ -58,6 +60,10 @@ impl MockDomDocument {
 }
 
 impl DomDocument for MockDomDocument {
+    fn doc_key(&self) -> u64 {
+        self.doc_key
+    }
+
     fn create_element(&mut self, tag: &str) -> NodeId {
         let id = self.next_id();
         self.nodes.insert(

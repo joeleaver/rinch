@@ -562,6 +562,16 @@ impl RinchDomEditorView {
         self.root.dom.node_id().0
     }
 
+    /// The host document's [`doc_key`](rinch_core::dom::DomDocument::doc_key),
+    /// or 0 if the document is gone. Scopes the blink target — container ids
+    /// collide across documents on one thread (issue #134).
+    pub(crate) fn doc_key(&self) -> u64 {
+        self.doc
+            .upgrade()
+            .map(|d| d.borrow().doc_key())
+            .unwrap_or(0)
+    }
+
     /// Switch the editor's color scheme by setting `data-pm-theme` on the container,
     /// which the default stylesheet's dark rules key off of (see
     /// [`styles`](super::styles)).
@@ -956,7 +966,7 @@ impl RinchDomEditorView {
         // `update_all_carets` sweeps every one, and a programmatic caret move in
         // an unfocused editor must not stomp the focused editor's global phase.
         // (A focus change resets the phase separately, in `caret_blink_tick`.)
-        if super::blink::target() == Some(self.container_id()) {
+        if super::blink::target() == Some((self.doc_key(), self.container_id())) {
             super::blink::reset();
         }
         // The `display: block` written below always puts this caret in the
@@ -1385,7 +1395,7 @@ mod tests {
         let mut view_b = RinchDomEditorView::new(container_b, doc_ref(&h), &st_b);
 
         // Editor A is the focused / blink-target editor.
-        crate::blink::set_target(Some(view_a.container_id()));
+        crate::blink::set_target(Some((view_a.doc_key(), view_a.container_id())));
         crate::blink::reset();
         let anchor0 = crate::blink::anchor_for_test();
 
