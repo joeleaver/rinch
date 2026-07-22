@@ -45,7 +45,9 @@
 //!
 //! A crash before step 2 leaves the previous state intact; after it, the new
 //! state complete. This is the same manifest/pointer-flip trick git and LSM
-//! engines use, and it needs nothing this trait doesn't already provide.
+//! engines use, and it needs nothing this trait doesn't already provide. The
+//! `manifest_pointer_flip_gives_multi_key_atomicity` test in the native backend
+//! is a worked example, including the interrupted-before-commit recovery.
 //!
 //! # Listing cost
 //!

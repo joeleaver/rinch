@@ -538,4 +538,77 @@ mod tests {
             ]
         );
     }
+
+    /// Executable proof of the crate's answer to "there is no `batch()`": the
+    /// manifest / pointer-flip recipe (module docs, "Atomicity: one key at a
+    /// time") gives a multi-key invariant out of single-key atomicity alone.
+    ///
+    /// A "generation" is a set of blobs written under fresh keys; one small
+    /// `manifest` key names the live generation, and a reader resolves everything
+    /// *through* it. Because publishing is that one atomic `put`, the multi-blob
+    /// state flips as a unit — and a crash before the flip leaves the previous
+    /// generation whole, never a mixture. This is the guarantee a real consumer
+    /// would rely on, so it is pinned here rather than left as prose.
+    #[test]
+    fn manifest_pointer_flip_gives_multi_key_atomicity() {
+        // A reader NEVER touches a generation's keys directly — it follows the
+        // manifest to the live generation and reads only under it. This is the
+        // whole discipline the recipe asks of a consumer.
+        fn read_live(store: &FsStore) -> Option<(Vec<u8>, Vec<u8>)> {
+            let generation = block_on(store.get("manifest")).unwrap()?;
+            let generation = String::from_utf8(generation).unwrap();
+            let snapshot = block_on(store.get(&format!("{generation}/snapshot"))).unwrap()?;
+            let log = block_on(store.get(&format!("{generation}/log"))).unwrap()?;
+            Some((snapshot, log))
+        }
+
+        let dir = tempdir();
+        let store = FsStore::open(dir.path()).unwrap();
+
+        // Nothing is published until a manifest exists.
+        assert_eq!(read_live(&store), None);
+
+        // Generation 1: stage the blobs under fresh keys, THEN publish them with
+        // the single atomic manifest put. Only this last write makes them live.
+        block_on(store.put("gen1/snapshot", b"snap-1")).unwrap();
+        block_on(store.put("gen1/log", b"log-1")).unwrap();
+        block_on(store.put("manifest", b"gen1")).unwrap();
+        assert_eq!(
+            read_live(&store),
+            Some((b"snap-1".to_vec(), b"log-1".to_vec()))
+        );
+
+        // Generation 2, INTERRUPTED: both new blobs reach disk, but the process
+        // "crashes" before the manifest flip. A restart (a fresh store instance
+        // over the same directory — FsStore keeps no in-memory state) must still
+        // see the complete generation 1, not a snap-2/log-1 mix.
+        block_on(store.put("gen2/snapshot", b"snap-2")).unwrap();
+        block_on(store.put("gen2/log", b"log-2")).unwrap();
+        // <-- crash here: `manifest` still names gen1.
+        let reopened = FsStore::open(dir.path()).unwrap();
+        assert_eq!(
+            read_live(&reopened),
+            Some((b"snap-1".to_vec(), b"log-1".to_vec())),
+            "a crash before the manifest flip leaves the previous generation intact"
+        );
+
+        // Retry: the flip is one atomic put, so once it lands the entire new
+        // generation is published at once.
+        block_on(reopened.put("manifest", b"gen2")).unwrap();
+        assert_eq!(
+            read_live(&reopened),
+            Some((b"snap-2".to_vec(), b"log-2".to_vec()))
+        );
+
+        // The superseded generation is now unreferenced garbage — no reader can
+        // reach it — so it can be swept whenever convenient without affecting the
+        // live state.
+        for key in block_on(reopened.list("gen1/")).unwrap() {
+            block_on(reopened.delete(&key)).unwrap();
+        }
+        assert_eq!(
+            read_live(&reopened),
+            Some((b"snap-2".to_vec(), b"log-2".to_vec()))
+        );
+    }
 }
