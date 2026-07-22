@@ -1334,28 +1334,25 @@ fn test_grid_1fr_track_fills_remaining_space() {
     );
 }
 
-// ── inline-block percentage width collapse (native grid "1fr → 0" bug) ─────
+// ── inline-block percentage width (was: native grid "1fr → 0" bug) ─────────
 //
-// PROVEN-BUG, NOT YET FIXED — tracked in issue #120.
+// Regression test for issue #120.
 //
-// This test is `#[ignore]`d, so CI never runs it. #120 is the live tracker;
-// un-ignore this test as part of closing it.
-//
-// The native "grid collapses / children squeezed to ~22×14" report is an
+// The native "grid collapses / children squeezed to ~22×14" report was an
 // *inline-block* bug, not a grid-track bug: an inline-block (an `<input>`
-// defaults to inline-block) with a percentage main-size collapses to
+// defaults to inline-block) with a percentage main-size collapsed to
 // min-content. `compute_inline_block_layouts` pre-measures inline-blocks
 // detached from Taffy under `AvailableSpace::MaxContent`, so a `width: 100%`
-// has no definite containing block to resolve against and falls to ~0 (just
-// padding). A block-level `width: 100%` resolves correctly, and a *definite*
-// inline-block width (`200px`) passes through — only percentages break.
+// had no definite containing block to resolve against and fell to ~0 (just
+// padding). A block-level `width: 100%` always resolved correctly, and a
+// *definite* inline-block width (`200px`) passed through — only percentages
+// broke.
 //
-// A correct fix needs the containing block's definite inner width at
-// pre-measure time, which is not known until the main Taffy compute runs
-// (ordering hazard). That is invasive/risky, so it is deliberately left for a
-// dedicated change rather than patched with a stale-width heuristic here.
+// Fixed by `resolve_percentage_inline_blocks`, which re-measures percentage
+// inline-blocks against their containing block's *computed* width after the
+// root Taffy compute, then re-runs that compute so the enclosing IFCs
+// line-break against the corrected boxes.
 #[test]
-#[ignore = "issue #120: inline-block percentage width collapses under MaxContent premeasure; fix is invasive (needs containing-block width before layout)"]
 fn test_inline_block_percent_width_fills_containing_block() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
@@ -1428,5 +1425,195 @@ fn test_fixed_block_auto_height_clamps_to_max_height() {
     assert!(
         (h - 120.0).abs() < 1.0,
         "fixed auto-height must clamp to max-height 120, got {h}"
+    );
+}
+
+/// The percentage resolves against the containing block's *content* box, so
+/// horizontal padding on the containing block shrinks it.
+#[test]
+fn test_inline_block_percent_width_excludes_container_padding() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let cell = doc.create_element("div");
+    doc.set_attribute(
+        cell,
+        "style",
+        "width: 700px; height: 40px; padding: 0 20px;",
+    );
+    doc.append_child(body, cell);
+    let ib = doc.create_element("div");
+    doc.set_attribute(ib, "style", "display: inline-block; width: 100%;");
+    doc.append_child(cell, ib);
+
+    doc.resolve_layout(1000.0, 800.0);
+
+    let ib_w = doc.tree.get(ib.0).unwrap().layout.width;
+    assert!(
+        (ib_w - 660.0).abs() < 1.0,
+        "should be 700 - 2*20 padding = 660, got {ib_w}"
+    );
+}
+
+/// A percentage `max-width` must clamp the inline-block *and* re-wrap its text.
+/// This is the case that proves the second layout pass does its job: the box is
+/// corrected after the first compute, so the enclosing IFC has to be measured
+/// again for the taller, narrower result to appear.
+#[test]
+fn test_inline_block_percent_max_width_clamps_and_rewraps() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let cell = doc.create_element("div");
+    doc.set_attribute(cell, "style", "width: 700px;");
+    doc.append_child(body, cell);
+    let ib = doc.create_element("div");
+    doc.set_attribute(ib, "style", "display: inline-block; max-width: 175px;");
+    doc.append_child(cell, ib);
+    let text = doc.create_text("hello world this is some text that could wrap somewhere");
+    doc.append_child(ib, text);
+
+    doc.resolve_layout(1000.0, 800.0);
+
+    let l = doc.tree.get(ib.0).unwrap().layout;
+    assert!(
+        (l.width - 175.0).abs() < 1.0,
+        "max-width 25% of 700 should clamp to 175, got {}",
+        l.width
+    );
+    assert!(
+        l.height > 40.0,
+        "clamped text must wrap to multiple lines, got height {}",
+        l.height
+    );
+}
+
+/// A percentage `min-width` floors an otherwise shrink-to-fit inline-block.
+#[test]
+fn test_inline_block_percent_min_width_floors_shrink_to_fit() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let cell = doc.create_element("div");
+    doc.set_attribute(cell, "style", "width: 700px;");
+    doc.append_child(body, cell);
+    let ib = doc.create_element("div");
+    doc.set_attribute(ib, "style", "display: inline-block; min-width: 50%;");
+    doc.append_child(cell, ib);
+    let text = doc.create_text("hi");
+    doc.append_child(ib, text);
+
+    doc.resolve_layout(1000.0, 800.0);
+
+    let ib_w = doc.tree.get(ib.0).unwrap().layout.width;
+    assert!(
+        (ib_w - 350.0).abs() < 1.0,
+        "min-width 50% of 700 should floor at 350, got {ib_w}"
+    );
+}
+
+/// An `auto`-width inline-block must keep shrink-to-fit sizing — the percentage
+/// fix must not start stretching every inline-block to its containing block.
+#[test]
+fn test_inline_block_auto_width_still_shrinks_to_fit() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let cell = doc.create_element("div");
+    doc.set_attribute(cell, "style", "width: 700px;");
+    doc.append_child(body, cell);
+    let ib = doc.create_element("div");
+    doc.set_attribute(ib, "style", "display: inline-block;");
+    doc.append_child(cell, ib);
+    let text = doc.create_text("hi");
+    doc.append_child(ib, text);
+
+    doc.resolve_layout(1000.0, 800.0);
+
+    let ib_w = doc.tree.get(ib.0).unwrap().layout.width;
+    assert!(
+        ib_w > 0.0 && ib_w < 200.0,
+        "auto inline-block must hug its content, not fill 700, got {ib_w}"
+    );
+}
+
+/// The percentage must be re-resolved on every layout, not frozen at first
+/// layout — otherwise a window resize strands the inline-block at its old width.
+#[test]
+fn test_inline_block_percent_width_tracks_container_resize() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let cell = doc.create_element("div");
+    doc.set_attribute(cell, "style", "width: 50%; height: 40px;");
+    doc.append_child(body, cell);
+    let ib = doc.create_element("div");
+    doc.set_attribute(ib, "style", "display: inline-block; width: 100%;");
+    doc.append_child(cell, ib);
+
+    doc.resolve_layout(1000.0, 800.0);
+    let before = doc.tree.get(ib.0).unwrap().layout.width;
+    assert!(
+        (before - 500.0).abs() < 1.0,
+        "100% of a 50%-of-1000 container should be 500, got {before}"
+    );
+
+    doc.resolve_layout(600.0, 800.0);
+    let after = doc.tree.get(ib.0).unwrap().layout.width;
+    assert!(
+        (after - 300.0).abs() < 1.0,
+        "after resize to 600 viewport it should be 300, got {after}"
+    );
+}
+
+/// The symptom that originally surfaced #120: an `<input>` (inline-block by
+/// default) with `width: 100%` inside a grid cell rendered ~22px wide, which
+/// read as "the grid collapsed". The grid tracks were always correct.
+#[test]
+fn test_percent_width_input_in_grid_cell_fills_track() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let grid = doc.create_element("div");
+    doc.set_attribute(
+        grid,
+        "style",
+        "display: grid; grid-template-columns: 120px 1fr; width: 600px;",
+    );
+    doc.append_child(body, grid);
+    let label = doc.create_element("div");
+    doc.append_child(grid, label);
+    let cell = doc.create_element("div");
+    doc.append_child(grid, cell);
+    let input = doc.create_element("input");
+    doc.set_attribute(input, "style", "width: 100%;");
+    doc.append_child(cell, input);
+
+    doc.resolve_layout(1000.0, 600.0);
+
+    let input_w = doc.tree.get(input.0).unwrap().layout.width;
+    assert!(
+        input_w > 470.0,
+        "input width:100% should fill the 480px 1fr track, got {input_w}"
+    );
+}
+
+/// The correction must converge: laying out repeatedly at the same size has to
+/// settle on the same width. If it did not, every frame would pay for a second
+/// Taffy pass and the box could visibly oscillate.
+#[test]
+fn test_inline_block_percent_width_is_stable_across_relayouts() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let cell = doc.create_element("div");
+    doc.set_attribute(cell, "style", "width: 700px; height: 40px;");
+    doc.append_child(body, cell);
+    let ib = doc.create_element("div");
+    doc.set_attribute(ib, "style", "display: inline-block; width: 100%;");
+    doc.append_child(cell, ib);
+
+    let mut widths = Vec::new();
+    for _ in 0..4 {
+        doc.resolve_layout(1000.0, 800.0);
+        widths.push(doc.tree.get(ib.0).unwrap().layout.width);
+    }
+
+    assert!(
+        widths.iter().all(|w| (w - 700.0).abs() < 1.0),
+        "width must settle at 700 on every layout, got {widths:?}"
     );
 }
