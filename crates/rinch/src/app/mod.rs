@@ -494,8 +494,10 @@ impl RinchApp {
         // New-editor phase 2 (design A3): render mounted editors' carets against
         // the fresh initial layout (the steady-state pass in resolve_and_repaint
         // short-circuits when nothing is dirty, so the first caret renders here).
+        // Key off the local `doc` — `self.doc` is only assigned below, so
+        // `self.doc_key()` would still be 0 here and filter every editor out.
         #[cfg(feature = "desktop")]
-        crate::editor::update_all_carets(self.focused_editor_id());
+        crate::editor::update_all_carets(Some(doc.borrow().doc_key()), self.focused_editor_id());
 
         self.scene_dirty = true;
         self.doc = Some(doc.clone());
@@ -511,7 +513,7 @@ impl RinchApp {
     /// clear a moved absolute element's old rect — so without this they ghost.
     #[cfg(feature = "desktop")]
     pub(crate) fn refresh_editor_overlays(&mut self) {
-        if crate::editor::update_all_carets(self.focused_editor_id()) {
+        if crate::editor::update_all_carets(Some(self.doc_key()), self.focused_editor_id()) {
             self.scene_dirty = true;
             #[cfg(not(feature = "gpu"))]
             {
@@ -621,7 +623,7 @@ impl RinchApp {
         // dirty-region cache can't clear a moved absolute element's *old* rect, so
         // the overlay would otherwise ghost.
         #[cfg(feature = "desktop")]
-        if crate::editor::update_all_carets(self.focused_editor_id()) {
+        if crate::editor::update_all_carets(Some(self.doc_key()), self.focused_editor_id()) {
             {
                 let mut d = doc.borrow_mut();
                 let _ = d.take_dirty_nodes();
@@ -640,7 +642,7 @@ impl RinchApp {
         // borrowed read-only just for the lookup.
         {
             let d = doc.borrow();
-            rinch_core::reactive::update_bounds_signals(|node_id| {
+            rinch_core::reactive::update_bounds_signals(d.doc_key(), |node_id| {
                 let nid = node_id as usize;
                 let n = d.tree.nodes.get(nid)?;
                 // Walk to root accumulating parent-relative offsets — same
@@ -1483,6 +1485,13 @@ impl RinchApp {
         }
 
         self.scene_dirty = true;
+    }
+
+    /// This app's document identity (see `DomDocument::doc_key`), or 0 before
+    /// mount. Used to scope thread-local registries (bounds signals, pending
+    /// focus requests) to this document (issue #134).
+    pub(crate) fn doc_key(&self) -> u64 {
+        self.doc.as_ref().map(|d| d.borrow().doc_key()).unwrap_or(0)
     }
 
     /// Programmatically focus an input element by node ID.

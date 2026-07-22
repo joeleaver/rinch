@@ -130,11 +130,8 @@ impl<T: 'static> Signal<T> {
 
                 super::flush_effects();
 
-                // Invoke the UI re-render callback AFTER Effects have run
-                let callback = RUNTIME.with(|rt| rt.borrow().on_signal_change.clone());
-                if let Some(callback) = callback {
-                    callback();
-                }
+                // Invoke the UI re-render callbacks AFTER Effects have run
+                super::notify_signal_change();
             }
         });
     }

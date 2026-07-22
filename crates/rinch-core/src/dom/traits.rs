@@ -115,6 +115,16 @@ pub struct NodeFont {
     pub style: String,
 }
 
+/// Allocate a fresh process-unique document key for [`DomDocument::doc_key`].
+///
+/// Call once per document at construction and store the result. Monotonic and
+/// never reused, so it is immune to allocator address reuse (unlike keying by
+/// `Rc` pointer).
+pub fn next_doc_key() -> u64 {
+    static NEXT_DOC_KEY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT_DOC_KEY.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Trait for DOM documents that support mutation operations.
 ///
 /// This trait abstracts the DOM mutation API, allowing different
@@ -129,6 +139,19 @@ pub struct NodeFont {
 /// - Text mutation: [`set_text_content`](DomDocument::set_text_content)
 /// - Dirty tracking: [`mark_dirty`](DomDocument::mark_dirty), [`take_dirty_nodes`](DomDocument::take_dirty_nodes)
 pub trait DomDocument {
+    /// A process-unique identity for this document instance.
+    ///
+    /// Node ids are per-document slab indices, so two documents on one thread
+    /// (e.g. two embedded `RinchContext`s, issue #134) contain the same ids
+    /// `0, 1, 2, …`. Thread-local registries that key state by node id must
+    /// scope it with this key to avoid cross-document collisions (element
+    /// bounds signals, the editor registry, pending focus requests).
+    ///
+    /// Implementations should allocate it once at construction from
+    /// [`next_doc_key`] — never reuse a key, even for a document at the same
+    /// address (an `Rc` pointer is not a substitute: addresses can be reused).
+    fn doc_key(&self) -> u64;
+
     /// Create a new element node with the given tag name.
     fn create_element(&mut self, tag: &str) -> NodeId;
 

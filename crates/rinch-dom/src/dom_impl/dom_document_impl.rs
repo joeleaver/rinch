@@ -14,6 +14,10 @@ use crate::node::{DirtyFlags, DisplayMode, Node, NodeContext, NodeKind, TextMeas
 use super::{RinchDocument, parse_style_string};
 
 impl DomDocument for RinchDocument {
+    fn doc_key(&self) -> u64 {
+        self.doc_key
+    }
+
     fn create_element(&mut self, tag: &str) -> NodeId {
         let id = self.tree.nodes.vacant_key();
         let mut node = Node::element(id, tag, self.tree.guard.clone());
@@ -997,8 +1001,10 @@ impl DomDocument for RinchDocument {
     }
 
     fn focus_element(&mut self, node_id: NodeId) {
-        // Request focus via the event system - the runtime will apply it
-        rinch_core::request_focus(node_id.0);
+        // Request focus via the event system - the runtime will apply it.
+        // Keyed by this document so another document's runtime on the same
+        // thread doesn't consume it (issue #134).
+        rinch_core::request_focus(self.doc_key, node_id.0);
     }
 
     fn resolve_layout(&mut self, width: f32, height: f32) {

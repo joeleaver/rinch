@@ -147,7 +147,7 @@ fn focused_handle() -> Option<(usize, EditorHandle)> {
 /// Resets the blink phase so the caret is solid immediately after an interaction.
 fn refresh_caret() {
     BLINK_ON.with(|c| c.set(true));
-    registry::update_all_carets(focused_editor());
+    registry::update_all_carets(None, focused_editor());
 }
 
 // ── Hidden capture target (clipboard + IME) ───────────────────────────────────

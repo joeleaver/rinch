@@ -65,7 +65,7 @@ impl RinchApp {
                 // `EditorHandle` — this only clears the overlays.) A pure focus
                 // change doesn't dirty layout, so the post-layout caret pass may
                 // short-circuit; hide explicitly here at the focus choke-point.
-                if let Some(handle) = crate::editor::editor_for(prev) {
+                if let Some(handle) = crate::editor::editor_for_doc(self.doc_key(), prev) {
                     handle.hide_overlays();
                 }
             }
@@ -83,11 +83,12 @@ impl RinchApp {
         match self.focus_target {
             #[cfg(feature = "desktop")]
             FocusTarget::Editor(container) => {
-                let cursor_area = crate::editor::editor_for(container).and_then(|handle| {
-                    let head = handle.selection().head();
-                    self.editor_caret_point(&handle, head)
-                        .map(|(x, y, h)| (x, y, 1.0, h))
-                });
+                let cursor_area = crate::editor::editor_for_doc(self.doc_key(), container)
+                    .and_then(|handle| {
+                        let head = handle.selection().head();
+                        self.editor_caret_point(&handle, head)
+                            .map(|(x, y, h)| (x, y, 1.0, h))
+                    });
                 ImeState {
                     enabled: true,
                     cursor_area,

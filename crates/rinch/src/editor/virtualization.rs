@@ -24,8 +24,12 @@ use rinch_editor_view::registry;
 use super::virtual_window::CeVirtualWindow;
 
 thread_local! {
-    /// `(container id, window)` for each scroll-container editor being virtualized.
-    static WINDOWS: RefCell<Vec<(usize, CeVirtualWindow)>> = const { RefCell::new(Vec::new()) };
+    /// `((doc_key, container id), window)` for each scroll-container editor being
+    /// virtualized. Keyed per document: container ids are per-document slab
+    /// indices, so two documents on one thread would otherwise share (and stomp)
+    /// a window at a colliding id (issue #134).
+    static WINDOWS: RefCell<Vec<((u64, usize), CeVirtualWindow)>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 /// Phase 1 (before layout): for every mounted editor that is a scroll container,
@@ -34,24 +38,33 @@ thread_local! {
 /// document's style/layout dirty flags, so the caller's short-circuit will not fire
 /// and the upcoming resolve applies the collapse.
 pub(crate) fn pre_layout(doc: &mut RinchDocument, focused: Option<usize>) {
-    let editors = registry::all_editors();
+    let doc_key = doc.doc_key();
+    // Only this document's editors: another document's editors are driven by its
+    // own runtime pass, against its own tree (issue #134).
+    let editors: Vec<(usize, EditorHandle)> = registry::all_editors()
+        .into_iter()
+        .filter(|(dk, _, _)| *dk == doc_key)
+        .map(|(_, id, h)| (id, h))
+        .collect();
     WINDOWS.with(|w| {
         let mut windows = w.borrow_mut();
-        // Drop windows whose editor unmounted.
-        windows.retain(|(id, _)| editors.iter().any(|(eid, _)| eid == id));
+        // Drop THIS document's windows whose editor unmounted; other documents'
+        // windows are managed by their own pass.
+        windows.retain(|((dk, id), _)| *dk != doc_key || editors.iter().any(|(eid, _)| eid == id));
         for (container, handle) in &editors {
             let container = *container;
             if container == 0 {
                 continue;
             }
-            let idx = match windows.iter().position(|(id, _)| *id == container) {
+            let key = (doc_key, container);
+            let idx = match windows.iter().position(|(k, _)| *k == key) {
                 Some(i) => i,
                 None => {
                     if !is_scroll_container(doc, container) {
                         continue;
                     }
                     let vw = CeVirtualWindow::new_filtered(container, doc, true);
-                    windows.push((container, vw));
+                    windows.push((key, vw));
                     windows.len() - 1
                 }
             };
@@ -73,12 +86,18 @@ pub(crate) fn pre_layout(doc: &mut RinchDocument, focused: Option<usize>) {
 /// Phase 2 (after layout): cache measured heights, then re-verify the materialized
 /// range with fresh positions; if it changed (a big scroll jump), re-layout once.
 pub(crate) fn post_layout(doc: &mut RinchDocument, focused: Option<usize>, vw_w: f32, vw_h: f32) {
-    let editors = registry::all_editors();
+    let doc_key = doc.doc_key();
+    let editors: Vec<(usize, EditorHandle)> = registry::all_editors()
+        .into_iter()
+        .filter(|(dk, _, _)| *dk == doc_key)
+        .map(|(_, id, h)| (id, h))
+        .collect();
     WINDOWS.with(|w| {
         let mut windows = w.borrow_mut();
         for (container, handle) in &editors {
             let container = *container;
-            let Some(idx) = windows.iter().position(|(id, _)| *id == container) else {
+            let key = (doc_key, container);
+            let Some(idx) = windows.iter().position(|(k, _)| *k == key) else {
                 continue;
             };
             let vw = &mut windows[idx].1;

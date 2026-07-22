@@ -297,7 +297,19 @@ fn main() {
 
 ### RinchContext
 
-`RinchContext` is the main handle. Create it once, call `update()` each frame.
+`RinchContext` is the main handle. Create it during initialization, call
+`update()` each frame.
+
+**Multiple contexts.** Several `RinchContext`s can coexist on one thread — a
+screen HUD plus N render-to-texture panels, say. Each context tracks signal
+changes through its own subscription (so creating or dropping one never
+silences another) and keeps its own document-scoped element-bounds signals,
+editor registrations, and focus requests. Two caveats remain, tracked in
+issue #134's follow-ups: `create_store`/`use_store` is keyed by **type** for
+the whole thread (two contexts creating the same store type share the last one
+— use distinct store types per context), and each context still processes the
+input events *you* feed it — route each window's events only to its own
+context.
 
 ### Input Routing
 

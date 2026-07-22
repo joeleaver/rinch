@@ -903,7 +903,9 @@ impl RinchApp {
                 match self.focus_target {
                     #[cfg(feature = "desktop")]
                     FocusTarget::Editor(container) => {
-                        if let Some(handle) = crate::editor::editor_for(container) {
+                        if let Some(handle) =
+                            crate::editor::editor_for_doc(self.doc_key(), container)
+                        {
                             self.dispatch_new_editor_key(
                                 &handle,
                                 key,
@@ -1031,7 +1033,9 @@ impl RinchApp {
                 match self.focus_target {
                     #[cfg(feature = "desktop")]
                     FocusTarget::Editor(container) => {
-                        if let Some(handle) = crate::editor::editor_for(container) {
+                        if let Some(handle) =
+                            crate::editor::editor_for_doc(self.doc_key(), container)
+                        {
                             self.dispatch_editor_ime(&handle, ime);
                             self.refresh_editor_overlays();
                             let (w, h) = (window_size.0 as f32, window_size.1 as f32);
@@ -1061,7 +1065,8 @@ impl RinchApp {
                 }
                 // Process any pending input focus request (e.g., from an Effect
                 // triggered by run_on_main_thread that called request_focus).
-                if let Some(focus_node_id) = rinch_core::take_pending_focus_request() {
+                if let Some(focus_node_id) = rinch_core::take_pending_focus_request(self.doc_key())
+                {
                     self.try_focus_input(focus_node_id);
                     actions.push(AppAction::RequestRedraw);
                 }
@@ -1174,7 +1179,8 @@ impl RinchApp {
                 }
 
                 // Process any pending input focus request from effects
-                if let Some(focus_node_id) = rinch_core::take_pending_focus_request() {
+                if let Some(focus_node_id) = rinch_core::take_pending_focus_request(self.doc_key())
+                {
                     self.try_focus_input(focus_node_id);
                     actions.push(AppAction::RequestRedraw);
                 }
@@ -2680,7 +2686,7 @@ impl RinchApp {
         let Some(container) = self.editor_container_at_physical(x, y, scale) else {
             return false;
         };
-        let Some(handle) = crate::editor::editor_for(container) else {
+        let Some(handle) = crate::editor::editor_for_doc(self.doc_key(), container) else {
             return false;
         };
         // Take keyboard focus through the arbiter (tears down a prior surface /
@@ -2765,7 +2771,7 @@ impl RinchApp {
         if c != container {
             return true;
         }
-        let Some(handle) = crate::editor::editor_for(container) else {
+        let Some(handle) = crate::editor::editor_for_doc(self.doc_key(), container) else {
             return false;
         };
         if let Some(head) = handle.pos_at(tb, ifc) {

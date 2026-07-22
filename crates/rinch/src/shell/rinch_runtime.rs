@@ -1842,7 +1842,7 @@ impl RinchRuntime {
     #[cfg(feature = "desktop")]
     fn tick_caret_blink(&mut self, event_loop: &dyn ActiveEventLoop) {
         let focused = self.app.focused_editor_id();
-        match crate::editor::caret_blink_tick(focused) {
+        match crate::editor::caret_blink_tick(self.app.doc_key(), focused) {
             Some(blink) => {
                 if blink.redraw
                     && let Some(w) = &self.window
@@ -1912,7 +1912,7 @@ impl RinchRuntime {
         let Some(handle) = self
             .app
             .focused_editor_id()
-            .and_then(crate::editor::editor_for)
+            .and_then(|id| crate::editor::editor_for_doc(self.app.doc_key(), id))
         else {
             return;
         };
@@ -1941,7 +1941,7 @@ impl RinchRuntime {
         let Some(handle) = self
             .app
             .focused_editor_id()
-            .and_then(crate::editor::editor_for)
+            .and_then(|id| crate::editor::editor_for_doc(self.app.doc_key(), id))
         else {
             return;
         };

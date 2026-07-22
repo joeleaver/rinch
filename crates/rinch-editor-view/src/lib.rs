@@ -27,7 +27,8 @@ pub use handle::EditorHandle;
 #[cfg(feature = "collaboration")]
 pub use registry::collab_receive_for;
 pub use registry::{
-    begin_drag, drag_anchor, editor_for, end_drag, unregister_editor, update_all_carets,
+    begin_drag, drag_anchor, editor_for, editor_for_doc, end_drag, unregister_editor,
+    update_all_carets,
 };
 /// The collaboration error type (re-exported from `rinch-editor-collab`) returned by
 /// the [`EditorHandle`] collaboration methods.
@@ -90,20 +91,25 @@ pub struct CaretBlink {
 /// standalone animation tick). The clock uses `std::time::Instant`, so a web runtime
 /// drives blink with its own timer (`setInterval` → [`EditorHandle::set_caret_blink`])
 /// rather than calling this.
-pub fn caret_blink_tick(focused: Option<usize>) -> Option<CaretBlink> {
+/// `doc_key` is the calling runtime's document (see
+/// [`DomDocument::doc_key`](rinch_core::dom::DomDocument::doc_key)) — `focused`
+/// is a container id from that document's focus arbiter, and container ids
+/// collide across documents on one thread (issue #134).
+pub fn caret_blink_tick(doc_key: u64, focused: Option<usize>) -> Option<CaretBlink> {
+    let target = focused.map(|id| (doc_key, id));
     // On a focus change, restore the previously-blinked caret to solid so a
     // blurred editor never freezes mid-blink with a hidden caret.
     let prev = blink::target();
-    if prev != focused {
-        if let Some(prev_id) = prev
-            && let Some(h) = registry::editor_for(prev_id)
+    if prev != target {
+        if let Some((prev_dk, prev_id)) = prev
+            && let Some(h) = registry::editor_for_doc(prev_dk, prev_id)
         {
             h.set_caret_blink(true);
         }
-        blink::set_target(focused);
+        blink::set_target(target);
         blink::reset();
     }
-    let handle = registry::editor_for(focused?)?;
+    let handle = registry::editor_for_doc(doc_key, focused?)?;
     let (visible, next) = blink::tick();
     let redraw = handle.set_caret_blink(visible)?;
     Some(CaretBlink { redraw, next })

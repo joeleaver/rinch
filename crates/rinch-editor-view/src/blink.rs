@@ -23,10 +23,11 @@ thread_local! {
     /// The instant the caret phase last reset to "solid". `None` until the first
     /// [`tick`] anchors it.
     static ANCHOR: Cell<Option<Instant>> = const { Cell::new(None) };
-    /// The container id of the editor currently being blinked, so a focus change
-    /// can restore the previously-blinked caret to solid (never leave a blurred
-    /// editor frozen mid-blink with a hidden caret).
-    static TARGET: Cell<Option<usize>> = const { Cell::new(None) };
+    /// The `(doc_key, container id)` of the editor currently being blinked, so a
+    /// focus change can restore the previously-blinked caret to solid (never
+    /// leave a blurred editor frozen mid-blink with a hidden caret). Doc-scoped:
+    /// container ids collide across documents on one thread (issue #134).
+    static TARGET: Cell<Option<(u64, usize)>> = const { Cell::new(None) };
 }
 
 /// Reset the blink phase to "solid". Called whenever the caret moves or the
@@ -35,14 +36,14 @@ pub(crate) fn reset() {
     ANCHOR.with(|a| a.set(Some(Instant::now())));
 }
 
-/// The editor container currently being blinked, if any.
-pub(crate) fn target() -> Option<usize> {
+/// The `(doc_key, container id)` currently being blinked, if any.
+pub(crate) fn target() -> Option<(u64, usize)> {
     TARGET.with(|t| t.get())
 }
 
-/// Record which editor container is being blinked (`None` = none).
-pub(crate) fn set_target(id: Option<usize>) {
-    TARGET.with(|t| t.set(id));
+/// Record which editor is being blinked (`None` = none).
+pub(crate) fn set_target(key: Option<(u64, usize)>) {
+    TARGET.with(|t| t.set(key));
 }
 
 /// The current blink phase and the time until the next toggle. Lazily anchors

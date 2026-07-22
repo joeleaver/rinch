@@ -1342,7 +1342,7 @@ Your game owns the window and wgpu device. Rinch runs headless — you feed it e
 
 | Type | Purpose |
 |------|---------|
-| `RinchContext` | Main handle — `new()`, `update()`, `scene()` |
+| `RinchContext` | Main handle — `new()`, `update()`, `scene()`. Multiple contexts can coexist on one thread (#134): each holds its own `subscribe_signal_change` guard, and bounds signals / editor registrations / focus requests are scoped per document via `DomDocument::doc_key()`. Caveat: `create_store` is TypeId-keyed thread-wide — use distinct store types per context. |
 | `RinchContextConfig` | Width, height, scale factor, optional theme |
 | `RinchOverlayRenderer` | Convenience Vello-to-texture renderer |
 | `GameViewport` | Component marking a transparent hole for game rendering |
