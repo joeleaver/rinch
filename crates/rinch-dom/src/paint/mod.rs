@@ -1311,10 +1311,8 @@ fn paint_node(
             }
 
             // Fallback: build layout on demand (should not happen with caching)
-            let parent_computed = node
-                .parent
-                .and_then(|p| tree.get(p))
-                .map(|p| &p.computed_style);
+            let parent_node = node.parent.and_then(|p| tree.get(p));
+            let parent_computed = parent_node.map(|p| &p.computed_style);
 
             let font_size = parent_computed.map(|s| s.font_size).unwrap_or(16.0);
             let font_weight = parent_computed.map(|s| s.font_weight).unwrap_or(400.0);
@@ -1332,10 +1330,16 @@ fn paint_node(
                 .and_then(|s| s.color)
                 .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255));
 
-            // Build Parley layout with identical parameters to measurement
-            let scaled_font_size = font_size * scale as f32;
+            // Build the Parley layout at the *logical* font size (scale 1.0) — the
+            // same space `measure_inline_blocks` sized the box in and the same space
+            // the cached IFC path (`build_inline_layout(..., 1.0, ...)`) uses. The
+            // painter re-applies `scale` in `render_text`. (Building at `font_size *
+            // scale` here would both double-scale the glyphs at render *and*, because
+            // glyph advances don't scale perfectly linearly, make this layout's width
+            // diverge from the width the box was measured at — breaking the wrap
+            // constraint below at fractional scale factors.)
             let mut builder = layout_cx.ranged_builder(font_cx, &text_data.content, 1.0, true);
-            builder.push_default(parley::style::StyleProperty::FontSize(scaled_font_size));
+            builder.push_default(parley::style::StyleProperty::FontSize(font_size));
             builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
             builder.push_default(parley::style::StyleProperty::FontStack(
                 parley::style::FontStack::Source(std::borrow::Cow::Owned(font_family)),
@@ -1351,10 +1355,42 @@ fn paint_node(
 
             let mut text_layout = builder.build(&text_data.content);
 
-            // Text was measured without width constraint to get natural width.
-            // Paint should use the same (no constraint) to avoid re-wrapping.
-            // The parent element's width constrains positioning, not text wrapping.
+            // Lay out unwrapped first to get the natural (single-line) width & height.
             text_layout.break_all_lines(None);
+
+            // This fallback fires for text that is not part of a cached IFC layout —
+            // notably the sole text child of an `inline-block`, which is not an IFC
+            // root (so it never gets a `cached_text_parley`). Such text was measured
+            // at the parent's max-content width, so for an *auto*-width box painting
+            // it unwrapped is correct. But once the box is clamped
+            // (`width`/`max-width`/`min-width` narrower than the content) layout wraps
+            // the text and sizes the box for the *wrapped* height, while these glyphs
+            // would still paint one overflowing line (#127).
+            //
+            // We can't decide "is it clamped?" by comparing this layout's width to the
+            // box: this on-demand layout's width drifts a pixel or two from the width
+            // the box was measured at (a different Parley build path), so a width test
+            // spuriously wraps auto-width boxes. Instead compare *heights*: layout
+            // records this text node's wrapped height, and line counts are discrete —
+            // if the node is more than ~1.5 single lines tall, layout wrapped it, so
+            // the box is clamped and paint must wrap to the content box too.
+            let one_line_h = text_layout.height();
+            let clamped = one_line_h > 0.0 && node.layout.height > one_line_h * 1.5;
+            if clamped && let Some(p) = parent_node {
+                let cs = &p.computed_style;
+                let padding_h = cs.padding_left.to_px() + cs.padding_right.to_px();
+                let border_h = cs.border_left_width.to_px() + cs.border_right_width.to_px();
+                let content_width = p.layout.width - padding_h - border_h;
+                if content_width > 0.0 {
+                    // Wrap to the content box, but 2% wider. This on-demand layout is a
+                    // hair wider per glyph run than the one layout wrapped the box with,
+                    // so breaking at exactly `content_width` fits fewer words per line
+                    // and can spill one extra line past the box's reserved height. The
+                    // small proportional slack reproduces layout's line breaks; any
+                    // residual right overflow stays within the element's padding.
+                    text_layout.break_all_lines(Some(content_width * 1.02));
+                }
+            }
 
             // Read text-align from parent's computed style
             let alignment = parent_computed
