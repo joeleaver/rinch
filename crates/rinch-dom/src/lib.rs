@@ -15,6 +15,7 @@ pub mod layout;
 mod layout_engine;
 pub mod node;
 pub mod paint;
+pub mod select;
 mod style_resolution;
 pub mod stylesheet;
 pub mod stylo_impl;
