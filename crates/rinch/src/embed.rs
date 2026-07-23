@@ -143,6 +143,12 @@ impl RinchContext {
 
         let mut app = RinchApp::new(component);
 
+        // Namespace this context's stores/contexts under its document's
+        // doc_key: two contexts creating the same store type no longer
+        // overwrite each other, and lookups fall back to the thread-global
+        // root 0 for stores created outside any context (issue #136).
+        app.scope_context_to_doc = true;
+
         // Register any pre-mount fonts BEFORE mounting so the initial layout/paint
         // pass has glyphs (essential on wasm, which has no system fonts). These are
         // drained onto the document's render font context during mount_component.
@@ -330,6 +336,18 @@ impl RinchContext {
             self.size.0 as f32 / self.scale_factor as f32,
             self.size.1 as f32 / self.scale_factor as f32,
         )
+    }
+}
+
+impl Drop for RinchContext {
+    fn drop(&mut self) {
+        // Clear this context's store/context namespace so its stores don't
+        // outlive it (issue #136). The thread-global root 0 — and every other
+        // context's namespace — is untouched.
+        let key = self.app.doc_key();
+        if key != 0 {
+            rinch_core::clear_context_for_root(key);
+        }
     }
 }
 

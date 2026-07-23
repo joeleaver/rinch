@@ -55,7 +55,8 @@ pub use reactive::{
 
 // Re-export context for sharing state across components
 pub use context::{
-    clear_context, create_context, create_store, try_use_context, try_use_store, use_context,
+    ContextRootGuard, clear_context, clear_context_for_root, create_context, create_store,
+    current_context_root, push_context_root, try_use_context, try_use_store, use_context,
     use_store,
 };
 
