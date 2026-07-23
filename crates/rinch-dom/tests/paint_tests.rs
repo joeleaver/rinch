@@ -553,3 +553,237 @@ fn test_paint_border_style_double() {
         "double border should produce draw commands"
     );
 }
+
+// ── Transform-aware paint: zero-dimension boxes (#142) and dirty-region
+// culling/tracking (#143). Pixel assertions use the software renderer.
+
+#[cfg(feature = "software-renderer")]
+mod transform_paint {
+    use super::*;
+    use peniko::kurbo::Rect;
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+
+    /// Paint the document with the tiny-skia software painter for pixel
+    /// assertions.
+    fn paint_skia(doc: &mut RinchDocument, painter: &mut TinySkiaPainter) {
+        let mut paint_layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            painter,
+            1.0,
+            (800.0, 600.0),
+            &mut doc.font_cx,
+            &mut paint_layout_cx,
+        );
+    }
+
+    /// Premultiplied RGBA pixel at (x, y).
+    fn pixel_at(painter: &TinySkiaPainter, x: u32, y: u32) -> [u8; 4] {
+        let idx = ((y * painter.width() + x) * 4) as usize;
+        let d = painter.pixels();
+        [d[idx], d[idx + 1], d[idx + 2], d[idx + 3]]
+    }
+
+    /// Whether any pixel in [x0, x1) × [y0, y1) satisfies the predicate.
+    fn any_pixel(
+        painter: &TinySkiaPainter,
+        x0: u32,
+        y0: u32,
+        x1: u32,
+        y1: u32,
+        pred: impl Fn([u8; 4]) -> bool,
+    ) -> bool {
+        for y in y0..y1.min(painter.height()) {
+            for x in x0..x1.min(painter.width()) {
+                if pred(pixel_at(painter, x, y)) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn is_opaque_red(p: [u8; 4]) -> bool {
+        p[0] > 200 && p[1] < 50 && p[2] < 50 && p[3] > 200
+    }
+
+    /// #142: a container collapsed to zero height must still apply its own
+    /// CSS transform to absolutely-positioned children.
+    #[test]
+    fn test_zero_height_container_applies_transform() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "position: relative; width: 100px; height: 0; transform: translateY(50px)",
+        );
+        doc.append_child(body, container);
+        let child = doc.create_element("div");
+        doc.set_attribute(
+            child,
+            "style",
+            "position: absolute; top: 0; left: 0; width: 20px; height: 20px; \
+             background-color: red",
+        );
+        doc.append_child(container, child);
+        doc.resolve_layout(800.0, 600.0);
+
+        let mut painter = TinySkiaPainter::new(200, 200);
+        paint_skia(&mut doc, &mut painter);
+
+        assert!(
+            any_pixel(&painter, 0, 40, 60, 90, is_opaque_red),
+            "child should paint at the translateY(50px) position"
+        );
+        assert!(
+            !any_pixel(&painter, 0, 0, 60, 35, is_opaque_red),
+            "child should not paint at the untransformed position"
+        );
+    }
+
+    /// #142: a container collapsed to zero height must still apply its own
+    /// opacity to absolutely-positioned children.
+    #[test]
+    fn test_zero_height_container_applies_opacity() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "position: relative; width: 100px; height: 0; \
+             transform: translateY(50px); opacity: 0.5",
+        );
+        doc.append_child(body, container);
+        let child = doc.create_element("div");
+        doc.set_attribute(
+            child,
+            "style",
+            "position: absolute; top: 0; left: 0; width: 20px; height: 20px; \
+             background-color: red",
+        );
+        doc.append_child(container, child);
+        doc.resolve_layout(800.0, 600.0);
+
+        let mut painter = TinySkiaPainter::new(200, 200);
+        paint_skia(&mut doc, &mut painter);
+
+        // Red at 0.5 opacity over a transparent background: premultiplied
+        // r ≈ a ≈ 128, definitely not opaque.
+        assert!(
+            any_pixel(&painter, 0, 40, 60, 90, |p| {
+                p[0] > 80 && p[0] < 180 && p[1] < 50 && p[3] > 80 && p[3] < 180
+            }),
+            "child should paint alpha-blended at the transformed position"
+        );
+        assert!(
+            !any_pixel(&painter, 0, 0, 200, 200, is_opaque_red),
+            "no fully opaque red anywhere — opacity must apply"
+        );
+    }
+
+    /// #142 (offset half): children of a collapsed box must paint relative to
+    /// the box's own origin, not its parent's.
+    #[test]
+    fn test_zero_height_container_uses_own_origin() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        // A 100px-tall sibling pushes the collapsed container down to y=100.
+        let sibling = doc.create_element("div");
+        doc.set_attribute(sibling, "style", "width: 100px; height: 100px");
+        doc.append_child(body, sibling);
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "position: relative; width: 100px; height: 0",
+        );
+        doc.append_child(body, container);
+        let child = doc.create_element("div");
+        doc.set_attribute(
+            child,
+            "style",
+            "position: absolute; top: 0; left: 0; width: 20px; height: 20px; \
+             background-color: red",
+        );
+        doc.append_child(container, child);
+        doc.resolve_layout(800.0, 600.0);
+
+        let mut painter = TinySkiaPainter::new(200, 200);
+        paint_skia(&mut doc, &mut painter);
+
+        assert!(
+            any_pixel(&painter, 0, 90, 60, 140, is_opaque_red),
+            "child should paint below the 100px sibling"
+        );
+        assert!(
+            !any_pixel(&painter, 0, 0, 60, 60, is_opaque_red),
+            "child should not paint at the parent's origin"
+        );
+    }
+
+    /// #143 (cull half): a node whose transformed position intersects the
+    /// dirty region must not be culled against its untransformed layout rect.
+    #[test]
+    fn test_dirty_region_cull_uses_transformed_position() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let div = doc.create_element("div");
+        doc.set_attribute(
+            div,
+            "style",
+            "width: 50px; height: 50px; background-color: red; \
+             transform: translateY(200px)",
+        );
+        doc.append_child(body, div);
+        doc.resolve_layout(800.0, 600.0);
+
+        // Dirty region covers only the translated position (y 190..300).
+        rinch_dom::paint::set_dirty_region(Some(Rect::new(0.0, 190.0, 300.0, 300.0)));
+        let mut painter = TinySkiaPainter::new(300, 300);
+        paint_skia(&mut doc, &mut painter);
+        rinch_dom::paint::set_dirty_region(None);
+
+        assert!(
+            any_pixel(&painter, 0, 190, 100, 280, is_opaque_red),
+            "transformed node inside the dirty region should paint"
+        );
+    }
+
+    /// #143 (tracking half): compute_dirty_region must cover a transformed
+    /// node's visual position, not its layout position.
+    #[test]
+    fn test_compute_dirty_region_uses_transformed_position() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let div = doc.create_element("div");
+        doc.set_attribute(
+            div,
+            "style",
+            "width: 50px; height: 50px; background-color: red; \
+             transform: translateY(200px)",
+        );
+        doc.append_child(body, div);
+        doc.resolve_layout(800.0, 600.0);
+
+        // Initial layout marks every node paint-dirty — reset so the region
+        // reflects only the transformed div.
+        doc.tree.paint_dirty_nodes.clear();
+        doc.tree.paint_dirty_removed_rects.clear();
+        doc.tree.paint_dirty_nodes.push(div.0);
+        let region = rinch_dom::paint::compute_dirty_region(&doc.tree, 1.0, 800.0, 600.0)
+            .expect("dirty node should produce a region");
+        doc.tree.paint_dirty_nodes.clear();
+
+        assert!(
+            region.y1 > 200.0,
+            "region should extend past the translated position, got {region:?}"
+        );
+        assert!(
+            region.y0 > 100.0,
+            "region should not start at the untransformed layout rect, got {region:?}"
+        );
+    }
+}
