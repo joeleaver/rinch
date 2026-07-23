@@ -4,6 +4,7 @@
 //! movement from a click handler until mouseup.
 
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::events::{ClickContext, get_click_context};
 
@@ -20,13 +21,46 @@ enum DragMode {
     },
 }
 
+impl DragMode {
+    /// Map raw viewport coordinates into this mode's delivery space
+    /// (raw pixels for `Absolute`, clamped 0.0–1.0 for `Percent`).
+    fn map(&self, mouse_x: f32, mouse_y: f32) -> (f32, f32) {
+        match self {
+            DragMode::Absolute => (mouse_x, mouse_y),
+            DragMode::Percent {
+                element_x,
+                element_y,
+                element_width,
+                element_height,
+            } => {
+                let px = if *element_width > 0.0 {
+                    ((mouse_x - element_x) / element_width).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let py = if *element_height > 0.0 {
+                    ((mouse_y - element_y) / element_height).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                (px, py)
+            }
+        }
+    }
+}
+
 /// Internal state for an active drag.
 struct ActiveDrag {
     mode: DragMode,
-    on_move: Box<dyn Fn(f32, f32) + 'static>,
+    on_move: Rc<dyn Fn(f32, f32) + 'static>,
     on_end: Option<Box<dyn FnOnce(f32, f32) + 'static>>,
+    on_cancel: Option<Box<dyn FnOnce(f32, f32) + 'static>>,
     /// The ClickContext captured at drag start.
     start_context: ClickContext,
+    /// The last coordinates delivered to `on_move`, in the drag's mode-specific
+    /// coordinate space. `None` until the first move; `cancel()` then falls
+    /// back to the start position mapped through the same mode.
+    last_pos: Option<(f32, f32)>,
     /// Whether to continue dispatching surface events during this drag.
     forward_surface_events: bool,
 }
@@ -46,6 +80,7 @@ thread_local! {
 /// Drag::absolute()
 ///     .on_move(move |x, y| panel_x.set(x - offset_x))
 ///     .on_end(move |x, y| save_position(x, y))
+///     .on_cancel(move |_x, _y| restore_position())
 ///     .start();
 ///
 /// // Slider with percentage coordinates
@@ -61,6 +96,7 @@ pub struct Drag {
     mode: DragMode,
     on_move: Option<Box<dyn Fn(f32, f32) + 'static>>,
     on_end: Option<Box<dyn FnOnce(f32, f32) + 'static>>,
+    on_cancel: Option<Box<dyn FnOnce(f32, f32) + 'static>>,
     forward_surface_events: bool,
 }
 
@@ -71,6 +107,7 @@ impl Drag {
             mode: DragMode::Absolute,
             on_move: None,
             on_end: None,
+            on_cancel: None,
             forward_surface_events: false,
         }
     }
@@ -89,6 +126,7 @@ impl Drag {
             },
             on_move: None,
             on_end: None,
+            on_cancel: None,
             forward_surface_events: false,
         }
     }
@@ -105,6 +143,21 @@ impl Drag {
         self
     }
 
+    /// Set the callback invoked once if the drag is cancelled via
+    /// [`Drag::cancel`] (e.g. the web backend's `pointercancel` — a
+    /// touch-scroll takeover, system gesture, or pointer-capture loss).
+    ///
+    /// Receives the last coordinates delivered to `on_move`, in the same
+    /// coordinate space (raw pixels for `absolute`, 0.0–1.0 for `percent`);
+    /// if the pointer never moved, the start position mapped into that space
+    /// is delivered instead. `on_end` does **not** fire on cancellation, so
+    /// use `on_cancel` for teardown (timers, hover state, overlays) and keep
+    /// commit logic in `on_end`.
+    pub fn on_cancel<F: FnOnce(f32, f32) + 'static>(mut self, f: F) -> Self {
+        self.on_cancel = Some(Box::new(f));
+        self
+    }
+
     /// Allow surface events to continue dispatching during this drag.
     ///
     /// By default, active drags suppress all other event handling (hover,
@@ -117,24 +170,45 @@ impl Drag {
 
     /// Activate the drag. Call from a mousedown/click handler.
     pub fn start(self) {
-        let on_move = self.on_move.unwrap_or_else(|| Box::new(|_, _| {}));
+        let on_move: Rc<dyn Fn(f32, f32)> = match self.on_move {
+            Some(f) => Rc::from(f),
+            None => Rc::new(|_, _| {}),
+        };
         let start_context = get_click_context();
         ACTIVE_DRAG.with(|drag| {
             *drag.borrow_mut() = Some(ActiveDrag {
                 mode: self.mode,
                 on_move,
                 on_end: self.on_end,
+                on_cancel: self.on_cancel,
                 start_context,
+                last_pos: None,
                 forward_surface_events: self.forward_surface_events,
             });
         });
     }
 
-    /// Cancel the active drag without firing `on_end`.
+    /// Cancel the active drag, firing `on_cancel` (but **not** `on_end` — a
+    /// cancelled drag must not commit).
+    ///
+    /// `on_cancel` receives the last coordinates delivered to `on_move`, or
+    /// the start position mapped into the drag's coordinate space if the
+    /// pointer never moved. A no-op when no drag is active.
     pub fn cancel() {
-        ACTIVE_DRAG.with(|drag| {
-            *drag.borrow_mut() = None;
-        });
+        // Take the state and release the borrow before invoking the callback
+        // (mirrors `finish_drag`) so an `on_cancel` that queries or starts a
+        // drag doesn't hit a re-entrant borrow.
+        let cancelled = ACTIVE_DRAG.with(|drag| drag.borrow_mut().take());
+        if let Some(state) = cancelled
+            && let Some(on_cancel) = state.on_cancel
+        {
+            let (x, y) = state.last_pos.unwrap_or_else(|| {
+                state
+                    .mode
+                    .map(state.start_context.mouse_x, state.start_context.mouse_y)
+            });
+            on_cancel(x, y);
+        }
     }
 
     /// Check if a drag is currently active.
@@ -165,36 +239,21 @@ impl Drag {
 /// - `handled`: true if a drag callback was invoked
 /// - `forward_surface_events`: true if surface events should still be dispatched
 pub fn update_drag(mouse_x: f32, mouse_y: f32) -> (bool, bool) {
-    ACTIVE_DRAG.with(|drag| {
-        if let Some(ref state) = *drag.borrow() {
-            let (x, y) = match &state.mode {
-                DragMode::Absolute => (mouse_x, mouse_y),
-                DragMode::Percent {
-                    element_x,
-                    element_y,
-                    element_width,
-                    element_height,
-                } => {
-                    let px = if *element_width > 0.0 {
-                        ((mouse_x - element_x) / element_width).clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    };
-                    let py = if *element_height > 0.0 {
-                        ((mouse_y - element_y) / element_height).clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    };
-                    (px, py)
-                }
-            };
-            let forward = state.forward_surface_events;
-            (state.on_move)(x, y);
-            (true, forward)
-        } else {
-            (false, false)
-        }
-    })
+    // Map coords + record last_pos under a short borrow, then release it
+    // before invoking `on_move` (which may itself query or cancel the drag).
+    let pending = ACTIVE_DRAG.with(|drag| {
+        drag.borrow_mut().as_mut().map(|state| {
+            let (x, y) = state.mode.map(mouse_x, mouse_y);
+            state.last_pos = Some((x, y));
+            (state.on_move.clone(), x, y, state.forward_surface_events)
+        })
+    });
+    if let Some((on_move, x, y, forward)) = pending {
+        on_move(x, y);
+        (true, forward)
+    } else {
+        (false, false)
+    }
 }
 
 /// Finish the drag, firing `on_end` if set. Called by the runtime on mouseup.
@@ -202,5 +261,115 @@ pub fn finish_drag(mouse_x: f32, mouse_y: f32) {
     let on_end = ACTIVE_DRAG.with(|drag| drag.borrow_mut().take().and_then(|s| s.on_end));
     if let Some(cb) = on_end {
         cb(mouse_x, mouse_y);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::set_click_context;
+    use std::cell::Cell;
+
+    #[test]
+    fn test_cancel_fires_on_cancel_not_on_end() {
+        let end_fired = Rc::new(Cell::new(false));
+        let cancel_pos: Rc<Cell<Option<(f32, f32)>>> = Rc::new(Cell::new(None));
+
+        let end = end_fired.clone();
+        let cancel = cancel_pos.clone();
+        Drag::absolute()
+            .on_end(move |_, _| end.set(true))
+            .on_cancel(move |x, y| cancel.set(Some((x, y))))
+            .start();
+        update_drag(42.0, 17.0);
+        Drag::cancel();
+
+        assert_eq!(cancel_pos.get(), Some((42.0, 17.0)));
+        assert!(!end_fired.get());
+        assert!(!Drag::is_active());
+    }
+
+    #[test]
+    fn test_cancel_before_any_move_delivers_start_position() {
+        let cancel_pos: Rc<Cell<Option<(f32, f32)>>> = Rc::new(Cell::new(None));
+
+        set_click_context(ClickContext {
+            mouse_x: 10.0,
+            mouse_y: 20.0,
+            ..Default::default()
+        });
+        let cancel = cancel_pos.clone();
+        Drag::absolute()
+            .on_cancel(move |x, y| cancel.set(Some((x, y))))
+            .start();
+        Drag::cancel();
+
+        assert_eq!(cancel_pos.get(), Some((10.0, 20.0)));
+        set_click_context(ClickContext::default());
+    }
+
+    #[test]
+    fn test_cancel_percent_mode_delivers_percent_coords() {
+        let cancel_pos: Rc<Cell<Option<(f32, f32)>>> = Rc::new(Cell::new(None));
+
+        set_click_context(ClickContext {
+            element_x: 0.0,
+            element_y: 0.0,
+            element_width: 100.0,
+            element_height: 200.0,
+            ..Default::default()
+        });
+        let cancel = cancel_pos.clone();
+        Drag::percent()
+            .on_cancel(move |x, y| cancel.set(Some((x, y))))
+            .start();
+        update_drag(25.0, 100.0);
+        Drag::cancel();
+
+        assert_eq!(cancel_pos.get(), Some((0.25, 0.5)));
+        set_click_context(ClickContext::default());
+    }
+
+    #[test]
+    fn test_finish_fires_on_end_not_on_cancel() {
+        let end_pos: Rc<Cell<Option<(f32, f32)>>> = Rc::new(Cell::new(None));
+        let cancel_fired = Rc::new(Cell::new(false));
+
+        let end = end_pos.clone();
+        let cancel = cancel_fired.clone();
+        Drag::absolute()
+            .on_end(move |x, y| end.set(Some((x, y))))
+            .on_cancel(move |_, _| cancel.set(true))
+            .start();
+        finish_drag(5.0, 6.0);
+
+        assert_eq!(end_pos.get(), Some((5.0, 6.0)));
+        assert!(!cancel_fired.get());
+        assert!(!Drag::is_active());
+    }
+
+    #[test]
+    fn test_cancel_with_no_active_drag_is_noop() {
+        assert!(!Drag::is_active());
+        Drag::cancel(); // must not panic
+        assert!(!Drag::is_active());
+    }
+
+    #[test]
+    fn test_on_cancel_reentrancy_does_not_panic() {
+        // The state is taken and the borrow released before on_cancel runs,
+        // so the callback may query or re-cancel without panicking.
+        let saw_inactive = Rc::new(Cell::new(false));
+
+        let saw = saw_inactive.clone();
+        Drag::absolute()
+            .on_cancel(move |_, _| {
+                saw.set(!Drag::is_active());
+                Drag::cancel();
+            })
+            .start();
+        Drag::cancel();
+
+        assert!(saw_inactive.get());
     }
 }
