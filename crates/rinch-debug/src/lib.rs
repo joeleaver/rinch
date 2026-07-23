@@ -2,7 +2,7 @@ pub mod discovery;
 pub mod protocol;
 pub mod server;
 
-pub use protocol::{DebugCommand, DebugCommandKind, DebugResult};
+pub use protocol::{DebugCommand, DebugCommandKind, DebugResult, fold_modifier_names};
 pub use server::DebugServer;
 
 use std::sync::{Arc, mpsc};

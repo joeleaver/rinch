@@ -117,6 +117,12 @@ pub struct KeyPressParams {
     /// Alt modifier
     #[serde(default)]
     pub alt: bool,
+    /// Modifier names as an array, e.g. ["ctrl", "shift"]. Recognized
+    /// (case-insensitive): "ctrl"/"control", "shift", "alt"/"option",
+    /// "meta"/"cmd"/"super". Equivalent to the flat booleans (OR'd together);
+    /// the only way to request the meta modifier. Unknown names are an error.
+    #[serde(default)]
+    pub modifiers: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -422,11 +428,31 @@ impl RinchMcpServer {
         &self,
         params: Parameters<KeyPressParams>,
     ) -> Result<CallToolResult, McpError> {
+        // OR the `modifiers` array into the flat booleans (issue #152). Meta has
+        // no flat boolean on the wire — it travels via the forwarded array.
+        // Unknown names are rejected here, before anything reaches the app.
+        let mut shift = params.0.shift;
+        let mut ctrl = params.0.ctrl;
+        let mut alt = params.0.alt;
+        for name in &params.0.modifiers {
+            match name.to_ascii_lowercase().as_str() {
+                "ctrl" | "control" => ctrl = true,
+                "shift" => shift = true,
+                "alt" | "option" => alt = true,
+                "meta" | "cmd" | "super" => {}
+                _ => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Unknown modifier name: {name:?} (expected ctrl/control, shift, alt/option, meta/cmd/super)"
+                    ))]));
+                }
+            }
+        }
         self.forward_json_command(DebugCommandKind::KeyPress {
             key: params.0.key,
-            shift: params.0.shift,
-            ctrl: params.0.ctrl,
-            alt: params.0.alt,
+            shift,
+            ctrl,
+            alt,
+            modifiers: params.0.modifiers,
         })
         .await
     }
@@ -748,5 +774,31 @@ impl Drop for RinchMcpServer {
             let _ = child.kill();
             let _ = child.wait();
         }
+    }
+}
+
+#[cfg(test)]
+mod key_press_params_tests {
+    use super::KeyPressParams;
+
+    #[test]
+    fn modifiers_array_is_accepted_not_silently_dropped() {
+        // The natural array shape from other automation protocols (issue #152):
+        // it must land in `modifiers` for the tool to fold, not vanish into
+        // serde's unknown-field handling.
+        let p: KeyPressParams =
+            serde_json::from_str(r#"{"key":"End","modifiers":["ctrl"]}"#).unwrap();
+        assert_eq!(p.key, "End");
+        assert_eq!(p.modifiers, vec!["ctrl".to_string()]);
+        // Flat booleans stay defaulted; the key_press tool ORs the array in.
+        assert!(!p.shift && !p.ctrl && !p.alt);
+    }
+
+    #[test]
+    fn flat_booleans_still_work_without_the_array() {
+        let p: KeyPressParams =
+            serde_json::from_str(r#"{"key":"End","ctrl":true,"shift":true}"#).unwrap();
+        assert!(p.ctrl && p.shift && !p.alt);
+        assert!(p.modifiers.is_empty());
     }
 }

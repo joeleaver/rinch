@@ -68,6 +68,10 @@ pub enum DebugCommandKind {
         ctrl: bool,
         #[serde(default)]
         alt: bool,
+        /// Modifier names OR'd into the flat booleans by the runtime (the only
+        /// way to request `meta`). Mirrored from rinch-debug in lockstep.
+        #[serde(default)]
+        modifiers: Vec<String>,
     },
     #[serde(rename = "get_caret_position")]
     GetCaretPosition { node_id: usize, byte_offset: usize },
