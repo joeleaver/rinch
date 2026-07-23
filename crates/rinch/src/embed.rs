@@ -130,18 +130,21 @@ impl RinchContext {
     where
         F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
     {
-        // Set up theme CSS before mounting the component
+        let mut app = RinchApp::new(component);
+
+        // Per-document theme (issue #138): generate this context's CSS from its
+        // own config and hand it to the app before mount. The thread-global
+        // theme slot is never touched — creating a second context can no longer
+        // restyle a concurrent one (or a mounted shell/web root).
         #[cfg(feature = "theme")]
         {
-            if let Some(ref theme) = config.theme {
-                crate::setup_theme_css(theme);
-            } else {
-                crate::setup_theme_css(&ThemeProviderProps::default());
-            }
+            let css = match config.theme {
+                Some(ref theme) => crate::generate_theme_css_string(theme),
+                None => crate::generate_theme_css_string(&ThemeProviderProps::default()),
+            };
+            app.owned_theme_css = Some(css);
         }
         let _ = &config.theme; // suppress unused warning when theme feature is off
-
-        let mut app = RinchApp::new(component);
 
         // Namespace this context's stores/contexts under its document's
         // doc_key: two contexts creating the same store type no longer
@@ -244,6 +247,30 @@ impl RinchContext {
     pub fn set_scale_factor(&mut self, scale: f64) {
         self.scale_factor = scale;
     }
+
+    /// Replace this context's theme at runtime.
+    ///
+    /// Regenerates the per-document theme CSS from `theme` and restyles this
+    /// context's document on its next [`update`](RinchContext::update). Other
+    /// concurrent contexts — and a mounted shell/web root following the
+    /// thread-global theme — are untouched (issue #138).
+    ///
+    /// **Caveat:** an embedded `ThemeProvider` component with a reactive
+    /// `dark_mode_fn`/`primary_color_fn` writes the *thread-global* theme slot,
+    /// which embed contexts deliberately ignore — this method is the supported
+    /// path for changing an embedded context's theme.
+    #[cfg(feature = "theme")]
+    pub fn set_theme(&mut self, theme: &ThemeProviderProps) {
+        self.app.owned_theme_css = Some(crate::generate_theme_css_string(theme));
+        // Wake the next update() — resolve_and_repaint detects the owned-CSS
+        // change against its cached last_theme_css and does the full restyle,
+        // exactly like the shell's thread-slot comparison path.
+        self.dirty.store(true, Ordering::Release);
+    }
+
+    /// No-op when the theme feature is disabled.
+    #[cfg(not(feature = "theme"))]
+    pub fn set_theme(&mut self, _theme: &ThemeProviderProps) {}
 
     /// Query the layout rect of a [`GameViewport`] component by name.
     ///

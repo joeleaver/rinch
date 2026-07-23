@@ -401,6 +401,7 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 | `scene() -> &Scene` | Get the Vello scene (lazy rebuild) |
 | `resize(w, h)` | Notify of window resize (physical pixels) |
 | `set_scale_factor(scale)` | Update DPI scale factor |
+| `set_theme(&props)` | Replace this context's theme (restyles on the next `update()`) |
 | `viewport_rect(name) -> Option<LayoutRect>` | Query a GameViewport's computed rect |
 | `wants_mouse(x, y) -> bool` | True if point hits UI (not viewport hole) |
 | `wants_keyboard() -> bool` | True if a text input is focused |
@@ -425,6 +426,18 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 | `height` | `u32` | Initial viewport height (physical pixels) |
 | `scale_factor` | `f64` | Display scale factor |
 | `theme` | `Option<ThemeProviderProps>` | Theme configuration |
+
+**Theming is per-context.** Each `RinchContext` owns the theme CSS generated
+from its `config.theme` (or the default theme when `None`) — creating a second
+context, or a shell app changing the thread-global theme, never restyles an
+existing context (issue #138). To change an embedded context's theme at
+runtime, call `ctx.set_theme(&props)`; the document restyles on its next
+`update()`.
+
+> **Caveat:** an embedded `ThemeProvider` component with a reactive
+> `dark_mode_fn`/`primary_color_fn` writes the *thread-global* theme slot,
+> which embed contexts deliberately ignore — `RinchContext::set_theme` is the
+> supported path for runtime theme changes in the embed API.
 
 **LayoutRect:**
 

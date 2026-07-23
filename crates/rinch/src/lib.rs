@@ -247,9 +247,13 @@ pub use rinch_platform as platform;
 #[cfg(feature = "gpu")]
 pub use rinch_renderer as renderer;
 
-/// Dynamically update theme CSS at runtime.
+/// Generate the theme (+ component) CSS for the given props.
+///
+/// Pure: does **not** touch the thread-local theme slot. The shell paths use
+/// [`update_theme`] (which writes the slot); an embed `RinchContext` owns its
+/// CSS per document instead (issue #138).
 #[cfg(feature = "theme")]
-pub fn update_theme(props: &ThemeProviderProps) {
+pub fn generate_theme_css_string(props: &ThemeProviderProps) -> String {
     use rinch_theme::{ColorName, RadiusSize, Theme, generate_theme_css};
 
     let mut builder = Theme::builder();
@@ -290,7 +294,17 @@ pub fn update_theme(props: &ThemeProviderProps) {
         css.push_str(&rinch_components::generate_component_css());
     }
 
-    rinch_core::set_current_theme_css(Some(css));
+    css
+}
+
+/// Dynamically update theme CSS at runtime.
+///
+/// Writes the **thread-global** theme slot, which single-root shell/web/android
+/// apps follow. Embed contexts ignore the slot — use
+/// `embed::RinchContext::set_theme` there instead (issue #138).
+#[cfg(feature = "theme")]
+pub fn update_theme(props: &ThemeProviderProps) {
+    rinch_core::set_current_theme_css(Some(generate_theme_css_string(props)));
 }
 
 /// No-op when theme feature is disabled.
