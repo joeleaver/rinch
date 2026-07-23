@@ -209,6 +209,10 @@ pub struct RinchRuntime {
     modifiers: winit::keyboard::ModifiersState,
     /// Native menu bar (attached to the window).
     native_menu: Option<muda::Menu>,
+    /// True while [`Self::drain_native_events`] is running. Prevents re-entrant
+    /// drains: `DebugCommandKind::Screenshot` calls [`Self::paint`] from inside
+    /// the drain, and the `RedrawRequested` arm drains before painting (#153).
+    draining_native_events: bool,
 
     // ── DevTools ─────────────────────────────────────────────────
     /// Shared DevTools store (persists across open/close cycles).
@@ -272,6 +276,7 @@ impl RinchRuntime {
             height,
             modifiers: winit::keyboard::ModifiersState::empty(),
             native_menu: None,
+            draining_native_events: false,
             devtools_store: None,
             devtools_app: None,
             devtools_window: None,
@@ -1390,15 +1395,18 @@ impl RinchRuntime {
             return false;
         };
 
-        // Collect commands that need renderer access
-        let mut pending = Vec::new();
-        while let Ok(cmd) = rx.0.try_recv() {
-            pending.push(cmd);
-        }
-
         let mut should_exit = false;
 
-        for cmd in pending {
+        // Process commands as they arrive. After answering command N, wait a
+        // short beat for a pipelined follow-up — a fast client sends command
+        // N+1 the moment it reads response N, but by then the paint N induced
+        // is usually already dispatched, so without this window N+1 would
+        // stall behind that full paint (#153). Batching here lets the whole
+        // burst ride a single paint. The window is bounded so a spamming
+        // client cannot starve painting.
+        let batch_start = std::time::Instant::now();
+        let mut next = rx.0.try_recv().ok();
+        while let Some(cmd) = next {
             let response = match &cmd.kind {
                 rinch_debug::DebugCommandKind::Screenshot => {
                     // Screenshot needs the renderer -- handle it here in the shell
@@ -1443,6 +1451,12 @@ impl RinchRuntime {
                 }
             };
             let _ = cmd.response_tx.send(response);
+
+            next = if batch_start.elapsed() < std::time::Duration::from_millis(25) {
+                rx.0.recv_timeout(std::time::Duration::from_millis(2)).ok()
+            } else {
+                rx.0.try_recv().ok()
+            };
         }
 
         self.app.debug_cmd_rx = Some(rx);
@@ -1476,10 +1490,7 @@ impl ApplicationHandler for RinchRuntime {
         drain_main_queue();
 
         // Drain queued native events.
-        let events: Vec<_> = NATIVE_EVENT_QUEUE.lock().unwrap().drain(..).collect();
-        for event in events {
-            self.handle_native_event(event, event_loop);
-        }
+        self.drain_native_events(event_loop);
 
         // A cross-thread Signal::send()/update_send() drained above runs its
         // effects on this thread, but the ReRender handler's resolve_and_repaint
@@ -1527,9 +1538,25 @@ impl ApplicationHandler for RinchRuntime {
                 }
             }
             WindowEvent::RedrawRequested => {
+                // Drain queued native events (debug commands, injected input)
+                // before painting so a command that arrived while the loop was
+                // busy isn't serialized behind a full paint (#153). Pre-paint
+                // is safe: the paint preamble re-resolves layout when
+                // has_pending_layout(), so the paint sees the drained state.
+                self.drain_native_events(event_loop);
                 // Paint directly -- this is shell-level, not delegated
                 if let Err(e) = self.paint() {
                     eprintln!("Paint error: {}", e);
+                }
+                // winit coalesces wake_up() calls arbitrarily, so a wake that
+                // landed mid-paint may already have been consumed. If events
+                // queued while we painted, self-wake so they're delivered
+                // immediately instead of waiting for the next external event
+                // (#153).
+                if !NATIVE_EVENT_QUEUE.lock().unwrap().is_empty() {
+                    if let Some(proxy) = GLOBAL_PROXY.get() {
+                        proxy.wake_up();
+                    }
                 }
                 return;
             }
@@ -1953,6 +1980,26 @@ impl RinchRuntime {
             handle.set_selection(sel);
             send_native_event(RinchNativeEvent::ReRender);
         }
+    }
+
+    /// Drain queued native events (debug commands, window controls, injected
+    /// platform events) and dispatch each through [`Self::handle_native_event`].
+    ///
+    /// Called from `proxy_wake_up` and from the top of the `RedrawRequested`
+    /// arm — the latter so a command that arrived while the loop was busy is
+    /// processed *before* the paint instead of stalling a full paint behind it
+    /// (#153). Guarded against re-entry: `DebugCommandKind::Screenshot` calls
+    /// [`Self::paint`] from inside the drain, so a nested drain must no-op.
+    fn drain_native_events(&mut self, event_loop: &dyn ActiveEventLoop) {
+        if self.draining_native_events {
+            return;
+        }
+        self.draining_native_events = true;
+        let events: Vec<_> = NATIVE_EVENT_QUEUE.lock().unwrap().drain(..).collect();
+        for event in events {
+            self.handle_native_event(event, event_loop);
+        }
+        self.draining_native_events = false;
     }
 
     /// Handle a single native event from the queue.
