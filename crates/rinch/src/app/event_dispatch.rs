@@ -1680,20 +1680,23 @@ impl RinchApp {
     ) {
         let Some(doc) = &self.doc else { return };
 
-        let anchor;
+        // Computed up-front, once: both snapshot blocks below may be compiled
+        // in the same build (desktop software + embed carries both painters).
+        let anchor = {
+            let d = doc.borrow();
+            let (abs_x, abs_y) =
+                rinch_dom::paint::compute_absolute_position(&d.tree, node_id, scale_factor);
+            (
+                mousedown_pos.0 - abs_x as f32,
+                mousedown_pos.1 - abs_y as f32,
+            )
+        };
 
         #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
         let snapshot = {
             let mut painter = VelloPainter::new();
             let mut d = doc.borrow_mut();
             let d = &mut *d;
-
-            let (abs_x, abs_y) =
-                rinch_dom::paint::compute_absolute_position(&d.tree, node_id, scale_factor);
-            anchor = (
-                mousedown_pos.0 - abs_x as f32,
-                mousedown_pos.1 - abs_y as f32,
-            );
 
             rinch_dom::paint::paint_subtree(
                 &d.tree,
@@ -1706,17 +1709,10 @@ impl RinchApp {
             painter
         };
 
-        #[cfg(not(any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
+        #[cfg(software_shell)]
         let (snapshot_pixels, snapshot_width, snapshot_height) = {
             let mut d = doc.borrow_mut();
             let d = &mut *d;
-
-            let (abs_x, abs_y) =
-                rinch_dom::paint::compute_absolute_position(&d.tree, node_id, scale_factor);
-            anchor = (
-                mousedown_pos.0 - abs_x as f32,
-                mousedown_pos.1 - abs_y as f32,
-            );
 
             // Compute the element's size in physical pixels for the snapshot pixmap
             let node = d.tree.get(node_id);
@@ -1746,11 +1742,11 @@ impl RinchApp {
             node_id,
             #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
             snapshot,
-            #[cfg(not(any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
+            #[cfg(software_shell)]
             snapshot_pixels,
-            #[cfg(not(any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
+            #[cfg(software_shell)]
             snapshot_width,
-            #[cfg(not(any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
+            #[cfg(software_shell)]
             snapshot_height,
             anchor,
             cursor,

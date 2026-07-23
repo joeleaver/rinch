@@ -24,7 +24,13 @@ use rinch_core::dom::{DomDocument, NodeHandle, RenderScope, clear_render_scope, 
 use rinch_core::events;
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::painter::Painter;
-#[cfg(not(any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
+// Painter selection is ADDITIVE (issue #140): the software painter is compiled
+// whenever a native shell presents via TinySkia (`software_shell`, emitted by
+// build.rs = desktop/android without gpu/android-gpu), and the Vello painter
+// whenever anything drives `build_scene` (gpu/android-gpu/embed). Under
+// desktop(software) + embed BOTH are present: the winit shell uses
+// `build_pixels` while embed `RinchContext`s use `build_scene`.
+#[cfg(software_shell)]
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
 use rinch_dom::paint::vello_painter::VelloPainter;
@@ -69,13 +75,13 @@ pub(crate) struct ActiveDrag {
     #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
     pub snapshot: VelloPainter,
     /// Captured RGBA pixels of the source element's subtree (software backend).
-    #[cfg(not(any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
+    #[cfg(software_shell)]
     pub snapshot_pixels: Vec<u8>,
     /// Width of the snapshot pixmap in physical pixels.
-    #[cfg(not(any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
+    #[cfg(software_shell)]
     pub snapshot_width: u32,
     /// Height of the snapshot pixmap in physical pixels.
-    #[cfg(not(any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
+    #[cfg(software_shell)]
     pub snapshot_height: u32,
     /// Offset within element where the grab happened (physical px, relative to element top-left).
     pub anchor: (f32, f32),
@@ -166,7 +172,7 @@ pub struct RinchApp {
     #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
     pub(crate) painter: VelloPainter,
     /// Software painter (reused across frames). Uses tiny-skia for CPU rendering.
-    #[cfg(not(any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
+    #[cfg(software_shell)]
     pub(crate) skia_painter: Option<TinySkiaPainter>,
     /// Parley layout context for paint-time text layout (debug screenshots).
     #[cfg(feature = "debug")]
@@ -201,7 +207,7 @@ pub struct RinchApp {
     /// Text rendering scale for HiDPI/mobile (applied to Parley font sizes).
     pub(crate) text_scale: f32,
     /// Whether we have a previous frame's pixels for dirty region caching.
-    #[cfg(not(any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
+    #[cfg(software_shell)]
     pub(crate) has_previous_frame: bool,
     /// The data-oninput handler ID for the currently focused text input.
     pub(crate) focused_input_handler_id: Option<usize>,
@@ -264,7 +270,7 @@ impl RinchApp {
             doc: None,
             #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
             painter: VelloPainter::new(),
-            #[cfg(not(any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
+            #[cfg(software_shell)]
             skia_painter: None,
             #[cfg(feature = "debug")]
             paint_layout_cx: parley::LayoutContext::new(),
@@ -282,7 +288,7 @@ impl RinchApp {
             modifiers: Modifiers::default(),
             scene_dirty: true,
             text_scale: 1.0,
-            #[cfg(not(any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
+            #[cfg(software_shell)]
             has_previous_frame: false,
             focused_input_handler_id: None,
             focused_input_value: String::new(),
@@ -515,7 +521,7 @@ impl RinchApp {
     pub(crate) fn refresh_editor_overlays(&mut self) {
         if crate::editor::update_all_carets(Some(self.doc_key()), self.focused_editor_id()) {
             self.scene_dirty = true;
-            #[cfg(not(feature = "gpu"))]
+            #[cfg(software_shell)]
             {
                 self.has_previous_frame = false;
             }
@@ -548,7 +554,7 @@ impl RinchApp {
                 // Force full repaint — recompute_all_styles_full() updates computed
                 // styles but doesn't populate paint_dirty_nodes, so the software
                 // renderer's dirty region optimization would skip most of the screen.
-                #[cfg(not(any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
+                #[cfg(software_shell)]
                 {
                     self.has_previous_frame = false;
                 }
@@ -590,7 +596,7 @@ impl RinchApp {
             if d.tree.full_repaint_needed {
                 d.tree.full_repaint_needed = false;
                 self.scene_dirty = true;
-                #[cfg(not(any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
+                #[cfg(software_shell)]
                 {
                     self.has_previous_frame = false;
                 }
@@ -630,7 +636,7 @@ impl RinchApp {
                 d.resolve_layout(viewport_width, viewport_height);
             }
             self.scene_dirty = true;
-            #[cfg(not(feature = "gpu"))]
+            #[cfg(software_shell)]
             {
                 self.has_previous_frame = false;
             }
@@ -846,7 +852,7 @@ impl RinchApp {
     ///
     /// Returns (pixels, width, height) in RGBA8 format. The painter is lazily
     /// created on first call and resized as needed.
-    #[cfg(not(any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
+    #[cfg(software_shell)]
     pub fn build_pixels(
         &mut self,
         scale: f64,
@@ -1049,7 +1055,7 @@ impl RinchApp {
     /// Blit premultiplied RGBA source pixels onto a destination buffer with
     /// alpha compositing (source-over). `dx`/`dy` can be negative for partially
     /// off-screen overlays.
-    #[cfg(not(any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
+    #[cfg(software_shell)]
     #[allow(clippy::too_many_arguments)]
     fn blit_drag_overlay(
         dst: &mut [u8],
