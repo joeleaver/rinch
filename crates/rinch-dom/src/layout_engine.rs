@@ -786,6 +786,20 @@ impl RinchDocument {
         }
         for (node_id, max_scroll) in clamps {
             self.tree.nodes[node_id].scroll_offset.1 = max_scroll;
+            // Queue a deferred scroll notification so the clamp isn't a silent
+            // mutation (#144). Coalesce per node (last value wins): layout can
+            // resolve more than once per frame, and a consumer must see one
+            // event per drain.
+            if let Some(pending) = self
+                .tree
+                .pending_scroll_clamps
+                .iter_mut()
+                .find(|(id, _)| *id == node_id)
+            {
+                pending.1 = max_scroll;
+            } else {
+                self.tree.pending_scroll_clamps.push((node_id, max_scroll));
+            }
         }
     }
 

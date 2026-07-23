@@ -5,6 +5,10 @@
 //! ultimately asking for: a way to read "how wide is this element right now,
 //! reactively?" Once available, app code can compose zoom + scroll + viewport
 //! signals to drive arbitrary domain-coordinate layouts in userland.
+//!
+//! The runtime refreshes these after *every* layout pass — including pure
+//! window resizes (#145) — so the root element's `bounds_signal()` doubles as
+//! the supported way to observe viewport size changes without polling.
 
 use std::cell::RefCell;
 
