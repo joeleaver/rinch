@@ -88,6 +88,11 @@ impl<T: 'static> Signal<T> {
     }
 
     /// Notify all subscribers that the value has changed.
+    ///
+    /// Subscribers are queued in registration order (the `BTreeSet` iterates
+    /// ascending `ObserverId`) and the queue drains FIFO, so effects sharing a
+    /// signal run in the order they were created — see the "Execution order"
+    /// section of the [`reactive`](crate::reactive) module docs.
     fn notify(&self) {
         let subscribers: Vec<ObserverId> = SIGNAL_STORE.with(|store| {
             store
@@ -111,7 +116,7 @@ impl<T: 'static> Signal<T> {
 
             for observer in subscribers {
                 if rt.pending_effects_set.insert(observer) {
-                    rt.pending_effects.push(observer);
+                    rt.pending_effects.push_back(observer);
                 }
             }
 

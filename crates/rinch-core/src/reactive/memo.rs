@@ -2,7 +2,7 @@
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::marker::PhantomData;
 use std::rc::Rc;
@@ -49,7 +49,9 @@ struct MemoInner<T> {
     value: RefCell<Option<T>>,
     f: RefCell<Box<dyn Fn() -> T>>,
     dirty: Cell<bool>,
-    subscribers: RefCell<HashSet<ObserverId>>,
+    /// Observers to notify, ordered — same contract (and same reason) as
+    /// `SignalSlot::subscribers`: a memo's dependents run in registration order.
+    subscribers: RefCell<BTreeSet<ObserverId>>,
 }
 
 impl<T: Clone + 'static> Memo<T> {
@@ -65,7 +67,7 @@ impl<T: Clone + 'static> Memo<T> {
             value: RefCell::new(None),
             f: RefCell::new(Box::new(f)),
             dirty: Cell::new(true),
-            subscribers: RefCell::new(HashSet::new()),
+            subscribers: RefCell::new(BTreeSet::new()),
         });
 
         // Store memo as an effect so it can be notified
@@ -89,7 +91,7 @@ impl<T: Clone + 'static> Memo<T> {
                         let mut rt = rt.borrow_mut();
                         for observer in subscribers {
                             if rt.pending_effects_set.insert(observer) {
-                                rt.pending_effects.push(observer);
+                                rt.pending_effects.push_back(observer);
                             }
                         }
                     });

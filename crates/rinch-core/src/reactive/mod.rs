@@ -8,6 +8,26 @@
 //! - **Effect**: A side-effect that re-runs when its dependencies change
 //! - **Memo**: A cached computed value that only recomputes when dependencies change
 //!
+//! # Execution order
+//!
+//! When several observers depend on the same signal, they run in **registration
+//! order** — the order their [`Effect`]s/[`Memo`]s were created. This is a
+//! guaranteed contract, not an implementation detail (issue #154), and it makes
+//! the "run me last" idiom well-defined: an effect registered *after* an `rsx!`
+//! tree observes the post-patch DOM in the same synchronous flush, so measuring
+//! effects can be layered on top of rendering effects.
+//!
+//! Two mechanisms enforce it, and both are load-bearing:
+//!
+//! 1. Subscriber sets are [`BTreeSet<ObserverId>`](std::collections::BTreeSet).
+//!    `ObserverId`s come from one monotonic counter and are never reused, so
+//!    ascending id *is* registration order — the ordering is intrinsic to the
+//!    data structure rather than a sort someone can forget to apply.
+//! 2. The pending queue is drained FIFO, so the order observers were queued in
+//!    is the order they run in. (An effect that writes a signal while running
+//!    queues that signal's observers *behind* the current flush, rather than
+//!    ahead of it.)
+//!
 //! # Example
 //!
 //! ```ignore
@@ -38,7 +58,7 @@ pub use signal::Signal;
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::{Mutex, OnceLock};
 
@@ -63,8 +83,12 @@ pub(crate) struct Runtime {
     /// Stack of currently executing observers
     pub(crate) observer_stack: Vec<ObserverId>,
 
-    /// Effects that need to run
-    pub(crate) pending_effects: Vec<ObserverId>,
+    /// Effects that need to run, drained front-to-back.
+    ///
+    /// FIFO, not LIFO: the queue order *is* the execution order, so the
+    /// registration-order guarantee established when enqueuing survives the
+    /// flush. See the module-level "Execution order" docs.
+    pub(crate) pending_effects: VecDeque<ObserverId>,
 
     /// Set for O(1) duplicate check when enqueuing pending effects
     pub(crate) pending_effects_set: HashSet<ObserverId>,
@@ -94,7 +118,7 @@ impl Runtime {
     fn new() -> Self {
         Self {
             observer_stack: Vec::new(),
-            pending_effects: Vec::new(),
+            pending_effects: VecDeque::new(),
             pending_effects_set: HashSet::new(),
             batching: false,
             next_id: 0,
@@ -308,8 +332,13 @@ pub fn run_on_main_thread(f: impl FnOnce() + Send + 'static) {
     }
 }
 
-/// Unique identifier for an observer (effect or memo)
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+/// Unique identifier for an observer (effect or memo).
+///
+/// Allocated from a single monotonic counter ([`Runtime::next_id`]) and never
+/// reused, so **ascending id is registration order** — which is what makes the
+/// `BTreeSet` subscriber sets order observers correctly. Anything that starts
+/// recycling ids breaks the execution-order contract, not just uniqueness.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub(crate) struct ObserverId(pub(crate) usize);
 
 // ============================================================================
@@ -326,7 +355,10 @@ thread_local! {
 
 pub(crate) struct SignalSlot {
     pub(crate) value: Box<dyn Any>,
-    pub(crate) subscribers: HashSet<ObserverId>,
+    /// Observers to notify, ordered. `BTreeSet` (not `HashSet`) so iteration
+    /// yields ascending `ObserverId` = registration order; see the module-level
+    /// "Execution order" docs.
+    pub(crate) subscribers: BTreeSet<ObserverId>,
     pub(crate) generation: u32,
 }
 
@@ -356,7 +388,7 @@ impl SignalStore {
 
         let slot = SignalSlot {
             value: Box::new(value),
-            subscribers: HashSet::new(),
+            subscribers: BTreeSet::new(),
             generation,
         };
 
@@ -526,8 +558,140 @@ pub fn untracked<R>(f: impl FnOnce() -> R) -> R {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
+
+    /// How many observers each ordering test registers.
+    ///
+    /// Large enough that hash-iteration order coinciding with registration
+    /// order is a 1-in-40320 accident rather than a coin flip — these tests
+    /// have to *fail* against the old `HashSet` + LIFO pair to be worth having.
+    const OBSERVERS: usize = 8;
+
+    /// Effects sharing a signal run in registration order (#154).
+    #[test]
+    fn same_signal_effects_run_in_registration_order() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let sig = Signal::new(0);
+
+        let _effects: Vec<Effect> = (0..OBSERVERS)
+            .map(|i| {
+                let log = log.clone();
+                Effect::new(move || {
+                    sig.get();
+                    log.borrow_mut().push(i);
+                })
+            })
+            .collect();
+
+        // Discard the runs that `Effect::new` performs at creation.
+        log.borrow_mut().clear();
+        sig.set(1);
+
+        assert_eq!(
+            *log.borrow(),
+            (0..OBSERVERS).collect::<Vec<_>>(),
+            "effects on one signal must run in the order they were created"
+        );
+    }
+
+    /// The same guarantee for a memo's dependents: notification flows through
+    /// `MemoInner::subscribers`, which is a separate set from the signal's.
+    #[test]
+    fn memo_dependents_run_in_registration_order() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let sig = Signal::new(0);
+        let doubled = Memo::new(move || sig.get() * 2);
+
+        let _effects: Vec<Effect> = (0..OBSERVERS)
+            .map(|i| {
+                let log = log.clone();
+                Effect::new(move || {
+                    doubled.get();
+                    log.borrow_mut().push(i);
+                })
+            })
+            .collect();
+
+        log.borrow_mut().clear();
+        sig.set(1);
+
+        assert_eq!(
+            *log.borrow(),
+            (0..OBSERVERS).collect::<Vec<_>>(),
+            "effects on one memo must run in the order they were created"
+        );
+    }
+
+    /// The idiom the contract exists to protect: an effect registered *after*
+    /// a tree of rendering effects observes their post-write state in the same
+    /// synchronous flush ("run me last").
+    ///
+    /// Here `dom` stands in for the patched DOM — the measuring effect must
+    /// read the width the rendering effect just wrote, not the previous one.
+    #[test]
+    fn an_effect_registered_last_observes_earlier_effects_writes() {
+        let dom = Rc::new(RefCell::new(String::new()));
+        let measured = Rc::new(RefCell::new(Vec::new()));
+        let width = Signal::new(1);
+
+        let render_dom = dom.clone();
+        let _render = Effect::new(move || {
+            *render_dom.borrow_mut() = "x".repeat(width.get());
+        });
+
+        let measure_dom = dom.clone();
+        let measure_log = measured.clone();
+        let _measure = Effect::new(move || {
+            width.get();
+            let len = measure_dom.borrow().len();
+            measure_log.borrow_mut().push(len);
+        });
+
+        width.set(5);
+
+        assert_eq!(
+            *measured.borrow(),
+            vec![1, 5],
+            "the later-registered effect must observe the post-write state"
+        );
+    }
+
+    /// A signal written *during* a flush queues its observers behind the rest
+    /// of that flush (FIFO), rather than jumping ahead of already-queued work.
+    #[test]
+    fn effects_queued_during_a_flush_run_after_the_already_queued_ones() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let trigger = Signal::new(0);
+        let cascade = Signal::new(0);
+
+        let writer_log = log.clone();
+        let _writer = Effect::new(move || {
+            writer_log.borrow_mut().push("writer");
+            cascade.set(trigger.get());
+        });
+
+        let other_log = log.clone();
+        let _other = Effect::new(move || {
+            trigger.get();
+            other_log.borrow_mut().push("other");
+        });
+
+        let cascaded_log = log.clone();
+        let _cascaded = Effect::new(move || {
+            cascade.get();
+            cascaded_log.borrow_mut().push("cascaded");
+        });
+
+        log.borrow_mut().clear();
+        trigger.set(1);
+
+        assert_eq!(
+            *log.borrow(),
+            vec!["writer", "other", "cascaded"],
+            "the cascade must not preempt an effect already queued for this flush"
+        );
+    }
 
     #[test]
     fn signal_change_subscriptions_are_independent() {

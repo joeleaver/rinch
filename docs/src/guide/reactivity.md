@@ -85,6 +85,34 @@ This happens automatically—you never manually specify dependencies.
                                            effects re-run
 ```
 
+## Execution Order
+
+When several effects observe the **same** signal, they run in **registration order** — the order the `Effect`s (or `Memo`s) were created. This is a guaranteed contract, not an implementation detail.
+
+That makes the "run me last" idiom well-defined: an effect registered *after* a tree of rendering effects observes their writes in the same synchronous flush, so a measuring effect can read the post-patch DOM rather than the previous frame's.
+
+```rust
+let width = Signal::new(100);
+
+// Registered first — writes.
+Effect::new(move || resize_panel(width.get()));
+
+// Registered second — reads what the first one just wrote.
+Effect::new(move || {
+    width.get();
+    record_measurement(measure_panel());
+});
+
+width.set(250); // resize_panel runs, then record_measurement sees the new size
+```
+
+Two related guarantees follow from the same queue:
+
+- **Effects run in the order they were queued.** Notifying signal A then signal B runs A's effects before B's.
+- **A signal written from inside an effect queues its observers *behind* the current flush**, not ahead of it. Cascading updates therefore run breadth-first, and an effect already scheduled for this flush is never preempted.
+
+Effects are still de-duplicated per flush: an effect observing two signals that both change in one `batch()` runs once, at the position of its first enqueue.
+
 ## Batching Updates
 
 When you update multiple signals, effects run after each update. To avoid redundant runs, use `batch()`:
