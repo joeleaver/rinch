@@ -84,12 +84,18 @@ pub fn register_bounds_signal(doc_key: u64, node_id: u64) -> Signal<ElementBound
 /// [`NodeHandle::bounds_signal`](crate::dom::NodeHandle::bounds_signal) on a
 /// long-lived root keeps application lifetime (issue #141, SD3).
 ///
+/// # Re-entrancy
+///
 /// `absolute_bounds` and the resulting signal writes run with **no registry
 /// borrow held**, so a lookup — or an effect woken by one of the writes — may
-/// call [`register_bounds_signal`] or `update_bounds_signals` re-entrantly. That
-/// matters because reading a `bounds_signal()` from inside a bounds-driven
-/// effect is the idiom this module's own docs recommend; before this it was a
-/// `BorrowMutError`.
+/// call [`register_bounds_signal`] or `update_bounds_signals` re-entrantly.
+///
+/// The writes flush effects **synchronously**, so a caller must also not be
+/// holding any lock those effects need. In particular a runtime must release its
+/// document borrow first: a reactive `style:` closure reading a measured width —
+/// the idiom [`NodeHandle::bounds_signal`](crate::dom::NodeHandle::bounds_signal)
+/// documents — patches the DOM and takes `borrow_mut`. Measure everything under
+/// the read borrow using [`registered_bounds_nodes`], drop it, then publish here.
 pub fn update_bounds_signals<F>(doc_key: u64, mut absolute_bounds: F)
 where
     F: FnMut(u64) -> Option<(f32, f32, f32, f32)>,
@@ -130,11 +136,42 @@ where
     BOUNDS_REGISTRY.with(|reg| reg.borrow_mut().retain(|e| e.signal.is_alive()));
 }
 
+/// The node ids currently registered for `doc_key`, with live signals.
+///
+/// Lets a runtime compute every rect it needs while holding its document
+/// borrow, then **release that borrow** before calling
+/// [`update_bounds_signals`] — whose writes flush effects synchronously, and
+/// those effects mutate the DOM. Without this two-step the document `RefCell`
+/// is still borrowed when user code runs, and the documented
+/// [`NodeHandle::bounds_signal`](crate::dom::NodeHandle::bounds_signal) idiom
+/// (a reactive `style:` closure reading a measured width) is a `BorrowMutError`.
+pub fn registered_bounds_nodes(doc_key: u64) -> Vec<u64> {
+    BOUNDS_REGISTRY.with(|reg| {
+        reg.borrow()
+            .iter()
+            .filter(|e| e.doc_key == doc_key && e.signal.is_alive())
+            .map(|e| e.node_id)
+            .collect()
+    })
+}
+
 /// Number of registered bounds entries on this thread, across all documents.
 /// Test-only: the self-pruning contract is about entries *disappearing*.
 #[cfg(test)]
 pub(crate) fn registry_len_for_tests() -> usize {
     BOUNDS_REGISTRY.with(|reg| reg.borrow().len())
+}
+
+/// The `(doc_key, node_id)` pairs currently registered. Test-only: pruning
+/// assertions must check *which* entry survived, not merely how many did.
+#[cfg(test)]
+pub(crate) fn registry_entries_for_tests() -> Vec<(u64, u64)> {
+    BOUNDS_REGISTRY.with(|reg| {
+        reg.borrow()
+            .iter()
+            .map(|e| (e.doc_key, e.node_id))
+            .collect()
+    })
 }
 
 #[cfg(test)]
@@ -230,10 +267,12 @@ mod lifetime_tests {
         doomed.free_for_tests();
         update_bounds_signals(7, any_rect);
 
+        // Assert *which* entry survived, not merely how many — an inverted
+        // retain predicate keeps the count right and the contents wrong.
         assert_eq!(
-            registry_len_for_tests(),
-            1,
-            "the dead entry is reaped, the live one is kept"
+            registry_entries_for_tests(),
+            vec![(7, 2)],
+            "the dead entry is reaped and the live one is kept"
         );
         assert_eq!(survivor.get().width, 3.0, "the survivor still updates");
     }
@@ -249,7 +288,28 @@ mod lifetime_tests {
         // Document 100 never runs again; document 200 does.
         update_bounds_signals(200, any_rect);
 
-        assert_eq!(registry_len_for_tests(), 1);
+        assert_eq!(
+            registry_entries_for_tests(),
+            vec![(200, 1)],
+            "document 100's stranded entry is reaped by document 200's pass"
+        );
+    }
+
+    #[test]
+    fn registered_bounds_nodes_lists_only_this_documents_live_entries() {
+        let a = register_bounds_signal(31, 10);
+        let _b = register_bounds_signal(31, 11);
+        let _other = register_bounds_signal(32, 12);
+
+        assert_eq!(registered_bounds_nodes(31), vec![10, 11]);
+        assert_eq!(registered_bounds_nodes(32), vec![12]);
+
+        a.free_for_tests();
+        assert_eq!(
+            registered_bounds_nodes(31),
+            vec![11],
+            "a freed entry must not be handed to the runtime to measure"
+        );
     }
 
     #[test]

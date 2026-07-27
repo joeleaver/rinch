@@ -77,7 +77,9 @@ mod poll;
 mod scope;
 mod signal;
 
-pub use bounds::{ElementBounds, register_bounds_signal, update_bounds_signals};
+pub use bounds::{
+    ElementBounds, register_bounds_signal, registered_bounds_nodes, update_bounds_signals,
+};
 pub use effect::Effect;
 pub use memo::Memo;
 pub use poll::{PollRate, drain_polls, poll_signal};
@@ -483,6 +485,11 @@ thread_local! {
 
 struct MemoSlot {
     inner: Rc<dyn Any>, // Type-erased Rc<MemoInner<T>>
+    /// The memo's dirty-marker effect, which holds the *second* strong
+    /// reference to the same `MemoInner`. Recorded here because the slot is
+    /// type-erased: freeing a memo has to clear `EFFECTS[observer]` too, and a
+    /// type-erased caller cannot downcast to reach `MemoInner::id`.
+    observer: ObserverId,
     generation: u32,
 }
 
@@ -501,14 +508,18 @@ impl MemoStore {
         }
     }
 
-    pub(crate) fn alloc(&mut self, inner: Rc<dyn Any>) -> (u32, u32) {
+    pub(crate) fn alloc(&mut self, inner: Rc<dyn Any>, observer: ObserverId) -> (u32, u32) {
         let generation = self.next_gen;
         self.next_gen = self.next_gen.wrapping_add(1);
         if self.next_gen == 0 {
             self.next_gen = 1;
         }
 
-        let slot = MemoSlot { inner, generation };
+        let slot = MemoSlot {
+            inner,
+            observer,
+            generation,
+        };
 
         if let Some(idx) = self.free_list.pop() {
             self.slots[idx as usize] = Some(slot);
@@ -528,27 +539,52 @@ impl MemoStore {
             .map(|s| Rc::clone(&s.inner))
     }
 
-    /// Free a slot, **returning** its `Rc` rather than dropping it in place —
-    /// same rule and same reason as [`SignalStore::free`]: a `MemoInner`'s cached
-    /// value can own arbitrary user data whose `Drop` may touch the reactive
-    /// stores. Not yet reachable from production code (#141 PR4 wires it).
+    /// Free a slot, **returning** its `Rc` and the marker's [`ObserverId`]
+    /// rather than dropping in place — same rule and same reason as
+    /// [`SignalStore::free`]: a `MemoInner`'s cached value can own arbitrary
+    /// user data whose `Drop` may touch the reactive stores.
+    ///
+    /// Freeing the slot alone does **not** release the memo. Use
+    /// [`free_memo`], which also clears the marker effect.
     #[allow(dead_code)]
-    pub(crate) fn free(&mut self, id: u32, generation: u32) -> Option<Rc<dyn Any>> {
+    pub(crate) fn free(&mut self, id: u32, generation: u32) -> Option<(Rc<dyn Any>, ObserverId)> {
         let slot = self.slots.get_mut(id as usize)?;
         if !slot.as_ref().is_some_and(|s| s.generation == generation) {
             return None;
         }
         let taken = slot.take();
         self.free_list.push(id);
-        taken.map(|s| s.inner)
+        taken.map(|s| (s.inner, s.observer))
     }
 }
 
-/// Free a memo slot directly. Test-only counterpart to
-/// [`free_signal_for_tests`]; see that function for why it exists.
-#[cfg(test)]
-pub(crate) fn free_memo_for_tests(id: u32, generation: u32) {
-    let _inner = MEMO_STORE.with(|store| store.borrow_mut().free(id, generation));
+/// Release a memo completely: its store slot **and** its dirty-marker effect.
+///
+/// `Memo::new` puts two strong `Rc<MemoInner>` references into two different
+/// registries — one in `MEMO_STORE`, one captured by the marker closure in
+/// `EFFECTS`. Dropping only the store slot frees nothing (the marker keeps the
+/// cached value and the computation closure alive) and is actively harmful: the
+/// marker stays subscribed to the memo's sources, so the next write to any of
+/// them re-queues the memo's dependents, whose `Memo::get()` then panics on the
+/// now-empty slot.
+///
+/// Both `Rc`s are dropped after every borrow is released, since the cached value
+/// is arbitrary user data whose `Drop` may touch the reactive stores.
+///
+/// Not yet reachable from production code — #141 PR4 wires it into the dispose
+/// fixpoint.
+#[allow(dead_code)]
+pub(crate) fn free_memo(id: u32, generation: u32) {
+    let Some((inner, observer)) = MEMO_STORE.with(|store| store.borrow_mut().free(id, generation))
+    else {
+        return;
+    };
+    let marker = effect::EFFECTS.with(|effects| {
+        let mut effects = effects.borrow_mut();
+        effects.get_mut(observer.0).and_then(|slot| slot.take())
+    });
+    drop(marker);
+    drop(inner);
 }
 
 // ============================================================================

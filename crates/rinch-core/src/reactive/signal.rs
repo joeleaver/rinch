@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt;
 use std::marker::PhantomData;
+use std::panic::Location;
 
 use super::{ObserverId, RUNTIME, SIGNAL_STORE};
 
@@ -45,13 +46,16 @@ fn panic_read_freed(called: &str) -> ! {
 /// `send`/`update_send` long after the UI that owned the signal was torn down,
 /// and panicking there would take down the app for a write nobody was waiting on.
 ///
-/// `#[track_caller]` makes the dedup key the *user's* call site rather than this
-/// function, so a hot loop warns once while two distinct offending call sites
-/// both get reported.
+/// The caller's location is passed in explicitly rather than read from
+/// `Location::caller()` here. `send`/`update_send` dispatch a closure that
+/// performs the write *later, on another stack*, where `#[track_caller]`
+/// information no longer exists — so they capture their caller's location up
+/// front and hand it down. Reading it here would key every cross-thread write
+/// to one line inside this file, collapsing the per-call-site dedup into a
+/// single global warning.
 #[cold]
 #[inline(never)]
-#[track_caller]
-fn warn_write_to_freed(called: &str) {
+fn warn_write_to_freed(called: &str, loc: &'static Location<'static>) {
     thread_local! {
         /// `(file, line, column)` of call sites already warned about. `file()`
         /// is `&'static str`, so the key borrows nothing.
@@ -59,7 +63,6 @@ fn warn_write_to_freed(called: &str) {
             RefCell::new(HashSet::new());
     }
 
-    let loc = std::panic::Location::caller();
     let first = WARNED.with(|w| {
         w.borrow_mut()
             .insert((loc.file(), loc.line(), loc.column()))
@@ -333,6 +336,13 @@ impl<T: 'static> Signal<T> {
     /// for automatic cross-thread dispatch.
     #[track_caller]
     pub fn set(&self, value: T) {
+        self.set_at(value, Location::caller());
+    }
+
+    /// [`set`](Signal::set), with the reporting location supplied explicitly so
+    /// [`send`](Signal::send) can attribute a deferred cross-thread write to the
+    /// site that requested it.
+    pub(crate) fn set_at(&self, value: T, loc: &'static Location<'static>) {
         if !super::is_main_thread() {
             panic_off_main("set", "send");
         }
@@ -351,7 +361,7 @@ impl<T: 'static> Signal<T> {
         drop(displaced);
         if value.is_some() {
             drop(value);
-            warn_write_to_freed("set");
+            warn_write_to_freed("set", loc);
             return;
         }
         self.notify();
@@ -368,6 +378,15 @@ impl<T: 'static> Signal<T> {
     /// Panics if called from a background thread.
     #[track_caller]
     pub fn set_if_changed(&self, value: T)
+    where
+        T: PartialEq,
+    {
+        self.set_if_changed_at(value, Location::caller());
+    }
+
+    /// [`set_if_changed`](Signal::set_if_changed) with an explicit reporting
+    /// location — see [`set_at`](Signal::set_at).
+    pub(crate) fn set_if_changed_at(&self, value: T, loc: &'static Location<'static>)
     where
         T: PartialEq,
     {
@@ -405,7 +424,7 @@ impl<T: 'static> Signal<T> {
         match outcome {
             Outcome::Freed => {
                 drop(value);
-                warn_write_to_freed("set_if_changed");
+                warn_write_to_freed("set_if_changed", loc);
             }
             Outcome::Unchanged => drop(value),
             Outcome::Changed(displaced) => {
@@ -429,6 +448,12 @@ impl<T: 'static> Signal<T> {
     /// for automatic cross-thread dispatch.
     #[track_caller]
     pub fn update(&self, f: impl FnOnce(&mut T)) {
+        self.update_at(f, Location::caller());
+    }
+
+    /// [`update`](Signal::update) with an explicit reporting location — see
+    /// [`set_at`](Signal::set_at).
+    pub(crate) fn update_at(&self, f: impl FnOnce(&mut T), loc: &'static Location<'static>) {
         if !super::is_main_thread() {
             panic_off_main("update", "update_send");
         }
@@ -448,7 +473,7 @@ impl<T: 'static> Signal<T> {
         });
         if !applied {
             drop(f);
-            warn_write_to_freed("update");
+            warn_write_to_freed("update", loc);
             return;
         }
         self.notify();
@@ -474,13 +499,19 @@ impl<T: Send + 'static> Signal<T> {
     ///     level.send(0.5);
     /// });
     /// ```
+    #[track_caller]
     pub fn send(&self, value: T) {
+        // Captured here, not inside the closure: the closure runs later on the
+        // main thread, where `#[track_caller]` no longer reaches this call site.
+        // Without this every dropped cross-thread write would be attributed to
+        // one line in this file and the warn-once dedup would silence them all.
+        let loc = Location::caller();
         if super::is_main_thread() {
-            self.set(value);
+            self.set_at(value, loc);
         } else {
             let signal = *self;
             super::dispatch_to_main_thread(Box::new(move || {
-                signal.set(value);
+                signal.set_at(value, loc);
             }));
         }
     }
@@ -502,13 +533,16 @@ impl<T: Send + 'static> Signal<T> {
     ///     items.update_send(|list| list.push(4));
     /// });
     /// ```
+    #[track_caller]
     pub fn update_send(&self, f: impl FnOnce(&mut T) + Send + 'static) {
+        // See `send` — the location must be captured before the thread hop.
+        let loc = Location::caller();
         if super::is_main_thread() {
-            self.update(f);
+            self.update_at(f, loc);
         } else {
             let signal = *self;
             super::dispatch_to_main_thread(Box::new(move || {
-                signal.update(f);
+                signal.update_at(f, loc);
             }));
         }
     }
@@ -667,22 +701,61 @@ mod liveness_tests {
     }
 
     #[test]
-    fn a_write_to_a_freed_signal_does_not_notify_surviving_observers() {
-        let dead = Signal::new(0);
-        let live = Signal::new(0);
+    fn a_write_to_a_freed_signal_does_not_notify_its_own_observers() {
+        // The observer must subscribe to `doomed` *before* it is freed —
+        // otherwise the test proves nothing, since an effect that never read
+        // the signal would not re-run either way.
+        let doomed = Signal::new(0);
         let runs = Rc::new(Cell::new(0));
 
         let r = Rc::clone(&runs);
         let _e = Effect::new(move || {
-            let _ = live.get();
+            // try_get, not get: after the free this effect must be able to run
+            // without panicking if anything else queues it.
+            let _ = doomed.try_get();
             r.set(r.get() + 1);
         });
         assert_eq!(runs.get(), 1);
 
-        dead.free_for_tests();
-        dead.set(99);
+        // Positive control: while alive, a write DOES re-run the observer.
+        doomed.set(1);
+        assert_eq!(runs.get(), 2, "control — the effect really observes it");
 
-        assert_eq!(runs.get(), 1, "a dropped write must not flush effects");
+        doomed.free_for_tests();
+        doomed.set(99);
+
+        assert_eq!(runs.get(), 2, "a dropped write must not flush effects");
+    }
+
+    #[test]
+    fn a_deferred_cross_thread_write_reports_the_send_call_site() {
+        // `send`/`update_send` perform the write inside a closure that runs
+        // later, where #[track_caller] no longer reaches the caller. If the
+        // location is not captured up front, every cross-thread freed write
+        // dedups to one line inside signal.rs and all but the first go silent.
+        let before = warn_count_for_tests();
+        let a = Signal::new(0i32);
+        let b = Signal::new(0i32);
+        a.free_for_tests();
+        b.free_for_tests();
+
+        a.send(1);
+        b.send(2);
+
+        assert_eq!(
+            warn_count_for_tests() - before,
+            2,
+            "two distinct send sites must produce two warnings"
+        );
+
+        let c = Signal::new(0i32);
+        c.free_for_tests();
+        c.update_send(|v| *v += 1);
+        assert_eq!(
+            warn_count_for_tests() - before,
+            3,
+            "update_send is attributed to its own call site too"
+        );
     }
 
     #[test]

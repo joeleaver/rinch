@@ -642,3 +642,66 @@ fn set_theme_restyles_only_its_own_context() {
         drop(b);
     });
 }
+
+/// A bounds-driven effect that **mutates the DOM** must not deadlock the
+/// document `RefCell` (#141).
+///
+/// `NodeHandle::bounds_signal`'s own docs recommend reading a measured width
+/// from a reactive `style:` closure. The `rsx!` macro compiles that to an
+/// `Effect` calling `set_attribute`, which takes `doc.borrow_mut()`. The runtime
+/// used to publish bounds while still holding `doc.borrow()`, so the very first
+/// layout pass panicked with `RefCell already borrowed`.
+#[test]
+fn a_bounds_driven_effect_may_patch_the_dom() {
+    on_ui_thread(|| {
+        let observed_width: Rc<Cell<f32>> = Rc::new(Cell::new(-1.0));
+        let seen = observed_width.clone();
+        // As in `bounds_registry_crosstalk_across_documents`: reactive text is
+        // the deterministic way to dirty the DOM so a layout pass definitely
+        // runs and `refresh_bounds_signals` is reached.
+        let dirty = Signal::new(0i32);
+
+        let mut ctx = RinchContext::new(cfg(), move |__scope: &mut RenderScope| {
+            let root = __scope.create_element("div");
+            let measured = __scope.create_element("div");
+            measured.set_attribute("style", "width: 120px; height: 40px;");
+            root.append_child(&measured);
+
+            let bar = __scope.create_element("div");
+            root.append_child(&bar);
+
+            let text = __scope.create_text("0");
+            root.append_child(&text);
+            let text_handle = text.clone();
+            __scope.create_effect(move || {
+                text_handle.set_text(&dirty.get().to_string());
+            });
+
+            // The documented idiom: react to the measured rect by patching
+            // another node's style.
+            let bounds = measured.bounds_signal();
+            let bar_handle = bar.clone();
+            let seen = seen.clone();
+            __scope.create_effect(move || {
+                let b = bounds.get();
+                seen.set(b.width);
+                bar_handle.set_attribute("style", &format!("width: {}px;", b.width));
+            });
+
+            root
+        });
+
+        // Pre-fix this panicked inside `refresh_bounds_signals` with
+        // "RefCell already borrowed".
+        dirty.set(1);
+        ctx.update(&[]);
+
+        assert_eq!(
+            observed_width.get(),
+            120.0,
+            "the effect ran and saw the measured width"
+        );
+
+        drop(ctx);
+    });
+}
