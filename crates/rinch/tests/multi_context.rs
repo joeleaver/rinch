@@ -6,9 +6,9 @@
 //! outcome explicitly and are marked `BUG #134` — if such an assertion starts
 //! failing, the bug got fixed: flip the assertion to the correct behavior.
 //!
-//! Requires the `embed` (or `gpu`) feature — with default features OFF (the
-//! `desktop` + `embed` combination does not compile; see #134's follow-ups):
-//!     cargo test -p rinch --no-default-features --features embed --test multi_context
+//! Requires the `embed` (or `gpu`) feature. Since #140 the painters are
+//! additive, so `desktop` + `embed` co-compiles and default features can stay on:
+//!     cargo test -p rinch --features embed --test multi_context
 //!
 //! ## Why every test body runs on one shared worker thread
 //!

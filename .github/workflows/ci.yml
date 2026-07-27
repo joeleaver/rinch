@@ -92,6 +92,16 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # Feature combinations the workspace-wide default build never exercises.
+      # desktop + embed carries BOTH painters since #140 (the winit shell drives
+      # TinySkia while embed RinchContexts drive Vello) and broke silently before
+      # anything checked it. Plain `cargo check` — compile-only, cheap.
+      - name: Check rinch feature combinations
+        run: |
+          cargo check -p rinch --features embed
+          cargo check -p rinch --no-default-features --features embed
+          cargo check -p rinch --features gpu,embed
+
   # Lint the wasm target too. `clippy --workspace` above only ever sees the native
   # cfg, so anything behind `cfg(target_arch = "wasm32")` — the whole rinch-web
   # backend, the render-surface canvas path, the wasm halves of rinch-ws/http —
