@@ -820,6 +820,7 @@ let offset_x = ctx.mouse_x - panel_x.get();
 Drag::absolute()
     .on_move(move |x, y| panel_x.set(x - offset_x))
     .on_end(move |x, y| save_position(x, y))
+    .on_cancel(move |_x, _y| restore_position())  // teardown; on_end does NOT fire
     .start();
 
 // Percentage 0.0–1.0 (sliders) — reads element bounds from ClickContext automatically
@@ -827,7 +828,9 @@ Drag::percent()
     .on_move(move |px, _| slider_value.set(px * 100.0))
     .start();
 
-// Cancel without firing on_end
+// Cancel: fires on_cancel (with the last on_move coords) but NOT on_end —
+// a cancelled drag must not commit. The web backend calls this on pointercancel
+// (touch-scroll takeover, system gesture, pointer-capture loss).
 Drag::cancel();
 
 // Check if active
