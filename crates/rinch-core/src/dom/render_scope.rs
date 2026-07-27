@@ -29,9 +29,9 @@ pub struct RenderScope {
     effects: Vec<Effect>,
     /// Child scopes (for hierarchical cleanup).
     children: Vec<RenderScope>,
-    /// Cleanup functions to run on dispose.
-    cleanups: Vec<Box<dyn FnOnce()>>,
-    /// The reactive scope for effect management.
+    /// The reactive scope for effect management **and cleanups** — see
+    /// [`RenderScope::on_cleanup`]. Cleanups deliberately live here and not in a
+    /// second list on `RenderScope`, so they run on drop as well as on dispose.
     reactive_scope: Scope,
 }
 
@@ -43,7 +43,6 @@ impl RenderScope {
             parent_id,
             effects: Vec::new(),
             children: Vec::new(),
-            cleanups: Vec::new(),
             reactive_scope: Scope::new(),
         }
     }
@@ -145,8 +144,14 @@ impl RenderScope {
     }
 
     /// Register a cleanup function to run when this scope is disposed.
+    ///
+    /// Delegates to the reactive [`Scope`], which runs its cleanups from its own
+    /// `Drop` as well as from `dispose()`. Keeping a second list on `RenderScope`
+    /// meant cleanups were lost on every drop-only teardown, because
+    /// `Drop for RenderScope` does nothing and only the by-value `dispose()`
+    /// drained that list (issue #141).
     pub fn on_cleanup<F: FnOnce() + 'static>(&mut self, f: F) {
-        self.cleanups.push(Box::new(f));
+        self.reactive_scope.on_cleanup(f);
     }
 
     /// Get a handle to the parent node.
@@ -270,25 +275,27 @@ impl RenderScope {
     }
 
     /// Dispose of this scope and all child scopes.
+    ///
+    /// Equivalent to dropping it: cleanups and effects both live on
+    /// `reactive_scope`, whose own `Drop` disposes it. This exists for callers
+    /// that want teardown to happen at a definite point.
     pub fn dispose(mut self) {
         // Dispose child scopes first
         for child in self.children.drain(..) {
             child.dispose();
         }
 
-        // Dispose effects
+        // Disposes effects and runs cleanups (see `on_cleanup`).
         self.reactive_scope.dispose();
-
-        // Run cleanup functions
-        for cleanup in self.cleanups.drain(..) {
-            cleanup();
-        }
     }
 }
 
 impl Drop for RenderScope {
     fn drop(&mut self) {
-        // Effects and cleanups are handled by the Scope and cleanups vec
+        // Nothing to do: `children` are `RenderScope`s that drop recursively,
+        // and effects + cleanups belong to `reactive_scope`, whose `Drop` calls
+        // its own iterative `dispose()`. This is what makes `on_cleanup` fire on
+        // drop-only teardown paths (issue #141).
     }
 }
 
