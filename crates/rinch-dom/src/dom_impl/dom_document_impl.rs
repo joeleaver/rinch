@@ -1155,4 +1155,11 @@ impl DomDocument for RinchDocument {
             .map(NodeId)
             .collect()
     }
+
+    fn drain_scroll_clamps(&mut self) -> Vec<(NodeId, f64)> {
+        std::mem::take(&mut self.tree.pending_scroll_clamps)
+            .into_iter()
+            .map(|(id, offset)| (NodeId(id), offset))
+            .collect()
+    }
 }

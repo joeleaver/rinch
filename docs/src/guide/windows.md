@@ -309,6 +309,24 @@ fn main() {
 }
 ```
 
+## Observing Window Resizes
+
+There is no separate resize event. The supported way to observe viewport size
+changes is a root element's `bounds_signal()`, which the runtime refreshes after
+every layout pass — including pure window resizes:
+
+```rust
+#[component]
+fn app() -> NodeHandle {
+    let root = __scope.create_element("div");
+    root.set_attribute("style", "width: 100%; height: 100%");
+    let bounds = root.bounds_signal(); // Signal<ElementBounds>
+
+    // bounds.get().width / bounds.get().height track the viewport reactively.
+    root
+}
+```
+
 ## Programmatic Window Management
 
 Open and close windows programmatically at runtime using the `windows` module.

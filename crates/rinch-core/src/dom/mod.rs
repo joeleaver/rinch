@@ -615,12 +615,17 @@ impl NodeHandle {
     }
 
     /// Reactive bounds signal for this element, refreshed by the runtime after
-    /// each layout pass.
+    /// each layout pass — including pure window resizes (#145).
     ///
     /// The signal carries absolute viewport-relative pixel bounds — the same
     /// frame [`crate::events::ClickContext::element_x`] uses, not the
     /// parent-relative values from [`Self::get_layout_bounds`]. Subscribers
     /// only re-run when the rect changes (uses `set_if_changed` internally).
+    ///
+    /// There is no separate resize event: the root element's `bounds_signal()`
+    /// is the supported way to observe viewport size changes — a full-size
+    /// element's signal reports the new geometry as soon as the resize's
+    /// layout pass completes.
     ///
     /// Initial value is `ElementBounds::default()` (zero rect). The first real
     /// bounds arrive after the next layout pass.

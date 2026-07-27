@@ -1617,3 +1617,46 @@ fn test_inline_block_percent_width_is_stable_across_relayouts() {
         "width must settle at 700 on every layout, got {widths:?}"
     );
 }
+
+/// #144: layout-time scroll clamping must not be a silent mutation. When a
+/// scroll container's content shrinks, `resolve_layout` clamps the stale
+/// offset AND queues a (node, clamped offset) pair for the runtime to drain
+/// and dispatch as a scroll event — coalesced to one entry per node with the
+/// final value, even when layout resolves more than once before the drain.
+#[test]
+fn test_scroll_clamp_is_queued_for_notification() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(container, "style", "height: 100px; overflow-y: auto");
+    doc.append_child(body, container);
+    let content = doc.create_element("div");
+    doc.set_attribute(content, "style", "height: 500px");
+    doc.append_child(container, content);
+
+    doc.resolve_layout(800.0, 600.0);
+
+    // Scroll to max (500 content - 100 visible = 400). A valid offset is
+    // never clamped, so nothing is queued.
+    doc.set_scroll_top(container, 400.0);
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(doc.scroll_top(container), 400.0);
+    assert!(
+        doc.drain_scroll_clamps().is_empty(),
+        "a valid offset must not queue a clamp event"
+    );
+
+    // Shrink the content twice before the runtime drains — the queue must
+    // coalesce to a single entry carrying the final clamped value.
+    doc.set_attribute(content, "style", "height: 250px");
+    doc.resolve_layout(800.0, 600.0);
+    doc.set_attribute(content, "style", "height: 180px");
+    doc.resolve_layout(800.0, 600.0);
+
+    // Offset clamped to the final max (180 - 100 = 80)...
+    assert_eq!(doc.scroll_top(container), 80.0);
+    // ...and the clamp was queued exactly once, not applied silently.
+    assert_eq!(doc.drain_scroll_clamps(), vec![(container, 80.0)]);
+    // Drained — a second drain yields nothing.
+    assert!(doc.drain_scroll_clamps().is_empty());
+}

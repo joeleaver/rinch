@@ -508,6 +508,10 @@ impl RinchApp {
         self.scene_dirty = true;
         self.doc = Some(doc.clone());
         self._render_scope = Some(scope);
+
+        // The initial layout can clamp a scroll offset a component set during
+        // construction (via set_scroll_top) — drain + notify (#144).
+        self.dispatch_scroll_clamp_events();
     }
 
     // ── Layout / repaint ─────────────────────────────────────────────────
@@ -642,34 +646,12 @@ impl RinchApp {
             }
         }
 
+        // Dispatch deferred scroll events for offsets the layout clamped, now
+        // that the last resolve of the frame has run (#144).
+        self.dispatch_scroll_clamp_events();
+
         // Refresh element-bounds signals against the freshly-computed layout.
-        // Subscribers (e.g. timeline-style widgets reading a strip's measured
-        // width) re-run inside this borrow, so the document RefCell must be
-        // borrowed read-only just for the lookup.
-        {
-            let d = doc.borrow();
-            rinch_core::reactive::update_bounds_signals(d.doc_key(), |node_id| {
-                let nid = node_id as usize;
-                let n = d.tree.nodes.get(nid)?;
-                // Walk to root accumulating parent-relative offsets — same
-                // convention as `dispatch_oncontextmenu` / `click_handling`.
-                let mut ax = n.layout.x;
-                let mut ay = n.layout.y;
-                let mut pid = n.parent;
-                while let Some(p) = pid {
-                    if let Some(pn) = d.tree.nodes.get(p) {
-                        ax += pn.layout.x;
-                        ay += pn.layout.y;
-                        ax -= pn.scroll_offset.0 as f32;
-                        ay -= pn.scroll_offset.1 as f32;
-                        pid = pn.parent;
-                    } else {
-                        break;
-                    }
-                }
-                Some((ax, ay, n.layout.width, n.layout.height))
-            });
-        }
+        self.refresh_bounds_signals();
 
         self.scene_dirty = true;
 
@@ -685,6 +667,78 @@ impl RinchApp {
         }
 
         true
+    }
+
+    /// Refresh element-bounds signals against the freshly-computed layout.
+    /// Subscribers (e.g. timeline-style widgets reading a strip's measured
+    /// width) re-run inside this borrow, so the document RefCell must be
+    /// borrowed read-only just for the lookup.
+    ///
+    /// Called from `resolve_and_repaint` and from `resize_layout` — the resize
+    /// path drains the dirty set, so the subsequent paint skips
+    /// `resolve_and_repaint` and this is the only refresh a pure resize gets
+    /// (#145).
+    fn refresh_bounds_signals(&self) {
+        let Some(doc) = &self.doc else { return };
+        let d = doc.borrow();
+        rinch_core::reactive::update_bounds_signals(d.doc_key(), |node_id| {
+            let nid = node_id as usize;
+            let n = d.tree.nodes.get(nid)?;
+            // Walk to root accumulating parent-relative offsets — same
+            // convention as `dispatch_oncontextmenu` / `click_handling`.
+            let mut ax = n.layout.x;
+            let mut ay = n.layout.y;
+            let mut pid = n.parent;
+            while let Some(p) = pid {
+                if let Some(pn) = d.tree.nodes.get(p) {
+                    ax += pn.layout.x;
+                    ay += pn.layout.y;
+                    ax -= pn.scroll_offset.0 as f32;
+                    ay -= pn.scroll_offset.1 as f32;
+                    pid = pn.parent;
+                } else {
+                    break;
+                }
+            }
+            Some((ax, ay, n.layout.width, n.layout.height))
+        });
+    }
+
+    /// Dispatch deferred scroll events for offsets the layout engine clamped.
+    ///
+    /// `resolve_layout` clamps a scroll container's offset when its content
+    /// shrinks or its viewport grows (#144). The clamp runs while this app
+    /// holds the document borrow, so the engine queues the (node, offset)
+    /// pairs; this drains them once the borrow is released and fires the same
+    /// `data-onscroll` handlers input-driven scrolling does.
+    fn dispatch_scroll_clamp_events(&mut self) {
+        let Some(doc) = self.doc.clone() else { return };
+        let clamps = doc.borrow_mut().drain_scroll_clamps();
+        if clamps.is_empty() {
+            return;
+        }
+        // Resolve handler ids under a read borrow, then drop it before
+        // dispatching — handlers are user code and may call back into the
+        // document.
+        let mut to_fire: Vec<(usize, f64)> = Vec::new();
+        {
+            let d = doc.borrow();
+            for (node, scroll_top) in clamps {
+                if let Some(handler_id) = d
+                    .tree
+                    .nodes
+                    .get(node.0)
+                    .and_then(|n| n.attributes.get("data-onscroll"))
+                    .and_then(|s| s.parse::<usize>().ok())
+                {
+                    to_fire.push((handler_id, scroll_top));
+                }
+            }
+        }
+        for (handler_id, scroll_top) in to_fire {
+            use rinch_core::events::{EventHandlerId, dispatch_scroll_event};
+            dispatch_scroll_event(EventHandlerId(handler_id), scroll_top);
+        }
     }
 
     /// Apply deferred scroll-into-view requests.
@@ -789,12 +843,19 @@ impl RinchApp {
     pub fn resize_layout(&mut self, width: u32, height: u32) {
         let width = width.max(1);
         let height = height.max(1);
-        if let Some(doc) = &self.doc {
+        let Some(doc) = self.doc.clone() else { return };
+        {
             let mut d = doc.borrow_mut();
             d.resolve_layout(width as f32, height as f32);
             let _ = d.take_dirty_nodes();
-            self.scene_dirty = true;
         }
+        self.scene_dirty = true;
+        // Layout at the new size may have clamped scroll offsets — notify (#144).
+        self.dispatch_scroll_clamp_events();
+        // The drain above emptied the dirty set, so the subsequent paint skips
+        // `resolve_and_repaint`; without this a pure resize leaves bounds
+        // signals reporting the pre-resize geometry (#145).
+        self.refresh_bounds_signals();
     }
 
     /// Build the Vello scene from the current document state.
@@ -1862,5 +1923,99 @@ impl RinchApp {
                 d.tree.dirty_nodes.insert(node_id);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod layout_notification_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// #145: a pure window resize must refresh bounds signals. `resize_layout`
+    /// drains the dirty set, so the subsequent paint never reaches
+    /// `resolve_and_repaint` — the resize path has to refresh the signals
+    /// itself or a full-size element keeps reporting pre-resize geometry.
+    #[test]
+    fn resize_layout_refreshes_bounds_signals() {
+        use rinch_core::reactive::{ElementBounds, Signal};
+
+        let captured: Rc<Cell<Option<Signal<ElementBounds>>>> = Rc::new(Cell::new(None));
+        let captured_in = captured.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "width: 100%; height: 100%");
+            captured_in.set(Some(root.bounds_signal()));
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        let bounds = captured.get().expect("bounds signal captured at mount");
+
+        // Pure resize, no other interaction: the signal must report the new
+        // viewport size.
+        app.resize_layout(400, 300);
+        let b = bounds.get();
+        assert_eq!(
+            (b.width, b.height),
+            (400.0, 300.0),
+            "bounds signal must track the resized viewport, got {b:?}"
+        );
+
+        // And again — a second resize keeps tracking.
+        app.resize_layout(640, 480);
+        let b = bounds.get();
+        assert_eq!((b.width, b.height), (640.0, 480.0));
+    }
+
+    /// #144: a layout-time scroll clamp must fire the container's
+    /// `data-onscroll` handler — exactly once, with the clamped offset —
+    /// through the deferred queue drained after layout.
+    #[test]
+    fn layout_scroll_clamp_fires_onscroll_handler() {
+        use rinch_core::events::{ScrollCallback, register_scroll_handler};
+
+        let fired: Rc<RefCell<Vec<f64>>> = Rc::new(RefCell::new(Vec::new()));
+        let fired_in = fired.clone();
+        let handler_id = register_scroll_handler(ScrollCallback::from(move |top: f64| {
+            fired_in.borrow_mut().push(top);
+        }));
+
+        let nodes: Rc<RefCell<Option<(NodeHandle, NodeHandle)>>> = Rc::new(RefCell::new(None));
+        let nodes_in = nodes.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let container = scope.create_element("div");
+            container.set_attribute("style", "height: 100px; overflow-y: auto");
+            container.set_attribute("data-onscroll", &handler_id.0.to_string());
+            let content = scope.create_element("div");
+            content.set_attribute("style", "height: 500px");
+            container.append_child(&content);
+            *nodes_in.borrow_mut() = Some((container.clone(), content));
+            container
+        });
+        app.mount_component(800.0, 600.0);
+        let (container, content) = nodes.borrow().clone().expect("nodes captured at mount");
+
+        // Scroll to max (500 content - 100 visible = 400) — a valid offset,
+        // so no clamp event fires.
+        if let Some(doc) = &app.doc {
+            doc.borrow_mut().set_scroll_top(container.node_id(), 400.0);
+        }
+        app.resolve_and_repaint(800.0, 600.0);
+        assert!(
+            fired.borrow().is_empty(),
+            "no clamp event while the offset is valid"
+        );
+
+        // Shrink the content: layout clamps 400 → 150 and must notify once.
+        content.set_attribute("style", "height: 250px");
+        app.resolve_and_repaint(800.0, 600.0);
+        assert_eq!(*fired.borrow(), vec![150.0]);
+
+        // Settled — a further frame must not re-fire.
+        app.resolve_and_repaint(800.0, 600.0);
+        assert_eq!(
+            fired.borrow().len(),
+            1,
+            "clamp event must fire exactly once"
+        );
     }
 }

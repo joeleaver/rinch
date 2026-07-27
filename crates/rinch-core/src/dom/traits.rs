@@ -404,4 +404,16 @@ pub trait DomDocument {
     fn drain_scroll_into_view_requests(&mut self) -> Vec<NodeId> {
         Vec::new()
     }
+
+    /// Drain the scroll offsets clamped during layout, as (node, clamped
+    /// offset) pairs — coalesced to one entry per node (last value wins).
+    ///
+    /// Layout clamps a container's scroll offset when its content shrinks or
+    /// its viewport grows. Firing handlers mid-layout would re-enter user code
+    /// while the document is borrowed, so the engine queues the clamps and the
+    /// runtime drains them after `resolve_layout()` to dispatch the same
+    /// scroll events input-driven scrolling produces.
+    fn drain_scroll_clamps(&mut self) -> Vec<(NodeId, f64)> {
+        Vec::new()
+    }
 }
