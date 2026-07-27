@@ -79,6 +79,15 @@ impl Default for RinchDocument {
     }
 }
 
+impl Drop for RinchDocument {
+    fn drop(&mut self) {
+        // A torn-down document can never drain its queued image decodes —
+        // purge them so they don't strand in the process-global pending
+        // queue forever (issue #137).
+        crate::image_cache::purge_pending(self.doc_key);
+    }
+}
+
 impl RinchDocument {
     /// Process-unique document identity (see
     /// [`DomDocument::doc_key`](rinch_core::dom::DomDocument::doc_key)) —
@@ -558,8 +567,9 @@ impl RinchDocument {
             );
         }
 
-        // Kick off async load — result goes to PENDING_IMAGES static queue
-        crate::image_cache::request_image_load(src.to_string(), loader);
+        // Kick off async load — result goes to PENDING_IMAGES static queue,
+        // tagged with this document's identity (#137)
+        crate::image_cache::request_image_load(self.doc_key, src.to_string(), loader);
     }
 
     /// Scan for background-image URLs that need loading and trigger async loads.
@@ -586,7 +596,7 @@ impl RinchDocument {
 
         for url in urls_to_load {
             self.tree.image_cache.mark_loading(url.clone());
-            crate::image_cache::request_image_load(url, loader.clone());
+            crate::image_cache::request_image_load(self.doc_key, url, loader.clone());
         }
     }
 
@@ -595,7 +605,7 @@ impl RinchDocument {
     /// Called before layout to pick up newly decoded images.
     /// Returns true if any images were newly decoded (needs re-layout).
     pub fn drain_pending_images(&mut self) -> bool {
-        let newly_decoded = self.tree.image_cache.drain_pending();
+        let newly_decoded = self.tree.image_cache.drain_pending(self.doc_key);
         if newly_decoded.is_empty() {
             return false;
         }
