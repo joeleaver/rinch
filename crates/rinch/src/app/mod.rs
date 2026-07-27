@@ -190,6 +190,11 @@ pub struct RinchApp {
     pub(crate) drag_over_surface: Option<(usize, usize)>,
     /// Last theme CSS loaded into the document (for change detection).
     pub(crate) last_theme_css: Option<String>,
+    /// Per-document theme CSS owned by this app (issue #138). `None` = follow
+    /// the thread-global theme slot (the single-root shell/web/android paths).
+    /// Embed contexts set this so creating another context on the same thread
+    /// never restyles this one.
+    pub(crate) owned_theme_css: Option<String>,
     /// Timestamp of last mouse click (for multi-click detection).
     pub(crate) last_click_time: Instant,
     /// Position of last mouse click.
@@ -284,6 +289,7 @@ impl RinchApp {
             active_dnd: None,
             drag_over_surface: None,
             last_theme_css: None,
+            owned_theme_css: None,
             last_click_time: Instant::now(),
             last_click_pos: (0.0, 0.0),
             click_count: 0,
@@ -410,6 +416,17 @@ impl RinchApp {
 
     // ── Component mounting ───────────────────────────────────────────────
 
+    /// The theme CSS this document should be using: the per-document owned CSS
+    /// when set (embed contexts, issue #138), otherwise the thread-global slot
+    /// (the single-root shell/web/android default).
+    #[cfg(feature = "theme")]
+    pub(crate) fn effective_theme_css(&self) -> String {
+        match &self.owned_theme_css {
+            Some(css) => css.clone(),
+            None => rinch_core::get_current_theme_css().unwrap_or_default(),
+        }
+    }
+
     /// Mount the component, building the initial DOM.
     ///
     /// Called once after the window and renderer are ready.
@@ -437,7 +454,7 @@ impl RinchApp {
             let mut d = doc.borrow_mut();
             #[cfg(feature = "theme")]
             {
-                let theme_css = rinch_core::get_current_theme_css().unwrap_or_default();
+                let theme_css = self.effective_theme_css();
                 if !theme_css.is_empty() {
                     // Must go through the theme slot (not load_css) so a later
                     // theme regeneration replaces this sheet instead of stacking
@@ -452,7 +469,7 @@ impl RinchApp {
         // Remember the initial theme CSS so we can detect changes later
         #[cfg(feature = "theme")]
         {
-            self.last_theme_css = Some(rinch_core::get_current_theme_css().unwrap_or_default());
+            self.last_theme_css = Some(self.effective_theme_css());
         }
 
         // An embed context namespaces its stores/contexts under the document's
@@ -558,7 +575,7 @@ impl RinchApp {
         let mut theme_changed = false;
         #[cfg(feature = "theme")]
         {
-            let current_theme = rinch_core::get_current_theme_css().unwrap_or_default();
+            let current_theme = self.effective_theme_css();
             theme_changed = self.last_theme_css.as_deref() != Some(current_theme.as_str());
 
             if theme_changed {

@@ -9,6 +9,8 @@
 //! Requires the `embed` (or `gpu`) feature. Since #140 the painters are
 //! additive, so `desktop` + `embed` co-compiles and default features can stay on:
 //!     cargo test -p rinch --features embed --test multi_context
+//! The per-document theme tests (#138) additionally need the `theme` feature:
+//!     cargo test -p rinch --features embed,theme --test multi_context
 //!
 //! ## Why every test body runs on one shared worker thread
 //!
@@ -438,6 +440,142 @@ fn bounds_registry_crosstalk_across_documents() {
             bounds.get().width,
             100.0,
             "A's bounds signal keeps reporting A's document geometry"
+        );
+
+        drop(a);
+        drop(b);
+    });
+}
+
+// ── 5. per-document theme CSS (#138) ─────────────────────────────────────────
+
+/// Config with an explicit light/dark theme (requires the `theme` feature).
+#[cfg(feature = "theme")]
+fn themed_cfg(dark_mode: bool) -> RinchContextConfig {
+    RinchContextConfig {
+        theme: Some(rinch::core::element::ThemeProviderProps {
+            dark_mode,
+            ..Default::default()
+        }),
+        ..cfg()
+    }
+}
+
+/// The computed background color (Debug-formatted) of a context's `.probe`
+/// element. The probe paints `var(--rinch-color-body)`, which the light and
+/// dark themes resolve to different colors — an observable for which theme CSS
+/// the document actually holds.
+#[cfg(feature = "theme")]
+fn probe_bg(ctx: &RinchContext) -> String {
+    let doc = ctx.app().doc().expect("context has a document").clone();
+    let d = doc.borrow();
+    let id = *rinch_dom::testing::query_selector(&d.tree, ".probe")
+        .first()
+        .expect("probe element exists");
+    format!(
+        "{:?}",
+        d.tree
+            .get(id)
+            .expect("probe node")
+            .computed_style
+            .background_color()
+    )
+}
+
+/// FIXED (#138): each embed context owns its theme CSS per document. Creating
+/// context B (light) no longer overwrites the thread-global theme slot that A
+/// (dark) was compared against, so A's next resolve keeps A's own theme
+/// instead of silently adopting B's.
+#[cfg(feature = "theme")]
+#[test]
+fn creating_a_context_does_not_restyle_another() {
+    on_ui_thread(|| {
+        let sig_a = Signal::new(0i32);
+        let mut a = RinchContext::new(themed_cfg(true), move |__scope: &mut RenderScope| {
+            rsx! {
+                div { class: "probe", style: "background-color: var(--rinch-color-body);",
+                    p { {move || format!("A:{}", sig_a.get())} }
+                }
+            }
+        });
+        a.update(&[]);
+        let dark_bg = probe_bg(&a);
+
+        let mut b = RinchContext::new(themed_cfg(false), |__scope: &mut RenderScope| {
+            rsx! {
+                div { class: "probe", style: "background-color: var(--rinch-color-body);",
+                    "B"
+                }
+            }
+        });
+        b.update(&[]);
+        let light_bg = probe_bg(&b);
+        assert_ne!(
+            dark_bg, light_bg,
+            "sanity: light and dark themes must resolve --rinch-color-body differently"
+        );
+
+        // Drive A through a real update AFTER B was created — on the old
+        // thread-slot path this is where A compared the slot (holding B's
+        // light CSS) against its cached dark CSS and adopted B's theme.
+        sig_a.set(1);
+        a.update(&[]);
+        assert!(
+            doc_text(&a).contains("A:1"),
+            "A still renders: {}",
+            doc_text(&a)
+        );
+        assert_eq!(
+            probe_bg(&a),
+            dark_bg,
+            "creating context B must not restyle A's document (#138)"
+        );
+        assert_eq!(probe_bg(&b), light_bg, "B keeps its own light theme");
+
+        drop(a);
+        drop(b);
+    });
+}
+
+/// `RinchContext::set_theme` restyles only its own document (#138): A flips to
+/// dark on its next update; B — created with the same light theme — is
+/// untouched.
+#[cfg(feature = "theme")]
+#[test]
+fn set_theme_restyles_only_its_own_context() {
+    on_ui_thread(|| {
+        let mut a = RinchContext::new(themed_cfg(false), |__scope: &mut RenderScope| {
+            rsx! {
+                div { class: "probe", style: "background-color: var(--rinch-color-body);",
+                    "A"
+                }
+            }
+        });
+        let mut b = RinchContext::new(themed_cfg(false), |__scope: &mut RenderScope| {
+            rsx! {
+                div { class: "probe", style: "background-color: var(--rinch-color-body);",
+                    "B"
+                }
+            }
+        });
+        a.update(&[]);
+        b.update(&[]);
+        let light_bg = probe_bg(&a);
+        assert_eq!(probe_bg(&b), light_bg, "both start on the light theme");
+
+        a.set_theme(&rinch::core::element::ThemeProviderProps {
+            dark_mode: true,
+            ..Default::default()
+        });
+        a.update(&[]);
+        b.update(&[]);
+
+        let dark_bg = probe_bg(&a);
+        assert_ne!(dark_bg, light_bg, "set_theme must restyle A's document");
+        assert_eq!(
+            probe_bg(&b),
+            light_bg,
+            "set_theme on A must not touch B (#138)"
         );
 
         drop(a);
