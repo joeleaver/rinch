@@ -54,14 +54,34 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
-      # The `serde` feature gates the durable DocNode wire format, and
-      # `cargo test --workspace` never enables it — so that surface went unrun
-      # until #123, where a lossless-round-trip test had been failing on main
-      # unnoticed. Same for `collaboration`, which gates the CRDT adapter wiring.
+      # Feature-gated tests. A test file whose `cfg` is false is not "skipped" —
+      # it compiles to an EMPTY binary that still prints `Running tests/x.rs` and
+      # then `running 0 tests`. Only the COUNT reveals it; grepping for the
+      # `Running` line will report a dead file as alive.
+      #
+      # `cargo test --workspace` unifies features across members, so a gated test
+      # can be alive purely because some unrelated example turns its feature on:
+      #   * rinch/tests/multi_context.rs (cfg(any(gpu, embed)) — the #134/#136/#138
+      #     pins) runs only because examples/game-embed and examples/gpu-device-config
+      #     enable `rinch/gpu`.
+      #   * event_dispatch.rs::paste_image_tests (cfg(all(test, desktop, clipboard)))
+      #     runs only because four examples enable `rinch/clipboard`.
+      # Retarget or drop those examples and the pins go dead silently, so name the
+      # combinations here rather than inheriting them by luck.
+      #
+      # One set was genuinely dead: rinch-editor-core/tests/serialize.rs is
+      # cfg(all(serde, markdown)) and NOTHING in the workspace enables `markdown`,
+      # so its 13 tests — the round-trip surface this step was added for in #123 —
+      # ran nowhere at all. `--features serde` alone was never enough.
+      #
+      # `--all-features` would cover the whole class, but it does not build: it
+      # pulls a transitive `ashpd` 0.11.1 that fails to compile. Hence explicit sets.
+      # When adding a feature-gated test, add its combination here.
       - name: Run feature-gated tests
         run: |
-          cargo test -p rinch-editor-core --features serde
+          cargo test -p rinch-editor-core --features serde,markdown
           cargo test -p rinch-editor-view --features collaboration
+          cargo test -p rinch --features embed,theme,clipboard
 
   clippy:
     runs-on: ubuntu-latest
