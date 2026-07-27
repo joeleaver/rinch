@@ -1436,6 +1436,8 @@ Without the closure, expressions like `{count.get()}` are captured once at initi
 3. **Signal Changes**: Effects run and surgically update their target nodes
 4. **Batched Updates**: Multiple updates are collected for efficient re-layout
 
+**Execution order is a contract** (#154): effects observing the same signal run in **registration order** (the order their `Effect`/`Memo` was created), and the pending queue drains FIFO — so an effect registered *after* an `rsx!` tree sees the post-patch DOM in the same flush ("run me last"), and a signal written from inside an effect queues its observers *behind* the current flush rather than preempting it. Enforced by `BTreeSet<ObserverId>` subscriber sets (ids are monotonic and never reused, so ascending id *is* registration order) plus `pop_front` in `flush_effects`. Don't swap either for a `HashSet`/LIFO. See `docs/src/guide/reactivity.md#execution-order`.
+
 ### Native Control Flow (if / for / match)
 
 The `rsx!` macro supports native Rust control flow. All control flow is **always reactive** — conditions, iterators, and scrutinees are automatically wrapped in closures and tracked by Effects.

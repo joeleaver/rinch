@@ -154,12 +154,18 @@ pub(super) fn run_effect(id: ObserverId) {
     }
 }
 
-/// Flush all pending effects
+/// Flush all pending effects, in the order they were queued.
+///
+/// FIFO (`pop_front`), so the registration-order guarantee established when
+/// enqueuing survives the flush. Draining from the back would run same-signal
+/// effects in *reverse* registration order, and would run effects queued by a
+/// running effect ahead of ones queued before it. See the "Execution order"
+/// section of the [`reactive`](crate::reactive) module docs.
 pub(super) fn flush_effects() {
     loop {
         let effect_id = RUNTIME.with(|rt| {
             let mut rt = rt.borrow_mut();
-            let id = rt.pending_effects.pop();
+            let id = rt.pending_effects.pop_front();
             if id.is_some() {
                 // Remove from set when dequeuing
                 if let Some(ref observer) = id {
