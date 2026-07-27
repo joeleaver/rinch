@@ -6,8 +6,14 @@ description = "Cross-platform clipboard abstraction for rinch (native + WASM)"
 
 [dependencies]
 # Native clipboard (not available on WASM)
+# wayland-data-control: without it arboard talks X11-only on Linux, and its X11
+# backend serves its own cached copy while it owns the selection — a compositor
+# that doesn't sync Wayland→X11 never revokes that ownership, so paste goes
+# stale (#148). arboard target-gates wl-clipboard-rs itself and only prefers
+# the Wayland backend at runtime when WAYLAND_DISPLAY is set (X11 fallback
+# otherwise), so enabling it unconditionally here is safe on all platforms.
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
-arboard = "3"
+arboard = { workspace = true, features = ["wayland-data-control"] }
 
 # Android clipboard via rinch-android JNI bridge
 [target.'cfg(target_os = "android")'.dependencies]
