@@ -700,9 +700,14 @@ impl RinchApp {
     }
 
     /// Refresh element-bounds signals against the freshly-computed layout.
-    /// Subscribers (e.g. timeline-style widgets reading a strip's measured
-    /// width) re-run inside this borrow, so the document RefCell must be
-    /// borrowed read-only just for the lookup.
+    ///
+    /// Measures every registered node **while holding the document borrow**,
+    /// then releases it before publishing. Subscribers (e.g. timeline-style
+    /// widgets reading a strip's measured width) re-run synchronously inside
+    /// `update_bounds_signals`, and a reactive `style:` closure — the idiom
+    /// [`NodeHandle::bounds_signal`]'s own docs recommend — takes
+    /// `doc.borrow_mut()` to patch the attribute. Publishing under the read
+    /// borrow made that a `BorrowMutError` (#141).
     ///
     /// Called from `resolve_and_repaint` and from `resize_layout` — the resize
     /// path drains the dirty set, so the subsequent paint skips
@@ -710,27 +715,45 @@ impl RinchApp {
     /// (#145).
     fn refresh_bounds_signals(&self) {
         let Some(doc) = &self.doc else { return };
-        let d = doc.borrow();
-        rinch_core::reactive::update_bounds_signals(d.doc_key(), |node_id| {
-            let nid = node_id as usize;
-            let n = d.tree.nodes.get(nid)?;
-            // Walk to root accumulating parent-relative offsets — same
-            // convention as `dispatch_oncontextmenu` / `click_handling`.
-            let mut ax = n.layout.x;
-            let mut ay = n.layout.y;
-            let mut pid = n.parent;
-            while let Some(p) = pid {
-                if let Some(pn) = d.tree.nodes.get(p) {
-                    ax += pn.layout.x;
-                    ay += pn.layout.y;
-                    ax -= pn.scroll_offset.0 as f32;
-                    ay -= pn.scroll_offset.1 as f32;
-                    pid = pn.parent;
-                } else {
-                    break;
-                }
-            }
-            Some((ax, ay, n.layout.width, n.layout.height))
+
+        // Phase 1: measure under the read borrow.
+        let (doc_key, measured) = {
+            let d = doc.borrow();
+            let doc_key = d.doc_key();
+            let measured: Vec<(u64, (f32, f32, f32, f32))> =
+                rinch_core::reactive::registered_bounds_nodes(doc_key)
+                    .into_iter()
+                    .filter_map(|node_id| {
+                        let n = d.tree.nodes.get(node_id as usize)?;
+                        // Walk to root accumulating parent-relative offsets — same
+                        // convention as `dispatch_oncontextmenu` / `click_handling`.
+                        let mut ax = n.layout.x;
+                        let mut ay = n.layout.y;
+                        let mut pid = n.parent;
+                        while let Some(p) = pid {
+                            if let Some(pn) = d.tree.nodes.get(p) {
+                                ax += pn.layout.x;
+                                ay += pn.layout.y;
+                                ax -= pn.scroll_offset.0 as f32;
+                                ay -= pn.scroll_offset.1 as f32;
+                                pid = pn.parent;
+                            } else {
+                                break;
+                            }
+                        }
+                        Some((node_id, (ax, ay, n.layout.width, n.layout.height)))
+                    })
+                    .collect();
+            (doc_key, measured)
+        };
+
+        // Phase 2: publish with no document borrow held, so a woken effect is
+        // free to mutate the DOM.
+        rinch_core::reactive::update_bounds_signals(doc_key, |node_id| {
+            measured
+                .iter()
+                .find(|(id, _)| *id == node_id)
+                .map(|(_, rect)| *rect)
         });
     }
 

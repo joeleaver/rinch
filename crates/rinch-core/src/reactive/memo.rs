@@ -111,9 +111,11 @@ impl<T: Clone + 'static> Memo<T> {
             }));
         });
 
-        // Store in MEMO_STORE and return Copy handle
+        // Store in MEMO_STORE and return Copy handle. The marker's ObserverId
+        // rides along so freeing the slot can also clear EFFECTS — the marker
+        // holds the second strong Rc to this same MemoInner.
         let (store_id, generation) =
-            MEMO_STORE.with(|store| store.borrow_mut().alloc(inner as Rc<dyn Any>));
+            MEMO_STORE.with(|store| store.borrow_mut().alloc(inner as Rc<dyn Any>, id));
 
         Self {
             id: store_id,
@@ -123,14 +125,31 @@ impl<T: Clone + 'static> Memo<T> {
     }
 
     /// Get the current value, recomputing if necessary.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the memo has been freed. Use [`try_get`](Memo::try_get) when
+    /// the memo may legitimately be gone.
     pub fn get(&self) -> T {
+        match self.try_get() {
+            Some(value) => value,
+            None => panic!(
+                "Memo::get() on a freed memo. The scope that owned this memo was \
+                 disposed (its component was removed from the tree) while this \
+                 handle was still reachable. Guard the read with `memo.is_alive()`, \
+                 or use `memo.try_get()` to get an `Option` instead of panicking."
+            ),
+        }
+    }
+
+    /// Get the current value, or `None` if the memo has been freed.
+    ///
+    /// The non-panicking counterpart to [`get`](Memo::get). Recomputes and
+    /// subscribes exactly like `get` when the memo is live.
+    pub fn try_get(&self) -> Option<T> {
         // Clone Rc out of store, releasing the borrow immediately
-        let inner_any = MEMO_STORE.with(|store| {
-            store
-                .borrow()
-                .get_inner(self.id, self.generation)
-                .expect("Memo::get() on freed memo")
-        });
+        let inner_any =
+            MEMO_STORE.with(|store| store.borrow().get_inner(self.id, self.generation))?;
 
         let inner = inner_any
             .downcast::<MemoInner<T>>()
@@ -161,11 +180,36 @@ impl<T: Clone + 'static> Memo<T> {
             inner.dirty.set(false);
         }
 
-        inner
-            .value
-            .borrow()
-            .clone()
-            .expect("memo should have value after get")
+        Some(
+            inner
+                .value
+                .borrow()
+                .clone()
+                .expect("memo should have value after get"),
+        )
+    }
+}
+
+impl<T: 'static> Memo<T> {
+    /// Whether this memo's backing slot is still live.
+    ///
+    /// A memo is freed when the scope that owns it is disposed, after which
+    /// [`get`](Memo::get) panics. Does **not** subscribe the current observer.
+    ///
+    /// Nothing frees memos yet — this returns `true` for every memo that was
+    /// ever created. It becomes meaningful when scope-driven disposal lands
+    /// (issue #141).
+    pub fn is_alive(&self) -> bool {
+        MEMO_STORE.with(|store| store.borrow().get_inner(self.id, self.generation).is_some())
+    }
+}
+
+#[cfg(test)]
+impl<T: 'static> Memo<T> {
+    /// Free this memo — slot and marker effect — standing in for the scope
+    /// disposal that #141's dispose fixpoint (PR4) will perform. Test-only.
+    pub(crate) fn free_for_tests(&self) {
+        super::free_memo(self.id, self.generation);
     }
 }
 
@@ -182,5 +226,81 @@ impl<T: fmt::Debug + Clone + 'static> fmt::Debug for Memo<T> {
                 .finish();
         }
         f.debug_struct("Memo").field("error", &"freed").finish()
+    }
+}
+
+#[cfg(test)]
+mod liveness_tests {
+    use super::*;
+    use crate::reactive::{Effect, Signal};
+    use std::cell::Cell;
+
+    #[test]
+    fn is_alive_flips_when_the_memo_is_freed() {
+        let n = Signal::new(2);
+        let doubled = Memo::new(move || n.get() * 2);
+
+        assert!(doubled.is_alive());
+        assert_eq!(doubled.try_get(), Some(4));
+
+        doubled.free_for_tests();
+        assert!(!doubled.is_alive());
+        assert_eq!(doubled.try_get(), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "Memo::get() on a freed memo")]
+    fn get_panics_after_free() {
+        let n = Signal::new(1);
+        let m = Memo::new(move || n.get());
+        m.free_for_tests();
+        let _ = m.get();
+    }
+
+    #[test]
+    fn freeing_a_memo_releases_its_computation_closure() {
+        // `Memo::new` puts TWO strong Rc<MemoInner> into two registries — one in
+        // MEMO_STORE, one captured by the dirty-marker closure in EFFECTS.
+        // Dropping only the store slot frees nothing.
+        let captured = Rc::new(7u32);
+        let c = Rc::clone(&captured);
+        let n = Signal::new(1);
+        let m = Memo::new(move || n.get() + *c);
+        let _ = m.get();
+        assert_eq!(Rc::strong_count(&captured), 2, "held by the memo closure");
+
+        m.free_for_tests();
+
+        assert_eq!(
+            Rc::strong_count(&captured),
+            1,
+            "the marker effect must be cleared too, or the memo leaks"
+        );
+    }
+
+    #[test]
+    fn a_dependent_of_a_freed_memo_is_not_re_queued_by_its_sources() {
+        // If the marker survives the free it stays subscribed to `n`, so writing
+        // `n` re-queues the memo's dependents — whose `get()` then panics on the
+        // now-empty slot.
+        let n = Signal::new(1);
+        let m = Memo::new(move || n.get() * 2);
+        let runs = Rc::new(Cell::new(0));
+
+        let r = Rc::clone(&runs);
+        let _dependent = Effect::new(move || {
+            let _ = m.get();
+            r.set(r.get() + 1);
+        });
+        assert_eq!(runs.get(), 1);
+
+        m.free_for_tests();
+        n.set(5); // must not resurrect the dependent, and must not panic
+
+        assert_eq!(
+            runs.get(),
+            1,
+            "a freed memo's sources must no longer drive its dependents"
+        );
     }
 }

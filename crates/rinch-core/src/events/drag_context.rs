@@ -53,20 +53,31 @@ impl<T: Clone + 'static> DragContext<T> {
     }
 
     /// Get a clone of the data being dragged, if any.
+    ///
+    /// Returns `None` both when no drag is in progress and when the context's
+    /// backing signal has been freed — a `DragContext` is `Copy` and routinely
+    /// captured by drop-target handlers that outlive the source component, so a
+    /// query must never panic. (Reads go through `try_get` for this reason;
+    /// see issue #141.)
     pub fn get(&self) -> Option<T> {
-        self.data.get()
+        self.data.try_get().flatten()
     }
 
     /// Take the data (sets internal state to `None`). Call from `ondrop`.
+    ///
+    /// Clears only when there was something to clear, so a `take` on an idle
+    /// context no longer notifies subscribers with an unchanged `None`.
     pub fn take(&self) -> Option<T> {
-        let d = self.data.get();
-        self.data.set(None);
+        let d = self.get();
+        if d.is_some() {
+            self.data.set(None);
+        }
         d
     }
 
     /// Check if a drag is in progress (data is set).
     pub fn is_active(&self) -> bool {
-        self.data.get().is_some()
+        self.get().is_some()
     }
 
     /// Clear the drag data. Call from `ondragend` if needed.
@@ -133,4 +144,43 @@ pub fn is_drag_ghost_visible() -> bool {
 /// when a drag ends.
 pub fn reset_drag_ghost_visibility() {
     DRAG_GHOST_VISIBLE.with(|v| v.set(true));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct Item(u32);
+
+    #[test]
+    fn take_returns_the_data_and_clears() {
+        let drag = DragContext::<Item>::new();
+        assert!(!drag.is_active());
+
+        drag.set(Item(1));
+        assert!(drag.is_active());
+        assert_eq!(drag.get(), Some(Item(1)));
+
+        assert_eq!(drag.take(), Some(Item(1)));
+        assert!(!drag.is_active());
+        assert_eq!(drag.take(), None);
+    }
+
+    #[test]
+    fn queries_are_safe_after_the_backing_signal_is_freed() {
+        // A DragContext is Copy and is routinely captured by drop-target
+        // handlers that outlive the source component. Once #141's disposal
+        // lands, that source's scope can free the signal mid-drag — every query
+        // must degrade to "no drag", not panic (issue #141, SD1).
+        let drag = DragContext::<Item>::new();
+        drag.set(Item(9));
+
+        drag.data.free_for_tests();
+
+        assert_eq!(drag.get(), None);
+        assert_eq!(drag.take(), None);
+        assert!(!drag.is_active());
+        drag.clear(); // lenient write — must not panic either
+    }
 }
