@@ -29,7 +29,7 @@ use painter::{BlendMode, Painter};
 use crate::computed_style::{
     BackgroundValue, DisplayValue, OverflowValue, PositionValue, VisibilityValue,
 };
-use crate::node::{NodeKind, NodeTree, RawNodeId};
+use crate::node::{Node, NodeKind, NodeTree, RawNodeId};
 
 /// Compute the dirty region (union of all paint-dirty node rects) in physical pixels.
 ///
@@ -56,13 +56,16 @@ pub fn compute_dirty_region(
             continue;
         }
 
-        // Current position
-        let (ax, ay) = compute_absolute_position(tree, node_id, scale);
+        // Current position. CSS transforms displace where a node renders, so
+        // use the transform-aware absolute rect — the region must cover the
+        // node's visual position, not its untransformed layout rect (#143).
+        let (ax, ay, transform) = compute_absolute_position_and_transform(tree, node_id, scale);
         if let Some(node) = tree.get(node_id) {
             let w = node.layout.width as f64 * scale;
             let h = node.layout.height as f64 * scale;
             if w > 0.0 && h > 0.0 {
-                let r = Rect::new(ax - margin, ay - margin, ax + w + margin, ay + h + margin);
+                let r = transform.transform_rect_bbox(Rect::new(ax, ay, ax + w, ay + h));
+                let r = Rect::new(r.x0 - margin, r.y0 - margin, r.x1 + margin, r.y1 + margin);
                 region = Some(region.map_or(r, |prev| prev.union(r)));
             }
 
@@ -71,18 +74,16 @@ pub fn compute_dirty_region(
             let ph = node.prev_layout.height as f64 * scale;
             if (pw > 0.0 && ph > 0.0) && node.prev_layout != node.layout {
                 // Approximate old absolute position: use current abs pos adjusted
-                // by the difference in layout offsets. Not perfectly accurate for
-                // deep ancestor layout changes, but covers the common case.
+                // by the difference in layout offsets, under the current transform
+                // chain. Not perfectly accurate for deep ancestor layout changes
+                // (or a simultaneous transform change), but covers the common case.
                 let dx = (node.layout.x - node.prev_layout.x) as f64 * scale;
                 let dy = (node.layout.y - node.prev_layout.y) as f64 * scale;
                 let old_x = ax - dx;
                 let old_y = ay - dy;
-                let r = Rect::new(
-                    old_x - margin,
-                    old_y - margin,
-                    old_x + pw + margin,
-                    old_y + ph + margin,
-                );
+                let r =
+                    transform.transform_rect_bbox(Rect::new(old_x, old_y, old_x + pw, old_y + ph));
+                let r = Rect::new(r.x0 - margin, r.y0 - margin, r.x1 + margin, r.y1 + margin);
                 region = Some(region.map_or(r, |prev| prev.union(r)));
             }
         }
@@ -211,6 +212,100 @@ pub fn compute_absolute_position(tree: &NodeTree, node_id: RawNodeId, scale: f64
         }
     }
     (x, y)
+}
+
+/// Compose a node's CSS transform onto `parent_transform`, applied about the
+/// node's transform-origin. Percentage-based translate values are resolved
+/// against the node's layout box (so they resolve to 0 on a collapsed axis).
+/// Returns `parent_transform` unchanged for identity transforms.
+///
+/// `x`/`y` are the node's absolute position in physical pixels. This is the
+/// single source of truth for transform composition — the paint arms, the
+/// dirty-region cull test, and dirty-region tracking must all agree on it
+/// (#142, #143).
+fn compose_node_transform(
+    node: &Node,
+    x: f64,
+    y: f64,
+    scale: f64,
+    parent_transform: Affine,
+) -> Affine {
+    let tf = &node.computed_style.transform;
+    if tf.is_identity {
+        return parent_transform;
+    }
+    let mut m = tf.matrix;
+    // Resolve percentage-based translate against element dimensions
+    if tf.translate_x_pct.abs() > 1e-9 || tf.translate_y_pct.abs() > 1e-9 {
+        m[4] += tf.translate_x_pct * node.layout.width as f64;
+        m[5] += tf.translate_y_pct * node.layout.height as f64;
+    }
+    let cs = &node.computed_style;
+    let ox = cs.transform_origin_x.resolve(node.layout.width);
+    let oy = cs.transform_origin_y.resolve(node.layout.height);
+    let cx = x + ox as f64 * scale;
+    let cy = y + oy as f64 * scale;
+    parent_transform * Affine::translate((cx, cy)) * Affine::new(m) * Affine::translate((-cx, -cy))
+}
+
+/// Compute a node's absolute position in physical pixels together with the
+/// composed CSS transform affecting it (its own and its ancestors'),
+/// mirroring paint-side composition (`compose_node_transform`) so that
+/// dirty-region tracking agrees with where paint actually renders (#143).
+///
+/// The common untransformed case takes an allocation-free fast path and
+/// returns `Affine::IDENTITY`.
+fn compute_absolute_position_and_transform(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+) -> (f64, f64, Affine) {
+    // First pass: check for transforms on the chain (cheap pointer walk),
+    // stopping at position:fixed like compute_absolute_position — fixed
+    // elements are viewport-relative and hoisted to body level at paint time.
+    let mut any_transform = false;
+    let mut current = Some(node_id);
+    while let Some(id) = current {
+        let Some(node) = tree.get(id) else { break };
+        any_transform |= !node.computed_style.transform.is_identity;
+        if node.computed_style.position == PositionValue::Fixed {
+            break;
+        }
+        current = node.parent;
+    }
+    if !any_transform {
+        let (x, y) = compute_absolute_position(tree, node_id, scale);
+        return (x, y, Affine::IDENTITY);
+    }
+
+    // Transformed chain: collect node → root, then walk root → node
+    // accumulating offsets and composing affines top-down — the same order
+    // paint_node applies them.
+    let mut chain: Vec<RawNodeId> = Vec::new();
+    let mut current = Some(node_id);
+    while let Some(id) = current {
+        let Some(node) = tree.get(id) else { break };
+        chain.push(id);
+        if node.computed_style.position == PositionValue::Fixed {
+            break;
+        }
+        current = node.parent;
+    }
+
+    let mut off_x = 0.0_f64;
+    let mut off_y = 0.0_f64;
+    let mut transform = Affine::IDENTITY;
+    let (mut x, mut y) = (0.0_f64, 0.0_f64);
+    for &id in chain.iter().rev() {
+        let Some(node) = tree.get(id) else { break };
+        x = off_x + node.layout.x as f64 * scale;
+        y = off_y + node.layout.y as f64 * scale;
+        transform = compose_node_transform(node, x, y, scale, transform);
+        // Children resolve against this node's scroll-adjusted origin.
+        off_x = x - node.scroll_offset.0 * scale;
+        off_y = y - node.scroll_offset.1 * scale;
+    }
+    (x, y, transform)
 }
 
 /// Find viewport descendant rects (absolute pixel positions) for hole-punching.
@@ -513,13 +608,11 @@ fn paint_node(
     // for backgrounds/borders, and attempting to paint them produces degenerate
     // zero-area rects that trigger warnings in renderers like tiny-skia.
     if layout.width == 0.0 || layout.height == 0.0 {
-        if node.computed_style.display == DisplayValue::Contents
-            || (layout.width == 0.0) != (layout.height == 0.0)
-        {
-            // display:contents has no box, so it never forms a SC itself.
-            // Elements with one zero dimension (e.g. collapsed height) may still
-            // have overflowing children that need painting (e.g. overflow:visible
-            // with absolutely-positioned children).
+        if node.computed_style.display == DisplayValue::Contents {
+            // display:contents has no box, so it never forms a SC itself and
+            // has no transform box — its children are laid out in the
+            // grandparent's coordinate space, so recurse with the parent's
+            // offsets and transform unchanged.
             //
             // Use full stacking-context-aware painting so that SC children
             // (e.g. z-indexed absolute children) are properly collected and
@@ -536,6 +629,46 @@ fn paint_node(
                 parent_transform,
                 false,
             );
+        } else if (layout.width == 0.0) != (layout.height == 0.0) {
+            // A real box collapsed to zero in one dimension (e.g. an
+            // auto-height container with only absolutely-positioned children)
+            // may still have overflowing children that need painting. Unlike
+            // display:contents it keeps its own origin, transform, and
+            // opacity — only the degenerate background/border fill is
+            // skipped (#142).
+            let x = offset_x + layout.x as f64 * scale;
+            let y = offset_y + layout.y as f64 * scale;
+            let node_transform = compose_node_transform(node, x, y, scale, parent_transform);
+
+            let opacity = node.computed_style.opacity;
+            let has_opacity = opacity < 1.0;
+            if has_opacity {
+                // The element's own rect is zero-area and push_layer clips to
+                // its bounds shape, which would blank the subtree — use a
+                // conservative large rect instead (tiny-skia ignores layer
+                // bounds; Vello merely clips to them).
+                let bounds = Rect::new(-1e7, -1e7, 1e7, 1e7);
+                painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds.into());
+            }
+
+            let scroll_x = node.scroll_offset.0 * scale;
+            let scroll_y = node.scroll_offset.1 * scale;
+            paint_children_with_stacking(
+                tree,
+                node_id,
+                painter,
+                scale,
+                x - scroll_x,
+                y - scroll_y,
+                font_cx,
+                layout_cx,
+                node_transform,
+                false,
+            );
+
+            if has_opacity {
+                painter.pop_layer();
+            }
         }
         return;
     }
@@ -575,12 +708,26 @@ fn paint_node(
         (x, y)
     };
 
+    // Compose this node's CSS transform (about its transform-origin) onto
+    // the parent transform. Shared by every paint arm below and by the cull
+    // test — a transformed node renders at its visual position, not its
+    // layout rect (#143).
+    let node_transform = compose_node_transform(node, x, y, scale, parent_transform);
+
     // Dirty region optimization: skip drawing for nodes entirely outside
     // the dirty region. If overflow is clipped or node is a leaf, skip the
     // entire subtree. Otherwise skip only this node's drawing but still
     // recurse into children (they may have absolute positioning inside the
     // dirty region).
-    let node_outside_dirty = !intersects_dirty_region(x, y, w, h);
+    //
+    // Cull against the transformed bounding box; untransformed nodes keep
+    // the plain AABB test (#143).
+    let node_outside_dirty = if node_transform == Affine::IDENTITY {
+        !intersects_dirty_region(x, y, w, h)
+    } else {
+        let bbox = node_transform.transform_rect_bbox(Rect::new(x, y, x + w, y + h));
+        !intersects_dirty_region(bbox.x0, bbox.y0, bbox.width(), bbox.height())
+    };
     if node_outside_dirty {
         let overflow_clips = matches!(
             node.computed_style.overflow_x,
@@ -602,7 +749,7 @@ fn paint_node(
             y,
             font_cx,
             layout_cx,
-            parent_transform,
+            node_transform,
             false,
         );
         return;
@@ -610,43 +757,12 @@ fn paint_node(
 
     match &node.kind {
         NodeKind::Element(el) if el.tag == "svg" => {
-            // Compute CSS transform for the SVG element (same as img/generic elements)
-            let node_transform = if !node.computed_style.transform.is_identity {
-                let m = &node.computed_style.transform.matrix;
-                let cs = &node.computed_style;
-                let ox = cs.transform_origin_x.resolve(node.layout.width);
-                let oy = cs.transform_origin_y.resolve(node.layout.height);
-                let cx = x + ox as f64 * scale;
-                let cy = y + oy as f64 * scale;
-                parent_transform
-                    * Affine::translate((cx, cy))
-                    * Affine::new(*m)
-                    * Affine::translate((-cx, -cy))
-            } else {
-                parent_transform
-            };
             paint_svg(tree, node, painter, scale, x, y, w, h, node_transform);
         }
         NodeKind::Element(el) if el.tag == "img" => {
             let rect = Rect::new(x, y, x + w, y + h);
 
             let fit = node.computed_style.object_fit;
-
-            // Compute transform (same as generic element)
-            let node_transform = if !node.computed_style.transform.is_identity {
-                let m = &node.computed_style.transform.matrix;
-                let cs = &node.computed_style;
-                let ox = cs.transform_origin_x.resolve(node.layout.width);
-                let oy = cs.transform_origin_y.resolve(node.layout.height);
-                let cx = x + ox as f64 * scale;
-                let cy = y + oy as f64 * scale;
-                parent_transform
-                    * Affine::translate((cx, cy))
-                    * Affine::new(*m)
-                    * Affine::translate((-cx, -cy))
-            } else {
-                parent_transform
-            };
 
             // Opacity
             let opacity = node.computed_style.opacity;
@@ -694,24 +810,6 @@ fn paint_node(
                                 if pixels.width > 0 && pixels.height > 0 && !pixels.data.is_empty()
                                 {
                                     let rect = Rect::new(x, y, x + w, y + h);
-                                    let node_transform =
-                                        if !node.computed_style.transform.is_identity {
-                                            let m = &node.computed_style.transform.matrix;
-                                            let cs = &node.computed_style;
-                                            let ox =
-                                                cs.transform_origin_x.resolve(node.layout.width);
-                                            let oy =
-                                                cs.transform_origin_y.resolve(node.layout.height);
-                                            let cx = x + ox as f64 * scale;
-                                            let cy = y + oy as f64 * scale;
-                                            parent_transform
-                                                * Affine::translate((cx, cy))
-                                                * Affine::new(*m)
-                                                * Affine::translate((-cx, -cy))
-                                        } else {
-                                            parent_transform
-                                        };
-
                                     let opacity = node.computed_style.opacity;
                                     if opacity < 1.0 {
                                         painter.push_layer(
@@ -774,20 +872,6 @@ fn paint_node(
                 node.computed_style.visibility,
                 VisibilityValue::Hidden | VisibilityValue::Collapse
             );
-            let node_transform = if !node.computed_style.transform.is_identity {
-                let m = &node.computed_style.transform.matrix;
-                let cs = &node.computed_style;
-                let ox = cs.transform_origin_x.resolve(node.layout.width);
-                let oy = cs.transform_origin_y.resolve(node.layout.height);
-                let cx = x + ox as f64 * scale;
-                let cy = y + oy as f64 * scale;
-                parent_transform
-                    * Affine::translate((cx, cy))
-                    * Affine::new(*m)
-                    * Affine::translate((-cx, -cy))
-            } else {
-                parent_transform
-            };
             let opacity = node.computed_style.opacity;
             if opacity < 1.0 {
                 painter.push_layer(BlendMode::Normal, opacity, node_transform, &rect.into());
@@ -828,28 +912,6 @@ fn paint_node(
                 // Uniform radius for code paths that don't support per-corner yet
                 let avg = (tl + tr + br + bl) / 4.0;
                 (avg, radii)
-            };
-
-            // Compute composed CSS transform for this node
-            let node_transform = if !node.computed_style.transform.is_identity {
-                let tf = &node.computed_style.transform;
-                let mut m = tf.matrix;
-                // Resolve percentage-based translate against element dimensions
-                if tf.translate_x_pct.abs() > 1e-9 || tf.translate_y_pct.abs() > 1e-9 {
-                    m[4] += tf.translate_x_pct * node.layout.width as f64;
-                    m[5] += tf.translate_y_pct * node.layout.height as f64;
-                }
-                let cs = &node.computed_style;
-                let ox = cs.transform_origin_x.resolve(node.layout.width);
-                let oy = cs.transform_origin_y.resolve(node.layout.height);
-                let cx = x + ox as f64 * scale;
-                let cy = y + oy as f64 * scale;
-                parent_transform
-                    * Affine::translate((cx, cy))
-                    * Affine::new(m)
-                    * Affine::translate((-cx, -cy))
-            } else {
-                parent_transform
             };
 
             // Get opacity from computed style and push layer if needed
