@@ -71,6 +71,12 @@ pub enum DebugCommandKind {
         ctrl: bool,
         #[serde(default)]
         alt: bool,
+        /// Modifier names OR'd into the flat booleans by the runtime via
+        /// [`fold_modifier_names`] — the natural array shape other automation
+        /// protocols use, and the only way to request `meta`. Unknown names
+        /// fail loud instead of silently altering the simulated input.
+        #[serde(default)]
+        modifiers: Vec<String>,
     },
     #[serde(rename = "ime")]
     Ime {
@@ -133,6 +139,30 @@ pub struct HandshakeResponse {
     pub pid: u32,
 }
 
+/// Fold a `key_press` `modifiers` name array into flat modifier booleans.
+///
+/// Recognized names (case-insensitive): `"ctrl"`/`"control"`, `"shift"`,
+/// `"alt"`/`"option"`, `"meta"`/`"cmd"`/`"super"`. Returns the offending name
+/// on failure so callers fail loud instead of silently dropping a modifier.
+pub fn fold_modifier_names(
+    names: &[String],
+    shift: &mut bool,
+    ctrl: &mut bool,
+    alt: &mut bool,
+    meta: &mut bool,
+) -> Result<(), String> {
+    for name in names {
+        match name.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => *ctrl = true,
+            "shift" => *shift = true,
+            "alt" | "option" => *alt = true,
+            "meta" | "cmd" | "super" => *meta = true,
+            _ => return Err(name.clone()),
+        }
+    }
+    Ok(())
+}
+
 /// Write a length-prefixed frame (4-byte big-endian length + JSON payload).
 pub fn write_frame(stream: &mut impl std::io::Write, data: &[u8]) -> std::io::Result<()> {
     let len = data.len() as u32;
@@ -156,4 +186,111 @@ pub fn read_frame(stream: &mut impl std::io::Read) -> std::io::Result<Vec<u8>> {
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf)?;
     Ok(buf)
+}
+
+#[cfg(test)]
+mod key_press_modifiers_tests {
+    use super::*;
+
+    #[test]
+    fn modifiers_array_deserializes_and_folds_to_ctrl_true() {
+        // The array shape guessed from CDP/WebDriver/Playwright must not be
+        // silently dropped (issue #152): it deserializes into the variant and
+        // folds onto the flat booleans.
+        let req: Request = serde_json::from_str(
+            r#"{"id":1,"method":"key_press","params":{"key":"End","shift":false,"ctrl":false,"modifiers":["ctrl"]}}"#,
+        )
+        .unwrap();
+        let DebugCommandKind::KeyPress {
+            key,
+            mut shift,
+            mut ctrl,
+            mut alt,
+            modifiers,
+        } = req.command
+        else {
+            panic!("expected KeyPress");
+        };
+        assert_eq!(key, "End");
+        assert_eq!(modifiers, vec!["ctrl".to_string()]);
+        let mut meta = false;
+        fold_modifier_names(&modifiers, &mut shift, &mut ctrl, &mut alt, &mut meta).unwrap();
+        assert!(ctrl);
+        assert!(!shift && !alt && !meta);
+    }
+
+    #[test]
+    fn key_press_round_trips_with_modifiers() {
+        let original = Request {
+            id: 7,
+            command: DebugCommandKind::KeyPress {
+                key: "End".into(),
+                shift: false,
+                ctrl: false,
+                alt: false,
+                modifiers: vec!["ctrl".into(), "Shift".into()],
+            },
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let back: Request = serde_json::from_str(&json).unwrap();
+        let DebugCommandKind::KeyPress { key, modifiers, .. } = back.command else {
+            panic!("expected KeyPress");
+        };
+        assert_eq!(key, "End");
+        assert_eq!(modifiers, vec!["ctrl".to_string(), "Shift".to_string()]);
+    }
+
+    #[test]
+    fn omitting_the_modifiers_array_defaults_to_empty() {
+        // The stricter raw-TCP contract is preserved: shift/ctrl stay
+        // required, the new array is optional.
+        let req: Request = serde_json::from_str(
+            r#"{"id":2,"method":"key_press","params":{"key":"End","shift":true,"ctrl":true}}"#,
+        )
+        .unwrap();
+        let DebugCommandKind::KeyPress {
+            shift,
+            ctrl,
+            modifiers,
+            ..
+        } = req.command
+        else {
+            panic!("expected KeyPress");
+        };
+        assert!(shift && ctrl);
+        assert!(modifiers.is_empty());
+    }
+
+    #[test]
+    fn unknown_modifier_name_fails_loud() {
+        let (mut s, mut c, mut a, mut m) = (false, false, false, false);
+        let err = fold_modifier_names(
+            &["ctrl".into(), "hyper".into()],
+            &mut s,
+            &mut c,
+            &mut a,
+            &mut m,
+        )
+        .unwrap_err();
+        assert_eq!(err, "hyper");
+    }
+
+    #[test]
+    fn modifier_names_are_case_insensitive_with_aliases() {
+        let (mut s, mut c, mut a, mut m) = (false, false, false, false);
+        fold_modifier_names(
+            &[
+                "Control".into(),
+                "SHIFT".into(),
+                "option".into(),
+                "Cmd".into(),
+            ],
+            &mut s,
+            &mut c,
+            &mut a,
+            &mut m,
+        )
+        .unwrap();
+        assert!(s && c && a && m);
+    }
 }

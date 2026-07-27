@@ -831,51 +831,7 @@ impl RinchApp {
                 let alt = modifiers.alt;
 
                 // Build key string for the user keyboard hook + global fallback.
-                let key_str: Option<String> = match key {
-                    // Named keys
-                    KeyCode::ArrowLeft => Some("ArrowLeft".into()),
-                    KeyCode::ArrowRight => Some("ArrowRight".into()),
-                    KeyCode::ArrowUp => Some("ArrowUp".into()),
-                    KeyCode::ArrowDown => Some("ArrowDown".into()),
-                    KeyCode::Home => Some("Home".into()),
-                    KeyCode::End => Some("End".into()),
-                    KeyCode::Enter => Some("Enter".into()),
-                    KeyCode::Backspace => Some("Backspace".into()),
-                    KeyCode::Delete => Some("Delete".into()),
-                    KeyCode::Tab => Some("Tab".into()),
-                    KeyCode::Escape => Some("Escape".into()),
-                    KeyCode::PageUp => Some("PageUp".into()),
-                    KeyCode::PageDown => Some("PageDown".into()),
-                    KeyCode::Space => Some("Space".into()),
-                    // Modifier keys (as physical key presses)
-                    KeyCode::ShiftLeft => Some("Shift".into()),
-                    KeyCode::ShiftRight => Some("Shift".into()),
-                    KeyCode::ControlLeft => Some("Control".into()),
-                    KeyCode::ControlRight => Some("Control".into()),
-                    KeyCode::AltLeft => Some("Alt".into()),
-                    KeyCode::AltRight => Some("Alt".into()),
-                    // Ctrl+key combos: derive key letter from KeyCode
-                    KeyCode::KeyA if ctrl => Some("a".into()),
-                    KeyCode::KeyB if ctrl => Some("b".into()),
-                    KeyCode::KeyC if ctrl => Some("c".into()),
-                    KeyCode::KeyD if ctrl => Some("d".into()),
-                    KeyCode::KeyE if ctrl => Some("e".into()),
-                    KeyCode::KeyH if ctrl => Some("h".into()),
-                    KeyCode::KeyI if ctrl => Some("i".into()),
-                    KeyCode::KeyU if ctrl => Some("u".into()),
-                    KeyCode::KeyV if ctrl => Some("v".into()),
-                    KeyCode::KeyX if ctrl => Some("x".into()),
-                    KeyCode::KeyY if ctrl => Some("y".into()),
-                    KeyCode::KeyZ if ctrl => Some("z".into()),
-                    // Regular character input: use text field (filter control chars)
-                    _ => text.as_ref().and_then(|t| {
-                        if !t.is_empty() && t.chars().all(|c| !c.is_control()) {
-                            Some(t.clone())
-                        } else {
-                            None
-                        }
-                    }),
-                };
+                let key_str: Option<String> = hook_key_str(key, text.as_deref(), ctrl);
 
                 tracing::trace!(?key, ?text, ?key_str, shift, ctrl, alt, "KeyDown event");
 
@@ -1773,6 +1729,61 @@ pub(crate) enum Motion {
     LineEnd,
     DocStart,
     DocEnd,
+}
+
+/// Derive the key string handed to the user keyboard hook (and global
+/// fallback) from a `KeyDown`'s keycode + text. Named keys report their name
+/// (`"Space"`, `"Enter"`, …); Ctrl+letter combos report the letter; everything
+/// else — including `KeyCode::Other`, which is how both real hardware and the
+/// debug channel deliver punctuation — falls through to the event's `text`
+/// field, so a hook sees `key: "."` for a period but `key: "Space"` for a
+/// spacebar press.
+pub(crate) fn hook_key_str(key: KeyCode, text: Option<&str>, ctrl: bool) -> Option<String> {
+    match key {
+        // Named keys
+        KeyCode::ArrowLeft => Some("ArrowLeft".into()),
+        KeyCode::ArrowRight => Some("ArrowRight".into()),
+        KeyCode::ArrowUp => Some("ArrowUp".into()),
+        KeyCode::ArrowDown => Some("ArrowDown".into()),
+        KeyCode::Home => Some("Home".into()),
+        KeyCode::End => Some("End".into()),
+        KeyCode::Enter => Some("Enter".into()),
+        KeyCode::Backspace => Some("Backspace".into()),
+        KeyCode::Delete => Some("Delete".into()),
+        KeyCode::Tab => Some("Tab".into()),
+        KeyCode::Escape => Some("Escape".into()),
+        KeyCode::PageUp => Some("PageUp".into()),
+        KeyCode::PageDown => Some("PageDown".into()),
+        KeyCode::Space => Some("Space".into()),
+        // Modifier keys (as physical key presses)
+        KeyCode::ShiftLeft => Some("Shift".into()),
+        KeyCode::ShiftRight => Some("Shift".into()),
+        KeyCode::ControlLeft => Some("Control".into()),
+        KeyCode::ControlRight => Some("Control".into()),
+        KeyCode::AltLeft => Some("Alt".into()),
+        KeyCode::AltRight => Some("Alt".into()),
+        // Ctrl+key combos: derive key letter from KeyCode
+        KeyCode::KeyA if ctrl => Some("a".into()),
+        KeyCode::KeyB if ctrl => Some("b".into()),
+        KeyCode::KeyC if ctrl => Some("c".into()),
+        KeyCode::KeyD if ctrl => Some("d".into()),
+        KeyCode::KeyE if ctrl => Some("e".into()),
+        KeyCode::KeyH if ctrl => Some("h".into()),
+        KeyCode::KeyI if ctrl => Some("i".into()),
+        KeyCode::KeyU if ctrl => Some("u".into()),
+        KeyCode::KeyV if ctrl => Some("v".into()),
+        KeyCode::KeyX if ctrl => Some("x".into()),
+        KeyCode::KeyY if ctrl => Some("y".into()),
+        KeyCode::KeyZ if ctrl => Some("z".into()),
+        // Regular character input: use text field (filter control chars)
+        _ => text.and_then(|t| {
+            if !t.is_empty() && t.chars().all(|c| !c.is_control()) {
+                Some(t.to_string())
+            } else {
+                None
+            }
+        }),
+    }
 }
 
 /// Translate a platform key event into an editor-core `KeyBinding` for keymap lookup.
@@ -2849,6 +2860,33 @@ mod paste_image_tests {
         // 2×2 RGBA needs 16 bytes; give it 8 → None (not a panic).
         assert!(image_rgba_to_png_data_url(2, 2, &[0; 8]).is_none());
         assert!(image_rgba_to_png_data_url(0, 0, &[]).is_none());
+    }
+}
+
+#[cfg(test)]
+mod hook_key_str_tests {
+    use super::hook_key_str;
+    use rinch_platform::KeyCode;
+
+    #[test]
+    fn other_keycode_falls_through_to_the_text_field() {
+        // Punctuation — hardware and debug channel alike — arrives as
+        // `KeyCode::Other` with the character in `text`; the hook must see the
+        // character, not a named key (issue #151).
+        assert_eq!(
+            hook_key_str(KeyCode::Other, Some("."), false),
+            Some(".".to_string())
+        );
+    }
+
+    #[test]
+    fn spacebar_reports_the_named_key_not_its_text() {
+        // A real (or injected) spacebar press is `KeyCode::Space` with
+        // text=" " — the named-key arm must win so hooks see "Space".
+        assert_eq!(
+            hook_key_str(KeyCode::Space, Some(" "), false),
+            Some("Space".to_string())
+        );
     }
 }
 

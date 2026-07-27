@@ -9,10 +9,16 @@ fn parse_button(s: &Option<String>) -> MouseButton {
 }
 
 /// Map a printable character to a physical `KeyCode` for synthesizing keystrokes
-/// (the `text` field carries the actual character; the keycode only matters for
-/// shortcut/interceptor matching). Unknown characters fall back to `Space`.
+/// (the `text` field carries the actual character). Characters without a
+/// dedicated keycode map to `KeyCode::Other` — exactly how real hardware
+/// delivers punctuation (`shell/rinch_runtime.rs` translates unlisted winit
+/// keys to `Other`) — so the keyboard hook's key string falls through to the
+/// `text` field instead of masquerading as a named key. Space keeps its
+/// explicit arm: an injected `' '` must still read as `key = "Space"`, matching
+/// a physical spacebar press (issue #151).
 fn char_to_keycode(c: char) -> KeyCode {
     match c.to_ascii_lowercase() {
+        ' ' => KeyCode::Space,
         'a' => KeyCode::KeyA,
         'b' => KeyCode::KeyB,
         'c' => KeyCode::KeyC,
@@ -49,13 +55,17 @@ fn char_to_keycode(c: char) -> KeyCode {
         '7' => KeyCode::Digit7,
         '8' => KeyCode::Digit8,
         '9' => KeyCode::Digit9,
-        _ => KeyCode::Space,
+        _ => KeyCode::Other,
     }
 }
 
-/// Map a debug `key_press` key-name string to a `KeyCode`.
-fn keyname_to_keycode(key: &str) -> KeyCode {
-    match key {
+/// Map a debug `key_press` key-name string to a `KeyCode`. Single-character
+/// names go through [`char_to_keycode`] (punctuation → `KeyCode::Other`, with
+/// the character delivered via the event's `text` field); unknown multi-char
+/// names return `None` so the caller can fail loud instead of synthesizing a
+/// silent no-text `Other` press.
+fn keyname_to_keycode(key: &str) -> Option<KeyCode> {
+    Some(match key {
         "ArrowLeft" => KeyCode::ArrowLeft,
         "ArrowRight" => KeyCode::ArrowRight,
         "ArrowUp" => KeyCode::ArrowUp,
@@ -69,10 +79,11 @@ fn keyname_to_keycode(key: &str) -> KeyCode {
         "Delete" => KeyCode::Delete,
         "Tab" => KeyCode::Tab,
         "Escape" => KeyCode::Escape,
+        "Space" => KeyCode::Space,
         "F12" => KeyCode::F12,
         k if k.chars().count() == 1 => char_to_keycode(k.chars().next().unwrap()),
-        _ => KeyCode::Space,
-    }
+        _ => return None,
+    })
 }
 
 #[cfg(feature = "debug")]
@@ -377,14 +388,35 @@ impl RinchApp {
             }
             DebugCommandKind::KeyPress {
                 key,
-                shift,
-                ctrl,
-                alt,
+                mut shift,
+                mut ctrl,
+                mut alt,
+                modifiers,
             } => {
                 // Synthesize a real KeyDown and route through `handle_event` (which
                 // owns Escape/F12/inspect/editor/CE handling) so MCP `key_press`
                 // matches a physical keystroke.
-                let key_code = keyname_to_keycode(&key);
+                //
+                // Fold the optional `modifiers` name array into the flat booleans
+                // (issue #152) — the only path that can request `meta`. An unknown
+                // name fails loud instead of silently altering the simulated input.
+                let mut meta = false;
+                if let Err(name) = rinch_debug::fold_modifier_names(
+                    &modifiers, &mut shift, &mut ctrl, &mut alt, &mut meta,
+                ) {
+                    return DebugResult::Error {
+                        message: format!(
+                            "Unknown modifier name: {name:?} (expected ctrl/control, shift, alt/option, meta/cmd/super)"
+                        ),
+                    };
+                }
+                // Unknown multi-char key names fail loud too — a silent no-text
+                // `Other` press would be indistinguishable from a dead key (#151).
+                let Some(key_code) = keyname_to_keycode(&key) else {
+                    return DebugResult::Error {
+                        message: format!("Unknown key name: {key:?}"),
+                    };
+                };
                 let text = match key.as_str() {
                     "Enter" => Some("\n".to_string()),
                     k if k.chars().count() == 1 => Some(k.to_string()),
@@ -407,7 +439,7 @@ impl RinchApp {
                             shift,
                             ctrl,
                             alt,
-                            meta: false,
+                            meta,
                         },
                     },
                     window_size,
@@ -638,5 +670,42 @@ impl RinchApp {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod keycode_mapping_tests {
+    use super::{char_to_keycode, keyname_to_keycode};
+    use rinch_platform::KeyCode;
+
+    #[test]
+    fn punctuation_maps_to_other_not_space() {
+        // Punctuation must not masquerade as the spacebar (issue #151): with
+        // `Other`, the hook's key string falls through to the `text` field.
+        assert_eq!(char_to_keycode('.'), KeyCode::Other);
+    }
+
+    #[test]
+    fn space_char_keeps_its_named_keycode() {
+        // Space-parity gotcha: an injected ' ' must still read as
+        // `key = "Space"`, exactly like a physical spacebar press.
+        assert_eq!(char_to_keycode(' '), KeyCode::Space);
+    }
+
+    #[test]
+    fn keyname_space_maps_to_space() {
+        assert_eq!(keyname_to_keycode("Space"), Some(KeyCode::Space));
+    }
+
+    #[test]
+    fn keyname_single_char_punctuation_maps_to_other() {
+        assert_eq!(keyname_to_keycode("."), Some(KeyCode::Other));
+    }
+
+    #[test]
+    fn unknown_multi_char_keyname_is_rejected() {
+        // The KeyPress handler turns this into a DebugResult::Error rather
+        // than a silent no-text `Other` press.
+        assert_eq!(keyname_to_keycode("NoSuchKey"), None);
     }
 }
