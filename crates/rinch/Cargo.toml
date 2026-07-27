@@ -185,3 +185,8 @@ serde = ["rinch-editor-core/serde"]
 # wasm-compatible, so the web view reuses the SAME adapter (the web app supplies a wasm
 # randomness source for automerge→uuid).
 collaboration = ["desktop", "rinch-editor-view/collaboration"]
+
+# Probe app for the ignored e2e test tests/debug_event_latency.rs (issue #153).
+[[example]]
+name = "debug_click_latency"
+required-features = ["desktop", "debug"]
