@@ -196,6 +196,16 @@ impl RinchContext {
     pub fn update(&mut self, events: &[PlatformEvent]) -> Vec<AppAction> {
         let mut all_actions = Vec::new();
 
+        // Fire due polled signals before anything reads them, mirroring what the
+        // desktop runtime does ahead of each paint. Without this an embedded
+        // context never drained the registry at all, so a `poll_signal` created
+        // inside a `RinchContext` never fired even once (issue #141).
+        //
+        // Draining before the events is deliberate: a poll write and an event
+        // handler can both dirty the tree, and this ordering lets the single
+        // layout pass below absorb both.
+        rinch_core::reactive::drain_polls();
+
         // Process each event
         for event in events {
             let actions = self

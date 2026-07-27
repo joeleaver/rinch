@@ -28,6 +28,34 @@
 //!    queues that signal's observers *behind* the current flush, rather than
 //!    ahead of it.)
 //!
+//! # Liveness
+//!
+//! [`Signal`] and [`Memo`] are `Copy` index handles, not owners. Their storage
+//! is freed when the scope that owns it is disposed, and a handle can outlive
+//! that — captured by a detached worker thread, a global callback, or a drag in
+//! flight. The contract for a handle whose storage is gone splits by direction:
+//!
+//! > **You may always write to a handle; you may only read a live one.**
+//!
+//! - **Reads panic.** [`Signal::get`]/[`Signal::with`] and [`Memo::get`] have no
+//!   value to return — `T` is not `Default` — so a lenient read is not
+//!   expressible. Use [`try_get`](Signal::try_get)/[`try_with`](Signal::try_with)
+//!   for the `Option` form.
+//! - **Writes are dropped, with a warning.** [`Signal::set`],
+//!   [`set_if_changed`](Signal::set_if_changed) and [`update`](Signal::update)
+//!   no-op and log once per call site. A background thread cannot check-then-write
+//!   without a race, and panicking there would take down the app for a write
+//!   nobody is waiting on. The cost is that side effects inside an `update`
+//!   closure are lost with it.
+//! - **[`is_alive`](Signal::is_alive) asks directly**, and does not subscribe —
+//!   liveness is not reactive.
+//!
+//! Registries that drive signals ([`poll_signal`], [`register_bounds_signal`])
+//! derive their own lifetime from this: an entry is dropped once the signal it
+//! writes is gone, so they self-prune rather than spinning on dead handles.
+//!
+//! See issue #141.
+//!
 //! # Example
 //!
 //! ```ignore
@@ -416,15 +444,33 @@ impl SignalStore {
             .filter(|s| s.generation == generation)
     }
 
+    /// Free a slot, **returning** its value rather than dropping it in place.
+    ///
+    /// The caller must drop the returned box after releasing the store borrow:
+    /// a value whose `Drop` touches a signal would otherwise `BorrowMutError`
+    /// (issue #141, SD4). Returns `None` if the slot was already freed or the
+    /// generation does not match.
+    ///
+    /// Not yet reachable from production code — #141's dispose fixpoint wires it.
     #[allow(dead_code)]
-    fn free(&mut self, id: u32, generation: u32) {
-        if let Some(slot) = self.slots.get(id as usize)
-            && slot.as_ref().is_some_and(|s| s.generation == generation)
-        {
-            self.slots[id as usize] = None;
-            self.free_list.push(id);
+    fn free(&mut self, id: u32, generation: u32) -> Option<Box<dyn Any>> {
+        let slot = self.slots.get_mut(id as usize)?;
+        if !slot.as_ref().is_some_and(|s| s.generation == generation) {
+            return None;
         }
+        let taken = slot.take();
+        self.free_list.push(id);
+        taken.map(|s| s.value)
     }
+}
+
+/// Free a signal slot directly, simulating the scope disposal that #141's
+/// dispose fixpoint will perform. Test-only: nothing frees signals yet, so
+/// without this the liveness API could not be exercised at all.
+#[cfg(test)]
+pub(crate) fn free_signal_for_tests(id: u32, generation: u32) {
+    // Dropped out here, after the store borrow is released.
+    let _value = SIGNAL_STORE.with(|store| store.borrow_mut().free(id, generation));
 }
 
 // ============================================================================
@@ -481,6 +527,28 @@ impl MemoStore {
             .filter(|s| s.generation == generation)
             .map(|s| Rc::clone(&s.inner))
     }
+
+    /// Free a slot, **returning** its `Rc` rather than dropping it in place —
+    /// same rule and same reason as [`SignalStore::free`]: a `MemoInner`'s cached
+    /// value can own arbitrary user data whose `Drop` may touch the reactive
+    /// stores. Not yet reachable from production code (#141 PR4 wires it).
+    #[allow(dead_code)]
+    pub(crate) fn free(&mut self, id: u32, generation: u32) -> Option<Rc<dyn Any>> {
+        let slot = self.slots.get_mut(id as usize)?;
+        if !slot.as_ref().is_some_and(|s| s.generation == generation) {
+            return None;
+        }
+        let taken = slot.take();
+        self.free_list.push(id);
+        taken.map(|s| s.inner)
+    }
+}
+
+/// Free a memo slot directly. Test-only counterpart to
+/// [`free_signal_for_tests`]; see that function for why it exists.
+#[cfg(test)]
+pub(crate) fn free_memo_for_tests(id: u32, generation: u32) {
+    let _inner = MEMO_STORE.with(|store| store.borrow_mut().free(id, generation));
 }
 
 // ============================================================================

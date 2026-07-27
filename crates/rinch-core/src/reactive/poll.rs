@@ -36,7 +36,9 @@ impl PollRate {
 struct PollEntry {
     interval_ms: u64,
     last_fired: Instant,
-    run: Box<dyn FnMut()>,
+    /// Fires the poll. Returns `false` once the driven signal is gone, which is
+    /// [`drain_polls`]'s signal to drop this entry (issue #141, SD3).
+    run: Box<dyn FnMut() -> bool>,
 }
 
 thread_local! {
@@ -75,9 +77,16 @@ thread_local! {
 ///
 /// # Lifetime
 ///
-/// Polls registered today live for the lifetime of the application; there is no
-/// unregister yet. This matches the typical "register once at startup" pattern;
-/// if you need scoped polling, gate the source closure on an external flag.
+/// **A poll lives exactly as long as the signal it drives.** [`drain_polls`]
+/// checks the signal before each fire and drops the entry once it is gone, so
+/// the registry self-prunes and the source closure — along with everything it
+/// captures — is released with it.
+///
+/// Registering at startup therefore still gives application lifetime, because a
+/// signal created outside any render has no owning scope and is never freed.
+/// Registering inside a component ties the poll to that component's scope: when
+/// it is removed from the tree, its signal is freed and the poll stops on the
+/// next drain. Neither case needs an external flag.
 pub fn poll_signal<T, F>(mut source: F, rate: PollRate) -> Signal<T>
 where
     T: PartialEq + Clone + 'static,
@@ -93,8 +102,17 @@ where
     let signal = Signal::new(initial);
 
     let run = move || {
+        // Check first so a dead signal never runs the source — the source may
+        // have observable side effects, and a lenient `set_if_changed` on a
+        // freed signal would otherwise warn on every frame forever.
+        if !signal.is_alive() {
+            return false;
+        }
         let value = source();
         signal.set_if_changed(value);
+        // Re-check: the source (or an effect it woke) may have disposed the
+        // scope that owned the signal.
+        signal.is_alive()
     };
 
     POLL_REGISTRY.with(|reg| {
@@ -112,26 +130,54 @@ where
     signal
 }
 
-/// Fire any polls whose interval has elapsed.
+/// Fire any polls whose interval has elapsed, dropping those whose signal has
+/// been freed.
 ///
 /// Called by the rinch runtime once per painted frame, before
 /// [`drain_main_queue`](super) and layout resolution. Application code should not
 /// need to invoke this directly.
+///
+/// The registry is moved out for the duration of the drain, so source closures
+/// run with **no borrow held**. That makes re-entrancy safe: a source that calls
+/// [`poll_signal`], or that wakes an effect which does, registers into the empty
+/// registry and is spliced back in afterwards instead of panicking with a
+/// `BorrowMutError`. A re-entrant `drain_polls` sees an empty registry and is a
+/// no-op, so no poll can fire twice in a frame.
 pub fn drain_polls() {
     if !is_main_thread() {
         return;
     }
     let now = Instant::now();
-    POLL_REGISTRY.with(|reg| {
-        let mut polls = reg.borrow_mut();
-        for entry in polls.iter_mut() {
-            let elapsed_ms = now.duration_since(entry.last_fired).as_millis() as u64;
-            if entry.interval_ms == 0 || elapsed_ms >= entry.interval_ms {
-                entry.last_fired = now;
-                (entry.run)();
-            }
+
+    let mut entries: Vec<PollEntry> =
+        POLL_REGISTRY.with(|reg| std::mem::take(&mut *reg.borrow_mut()));
+
+    entries.retain_mut(|entry| {
+        let elapsed_ms = now.duration_since(entry.last_fired).as_millis() as u64;
+        if entry.interval_ms == 0 || elapsed_ms >= entry.interval_ms {
+            entry.last_fired = now;
+            (entry.run)()
+        } else {
+            // Not due this frame — liveness is only judged on a fire, so an
+            // idle poll for a freed signal is reaped on its next due frame.
+            true
         }
     });
+
+    POLL_REGISTRY.with(|reg| {
+        let mut reg = reg.borrow_mut();
+        // Anything registered re-entrantly during the drain landed in `reg`;
+        // keep it, ordered after the surviving pre-existing entries.
+        entries.append(&mut reg);
+        *reg = entries;
+    });
+}
+
+/// Number of registered polls on this thread. Test-only: the self-pruning
+/// contract is about entries *disappearing*, which is otherwise unobservable.
+#[cfg(test)]
+pub(crate) fn registry_len_for_tests() -> usize {
+    POLL_REGISTRY.with(|reg| reg.borrow().len())
 }
 
 #[cfg(test)]
@@ -171,5 +217,139 @@ mod tests {
         assert_eq!(PollRate::Hz(60).interval_ms(), 16);
         assert_eq!(PollRate::Hz(1000).interval_ms(), 1);
         assert_eq!(PollRate::Millis(33).interval_ms(), 33);
+    }
+}
+
+#[cfg(test)]
+mod lifetime_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    #[test]
+    fn a_poll_is_dropped_once_its_signal_is_freed() {
+        let reads = Rc::new(Cell::new(0));
+        let r = Rc::clone(&reads);
+        let signal = poll_signal(
+            move || {
+                r.set(r.get() + 1);
+                r.get()
+            },
+            PollRate::EveryFrame,
+        );
+
+        assert_eq!(registry_len_for_tests(), 1);
+        drain_polls();
+        let reads_while_alive = reads.get();
+        assert!(
+            reads_while_alive >= 2,
+            "the source ran while the signal lived"
+        );
+
+        signal.free_for_tests();
+
+        drain_polls();
+        assert_eq!(
+            registry_len_for_tests(),
+            0,
+            "a poll whose signal is gone must be removed, not left spinning"
+        );
+        assert_eq!(
+            reads.get(),
+            reads_while_alive,
+            "the source must not run for a freed signal"
+        );
+
+        // Still gone, and still no work, on later frames.
+        drain_polls();
+        assert_eq!(registry_len_for_tests(), 0);
+        assert_eq!(reads.get(), reads_while_alive);
+    }
+
+    #[test]
+    fn a_live_poll_registered_beside_a_dead_one_survives() {
+        let doomed = poll_signal(|| 1, PollRate::EveryFrame);
+        let survivor_ticks = Rc::new(Cell::new(0));
+        let t = Rc::clone(&survivor_ticks);
+        let _survivor = poll_signal(
+            move || {
+                t.set(t.get() + 1);
+                t.get()
+            },
+            PollRate::EveryFrame,
+        );
+        assert_eq!(registry_len_for_tests(), 2);
+
+        doomed.free_for_tests();
+        drain_polls();
+
+        assert_eq!(registry_len_for_tests(), 1, "only the dead entry is reaped");
+        let after = survivor_ticks.get();
+        drain_polls();
+        assert!(survivor_ticks.get() > after, "the survivor keeps firing");
+    }
+
+    #[test]
+    fn a_poll_source_may_register_another_poll() {
+        // Pre-fix this was a BorrowMutError: `drain_polls` held
+        // `POLL_REGISTRY.borrow_mut()` across the source closure, and
+        // `poll_signal` takes `borrow_mut()` to push.
+        //
+        // The nested registration must happen on call #2. Call #1 is
+        // `poll_signal`'s own initial read, which runs *before* it touches the
+        // registry — registering from there would exercise nothing.
+        let calls = Rc::new(Cell::new(0));
+        let c = Rc::clone(&calls);
+        let _outer = poll_signal(
+            move || {
+                c.set(c.get() + 1);
+                if c.get() == 2 {
+                    let _inner = poll_signal(|| 0u8, PollRate::EveryFrame);
+                }
+                0u8
+            },
+            PollRate::EveryFrame,
+        );
+        assert_eq!(calls.get(), 1, "registration read the source once");
+        assert_eq!(registry_len_for_tests(), 1);
+
+        drain_polls();
+
+        assert_eq!(calls.get(), 2, "the drain fired the outer poll");
+        assert_eq!(
+            registry_len_for_tests(),
+            2,
+            "the poll registered during the drain is spliced back in"
+        );
+
+        // And the newcomer participates from the next frame on.
+        drain_polls();
+        assert_eq!(registry_len_for_tests(), 2);
+    }
+
+    #[test]
+    fn a_reentrant_drain_is_a_no_op_rather_than_a_double_fire() {
+        let ticks = Rc::new(Cell::new(0));
+        let t = Rc::clone(&ticks);
+        let _p = poll_signal(
+            move || {
+                t.set(t.get() + 1);
+                // Re-entering the drain must not re-fire this very poll.
+                drain_polls();
+                t.get()
+            },
+            PollRate::EveryFrame,
+        );
+        // Registration itself invokes the source once for the initial value.
+        let after_register = ticks.get();
+
+        drain_polls();
+
+        assert_eq!(
+            ticks.get(),
+            after_register + 1,
+            "the poll fired exactly once for this frame"
+        );
+        assert_eq!(registry_len_for_tests(), 1);
     }
 }
