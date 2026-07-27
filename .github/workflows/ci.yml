@@ -188,7 +188,9 @@ jobs:
       - name: Run wasm tests (headless Chrome)
         env:
           CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
-        run: cargo test -p rinch-storage --target wasm32-unknown-unknown
+        run: |
+          cargo test -p rinch-storage --target wasm32-unknown-unknown
+          cargo test -p rinch-web --target wasm32-unknown-unknown
 
   fmt:
     runs-on: ubuntu-latest
