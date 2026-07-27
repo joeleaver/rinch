@@ -276,6 +276,15 @@ impl ScrollRegistry {
 pub fn register_handler(callback: EventCallback) -> EventHandlerId {
     let id = next_handler_id();
     tracing::debug!("register_handler: Registered handler {:?}", id);
+    // Capture the context root current at registration time: dispatch happens
+    // from the event loop (no root pushed), so the wrapper re-enters the root
+    // the handler was built under — a handler inside a mounted root resolves
+    // that root's stores/contexts (issue #136).
+    let root = crate::context::current_context_root();
+    let callback: EventCallback = Rc::new(move || {
+        let _root = crate::context::push_context_root(root);
+        callback();
+    });
     EVENT_REGISTRY.with(|registry| {
         registry.borrow_mut().handlers.insert(id, callback);
     });
@@ -363,6 +372,12 @@ pub fn dispatch_event(id: EventHandlerId) -> bool {
 #[doc(hidden)]
 pub fn register_input_handler(callback: InputCallback) -> EventHandlerId {
     let id = next_handler_id();
+    // Re-enter the registration-time context root on dispatch (issue #136).
+    let root = crate::context::current_context_root();
+    let callback = InputCallback::new(move |value| {
+        let _root = crate::context::push_context_root(root);
+        callback.invoke(value);
+    });
     INPUT_REGISTRY.with(|registry| {
         registry.borrow_mut().handlers.insert(id, callback);
     });
@@ -406,6 +421,12 @@ pub fn dispatch_input_event(id: EventHandlerId, value: String) -> bool {
 #[doc(hidden)]
 pub fn register_file_drop_handler(callback: FileDropCallback) -> EventHandlerId {
     let id = next_handler_id();
+    // Re-enter the registration-time context root on dispatch (issue #136).
+    let root = crate::context::current_context_root();
+    let callback = FileDropCallback::new(move |paths| {
+        let _root = crate::context::push_context_root(root);
+        callback.invoke(paths);
+    });
     FILE_DROP_REGISTRY.with(|registry| {
         registry.borrow_mut().handlers.insert(id, callback);
     });
@@ -433,6 +454,12 @@ pub fn dispatch_file_drop_event(id: EventHandlerId, paths: Vec<PathBuf>) -> bool
 #[doc(hidden)]
 pub fn register_scroll_handler(callback: ScrollCallback) -> EventHandlerId {
     let id = next_handler_id();
+    // Re-enter the registration-time context root on dispatch (issue #136).
+    let root = crate::context::current_context_root();
+    let callback = ScrollCallback::new(move |scroll_top| {
+        let _root = crate::context::push_context_root(root);
+        callback.invoke(scroll_top);
+    });
     SCROLL_REGISTRY.with(|registry| {
         registry.borrow_mut().handlers.insert(id, callback);
     });

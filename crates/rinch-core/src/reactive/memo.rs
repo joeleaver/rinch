@@ -97,6 +97,7 @@ impl<T: Clone + 'static> Memo<T> {
                     });
                 })),
                 disposed: Cell::new(false),
+                root: crate::context::current_context_root(),
             }));
         });
 

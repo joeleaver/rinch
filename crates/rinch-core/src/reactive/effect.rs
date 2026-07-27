@@ -36,6 +36,10 @@ pub(super) struct EffectInner {
     pub(super) id: ObserverId,
     pub(super) f: RefCell<Box<dyn FnMut()>>,
     pub(super) disposed: Cell<bool>,
+    /// The context root current when this effect was created; re-entered on
+    /// every run so `use_context`/`use_store` resolve the same namespace as at
+    /// build time (issue #136). `0` = the thread-global fallback root.
+    pub(super) root: u64,
 }
 
 impl Effect {
@@ -50,6 +54,7 @@ impl Effect {
             id,
             f: RefCell::new(Box::new(f)),
             disposed: Cell::new(false),
+            root: crate::context::current_context_root(),
         });
 
         // Store the effect
@@ -79,6 +84,7 @@ impl Effect {
             id,
             f: RefCell::new(Box::new(f)),
             disposed: Cell::new(false),
+            root: crate::context::current_context_root(),
         });
 
         EFFECTS.with(|effects| {
@@ -134,6 +140,11 @@ pub(super) fn run_effect(id: ObserverId) {
         }
 
         tracing::debug!("run_effect({}): running", id.0);
+
+        // Re-enter the context root the effect was created under, so
+        // use_context/use_store resolve the same namespace as at build time
+        // (issue #136).
+        let _root_guard = crate::context::push_context_root(inner.root);
 
         // Push this effect as the current observer
         RUNTIME.with(|rt| {

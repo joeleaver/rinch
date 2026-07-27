@@ -1,10 +1,10 @@
-//! Empirical pinning tests for issue #134: two `RinchContext`s on one thread.
+//! Empirical pinning tests for issues #134/#136: two `RinchContext`s on one
+//! thread.
 //!
 //! Each test constructs headless embed contexts (no window, no GPU — `scene()`
-//! is never called) and demonstrates the REAL current behavior of the shared
-//! thread-local state. Tests that document broken behavior assert the buggy
-//! outcome explicitly and are marked `BUG #134` — if such an assertion starts
-//! failing, the bug got fixed: flip the assertion to the correct behavior.
+//! is never called) and pins the behavior of the shared thread-local state:
+//! per-context signal subscriptions and bounds registries (#134) and per-root
+//! store/context namespacing with the thread-global root-0 fallback (#136).
 //!
 //! Requires the `embed` (or `gpu`) feature. Since #140 the painters are
 //! additive, so `desktop` + `embed` co-compiles and default features can stay on:
@@ -213,18 +213,19 @@ fn contexts_keep_independent_dirty_flags() {
     });
 }
 
-// ── 3. CONTEXT_STORE (create_store/use_store) cross-talk ─────────────────────
+// ── 3. CONTEXT_STORE (create_store/use_store) per-root scoping ───────────────
 
 #[derive(Clone, Copy)]
 struct SharedStore {
     which: Signal<i32>,
 }
 
-/// CONTEXT_STORE is keyed by TypeId only — no per-context namespace. When both
-/// contexts `create_store` the same type, the second insert overwrites the
-/// first, and content A builds LATER (an `if` branch flipping) silently reads
-/// B's store. Dropping B does not remove its store, and dropping both contexts
-/// leaves the store behind entirely.
+/// FIXED (#136): CONTEXT_STORE is keyed by `(root, TypeId)`. Each mounted
+/// `RinchContext` namespaces its stores under its document's `doc_key`, so two
+/// contexts creating the same store type no longer overwrite each other:
+/// effects and handlers capture their root at creation time, so content A
+/// builds LATER (an `if` branch flipping after B mounted) still resolves A's
+/// OWN store. Dropping a context clears exactly its own namespace.
 #[test]
 fn store_crosstalk_between_contexts() {
     on_ui_thread(|| {
@@ -245,56 +246,109 @@ fn store_crosstalk_between_contexts() {
             }
         });
         a.update(&[]);
-        assert_eq!(
-            use_store::<SharedStore>().which.get(),
-            1,
-            "with only A mounted, use_store resolves A's store"
-        );
 
         let mut b = RinchContext::new(cfg(), move |__scope: &mut RenderScope| {
             create_store(SharedStore {
                 which: Signal::new(2),
             });
-            rsx! { div { "B" } }
+            rsx! {
+                div {
+                    p { {move || format!("store:{}", use_store::<SharedStore>().which.get())} }
+                }
+            }
         });
         b.update(&[]);
-
-        // BUG #134: this documents current-broken behavior. CORRECT behavior:
-        // each context should resolve its own store. B's create_store
-        // overwrote A's entry in the TypeId-keyed CONTEXT_STORE.
-        assert_eq!(
-            use_store::<SharedStore>().which.get(),
-            2,
-            "BUG #134 pinned: B's create_store overwrote A's store (TypeId-keyed, \
-             last write wins). If this fails with value 1, the bug was FIXED"
+        assert!(
+            doc_text(&b).contains("store:2"),
+            "B's content resolves B's own store; got: {}",
+            doc_text(&b)
         );
 
         // A's dynamically-built content — an `if` branch constructed AFTER B
-        // mounted — reads the store at build time and gets B's store, rendered
-        // into A's own document.
+        // mounted — resolves A's OWN store: the branch effect re-runs under
+        // A's captured root (#136).
         show_late.set(true);
         a.update(&[]);
         let text = doc_text(&a);
         assert!(
-            text.contains("store:2"),
-            "BUG #134 pinned: A's late-built UI silently received B's store \
-             (expected broken 'store:2', correct would be 'store:1'); got: {text}"
+            text.contains("store:1"),
+            "A's late-built UI must read A's own store, not B's (#136); got: {text}"
         );
 
-        // Dropping B does not remove its store — A keeps reading B's dead store.
+        // Remember A's root key so the post-drop check can look inside A's
+        // (former) namespace.
+        let a_root = a.app().doc().expect("A has a document").borrow().doc_key();
+
+        // Dropping B clears only B's namespace — A keeps resolving its own
+        // store when its branch rebuilds.
         drop(b);
-        assert_eq!(
-            use_store::<SharedStore>().which.get(),
-            2,
-            "BUG #134 pinned: B's store outlives B (RinchContext::drop never \
-             touches CONTEXT_STORE)"
+        show_late.set(false);
+        a.update(&[]);
+        show_late.set(true);
+        a.update(&[]);
+        assert!(
+            doc_text(&a).contains("store:1"),
+            "after dropping B, A still resolves its own store; got: {}",
+            doc_text(&a)
         );
 
-        // Even after BOTH contexts are gone the store persists on the thread.
+        // Dropping A clears A's namespace: nothing is left under A's root
+        // (the lookup below would fall back to root 0, where nothing ever
+        // landed in this test either).
         drop(a);
+        {
+            let _root = rinch_core::push_context_root(a_root);
+            assert!(
+                try_use_store::<SharedStore>().is_none(),
+                "A's namespaced store must be cleared when A drops (#136)"
+            );
+        }
         assert!(
-            try_use_store::<SharedStore>().is_some(),
-            "BUG #134 pinned: the store survives both contexts"
+            try_use_store::<SharedStore>().is_none(),
+            "no store leaked into the thread-global root 0"
+        );
+
+        // Leave the shared worker thread clean for the other tests.
+        rinch_core::clear_context();
+    });
+}
+
+#[derive(Clone, Copy)]
+struct GlobalStore {
+    value: Signal<i32>,
+}
+
+/// The thread-global fallback (#136): a store created at top level — no root
+/// pushed, exactly like shell-startup code — lands in root 0, and a mounted
+/// context that did NOT create that store type still finds it through the
+/// root-0 fallback. Dropping the context must not clear root-0 stores.
+#[test]
+fn store_root_zero_fallback() {
+    on_ui_thread(|| {
+        create_store(GlobalStore {
+            value: Signal::new(42),
+        });
+
+        let mut c = RinchContext::new(cfg(), move |__scope: &mut RenderScope| {
+            rsx! {
+                div {
+                    p { {move || format!("global:{}", use_store::<GlobalStore>().value.get())} }
+                }
+            }
+        });
+        c.update(&[]);
+        assert!(
+            doc_text(&c).contains("global:42"),
+            "a context that created no such store falls back to the \
+             thread-global root-0 store (#136); got: {}",
+            doc_text(&c)
+        );
+
+        // A root-0 store survives the context that merely read it.
+        drop(c);
+        assert!(
+            try_use_store::<GlobalStore>().is_some(),
+            "dropping a context must not clear thread-global (root 0) stores"
         );
 
         // Leave the shared worker thread clean for the other tests.

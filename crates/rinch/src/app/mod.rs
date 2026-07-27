@@ -253,6 +253,10 @@ pub struct RinchApp {
     pub(crate) inspect_highlight: Option<(f32, f32, f32, f32)>,
     /// Font data to register on the document when it is created (for WASM).
     pub(crate) pending_fonts: Vec<&'static [u8]>,
+    /// When true, `mount_component` namespaces stores/contexts under the
+    /// document's `doc_key` (set by embed `RinchContext`s, issue #136). Shell
+    /// roots leave this false and keep writing to the thread-global root 0.
+    pub(crate) scope_context_to_doc: bool,
     /// Debug command receiver.
     #[cfg(feature = "debug")]
     pub(crate) debug_cmd_rx: Option<CommandReceiver>,
@@ -306,6 +310,7 @@ impl RinchApp {
             file_hover_target: None,
             inspect_highlight: None,
             pending_fonts: Vec::new(),
+            scope_context_to_doc: false,
             #[cfg(feature = "debug")]
             debug_cmd_rx: None,
             #[cfg(feature = "debug")]
@@ -449,6 +454,14 @@ impl RinchApp {
         {
             self.last_theme_css = Some(rinch_core::get_current_theme_css().unwrap_or_default());
         }
+
+        // An embed context namespaces its stores/contexts under the document's
+        // doc_key for the whole mount — the component run plus every effect it
+        // creates captures this root (issue #136). Shell roots don't push a
+        // root and keep writing to the thread-global root 0.
+        let _root_guard = self
+            .scope_context_to_doc
+            .then(|| rinch_core::push_context_root(doc.borrow().doc_key()));
 
         // Create RenderScope
         let doc_as_dom: Rc<RefCell<dyn DomDocument>> = doc.clone();
