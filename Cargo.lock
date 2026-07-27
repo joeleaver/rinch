@@ -5090,6 +5090,7 @@ dependencies = [
  "rinch-editor-core",
  "rinch-editor-view",
  "wasm-bindgen",
+ "wasm-bindgen-test",
  "web-sys",
 ]
 

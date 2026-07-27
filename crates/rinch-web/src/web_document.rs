@@ -210,6 +210,43 @@ pub(crate) fn get_nid(node: &web_sys::Node) -> Option<NodeId> {
         .map(|n| NodeId(n as usize))
 }
 
+/// Marker attribute identifying the one page-global theme `<style>` element.
+///
+/// Private to the theme path on purpose: a theme update *replaces the text* of
+/// the element it matches, so anything else wearing this marker would be
+/// silently clobbered by the next dark-mode toggle. App CSS injected through
+/// [`WebDocument::inject_style`] is deliberately left unmarked (#155).
+const THEME_STYLE_MARKER: &str = "data-rinch-theme";
+const THEME_STYLE_SELECTOR: &str = "[data-rinch-theme]";
+
+/// Append a fresh `<style>` to `<head>`, optionally stamped with a marker attribute.
+fn append_style_element(doc: &web_sys::Document, css: &str, marker: Option<&str>) {
+    let Ok(style) = doc.create_element("style") else {
+        return;
+    };
+    if let Some(marker) = marker {
+        style.set_attribute(marker, "true").ok();
+    }
+    style.set_text_content(Some(css));
+    if let Some(head) = doc.head() {
+        head.append_child(&style).ok();
+    }
+}
+
+/// Update the theme `<style>` in place, or create it if this is the first call.
+///
+/// Updating in place (rather than appending a regenerated sheet) keeps the theme
+/// at a stable document position *before* every app stylesheet, so app CSS always
+/// cascades over it — the same invariant `RinchDocument::set_theme_css` maintains
+/// on desktop.
+fn upsert_theme_style(doc: &web_sys::Document, css: &str) {
+    if let Ok(Some(el)) = doc.query_selector(THEME_STYLE_SELECTOR) {
+        el.set_text_content(Some(css));
+    } else {
+        append_style_element(doc, css, Some(THEME_STYLE_MARKER));
+    }
+}
+
 /// Update (or inject) the page-global theme `<style data-rinch-theme>` in the
 /// document head, independent of any one `WebDocument`.
 ///
@@ -220,15 +257,7 @@ pub fn update_theme_style_global(css: &str) {
     let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
         return;
     };
-    if let Ok(Some(el)) = doc.query_selector("[data-rinch-theme]") {
-        el.set_text_content(Some(css));
-    } else if let Ok(style) = doc.create_element("style") {
-        style.set_attribute("data-rinch-theme", "true").ok();
-        style.set_text_content(Some(css));
-        if let Some(head) = doc.head() {
-            head.append_child(&style).ok();
-        }
-    }
+    upsert_theme_style(&doc, css);
 }
 
 impl WebDocument {
@@ -311,24 +340,19 @@ impl WebDocument {
         &self.browser_doc
     }
 
-    /// Inject CSS as a `<style>` element in `<head>`.
+    /// Inject app CSS as a plain `<style>` element in `<head>`.
+    ///
+    /// The element is deliberately **unmarked**: theme updates only ever rewrite
+    /// the element carrying the private theme marker, so CSS injected here is
+    /// never clobbered by a later dark-mode toggle (#155). Each call appends a
+    /// new element — this is an append, not an upsert.
     pub fn inject_style(&self, css: &str) {
-        if let Ok(style) = self.browser_doc.create_element("style") {
-            style.set_attribute("data-rinch-theme", "true").ok();
-            style.set_text_content(Some(css));
-            if let Some(head) = self.browser_doc.head() {
-                head.append_child(&style).ok();
-            }
-        }
+        append_style_element(&self.browser_doc, css, None);
     }
 
     /// Update the theme `<style>` element, or inject one if it doesn't exist.
     pub fn update_theme_style(&self, css: &str) {
-        if let Ok(Some(el)) = self.browser_doc.query_selector("[data-rinch-theme]") {
-            el.set_text_content(Some(css));
-        } else {
-            self.inject_style(css);
-        }
+        upsert_theme_style(&self.browser_doc, css);
     }
 
     /// Recursively walk a DOM subtree and assign `__nid` + register in HashMap.

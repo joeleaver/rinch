@@ -49,6 +49,13 @@ web-sys = { version = "0.3", features = [
     "Blob", "File", "FileReader",
 ] }
 
+# Browser-driven tests for `<style>` injection (#155): they need a real
+# `document.head`, so they only build for wasm. Run with a matching chromedriver:
+#   CHROMEDRIVER=/path/to/chromedriver \
+#     cargo test -p rinch-web --target wasm32-unknown-unknown
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+
 [features]
 # Collaborative editing (M9): forwards to the editor view's collab adapter, which
 # is the only thing that links Automerge. Off by default, so a default web build
