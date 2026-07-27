@@ -49,6 +49,15 @@ struct MemoInner<T> {
     value: RefCell<Option<T>>,
     f: RefCell<Box<dyn Fn() -> T>>,
     dirty: Cell<bool>,
+    /// The context root current when this memo was created, re-entered around
+    /// the recompute in [`Memo::get`].
+    ///
+    /// A memo is *lazy*: the user computation does not run in the dirty-marker
+    /// effect (which carries its own root) but in whichever call site first
+    /// reads the memo after invalidation. Without this, a memo created in
+    /// context A but first read from context B resolved B's stores (issue #136
+    /// follow-up, issue #141). `0` = the thread-global fallback root.
+    root: u64,
     /// Observers to notify, ordered — same contract (and same reason) as
     /// `SignalSlot::subscribers`: a memo's dependents run in registration order.
     subscribers: RefCell<BTreeSet<ObserverId>>,
@@ -67,6 +76,7 @@ impl<T: Clone + 'static> Memo<T> {
             value: RefCell::new(None),
             f: RefCell::new(Box::new(f)),
             dirty: Cell::new(true),
+            root: crate::context::current_context_root(),
             subscribers: RefCell::new(BTreeSet::new()),
         });
 
@@ -134,19 +144,21 @@ impl<T: Clone + 'static> Memo<T> {
             }
         });
 
-        // Recompute if dirty
+        // Recompute if dirty.
+        //
+        // The computation runs HERE, at the first read after invalidation — not
+        // in the dirty-marker effect. So the marker's root is irrelevant to it,
+        // and the memo must re-enter its own creation root, or a memo created in
+        // one context but first read from another resolves the wrong stores
+        // (issue #136 follow-up). Both guards are RAII so a panic in the user
+        // computation cannot strand state (issue #141).
         if inner.dirty.get() {
-            RUNTIME.with(|rt| {
-                rt.borrow_mut().observer_stack.push(inner.id);
-            });
+            let _root_guard = crate::context::push_context_root(inner.root);
+            let _observer_guard = super::effect::ObserverGuard::push(inner.id);
 
             let value = (inner.f.borrow())();
             *inner.value.borrow_mut() = Some(value);
             inner.dirty.set(false);
-
-            RUNTIME.with(|rt| {
-                rt.borrow_mut().observer_stack.pop();
-            });
         }
 
         inner

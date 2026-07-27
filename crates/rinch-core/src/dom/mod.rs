@@ -842,4 +842,51 @@ mod tests {
             Some("test".to_string())
         );
     }
+
+    /// `on_cleanup` must fire when a `RenderScope` is merely dropped, not only
+    /// when the by-value `dispose()` is called (issue #141).
+    ///
+    /// This is the shape every real teardown path takes: `Drop for RenderScope`
+    /// does nothing, so while cleanups lived in a second list on `RenderScope`
+    /// they were silently discarded — which is why `unregister_editor` and
+    /// `unregister_render_surface` never ran on a dropped context or a closed
+    /// DevTools window.
+    #[test]
+    fn on_cleanup_runs_when_the_render_scope_is_dropped() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let fired = Rc::new(Cell::new(false));
+
+        {
+            let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+            let mut scope = RenderScope::new(doc.clone(), doc.borrow().body());
+            let flag = fired.clone();
+            scope.on_cleanup(move || flag.set(true));
+            assert!(!fired.get(), "cleanup must not run before teardown");
+            // Dropped here — NOT `dispose()`d.
+        }
+
+        assert!(
+            fired.get(),
+            "on_cleanup must run on drop, not only on the by-value dispose()"
+        );
+    }
+
+    /// The explicit `dispose()` path keeps working after the delegation.
+    #[test]
+    fn on_cleanup_runs_on_explicit_dispose() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let fired = Rc::new(Cell::new(false));
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let mut scope = RenderScope::new(doc.clone(), doc.borrow().body());
+        let flag = fired.clone();
+        scope.on_cleanup(move || flag.set(true));
+
+        scope.dispose();
+
+        assert!(fired.get(), "on_cleanup must still run on dispose()");
+    }
 }

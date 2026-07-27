@@ -693,6 +693,67 @@ mod tests {
         );
     }
 
+    /// A panic inside an effect must not strand its `ObserverId` on the
+    /// observer stack (issue #141).
+    ///
+    /// The stack is what `Signal::track` reads to decide who subscribes, so a
+    /// stranded id silently subscribes itself to *every* signal read for the
+    /// rest of the thread's life — and that observer's slot is gone, so the
+    /// symptom is unbounded queue churn far from the panic that caused it.
+    #[test]
+    fn a_panicking_effect_does_not_strand_its_observer() {
+        let depth_before = RUNTIME.with(|rt| rt.borrow().observer_stack.len());
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Effect::new(|| panic!("boom"));
+        }));
+        assert!(result.is_err(), "the effect body must have panicked");
+
+        let depth_after = RUNTIME.with(|rt| rt.borrow().observer_stack.len());
+        assert_eq!(
+            depth_after, depth_before,
+            "the observer stack must unwind with the panic"
+        );
+
+        // Positive control: the runtime is still usable afterwards, and a
+        // signal read at top level (outside any effect) does not wake anyone.
+        // With a stranded observer this signal would acquire a subscriber whose
+        // slot is gone, and every later `set` would queue it forever.
+        let sig = Signal::new(0);
+        let runs = Rc::new(Cell::new(0));
+        let r = runs.clone();
+        let _e = Effect::new(move || {
+            sig.get();
+            r.set(r.get() + 1);
+        });
+        assert_eq!(runs.get(), 1, "the new effect runs once at creation");
+
+        sig.get(); // top-level read: must not subscribe anything
+        sig.set(1);
+        assert_eq!(
+            runs.get(),
+            2,
+            "exactly the one live subscriber re-runs, no more"
+        );
+    }
+
+    /// The same guarantee for a memo, whose user computation runs lazily in
+    /// `Memo::get` rather than in its dirty-marker effect.
+    #[test]
+    fn a_panicking_memo_computation_does_not_strand_its_observer() {
+        let depth_before = RUNTIME.with(|rt| rt.borrow().observer_stack.len());
+
+        let memo = Memo::new(|| -> i32 { panic!("boom") });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| memo.get()));
+        assert!(result.is_err(), "the memo computation must have panicked");
+
+        let depth_after = RUNTIME.with(|rt| rt.borrow().observer_stack.len());
+        assert_eq!(
+            depth_after, depth_before,
+            "the observer stack must unwind with the panic"
+        );
+    }
+
     #[test]
     fn signal_change_subscriptions_are_independent() {
         let a = Rc::new(Cell::new(0));

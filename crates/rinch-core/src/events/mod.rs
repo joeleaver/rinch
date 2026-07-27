@@ -327,4 +327,73 @@ mod tests {
         assert_eq!(handler_count(), 0);
         assert!(!dispatch_event(id));
     }
+
+    /// An input handler must be able to touch the input registry while it runs
+    /// (issue #141).
+    ///
+    /// This is not exotic: an `oninput` writes a signal, `Signal::set` flushes
+    /// effects synchronously outside `batch()`, and an effect that flips an `if`
+    /// renders new content which registers new handlers. `dispatch_input_event`
+    /// used to hold `INPUT_REGISTRY.borrow()` across the callback, so that path
+    /// was a BorrowMutError on the first such keystroke. Pre-fix this test
+    /// panics with "already borrowed".
+    #[test]
+    fn input_handler_may_register_another_handler_while_running() {
+        clear_handlers();
+
+        let registered: std::rc::Rc<std::cell::Cell<bool>> =
+            std::rc::Rc::new(std::cell::Cell::new(false));
+        let flag = registered.clone();
+
+        let id = register_input_handler(InputCallback::new(move |_value: String| {
+            // Re-enters INPUT_REGISTRY while the dispatch is on the stack.
+            register_input_handler(InputCallback::new(|_| {}));
+            flag.set(true);
+        }));
+
+        assert!(dispatch_input_event(id, "hello".to_string()));
+        assert!(registered.get(), "the nested registration must have run");
+
+        clear_handlers();
+    }
+
+    /// The same re-entrancy reached the way production actually reaches it: the
+    /// handler writes a signal, `Signal::set` flushes effects synchronously, and
+    /// an effect renders a branch containing an input — which registers a
+    /// handler while the outer dispatch is still on the stack.
+    ///
+    /// This is the exact shape of "typing in a box that reveals another box".
+    /// Pre-fix it panics with "already borrowed: BorrowMutError".
+    #[test]
+    fn input_handler_writing_a_signal_may_trigger_handler_registration() {
+        use crate::reactive::{Effect, Signal};
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        clear_handlers();
+
+        let show_second = Signal::new(false);
+        let registrations = Rc::new(Cell::new(0));
+        let count = registrations.clone();
+
+        // Stands in for an `if show_second { TextInput {} }` branch.
+        let _effect = Effect::new(move || {
+            if show_second.get() {
+                register_input_handler(InputCallback::new(|_| {}));
+                count.set(count.get() + 1);
+            }
+        });
+        assert_eq!(registrations.get(), 0, "branch starts hidden");
+
+        let first = register_input_handler(InputCallback::new(move |_| show_second.set(true)));
+
+        assert!(dispatch_input_event(first, "hello".to_string()));
+        assert_eq!(
+            registrations.get(),
+            1,
+            "the revealed branch must have registered its handler"
+        );
+
+        clear_handlers();
+    }
 }

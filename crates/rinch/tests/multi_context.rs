@@ -358,6 +358,66 @@ fn store_root_zero_fallback() {
     });
 }
 
+#[derive(Clone, Copy)]
+struct MemoStore {
+    which: Signal<i32>,
+}
+
+/// FIXED (#141): a `Memo` re-enters its own creation root when it recomputes.
+///
+/// A memo is *lazy* — the user computation does not run in its dirty-marker
+/// effect (which carries a root) but at whichever call site first reads it after
+/// invalidation. So capturing a root on the marker, as #136 did for effects, is
+/// not enough: it is inert for the computation. Here the memo is created inside
+/// context A but never read there, then read for the first time from context B.
+/// Before the fix the computation ran under B's root and resolved B's store,
+/// silently returning 2.
+#[test]
+fn memo_recompute_resolves_its_creation_context_store() {
+    on_ui_thread(|| {
+        // Carries the Copy memo handle out of A and into B.
+        let slot: Rc<std::cell::RefCell<Option<Memo<i32>>>> =
+            Rc::new(std::cell::RefCell::new(None));
+
+        let a_slot = slot.clone();
+        let mut a = RinchContext::new(cfg(), move |__scope: &mut RenderScope| {
+            create_store(MemoStore {
+                which: Signal::new(1),
+            });
+            // Created under A's root — but deliberately NOT read here, so the
+            // computation is still pending when B mounts.
+            *a_slot.borrow_mut() = Some(Memo::new(|| use_store::<MemoStore>().which.get()));
+            rsx! { div { p { "A" } } }
+        });
+        a.update(&[]);
+
+        let b_slot = slot.clone();
+        let mut b = RinchContext::new(cfg(), move |__scope: &mut RenderScope| {
+            create_store(MemoStore {
+                which: Signal::new(2),
+            });
+            let memo = b_slot.borrow().expect("A created the memo");
+            rsx! {
+                div {
+                    p { {move || format!("memo:{}", memo.get())} }
+                }
+            }
+        });
+        b.update(&[]);
+
+        let text = doc_text(&b);
+        assert!(
+            text.contains("memo:1"),
+            "a memo created in A must resolve A's store even when first read \
+             from B (#141); got: {text}"
+        );
+
+        drop(b);
+        drop(a);
+        rinch_core::clear_context();
+    });
+}
+
 // ── 4. BOUNDS_REGISTRY per-document scoping ──────────────────────────────────
 
 /// FIXED (#134): bounds-signal registry entries carry their document's

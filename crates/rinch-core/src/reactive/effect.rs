@@ -129,6 +129,32 @@ impl Drop for Effect {
     }
 }
 
+/// RAII guard for the observer stack.
+///
+/// Pushes an [`ObserverId`] on construction and pops it on drop — including
+/// while unwinding. A bare push/pop pair leaks the id when user code panics
+/// between them, and a stale observer then subscribes itself to every signal
+/// read for the rest of the thread's life (issue #141).
+pub(super) struct ObserverGuard;
+
+impl ObserverGuard {
+    pub(super) fn push(id: ObserverId) -> Self {
+        RUNTIME.with(|rt| rt.borrow_mut().observer_stack.push(id));
+        ObserverGuard
+    }
+}
+
+impl Drop for ObserverGuard {
+    fn drop(&mut self) {
+        // `try_with`: TLS may already be torn down at thread exit.
+        let _ = RUNTIME.try_with(|rt| {
+            if let Ok(mut rt) = rt.try_borrow_mut() {
+                rt.observer_stack.pop();
+            }
+        });
+    }
+}
+
 /// Run a specific effect by ID
 pub(super) fn run_effect(id: ObserverId) {
     let effect = EFFECTS.with(|effects| effects.borrow().get(id.0).and_then(|e| e.clone()));
@@ -146,20 +172,14 @@ pub(super) fn run_effect(id: ObserverId) {
         // (issue #136).
         let _root_guard = crate::context::push_context_root(inner.root);
 
-        // Push this effect as the current observer
-        RUNTIME.with(|rt| {
-            rt.borrow_mut().observer_stack.push(id);
-        });
+        // Push this effect as the current observer. RAII so a panic in the
+        // effect body cannot strand it on the stack (issue #141).
+        let _observer_guard = ObserverGuard::push(id);
 
         // Run the effect
         (inner.f.borrow_mut())();
 
         tracing::debug!("run_effect({}): done", id.0);
-
-        // Pop the observer
-        RUNTIME.with(|rt| {
-            rt.borrow_mut().observer_stack.pop();
-        });
     } else {
         tracing::debug!("run_effect({}): SKIPPED - no effect found (dropped?)", id.0);
     }

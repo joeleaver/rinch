@@ -402,16 +402,25 @@ pub fn get_input_context() -> InputContext {
 /// Also sets the `INPUT_EVENT_HANDLED` flag which can be checked with
 /// `check_and_clear_input_handled()`.
 pub fn dispatch_input_event(id: EventHandlerId, value: String) -> bool {
-    INPUT_REGISTRY.with(|registry| {
-        if let Some(handler) = registry.borrow().handlers.get(&id) {
-            handler.invoke(value);
-            // Signal that an input event was handled - caller should re-render
-            INPUT_EVENT_HANDLED.with(|flag| *flag.borrow_mut() = true);
-            true
-        } else {
-            false
-        }
-    })
+    // Clone the handler out of the registry so the borrow is released before
+    // calling it — the same reason `dispatch_event` does. An input handler
+    // typically writes a signal, and `Signal::set` flushes effects
+    // synchronously outside `batch()`; those effects can register new handlers
+    // (an `if` flipping to a branch with a button) or re-enter this registry.
+    // Holding `borrow()` across `invoke` makes that a BorrowMutError.
+    let handler: Option<InputCallback> = INPUT_REGISTRY.with(|registry| {
+        let reg = registry.borrow();
+        reg.handlers.get(&id).cloned()
+    });
+
+    if let Some(h) = handler {
+        h.invoke(value);
+        // Signal that an input event was handled - caller should re-render
+        INPUT_EVENT_HANDLED.with(|flag| *flag.borrow_mut() = true);
+        true
+    } else {
+        false
+    }
 }
 
 /// Register a file-drop event handler and return its ID.
