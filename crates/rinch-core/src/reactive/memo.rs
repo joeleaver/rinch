@@ -58,6 +58,10 @@ struct MemoInner<T> {
     /// context A but first read from context B resolved B's stores (issue #136
     /// follow-up, issue #141). `0` = the thread-global fallback root.
     root: u64,
+    /// The scope that owned this memo at creation, re-entered around the lazy
+    /// recompute for the same reason `root` is (issue #141). Weak by
+    /// construction — see [`Owner`](super::Owner).
+    owner: super::Owner,
     /// Observers to notify, ordered — same contract (and same reason) as
     /// `SignalSlot::subscribers`: a memo's dependents run in registration order.
     subscribers: RefCell<BTreeSet<ObserverId>>,
@@ -77,6 +81,7 @@ impl<T: Clone + 'static> Memo<T> {
             f: RefCell::new(Box::new(f)),
             dirty: Cell::new(true),
             root: crate::context::current_context_root(),
+            owner: super::Owner::current(),
             subscribers: RefCell::new(BTreeSet::new()),
         });
 
@@ -108,6 +113,10 @@ impl<T: Clone + 'static> Memo<T> {
                 })),
                 disposed: Cell::new(false),
                 root: crate::context::current_context_root(),
+                // Inert: the marker closure only flips a flag and queues
+                // observers, so it allocates nothing to attribute. Set for
+                // uniformity with every other `EffectInner`.
+                owner: super::Owner::current(),
             }));
         });
 
@@ -116,6 +125,14 @@ impl<T: Clone + 'static> Memo<T> {
         // holds the second strong Rc to this same MemoInner.
         let (store_id, generation) =
             MEMO_STORE.with(|store| store.borrow_mut().alloc(inner as Rc<dyn Any>, id));
+
+        // Attribute this memo to the ambient owner, if any (issue #141). The
+        // marker effect is deliberately NOT recorded separately: `free_memo`
+        // releases the slot and the marker together, so one record covers both.
+        super::scope::record_memo(super::scope::MemoKey {
+            id: store_id,
+            generation,
+        });
 
         Self {
             id: store_id,
@@ -171,8 +188,14 @@ impl<T: Clone + 'static> Memo<T> {
         // one context but first read from another resolves the wrong stores
         // (issue #136 follow-up). Both guards are RAII so a panic in the user
         // computation cannot strand state (issue #141).
+        //
+        // The owner is restored for the same structural reason as the root: the
+        // computation runs in the *reader's* frame, so a memo created in one
+        // component but first read from another would otherwise attribute the
+        // resources it creates to whatever happened to be rendering.
         if inner.dirty.get() {
             let _root_guard = crate::context::push_context_root(inner.root);
+            let _owner_guard = inner.owner.push();
             let _observer_guard = super::effect::ObserverGuard::push(inner.id);
 
             let value = (inner.f.borrow())();
@@ -201,6 +224,25 @@ impl<T: 'static> Memo<T> {
     /// (issue #141).
     pub fn is_alive(&self) -> bool {
         MEMO_STORE.with(|store| store.borrow().get_inner(self.id, self.generation).is_some())
+    }
+
+    /// Detach this memo from its owning scope, giving it app lifetime.
+    ///
+    /// The memo counterpart of [`Signal::leak`](super::Signal::leak); the same
+    /// "call it in the same render that created it" rule applies.
+    #[track_caller]
+    pub fn leak(self) -> Self {
+        if !super::scope::forget_memo(super::scope::MemoKey {
+            id: self.id,
+            generation: self.generation,
+        }) {
+            tracing::debug!(
+                "Memo::leak() at {}: no ambient owner held this memo; it already had \
+                 app lifetime",
+                std::panic::Location::caller()
+            );
+        }
+        self
     }
 }
 

@@ -490,7 +490,12 @@ impl RinchApp {
 
         // Run the component
         let component = self.component.take().expect("component already consumed");
+        // The root scope owns everything the component tree builds (issue
+        // #141). Deliberately narrower than `_root_guard` above, which spans the
+        // whole function: the owner must not cover initial layout, caret
+        // updates or scroll-clamp dispatch, none of which belong to the tree.
         let root = {
+            let _owner = scope.borrow().push_owner();
             let mut scope_ref = scope.borrow_mut();
             component(&mut scope_ref)
         };

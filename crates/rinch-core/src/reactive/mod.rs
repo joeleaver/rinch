@@ -83,7 +83,10 @@ pub use bounds::{
 pub use effect::Effect;
 pub use memo::Memo;
 pub use poll::{PollRate, drain_polls, poll_signal};
-pub use scope::Scope;
+/// Attribution hook for `crate::events`, which registers handlers on behalf of
+/// the scope currently rendering.
+pub(crate) use scope::record_handler;
+pub use scope::{OwnedCounts, Owner, OwnerGuard, Scope, current_owner, unowned};
 pub use signal::Signal;
 
 use std::any::Any;
@@ -129,6 +132,16 @@ pub(crate) struct Runtime {
     /// Counter for generating unique IDs
     next_id: usize,
 
+    /// Stack of scopes that own newly created resources.
+    ///
+    /// Deliberately separate from `observer_stack`: that one answers "who
+    /// subscribes to this read" and is suspended by [`untracked`]; this one
+    /// answers "who owns this allocation" and is suspended by [`unowned`].
+    ///
+    /// Entries are [`Weak`](std::rc::Weak), never `Rc` — see [`Owner`].
+    /// Module-private, so the private `scope::ScopeInner` can appear in its type.
+    owner_stack: Vec<std::rc::Weak<scope::ScopeInner>>,
+
     /// Callbacks invoked when any signal changes (for UI re-render / dirty
     /// tracking). Multi-subscriber: each entry is `(subscription id, callback)`;
     /// a [`SignalChangeSubscription`] removes only its own entry on drop, so
@@ -152,6 +165,7 @@ impl Runtime {
             pending_effects_set: HashSet::new(),
             batching: false,
             next_id: 0,
+            owner_stack: Vec::new(),
             on_signal_change: Vec::new(),
             next_signal_change_sub: 0,
             signals_changed: false,
@@ -643,6 +657,13 @@ pub fn derived<T: Clone + 'static>(f: impl Fn() -> T + 'static) -> Memo<T> {
 /// Run a function without tracking any signal reads.
 ///
 /// Useful for reading signals without creating subscriptions.
+///
+/// # See also
+///
+/// [`unowned`] suspends the *owner* stack instead of the *observer* stack —
+/// it changes who owns resources created inside `f`, not who subscribes to
+/// signals read inside it. The two are independent, and picking the wrong one
+/// fails silently.
 pub fn untracked<R>(f: impl FnOnce() -> R) -> R {
     // Temporarily remove the current observer
     let observer = RUNTIME.with(|rt| rt.borrow_mut().observer_stack.pop());
@@ -1143,6 +1164,125 @@ mod tests {
 
         // Cleanup should only run once
         assert_eq!(cleanup_count.get(), 1);
+    }
+
+    /// An effect re-runs under the scope that *created* it, not under whatever
+    /// happened to be rendering when the flush fired (issue #141).
+    ///
+    /// `flush_effects` is reached from arbitrary stacks — an event handler, a
+    /// timer, the cross-thread drain — so without the restore in `run_effect`
+    /// the third run below would attribute its signal to `b`.
+    #[test]
+    fn an_effect_reruns_under_its_creation_time_owner() {
+        let a = Scope::new();
+        let b = Scope::new();
+        let trigger = Signal::new(0);
+        let seen: Rc<RefCell<Vec<Option<Owner>>>> = Rc::new(RefCell::new(Vec::new()));
+
+        let log = seen.clone();
+        let effect = a.run(|| {
+            Effect::new(move || {
+                trigger.get();
+                Signal::new(0);
+                log.borrow_mut().push(current_owner());
+            })
+        });
+        a.add_effect(effect);
+
+        trigger.set(1); // re-run with an empty owner stack
+        b.run(|| trigger.set(2)); // re-run with an unrelated owner ambient
+
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 3, "creation run plus two re-runs");
+        for (i, owner) in seen.iter().enumerate() {
+            assert_eq!(
+                *owner,
+                Some(a.owner()),
+                "run {i} must observe the creation-time owner"
+            );
+        }
+        assert_eq!(
+            b.owned_counts().signals,
+            0,
+            "the ambient owner at flush time must not capture the effect's work"
+        );
+        assert_eq!(a.owned_counts().signals, 3);
+    }
+
+    /// A memo's user computation runs lazily, in the *reader's* frame, so it
+    /// must restore its creation-time owner too — the ownership analogue of the
+    /// context-root bug `MemoInner::root` exists to close.
+    #[test]
+    fn a_memo_recomputes_under_its_creation_time_owner() {
+        let a = Scope::new();
+        let b = Scope::new();
+        let source = Signal::new(1);
+
+        let memo = a.run(|| {
+            Memo::new(move || {
+                Signal::new(0);
+                source.get() * 2
+            })
+        });
+        assert_eq!(
+            a.owned_counts().signals,
+            0,
+            "a memo is lazy: nothing has computed yet"
+        );
+
+        // First read happens from inside a DIFFERENT scope.
+        assert_eq!(b.run(|| memo.get()), 2);
+
+        assert_eq!(
+            b.owned_counts().signals,
+            0,
+            "the reading scope must not capture the memo's computation"
+        );
+        assert_eq!(a.owned_counts().signals, 1);
+    }
+
+    /// The owner guard pops while unwinding, and — critically — does not abort
+    /// the process doing so. A panic raised inside a `Drop` during unwind is a
+    /// hard abort, which would take down the whole test binary rather than fail
+    /// one test.
+    #[test]
+    fn an_owner_guard_pops_while_unwinding() {
+        let scope = Scope::new();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            scope.run(|| panic!("boom"));
+        }));
+        assert!(result.is_err(), "the body must have panicked");
+
+        assert!(
+            current_owner().is_none(),
+            "the guard must pop while unwinding"
+        );
+        Signal::new(0);
+        assert_eq!(
+            scope.owned_counts().signals,
+            0,
+            "a stranded owner would capture every later allocation"
+        );
+    }
+
+    /// Nested guards restore by depth, so an inner scope never clobbers the
+    /// outer one's entry.
+    #[test]
+    fn nested_owner_guards_restore_by_depth() {
+        let a = Scope::new();
+        let b = Scope::new();
+
+        a.run(|| {
+            let outer = current_owner().expect("a is ambient");
+            b.run(|| {
+                let inner = current_owner().expect("b is ambient");
+                assert_ne!(inner, outer, "the inner scope is a distinct owner");
+            });
+            assert_eq!(current_owner(), Some(outer), "the outer owner is restored");
+        });
+
+        assert!(current_owner().is_none(), "the stack drains completely");
     }
 
     #[test]

@@ -79,7 +79,12 @@ where
     ) {
         if let Some(doc) = doc_weak.upgrade() {
             let mut child_scope = RenderScope::new(doc, parent_id);
-            let content = branch_fn(&mut child_scope);
+            // Attribute the branch's resources to the branch's own scope
+            // (issue #141). Covers the initial render and the arm swap alike.
+            let content = {
+                let _owner = child_scope.push_owner();
+                branch_fn(&mut child_scope)
+            };
             marker.insert_after(&content);
             current_content.borrow_mut().push(content);
             *current_scope.borrow_mut() = Some(child_scope);
@@ -146,4 +151,67 @@ where
     scope.create_effect_from(effect);
 
     marker
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::dom::traits::DomDocument;
+    use crate::dom::{RenderScope, mock::MockDomDocument};
+    use crate::reactive::{Owner, Signal, current_owner};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// Each `match` arm body is attributed to that arm's own child scope, and
+    /// switching arms disposes the outgoing one (issue #141).
+    ///
+    /// Both entry paths — the initial render and the effect-driven arm swap —
+    /// run through the same `render_branch` helper, so one guard covers both.
+    #[test]
+    fn an_arm_body_is_attributed_to_its_own_child_scope() {
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let which = Signal::new(0usize);
+        let seen: Rc<RefCell<Vec<Option<Owner>>>> = Rc::new(RefCell::new(Vec::new()));
+
+        let branches: Vec<super::BranchFn> = (0..2)
+            .map(|_| {
+                let log = seen.clone();
+                Box::new(move |s: &mut RenderScope| {
+                    log.borrow_mut().push(current_owner());
+                    Signal::new(0);
+                    s.create_element("div")
+                }) as super::BranchFn
+            })
+            .collect();
+
+        let marker = super::match_dom(&mut scope, &parent, move || which.get(), branches);
+        let _ = marker;
+
+        which.set(1); // swap arms
+
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 2, "initial render plus one arm swap");
+
+        let first = seen[0].clone().expect("an arm runs under an owner");
+        let second = seen[1].clone().expect("an arm runs under an owner");
+        assert_ne!(first, second, "each arm gets its own child scope");
+        assert_ne!(
+            second,
+            scope.owner(),
+            "an arm is not attributed to the scope hosting the `match`"
+        );
+        assert!(
+            !first.is_alive(),
+            "switching arms disposed the outgoing one"
+        );
+        assert_eq!(
+            second.owned_counts().map(|c| c.signals),
+            Some(1),
+            "the live arm owns the signal its body created"
+        );
+        assert_eq!(scope.owned_counts().signals, 0);
+    }
 }

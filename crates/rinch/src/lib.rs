@@ -211,7 +211,13 @@ pub mod prelude {
 pub use rinch_core::element::{
     Children, CloseRequestCallback, Element, ThemeProviderProps, WindowProps,
 };
-pub use rinch_core::{Effect, Memo, Scope, Signal, batch, derived, untracked};
+// `Owner` / `current_owner` / `unowned` sit at the crate root rather than in the
+// prelude, alongside `Effect`, for the same reason: they are advanced tools, and
+// `unowned` in particular is an attractive nuisance — it turns a lifetime bug
+// into a permanent leak. Reach for `Signal::try_get` / `is_alive` first.
+pub use rinch_core::{
+    Effect, Memo, Owner, Scope, Signal, batch, current_owner, derived, unowned, untracked,
+};
 pub use rinch_macros::{component, rsx};
 #[cfg(feature = "desktop")]
 #[allow(deprecated)]

@@ -40,6 +40,13 @@ pub(super) struct EffectInner {
     /// every run so `use_context`/`use_store` resolve the same namespace as at
     /// build time (issue #136). `0` = the thread-global fallback root.
     pub(super) root: u64,
+    /// The scope that owned this effect when it was created, re-entered on every
+    /// run so resources the body creates are attributed to the component that
+    /// built it rather than to whatever happened to be rendering when the flush
+    /// fired (issue #141). Weak by construction — see [`Owner`](super::Owner);
+    /// a strong reference here would make every scope immortal, since `EFFECTS`
+    /// holds the `Rc<EffectInner>` until `Scope::dispose` clears it.
+    pub(super) owner: super::Owner,
 }
 
 impl Effect {
@@ -55,6 +62,7 @@ impl Effect {
             f: RefCell::new(Box::new(f)),
             disposed: Cell::new(false),
             root: crate::context::current_context_root(),
+            owner: super::Owner::current(),
         });
 
         // Store the effect
@@ -66,6 +74,10 @@ impl Effect {
             }
             effects[idx] = Some(Rc::clone(&inner));
         });
+
+        // Attribute before the first run: the body runs synchronously below and
+        // may create resources of its own (issue #141).
+        super::scope::record_effect(id);
 
         // Run the effect immediately
         run_effect(id);
@@ -85,6 +97,7 @@ impl Effect {
             f: RefCell::new(Box::new(f)),
             disposed: Cell::new(false),
             root: crate::context::current_context_root(),
+            owner: super::Owner::current(),
         });
 
         EFFECTS.with(|effects| {
@@ -95,6 +108,8 @@ impl Effect {
             }
             effects[idx] = Some(inner);
         });
+
+        super::scope::record_effect(id);
 
         Effect { id }
     }
@@ -171,6 +186,12 @@ pub(super) fn run_effect(id: ObserverId) {
         // use_context/use_store resolve the same namespace as at build time
         // (issue #136).
         let _root_guard = crate::context::push_context_root(inner.root);
+
+        // Re-enter the scope that owned this effect at creation, for the same
+        // reason: `flush_effects` runs from arbitrary stacks (an event handler,
+        // a timer, the cross-thread drain), so the ambient owner at flush time
+        // is unrelated to the component this effect belongs to (issue #141).
+        let _owner_guard = inner.owner.push();
 
         // Push this effect as the current observer. RAII so a panic in the
         // effect body cannot strand it on the stack (issue #141).

@@ -110,9 +110,48 @@ impl RenderScope {
         NodeHandle::new(node_id, self.doc.clone())
     }
 
+    /// Make this scope the ambient owner until the returned guard drops.
+    ///
+    /// Resources created while the guard is live — signals, memos, effects,
+    /// event handlers — are attributed to this scope (issue #141). The render
+    /// sites wrap exactly the user render call:
+    ///
+    /// ```ignore
+    /// let node = { let _owner = child_scope.push_owner(); view(&item, &mut child_scope) };
+    /// ```
+    ///
+    /// Takes `&self` and returns a lifetime-free guard, so the `&mut` borrow of
+    /// the same scope on the next line is still legal.
+    #[doc(hidden)]
+    pub fn push_owner(&self) -> crate::reactive::OwnerGuard {
+        self.reactive_scope.push_owner()
+    }
+
+    /// What this scope owns. See [`OwnedCounts`](crate::reactive::OwnedCounts).
+    #[doc(hidden)]
+    pub fn owned_counts(&self) -> crate::reactive::OwnedCounts {
+        self.reactive_scope.owned_counts()
+    }
+
+    /// A non-owning reference to this scope's reactive scope, for comparison
+    /// and diagnostics. See [`Owner`](crate::reactive::Owner).
+    #[doc(hidden)]
+    pub fn owner(&self) -> crate::reactive::Owner {
+        self.reactive_scope.owner()
+    }
+
     /// Create a child scope for nested rendering.
     ///
     /// Child scopes are cleaned up when the parent scope is disposed.
+    ///
+    /// # Warning
+    ///
+    /// Resources created through the returned `&mut` are attributed to the
+    /// **ambient** owner — normally the parent — not to the child, because the
+    /// returned reference outlives any guard this method could hand back. Its
+    /// only caller is a test; prefer [`RenderScope::new`] plus
+    /// [`push_owner`](RenderScope::push_owner).
+    #[doc(hidden)]
     pub fn child_scope(&mut self, parent: &NodeHandle) -> &mut RenderScope {
         let scope = RenderScope::new(self.doc().expect("Document dropped"), parent.node_id);
         self.children.push(scope);

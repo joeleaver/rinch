@@ -705,3 +705,56 @@ fn a_bounds_driven_effect_may_patch_the_dom() {
         drop(ctx);
     });
 }
+
+// ── the root mount owns the tree it builds (#141) ────────────────────────────
+
+/// The root component build runs under the root `RenderScope`'s ambient owner,
+/// and that owner is popped before mounting returns.
+///
+/// This pins the cross-crate half of #141 PR2: the guard lives in
+/// `RinchApp::mount_component`, so it cannot be exercised from `rinch-core`.
+/// It is deliberately narrower than the surrounding `_root_guard` — the owner
+/// must not cover initial layout, caret updates or scroll-clamp dispatch, none
+/// of which belong to the component tree.
+#[test]
+fn the_root_build_is_attributed_to_the_root_scope() {
+    on_ui_thread(|| {
+        assert!(
+            rinch::current_owner().is_none(),
+            "no ambient owner before mounting"
+        );
+
+        let seen: Rc<std::cell::RefCell<Option<rinch::Owner>>> =
+            Rc::new(std::cell::RefCell::new(None));
+        let log = seen.clone();
+
+        let mut ctx = RinchContext::new(cfg(), move |__scope: &mut RenderScope| {
+            *log.borrow_mut() = rinch::current_owner();
+            Signal::new(0i32);
+            rsx! { div { "owned" } }
+        });
+        ctx.update(&[]);
+
+        assert!(
+            rinch::current_owner().is_none(),
+            "the mount guard must not outlive the build"
+        );
+
+        let owner = seen
+            .borrow()
+            .clone()
+            .expect("the root component must build under an ambient owner");
+        assert!(owner.is_alive(), "the root scope outlives the mount");
+        assert_eq!(
+            owner.owned_counts().map(|c| c.signals),
+            Some(1),
+            "a signal created by the root component belongs to the root scope"
+        );
+
+        drop(ctx);
+        assert!(
+            !owner.is_alive(),
+            "dropping the context disposes the root scope"
+        );
+    });
+}
