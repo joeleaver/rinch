@@ -180,6 +180,11 @@ pub mod prelude {
     #[cfg(feature = "collaboration")]
     pub use crate::editor::{CollabError, collab_receive_for, post_remote_delta};
 
+    // The Automerge sync-protocol types, for a caller driving
+    // `EditorHandle::collab_generate_sync_message` / `collab_receive_sync_message`.
+    #[cfg(feature = "collaboration")]
+    pub use crate::editor::{ChangeHash, SyncMessage, SyncState};
+
     // Desktop-only GPU types for render surfaces
     #[cfg(feature = "gpu")]
     pub use crate::render_surface::{GpuTextureRegistrar, TextureSource};
