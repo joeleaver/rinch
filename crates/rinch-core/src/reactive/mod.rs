@@ -83,10 +83,11 @@ pub use bounds::{
 pub use effect::Effect;
 pub use memo::Memo;
 pub use poll::{PollRate, drain_polls, poll_signal};
-/// Attribution hook for `crate::events`, which registers handlers on behalf of
-/// the scope currently rendering.
-pub(crate) use scope::record_handler;
 pub use scope::{OwnedCounts, Owner, OwnerGuard, Scope, current_owner, unowned};
+/// Ambient-owner hooks for the rest of the crate: `crate::events` attributes
+/// handlers to the scope currently rendering, and `crate::context` ties a
+/// store/context entry to the scope that created it (issue #141).
+pub(crate) use scope::{on_cleanup_for_ambient_owner, record_handler};
 pub use signal::Signal;
 
 use std::any::Any;

@@ -211,7 +211,14 @@ impl Scope {
 
     /// Register a cleanup function to run when this scope is disposed.
     ///
-    /// Cleanup functions run after child scopes and effects are disposed.
+    /// Today cleanups run *before* this scope's child scopes are processed, and
+    /// before its effects are actually disposed — disposal only enqueues them.
+    /// **Do not depend on either**: issue #141's PR4 reorders disposal to
+    /// handlers → effects → cleanups so that a cleanup cannot resurrect a
+    /// disposed effect.
+    ///
+    /// A cleanup must not register another cleanup on the *same* scope: the
+    /// cleanup list is borrowed for the duration of the drain that runs it.
     pub fn on_cleanup<F: FnOnce() + 'static>(&self, f: F) {
         self.0.cleanups.borrow_mut().push(Box::new(f));
     }
@@ -578,16 +585,25 @@ pub fn unowned<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
-/// Run `f` against the ambient owner's bucket, if there is a live one.
-fn with_ambient_owned<R>(f: impl FnOnce(&mut Owned) -> R) -> Option<R> {
+/// Run `f` against the live ambient owner's scope, if there is one.
+///
+/// "Live" is load-bearing in both directions: a dead **or disposed** top entry
+/// resolves to *no owner*, and the stack is deliberately not walked down past it
+/// — it is not an ancestor chain (see [`Owner::push`]).
+///
+/// Holds a strong `Rc<ScopeInner>` across `f`, so `f` must stay allocation-only.
+/// No user code may run inside it.
+fn with_ambient_scope<R>(f: impl FnOnce(&ScopeInner) -> R) -> Option<R> {
     let inner = RUNTIME.with(|rt| rt.borrow().owner_stack.last().and_then(|w| w.upgrade()))?;
     if inner.disposed.get() {
         return None;
     }
-    // The borrow is released before returning, and `f` only touches plain data,
-    // so no user code runs under it.
-    let result = f(&mut inner.owned.borrow_mut());
-    Some(result)
+    Some(f(&inner))
+}
+
+/// Run `f` against the ambient owner's bucket, if there is a live one.
+fn with_ambient_owned<R>(f: impl FnOnce(&mut Owned) -> R) -> Option<R> {
+    with_ambient_scope(|inner| f(&mut inner.owned.borrow_mut()))
 }
 
 /// Walk the owner stack top-down and run `f` against the first live bucket for
@@ -626,6 +642,50 @@ pub(in crate::reactive) fn record_effect(id: ObserverId) {
 /// Called from [`crate::events`] at registration time.
 pub(crate) fn record_handler(id: EventHandlerId) {
     with_ambient_owned(|owned| owned.handlers.push(id));
+}
+
+/// Register a cleanup to run when the ambient owner is disposed.
+///
+/// Returns `false` when there is no live ambient owner, in which case the
+/// caller's resource keeps **app lifetime** — the #141 SD2 default. Like
+/// [`with_ambient_owned`], a dead or disposed top entry counts as *no owner*
+/// and does not fall through to the next entry down: the owner stack is not an
+/// ancestor chain.
+///
+/// Called from [`crate::context`] to tie a store/context entry to the scope
+/// that created it.
+pub(crate) fn on_cleanup_for_ambient_owner(f: impl FnOnce() + 'static) -> bool {
+    with_ambient_scope(|inner| {
+        // `try_borrow_mut`, not `borrow_mut`: `dispose_into_queue` drains this
+        // vec with the borrow held across every cleanup it runs, so reaching a
+        // mid-drain scope here would panic.
+        //
+        // Reaching one is not easy — `dispose` pushes no owner, so the stack is
+        // normally empty by then — but it is possible: a cleanup writes a
+        // signal, the synchronous flush re-runs an effect that is
+        // enqueued-but-not-yet-disposed, and `run_effect` re-pushes that
+        // effect's owner, which is the disposing scope.
+        //
+        // Two guards cover it and either alone suffices: `with_ambient_scope`
+        // rejects a disposed owner (`disposed` is set before the drain begins),
+        // and this `try_borrow_mut`. Kept redundant deliberately — degrading to
+        // "not registered" beats taking the app down, matching the lenient-write
+        // stance PR1 established.
+        match inner.cleanups.try_borrow_mut() {
+            Ok(mut cleanups) => {
+                cleanups.push(Box::new(f));
+                true
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "a cleanup was registered while its owning scope was already disposing; \
+                     it will not run"
+                );
+                false
+            }
+        }
+    })
+    .unwrap_or(false)
 }
 
 /// Detach a signal from whichever owner on the stack recorded it.
@@ -833,6 +893,52 @@ mod tests {
             "and ownership must not fall through to the next entry down"
         );
         assert!(signal.is_alive(), "the signal simply has app lifetime");
+    }
+
+    /// The cleanup hook `crate::context` uses to tie a store entry to its
+    /// creating scope registers against a **live ambient** owner only.
+    #[test]
+    fn on_cleanup_for_ambient_owner_registers_only_against_a_live_ambient_owner() {
+        let fired = Rc::new(Cell::new(0));
+
+        // No ambient owner => not registered (the resource keeps app lifetime).
+        assert!(
+            !on_cleanup_for_ambient_owner(|| {}),
+            "an empty owner stack must not accept a cleanup"
+        );
+
+        let scope = Scope::new();
+        let hits = fired.clone();
+        scope.run(|| {
+            assert!(
+                on_cleanup_for_ambient_owner(move || hits.set(hits.get() + 1)),
+                "a live ambient owner accepts the cleanup"
+            );
+            // `unowned` suspends the owner stack, so nothing to register against.
+            unowned(|| {
+                assert!(
+                    !on_cleanup_for_ambient_owner(|| {}),
+                    "`unowned` must hide the ambient owner from the cleanup hook too"
+                );
+            });
+        });
+
+        assert_eq!(fired.get(), 0, "cleanups do not run before disposal");
+        scope.dispose();
+        assert_eq!(fired.get(), 1, "the registered cleanup ran on dispose");
+
+        // A disposed top entry counts as no owner, and is NOT walked past.
+        let outer = Scope::new();
+        let inner = Scope::new();
+        outer.run(|| {
+            let _inner = inner.push_owner();
+            inner.dispose();
+            assert!(
+                !on_cleanup_for_ambient_owner(|| {}),
+                "a disposed ambient owner must not accept a cleanup, and must not \
+                 fall through to the live scope beneath it"
+            );
+        });
     }
 
     /// `leak` searches the whole owner stack, not just its top.
