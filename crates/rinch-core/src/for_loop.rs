@@ -164,7 +164,13 @@ where
         for item in initial_items {
             if let Some(doc) = doc_weak.upgrade() {
                 let mut child_scope = RenderScope::new(doc, parent_id);
-                let node = view(&item, &mut child_scope);
+                // Each item owns what its view creates (issue #141). The guard
+                // ends before `state.insert` below, which can displace — and so
+                // dispose — a live item scope on a duplicate key.
+                let node = {
+                    let _owner = child_scope.push_owner();
+                    view(&item, &mut child_scope)
+                };
 
                 if initial_nodes.is_empty() {
                     marker.insert_after(&node);
@@ -242,8 +248,15 @@ where
                         // Wrap in untracked so signal reads during view rendering
                         // don't subscribe the for-loop's parent effect. Items create
                         // their own effects for reactivity via {|| expr} closures.
-                        let node =
-                            crate::reactive::untracked(|| view_clone(item, &mut child_scope));
+                        //
+                        // The owner guard is a separate stack from `untracked`'s
+                        // observer stack (issue #141). It must stay inside this
+                        // match arm: the `Remove` arm disposes scopes, and that
+                        // must run under the reconcile effect's owner.
+                        let node = {
+                            let _owner = child_scope.push_owner();
+                            crate::reactive::untracked(|| view_clone(item, &mut child_scope))
+                        };
 
                         // Insert at the correct position as sibling.
                         // Find the node to insert after: either the previous
@@ -353,8 +366,13 @@ where
                                 old_scope.dispose();
                             }
                             let mut child_scope = RenderScope::new(doc, parent_id);
-                            let new_node =
-                                crate::reactive::untracked(|| view_clone(item, &mut child_scope));
+                            // The re-rendered item owns its new resources
+                            // (issue #141); the old scope was disposed above,
+                            // under the reconcile effect's owner.
+                            let new_node = {
+                                let _owner = child_scope.push_owner();
+                                crate::reactive::untracked(|| view_clone(item, &mut child_scope))
+                            };
                             old_state.node.insert_after(&new_node);
                             old_state.node.remove();
                             old_state.node = new_node;
@@ -529,6 +547,92 @@ mod tests {
     struct TestItem {
         id: String,
         name: String,
+    }
+
+    /// Each item body is attributed to that item's own child scope, across all
+    /// three of the `for` loop's render sites: the initial build, an `Insert`
+    /// during reconcile, and a data-change re-render (issue #141).
+    ///
+    /// Also proves the item guards nest correctly *inside* `run_effect`'s push —
+    /// the reconcile effect is itself running with its own owner ambient when
+    /// sites 7 and 8 fire.
+    #[test]
+    fn an_item_body_is_attributed_to_its_own_item_scope() {
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use crate::reactive::{Owner, Signal, current_owner};
+        use std::cell::RefCell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let items = Signal::new(vec![TestItem {
+            id: "a".into(),
+            name: "A".into(),
+        }]);
+        #[allow(clippy::type_complexity)]
+        let seen: Rc<RefCell<Vec<(String, Option<Owner>)>>> = Rc::new(RefCell::new(Vec::new()));
+
+        let log = seen.clone();
+        let marker = super::for_each_dom_typed(
+            &mut scope,
+            &parent,
+            move || items.get(),
+            |item: &TestItem| item.id.clone(),
+            move |item: TestItem, s: &mut RenderScope| {
+                log.borrow_mut().push((item.name.clone(), current_owner()));
+                Signal::new(0);
+                s.create_element("div")
+            },
+        );
+        let _ = marker;
+
+        // Site 7: reconcile inserts a new key.
+        items.update(|v| {
+            v.push(TestItem {
+                id: "b".into(),
+                name: "B".into(),
+            })
+        });
+        // Site 8: an existing key's data changes, forcing a re-render.
+        items.update(|v| v[0].name = "A2".into());
+
+        let seen = seen.borrow();
+        let names: Vec<&str> = seen.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["A", "B", "A2"], "all three render sites fired");
+
+        let owners: Vec<Owner> = seen
+            .iter()
+            .map(|(n, o)| o.clone().unwrap_or_else(|| panic!("{n} ran with no owner")))
+            .collect();
+
+        for (i, owner) in owners.iter().enumerate() {
+            assert_ne!(
+                *owner,
+                scope.owner(),
+                "render {i} must not be attributed to the parent scope"
+            );
+            for (j, other) in owners.iter().enumerate().skip(i + 1) {
+                assert_ne!(*owner, *other, "renders {i} and {j} must have own scopes");
+            }
+        }
+
+        assert!(
+            !owners[0].is_alive(),
+            "the re-rendered item's original scope was disposed"
+        );
+        assert_eq!(
+            owners[1].owned_counts().map(|c| c.signals),
+            Some(1),
+            "the inserted item owns its own signal"
+        );
+        assert_eq!(
+            owners[2].owned_counts().map(|c| c.signals),
+            Some(1),
+            "the re-rendered item owns its own signal"
+        );
     }
 
     #[test]

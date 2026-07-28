@@ -127,7 +127,13 @@ where
     ) {
         if let Some(doc) = doc_weak.upgrade() {
             let mut child_scope = RenderScope::new(doc, parent_id);
-            let content = render_fn(&mut child_scope);
+            // Resources the branch creates belong to the branch's own scope, so
+            // flipping the condition takes them with it (issue #141). Covers
+            // both entry paths — initial render and the effect-driven swap.
+            let content = {
+                let _owner = child_scope.push_owner();
+                render_fn(&mut child_scope)
+            };
             marker.insert_after(&content);
             current_content.borrow_mut().push(content);
             *current_scope.borrow_mut() = Some(child_scope);
@@ -351,5 +357,77 @@ mod tests {
 
         // Cleanup ran
         assert!(cleanup_ran.get());
+    }
+
+    /// A branch body's resources are attributed to the branch's own child scope,
+    /// not to the parent that hosts the `show` (issue #141).
+    ///
+    /// Both entry paths are covered by the single push in
+    /// `insert_content_after_marker`: the initial render, and the effect-driven
+    /// swap when the condition flips.
+    #[test]
+    fn a_branch_body_is_attributed_to_its_own_child_scope() {
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use crate::reactive::{Owner, Signal, current_owner};
+        use std::cell::RefCell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let showing = Signal::new(true);
+        let owners: Rc<RefCell<Vec<Option<Owner>>>> = Rc::new(RefCell::new(Vec::new()));
+
+        let then_owners = owners.clone();
+        let else_owners = owners.clone();
+        let marker = crate::show::show_dom(
+            &mut scope,
+            &parent,
+            move || showing.get(),
+            move |s: &mut RenderScope| {
+                then_owners.borrow_mut().push(current_owner());
+                Signal::new(0);
+                s.create_element("div")
+            },
+            Some(move |s: &mut RenderScope| {
+                else_owners.borrow_mut().push(current_owner());
+                Signal::new(0);
+                s.create_element("span")
+            }),
+        );
+        let _ = marker;
+
+        showing.set(false); // flip: disposes the then-scope, builds the else-scope
+
+        let owners = owners.borrow();
+        assert_eq!(owners.len(), 2, "one initial render plus one swap");
+
+        let then_owner = owners[0].clone().expect("the branch runs under an owner");
+        let else_owner = owners[1].clone().expect("the branch runs under an owner");
+        assert_ne!(
+            then_owner, else_owner,
+            "each branch gets its own child scope"
+        );
+        assert_ne!(
+            else_owner,
+            scope.owner(),
+            "a branch is not attributed to the scope hosting the `show`"
+        );
+        assert!(
+            !then_owner.is_alive(),
+            "flipping the condition must have disposed the then-branch's scope"
+        );
+        assert_eq!(
+            else_owner.owned_counts().map(|c| c.signals),
+            Some(1),
+            "the live branch's signal belongs to that branch"
+        );
+        assert_eq!(
+            scope.owned_counts().signals,
+            0,
+            "and not to the parent render scope"
+        );
     }
 }

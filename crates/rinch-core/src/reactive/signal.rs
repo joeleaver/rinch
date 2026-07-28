@@ -147,11 +147,41 @@ impl<T: 'static> Signal<T> {
     /// Create a new signal with the given initial value.
     pub fn new(value: T) -> Self {
         let (id, generation) = SIGNAL_STORE.with(|store| store.borrow_mut().alloc(value));
+        // Attribute this signal to the ambient owner, if any. No ambient owner
+        // means app lifetime (issue #141).
+        super::scope::record_signal(super::scope::SignalKey { id, generation });
         Self {
             id,
             generation,
             _phantom: PhantomData,
         }
+    }
+
+    /// Detach this signal from its owning scope, giving it app lifetime.
+    ///
+    /// Signals created during a render are attributed to the scope being built,
+    /// and will be freed when that scope is disposed. `leak` opts out — for a
+    /// signal that is deliberately handed to something longer-lived than the
+    /// component that created it.
+    ///
+    /// Call it in the same render that created the signal: it searches the
+    /// owner stack as it stands *now*, so from a later callback (a timer, a
+    /// resumed continuation) the stack is empty and this is a no-op.
+    ///
+    /// Returns the signal, so it composes: `let s = Signal::new(0).leak();`
+    #[track_caller]
+    pub fn leak(self) -> Self {
+        if !super::scope::forget_signal(super::scope::SignalKey {
+            id: self.id,
+            generation: self.generation,
+        }) {
+            tracing::debug!(
+                "Signal::leak() at {}: no ambient owner held this signal; it already had \
+                 app lifetime",
+                std::panic::Location::caller()
+            );
+        }
+        self
     }
 
     /// Subscribe the current observer (if any) to this signal.

@@ -164,6 +164,14 @@ pub fn next_handler_id() -> EventHandlerId {
 }
 
 /// Reset the handler ID counter (useful for testing or re-rendering).
+///
+/// # Warning
+///
+/// Rewinding a process-global counter aliases any [`EventHandlerId`] still
+/// recorded against a live scope (issue #141): a later registration can reuse an
+/// id that a surviving scope still believes it owns. This is safe today only
+/// because every production caller runs at startup, before any scope exists.
+/// Do not call it once a tree is mounted.
 pub fn reset_handler_ids() {
     NEXT_HANDLER_ID.store(0, Ordering::SeqCst);
 }
@@ -185,6 +193,30 @@ pub fn remove_handlers_in_range(start: EventHandlerId, end: EventHandlerId) {
     INPUT_REGISTRY.with(|r| r.borrow_mut().handlers.retain(|k, _| !range.contains(&k.0)));
     FILE_DROP_REGISTRY.with(|r| r.borrow_mut().handlers.retain(|k, _| !range.contains(&k.0)));
     SCROLL_REGISTRY.with(|r| r.borrow_mut().handlers.retain(|k, _| !range.contains(&k.0)));
+}
+
+/// Remove a single handler, by id, from whichever registry holds it.
+///
+/// The per-id counterpart of [`remove_handlers_in_range`], which #141's dispose
+/// fixpoint (PR4) needs: id *ranges* do not nest correctly once several roots
+/// interleave registrations, but a scope's recorded ids always do.
+///
+/// Each removed callback is moved into a local and dropped **after** its
+/// registry borrow is released. The callbacks are `Rc<dyn Fn(..)>` closing over
+/// arbitrary user state whose `Drop` may touch these same registries, and
+/// `remove_handlers_in_range`'s `retain` drops them *inside* the borrow.
+///
+/// Not yet reachable from production code — PR4 wires it in.
+#[allow(dead_code)]
+pub fn unregister_handler(id: EventHandlerId) {
+    let click = EVENT_REGISTRY.with(|r| r.borrow_mut().handlers.remove(&id));
+    drop(click);
+    let input = INPUT_REGISTRY.with(|r| r.borrow_mut().handlers.remove(&id));
+    drop(input);
+    let file_drop = FILE_DROP_REGISTRY.with(|r| r.borrow_mut().handlers.remove(&id));
+    drop(file_drop);
+    let scroll = SCROLL_REGISTRY.with(|r| r.borrow_mut().handlers.remove(&id));
+    drop(scroll);
 }
 
 // Thread-local event handler registry.
@@ -281,8 +313,17 @@ pub fn register_handler(callback: EventCallback) -> EventHandlerId {
     // the handler was built under — a handler inside a mounted root resolves
     // that root's stores/contexts (issue #136).
     let root = crate::context::current_context_root();
+    // Attribute the handler to the scope registering it, and re-enter that scope
+    // on dispatch so a `Signal::new` inside the callback belongs to the
+    // component that installed it (issue #141). `Owner` is a `Weak`, so the
+    // capture does not keep the scope alive — unlike `root`, which is a `Copy`
+    // `u64` and retains nothing, this is the edge that would make every desktop
+    // scope immortal if it were strong.
+    crate::reactive::record_handler(id);
+    let owner = crate::reactive::Owner::current();
     let callback: EventCallback = Rc::new(move || {
         let _root = crate::context::push_context_root(root);
+        let _owner = owner.push();
         callback();
     });
     EVENT_REGISTRY.with(|registry| {
@@ -372,10 +413,14 @@ pub fn dispatch_event(id: EventHandlerId) -> bool {
 #[doc(hidden)]
 pub fn register_input_handler(callback: InputCallback) -> EventHandlerId {
     let id = next_handler_id();
-    // Re-enter the registration-time context root on dispatch (issue #136).
+    // Re-enter the registration-time context root and owner on dispatch
+    // (issues #136, #141).
     let root = crate::context::current_context_root();
+    crate::reactive::record_handler(id);
+    let owner = crate::reactive::Owner::current();
     let callback = InputCallback::new(move |value| {
         let _root = crate::context::push_context_root(root);
+        let _owner = owner.push();
         callback.invoke(value);
     });
     INPUT_REGISTRY.with(|registry| {
@@ -430,10 +475,14 @@ pub fn dispatch_input_event(id: EventHandlerId, value: String) -> bool {
 #[doc(hidden)]
 pub fn register_file_drop_handler(callback: FileDropCallback) -> EventHandlerId {
     let id = next_handler_id();
-    // Re-enter the registration-time context root on dispatch (issue #136).
+    // Re-enter the registration-time context root and owner on dispatch
+    // (issues #136, #141).
     let root = crate::context::current_context_root();
+    crate::reactive::record_handler(id);
+    let owner = crate::reactive::Owner::current();
     let callback = FileDropCallback::new(move |paths| {
         let _root = crate::context::push_context_root(root);
+        let _owner = owner.push();
         callback.invoke(paths);
     });
     FILE_DROP_REGISTRY.with(|registry| {
@@ -463,10 +512,14 @@ pub fn dispatch_file_drop_event(id: EventHandlerId, paths: Vec<PathBuf>) -> bool
 #[doc(hidden)]
 pub fn register_scroll_handler(callback: ScrollCallback) -> EventHandlerId {
     let id = next_handler_id();
-    // Re-enter the registration-time context root on dispatch (issue #136).
+    // Re-enter the registration-time context root and owner on dispatch
+    // (issues #136, #141).
     let root = crate::context::current_context_root();
+    crate::reactive::record_handler(id);
+    let owner = crate::reactive::Owner::current();
     let callback = ScrollCallback::new(move |scroll_top| {
         let _root = crate::context::push_context_root(root);
+        let _owner = owner.push();
         callback.invoke(scroll_top);
     });
     SCROLL_REGISTRY.with(|registry| {
@@ -523,4 +576,157 @@ pub fn clear_handlers() {
 /// Get the number of registered handlers (for debugging).
 pub fn handler_count() -> usize {
     EVENT_REGISTRY.with(|registry| registry.borrow().handlers.len())
+}
+
+#[cfg(test)]
+mod owner_tests {
+    //! A signal created inside an event handler belongs to the scope that
+    //! *registered* the handler (issue #141, maintainer decision 1).
+    //!
+    //! Dispatch happens from the event loop with an empty owner stack, so
+    //! without the re-entry in the registration wrapper these signals would have
+    //! app lifetime and never be reclaimed.
+    //!
+    //! # Harness note
+    //!
+    //! `NEXT_HANDLER_ID` is a **process-global** `AtomicUsize` while the
+    //! registries are thread-local, and `clear_handlers()` — which other tests
+    //! call from other threads — rewinds it. A test that registers two handlers
+    //! into the *same* registry could therefore see the second overwrite the
+    //! first. Hence: one handler per registry per test.
+
+    use super::*;
+    use crate::reactive::{Scope, Signal, current_owner};
+
+    /// Register one handler under `scope`, dispatch it from an empty owner
+    /// stack, and report what the callback saw.
+    fn check_handler_owner(
+        scope: &Scope,
+        register: impl FnOnce() -> EventHandlerId,
+        dispatch: impl FnOnce(EventHandlerId) -> bool,
+    ) {
+        let id = {
+            let _owner = scope.push_owner();
+            register()
+        };
+        assert_eq!(
+            scope.owned_counts().handlers,
+            1,
+            "the handler is attributed at registration time"
+        );
+
+        assert!(
+            current_owner().is_none(),
+            "dispatch must run from an empty owner stack for this to prove anything"
+        );
+        assert!(dispatch(id), "the handler must have been found");
+
+        assert!(
+            current_owner().is_none(),
+            "the wrapper's owner push must be RAII"
+        );
+        assert_eq!(
+            scope.owned_counts().signals,
+            1,
+            "a signal created inside the handler belongs to the registering scope"
+        );
+    }
+
+    #[test]
+    fn a_signal_created_in_a_click_handler_belongs_to_the_registering_scope() {
+        let scope = Scope::new();
+        check_handler_owner(
+            &scope,
+            || {
+                register_handler(Rc::new(|| {
+                    Signal::new(0);
+                }))
+            },
+            dispatch_event,
+        );
+    }
+
+    #[test]
+    fn a_signal_created_in_an_input_handler_belongs_to_the_registering_scope() {
+        let scope = Scope::new();
+        check_handler_owner(
+            &scope,
+            || {
+                register_input_handler(InputCallback::new(|_value: String| {
+                    Signal::new(0);
+                }))
+            },
+            |id| dispatch_input_event(id, "hello".into()),
+        );
+    }
+
+    #[test]
+    fn a_signal_created_in_a_file_drop_handler_belongs_to_the_registering_scope() {
+        let scope = Scope::new();
+        check_handler_owner(
+            &scope,
+            || {
+                register_file_drop_handler(FileDropCallback::new(|_paths: Vec<PathBuf>| {
+                    Signal::new(0);
+                }))
+            },
+            |id| dispatch_file_drop_event(id, Vec::new()),
+        );
+    }
+
+    #[test]
+    fn a_signal_created_in_a_scroll_handler_belongs_to_the_registering_scope() {
+        let scope = Scope::new();
+        check_handler_owner(
+            &scope,
+            || {
+                register_scroll_handler(ScrollCallback::new(|_top: f64| {
+                    Signal::new(0);
+                }))
+            },
+            |id| dispatch_scroll_event(id, 12.0),
+        );
+    }
+
+    /// A handler that dispatches another handler nests the owner pushes, so each
+    /// callback's allocations land in its own registering scope.
+    ///
+    /// The two handlers deliberately live in **different registries**: that makes
+    /// the test immune to the process-global id counter being rewound between
+    /// the two registrations (see the module note).
+    #[test]
+    fn a_re_entrant_dispatch_nests_owner_pushes() {
+        let outer = Scope::new();
+        let inner = Scope::new();
+
+        let inner_id = {
+            let _owner = inner.push_owner();
+            register_input_handler(InputCallback::new(|_value: String| {
+                Signal::new(0);
+            }))
+        };
+
+        let outer_id = {
+            let _owner = outer.push_owner();
+            register_handler(Rc::new(move || {
+                Signal::new(0); // before the nested dispatch
+                assert!(dispatch_input_event(inner_id, "x".into()));
+                Signal::new(0); // after it — the outer owner must be restored
+            }))
+        };
+
+        assert!(dispatch_event(outer_id));
+
+        assert_eq!(
+            outer.owned_counts().signals,
+            2,
+            "both of the outer handler's signals belong to the outer scope"
+        );
+        assert_eq!(
+            inner.owned_counts().signals,
+            1,
+            "the nested handler's signal belongs to the inner scope"
+        );
+        assert!(current_owner().is_none(), "the stack drains completely");
+    }
 }

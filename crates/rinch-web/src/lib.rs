@@ -206,7 +206,11 @@ where
     // Handler ids allocated during this build belong to this root (builds are
     // sequential, so the range is contiguous and exclusively ours).
     let handler_start = events::handler_id_watermark();
+    // The root scope owns everything this build creates (issue #141). Scoped to
+    // the build alone: theme injection, event delegation and root registration
+    // below are page-global setup with app lifetime.
     let root = {
+        let _owner = scope.borrow().push_owner();
         let mut scope_ref = scope.borrow_mut();
         build(&mut scope_ref)
     };

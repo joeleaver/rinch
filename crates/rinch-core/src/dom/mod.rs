@@ -732,7 +732,14 @@ where
         // Render fresh
         if let Some(doc) = doc_weak.upgrade() {
             let mut child_scope = RenderScope::new(doc, parent_id);
-            let node = render_fn(&mut child_scope);
+            // The component's own resources belong to its own scope, not to the
+            // effect that re-renders it (issue #141). This is the deepest reach
+            // of the ambient owner: `render_fn` runs arbitrary user
+            // `Component::render` code.
+            let node = {
+                let _owner = child_scope.push_owner();
+                render_fn(&mut child_scope)
+            };
             m.insert_after(&node);
             cc.borrow_mut().push(node);
             *cs.borrow_mut() = Some(child_scope);
@@ -750,6 +757,55 @@ where
 mod tests {
     use super::*;
     use mock::MockDomDocument;
+
+    /// A component's own resources are attributed to the component's child
+    /// scope, not to the effect that re-renders it (issue #141).
+    ///
+    /// This is the deepest reach of the ambient owner: `render_fn` runs
+    /// arbitrary user `Component::render` code, and it is always inside
+    /// `run_effect`, so the item guard has to nest under the effect's push.
+    #[test]
+    fn a_component_body_is_attributed_to_its_own_child_scope() {
+        use crate::reactive::{Owner, Signal, current_owner};
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let version = Signal::new(0);
+        let seen: Rc<RefCell<Vec<Option<Owner>>>> = Rc::new(RefCell::new(Vec::new()));
+
+        let log = seen.clone();
+        let marker = reactive_component_dom(&mut scope, &parent, move |s: &mut RenderScope| {
+            version.get();
+            log.borrow_mut().push(current_owner());
+            Signal::new(0);
+            s.create_element("div")
+        });
+        let _ = marker;
+
+        version.set(1); // re-render: disposes the old child scope, builds a new one
+
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 2, "initial render plus one re-render");
+
+        let first = seen[0].clone().expect("the component runs under an owner");
+        let second = seen[1].clone().expect("the component runs under an owner");
+        assert_ne!(first, second, "each re-render gets a fresh child scope");
+        assert_ne!(
+            second,
+            scope.owner(),
+            "the component is not attributed to the scope that hosts it"
+        );
+        assert!(!first.is_alive(), "the previous child scope was disposed");
+        assert_eq!(
+            second.owned_counts().map(|c| c.signals),
+            Some(1),
+            "the component owns the signal its body created"
+        );
+        assert_eq!(scope.owned_counts().signals, 0);
+    }
 
     #[test]
     fn test_node_handle_text() {

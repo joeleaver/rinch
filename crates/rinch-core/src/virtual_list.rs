@@ -207,7 +207,12 @@ where
                 && let Some(doc) = doc_weak.upgrade()
             {
                 let mut child_scope = RenderScope::new(doc, window_id);
-                let node = view(item_data.clone(), &mut child_scope);
+                // Each virtualized row owns what its view creates, so scrolling
+                // it out of the window takes them with it (issue #141).
+                let node = {
+                    let _owner = child_scope.push_owner();
+                    view(item_data.clone(), &mut child_scope)
+                };
                 state.insert(
                     k.clone(),
                     RenderedItem {
@@ -243,4 +248,64 @@ where
     scope.create_effect_from(effect);
 
     container
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::dom::traits::DomDocument;
+    use crate::dom::{RenderScope, mock::MockDomDocument};
+    use crate::reactive::{Owner, Signal, current_owner};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// Each virtualized row is attributed to its own child scope, so scrolling a
+    /// row out of the window takes its resources with it (issue #141).
+    #[test]
+    fn a_virtualized_row_is_attributed_to_its_own_child_scope() {
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        let items = Signal::new(vec![1u32, 2, 3]);
+        let seen: Rc<RefCell<Vec<Option<Owner>>>> = Rc::new(RefCell::new(Vec::new()));
+
+        let log = seen.clone();
+        let list = super::virtual_list(
+            &mut scope,
+            20.0,
+            move || items.get(),
+            |item: &u32| *item,
+            1,
+            move |item: u32, s: &mut RenderScope| {
+                log.borrow_mut().push(current_owner());
+                Signal::new(item);
+                s.create_element("div")
+            },
+        );
+        let _ = list;
+
+        let seen = seen.borrow();
+        assert!(!seen.is_empty(), "at least one row rendered");
+
+        for (i, owner) in seen.iter().enumerate() {
+            let owner = owner
+                .clone()
+                .unwrap_or_else(|| panic!("row {i} had no owner"));
+            assert_ne!(
+                owner,
+                scope.owner(),
+                "row {i} must not be attributed to the list's own scope"
+            );
+            assert_eq!(
+                owner.owned_counts().map(|c| c.signals),
+                Some(1),
+                "row {i} owns the signal its view created"
+            );
+        }
+        assert_eq!(
+            scope.owned_counts().signals,
+            0,
+            "no row signal leaked into the parent scope"
+        );
+    }
 }
