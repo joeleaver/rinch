@@ -61,7 +61,12 @@ struct MemoInner<T> {
     /// The scope that owned this memo at creation, re-entered around the lazy
     /// recompute for the same reason `root` is (issue #141). Weak by
     /// construction — see [`Owner`](super::Owner).
-    owner: super::Owner,
+    ///
+    /// Mutable so that [`Memo::leak`] can clear it. Detaching the memo from its
+    /// owner's bucket is only half of leaking: the recompute still re-enters
+    /// this owner, so a `Signal` the computation creates would be attributed to
+    /// — and freed with — the very scope the memo was leaked out of.
+    owner: RefCell<super::Owner>,
     /// Observers to notify, ordered — same contract (and same reason) as
     /// `SignalSlot::subscribers`: a memo's dependents run in registration order.
     subscribers: RefCell<BTreeSet<ObserverId>>,
@@ -81,7 +86,7 @@ impl<T: Clone + 'static> Memo<T> {
             f: RefCell::new(Box::new(f)),
             dirty: Cell::new(true),
             root: crate::context::current_context_root(),
-            owner: super::Owner::current(),
+            owner: RefCell::new(super::Owner::current()),
             subscribers: RefCell::new(BTreeSet::new()),
         });
 
@@ -194,8 +199,11 @@ impl<T: Clone + 'static> Memo<T> {
         // component but first read from another would otherwise attribute the
         // resources it creates to whatever happened to be rendering.
         if inner.dirty.get() {
+            // Clone the owner out before pushing: the user computation below can
+            // reach `Memo::leak` on this same memo, which takes `owner` mutably.
+            let owner = inner.owner.borrow().clone();
             let _root_guard = crate::context::push_context_root(inner.root);
-            let _owner_guard = inner.owner.push();
+            let _owner_guard = owner.push();
             let _observer_guard = super::effect::ObserverGuard::push(inner.id);
 
             let value = (inner.f.borrow())();
@@ -218,10 +226,6 @@ impl<T: 'static> Memo<T> {
     ///
     /// A memo is freed when the scope that owns it is disposed, after which
     /// [`get`](Memo::get) panics. Does **not** subscribe the current observer.
-    ///
-    /// Nothing frees memos yet — this returns `true` for every memo that was
-    /// ever created. It becomes meaningful when scope-driven disposal lands
-    /// (issue #141).
     pub fn is_alive(&self) -> bool {
         MEMO_STORE.with(|store| store.borrow().get_inner(self.id, self.generation).is_some())
     }
@@ -230,6 +234,13 @@ impl<T: 'static> Memo<T> {
     ///
     /// The memo counterpart of [`Signal::leak`](super::Signal::leak); the same
     /// "call it in the same render that created it" rule applies.
+    ///
+    /// Detaching is two-sided for a memo, where it is one-sided for a signal.
+    /// Dropping the `MemoKey` from the owner's bucket stops the memo itself
+    /// being freed, but the *recompute* also re-enters that owner (see
+    /// [`MemoInner::owner`]), so anything the computation allocates would still
+    /// be attributed to the scope this memo was just leaked out of, and die with
+    /// it. Clearing the owner closes that half.
     #[track_caller]
     pub fn leak(self) -> Self {
         if !super::scope::forget_memo(super::scope::MemoKey {
@@ -241,6 +252,17 @@ impl<T: 'static> Memo<T> {
                  app lifetime",
                 std::panic::Location::caller()
             );
+        }
+        // `try_borrow_mut` rather than `borrow_mut`: `try_get` clones the owner
+        // out before pushing it precisely so this cannot conflict, and that
+        // pairing is easy to break from a distance. Degrading to "owner left in
+        // place" beats taking the app down over a `leak`.
+        let inner_any = MEMO_STORE.with(|store| store.borrow().get_inner(self.id, self.generation));
+        if let Some(inner_any) = inner_any
+            && let Ok(inner) = inner_any.downcast::<MemoInner<T>>()
+            && let Ok(mut owner) = inner.owner.try_borrow_mut()
+        {
+            *owner = super::Owner::none();
         }
         self
     }
@@ -318,6 +340,55 @@ mod liveness_tests {
             1,
             "the marker effect must be cleared too, or the memo leaks"
         );
+    }
+
+    /// `leak` detaches a memo from its owner on **both** sides.
+    ///
+    /// Dropping the `MemoKey` from the bucket is the obvious half. The other is
+    /// `MemoInner::owner`: the computation runs lazily, in the reader's frame,
+    /// re-entering the creation-time owner — so without clearing it a `Signal`
+    /// the computation allocates is still attributed to, and freed with, the
+    /// scope the memo was leaked out of. The leak would then hold a handle to
+    /// dead state, which is worse than not leaking at all.
+    #[test]
+    fn leak_detaches_a_memos_recompute_from_its_owner_too() {
+        use crate::reactive::Scope;
+
+        let source = Signal::new(1).leak();
+        let scope = Scope::new();
+
+        // Leaked in the same render that created it, per the documented rule.
+        let inner_signal: Rc<Cell<Option<Signal<i32>>>> = Rc::new(Cell::new(None));
+        let sink = inner_signal.clone();
+        let memo = scope.run(|| {
+            Memo::new(move || {
+                sink.set(Some(Signal::new(7)));
+                source.get() * 2
+            })
+            .leak()
+        });
+
+        assert_eq!(memo.get(), 2, "the computation ran");
+        let created = inner_signal
+            .get()
+            .expect("the computation created a signal");
+        assert_eq!(
+            scope.owned_counts().signals,
+            0,
+            "a leaked memo must not attribute its computation to the scope"
+        );
+
+        scope.dispose();
+
+        assert!(
+            memo.is_alive(),
+            "the memo itself survives, as leak promises"
+        );
+        assert!(
+            created.is_alive(),
+            "and so does what its computation allocated"
+        );
+        assert_eq!(memo.get(), 2);
     }
 
     #[test]

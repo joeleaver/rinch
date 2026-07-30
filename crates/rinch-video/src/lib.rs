@@ -168,6 +168,18 @@ pub(crate) fn unregister_active_player(player: &VideoPlayer) {
 /// mpv property-change events into reactive Signals.
 /// Also unregisters players that have ended (EOF).
 pub fn poll_active_players() {
+    // Drop players whose signals have been freed, before anything reads one.
+    //
+    // A player's signals belong to the component that created it, so unmounting
+    // that component frees them (issue #141) while this process-lifetime list
+    // still holds a clone. `use_video_player` registers a cleanup that
+    // unregisters here, which is the primary mechanism; this sweep is the
+    // backstop for a player built some other way, and it mirrors how the poll
+    // and bounds registries in rinch-core already derive their own lifetime from
+    // the signal they drive. Without it the first read below panics, every
+    // frame, forever.
+    ACTIVE_PLAYERS.with(|list| list.borrow_mut().retain(|p| p.state.is_alive()));
+
     // Clone the list so we don't hold a borrow during poll().
     // poll() updates signals (e.g. duration) which can trigger Effects
     // that call play() → register_active_player() → borrow_mut().
@@ -175,9 +187,11 @@ pub fn poll_active_players() {
     for player in &players {
         player.poll();
     }
-    // Remove players that have ended (EOF)
+    // Remove players that have ended (EOF), and any whose signals a `poll()`
+    // above tore down (a state change can flush an effect that unmounts the
+    // component showing the video).
     ACTIVE_PLAYERS.with(|list| {
         let mut list = list.borrow_mut();
-        list.retain(|p| p.state.get() != PlaybackState::Ended);
+        list.retain(|p| p.state.try_get().is_some_and(|s| s != PlaybackState::Ended));
     });
 }

@@ -151,7 +151,10 @@ impl VideoPlayerBackend for MpvPlayer {
                 MpvUpdate::PausedForCache(stalled) => {
                     if stalled {
                         self.signals.state.set(PlaybackState::Loading);
-                    } else if self.signals.playing.get() {
+                    } else if self.signals.playing.try_get() == Some(true) {
+                        // `try_get`, for the same reason as the render gate
+                        // below: a freed signal here would panic the poll loop
+                        // rather than skip a torn-down player (issue #141).
                         self.signals.state.set(PlaybackState::Playing);
                     }
                 }
@@ -216,7 +219,14 @@ impl VideoPlayerBackend for MpvPlayer {
         // non-blocking snapshot of the current audio-clock position — safe to call
         // at display refresh rate without causing fast-forward.
         if !self.render_ctx.is_null() {
-            let state = self.signals.state.get();
+            // `try_get`: this runs from the per-frame poll, and the component
+            // that owns these signals may have been unmounted since the last
+            // one — `poll_active_players` sweeps the registry, but an effect
+            // flushed by the property updates above can unmount it mid-poll
+            // (issue #141). Nothing to render for a torn-down player.
+            let Some(state) = self.signals.state.try_get() else {
+                return;
+            };
             let should_render = matches!(state, PlaybackState::Playing | PlaybackState::Loading);
             if should_render && self.needs_render.swap(false, Ordering::AcqRel) {
                 self.render_sw_frame();

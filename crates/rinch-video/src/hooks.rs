@@ -41,7 +41,24 @@ pub fn use_video_player_paused(src: &str) -> VideoPlayer {
 
 fn use_video_player_impl(src: &str, start_paused: bool) -> VideoPlayer {
     // Component functions run once, so just create the player directly.
-    create_platform_player(src, start_paused)
+    let player = create_platform_player(src, start_paused);
+
+    // Unregister the player when the component that created it is unmounted
+    // (issue #141).
+    //
+    // The player's seven `Signal`s are minted right here, so they belong to the
+    // component's scope and are freed when it is disposed — while `play()` has
+    // handed a clone to the process-lifetime `ACTIVE_PLAYERS` list that the
+    // event loop polls every frame. Without this the very next frame reads a
+    // freed signal and panics, and because nothing else ever removes the entry
+    // it panics again on every frame after that.
+    //
+    // `cleanup` reads no signals itself, and cleanups run before the scope's
+    // signals are freed, so this is safe in both directions.
+    let doomed = player.clone();
+    rinch_core::reactive::on_cleanup(move || doomed.cleanup());
+
+    player
 }
 
 /// Create a platform-appropriate video player.

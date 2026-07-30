@@ -182,8 +182,18 @@ where
             *showing_clone.borrow_mut() = new_showing;
 
             // DISPOSE old scope BEFORE removing DOM nodes
-            // This ensures all nested effects are cleaned up properly
-            if let Some(old_scope) = current_scope_clone.borrow_mut().take() {
+            // This ensures all nested effects are cleaned up properly.
+            //
+            // The `take()` is deliberately a separate statement: an `if let`
+            // scrutinee's temporaries live through the then-block, so the
+            // obvious one-liner holds `current_scope`'s `RefMut` across the
+            // dispose. That used to be harmless, but disposal now runs user code
+            // — cleanups, handler-closure drops, signal value drops (issue
+            // #141) — and any of it that writes a signal flushes effects
+            // synchronously, re-entering this very closure and panicking on the
+            // outstanding borrow.
+            let old_scope = current_scope_clone.borrow_mut().take();
+            if let Some(old_scope) = old_scope {
                 old_scope.dispose();
             }
 

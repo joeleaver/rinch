@@ -176,38 +176,19 @@ pub fn reset_handler_ids() {
     NEXT_HANDLER_ID.store(0, Ordering::SeqCst);
 }
 
-/// The id the *next* `register_*` call will allocate. Capture this before and
-/// after building a component subtree to record which handler ids that subtree
-/// created (used by `rinch-web` to tear down a root on unmount).
-pub fn handler_id_watermark() -> EventHandlerId {
-    EventHandlerId(NEXT_HANDLER_ID.load(Ordering::SeqCst))
-}
-
-/// Remove every handler whose id is in `[start, end)` from all registries.
-///
-/// Used to deregister the handlers a single root created at build time when it
-/// is unmounted, without disturbing handlers belonging to other roots.
-pub fn remove_handlers_in_range(start: EventHandlerId, end: EventHandlerId) {
-    let range = start.0..end.0;
-    EVENT_REGISTRY.with(|r| r.borrow_mut().handlers.retain(|k, _| !range.contains(&k.0)));
-    INPUT_REGISTRY.with(|r| r.borrow_mut().handlers.retain(|k, _| !range.contains(&k.0)));
-    FILE_DROP_REGISTRY.with(|r| r.borrow_mut().handlers.retain(|k, _| !range.contains(&k.0)));
-    SCROLL_REGISTRY.with(|r| r.borrow_mut().handlers.retain(|k, _| !range.contains(&k.0)));
-}
-
 /// Remove a single handler, by id, from whichever registry holds it.
 ///
-/// The per-id counterpart of [`remove_handlers_in_range`], which #141's dispose
-/// fixpoint (PR4) needs: id *ranges* do not nest correctly once several roots
-/// interleave registrations, but a scope's recorded ids always do.
+/// This is how scope disposal reclaims the handlers a scope owns (issue #141).
+/// It replaced a `handler_id_watermark`/`remove_handlers_in_range` pair that
+/// deleted a contiguous *range* of ids, which was both incomplete and unsound:
+/// a range recorded around a synchronous build misses every handler a later
+/// effect run registers, and a synchronous effect flush *inside* that build lets
+/// an unrelated root allocate an id within the window, which the range would
+/// then delete out from under it. A scope's own record has neither problem.
 ///
 /// Each removed callback is moved into a local and dropped **after** its
-/// registry borrow is released. The callbacks are `Rc<dyn Fn(..)>` closing over
-/// arbitrary user state whose `Drop` may touch these same registries, and
-/// `remove_handlers_in_range`'s `retain` drops them *inside* the borrow.
-///
-/// Not yet reachable from production code — PR4 wires it in.
-#[allow(dead_code)]
+/// registry borrow is released: the callbacks are `Rc<dyn Fn(..)>` closing over
+/// arbitrary user state whose `Drop` may touch these same registries.
 pub fn unregister_handler(id: EventHandlerId) {
     let click = EVENT_REGISTRY.with(|r| r.borrow_mut().handlers.remove(&id));
     drop(click);
@@ -217,6 +198,32 @@ pub fn unregister_handler(id: EventHandlerId) {
     drop(file_drop);
     let scroll = SCROLL_REGISTRY.with(|r| r.borrow_mut().handlers.remove(&id));
     drop(scroll);
+}
+
+/// Whether a click handler is still registered under this id.
+///
+/// Scope disposal frees the handlers a scope owns (issue #141), so an id read
+/// back out of a `data-rid` attribute can outlive its callback: nothing removes
+/// the attribute when the handler goes. Dispatchers that walk an ancestor chain
+/// use this to *skip* a dead node and keep walking, rather than consuming the
+/// event on its behalf.
+pub fn has_click_handler(id: EventHandlerId) -> bool {
+    EVENT_REGISTRY.with(|registry| registry.borrow().handlers.contains_key(&id))
+}
+
+/// Whether an input handler is still registered under this id.
+///
+/// The counterpart to [`has_click_handler`] for callers that cache an id across
+/// frames (the desktop shell's focused-input state) and must notice when the
+/// element it belongs to has been torn down.
+pub fn has_input_handler(id: EventHandlerId) -> bool {
+    INPUT_REGISTRY.with(|registry| registry.borrow().handlers.contains_key(&id))
+}
+
+/// Whether a file-drop handler is still registered under this id.
+/// See [`has_click_handler`].
+pub fn has_file_drop_handler(id: EventHandlerId) -> bool {
+    FILE_DROP_REGISTRY.with(|registry| registry.borrow().handlers.contains_key(&id))
 }
 
 // Thread-local event handler registry.
@@ -376,6 +383,12 @@ pub fn get_click_context() -> ClickContext {
 /// Dispatch an event to the handler with the given ID.
 ///
 /// Returns `true` if a handler was found and called, `false` otherwise.
+///
+/// A `false` is **not** by itself a bug: disposing a scope frees the handlers it
+/// owns while their `data-rid` attributes stay on any node that outlives them
+/// (issue #141), so a miss is the routine outcome of a teardown race. Callers
+/// that walk an ancestor chain should treat it as "keep walking" — see
+/// [`has_click_handler`] for probing without dispatching.
 pub fn dispatch_event(id: EventHandlerId) -> bool {
     // Clone the handler out of the registry so we can release the borrow
     // before calling it. This allows handlers to register new handlers
@@ -391,17 +404,10 @@ pub fn dispatch_event(id: EventHandlerId) -> bool {
         tracing::info!("dispatch_event: Handler {:?} completed", id);
         true
     } else {
-        let (count, handler_ids) = EVENT_REGISTRY.with(|registry| {
-            let reg = registry.borrow();
-            let ids: Vec<_> = reg.handlers.keys().cloned().collect();
-            (ids.len(), ids)
-        });
-        tracing::error!(
-            "dispatch_event: handler {:?} NOT FOUND. Registry has {} handlers: {:?}",
-            id,
-            count,
-            handler_ids
-        );
+        // `debug!`, and no registry dump: since #141 a miss is an expected
+        // teardown outcome rather than a bug, and this runs on every stale
+        // hover/drag-move, where formatting the whole registry would dominate.
+        tracing::debug!("dispatch_event: no handler registered for {:?}", id);
         false
     }
 }

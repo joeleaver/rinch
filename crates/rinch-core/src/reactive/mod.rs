@@ -83,7 +83,7 @@ pub use bounds::{
 pub use effect::Effect;
 pub use memo::Memo;
 pub use poll::{PollRate, drain_polls, poll_signal};
-pub use scope::{OwnedCounts, Owner, OwnerGuard, Scope, current_owner, unowned};
+pub use scope::{OwnedCounts, Owner, OwnerGuard, Scope, current_owner, on_cleanup, unowned};
 /// Ambient-owner hooks for the rest of the crate: `crate::events` attributes
 /// handlers to the scope currently rendering, and `crate::context` ties a
 /// store/context entry to the scope that created it (issue #141).
@@ -467,9 +467,6 @@ impl SignalStore {
     /// a value whose `Drop` touches a signal would otherwise `BorrowMutError`
     /// (issue #141, SD4). Returns `None` if the slot was already freed or the
     /// generation does not match.
-    ///
-    /// Not yet reachable from production code — #141's dispose fixpoint wires it.
-    #[allow(dead_code)]
     fn free(&mut self, id: u32, generation: u32) -> Option<Box<dyn Any>> {
         let slot = self.slots.get_mut(id as usize)?;
         if !slot.as_ref().is_some_and(|s| s.generation == generation) {
@@ -481,13 +478,22 @@ impl SignalStore {
     }
 }
 
-/// Free a signal slot directly, simulating the scope disposal that #141's
-/// dispose fixpoint will perform. Test-only: nothing frees signals yet, so
-/// without this the liveness API could not be exercised at all.
+/// Free a signal slot, **returning** its value for the caller to drop once every
+/// borrow is released. See [`SignalStore::free`].
+///
+/// The disposal fixpoint parks the returned value and drops it at the very end,
+/// so that a value's `Drop` sees a deterministic world rather than an arbitrary
+/// prefix of its siblings.
+pub(crate) fn free_signal(id: u32, generation: u32) -> Option<Box<dyn Any>> {
+    SIGNAL_STORE.with(|store| store.borrow_mut().free(id, generation))
+}
+
+/// Free a signal slot and drop its value, standing in for scope disposal.
+/// Test-only convenience over [`free_signal`].
 #[cfg(test)]
 pub(crate) fn free_signal_for_tests(id: u32, generation: u32) {
     // Dropped out here, after the store borrow is released.
-    let _value = SIGNAL_STORE.with(|store| store.borrow_mut().free(id, generation));
+    let _value = free_signal(id, generation);
 }
 
 // ============================================================================
@@ -561,7 +567,6 @@ impl MemoStore {
     ///
     /// Freeing the slot alone does **not** release the memo. Use
     /// [`free_memo`], which also clears the marker effect.
-    #[allow(dead_code)]
     pub(crate) fn free(&mut self, id: u32, generation: u32) -> Option<(Rc<dyn Any>, ObserverId)> {
         let slot = self.slots.get_mut(id as usize)?;
         if !slot.as_ref().is_some_and(|s| s.generation == generation) {
@@ -585,10 +590,6 @@ impl MemoStore {
 ///
 /// Both `Rc`s are dropped after every borrow is released, since the cached value
 /// is arbitrary user data whose `Drop` may touch the reactive stores.
-///
-/// Not yet reachable from production code — #141 PR4 wires it into the dispose
-/// fixpoint.
-#[allow(dead_code)]
 pub(crate) fn free_memo(id: u32, generation: u32) {
     let Some((inner, observer)) = MEMO_STORE.with(|store| store.borrow_mut().free(id, generation))
     else {

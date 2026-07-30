@@ -292,9 +292,18 @@ impl RinchApp {
         let mut current = Some(hit_id);
         while let Some(node_id) = current {
             if let Some(node) = d.tree.get(node_id) {
-                // Check for click handler
+                // Check for click handler.
+                //
+                // The liveness probe is what keeps a *stale* `data-rid` from
+                // swallowing the click. Disposing a scope frees its handlers
+                // (issue #141) but nothing strips the attribute from a node that
+                // outlives them, and this walk commits to the first node
+                // carrying one — so without the probe a dead button would
+                // consume clicks that belong to the row, backdrop or modal
+                // wrapping it, silently and permanently.
                 if let Some(rid_str) = node.attributes.get("data-rid")
                     && let Ok(handler_id) = rid_str.parse::<usize>()
+                    && events::has_click_handler(events::EventHandlerId(handler_id))
                 {
                     let text_hit = Self::compute_text_hit_info(&d.tree, hit_id, x, y);
 

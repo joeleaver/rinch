@@ -1292,9 +1292,39 @@ impl RinchApp {
     // Routes editing commands through EditableState<StringDocument> for
     // proper cursor tracking, selection, and undo support.
 
+    /// The focused input's handler id, **if its handler is still registered**.
+    ///
+    /// Disposing a scope frees the event handlers it owns (issue #141), so this
+    /// cached id dangles the instant the focused `<input>`'s branch is torn down
+    /// — a modal closing, an `if` flipping, a `for` item being removed. Every
+    /// consumer below then fails silently: `dispatch_input_event` returns a
+    /// `false` nobody reads, `update_focused_input_dom_value` matches no node so
+    /// the DOM stops tracking `focused_input_value`, and the window keeps IME
+    /// enabled for an element that no longer exists.
+    ///
+    /// So a miss self-heals by dropping focus entirely, mirroring what
+    /// `FocusTarget::Editor` already does when its container is unmounted. That
+    /// also clears `focused_input_node_id`, which matters: it is a slab index,
+    /// and a recycled one would aim the caret/value attribute writes at an
+    /// unrelated element.
+    ///
+    /// Must be called with no outstanding borrow of `self.doc` — `set_focus_target`
+    /// writes DOM attributes.
+    fn live_focused_input_handler(&mut self) -> Option<usize> {
+        let handler_id = self.focused_input_handler_id?;
+        if events::has_input_handler(events::EventHandlerId(handler_id)) {
+            return Some(handler_id);
+        }
+        tracing::debug!(
+            "focused input handler {handler_id} was freed with its scope; dropping focus"
+        );
+        self.set_focus_target(FocusTarget::None);
+        None
+    }
+
     /// Central dispatch: execute an EditCommand on the focused input's EditableState.
     fn handle_input_edit_command(&mut self, cmd: EditCommand) {
-        let Some(handler_id) = self.focused_input_handler_id else {
+        let Some(handler_id) = self.live_focused_input_handler() else {
             return;
         };
         let Some(state) = self.focused_input_state.as_mut() else {
@@ -1327,7 +1357,7 @@ impl RinchApp {
     fn handle_text_input(&mut self, text: &str) {
         if self.focused_input_state.is_some() {
             self.handle_input_edit_command(EditCommand::InsertText(text.to_string()));
-        } else if let Some(handler_id) = self.focused_input_handler_id {
+        } else if let Some(handler_id) = self.live_focused_input_handler() {
             // Fallback for inputs without EditableState (shouldn't happen)
             self.focused_input_value.push_str(text);
             let value = self.focused_input_value.clone();
@@ -1338,7 +1368,7 @@ impl RinchApp {
     fn handle_backspace(&mut self) {
         if self.focused_input_state.is_some() {
             self.handle_input_edit_command(EditCommand::DeleteBackward);
-        } else if let Some(handler_id) = self.focused_input_handler_id {
+        } else if let Some(handler_id) = self.live_focused_input_handler() {
             self.focused_input_value.pop();
             let value = self.focused_input_value.clone();
             self.update_focused_input_dom_value(handler_id, &value);
@@ -1367,8 +1397,11 @@ impl RinchApp {
         self.handle_input_edit_command(cmd);
     }
     fn handle_enter(&mut self) {
-        // Check if a text input is focused and has an onsubmit handler
-        if self.focused_input_handler_id.is_some() {
+        // Check if a text input is focused and has an onsubmit handler.
+        // Probe liveness first: with a freed id the block below still runs, the
+        // node lookups match nothing, and Enter is swallowed rather than falling
+        // through to the global handlers (issue #141).
+        if self.live_focused_input_handler().is_some() {
             // Use stored node_id if available, else linear scan
             let submit_handler_id = if let Some(node_id) = self.focused_input_node_id {
                 if let Some(doc) = &self.doc {

@@ -20,6 +20,9 @@
 //! let t = rinch_core::set_timeout(300, move || save(editor.doc()));
 //! rinch_core::clear_timeout(t); // debounce: cancel and re-arm
 //! ```
+//!
+//! A timeout armed during a render is also cancelled if that component unmounts
+//! before it fires — see [`set_timeout`].
 
 use std::sync::Mutex;
 
@@ -50,6 +53,21 @@ pub fn set_timer_backend(backend: TimerBackend) {
 /// and invoked there, so it needn't be `Send` and may capture `Rc`-based UI state.
 /// The native scheduler additionally requires the runtime's cross-thread
 /// dispatcher to be registered (it hops the fired id back onto the main thread).
+///
+/// # Unmounting cancels it
+///
+/// A timeout armed **during a render** does not fire if the component that armed
+/// it is unmounted first — its captured signals are freed with that component
+/// (issue #141), so firing would read dead state. This is what you want for the
+/// usual cases (debounce, toast auto-dismiss, retry): there is no UI left to
+/// update.
+///
+/// For work that must outlive the component — flushing to disk, releasing an
+/// external resource — arm it outside any render, or opt out explicitly:
+///
+/// ```ignore
+/// rinch_core::reactive::unowned(|| set_timeout(500, move || flush_to_disk()));
+/// ```
 pub fn set_timeout(delay_ms: u32, cb: impl FnOnce() + 'static) -> TimeoutHandle {
     let id = park_main_callback::<()>(move |()| cb());
     schedule(id.raw(), delay_ms);
