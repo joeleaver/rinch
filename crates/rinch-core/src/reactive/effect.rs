@@ -1,13 +1,74 @@
 //! Effect: a side-effect that re-runs when its dependencies change.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
 
 use super::{ObserverId, RUNTIME};
 
-// Storage for all effects (needed because effects reference themselves)
 thread_local! {
-    pub(super) static EFFECTS: RefCell<Vec<Option<Rc<EffectInner>>>> = const { RefCell::new(Vec::new()) };
+    /// Storage for all effects, needed because effects reference themselves: an
+    /// effect is queued and run by *id*, so its closure has to live somewhere
+    /// other than the [`Effect`] handle, which the caller is free to drop.
+    pub(super) static EFFECTS: RefCell<EffectRegistry> = RefCell::new(EffectRegistry::default());
+}
+
+/// The effect registry: [`ObserverId`] → effect.
+///
+/// # Why a map and not an id-indexed vec
+///
+/// `ObserverId`s are monotonic and never reused (see [`ObserverId`]), so a vec
+/// indexed by id can only ever grow to the number of observers the thread has
+/// *ever* created. Disposal emptied the slot but never removed it, so every
+/// mount/unmount cycle left 8 bytes of spine behind forever — the last of the
+/// five leaks in issue #141.
+///
+/// Reusing ids to keep the vec dense is not an option: ascending `ObserverId`
+/// **is** registration order, which is what makes the `BTreeSet` subscriber
+/// sets order observers correctly (issue #154). Recycling ids would silently
+/// break execution order, not just uniqueness. So the id stays monotonic and
+/// the container becomes sparse.
+///
+/// Nothing iterates this map — every access site is a point lookup by id — so
+/// its unordered iteration cannot leak into that ordering contract.
+pub(super) type EffectRegistry =
+    HashMap<ObserverId, Rc<EffectInner>, BuildHasherDefault<ObserverIdHasher>>;
+
+/// Hasher for [`ObserverId`] keys: one multiply, no SipHash.
+///
+/// `run_effect` does one registry lookup per observer drained from the pending
+/// queue, and that count is dominated by **misses** — a signal's subscriber set
+/// still holds the ids of effects that have since been disposed (issue #171),
+/// so a long-lived signal accumulates dead subscribers and every write probes
+/// the registry once for each. std's SipHash costs ~6x an integer hash on that
+/// path, which would make an existing pathology measurably worse for no benefit
+/// on a key that is already a unique integer.
+///
+/// The multiplier is the golden-ratio constant, and it is load-bearing: a plain
+/// identity hash is pathological here, because hashbrown derives its control
+/// byte from the *top* 7 bits and monotonically allocated ids would all land in
+/// one control group. Multiplying distributes the low bits upward.
+#[derive(Default)]
+pub(super) struct ObserverIdHasher(u64);
+
+impl Hasher for ObserverIdHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        // Never called: `ObserverId`'s derived `Hash` forwards to `write_usize`.
+        // Folding rather than ignoring keeps the hasher correct-by-construction
+        // if the key type ever grows a second field.
+        for &b in bytes {
+            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.0 = (n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
 }
 
 /// A side-effect that re-runs when its dependencies change.
@@ -32,8 +93,6 @@ pub struct Effect {
 }
 
 pub(super) struct EffectInner {
-    #[allow(dead_code)] // Used for debugging/tracking purposes
-    pub(super) id: ObserverId,
     pub(super) f: RefCell<Box<dyn FnMut()>>,
     pub(super) disposed: Cell<bool>,
     /// The context root current when this effect was created; re-entered on
@@ -45,7 +104,7 @@ pub(super) struct EffectInner {
     /// built it rather than to whatever happened to be rendering when the flush
     /// fired (issue #141). Weak by construction — see [`Owner`](super::Owner);
     /// a strong reference here would make every scope immortal, since `EFFECTS`
-    /// holds the `Rc<EffectInner>` until `Scope::dispose` clears it.
+    /// holds the `Rc<EffectInner>` until `Scope::dispose` removes it.
     pub(super) owner: super::Owner,
 }
 
@@ -58,7 +117,6 @@ impl Effect {
         });
 
         let inner = Rc::new(EffectInner {
-            id,
             f: RefCell::new(Box::new(f)),
             disposed: Cell::new(false),
             root: crate::context::current_context_root(),
@@ -66,14 +124,7 @@ impl Effect {
         });
 
         // Store the effect
-        EFFECTS.with(|effects| {
-            let mut effects = effects.borrow_mut();
-            let idx = id.0;
-            if idx >= effects.len() {
-                effects.resize(idx + 1, None);
-            }
-            effects[idx] = Some(Rc::clone(&inner));
-        });
+        register(id, Rc::clone(&inner));
 
         // Attribute before the first run: the body runs synchronously below and
         // may create resources of its own (issue #141).
@@ -93,21 +144,13 @@ impl Effect {
         });
 
         let inner = Rc::new(EffectInner {
-            id,
             f: RefCell::new(Box::new(f)),
             disposed: Cell::new(false),
             root: crate::context::current_context_root(),
             owner: super::Owner::current(),
         });
 
-        EFFECTS.with(|effects| {
-            let mut effects = effects.borrow_mut();
-            let idx = id.0;
-            if idx >= effects.len() {
-                effects.resize(idx + 1, None);
-            }
-            effects[idx] = Some(inner);
-        });
+        register(id, inner);
 
         super::scope::record_effect(id);
 
@@ -127,11 +170,31 @@ impl Effect {
 
     /// Dispose of this effect, preventing it from running again.
     ///
-    /// Also clears the slot in the global EFFECTS vec, allowing the
-    /// `Rc<EffectInner>` to be reclaimed.
+    /// Also removes it from the global [`EFFECTS`] registry, allowing the
+    /// `Rc<EffectInner>` — and everything its closure captures — to be
+    /// reclaimed.
     pub fn dispose(&self) {
         dispose_effect(self.id);
     }
+}
+
+/// Insert an effect into the registry under its id.
+///
+/// The displaced entry — always `None`, since ids are never reused — comes back
+/// out of the closure rather than dropping inside it, for the same reason
+/// [`dispose_effect`] moves the `Rc` out: dropping an `EffectInner` under the
+/// `EFFECTS` borrow can re-enter the registry. The `debug_assert` is the cheap
+/// tripwire for the only way that value could ever be `Some`: someone starting
+/// to recycle `ObserverId`s, which would break the execution-order contract
+/// silently and everywhere else.
+fn register(id: ObserverId, inner: Rc<EffectInner>) {
+    let displaced = EFFECTS.with(|effects| effects.borrow_mut().insert(id, inner));
+    debug_assert!(
+        displaced.is_none(),
+        "ObserverId {} was reused — ascending id is the registration-order contract (issue #154)",
+        id.0
+    );
+    drop(displaced);
 }
 
 /// Dispose the effect with this id, if it is still registered.
@@ -141,19 +204,23 @@ impl Effect {
 /// The `Rc<EffectInner>` is moved out and dropped **after** the registry borrow
 /// is released. That is load-bearing, not tidiness: the `Rc` owns the effect's
 /// closure, which captures arbitrary user state — very often the only handle to
-/// a child `RenderScope`. Dropping it in place (`*slot = None`) runs that state's
-/// `Drop` while `EFFECTS` is mutably borrowed, so a `Drop` that writes a signal
-/// flushes effects synchronously into `run_effect`, whose `EFFECTS.borrow()`
-/// then panics with a `BorrowMutError` (issue #141).
+/// a child `RenderScope`. Dropping it in place runs that state's `Drop` while
+/// `EFFECTS` is mutably borrowed, so a `Drop` that writes a signal flushes
+/// effects synchronously into `run_effect`, whose `EFFECTS.borrow()` then panics
+/// with a `BorrowMutError` (issue #141).
+///
+/// Removing the entry — rather than emptying a slot that stays in the container
+/// forever — is what makes disposal actually reclaim (issue #141, final bullet).
 pub(super) fn dispose_effect(id: ObserverId) {
-    let inner = EFFECTS.with(|effects| {
-        let mut effects = effects.borrow_mut();
-        let slot = effects.get_mut(id.0)?;
-        if let Some(inner) = slot.as_ref() {
-            inner.disposed.set(true);
-        }
-        slot.take()
-    });
+    let inner = EFFECTS.with(|effects| effects.borrow_mut().remove(&id));
+    if let Some(inner) = &inner {
+        // Belt and braces. Removal alone already makes `run_effect` a no-op,
+        // since its only read of `disposed` follows a fresh lookup — but an
+        // `Rc` handed out by an earlier lookup can still be in flight (that is
+        // exactly what `run_effect` holds across the body it is running), and
+        // this is the flag that tells such a run it has been retired.
+        inner.disposed.set(true);
+    }
     drop(inner);
 }
 
@@ -162,6 +229,30 @@ impl Drop for Effect {
         // Note: We don't automatically dispose here to allow effects to outlive
         // their handles. Use dispose() explicitly if needed.
     }
+}
+
+/// Number of live entries in the effect registry, on this thread.
+///
+/// Test-only: the reclamation contract is about entries *disappearing*, which is
+/// otherwise unobservable — the registry is `pub(super)` and nothing counts it.
+#[cfg(test)]
+pub(crate) fn registry_len_for_tests() -> usize {
+    EFFECTS.with(|effects| effects.borrow().len())
+}
+
+/// The ids currently live in the effect registry, ascending.
+///
+/// Test-only, and separate from [`registry_len_for_tests`] on purpose: a
+/// reclamation assertion has to check *which* entries survived, not merely how
+/// many did. A rewrite that removes the wrong entry keeps the count right and
+/// the contents wrong.
+#[cfg(test)]
+pub(crate) fn registry_ids_for_tests() -> Vec<usize> {
+    EFFECTS.with(|effects| {
+        let mut ids: Vec<usize> = effects.borrow().keys().map(|id| id.0).collect();
+        ids.sort_unstable();
+        ids
+    })
 }
 
 /// RAII guard for the observer stack.
@@ -192,7 +283,7 @@ impl Drop for ObserverGuard {
 
 /// Run a specific effect by ID
 pub(super) fn run_effect(id: ObserverId) {
-    let effect = EFFECTS.with(|effects| effects.borrow().get(id.0).and_then(|e| e.clone()));
+    let effect = EFFECTS.with(|effects| effects.borrow().get(&id).cloned());
 
     if let Some(inner) = effect {
         if inner.disposed.get() {
@@ -273,6 +364,146 @@ pub(super) fn flush_effects() {
             Some(id) => run_effect(id),
             None => break,
         }
+    }
+}
+
+#[cfg(test)]
+mod reclamation_tests {
+    use super::*;
+    use crate::reactive::{Memo, Scope, Signal};
+    use std::cell::Cell;
+
+    /// Disposing a scope returns the effect registry to its previous size.
+    ///
+    /// The last of the five leaks in issue #141: `ObserverId`s are monotonic, so
+    /// an id-indexed vec grew by one entry per observer ever created and never
+    /// shrank. Disposal emptied the slot; the slot itself stayed forever.
+    ///
+    /// The loop count matters. A single cycle cannot distinguish "reclaimed"
+    /// from "the container happens to be this size" — the pre-fix vec is *also*
+    /// small after one cycle. 100 cycles makes the two answers differ by two
+    /// orders of magnitude.
+    #[test]
+    fn disposing_a_scope_returns_the_effect_registry_to_its_baseline() {
+        // Positive control, created *outside* the loop: proves the shrinking
+        // below is entries being reclaimed rather than the registry being
+        // wrongly emptied. An implementation that removed too much passes a
+        // bare length assertion and fails here.
+        let survivor_source = Signal::new(0);
+        let survivor_runs = Rc::new(Cell::new(0));
+        let hits = survivor_runs.clone();
+        let _survivor = Effect::new(move || {
+            survivor_source.get();
+            hits.set(hits.get() + 1);
+        });
+        assert_eq!(survivor_runs.get(), 1);
+
+        let baseline = registry_len_for_tests();
+        let baseline_ids = registry_ids_for_tests();
+
+        for _ in 0..100 {
+            let scope = Scope::new();
+            scope.run(|| {
+                let source = Signal::new(1);
+                let doubled = Memo::new(move || source.get() * 2);
+                Effect::new(move || {
+                    // Read the memo so its marker is genuinely subscribed, not
+                    // an inert entry nothing ever touches.
+                    let _ = doubled.get();
+                });
+            });
+            scope.dispose();
+        }
+
+        assert_eq!(
+            registry_len_for_tests(),
+            baseline,
+            "every disposed scope's effect and memo marker must leave the registry; \
+             pre-fix this grows by ~2 per cycle"
+        );
+        // Assert *which* entries survived, not merely how many — a removal that
+        // evicts the wrong id keeps the count right and the contents wrong.
+        assert_eq!(registry_ids_for_tests(), baseline_ids);
+
+        // And the survivor is still wired up, not merely still counted.
+        survivor_source.set(1);
+        assert_eq!(
+            survivor_runs.get(),
+            2,
+            "a live effect outside the disposed scopes still runs"
+        );
+    }
+
+    /// The two removal paths are independent and both must reclaim.
+    ///
+    /// An effect leaves via `dispose_effect`; a memo's dirty marker leaves via
+    /// `free_memo`, which is reached from a different level of the disposal
+    /// fixpoint. Testing them only together lets a fix for one hide a miss on
+    /// the other.
+    #[test]
+    fn both_removal_paths_reclaim_independently() {
+        let baseline = registry_len_for_tests();
+
+        // Effect-only: `dispose_effect`.
+        let scope = Scope::new();
+        scope.run(|| {
+            Effect::new(|| {});
+        });
+        assert_eq!(registry_len_for_tests(), baseline + 1);
+        scope.dispose();
+        assert_eq!(
+            registry_len_for_tests(),
+            baseline,
+            "dispose_effect must remove the entry, not empty it"
+        );
+
+        // Memo-only: `free_memo`'s marker removal.
+        let source = Signal::new(1);
+        let scope = Scope::new();
+        scope.run(|| {
+            let doubled = Memo::new(move || source.get() * 2);
+            assert_eq!(doubled.get(), 2);
+        });
+        assert_eq!(
+            registry_len_for_tests(),
+            baseline + 1,
+            "a memo registers exactly one marker"
+        );
+        scope.dispose();
+        assert_eq!(
+            registry_len_for_tests(),
+            baseline,
+            "free_memo must remove the marker entry, not empty it"
+        );
+    }
+
+    /// Explicit `Effect::dispose` reclaims too, not just scope teardown.
+    #[test]
+    fn explicitly_disposing_an_effect_removes_its_entry() {
+        let baseline = registry_len_for_tests();
+        let effect = Effect::new(|| {});
+        assert_eq!(registry_len_for_tests(), baseline + 1);
+        effect.dispose();
+        assert_eq!(registry_len_for_tests(), baseline);
+        // Idempotent: a second dispose is a no-op, not an underflow or a panic.
+        effect.dispose();
+        assert_eq!(registry_len_for_tests(), baseline);
+    }
+
+    /// Dropping an `Effect` handle deliberately does **not** reclaim.
+    ///
+    /// Pinned because it is the surprising half of the contract and the reason
+    /// scope ownership exists: an unowned `Effect::new(..)` whose handle is
+    /// dropped keeps running for the life of the thread.
+    #[test]
+    fn dropping_an_effect_handle_does_not_remove_its_entry() {
+        let baseline = registry_len_for_tests();
+        drop(Effect::new(|| {}));
+        assert_eq!(
+            registry_len_for_tests(),
+            baseline + 1,
+            "the handle is not the owner — disposal is explicit or via a scope"
+        );
     }
 }
 

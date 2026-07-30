@@ -90,40 +90,38 @@ impl<T: Clone + 'static> Memo<T> {
             subscribers: RefCell::new(BTreeSet::new()),
         });
 
-        // Store memo as an effect so it can be notified
-        let inner_clone = Rc::clone(&inner);
-        EFFECTS.with(|effects| {
-            let mut effects = effects.borrow_mut();
-            let idx = id.0;
-            if idx >= effects.len() {
-                effects.resize(idx + 1, None);
-            }
-            // We store a "marker" effect that marks the memo as dirty
-            let memo_inner = inner_clone;
-            effects[idx] = Some(Rc::new(EffectInner {
-                id,
-                f: RefCell::new(Box::new(move || {
-                    memo_inner.dirty.set(true);
-                    // Notify memo's subscribers
-                    let subscribers: Vec<_> =
-                        memo_inner.subscribers.borrow().iter().copied().collect();
-                    RUNTIME.with(|rt| {
-                        let mut rt = rt.borrow_mut();
-                        for observer in subscribers {
-                            if rt.pending_effects_set.insert(observer) {
-                                rt.pending_effects.push_back(observer);
-                            }
+        // Store memo as an effect so it can be notified. We store a "marker"
+        // effect that marks the memo as dirty.
+        //
+        // Built before the registry is touched, not inside the borrow: the
+        // constructor reads two other thread-locals (the context root and the
+        // ambient owner), and nothing under an `EFFECTS` borrow should call out
+        // to code that could reach back into it.
+        let memo_inner = Rc::clone(&inner);
+        let marker = Rc::new(EffectInner {
+            f: RefCell::new(Box::new(move || {
+                memo_inner.dirty.set(true);
+                // Notify memo's subscribers
+                let subscribers: Vec<_> = memo_inner.subscribers.borrow().iter().copied().collect();
+                RUNTIME.with(|rt| {
+                    let mut rt = rt.borrow_mut();
+                    for observer in subscribers {
+                        if rt.pending_effects_set.insert(observer) {
+                            rt.pending_effects.push_back(observer);
                         }
-                    });
-                })),
-                disposed: Cell::new(false),
-                root: crate::context::current_context_root(),
-                // Inert: the marker closure only flips a flag and queues
-                // observers, so it allocates nothing to attribute. Set for
-                // uniformity with every other `EffectInner`.
-                owner: super::Owner::current(),
-            }));
+                    }
+                });
+            })),
+            disposed: Cell::new(false),
+            root: crate::context::current_context_root(),
+            // Inert: the marker closure only flips a flag and queues
+            // observers, so it allocates nothing to attribute. Set for
+            // uniformity with every other `EffectInner`.
+            owner: super::Owner::current(),
         });
+        let displaced = EFFECTS.with(|effects| effects.borrow_mut().insert(id, marker));
+        debug_assert!(displaced.is_none(), "ObserverId {} was reused", id.0);
+        drop(displaced);
 
         // Store in MEMO_STORE and return Copy handle. The marker's ObserverId
         // rides along so freeing the slot can also clear EFFECTS — the marker
