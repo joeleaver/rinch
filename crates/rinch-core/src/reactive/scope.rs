@@ -295,8 +295,10 @@ impl ScopeInner {
         self.collect();
 
         if is_root {
+            // RAII, because the fixpoint runs arbitrary user code and it can
+            // panic — see [`DisposeCtxGuard`].
+            let _ctx_guard = DisposeCtxGuard;
             run_dispose_fixpoint();
-            DISPOSE_CTX.with(|ctx| *ctx.borrow_mut() = None);
         }
     }
 
@@ -383,6 +385,31 @@ thread_local! {
     /// `Some` also *means* "a fixpoint is already draining above me", which is
     /// how [`ScopeInner::dispose`] tells an outermost call from a nested one.
     static DISPOSE_CTX: RefCell<Option<DisposeCtx>> = const { RefCell::new(None) };
+}
+
+/// Clears the in-flight [`DisposeCtx`] on drop, including while unwinding.
+///
+/// The fixpoint runs arbitrary user code — cleanups, closure drops, value drops
+/// — and any of it can panic. Clearing the context on the normal path only would
+/// leave it installed for the rest of the thread's life, and then every later
+/// `dispose()` would see it, conclude it was *nested*, collect into it and never
+/// drain. One panicking cleanup would silently and permanently disable disposal
+/// process-wide, which is a far worse failure than the panic itself.
+struct DisposeCtxGuard;
+
+impl Drop for DisposeCtxGuard {
+    fn drop(&mut self) {
+        // `try_with`: TLS may already be torn down at thread exit, exactly as in
+        // `ObserverGuard::drop`. `try_borrow_mut` guards the (pathological) case
+        // of unwinding out of `with_dispose_ctx` itself.
+        let leftover = DISPOSE_CTX
+            .try_with(|ctx| ctx.try_borrow_mut().ok().and_then(|mut ctx| ctx.take()))
+            .ok()
+            .flatten();
+        // Dropped out here with no borrow held: an abandoned batch still holds
+        // un-run cleanups and freed values, i.e. more arbitrary user `Drop`s.
+        drop(leftover);
+    }
 }
 
 /// Run `f` against the in-flight disposal context, if there is one.
@@ -1341,6 +1368,36 @@ mod tests {
         assert!(
             !crate::events::dispatch_event(deep_handler),
             "including levels above the one that discovered the scope"
+        );
+    }
+
+    /// A panicking cleanup must not disable disposal for the rest of the
+    /// thread's life.
+    ///
+    /// The fixpoint installs a thread-local context and uses "is it installed?"
+    /// to tell an outermost `dispose` from a nested one. Clearing it only on the
+    /// normal path would leave it stranded after a panic, and every later
+    /// `dispose()` would then collect into it and never drain — silently, and
+    /// for every scope in the process, not just this one.
+    #[test]
+    fn a_panicking_cleanup_does_not_strand_the_disposal_context() {
+        let scope = Scope::new();
+        scope.on_cleanup(|| panic!("boom"));
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scope.dispose()));
+        assert!(result.is_err(), "the cleanup must have panicked");
+
+        // The positive control: a completely unrelated scope disposed
+        // afterwards still frees what it owns.
+        let later = Scope::new();
+        let signal = later.run(|| Signal::new(0));
+        assert!(signal.is_alive());
+
+        later.dispose();
+
+        assert!(
+            !signal.is_alive(),
+            "disposal must still work after a cleanup panicked in an earlier scope"
         );
     }
 
