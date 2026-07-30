@@ -179,7 +179,11 @@ impl VideoPlayer {
         self.inner.borrow().poll_updates();
     }
 
-    /// Clean up resources. Called automatically on drop via the hook.
+    /// Clean up resources and unregister this player from the active list.
+    ///
+    /// `use_video_player` wires this to the creating component's scope, so a
+    /// player stops being polled when the component showing it is unmounted
+    /// (issue #141). Call it directly only for a player built outside a render.
     pub fn cleanup(&self) {
         self.inner.borrow().cleanup();
         crate::unregister_active_player(self);

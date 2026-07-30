@@ -305,10 +305,6 @@ impl<T: 'static> Signal<T> {
     /// to make from a long-lived callback or a background worker holding a
     /// `Copy` handle.
     ///
-    /// Nothing frees signals yet — this returns `true` for every signal that was
-    /// ever created. It becomes meaningful when scope-driven disposal lands
-    /// (issue #141).
-    ///
     /// Does **not** subscribe the current observer — liveness is not reactive,
     /// and tracking it would resurrect the dependency you are trying to drop.
     pub fn is_alive(&self) -> bool {

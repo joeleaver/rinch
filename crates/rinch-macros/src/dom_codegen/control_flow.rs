@@ -467,6 +467,141 @@ fn generate_children_body(children: &[RsxNode], ctx: &mut DomCodegenContext) -> 
 
 /// Generate DOM code for a native `for` loop in RSX.
 ///
+/// The leading `let` statements of a `for` body that the key expression
+/// actually depends on, in source order.
+///
+/// The key closure runs once per item on **every** reconcile pass, and is a
+/// separate closure from the view. Copying the whole leading-`let` prologue into
+/// it therefore re-executes each statement per item per pass — and the
+/// documented per-item-state idiom puts a `Signal::new(..)` in exactly that
+/// prologue:
+///
+/// ```ignore
+/// for todo in todos.get() {
+///     let editing = Signal::new(false);   // per-item state, for the *view*
+///     div { key: todo.id, /* ... */ }     // the key needs `todo`, not `editing`
+/// }
+/// ```
+///
+/// Unfiltered, that mints a throwaway signal per item per reconcile, attributed
+/// to the scope *enclosing* the `for` (the reconcile effect re-enters its
+/// creation-time owner), so they accumulate until the whole component dies —
+/// an invisible leak before #141, and an unbounded `Owned::signals` for the
+/// dispose fixpoint to walk after it. Keeping only what the key reads removes
+/// the allocation rather than re-homing it.
+///
+/// Traced backwards so a chain survives intact: if the key needs `b` and `b`'s
+/// initialiser reads `a`, both are kept. Non-`let` statements are kept
+/// unconditionally — they bind nothing to trace and may carry side effects the
+/// key relies on.
+fn key_relevant_leading_stmts(for_loop: &RsxForLoop, key_fn: &TokenStream2) -> Vec<TokenStream2> {
+    let leading: Vec<&syn::Stmt> = for_loop
+        .children
+        .iter()
+        .take_while(|c| matches!(c, RsxNode::Statement(_)))
+        .filter_map(|c| match c {
+            RsxNode::Statement(stmt) => Some(stmt),
+            _ => None,
+        })
+        .collect();
+
+    let mut needed = token_idents(key_fn);
+
+    let mut keep = vec![false; leading.len()];
+    for (i, stmt) in leading.iter().enumerate().rev() {
+        let syn::Stmt::Local(local) = stmt else {
+            keep[i] = true;
+            continue;
+        };
+        let mut bound = HashSet::new();
+        collect_pat_idents(&local.pat, &mut bound);
+        if bound.iter().any(|name| needed.contains(name)) {
+            keep[i] = true;
+            if let Some(init) = &local.init {
+                let expr = &init.expr;
+                needed.extend(token_idents(&quote! { #expr }));
+                // `let x = a else { ... }` — the divergent block can reference
+                // bindings too.
+                if let Some((_, diverge)) = &init.diverge {
+                    needed.extend(token_idents(&quote! { #diverge }));
+                }
+            }
+        }
+    }
+
+    leading
+        .into_iter()
+        .zip(keep)
+        .filter(|&(_, keep)| keep)
+        .map(|(stmt, _)| quote! { #stmt })
+        .collect()
+}
+
+/// Every identifier that *might* be referenced by `tokens`.
+///
+/// Deliberately a token-level over-approximation rather than the scope-aware
+/// [`collect_capture_idents`]: this drives a decision about what to **discard**,
+/// so the only acceptable error is keeping too much. Two things a `syn::Expr`
+/// walk misses outright, both of which would silently drop a binding the key
+/// needs and turn it into a compile error in user code:
+///
+/// - **Macro arguments.** `syn` models a macro invocation's body as an opaque
+///   `TokenStream`, so `key: format!("{}-{}", a, b)` yields no identifiers at all.
+/// - **Inline format args.** In `format!("{prefix}-{}", id)`, `prefix` lives
+///   inside a string *literal* and is not a token anywhere.
+///
+/// Field names and method names are collected too. Harmless: at worst a `let`
+/// whose binding happens to share a name with a field is kept unnecessarily.
+fn token_idents(tokens: &TokenStream2) -> HashSet<String> {
+    use proc_macro2::TokenTree;
+
+    let mut out = HashSet::new();
+    let mut stack: Vec<TokenStream2> = vec![tokens.clone()];
+    while let Some(stream) = stack.pop() {
+        for tree in stream {
+            match tree {
+                TokenTree::Ident(id) => {
+                    out.insert(id.to_string());
+                }
+                TokenTree::Group(g) => stack.push(g.stream()),
+                TokenTree::Literal(lit) => collect_inline_format_args(&lit.to_string(), &mut out),
+                TokenTree::Punct(_) => {}
+            }
+        }
+    }
+    out
+}
+
+/// Pull identifiers out of a string literal's `{...}` placeholders, so an inline
+/// format arg such as the `prefix` in `format!("{prefix}-{}", id)` is seen.
+///
+/// Takes the leading identifier of each placeholder, stopping at `:` (the format
+/// spec) — `{width$}`/`{0}`/`{}` contribute nothing. `{{` is an escaped brace and
+/// is skipped. Over-collecting from an unrelated string literal is harmless.
+fn collect_inline_format_args(literal: &str, out: &mut HashSet<String>) {
+    let bytes: Vec<char> = literal.chars().collect();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != '{' {
+            i += 1;
+            continue;
+        }
+        if bytes.get(i + 1) == Some(&'{') {
+            i += 2; // escaped `{{`
+            continue;
+        }
+        let start = i + 1;
+        let mut end = start;
+        while end < bytes.len() && (bytes[end].is_alphanumeric() || bytes[end] == '_') {
+            end += 1;
+        }
+        if end > start && !bytes[start].is_ascii_digit() {
+            out.insert(bytes[start..end].iter().collect());
+        }
+        i = end.max(start + 1);
+    }
+}
+
 /// Desugars to `for_each_dom_typed()`. The iterator expression is auto-wrapped
 /// in a `move ||` closure. If a `key:` prop is found on the first child element,
 /// it's extracted as the key function.
@@ -481,19 +616,9 @@ pub fn generate_for_loop(
     // Try to extract key from first child element's `key:` prop
     let key_fn = extract_key_expr(for_loop);
 
-    // Collect leading let statements so they can be included in the key closure too
-    let leading_stmts: Vec<TokenStream2> = for_loop
-        .children
-        .iter()
-        .take_while(|c| matches!(c, RsxNode::Statement(_)))
-        .filter_map(|c| {
-            if let RsxNode::Statement(stmt) = c {
-                Some(quote! { #stmt })
-            } else {
-                None
-            }
-        })
-        .collect();
+    // Leading `let`s the key expression depends on, so `key:` can reference a
+    // let-bound value. Deliberately filtered — see `key_relevant_leading_stmts`.
+    let leading_stmts = key_relevant_leading_stmts(for_loop, &key_fn);
 
     // Build the view closure body from children
     let body = generate_children_body(&for_loop.children, ctx);
@@ -636,6 +761,126 @@ pub fn generate_match_block(
                 vec![#(#branch_closures),*]
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod key_prologue_tests {
+    use super::key_relevant_leading_stmts;
+    use crate::node::RsxForLoop;
+    use quote::quote;
+
+    /// Render the statements `key_relevant_leading_stmts` would copy into the
+    /// key closure, as one whitespace-free string.
+    fn prologue(for_body: proc_macro2::TokenStream, key: proc_macro2::TokenStream) -> String {
+        let for_loop: RsxForLoop = syn::parse2(for_body).expect("parse for loop");
+        key_relevant_leading_stmts(&for_loop, &key)
+            .iter()
+            .map(|ts| ts.to_string())
+            .collect::<String>()
+            .replace(' ', "")
+    }
+
+    /// The documented per-item-state idiom must not be re-executed by the key
+    /// closure: `Signal::new` there mints a throwaway signal per item per
+    /// reconcile pass, attributed to the scope enclosing the `for` (issue #141).
+    #[test]
+    fn per_item_state_is_not_copied_into_the_key_closure() {
+        let copied = prologue(
+            quote! {
+                for todo in todos.get() {
+                    let editing = Signal::new(false);
+                    div { key: todo.id, "x" }
+                }
+            },
+            quote! { todo.id },
+        );
+        assert_eq!(
+            copied, "",
+            "the key reads only `todo`, so nothing needs re-running"
+        );
+    }
+
+    /// The reason the prologue is copied at all still works: a key that reads a
+    /// let-bound value keeps the binding that produced it.
+    #[test]
+    fn a_binding_the_key_reads_is_kept() {
+        let copied = prologue(
+            quote! {
+                for todo in todos.get() {
+                    let composite = format!("{}-{}", todo.id, todo.rev);
+                    div { key: composite, "x" }
+                }
+            },
+            quote! { composite },
+        );
+        assert!(
+            copied.contains("letcomposite"),
+            "the key depends on `composite`, so its binding must survive: {copied}"
+        );
+    }
+
+    /// A key built with a macro keeps its dependencies.
+    ///
+    /// This is why the analysis is token-level: `syn` models a macro body as an
+    /// opaque `TokenStream`, so an expression walk sees *no* identifiers in
+    /// `format!("{}", part)` at all and would drop `part` — turning the filter
+    /// from an optimisation into a compile error in user code.
+    #[test]
+    fn a_key_built_by_a_macro_keeps_its_dependencies() {
+        let positional = prologue(
+            quote! {
+                for todo in todos.get() {
+                    let part = todo.id.to_string();
+                    let editing = Signal::new(false);
+                    div { key: format!("{}-x", part), "x" }
+                }
+            },
+            quote! { format!("{}-x", part) },
+        );
+        assert!(positional.contains("letpart"), "{positional}");
+        assert!(!positional.contains("letediting"), "{positional}");
+
+        // The same, with an inline format arg — the identifier lives inside a
+        // string literal and is not a token anywhere.
+        let inline = prologue(
+            quote! {
+                for todo in todos.get() {
+                    let part = todo.id.to_string();
+                    let editing = Signal::new(false);
+                    div { key: format!("{part}-x"), "x" }
+                }
+            },
+            quote! { format!("{part}-x") },
+        );
+        assert!(inline.contains("letpart"), "{inline}");
+        assert!(!inline.contains("letediting"), "{inline}");
+    }
+
+    /// Dependencies are traced backwards through a chain, and unrelated
+    /// bindings interleaved with it are still dropped.
+    #[test]
+    fn a_dependency_chain_is_kept_and_unrelated_bindings_are_not() {
+        let copied = prologue(
+            quote! {
+                for todo in todos.get() {
+                    let prefix = todo.group.clone();
+                    let editing = Signal::new(false);
+                    let composite = format!("{prefix}-{}", todo.id);
+                    div { key: composite, "x" }
+                }
+            },
+            quote! { composite },
+        );
+        assert!(copied.contains("letcomposite"), "{copied}");
+        assert!(
+            copied.contains("letprefix"),
+            "`composite` reads `prefix`, so the chain must survive: {copied}"
+        );
+        assert!(
+            !copied.contains("letediting"),
+            "`editing` is not on the chain and must be dropped: {copied}"
+        );
     }
 }
 

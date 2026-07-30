@@ -222,15 +222,24 @@ impl Component for Tabs {
         for (value, btn) in &tab_buttons {
             let val = value.clone();
             let active = active_tab;
-            // Preserve any user-provided onclick handler
-            let user_rid = btn
-                .get_attribute("data-user-rid")
-                .and_then(|s| s.parse::<usize>().ok())
-                .map(rinch_core::events::EventHandlerId);
+            // Preserve any user-provided onclick handler.
+            //
+            // The id is re-read from the button at *dispatch* time rather than
+            // captured here. `Tab` registers its handler under whichever scope
+            // built that button, which need not be the scope building this
+            // `Tabs` — a `for`-generated or conditional tab list makes them
+            // different — and disposing the inner one frees its handler while
+            // this wrapper survives (issue #141). A captured id would then
+            // silently stop firing; a re-read one simply resolves to nothing.
+            let button = btn.clone();
             let handler_id = __scope.register_handler(move || {
                 active.set(val.clone());
                 // Also fire user's onclick callback if present
-                if let Some(rid) = user_rid {
+                if let Some(rid) = button
+                    .get_attribute("data-user-rid")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .map(rinch_core::events::EventHandlerId)
+                {
                     rinch_core::events::dispatch_event(rid);
                 }
             });

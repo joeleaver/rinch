@@ -75,11 +75,10 @@ pub use rinch_editor_view::{CollabError, collab_receive_for};
 struct MountedRoot {
     web_doc: Rc<RefCell<WebDocument>>,
     /// Held so the render scope (and the effects that reference it) stay alive.
-    #[allow(dead_code)]
+    /// It also *owns* everything the build created — handlers included — so
+    /// dropping it is what reclaims the root (issue #141).
     scope: Rc<RefCell<RenderScope>>,
     root: NodeHandle,
-    handler_start: events::EventHandlerId,
-    handler_end: events::EventHandlerId,
 }
 
 thread_local! {
@@ -113,9 +112,26 @@ impl RootHandle {
     pub fn unmount(self) {
         let root = MOUNTED_ROOTS.with(|m| m.borrow_mut().remove(&self.id));
         if let Some(r) = root {
+            // Dispose the scope *first*, while the DOM it was built against is
+            // still standing: disposal runs this root's cleanups and drops its
+            // effect closures, and those legitimately touch their own nodes.
+            // Tearing the tree down first left them patching a corpse.
+            //
+            // Disposal is also what deregisters this root's event handlers now,
+            // replacing the old `handler_id_watermark` range. The range was both
+            // incomplete and unsound: it only covered ids allocated during the
+            // synchronous build (missing every handler a later effect run
+            // registers), and a synchronous effect flush inside the build lets
+            // an *unrelated* root allocate an id inside the recorded window,
+            // which unmounting this root would then delete. A scope's own record
+            // has neither problem (issue #141).
+            match Rc::try_unwrap(r.scope) {
+                // The expected path: nothing else can reach the scope, so its
+                // cleanups run with no borrow outstanding anywhere.
+                Ok(cell) => cell.into_inner().dispose(),
+                Err(shared) => shared.borrow_mut().dispose_in_place(),
+            }
             r.web_doc.borrow_mut().remove_node(r.root.node_id());
-            events::remove_handlers_in_range(r.handler_start, r.handler_end);
-            // Dropping `r` releases the WebDocument and RenderScope for this root.
         }
     }
 }
@@ -203,18 +219,15 @@ where
 
     set_render_scope(scope.clone());
 
-    // Handler ids allocated during this build belong to this root (builds are
-    // sequential, so the range is contiguous and exclusively ours).
-    let handler_start = events::handler_id_watermark();
-    // The root scope owns everything this build creates (issue #141). Scoped to
-    // the build alone: theme injection, event delegation and root registration
-    // below are page-global setup with app lifetime.
+    // The root scope owns everything this build creates — signals, memos,
+    // effects and event handlers — and `unmount` releases them by disposing it
+    // (issue #141). Scoped to the build alone: theme injection, event delegation
+    // and root registration below are page-global setup with app lifetime.
     let root = {
         let _owner = scope.borrow().push_owner();
         let mut scope_ref = scope.borrow_mut();
         build(&mut scope_ref)
     };
-    let handler_end = events::handler_id_watermark();
 
     web_doc.borrow_mut().append_child(body_id, root.node_id());
 
@@ -240,8 +253,6 @@ where
                 web_doc,
                 scope,
                 root,
-                handler_start,
-                handler_end,
             },
         );
     });

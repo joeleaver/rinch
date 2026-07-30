@@ -1186,10 +1186,17 @@ impl RinchApp {
             let mut found = None;
             while let Some(nid) = current {
                 if let Some(node) = d.tree.get(nid) {
-                    if let Some(val) = node.attributes.get("data-onenter") {
-                        if let Ok(id) = val.parse::<usize>() {
-                            found = Some(id);
-                        }
+                    // A stale attribute must not stop the walk: disposing a
+                    // scope frees its handlers (issue #141) while nothing strips
+                    // the attribute from a node that outlives them, and this
+                    // walk commits to the first node carrying one.
+                    if let Some(id) = node
+                        .attributes
+                        .get("data-onenter")
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .filter(|&id| events::has_click_handler(events::EventHandlerId(id)))
+                    {
+                        found = Some(id);
                         break;
                     }
                     current = node.parent;
@@ -1215,10 +1222,17 @@ impl RinchApp {
             let mut found = None;
             while let Some(nid) = current {
                 if let Some(node) = d.tree.get(nid) {
-                    if let Some(val) = node.attributes.get("data-onleave") {
-                        if let Ok(id) = val.parse::<usize>() {
-                            found = Some(id);
-                        }
+                    // A stale attribute must not stop the walk: disposing a
+                    // scope frees its handlers (issue #141) while nothing strips
+                    // the attribute from a node that outlives them, and this
+                    // walk commits to the first node carrying one.
+                    if let Some(id) = node
+                        .attributes
+                        .get("data-onleave")
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .filter(|&id| events::has_click_handler(events::EventHandlerId(id)))
+                    {
+                        found = Some(id);
                         break;
                     }
                     current = node.parent;
@@ -1254,8 +1268,14 @@ impl RinchApp {
             let mut found = None;
             while let Some(nid) = current {
                 if let Some(node) = d.tree.get(nid) {
+                    // A stale attribute must not stop the walk — see the note
+                    // on the `data-onenter` walk (issue #141).
                     if let Some(val) = node.attributes.get("data-oncontextmenu") {
-                        if let Ok(id) = val.parse::<usize>() {
+                        if let Some(id) = val
+                            .parse::<usize>()
+                            .ok()
+                            .filter(|&id| events::has_click_handler(events::EventHandlerId(id)))
+                        {
                             // Compute element absolute position
                             let mut ax = node.layout.x;
                             let mut ay = node.layout.y;
@@ -1408,8 +1428,14 @@ impl RinchApp {
             let mut found = None;
             while let Some(nid) = current {
                 if let Some(node) = d.tree.get(nid) {
+                    // A stale attribute must not stop the walk — see the note
+                    // on the `data-onenter` walk (issue #141).
                     if let Some(val) = node.attributes.get(attr) {
-                        if let Ok(id) = val.parse::<usize>() {
+                        if let Some(id) = val
+                            .parse::<usize>()
+                            .ok()
+                            .filter(|&id| events::has_click_handler(events::EventHandlerId(id)))
+                        {
                             // Compute element absolute position
                             let mut ax = node.layout.x;
                             let mut ay = node.layout.y;
@@ -1463,10 +1489,15 @@ impl RinchApp {
             let mut found = None;
             while let Some(nid) = current {
                 if let Some(node) = d.tree.get(nid) {
-                    if let Some(val) = node.attributes.get(attr) {
-                        if let Ok(id) = val.parse::<usize>() {
-                            found = Some(id);
-                        }
+                    // A stale attribute must not stop the walk — see the note
+                    // on the `data-onenter` walk (issue #141).
+                    if let Some(id) = node
+                        .attributes
+                        .get(attr)
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .filter(|&id| events::has_click_handler(events::EventHandlerId(id)))
+                    {
+                        found = Some(id);
                         break;
                     }
                     current = node.parent;
@@ -1528,8 +1559,14 @@ impl RinchApp {
             let mut found = None;
             while let Some(nid) = current {
                 if let Some(node) = d.tree.get(nid) {
+                    // A stale attribute must not stop the walk — see the note
+                    // on the `data-onenter` walk (issue #141).
                     if let Some(val) = node.attributes.get(attr) {
-                        if let Ok(id) = val.parse::<usize>() {
+                        if let Some(id) = val
+                            .parse::<usize>()
+                            .ok()
+                            .filter(|&id| events::has_click_handler(events::EventHandlerId(id)))
+                        {
                             // Compute element absolute position
                             let mut ax = node.layout.x;
                             let mut ay = node.layout.y;
@@ -1607,10 +1644,17 @@ impl RinchApp {
             let mut found = None;
             while let Some(nid) = current {
                 if let Some(node) = d.tree.get(nid) {
-                    if let Some(val) = node.attributes.get("data-onfiledrop") {
-                        if let Ok(id) = val.parse::<usize>() {
-                            found = Some(id);
-                        }
+                    // A stale attribute must not stop the walk: disposing a
+                    // scope frees its handlers (issue #141) while nothing strips
+                    // the attribute from a node that outlives them, and this
+                    // walk commits to the first node carrying one.
+                    if let Some(id) = node
+                        .attributes
+                        .get("data-onfiledrop")
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .filter(|&id| events::has_file_drop_handler(events::EventHandlerId(id)))
+                    {
+                        found = Some(id);
                         break;
                     }
                     current = node.parent;

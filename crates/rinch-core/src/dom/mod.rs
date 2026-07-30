@@ -720,8 +720,12 @@ where
     let m = marker.clone();
 
     let effect = crate::reactive::Effect::new(move || {
-        // Dispose old scope (cleans up nested effects)
-        if let Some(old) = cs.borrow_mut().take() {
+        // Dispose old scope (cleans up nested effects).
+        //
+        // `take()` on its own line so the `RefMut` is not held across the
+        // dispose — see the matching note in `show_dom` (issue #141).
+        let old = cs.borrow_mut().take();
+        if let Some(old) = old {
             old.dispose();
         }
         // Remove old nodes

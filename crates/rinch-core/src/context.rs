@@ -630,48 +630,48 @@ mod tests {
         clear_context();
     }
 
-    /// A `create_store` that reaches the *disposing* scope as its ambient owner
-    /// gets app lifetime rather than panicking on the borrowed cleanup list.
+    /// A `create_store` whose ambient owner is a **disposed** scope gets app
+    /// lifetime rather than attaching its cleanup to a corpse — where it would
+    /// silently never run.
     ///
-    /// Getting there takes a specific shape, because `dispose` itself pushes no
-    /// owner: a cleanup writes a signal, the synchronous flush re-runs an effect
-    /// that is enqueued-but-not-yet-disposed, and `run_effect` re-pushes *that
-    /// effect's* owner — which is the scope currently mid-drain.
-    ///
-    /// Two redundant guards make this safe: `with_ambient_scope` rejects a
-    /// disposed owner, and `on_cleanup_for_ambient_owner` uses `try_borrow_mut`.
-    /// Either alone suffices, so only removing **both** reproduces the panic.
+    /// This is reachable in production even though `dispose` pushes no owner of
+    /// its own. `record_effect` declines to record against a disposed ambient
+    /// owner while `Owner::current` still captures it, so such an effect is
+    /// disposed by nobody, and every later run re-pushes that dead owner —
+    /// which is exactly the stack `run_effect` installs here.
     #[test]
-    fn a_store_created_under_a_disposing_scope_gets_app_lifetime() {
+    fn a_store_created_under_a_disposed_owner_gets_app_lifetime() {
         use crate::reactive::{Effect, Signal};
 
         clear_context();
         let scope = Scope::new();
         scope.run(|| create_store(S("doomed")));
 
-        let trigger = Signal::new(0);
-        let effect = scope.run(|| {
+        let trigger = Signal::new(0).leak();
+        let effect = {
+            // Create the effect while the (already disposed) scope is ambient,
+            // reproducing the record/capture asymmetry described above.
+            let _owner = scope.push_owner();
+            scope.dispose();
             Effect::new(move || {
                 if trigger.get() > 0 {
-                    create_store(T2("born-during-dispose"));
+                    create_store(T2("born-under-a-corpse"));
                 }
             })
-        });
-        scope.add_effect(effect);
-
-        // Runs while `cleanups` is borrowed by the drain; the write flushes the
-        // effect above, which re-pushes this scope as the ambient owner.
-        scope.on_cleanup(move || trigger.set(1));
-
-        scope.dispose();
+        };
 
         assert_eq!(try_use_store::<S>(), None, "the owned entry is reclaimed");
+
+        trigger.set(1); // re-runs the effect with the dead owner ambient
+
         assert_eq!(
             try_use_store::<T2>(),
-            Some(T2("born-during-dispose")),
-            "a store whose only candidate owner is already disposing falls back \
-             to app lifetime instead of attaching to a corpse"
+            Some(T2("born-under-a-corpse")),
+            "a store whose only candidate owner is disposed falls back to app \
+             lifetime instead of attaching to a corpse"
         );
+
+        drop(effect);
         clear_context();
     }
 }

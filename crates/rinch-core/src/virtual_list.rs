@@ -181,12 +181,18 @@ where
             .cloned()
             .collect();
 
-        // Remove out-of-range items
+        // Remove out-of-range items.
+        //
+        // Their scopes are parked and disposed at the very end of this closure,
+        // once `state` and `old_keys` are no longer borrowed. Disposal runs user
+        // code — cleanups, handler-closure drops, signal value drops (issue
+        // #141) — and any of it that writes a signal flushes effects
+        // synchronously, re-entering this closure and panicking on the
+        // outstanding `RefMut`s.
+        let mut doomed: Vec<RenderScope> = Vec::new();
         for k in &to_remove {
             if let Some(item_state) = state.remove(k) {
-                if let Some(s) = item_state.scope {
-                    s.dispose();
-                }
+                doomed.extend(item_state.scope);
                 item_state.node.remove();
             }
         }
@@ -243,6 +249,13 @@ where
 
         // Update keys order
         *old_keys = new_keys;
+
+        // Borrows released before the parked scopes are torn down.
+        drop(state);
+        drop(old_keys);
+        for scope in doomed {
+            scope.dispose();
+        }
     });
 
     scope.create_effect_from(effect);

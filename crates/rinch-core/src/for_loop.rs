@@ -160,6 +160,9 @@ where
 
         // Track inserted nodes to chain insert_after calls
         let mut initial_nodes: Vec<NodeHandle> = Vec::new();
+        // Item states displaced by a duplicate key, dropped after `state` is
+        // released — see the note on `state.insert` below.
+        let mut displaced: Vec<ItemState> = Vec::new();
 
         for item in initial_items {
             if let Some(doc) = doc_weak.upgrade() {
@@ -180,7 +183,10 @@ where
 
                 keys.push(item.key.clone());
                 initial_nodes.push(node.clone());
-                state.insert(
+                // A duplicate key displaces a live `ItemState`, and dropping it
+                // here would dispose its scope — running user code under
+                // `state`'s `RefMut` (issue #141). Park it instead.
+                let clobbered = state.insert(
                     item.key.clone(),
                     ItemState {
                         node,
@@ -188,8 +194,20 @@ where
                         scope: Some(child_scope),
                     },
                 );
+                if let Some(clobbered) = clobbered {
+                    tracing::warn!(
+                        "duplicate `for` key {:?}: the earlier item's state is discarded while \
+                         its DOM node stays mounted. Give each item a unique `key:`.",
+                        keys.last()
+                    );
+                    displaced.push(clobbered);
+                }
             }
         }
+
+        drop(state);
+        drop(keys);
+        drop(displaced);
     }
 
     // Create Effect that reconciles list when it changes
@@ -214,6 +232,18 @@ where
         // Always use diff_keyed to compute minimal operations
         let ops = diff_keyed(&old_keys, &new_keys);
 
+        // Scopes displaced by this reconcile, torn down at the very end of the
+        // closure once `state` and `keys` are no longer borrowed.
+        //
+        // Disposal runs user code — cleanups, handler-closure drops, signal
+        // value drops (issue #141) — and any of it that writes a signal flushes
+        // effects synchronously, re-entering this very closure. Disposing under
+        // the `RefMut`s below would make that a `BorrowMutError` rather than a
+        // reconcile. The cost is that a removed item's effects stay live for the
+        // remainder of this pass; they have no signal to wake them in that
+        // window, since nothing re-enters the flush before the drop.
+        let mut doomed: Vec<RenderScope> = Vec::new();
+
         // Apply operations
         let mut state = items_state_clone.borrow_mut();
         let mut keys = keys_order_clone.borrow_mut();
@@ -226,9 +256,7 @@ where
                 ListOp::Remove { key, .. } => {
                     // Remove the item's DOM node
                     if let Some(item_state) = state.remove(&key) {
-                        if let Some(old_scope) = item_state.scope {
-                            old_scope.dispose();
-                        }
+                        doomed.extend(item_state.scope);
                         item_state.node.clear_animations();
                         item_state.node.remove();
                     }
@@ -285,17 +313,25 @@ where
                             }
                         }
 
-                        // Update state
+                        // Update state. A duplicate key displaces a live
+                        // `ItemState`; park it rather than letting it drop —
+                        // and so dispose — under the `state` borrow (#141).
                         let insert_pos = new_index.min(keys.len());
                         keys.insert(insert_pos, key.clone());
-                        state.insert(
+                        if let Some(clobbered) = state.insert(
                             key,
                             ItemState {
                                 node,
                                 item: item.clone(),
                                 scope: Some(child_scope),
                             },
-                        );
+                        ) {
+                            tracing::warn!(
+                                "duplicate `for` key: the earlier item's state is discarded \
+                                 while its DOM node stays mounted. Give each item a unique `key:`."
+                            );
+                            doomed.extend(clobbered.scope);
+                        }
                     }
                 }
                 ListOp::Move { key, new_index, .. } => {
@@ -362,9 +398,7 @@ where
                     if !eq_fn(&old_state.item, item) {
                         // Data changed — re-render this item
                         if let Some(doc) = doc_weak_clone.upgrade() {
-                            if let Some(old_scope) = old_state.scope.take() {
-                                old_scope.dispose();
-                            }
+                            doomed.extend(old_state.scope.take());
                             let mut child_scope = RenderScope::new(doc, parent_id);
                             // The re-rendered item owns its new resources
                             // (issue #141); the old scope was disposed above,
@@ -386,6 +420,13 @@ where
 
         // Update keys to match new order
         *keys = new_keys;
+
+        // Borrows released before the parked scopes are torn down.
+        drop(state);
+        drop(keys);
+        for scope in doomed {
+            scope.dispose();
+        }
     });
 
     // Attach effect to parent scope
@@ -793,5 +834,66 @@ mod tests {
         // Verify data is preserved
         let item_data = items[0].downcast::<TestItem>().unwrap();
         assert_eq!(item_data.name, "One");
+    }
+
+    /// Removing an item whose teardown writes a signal must not deadlock the
+    /// reconcile on its own `RefCell`s (issue #141).
+    ///
+    /// Disposal now runs user code — cleanups, handler-closure drops, signal
+    /// value drops — and a write from any of it flushes effects synchronously,
+    /// re-entering this very reconcile closure. Disposing under the
+    /// `items_state`/`keys_order` borrows makes that a `BorrowMutError`; parking
+    /// the doomed scopes until both are released makes it a no-op re-entry.
+    ///
+    /// Counterfactual: replace the `doomed` vec at the `ListOp::Remove` arm with
+    /// an inline `old_scope.dispose()` and this panics with
+    /// "already mutably borrowed".
+    #[test]
+    fn removing_an_item_whose_cleanup_writes_a_signal_does_not_panic() {
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use crate::reactive::Signal;
+        use std::cell::RefCell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let items = Signal::new(vec![
+            TestItem {
+                id: "a".into(),
+                name: "A".into(),
+            },
+            TestItem {
+                id: "b".into(),
+                name: "B".into(),
+            },
+        ]);
+        // Written from each item's cleanup, and read by the list itself — so the
+        // write re-enters the reconcile effect rather than merely waking a
+        // bystander.
+        let churn = Signal::new(0);
+
+        let marker = super::for_each_dom_typed(
+            &mut scope,
+            &parent,
+            move || {
+                churn.get();
+                items.get()
+            },
+            |item: &TestItem| item.id.clone(),
+            move |_item: TestItem, s: &mut RenderScope| {
+                s.on_cleanup(move || churn.update(|n| *n += 1));
+                s.create_element("div")
+            },
+        );
+        let _ = marker;
+
+        // Drops item "a": its cleanup writes `churn`, whose flush re-enters this
+        // reconcile.
+        items.update(|v| v.retain(|i| i.id == "b"));
+
+        assert_eq!(churn.get(), 1, "exactly the removed item's cleanup ran");
     }
 }

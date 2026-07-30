@@ -916,9 +916,19 @@ fn dispatch_click_at(
         events::set_click_ancestors(ancestors);
 
         // Prevent browser default behavior (e.g. text selection during slider
-        // drag, <label> synthesizing extra events).
-        event.prevent_default();
-        events::dispatch_event(events::EventHandlerId(rid));
+        // drag, <label> synthesizing extra events) — but only if a handler
+        // actually ran.
+        //
+        // Order matters here in a way it does not on desktop. Disposing a scope
+        // frees its handlers while the `data-rid` attribute stays on any node
+        // that outlives them (issue #141), and a detached element still
+        // satisfies `closest()` within its own detached subtree. Suppressing the
+        // default unconditionally would then be strictly worse than doing
+        // nothing: text selection, `<label>` activation, native form submit and
+        // the context menu are all cancelled while nothing is dispatched.
+        if events::dispatch_event(events::EventHandlerId(rid)) {
+            event.prevent_default();
+        }
     }
 }
 

@@ -317,10 +317,26 @@ impl RenderScope {
     ///
     /// Equivalent to dropping it: cleanups and effects both live on
     /// `reactive_scope`, whose own `Drop` disposes it. This exists for callers
-    /// that want teardown to happen at a definite point.
+    /// that want teardown to happen at a definite point — which matters more
+    /// than it looks, because disposal now *frees* the scope's signals, memos
+    /// and event handlers rather than merely stopping its effects (issue #141),
+    /// so doing it before the surrounding DOM is torn down rather than after is
+    /// the difference between cleanups patching live nodes and patching a
+    /// corpse.
     pub fn dispose(mut self) {
-        // Dispose child scopes first
-        for child in self.children.drain(..) {
+        self.dispose_in_place();
+    }
+
+    /// [`dispose`](RenderScope::dispose) for callers that hold only `&mut` —
+    /// notably a `RenderScope` living inside a shared `Rc<RefCell<_>>`, where the
+    /// by-value form is unreachable.
+    ///
+    /// Prefer the by-value form: it proves at the type level that nothing else
+    /// can observe the scope while its cleanups run.
+    pub fn dispose_in_place(&mut self) {
+        // Emptied before any child is disposed, so a child's teardown cannot
+        // observe (or re-enter) a half-drained list.
+        for child in std::mem::take(&mut self.children) {
             child.dispose();
         }
 

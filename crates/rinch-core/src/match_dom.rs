@@ -120,8 +120,12 @@ where
         if new_idx != old_idx {
             *idx_clone.borrow_mut() = new_idx;
 
-            // Dispose old scope BEFORE removing DOM nodes
-            if let Some(old_scope) = scope_clone.borrow_mut().take() {
+            // Dispose old scope BEFORE removing DOM nodes.
+            //
+            // `take()` on its own line so the `RefMut` is not held across the
+            // dispose — see the matching note in `show_dom` (issue #141).
+            let old_scope = scope_clone.borrow_mut().take();
+            if let Some(old_scope) = old_scope {
                 old_scope.dispose();
             }
 

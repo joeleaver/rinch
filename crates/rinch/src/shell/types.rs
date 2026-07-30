@@ -2,8 +2,6 @@
 
 /// Events used internally by rinch.
 #[cfg(feature = "desktop")]
-use rinch_core::events::{ClickContext, EventHandlerId};
-#[cfg(feature = "desktop")]
 #[derive(Debug, Clone)]
 pub enum RinchEvent {
     /// Poll a window for document updates.
@@ -18,12 +16,12 @@ pub enum RinchEvent {
     /// Fine-grained reactive text update - directly update the DOM Document.
     /// This is the fastest path: no app() re-execution, no HTML regeneration.
     UpdateReactiveText { reactive_id: usize, text: String },
-    /// An element was clicked (with handler ID, source window, and click context).
-    ElementClicked {
-        handler_id: EventHandlerId,
-        window_id: winit::window::WindowId,
-        click_context: ClickContext,
-    },
+    // NOTE: there was an `ElementClicked { handler_id, .. }` variant here. It was
+    // dead, and it is the one shape scope-owned handlers forbid: an id queued for
+    // *later* delivery can have its handler freed before the queue is drained
+    // (issue #141). If deferred click delivery is ever needed, carry the
+    // `Callback`/`Rc<dyn Fn()>` itself, or re-probe liveness at drain time with
+    // `events::has_click_handler`.
     /// Toggle the DevTools window.
     ToggleDevTools {
         source_window: winit::window::WindowId,

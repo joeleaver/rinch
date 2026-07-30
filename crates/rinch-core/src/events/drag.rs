@@ -63,6 +63,54 @@ struct ActiveDrag {
     last_pos: Option<(f32, f32)>,
     /// Whether to continue dispatching surface events during this drag.
     forward_surface_events: bool,
+    /// The scope that was rendering when `start()` was called, if any.
+    ///
+    /// A drag lives in a process-lifetime global, so it can outlive the
+    /// component that armed it: an `on_move` that writes a signal can flip a
+    /// branch, switch a tab, or reconcile the very list item the drag belongs
+    /// to. Disposing that scope frees the signals these callbacks close over
+    /// (issue #141), and the fixpoint cannot reach the callbacks themselves —
+    /// they sit in no scope's owned bucket and are reachable from no effect. So
+    /// the drag carries its owner and checks it before every dispatch.
+    ///
+    /// `Option`, not the `Owner::none()` sentinel: a *dangling* `Weak` is what a
+    /// dropped scope also looks like, and the two must not be confused. `None`
+    /// means the drag was armed outside any render and has app lifetime; `Some`
+    /// that died means stop.
+    ///
+    /// Identity, not a flag: `ACTIVE_DRAG` is a single global slot, so a bool
+    /// could not say *whose* drag was abandoned. `Owner` is a `Weak`, so this
+    /// does not keep the scope — or anything it will free — alive.
+    owner: Option<crate::reactive::Owner>,
+}
+
+impl ActiveDrag {
+    /// Whether the scope that armed this drag has since been disposed.
+    fn is_abandoned(&self) -> bool {
+        self.owner.as_ref().is_some_and(|o| !o.is_alive())
+    }
+}
+
+/// Drop the active drag if the scope that armed it is gone.
+///
+/// Returns `true` if a drag was discarded. Deliberately silent: `on_cancel` is
+/// not fired, because it belongs to the same dead component and would be the
+/// next thing to read a freed signal. There is nothing left to restore.
+fn discard_if_abandoned() -> bool {
+    let abandoned = ACTIVE_DRAG.with(|drag| {
+        let mut slot = drag.borrow_mut();
+        match slot.as_ref() {
+            Some(state) if state.is_abandoned() => slot.take(),
+            _ => None,
+        }
+    });
+    // Dropped out here: the callbacks it owns are arbitrary user closures.
+    if abandoned.is_some() {
+        tracing::debug!("dropping an in-flight drag whose owning scope was disposed");
+        drop(abandoned);
+        return true;
+    }
+    false
 }
 
 thread_local! {
@@ -175,8 +223,13 @@ impl Drag {
             None => Rc::new(|_, _| {}),
         };
         let start_context = get_click_context();
-        ACTIVE_DRAG.with(|drag| {
-            *drag.borrow_mut() = Some(ActiveDrag {
+        // Captured here rather than at dispatch: `start()` runs inside the
+        // handler that armed the drag, so the registering scope is ambient
+        // (`register_handler` re-enters it on dispatch). By the time `on_move`
+        // fires, the owner stack is unrelated.
+        let owner = crate::reactive::current_owner();
+        let previous = ACTIVE_DRAG.with(|drag| {
+            drag.borrow_mut().replace(ActiveDrag {
                 mode: self.mode,
                 on_move,
                 on_end: self.on_end,
@@ -184,8 +237,12 @@ impl Drag {
                 start_context,
                 last_pos: None,
                 forward_surface_events: self.forward_surface_events,
-            });
+                owner,
+            })
         });
+        // Dropped outside the borrow: a superseded drag's callbacks are
+        // arbitrary user closures, and their `Drop` may query the drag state.
+        drop(previous);
     }
 
     /// Cancel the active drag, firing `on_cancel` (but **not** `on_end` — a
@@ -212,7 +269,12 @@ impl Drag {
     }
 
     /// Check if a drag is currently active.
+    ///
+    /// A drag whose owning scope has been disposed is discarded here rather
+    /// than reported as active — the runtime gates hover, surface events and
+    /// text selection on this, and a stale `true` would wedge all three.
     pub fn is_active() -> bool {
+        discard_if_abandoned();
         ACTIVE_DRAG.with(|drag| drag.borrow().is_some())
     }
 
@@ -239,6 +301,11 @@ impl Drag {
 /// - `handled`: true if a drag callback was invoked
 /// - `forward_surface_events`: true if surface events should still be dispatched
 pub fn update_drag(mouse_x: f32, mouse_y: f32) -> (bool, bool) {
+    // A drag whose component was unmounted mid-gesture is dropped rather than
+    // driven: its callbacks close over signals the dispose fixpoint has freed
+    // (issue #141), so `on_move` would panic on the first read.
+    discard_if_abandoned();
+
     // Map coords + record last_pos under a short borrow, then release it
     // before invoking `on_move` (which may itself query or cancel the drag).
     let pending = ACTIVE_DRAG.with(|drag| {
@@ -257,7 +324,13 @@ pub fn update_drag(mouse_x: f32, mouse_y: f32) -> (bool, bool) {
 }
 
 /// Finish the drag, firing `on_end` if set. Called by the runtime on mouseup.
+///
+/// A drag whose owning scope was disposed mid-gesture does not commit: `on_end`
+/// is the *commit* callback, and there is nothing left to commit to.
 pub fn finish_drag(mouse_x: f32, mouse_y: f32) {
+    if discard_if_abandoned() {
+        return;
+    }
     let on_end = ACTIVE_DRAG.with(|drag| drag.borrow_mut().take().and_then(|s| s.on_end));
     if let Some(cb) = on_end {
         cb(mouse_x, mouse_y);
@@ -371,5 +444,72 @@ mod tests {
         Drag::cancel();
 
         assert!(saw_inactive.get());
+    }
+
+    /// A drag armed inside a component that is then unmounted mid-gesture is
+    /// dropped rather than driven (issue #141).
+    ///
+    /// The callbacks close over the component's signals, which disposal has
+    /// freed, so `on_move` would panic on the first read — and `ACTIVE_DRAG` is
+    /// a process-lifetime global the dispose fixpoint cannot reach into.
+    #[test]
+    fn a_drag_whose_scope_was_disposed_stops_being_driven() {
+        use crate::reactive::{Scope, Signal};
+
+        let moves = Rc::new(Cell::new(0));
+        let ends = Rc::new(Cell::new(0));
+
+        let scope = Scope::new();
+        let m = moves.clone();
+        let e = ends.clone();
+        scope.run(|| {
+            let owned = Signal::new(0);
+            Drag::absolute()
+                .on_move(move |x, _| {
+                    // Reads freed state if this is allowed to run post-dispose.
+                    let _ = owned.get();
+                    m.set(m.get() + 1);
+                    owned.set(x as i32);
+                })
+                .on_end(move |_, _| e.set(e.get() + 1))
+                .start();
+        });
+
+        assert!(Drag::is_active(), "the drag is armed");
+        update_drag(10.0, 10.0);
+        assert_eq!(moves.get(), 1, "and driven normally while mounted");
+
+        scope.dispose();
+
+        assert!(
+            !Drag::is_active(),
+            "an abandoned drag is not reported active"
+        );
+        update_drag(20.0, 20.0);
+        finish_drag(20.0, 20.0);
+
+        assert_eq!(moves.get(), 1, "no further on_move after the scope died");
+        assert_eq!(ends.get(), 0, "and an abandoned drag must not commit");
+    }
+
+    /// The other half: a drag armed outside any render keeps app lifetime, so
+    /// an unrelated scope being disposed must not disturb it.
+    #[test]
+    fn a_drag_armed_outside_a_render_is_never_abandoned() {
+        use crate::reactive::Scope;
+
+        let moves = Rc::new(Cell::new(0));
+        let m = moves.clone();
+        Drag::absolute()
+            .on_move(move |_, _| m.set(m.get() + 1))
+            .start();
+
+        // An unrelated component unmounts.
+        Scope::new().dispose();
+
+        assert!(Drag::is_active(), "an ownerless drag survives");
+        update_drag(5.0, 5.0);
+        assert_eq!(moves.get(), 1, "and is still driven");
+        Drag::cancel();
     }
 }
