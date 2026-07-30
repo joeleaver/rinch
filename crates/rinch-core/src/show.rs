@@ -430,4 +430,55 @@ mod tests {
             "and not to the parent render scope"
         );
     }
+
+    /// A store created inside a branch dies with that branch (issue #141 PR3).
+    ///
+    /// This is the claim SD2 rests on — "a `create_store` inside a `match` arm
+    /// removes its entry when the arm flips" — exercised on a real render path
+    /// rather than a bare `Scope`.
+    #[test]
+    fn a_store_created_in_a_branch_dies_with_the_branch() {
+        use crate::context::{clear_context, create_store, try_use_store};
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use crate::reactive::Signal;
+        use std::cell::RefCell;
+
+        #[derive(Clone, Debug, PartialEq)]
+        struct BranchStore(&'static str);
+
+        clear_context();
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let showing = Signal::new(true);
+        let marker = crate::show::show_dom(
+            &mut scope,
+            &parent,
+            move || showing.get(),
+            move |s: &mut RenderScope| {
+                create_store(BranchStore("in-branch"));
+                s.create_element("div")
+            },
+            Some(move |s: &mut RenderScope| s.create_element("span")),
+        );
+        let _ = marker;
+
+        assert_eq!(
+            try_use_store::<BranchStore>(),
+            Some(BranchStore("in-branch")),
+            "the store resolves while its branch is mounted"
+        );
+
+        showing.set(false); // flip: the then-branch's scope is disposed
+
+        assert_eq!(
+            try_use_store::<BranchStore>(),
+            None,
+            "flipping the branch must reclaim the store it created"
+        );
+        clear_context();
+    }
 }
