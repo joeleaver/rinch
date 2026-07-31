@@ -1031,11 +1031,12 @@ impl EditorHandle {
             return false;
         }
         let prev = core.state.clone();
-        let result = core.collab.as_mut().unwrap().session.integrate_sync_message(
-            &prev,
-            sync_state,
-            message,
-        );
+        let result = core
+            .collab
+            .as_mut()
+            .unwrap()
+            .session
+            .integrate_sync_message(&prev, sync_state, message);
         match result {
             Ok(Some(next)) => {
                 core.state = next.clone();
@@ -2049,9 +2050,7 @@ mod tests {
             // for — an HTTP poll, a dropped socket, a peer that was offline. The
             // broadcast path alone would leave these two permanently diverged.
             let snapshot = host.start_collaboration_host(|_d| {}).unwrap();
-            guest
-                .start_collaboration_guest(&snapshot, |_d| {})
-                .unwrap();
+            guest.start_collaboration_guest(&snapshot, |_d| {}).unwrap();
 
             host.set_selection(Selection::cursor(Pos(6)));
             assert!(host.insert_text(" world"));
