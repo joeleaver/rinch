@@ -304,12 +304,21 @@ impl WgpuRenderer {
         let (device, queue) = match gpu_init {
             Some(GpuInit::External(g)) => (g.device.clone(), g.queue.clone()),
             other => {
-                let (features, limits) = match other {
+                let (mut features, limits) = match other {
                     Some(GpuInit::Config(cfg)) => {
                         (cfg.required_features, cfg.required_limits.clone())
                     }
                     _ => (Features::default(), Limits::default()),
                 };
+                // On surfaces that only offer Bgra8Unorm (X11 on NVIDIA,
+                // notably), any storage-texture use of the surface format
+                // needs this feature explicitly. Harmless to request whenever
+                // the adapter has it.
+                if format == TextureFormat::Bgra8Unorm
+                    && adapter.features().contains(Features::BGRA8UNORM_STORAGE)
+                {
+                    features |= Features::BGRA8UNORM_STORAGE;
+                }
                 let (raw_device, raw_queue) =
                     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                         label: Some("rinch-dom device"),
@@ -347,7 +356,14 @@ impl WgpuRenderer {
 
         surface.configure(&device, &surface_config);
 
-        let render_texture = Self::create_render_texture(&device, format, width, height);
+        // Vello's compute shaders only write rgba8unorm storage textures, so
+        // the intermediate render texture is ALWAYS Rgba8Unorm regardless of
+        // the surface format. When the surface is also Rgba8Unorm we present
+        // with a plain copy; otherwise (e.g. Bgra8Unorm — X11/NVIDIA surfaces
+        // commonly offer nothing else) render_scene blits through the layer
+        // compositor's sampling pass, which swizzles for free.
+        let render_texture =
+            Self::create_render_texture(&device, TextureFormat::Rgba8Unorm, width, height);
 
         let renderer = VelloRenderer::new(
             &device,
@@ -429,8 +445,12 @@ impl PlatformRenderer for WgpuRenderer {
         self.surface_config.width = width;
         self.surface_config.height = height;
         self.surface.configure(&self.device, &self.surface_config);
-        self.render_texture =
-            Self::create_render_texture(&self.device, self.surface_config.format, width, height);
+        self.render_texture = Self::create_render_texture(
+            &self.device,
+            TextureFormat::Rgba8Unorm,
+            width,
+            height,
+        );
         self.composited_texture = None;
     }
 
@@ -620,26 +640,42 @@ impl PlatformRenderer for WgpuRenderer {
             return Ok(());
         }
 
-        // Standard path: simple texture copy (no video)
-        encoder.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.render_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyTextureInfo {
-                texture: &surface_texture.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            Extent3d {
-                width: self.surface_config.width,
-                height: self.surface_config.height,
-                depth_or_array_layers: 1,
-            },
-        );
+        // Standard path (no layers). The render texture is always Rgba8Unorm
+        // (Vello's storage-texture requirement); a raw copy is only legal when
+        // the surface matches. Otherwise blit through the compositor's UI
+        // sampling pass — the sample/write does the channel-order conversion.
+        if self.surface_config.format == TextureFormat::Rgba8Unorm {
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.render_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &surface_texture.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                Extent3d {
+                    width: self.surface_config.width,
+                    height: self.surface_config.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        } else {
+            let compositor = self.layer_compositor.get_or_insert_with(|| {
+                super::compositor::LayerCompositor::new(&self.device, self.surface_config.format)
+            });
+            let surface_view = surface_texture
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            // Vello output is opaque here (base color is never transparent on
+            // this path), so the alpha-over fullscreen draw writes every pixel
+            // and the surface needs no clear.
+            compositor.overlay_ui(&self.device, &mut encoder, &self.render_texture, &surface_view);
+        }
 
         self.queue.submit(Some(encoder.finish()));
         surface_texture.present();
@@ -663,7 +699,6 @@ impl PlatformRenderer for WgpuRenderer {
         {
             let w = self.surface_config.width;
             let h = self.surface_config.height;
-            let fmt = self.surface_config.format;
 
             // When compositing is active, read from the composited texture
             // (which has layers + UI blended). Otherwise read from render_texture.
@@ -671,6 +706,16 @@ impl PlatformRenderer for WgpuRenderer {
                 .composited_texture
                 .as_ref()
                 .unwrap_or(&self.render_texture);
+
+            // Ask the texture, not the surface. `composited_texture` is created
+            // in the surface format, but `render_texture` is ALWAYS Rgba8Unorm
+            // (Vello's storage-texture requirement) even when the surface is
+            // Bgra8Unorm — so using `surface_config.format` here made
+            // `capture_texture_rgba` apply a BGRA→RGBA swizzle to bytes that
+            // were already RGBA, and every screenshot on an X11/Bgra8Unorm
+            // surface came out with red and blue swapped while the window on
+            // screen was correct.
+            let fmt = tex.format();
 
             let rgba =
                 super::screenshot::capture_texture_rgba(&self.device, &self.queue, tex, w, h, fmt)

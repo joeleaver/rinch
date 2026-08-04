@@ -1,0 +1,9 @@
+[package]
+name = "channel-repro"
+version.workspace = true
+edition.workspace = true
+description = "Minimal R/B channel-order repro: div fill vs RenderSurface vs <img>"
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop", "gpu", "debug"] }
+rinch-core = { workspace = true }
