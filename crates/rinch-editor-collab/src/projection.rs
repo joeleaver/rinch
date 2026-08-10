@@ -38,7 +38,7 @@
 //! `rinch-editor-core` positions are **Unicode scalars** (chars); yrs offers only
 //! `OffsetKind::Bytes` and `OffsetKind::Utf16`, so the document is built with
 //! [`OffsetKind::Utf16`] and every index crossing a `Text` boundary is converted
-//! ([`u16_offset`]). Blocks are small, so the linear walk is cheaper than maintaining a
+//! (`u16_offset`). Blocks are small, so the linear walk is cheaper than maintaining a
 //! rope mirror. Getting this wrong is silent: yrs snaps an index that lands mid
 //! surrogate pair to the nearest boundary rather than erroring, which is why the offset
 //! tests use **two** astral characters (one cannot distinguish a correct conversion

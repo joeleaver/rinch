@@ -88,7 +88,7 @@ impl CollabSession {
     /// The next broadcast delta: everything produced since the previous call. Empty when
     /// there is genuinely nothing to send, so a caller can skip the transmission.
     ///
-    /// "Nothing to send" is decided from the *encoded delta* ([`EMPTY_UPDATE`]), never
+    /// "Nothing to send" is decided from the *encoded delta* (`EMPTY_UPDATE`), never
     /// from a state-vector comparison — a local deletion or mark removal does not move
     /// the state vector, and skipping on that basis would drop the change permanently.
     pub fn save_incremental(&mut self) -> Vec<u8> {

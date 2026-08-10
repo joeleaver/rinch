@@ -7,8 +7,7 @@
 //! 1. The unchanged leading/trailing blocks are skipped by **`Rc` identity**
 //!    ([`Node::same_ref`]) — the persistent model shares every untouched block, so
 //!    typing one character reads and re-splices exactly one block.
-//! 2. Each changed block is reconciled in place
-//!    ([`reconcile_node`](crate::projection::reconcile_node)) with a minimal
+//! 2. Each changed block is reconciled in place (`reconcile_node`) with a minimal
 //!    common-prefix/suffix text splice, so the per-character CRDT identity of
 //!    unchanged text survives and concurrent edits merge.
 //! 3. The net block-count difference is inserted/deleted at the boundary, preserving
