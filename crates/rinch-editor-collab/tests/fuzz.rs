@@ -191,7 +191,7 @@ fn fuzz_trial(seed: u64, peers: usize, rounds: usize) {
 
     // All peers start from peer 0's snapshot, so they share one CRDT lineage.
     let init = initial_state(&schema);
-    let mut host = CollabSession::new(&init).unwrap();
+    let host = CollabSession::new(&init).unwrap();
     let snapshot = host.snapshot();
 
     let mut states: Vec<EditorState> = Vec::with_capacity(peers);

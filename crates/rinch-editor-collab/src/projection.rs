@@ -1,38 +1,57 @@
-//! [`CollabDoc`] — the Automerge projection of a flat editor document.
+//! [`CollabDoc`] — the yrs (Yjs) projection of an editor document.
 //!
-//! Automerge is **not** the model (design §8). The model lives in `rinch-editor-core`;
+//! The CRDT is **not** the model (design §8). The model lives in `rinch-editor-core`;
 //! this is a *projection* of it onto a CRDT so concurrent edits converge. The two are
 //! kept byte-for-byte equivalent by the invariant **`model ≡ project(model)`**: every
 //! local step is projected onto the CRDT ([`crate::project`]), every remote CRDT change
-//! is translated back into steps ([`crate::remote`]). Convergence then follows from
-//! Automerge's own convergence.
+//! is rebuilt back into the model ([`crate::remote`]). Convergence then follows from
+//! yrs's own convergence.
 //!
 //! ## Wire shape (rich-text projection)
 //!
-//! Every model node — at any depth — projects onto the **same** Automerge `Map` shape;
+//! Every model node — at any depth — projects onto the **same** yrs `Map` shape;
 //! nesting is just recursion on it. A node is *either* a textblock (carries a `text`)
-//! *or* a container (carries a `content` list of child nodes):
+//! *or* a container (carries a `content` array of child nodes):
 //!
 //! ```text
-//! ROOT (Map)
-//!   "content" -> List<Node>
-//!     Node (Map):
-//!       "type"  -> Str             // "paragraph" | "heading" | "bullet_list" | …
-//!       "attrs" -> Map<Str,scalar> // e.g. heading {"level": 2}, ordered_list {"start": 3}
-//!       and then EXACTLY ONE of:
-//!         "text"    -> Text        // a textblock's plain text, codepoint-indexed
-//!           (marks applied to "text" via doc.mark(): name = mark type;
-//!            value = Bool(true) for an attr-less mark, or Str(json) carrying its attrs)
-//!         "content" -> List<Node>  // a container block's child nodes, recursively
+//! root Array "content"            // a named root type, holding the top-level blocks
+//!   Node (Map):
+//!     "type"  -> string           // "paragraph" | "heading" | "bullet_list" | …
+//!     "attrs" -> Map<str, Any>    // e.g. heading {"level": 2}, ordered_list {"start": 3}
+//!     and then EXACTLY ONE of:
+//!       "text"    -> Text         // a textblock's plain text
+//!         (marks are the Text's own *formatting attributes*: the attribute key is
+//!          the mark type name; its value is `true` for an attr-less mark or a
+//!          `Map` of the mark's attrs. Per the Yjs convention a `null` value
+//!          *removes* the format over a range.)
+//!       "content" -> Array<Node>  // a container block's child nodes, recursively
 //! ```
 //!
-//! One `Text` per textblock with Automerge marks over it is the *rich-text* model — text
-//! and formatting merge independently, which is exactly the "concurrent insert/format"
-//! convergence the milestone requires. Automerge `Text` is **codepoint-indexed**, which
-//! matches `rinch-editor-core`'s char-based positions exactly — no UTF conversion. A
-//! textblock keeps its own `Text` object however deeply it is nested, so concurrent edits
-//! to *different* list items are edits to *different* `Text` objects and merge without
-//! loss.
+//! One `Text` per textblock with native formatting attributes over it is the
+//! *rich-text* model — text and formatting merge independently, which is exactly the
+//! "concurrent insert/format" convergence the milestone requires. A textblock keeps its
+//! own `Text` object however deeply it is nested, so concurrent edits to *different*
+//! list items are edits to *different* `Text` objects and merge without loss.
+//!
+//! ## Offsets: char in the model, UTF-16 in the CRDT
+//!
+//! `rinch-editor-core` positions are **Unicode scalars** (chars); yrs offers only
+//! `OffsetKind::Bytes` and `OffsetKind::Utf16`, so the document is built with
+//! [`OffsetKind::Utf16`] and every index crossing a `Text` boundary is converted
+//! ([`u16_offset`]). Blocks are small, so the linear walk is cheaper than maintaining a
+//! rope mirror. Getting this wrong is silent: yrs snaps an index that lands mid
+//! surrogate pair to the nearest boundary rather than erroring, which is why the offset
+//! tests use **two** astral characters (one cannot distinguish a correct conversion
+//! from a snapped one).
+//!
+//! ## One transaction per entry point
+//!
+//! yrs cannot nest transaction acquisitions — a second `transact()`/`transact_mut()`
+//! taken while one is live blocks on native and panics on wasm. So the root handle is
+//! resolved once at construction (`get_or_insert_array` opens its own transaction) and
+//! every public entry point opens **exactly one** transaction and threads it down; the
+//! helpers below are free functions taking `&T: ReadTxn` or `&mut TransactionMut`
+//! rather than methods that reach for a transaction of their own.
 //!
 //! ## Scope (design A22)
 //!
@@ -46,15 +65,22 @@
 //! `task_list`/`task_item`) and every inline atom (`hard_break`, `image`,
 //! `horizontal_rule`).
 
-use automerge::marks::{ExpandMark, Mark as AmMark};
-use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use yrs::types::Attrs as YAttrs;
+use yrs::types::text::YChange;
+use yrs::updates::decoder::Decode;
+use yrs::{
+    Any, Array, ArrayPrelim, ArrayRef, Doc, Map, MapPrelim, MapRef, OffsetKind, Options, Out,
+    ReadTxn, StateVector, Text, TextPrelim, TextRef, Transact, TransactionMut, Update,
+};
 
 use rinch_editor_core::{AttrValue, Attrs, Fragment, Mark, Node, Schema};
 
 use crate::error::{CollabError, Result};
 
-/// Automerge key/value names used by the projection.
+/// yrs key/root names used by the projection.
 const CONTENT: &str = "content";
 const TYPE: &str = "type";
 const ATTRS: &str = "attrs";
@@ -80,9 +106,9 @@ pub(crate) struct BlockData {
 
 /// One projectable model node: either a flat text-block ([`BlockData`]) or a container
 /// block (a list / list item) holding child nodes recursively. Structural equality is
-/// canonical (marks are sorted in [`read_block`] / [`CollabDoc::read_text_marks`]), so
-/// comparing two `NodeData` trees is the same as comparing the model nodes they came
-/// from — the child-list diff in [`CollabDoc::reconcile_child_list`] relies on that.
+/// canonical (marks are sorted in [`read_block`] / [`read_text_data`]), so comparing two
+/// `NodeData` trees is the same as comparing the model nodes they came from — the
+/// child-list diff in [`reconcile_child_list`] relies on that.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NodeData {
     /// A flat text-block (`paragraph`/`heading`/`code_block`): its `text` + marks.
@@ -114,7 +140,7 @@ impl NodeData {
 }
 
 /// The container block types the projection nests (design A22). A container carries a
-/// `content` list of child nodes instead of a `text`. Deliberately a whitelist: every
+/// `content` array of child nodes instead of a `text`. Deliberately a whitelist: every
 /// other non-text-block node (`blockquote`, tables, `task_list`/`task_item`, atoms)
 /// stays [`CollabError::Unsupported`] so an unsupported shape fails loud rather than
 /// being silently mangled.
@@ -122,366 +148,86 @@ fn is_supported_container(type_name: &str) -> bool {
     matches!(type_name, "bullet_list" | "ordered_list" | "list_item")
 }
 
-/// An Automerge document projecting a flat editor document.
+/// A yrs document projecting an editor document.
 #[derive(Debug)]
 pub struct CollabDoc {
-    /// The Automerge document. `pub(crate)` so [`crate::sync`] can drive the transport.
-    pub(crate) doc: AutoCommit,
-    /// The root `content` list object id.
-    pub(crate) content: ObjId,
+    /// The yrs document. `pub(crate)` so [`crate::sync`] can drive the transport.
+    pub(crate) doc: Doc,
+    /// The root `content` array handle. Resolved once at construction: obtaining a root
+    /// type opens its own transaction, so doing it lazily inside a live one would
+    /// deadlock.
+    pub(crate) content: ArrayRef,
 }
 
 impl CollabDoc {
+    /// A fresh, empty CRDT document.
+    ///
+    /// **Never `Doc::new()`** — `Options::default()` is [`OffsetKind::Bytes`], which
+    /// would make every text index a byte offset and quietly corrupt any block holding
+    /// a non-ASCII character.
+    fn empty_doc() -> Doc {
+        Doc::with_options(Options {
+            offset_kind: OffsetKind::Utf16,
+            ..Default::default()
+        })
+    }
+
     /// Build a fresh projection from a model document. Fails loud
     /// ([`CollabError::Unsupported`]) on any node outside the staged scope.
     pub fn from_doc(doc: &Node) -> Result<CollabDoc> {
-        let mut am = AutoCommit::new();
-        let content = am.put_object(automerge::ROOT, CONTENT, ObjType::List)?;
-        let mut cdoc = CollabDoc {
-            doc: am,
-            content: content.clone(),
-        };
+        // Validate the whole document before opening the write transaction, so an
+        // out-of-scope node leaves no half-built CRDT behind (design A22).
+        let mut nodes = Vec::with_capacity(doc.child_count());
         for i in 0..doc.child_count() {
-            let node = read_node(doc.child(i))?;
-            cdoc.insert_node(&content, i, &node)?;
-        }
-        Ok(cdoc)
-    }
-
-    /// Load a projection from saved Automerge bytes (a peer's document).
-    pub fn load(bytes: &[u8]) -> Result<CollabDoc> {
-        let am = AutoCommit::load(bytes)?;
-        let content = match am.get(automerge::ROOT, CONTENT)? {
-            Some((Value::Object(ObjType::List), id)) => id,
-            _ => {
-                return Err(CollabError::schema(
-                    "loaded automerge doc has no `content` list",
-                ));
-            }
-        };
-        Ok(CollabDoc { doc: am, content })
-    }
-
-    /// Save the whole projection (for forking a peer).
-    pub fn save(&mut self) -> Vec<u8> {
-        self.doc.save()
-    }
-
-    /// The number of blocks.
-    pub(crate) fn block_count(&self) -> usize {
-        self.doc.length(&self.content)
-    }
-
-    /// The map object of the child at `index` of a content list (top-level `content` or
-    /// a container's nested `content`).
-    pub(crate) fn child_map(&self, list: &ObjId, index: usize) -> Option<ObjId> {
-        match self.doc.get(list, index) {
-            Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
-            _ => None,
-        }
-    }
-
-    /// The object id of the top-level block at `index`.
-    pub(crate) fn block_obj(&self, index: usize) -> Option<ObjId> {
-        self.child_map(&self.content, index)
-    }
-
-    /// The `text` Text object of a text-block node.
-    pub(crate) fn block_text_obj(&self, block: &ObjId) -> Option<ObjId> {
-        match self.doc.get(block, TEXT) {
-            Ok(Some((Value::Object(ObjType::Text), id))) => Some(id),
-            _ => None,
-        }
-    }
-
-    /// The `content` List object of a container node.
-    pub(crate) fn node_content_obj(&self, node: &ObjId) -> Option<ObjId> {
-        match self.doc.get(node, CONTENT) {
-            Ok(Some((Value::Object(ObjType::List), id))) => Some(id),
-            _ => None,
-        }
-    }
-
-    /// Insert a new node (text-block or container) at `index` of `list`.
-    pub(crate) fn insert_node(&mut self, list: &ObjId, index: usize, nd: &NodeData) -> Result<()> {
-        let node = self.doc.insert_object(list, index, ObjType::Map)?;
-        self.write_node(&node, nd)
-    }
-
-    /// Write a node's contents into its (already-inserted) map object. Recurses into a
-    /// container's children.
-    fn write_node(&mut self, node: &ObjId, nd: &NodeData) -> Result<()> {
-        self.doc.put(node, TYPE, nd.type_name())?;
-        let attrs_obj = self.doc.put_object(node, ATTRS, ObjType::Map)?;
-        write_attrs(&mut self.doc, &attrs_obj, nd.attrs())?;
-        match nd {
-            NodeData::Block(b) => {
-                let text = self.doc.put_object(node, TEXT, ObjType::Text)?;
-                if !b.text.is_empty() {
-                    self.doc.splice_text(&text, 0, 0, &b.text)?;
-                }
-                for m in &b.marks {
-                    self.apply_mark(&text, m)?;
-                }
-            }
-            NodeData::Container { children, .. } => {
-                let content = self.doc.put_object(node, CONTENT, ObjType::List)?;
-                for (i, child) in children.iter().enumerate() {
-                    self.insert_node(&content, i, child)?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Delete the top-level block at `index`.
-    pub(crate) fn delete_block(&mut self, index: usize) -> Result<()> {
-        self.doc.delete(&self.content, index)?;
-        Ok(())
-    }
-
-    /// Reconcile the node at `index` of `list` to `target`: update type/attrs if they
-    /// changed, then reconcile its body — a text-block's text + marks, or a container's
-    /// child list — recursively. Unchanged descendants keep their CRDT identity, so a
-    /// concurrent edit to a *different* text-block (even in a different list item) merges.
-    pub(crate) fn reconcile_node(
-        &mut self,
-        list: &ObjId,
-        index: usize,
-        target: &NodeData,
-    ) -> Result<()> {
-        let node = self
-            .child_map(list, index)
-            .ok_or_else(|| CollabError::schema("reconcile_node: missing node"))?;
-
-        // A node changing *kind* (text-block <-> container — e.g. a paragraph wrapped
-        // into a list) can't be reconciled in place; replace it wholesale. Rare, so the
-        // coarse-grained replace is fine.
-        let crdt_is_block = self.block_text_obj(&node).is_some();
-        let target_is_block = matches!(target, NodeData::Block(_));
-        if crdt_is_block != target_is_block {
-            self.doc.delete(list, index)?;
-            self.insert_node(list, index, target)?;
-            return Ok(());
+            nodes.push(read_node(doc.child(i))?);
         }
 
-        // type — only write when it changed
-        if self.scalar_str(&node, TYPE).as_deref() != Some(target.type_name()) {
-            self.doc.put(&node, TYPE, target.type_name())?;
-        }
-        // attrs — only rebuild when they changed. Replacing the attrs object on every
-        // keystroke would churn the CRDT and clobber a concurrent remote attr edit on
-        // the same node.
-        let current_attrs = match self.doc.get(&node, ATTRS) {
-            Ok(Some((Value::Object(ObjType::Map), id))) => read_attrs(&self.doc, &id),
-            _ => Attrs::new(),
-        };
-        if current_attrs != *target.attrs() {
-            let attrs_obj = self.doc.put_object(&node, ATTRS, ObjType::Map)?;
-            write_attrs(&mut self.doc, &attrs_obj, target.attrs())?;
-        }
-
-        match target {
-            NodeData::Block(b) => {
-                let text = self
-                    .block_text_obj(&node)
-                    .ok_or_else(|| CollabError::schema("reconcile_node: missing text"))?;
-                self.reconcile_text(&text, b)?;
-            }
-            NodeData::Container { children, .. } => {
-                let content = self
-                    .node_content_obj(&node)
-                    .ok_or_else(|| CollabError::schema("reconcile_node: missing content"))?;
-                self.reconcile_child_list(&content, children)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Reconcile a text-block's `text` Text object to `b`: a minimal common-prefix/suffix
-    /// splice (so the per-char CRDT identity of unchanged text survives) plus a mark
-    /// resync only when the marks actually changed.
-    fn reconcile_text(&mut self, text: &ObjId, b: &BlockData) -> Result<()> {
-        let old = self.doc.text(text)?;
-        if old != b.text {
-            splice_min(&mut self.doc, text, &old, &b.text)?;
-        }
-        // marks — only clear-and-reapply when they actually changed (after the splice,
-        // Automerge has already shifted existing mark ranges with the text). Skipping
-        // the resync on a pure text edit avoids clobbering a concurrent remote mark.
-        let mut target_marks = b.marks.clone();
-        target_marks.sort_by(|a, b| (a.start, a.end, &a.name).cmp(&(b.start, b.end, &b.name)));
-        if self.read_text_marks(text)? != target_marks {
-            self.resync_marks(text, &b.marks)?;
-        }
-        Ok(())
-    }
-
-    /// Reconcile a container's `content` list to `target`. Diffs the CRDT's current
-    /// children against `target` by *structural* equality (a common leading/trailing run
-    /// is left untouched, keeping the CRDT identity — and merge behaviour — of every
-    /// node in it), reconciles the overlapping middle in place, and inserts/deletes the
-    /// count difference. This is the same block-list diff as [`Self::project_change`],
-    /// one level down; recursion carries it to any depth.
-    fn reconcile_child_list(&mut self, content: &ObjId, target: &[NodeData]) -> Result<()> {
-        let cn = self.doc.length(content);
-        let mut cur = Vec::with_capacity(cn);
-        for i in 0..cn {
-            cur.push(self.read_node_data(content, i)?);
-        }
-        let tn = target.len();
-
-        let mut prefix = 0;
-        while prefix < cn && prefix < tn && cur[prefix] == target[prefix] {
-            prefix += 1;
-        }
-        let mut suffix = 0;
-        while suffix < cn - prefix
-            && suffix < tn - prefix
-            && cur[cn - 1 - suffix] == target[tn - 1 - suffix]
+        let ydoc = CollabDoc::empty_doc();
+        let content = ydoc.get_or_insert_array(CONTENT);
         {
-            suffix += 1;
-        }
-
-        let cur_mid = cn - prefix - suffix;
-        let tgt_mid = tn - prefix - suffix;
-        let common = cur_mid.min(tgt_mid);
-
-        // Reconcile the overlapping changed children in place (keeps identity).
-        for k in 0..common {
-            self.reconcile_node(content, prefix + k, &target[prefix + k])?;
-        }
-        // Insert the extra target children.
-        for k in common..tgt_mid {
-            self.insert_node(content, prefix + k, &target[prefix + k])?;
-        }
-        // Delete the extra current children (from the end so earlier indices stay valid).
-        for idx in (prefix + common..prefix + cur_mid).rev() {
-            self.doc.delete(content, idx)?;
-        }
-        Ok(())
-    }
-
-    /// Read a Text object's active marks back as canonical (sorted) [`SpanMark`]s.
-    fn read_text_marks(&self, text: &ObjId) -> Result<Vec<SpanMark>> {
-        let mut marks: Vec<SpanMark> = self
-            .doc
-            .marks(text)?
-            .into_iter()
-            .filter(|m| m.value() != &ScalarValue::Null)
-            .map(|m| {
-                Ok(SpanMark {
-                    name: m.name().to_string(),
-                    attrs: decode_mark_value(m.value())?,
-                    start: m.start,
-                    end: m.end,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        marks.sort_by(|a, b| (a.start, a.end, &a.name).cmp(&(b.start, b.end, &b.name)));
-        Ok(marks)
-    }
-
-    /// Clear and reapply a Text object's marks to match `target` exactly.
-    pub(crate) fn resync_marks(&mut self, text: &ObjId, target: &[SpanMark]) -> Result<()> {
-        // Clear every currently-active mark (set its name to Null over its range).
-        // Collect owned data first so the read borrow ends before we mutate.
-        let existing: Vec<(String, usize, usize)> = self
-            .doc
-            .marks(text)?
-            .iter()
-            .map(|m| (m.name().to_string(), m.start, m.end))
-            .collect();
-        for (name, start, end) in existing {
-            self.doc.mark(
-                text,
-                AmMark::new(name, ScalarValue::Null, start, end),
-                ExpandMark::None,
-            )?;
-        }
-        for m in target {
-            self.apply_mark(text, m)?;
-        }
-        Ok(())
-    }
-
-    /// Apply one mark span to a Text object, encoding its attrs into the mark value.
-    fn apply_mark(&mut self, text: &ObjId, m: &SpanMark) -> Result<()> {
-        let value = if m.attrs.is_empty() {
-            ScalarValue::Boolean(true)
-        } else {
-            ScalarValue::Str(encode_attrs(&m.attrs).into())
-        };
-        self.doc.mark(
-            text,
-            AmMark::new(m.name.clone(), value, m.start, m.end),
-            ExpandMark::None,
-        )?;
-        Ok(())
-    }
-
-    /// Read a scalar string attribute of an object.
-    fn scalar_str(&self, obj: &ObjId, key: &str) -> Option<String> {
-        match self.doc.get(obj, key) {
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                ScalarValue::Str(smol) => Some(smol.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    /// Read the node at `index` of `list` back out of the CRDT as [`NodeData`]. A node
-    /// carrying a `text` Text is a text-block; a node carrying a `content` List is a
-    /// container, read recursively. Fails loud on a node that is neither (a corrupt
-    /// projection), rather than materializing a broken shape.
-    pub(crate) fn read_node_data(&self, list: &ObjId, index: usize) -> Result<NodeData> {
-        let node = self
-            .child_map(list, index)
-            .ok_or_else(|| CollabError::schema("read_node_data: missing node"))?;
-        let type_name = self
-            .scalar_str(&node, TYPE)
-            .ok_or_else(|| CollabError::schema("node has no type"))?;
-        let attrs = match self.doc.get(&node, ATTRS) {
-            Ok(Some((Value::Object(ObjType::Map), id))) => read_attrs(&self.doc, &id),
-            _ => Attrs::new(),
-        };
-        if let Some(text_obj) = self.block_text_obj(&node) {
-            let text = self.doc.text(&text_obj)?;
-            let marks = self.read_text_marks(&text_obj)?;
-            Ok(NodeData::Block(BlockData {
-                type_name,
-                attrs,
-                text,
-                marks,
-            }))
-        } else if let Some(content) = self.node_content_obj(&node) {
-            let len = self.doc.length(&content);
-            let mut children = Vec::with_capacity(len);
-            for i in 0..len {
-                children.push(self.read_node_data(&content, i)?);
+            let mut txn = ydoc.transact_mut();
+            for (i, node) in nodes.iter().enumerate() {
+                insert_node(&mut txn, &content, i as u32, node)?;
             }
-            Ok(NodeData::Container {
-                type_name,
-                attrs,
-                children,
-            })
-        } else {
-            Err(CollabError::schema(format!(
-                "node `{type_name}` has neither a `text` nor a `content` object"
-            )))
         }
+        Ok(CollabDoc {
+            doc: ydoc,
+            content,
+        })
+    }
+
+    /// Load a projection from a peer's saved CRDT bytes (see [`CollabDoc::save`]).
+    pub fn load(bytes: &[u8]) -> Result<CollabDoc> {
+        let update = Update::decode_v1(bytes)?;
+        let doc = CollabDoc::empty_doc();
+        // The root handle is resolved before the update is applied — a named root type
+        // is identified by name, so the incoming blocks land in this very array.
+        let content = doc.get_or_insert_array(CONTENT);
+        doc.transact_mut().apply_update(update)?;
+        Ok(CollabDoc { doc, content })
+    }
+
+    /// Save the whole projection (for forking a peer): the complete document state as
+    /// a v1 update, which [`CollabDoc::load`] reads back.
+    pub fn save(&self) -> Vec<u8> {
+        self.doc
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default())
     }
 
     /// Rebuild the whole model document from the projection (the canonical, total
     /// read-back; both peers reconstruct identically, so equal CRDTs give equal docs).
     pub fn to_doc(&self, schema: &Schema) -> Result<Node> {
-        let n = self.block_count();
-        let mut blocks = Vec::with_capacity(n);
-        for i in 0..n {
-            let nd = self.read_node_data(&self.content, i)?;
-            blocks.push(build_node(schema, &nd)?);
-        }
+        let mut blocks = {
+            let txn = self.doc.transact();
+            let n = self.content.len(&txn);
+            let mut blocks = Vec::with_capacity(n as usize);
+            for i in 0..n {
+                let nd = read_node_data(&txn, &self.content, i)?;
+                blocks.push(build_node(schema, &nd)?);
+            }
+            blocks
+        };
         if blocks.is_empty() {
             // An editor doc is never empty; mirror the starter empty paragraph.
             let para = schema
@@ -494,6 +240,402 @@ impl CollabDoc {
             .map_err(CollabError::from)
     }
 }
+
+// --- offset conversion ----------------------------------------------------------
+
+/// The UTF-16 code-unit offset of char offset `chars` inside `s`.
+///
+/// The model counts chars, yrs counts UTF-16 code units ([`OffsetKind::Utf16`]), so
+/// every index handed to a `Text` goes through here. A char offset past the end clamps
+/// to the end: [`Text::remove_range`] **panics** on an out-of-range index (automerge
+/// returned an error), and a panic here would take the whole app down.
+fn u16_offset(s: &str, chars: usize) -> u32 {
+    s.chars().take(chars).map(|c| c.len_utf16() as u32).sum()
+}
+
+/// A char range as a UTF-16 `(index, len)` pair inside `s`.
+fn u16_span(s: &str, start: usize, end: usize) -> (u32, u32) {
+    let at = u16_offset(s, start);
+    let to = u16_offset(s, end.max(start));
+    (at, to - at)
+}
+
+// --- structural read helpers (any transaction) ----------------------------------
+
+/// The map object of the child at `index` of a content array (the root `content` or a
+/// container's nested `content`).
+fn child_map<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -> Option<MapRef> {
+    match list.get(txn, index) {
+        Some(Out::YMap(m)) => Some(m),
+        _ => None,
+    }
+}
+
+/// The `text` Text object of a text-block node.
+fn block_text<T: ReadTxn>(txn: &T, node: &MapRef) -> Option<TextRef> {
+    match node.get(txn, TEXT) {
+        Some(Out::YText(t)) => Some(t),
+        _ => None,
+    }
+}
+
+/// The `content` Array object of a container node.
+fn node_content<T: ReadTxn>(txn: &T, node: &MapRef) -> Option<ArrayRef> {
+    match node.get(txn, CONTENT) {
+        Some(Out::YArray(a)) => Some(a),
+        _ => None,
+    }
+}
+
+/// A node's `type` string.
+fn node_type<T: ReadTxn>(txn: &T, node: &MapRef) -> Option<String> {
+    match node.get(txn, TYPE) {
+        Some(Out::Any(Any::String(s))) => Some(s.to_string()),
+        _ => None,
+    }
+}
+
+/// A node's `attrs` map read back into a model attr set (empty when absent).
+fn node_attrs<T: ReadTxn>(txn: &T, node: &MapRef) -> Attrs {
+    match node.get(txn, ATTRS) {
+        Some(Out::YMap(m)) => read_attrs(txn, &m),
+        _ => Attrs::new(),
+    }
+}
+
+/// Bounds-check a content-array index before a write.
+///
+/// yrs **panics** on an out-of-range array index where automerge returned `Err`. Every
+/// index the projection writes comes from a model/CRDT pair it believes are in step, so
+/// a mismatch is a projection bug — and it must surface as a loud [`CollabError`], not
+/// as a panic that kills the host application.
+pub(crate) fn check_index<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32, allow_end: bool) -> Result<()> {
+    let len = list.len(txn);
+    if if allow_end { index <= len } else { index < len } {
+        Ok(())
+    } else {
+        Err(CollabError::schema(format!(
+            "content index {index} out of range (length {len})"
+        )))
+    }
+}
+
+// --- writes --------------------------------------------------------------------
+
+/// Insert a new node (text-block or container) at `index` of `list`.
+pub(crate) fn insert_node(
+    txn: &mut TransactionMut,
+    list: &ArrayRef,
+    index: u32,
+    nd: &NodeData,
+) -> Result<()> {
+    check_index(txn, list, index, true)?;
+    let node = list.insert(txn, index, MapPrelim::default());
+    write_node(txn, &node, nd)
+}
+
+/// Write a node's contents into its (already-inserted) map object. Recurses into a
+/// container's children.
+fn write_node(txn: &mut TransactionMut, node: &MapRef, nd: &NodeData) -> Result<()> {
+    node.insert(txn, TYPE, Any::String(nd.type_name().into()));
+    let attrs_obj = node.insert(txn, ATTRS, MapPrelim::default());
+    write_attrs(txn, &attrs_obj, nd.attrs());
+    match nd {
+        NodeData::Block(b) => {
+            let text = node.insert(txn, TEXT, TextPrelim::new(b.text.as_str()));
+            for m in &b.marks {
+                apply_mark(txn, &text, &b.text, m);
+            }
+        }
+        NodeData::Container { children, .. } => {
+            let content = node.insert(txn, CONTENT, ArrayPrelim::default());
+            for (i, child) in children.iter().enumerate() {
+                insert_node(txn, &content, i as u32, child)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Reconcile the node at `index` of `list` to `target`: update type/attrs if they
+/// changed, then reconcile its body — a text-block's text + marks, or a container's
+/// child list — recursively. Unchanged descendants keep their CRDT identity, so a
+/// concurrent edit to a *different* text-block (even in a different list item) merges.
+pub(crate) fn reconcile_node(
+    txn: &mut TransactionMut,
+    list: &ArrayRef,
+    index: u32,
+    target: &NodeData,
+) -> Result<()> {
+    let node = child_map(txn, list, index)
+        .ok_or_else(|| CollabError::schema("reconcile_node: missing node"))?;
+
+    // A node changing *kind* (text-block <-> container — e.g. a paragraph wrapped
+    // into a list) can't be reconciled in place; replace it wholesale. Rare, so the
+    // coarse-grained replace is fine.
+    let crdt_is_block = block_text(txn, &node).is_some();
+    let target_is_block = matches!(target, NodeData::Block(_));
+    if crdt_is_block != target_is_block {
+        check_index(txn, list, index, false)?;
+        list.remove(txn, index);
+        return insert_node(txn, list, index, target);
+    }
+
+    // type — only write when it changed
+    if node_type(txn, &node).as_deref() != Some(target.type_name()) {
+        node.insert(txn, TYPE, Any::String(target.type_name().into()));
+    }
+    // attrs — only rebuild when they changed. Replacing the attrs object on every
+    // keystroke would churn the CRDT and clobber a concurrent remote attr edit on
+    // the same node.
+    if node_attrs(txn, &node) != *target.attrs() {
+        let attrs_obj = node.insert(txn, ATTRS, MapPrelim::default());
+        write_attrs(txn, &attrs_obj, target.attrs());
+    }
+
+    match target {
+        NodeData::Block(b) => {
+            let text = block_text(txn, &node)
+                .ok_or_else(|| CollabError::schema("reconcile_node: missing text"))?;
+            reconcile_text(txn, &text, b)
+        }
+        NodeData::Container { children, .. } => {
+            let content = node_content(txn, &node)
+                .ok_or_else(|| CollabError::schema("reconcile_node: missing content"))?;
+            reconcile_child_list(txn, &content, children)
+        }
+    }
+}
+
+/// Reconcile a text-block's `text` object to `b`: a minimal common-prefix/suffix splice
+/// (so the per-char CRDT identity of unchanged text survives) plus a mark resync only
+/// when the marks actually changed.
+fn reconcile_text(txn: &mut TransactionMut, text: &TextRef, b: &BlockData) -> Result<()> {
+    let (old, old_marks) = read_text_data(txn, text)?;
+    let spliced = old != b.text;
+    if spliced {
+        splice_min(txn, text, &old, &b.text);
+    }
+
+    let mut target_marks = b.marks.clone();
+    target_marks.sort_by(|a, b| (a.start, a.end, &a.name).cmp(&(b.start, b.end, &b.name)));
+
+    // Marks must be compared *after* the splice: yrs has already shifted existing
+    // formatting ranges with the text, and text inserted **inside** a formatted run
+    // inherits that run's attributes (which usually matches the editor's own stored-mark
+    // behaviour, but not always). Re-reading is what keeps the two in step. Skipping the
+    // resync when the marks already agree avoids clobbering a concurrent remote mark on
+    // a pure text edit.
+    let (current, current_marks) = if spliced {
+        read_text_data(txn, text)?
+    } else {
+        (old, old_marks)
+    };
+    if current_marks != target_marks {
+        resync_marks(txn, text, &current, &current_marks, &target_marks);
+    }
+    Ok(())
+}
+
+/// Reconcile a container's `content` array to `target`. Diffs the CRDT's current
+/// children against `target` by *structural* equality (a common leading/trailing run
+/// is left untouched, keeping the CRDT identity — and merge behaviour — of every
+/// node in it), reconciles the overlapping middle in place, and inserts/deletes the
+/// count difference. This is the same block-list diff as
+/// [`project_change`](CollabDoc::project_change), one level down; recursion carries it
+/// to any depth.
+fn reconcile_child_list(
+    txn: &mut TransactionMut,
+    content: &ArrayRef,
+    target: &[NodeData],
+) -> Result<()> {
+    let cn = content.len(txn) as usize;
+    let mut cur = Vec::with_capacity(cn);
+    for i in 0..cn {
+        cur.push(read_node_data(txn, content, i as u32)?);
+    }
+    let tn = target.len();
+
+    let mut prefix = 0;
+    while prefix < cn && prefix < tn && cur[prefix] == target[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < cn - prefix
+        && suffix < tn - prefix
+        && cur[cn - 1 - suffix] == target[tn - 1 - suffix]
+    {
+        suffix += 1;
+    }
+
+    let cur_mid = cn - prefix - suffix;
+    let tgt_mid = tn - prefix - suffix;
+    let common = cur_mid.min(tgt_mid);
+
+    // Reconcile the overlapping changed children in place (keeps identity).
+    for k in 0..common {
+        reconcile_node(txn, content, (prefix + k) as u32, &target[prefix + k])?;
+    }
+    // Insert the extra target children.
+    for k in common..tgt_mid {
+        insert_node(txn, content, (prefix + k) as u32, &target[prefix + k])?;
+    }
+    // Delete the extra current children (from the end so earlier indices stay valid).
+    for idx in (prefix + common..prefix + cur_mid).rev() {
+        check_index(txn, content, idx as u32, false)?;
+        content.remove(txn, idx as u32);
+    }
+    Ok(())
+}
+
+/// Minimal common-prefix/suffix splice: replace only the changed middle so unchanged
+/// characters keep their CRDT identity (and merge across peers). yrs has no
+/// `update_text` equivalent, so the diff is computed here and applied as a
+/// remove-then-insert pair, converted from char offsets into UTF-16 code units.
+pub(crate) fn splice_min(txn: &mut TransactionMut, text: &TextRef, old: &str, new: &str) {
+    let o: Vec<char> = old.chars().collect();
+    let n: Vec<char> = new.chars().collect();
+    let mut prefix = 0;
+    while prefix < o.len() && prefix < n.len() && o[prefix] == n[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < o.len() - prefix
+        && suffix < n.len() - prefix
+        && o[o.len() - 1 - suffix] == n[n.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    let del = o.len() - prefix - suffix;
+    let ins: String = n[prefix..n.len() - suffix].iter().collect();
+
+    let at: u32 = o[..prefix].iter().map(|c| c.len_utf16() as u32).sum();
+    let del_u16: u32 = o[prefix..prefix + del]
+        .iter()
+        .map(|c| c.len_utf16() as u32)
+        .sum();
+    if del_u16 > 0 {
+        text.remove_range(txn, at, del_u16);
+    }
+    if !ins.is_empty() {
+        text.insert(txn, at, &ins);
+    }
+}
+
+/// Apply one mark span as a formatting attribute over a `Text` range. A zero-length
+/// span is skipped — there is nothing to format, and the model never produces one.
+fn apply_mark(txn: &mut TransactionMut, text: &TextRef, s: &str, m: &SpanMark) {
+    let (at, len) = u16_span(s, m.start, m.end);
+    if len == 0 {
+        return;
+    }
+    let attrs = YAttrs::from([(m.name.as_str().into(), encode_mark_value(&m.attrs))]);
+    text.format(txn, at, len, attrs);
+}
+
+/// Clear and reapply a `Text`'s formatting attributes to match `target` exactly.
+/// `current` is the text's present string and `current_marks` the spans read out of it
+/// (both **after** any splice), so the ranges being cleared are the live ones.
+fn resync_marks(
+    txn: &mut TransactionMut,
+    text: &TextRef,
+    current: &str,
+    current_marks: &[SpanMark],
+    target: &[SpanMark],
+) {
+    // Clear every currently-active mark over its range. Per the Yjs convention a
+    // `null` attribute value removes that format.
+    for m in current_marks {
+        let (at, len) = u16_span(current, m.start, m.end);
+        if len == 0 {
+            continue;
+        }
+        text.format(
+            txn,
+            at,
+            len,
+            YAttrs::from([(m.name.as_str().into(), Any::Null)]),
+        );
+    }
+    for m in target {
+        apply_mark(txn, text, current, m);
+    }
+}
+
+// --- CRDT → NodeData -----------------------------------------------------------
+
+/// Read a `Text` back as its plain string plus the canonical (sorted, coalesced) mark
+/// spans over it, in **char** offsets.
+///
+/// `Text::diff` hands back the text already split into runs at every formatting change,
+/// each carrying the full attribute set active over it — so the string and the spans are
+/// read in one pass and cannot disagree. A chunk that is not a string is an embedded
+/// value, which is outside the staged scope (A22) and fails loud rather than being
+/// dropped.
+fn read_text_data<T: ReadTxn>(txn: &T, text: &TextRef) -> Result<(String, Vec<SpanMark>)> {
+    let mut s = String::new();
+    let mut marks: Vec<SpanMark> = Vec::new();
+    for chunk in text.diff(txn, YChange::identity) {
+        let Out::Any(Any::String(part)) = &chunk.insert else {
+            return Err(CollabError::unsupported(
+                "an embedded value inside a block's text is not supported (inline atoms \
+                 such as image/hard_break are not yet projected)",
+            ));
+        };
+        let start = s.chars().count();
+        s.push_str(part);
+        let end = s.chars().count();
+        if let Some(attrs) = &chunk.attributes {
+            for (name, value) in attrs.iter() {
+                // A cleared format can linger as an explicit null; it is not a mark.
+                if matches!(value, Any::Null | Any::Undefined) {
+                    continue;
+                }
+                push_mark_span(&mut marks, name, decode_mark_value(value)?, start, end);
+            }
+        }
+    }
+    marks.sort_by(|a, b| (a.start, a.end, &a.name).cmp(&(b.start, b.end, &b.name)));
+    Ok((s, marks))
+}
+
+/// Read the node at `index` of `list` back out of the CRDT as [`NodeData`]. A node
+/// carrying a `text` object is a text-block; a node carrying a `content` array is a
+/// container, read recursively. Fails loud on a node that is neither (a corrupt
+/// projection), rather than materializing a broken shape.
+fn read_node_data<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -> Result<NodeData> {
+    let node = child_map(txn, list, index)
+        .ok_or_else(|| CollabError::schema("read_node_data: missing node"))?;
+    let type_name =
+        node_type(txn, &node).ok_or_else(|| CollabError::schema("node has no type"))?;
+    let attrs = node_attrs(txn, &node);
+    if let Some(text_obj) = block_text(txn, &node) {
+        let (text, marks) = read_text_data(txn, &text_obj)?;
+        Ok(NodeData::Block(BlockData {
+            type_name,
+            attrs,
+            text,
+            marks,
+        }))
+    } else if let Some(content) = node_content(txn, &node) {
+        let len = content.len(txn);
+        let mut children = Vec::with_capacity(len as usize);
+        for i in 0..len {
+            children.push(read_node_data(txn, &content, i)?);
+        }
+        Ok(NodeData::Container {
+            type_name,
+            attrs,
+            children,
+        })
+    } else {
+        Err(CollabError::schema(format!(
+            "node `{type_name}` has neither a `text` nor a `content` object"
+        )))
+    }
+}
+
+// --- model → NodeData ----------------------------------------------------------
 
 /// Validate a model node is projectable and extract its [`NodeData`], recursing into
 /// list containers. A flat text-block becomes [`NodeData::Block`]; a supported list
@@ -524,9 +666,9 @@ pub(crate) fn read_node(node: &Node) -> Result<NodeData> {
 }
 
 /// Validate a model block is a flat textblock and extract its projectable data. Marks
-/// are returned in canonical `(start, end, name)` order — matching
-/// [`CollabDoc::read_text_marks`] — so a [`NodeData`] read from the model compares equal
-/// to the same node read back from the CRDT.
+/// are returned in canonical `(start, end, name)` order — matching [`read_text_data`] —
+/// so a [`NodeData`] read from the model compares equal to the same node read back from
+/// the CRDT.
 pub(crate) fn read_block(block: &Node) -> Result<BlockData> {
     if !block.is_textblock() {
         return Err(CollabError::unsupported(format!(
@@ -563,21 +705,34 @@ pub(crate) fn read_block(block: &Node) -> Result<BlockData> {
 /// Append a mark over `start..end`, coalescing with an immediately-preceding span of
 /// the same (type, attrs).
 fn push_span(marks: &mut Vec<SpanMark>, m: &Mark, start: usize, end: usize) {
-    let name = m.type_name().to_string();
+    push_mark_span(marks, m.type_name(), m.attrs.clone(), start, end);
+}
+
+/// The coalescing half of [`push_span`], shared with the CRDT read-back so both sides
+/// produce the same canonical span list for the same logical formatting.
+fn push_mark_span(
+    marks: &mut Vec<SpanMark>,
+    name: &str,
+    attrs: Attrs,
+    start: usize,
+    end: usize,
+) {
     if let Some(prev) = marks
         .iter_mut()
-        .find(|s| s.end == start && s.name == name && s.attrs == m.attrs)
+        .find(|s| s.end == start && s.name == name && s.attrs == attrs)
     {
         prev.end = end;
         return;
     }
     marks.push(SpanMark {
-        name,
-        attrs: m.attrs.clone(),
+        name: name.to_string(),
+        attrs,
         start,
         end,
     });
 }
+
+// --- NodeData → model ----------------------------------------------------------
 
 /// Rebuild a model node from projected [`NodeData`], recursing into list containers.
 /// The inbound scope guard (A22) is shared with the outbound [`read_node`]: a container
@@ -679,113 +834,118 @@ fn same_mark_set(a: &[Mark], b: &[Mark]) -> bool {
 
 // --- attr / mark-value encoding ------------------------------------------------
 
-/// Write a model attr set into an Automerge map (scalar values only).
-fn write_attrs(doc: &mut AutoCommit, obj: &ObjId, attrs: &Attrs) -> Result<()> {
+/// Write a model attr set into a yrs map. Values stay **typed** — an integer is an
+/// integer, not a stringified one.
+fn write_attrs(txn: &mut TransactionMut, obj: &MapRef, attrs: &Attrs) {
     for (k, v) in attrs.iter() {
-        match v {
-            AttrValue::Str(s) => doc.put(obj, k, s.as_ref())?,
-            AttrValue::Int(i) => doc.put(obj, k, *i)?,
-            AttrValue::Bool(b) => doc.put(obj, k, *b)?,
-            AttrValue::Null => {}
+        match attr_to_any(v) {
+            Some(any) => {
+                obj.insert(txn, k.to_string(), any);
+            }
+            // `Null` means "explicitly absent"; storing it would be indistinguishable
+            // from a cleared key on read-back.
+            None => {}
         }
     }
-    Ok(())
 }
 
-/// Read an Automerge map back into a model attr set.
-fn read_attrs(doc: &AutoCommit, obj: &ObjId) -> Attrs {
+/// Read a yrs map back into a model attr set. Values yrs cannot have come from
+/// [`write_attrs`] (a nested shared type, a buffer) are skipped rather than guessed at.
+fn read_attrs<T: ReadTxn>(txn: &T, obj: &MapRef) -> Attrs {
     let mut out = Attrs::new();
-    for key in doc.keys(obj) {
-        if let Ok(Some((Value::Scalar(s), _))) = doc.get(obj, &key) {
-            let v = match s.as_ref() {
-                ScalarValue::Str(smol) => AttrValue::from(smol.to_string()),
-                ScalarValue::Int(i) => AttrValue::Int(*i),
-                // Clamp rather than wrap a foreign-impl Uint past i64::MAX.
-                ScalarValue::Uint(u) => AttrValue::Int(i64::try_from(*u).unwrap_or(i64::MAX)),
-                ScalarValue::Boolean(b) => AttrValue::Bool(*b),
-                _ => continue,
-            };
+    for (key, value) in obj.iter(txn) {
+        if let Out::Any(any) = value
+            && let Some(v) = any_to_attr(&any)
+        {
             out = out.with(key, v);
         }
     }
     out
 }
 
-/// Encode mark attrs as a compact deterministic JSON object string.
-fn encode_attrs(attrs: &Attrs) -> String {
-    let mut map = serde_json::Map::new();
-    for (k, v) in attrs.iter() {
-        let jv = match v {
-            AttrValue::Str(s) => serde_json::Value::String(s.to_string()),
-            AttrValue::Int(i) => serde_json::Value::from(*i),
-            AttrValue::Bool(b) => serde_json::Value::Bool(*b),
-            AttrValue::Null => serde_json::Value::Null,
-        };
-        map.insert(k.to_string(), jv);
+/// One model attr value as a yrs [`Any`]. `None` for [`AttrValue::Null`], which is not
+/// stored at all.
+fn attr_to_any(v: &AttrValue) -> Option<Any> {
+    match v {
+        AttrValue::Str(s) => Some(Any::String(s.as_ref().into())),
+        // Written explicitly as a `BigInt` so the encoding does not depend on the
+        // value's magnitude; `any_to_attr` accepts both encodings regardless.
+        AttrValue::Int(i) => Some(Any::BigInt(*i)),
+        AttrValue::Bool(b) => Some(Any::Bool(*b)),
+        AttrValue::Null => None,
     }
-    serde_json::Value::Object(map).to_string()
 }
 
-/// Decode a mark's Automerge scalar value back into model attrs. The two valid
-/// encodings ([`CollabDoc::apply_mark`]) are `Boolean(true)` for an attr-less mark
-/// (→ empty attrs) and `Str(json-object)` for an attr-bearing mark. Fails loud on
-/// anything else — a wrong scalar kind, invalid JSON, a non-object, or a non-integer
-/// number — rather than silently dropping a peer's corrupted mark attrs (A22).
-fn decode_mark_value(value: &ScalarValue) -> Result<Attrs> {
-    let smol = match value {
+/// One yrs [`Any`] as a model attr value, or `None` for a shape the projection never
+/// writes.
+///
+/// Integers are accepted in **both** encodings: yrs picks between `BigInt` and
+/// `Number` by magnitude, so matching only the arm we write would silently drop
+/// attributes that came from another writer (or a future yrs).
+fn any_to_attr(v: &Any) -> Option<AttrValue> {
+    match v {
+        Any::String(s) => Some(AttrValue::from(s.to_string())),
+        Any::BigInt(i) => Some(AttrValue::Int(*i)),
+        Any::Number(n) if n.fract() == 0.0 => Some(AttrValue::Int(*n as i64)),
+        Any::Bool(b) => Some(AttrValue::Bool(*b)),
+        _ => None,
+    }
+}
+
+/// Encode a mark's attrs as its yrs formatting-attribute **value**.
+///
+/// Two encodings, mirrored by [`decode_mark_value`]: `true` for an attr-less mark
+/// (bold, italic) and a `Map` of typed values for an attr-bearing one (a link's
+/// `href`). yrs formatting attributes carry structured values, so — unlike automerge,
+/// whose marks held a single scalar — no JSON-string indirection is needed.
+fn encode_mark_value(attrs: &Attrs) -> Any {
+    if attrs.is_empty() {
+        return Any::Bool(true);
+    }
+    let mut map: HashMap<String, Any> = HashMap::new();
+    for (k, v) in attrs.iter() {
+        map.insert(k.to_string(), attr_to_any(v).unwrap_or(Any::Null));
+    }
+    Any::Map(Arc::new(map))
+}
+
+/// Decode a mark's yrs formatting value back into model attrs. Fails loud on anything
+/// [`encode_mark_value`] could not have produced — a wrong value kind, a non-integer
+/// number, a nested collection — rather than silently dropping a peer's corrupted mark
+/// attrs (A22).
+fn decode_mark_value(value: &Any) -> Result<Attrs> {
+    let map = match value {
         // The attr-less encoding — no attributes to decode.
-        ScalarValue::Boolean(_) => return Ok(Attrs::new()),
-        ScalarValue::Str(smol) => smol,
+        Any::Bool(_) => return Ok(Attrs::new()),
+        Any::Map(map) => map,
         other => {
             return Err(CollabError::schema(format!(
-                "mark value must be Boolean(true) or a JSON-object string, got {other:?}"
+                "mark value must be `true` or a map of attributes, got {other:?}"
             )));
         }
     };
-    let serde_json::Value::Object(map) = serde_json::from_str(smol)
-        .map_err(|e| CollabError::schema(format!("mark attr json invalid: {e}")))?
-    else {
-        return Err(CollabError::schema("mark attr json must be an object"));
-    };
     let mut out = Attrs::new();
-    for (k, v) in map {
+    for (k, v) in map.iter() {
         let av = match v {
-            serde_json::Value::String(s) => AttrValue::from(s),
-            serde_json::Value::Bool(b) => AttrValue::Bool(b),
-            serde_json::Value::Number(n) if n.is_i64() => AttrValue::Int(n.as_i64().unwrap()),
-            serde_json::Value::Number(n) => {
+            Any::String(s) => AttrValue::from(s.to_string()),
+            Any::Bool(b) => AttrValue::Bool(*b),
+            Any::BigInt(i) => AttrValue::Int(*i),
+            Any::Number(n) if n.fract() == 0.0 => AttrValue::Int(*n as i64),
+            Any::Number(n) => {
                 return Err(CollabError::schema(format!(
-                    "non-integer JSON number in mark attr `{k}`: {n}"
+                    "non-integer number in mark attr `{k}`: {n}"
                 )));
             }
-            serde_json::Value::Null => AttrValue::Null,
-            _ => continue,
+            Any::Null | Any::Undefined => AttrValue::Null,
+            other => {
+                return Err(CollabError::schema(format!(
+                    "unsupported value in mark attr `{k}`: {other:?}"
+                )));
+            }
         };
-        out = out.with(k, av);
+        out = out.with(k.as_str(), av);
     }
     Ok(out)
-}
-
-/// Minimal common-prefix/suffix splice: replace only the changed middle so unchanged
-/// characters keep their CRDT identity (and merge across peers).
-pub(crate) fn splice_min(doc: &mut AutoCommit, text: &ObjId, old: &str, new: &str) -> Result<()> {
-    let o: Vec<char> = old.chars().collect();
-    let n: Vec<char> = new.chars().collect();
-    let mut prefix = 0;
-    while prefix < o.len() && prefix < n.len() && o[prefix] == n[prefix] {
-        prefix += 1;
-    }
-    let mut suffix = 0;
-    while suffix < o.len() - prefix
-        && suffix < n.len() - prefix
-        && o[o.len() - 1 - suffix] == n[n.len() - 1 - suffix]
-    {
-        suffix += 1;
-    }
-    let del = o.len() - prefix - suffix;
-    let ins: String = n[prefix..n.len() - suffix].iter().collect();
-    doc.splice_text(text, prefix, del as isize, &ins)?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -841,9 +1001,12 @@ mod tests {
             .branch("paragraph", Fragment::from_node(s.text("hi").unwrap()))
             .unwrap();
         let doc = s.branch("doc", Fragment::from_node(para)).unwrap();
-        let mut cdoc = CollabDoc::from_doc(&doc).unwrap();
-        let block = cdoc.block_obj(0).unwrap();
-        cdoc.doc.put(&block, TYPE, "blockquote").unwrap();
+        let cdoc = CollabDoc::from_doc(&doc).unwrap();
+        {
+            let mut txn = cdoc.doc.transact_mut();
+            let block = child_map(&txn, &cdoc.content, 0).unwrap();
+            block.insert(&mut txn, TYPE, Any::String("blockquote".into()));
+        }
         assert!(matches!(
             cdoc.to_doc(&s).unwrap_err(),
             CollabError::Unsupported(_)
@@ -853,18 +1016,40 @@ mod tests {
     #[test]
     fn decode_mark_value_fails_loud_on_corruption() {
         // attr-less encoding decodes to empty attrs
-        assert!(
-            decode_mark_value(&ScalarValue::Boolean(true))
-                .unwrap()
-                .is_empty()
-        );
-        // valid attr json decodes
-        let attrs = decode_mark_value(&ScalarValue::Str(r#"{"href":"x"}"#.into())).unwrap();
+        assert!(decode_mark_value(&Any::Bool(true)).unwrap().is_empty());
+        // valid attr map decodes
+        let attrs = decode_mark_value(&encode_mark_value(
+            &Attrs::new().with("href", AttrValue::from("x")),
+        ))
+        .unwrap();
         assert_eq!(attrs.get_str("href"), Some("x"));
         // malformed values fail loud rather than silently dropping the attrs
-        assert!(decode_mark_value(&ScalarValue::Str("not json".into())).is_err());
-        assert!(decode_mark_value(&ScalarValue::Str(r#"["a"]"#.into())).is_err()); // not an object
-        assert!(decode_mark_value(&ScalarValue::Str(r#"{"n":1.5}"#.into())).is_err()); // non-integer
-        assert!(decode_mark_value(&ScalarValue::Int(5)).is_err()); // wrong scalar kind
+        assert!(decode_mark_value(&Any::String("not a map".into())).is_err()); // wrong kind
+        assert!(decode_mark_value(&Any::Array(Arc::from([Any::Bool(true)]))).is_err()); // not a map
+        assert!(
+            decode_mark_value(&Any::Map(Arc::new(HashMap::from([(
+                "n".to_string(),
+                Any::Number(1.5)
+            )]))))
+            .is_err()
+        ); // non-integer
+        assert!(decode_mark_value(&Any::BigInt(5)).is_err()); // wrong kind
+    }
+
+    #[test]
+    fn char_offsets_convert_to_utf16_across_astral_pairs() {
+        // Two astral characters, deliberately: yrs snaps an index that lands mid
+        // surrogate pair to the nearest boundary and silently corrects the off-by-one,
+        // so a single-astral case cannot tell a correct conversion from a broken one.
+        let s = "a🐱b🐱c"; // chars 0..5, UTF-16 units 0..7
+        assert_eq!(u16_offset(s, 0), 0);
+        assert_eq!(u16_offset(s, 1), 1); // after 'a'
+        assert_eq!(u16_offset(s, 2), 3); // after the first 🐱 (2 units)
+        assert_eq!(u16_offset(s, 3), 4); // after 'b'
+        assert_eq!(u16_offset(s, 4), 6); // after the second 🐱
+        assert_eq!(u16_offset(s, 5), 7); // end
+        // Past the end clamps rather than running off (remove_range would panic).
+        assert_eq!(u16_offset(s, 99), 7);
+        assert_eq!(u16_span(s, 1, 4), (1, 5)); // "🐱b🐱" is 5 UTF-16 units
     }
 }
