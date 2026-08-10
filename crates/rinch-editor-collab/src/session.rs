@@ -9,8 +9,9 @@
 //!   `model ≡ project(model)` invariant and means there is never an unconfirmed backlog
 //!   to rebase).
 //! * **`save_incremental` / `state_vector` / `sync_diff`** — produce something to send:
-//!   the next broadcast delta, this replica's state vector, or the diff a peer at a
-//!   given state vector is missing.
+//!   the next broadcast delta (the updates of the local transactions since the last
+//!   call), this replica's state vector, or the diff a peer at a given state vector is
+//!   missing.
 //! * **`integrate_incremental`** — apply a peer's bytes, whatever transport produced
 //!   them: merge into the CRDT, rebuild the model from the *converged* CRDT, and return
 //!   the next [`EditorState`] (the change applied as a remote, non-undoable transaction).
@@ -29,14 +30,9 @@ use crate::projection::CollabDoc;
 use crate::remote::build_remote_transaction;
 
 /// An update that carries nothing, in the lib0 v1 encoding: zero blocks followed by a
-/// zero-length delete set.
-///
-/// Worth naming, because it is the **only** sound "nothing happened" test on this
-/// wire. A state vector counts the *inserts* a replica has seen and says nothing about
-/// deletions, so two docs can differ by an arbitrary number of deletes (and, since yrs
-/// implements un-formatting by deleting format markers, by arbitrary *mark removals*)
-/// while their state vectors are identical. Comparing state vectors to decide whether
-/// anything changed silently drops exactly those changes.
+/// zero-length delete set. A peer can legitimately send one (a reconciliation diff for a
+/// peer that is already up to date), so the inbound path recognises it instead of
+/// decoding it into a no-op transaction.
 const EMPTY_UPDATE: &[u8] = &[0, 0];
 
 /// One editor's collaboration session: its CRDT projection plus the lifecycle to drive
@@ -44,34 +40,22 @@ const EMPTY_UPDATE: &[u8] = &[0, 0];
 #[derive(Debug)]
 pub struct CollabSession {
     cdoc: CollabDoc,
-    /// The state vector as of the last [`Self::save_incremental`] — the watermark that
-    /// bounds how far back a broadcast delta has to reach for *inserts*. Deletions ride
-    /// along regardless: yrs writes the whole delete set into every diff, so a deletion
-    /// this watermark cannot represent still reaches every peer (and keeps reaching
-    /// them, which is why a missed delete self-heals).
-    ///
-    /// Deliberately *not* advanced by [`Self::snapshot`] or
-    /// [`Self::integrate_incremental`]: a snapshot handed to a late joiner must not
-    /// make the existing peers miss the next delta, and re-broadcasting a change that
-    /// arrived from a peer is harmless (updates are idempotent) where dropping one is
-    /// not.
-    last_saved: StateVector,
 }
 
 impl CollabSession {
     /// Start a session from a fresh editor state, projecting its document onto a new
     /// CRDT. Fails loud on content outside the staged scope (design A22).
     pub fn new(state: &EditorState) -> Result<CollabSession> {
-        let cdoc = CollabDoc::from_doc(&state.doc)?;
-        let last_saved = cdoc.state_vector();
-        Ok(CollabSession { cdoc, last_saved })
+        Ok(CollabSession {
+            cdoc: CollabDoc::from_doc(&state.doc)?,
+        })
     }
 
     /// Join an existing collaboration from a peer's saved CRDT bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<CollabSession> {
-        let cdoc = CollabDoc::load(bytes)?;
-        let last_saved = cdoc.state_vector();
-        Ok(CollabSession { cdoc, last_saved })
+        Ok(CollabSession {
+            cdoc: CollabDoc::load(bytes)?,
+        })
     }
 
     /// Save the whole CRDT (hand to a peer so they can `from_bytes` and join).
@@ -85,23 +69,27 @@ impl CollabSession {
         self.cdoc.project_change(before, after)
     }
 
-    /// The next broadcast delta: everything produced since the previous call. Empty when
-    /// there is genuinely nothing to send, so a caller can skip the transmission.
+    /// The next broadcast delta: the updates of every locally-projected transaction since
+    /// the previous call, as one update. **Empty** when nothing has been projected since,
+    /// so a caller can skip the transmission.
     ///
-    /// "Nothing to send" is decided from the *encoded delta* (`EMPTY_UPDATE`), never
-    /// from a state-vector comparison — a local deletion or mark removal does not move
-    /// the state vector, and skipping on that basis would drop the change permanently.
-    pub fn save_incremental(&mut self) -> Vec<u8> {
-        let delta = self.cdoc.diff_since(&self.last_saved);
-        self.last_saved = self.cdoc.state_vector();
-        if delta == EMPTY_UPDATE {
-            return Vec::new();
-        }
-        delta
+    /// This drains an outbox fed by an update observer rather than diffing against the
+    /// state vector of the last broadcast. The difference is not cosmetic:
+    /// `encode_diff_v1` writes the *complete* delete set whatever state vector it is
+    /// given, so a diff-based delta re-carries the document's entire deletion history on
+    /// every keystroke — growing without bound — and a "nothing new" diff never becomes
+    /// empty once anything has been deleted. A transaction's own update is constant-size
+    /// and genuinely empty when there was no transaction.
+    ///
+    /// Fails only if a parked update cannot be re-decoded to be merged with its
+    /// neighbours, which would mean this replica produced a malformed update; the parked
+    /// updates are left in place, so the error is not a silent loss.
+    pub fn save_incremental(&mut self) -> Result<Vec<u8>> {
+        self.cdoc.take_outbox()
     }
 
-    /// This replica's state vector, encoded for the wire — the inserts it has seen. Send
-    /// it to a peer, which answers with [`Self::sync_diff`].
+    /// This replica's state vector, encoded for the wire — the insertions it has seen.
+    /// Send it to a peer, which answers with [`Self::sync_diff`].
     ///
     /// **Not a convergence test.** Equal state vectors mean two replicas have seen the
     /// same insertions, not that they hold the same document: deletions (and mark
@@ -133,12 +121,18 @@ impl CollabSession {
     /// document, so a state-vector guard here would apply the change to the CRDT and
     /// then never tell the model about it, breaking `model ≡ project(model)` in a way
     /// that only shows up rounds later as divergence.
+    ///
+    /// Both spellings of "nothing arrived" are a no-op: the two-byte empty update, which is what a
+    /// reconciliation diff for an up-to-date peer encodes as, and an empty slice, which is
+    /// what [`Self::save_incremental`] returns when it has nothing to send. Neither is
+    /// decodable as an update, so recognising them here is what keeps a caller that
+    /// forwards its own empty delta from parking a spurious decode error.
     pub fn integrate_incremental(
         &mut self,
         state: &EditorState,
         changes: &[u8],
     ) -> Result<Option<EditorState>> {
-        if changes == EMPTY_UPDATE {
+        if changes.is_empty() || changes == EMPTY_UPDATE {
             return Ok(None);
         }
         self.cdoc.apply_update(changes)?;

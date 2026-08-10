@@ -53,6 +53,24 @@
 //! helpers below are free functions taking `&T: ReadTxn` or `&mut TransactionMut`
 //! rather than methods that reach for a transaction of their own.
 //!
+//! ## The broadcast outbox
+//!
+//! Every committed transaction hands its *own* update to an `observe_update_v1`
+//! subscription, which parks it in [`CollabDoc`]'s outbox for
+//! [`CollabSession::save_incremental`](crate::CollabSession::save_incremental) to drain.
+//! A transaction applying *foreign* bytes is tagged `REMOTE_ORIGIN` and skipped:
+//! those changes are already shared, so re-broadcasting them would echo. Locally
+//! projected writes are therefore exactly the broadcasts.
+//!
+//! Relaying a peer's content onward is the **transport's** job, not the adapter's: a mesh
+//! delivers to everyone directly, and a star hub forwards the raw delta bytes it received.
+//!
+//! The outbox exists because the obvious alternative — diffing against the state vector
+//! of the last broadcast — cannot work here. `encode_diff_v1` writes the *complete*
+//! delete set regardless of the target state vector, so once a document has seen any
+//! deletion every delta re-carries the whole deletion history (growing without bound) and
+//! a "nothing new" diff is no longer empty. A transaction's own update is constant-size.
+//!
 //! ## Scope (design A22)
 //!
 //! Supported: **flat text-blocks + marks** (`paragraph`/`heading`/`code_block` whose own
@@ -65,15 +83,18 @@
 //! `task_list`/`task_item`) and every inline atom (`hard_break`, `image`,
 //! `horizontal_rule`).
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use yrs::types::Attrs as YAttrs;
 use yrs::types::text::YChange;
 use yrs::updates::decoder::Decode;
 use yrs::{
-    Any, Array, ArrayPrelim, ArrayRef, Doc, Map, MapPrelim, MapRef, OffsetKind, Options, Out,
-    ReadTxn, StateVector, Text, TextPrelim, TextRef, Transact, TransactionMut, Update,
+    Any, Array, ArrayPrelim, ArrayRef, Doc, Map, MapPrelim, MapRef, OffsetKind, Options, Origin,
+    Out, ReadTxn, StateVector, Subscription, Text, TextPrelim, TextRef, Transact, TransactionMut,
+    Update,
 };
 
 use rinch_editor_core::{AttrValue, Attrs, Fragment, Mark, Node, Schema};
@@ -85,6 +106,17 @@ const CONTENT: &str = "content";
 const TYPE: &str = "type";
 const ATTRS: &str = "attrs";
 const TEXT: &str = "text";
+
+/// Origin tag for a transaction that applies bytes received from a peer, as opposed to one
+/// that projects a local edit. The update observer skips these: they are already shared,
+/// so putting them in the outbox would echo them back.
+pub(crate) const REMOTE_ORIGIN: &str = "collabRemoteOrigin";
+
+/// Updates produced by locally-projected transactions, waiting to be broadcast. Shared
+/// with the update observer, which is why it is behind `Rc<RefCell<_>>`: without the
+/// `sync` cargo feature yrs asks nothing of the closure but `'static`, and the whole
+/// adapter is single-threaded.
+pub(crate) type Outbox = Rc<RefCell<Vec<Vec<u8>>>>;
 
 /// One coalesced run of a single mark over a block's text (char offsets).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,7 +181,6 @@ fn is_supported_container(type_name: &str) -> bool {
 }
 
 /// A yrs document projecting an editor document.
-#[derive(Debug)]
 pub struct CollabDoc {
     /// The yrs document. `pub(crate)` so [`crate::sync`] can drive the transport.
     pub(crate) doc: Doc,
@@ -157,19 +188,55 @@ pub struct CollabDoc {
     /// type opens its own transaction, so doing it lazily inside a live one would
     /// deadlock.
     pub(crate) content: ArrayRef,
+    /// Updates from locally-projected transactions, awaiting broadcast.
+    pub(crate) outbox: Outbox,
+    /// Keeps the update observer alive — dropping the subscription unsubscribes it, and
+    /// the outbox would silently stop filling.
+    _updates: Subscription,
+}
+
+// `Subscription` is not `Debug`, and neither is the observer closure behind it, so the
+// derive is replaced by a summary of what a reader actually wants to see.
+impl std::fmt::Debug for CollabDoc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CollabDoc")
+            .field("client_id", &self.doc.client_id())
+            .field("blocks", &self.content.len(&self.doc.transact()))
+            .field("pending_updates", &self.outbox.borrow().len())
+            .finish()
+    }
 }
 
 impl CollabDoc {
-    /// A fresh, empty CRDT document.
+    /// A fresh, empty CRDT document with its broadcast outbox wired up, and no root type
+    /// resolved yet.
     ///
     /// **Never `Doc::new()`** — `Options::default()` is [`OffsetKind::Bytes`], which
     /// would make every text index a byte offset and quietly corrupt any block holding
     /// a non-ASCII character.
-    fn empty_doc() -> Doc {
-        Doc::with_options(Options {
+    ///
+    /// The root is deliberately left unresolved: [`CollabDoc::load`] has to inspect what
+    /// arrived *before* declaring a type for it, because declaring one reinterprets
+    /// whatever is there (see the shape guard in `load`).
+    fn blank() -> (Doc, Outbox, Subscription) {
+        let doc = Doc::with_options(Options {
             offset_kind: OffsetKind::Utf16,
             ..Default::default()
-        })
+        });
+        let outbox: Outbox = Rc::new(RefCell::new(Vec::new()));
+        let sink = outbox.clone();
+        let remote = Origin::from(REMOTE_ORIGIN);
+        // yrs does not fire this for a transaction that changed nothing, so the outbox
+        // never collects an empty update and "outbox is empty" really does mean "nothing
+        // to send".
+        let updates = doc
+            .observe_update_v1(move |txn, e| {
+                if txn.origin() != Some(&remote) {
+                    sink.borrow_mut().push(e.update.clone());
+                }
+            })
+            .expect("a freshly built document has no live transaction to conflict with");
+        (doc, outbox, updates)
     }
 
     /// Build a fresh projection from a model document. Fails loud
@@ -182,42 +249,65 @@ impl CollabDoc {
             nodes.push(read_node(doc.child(i))?);
         }
 
-        let ydoc = CollabDoc::empty_doc();
+        let (ydoc, outbox, updates) = CollabDoc::blank();
         let content = ydoc.get_or_insert_array(CONTENT);
+        // A plain local transaction, so the initial projection lands in the outbox and is
+        // broadcast like any other local change. A peer that joined from a snapshot
+        // already has it and applies it as a no-op (updates are idempotent).
         {
             let mut txn = ydoc.transact_mut();
             for (i, node) in nodes.iter().enumerate() {
                 insert_node(&mut txn, &content, i as u32, node)?;
             }
         }
-        Ok(CollabDoc { doc: ydoc, content })
+        Ok(CollabDoc {
+            doc: ydoc,
+            content,
+            outbox,
+            _updates: updates,
+        })
     }
 
     /// Load a projection from a peer's saved CRDT bytes (see [`CollabDoc::save`]).
+    ///
+    /// Fails loud on bytes that decode as a yrs update but are not one of *our*
+    /// projections, rather than silently adopting an empty document and collaborating on
+    /// content no peer shares.
+    ///
+    /// The guard validates **content, not the root's type**, because a root type carries
+    /// no type tag on the wire: a root arriving from a peer reads as `Out::UndefinedRef`
+    /// whatever it really is, and asking for it as an array *reinterprets* whatever is
+    /// there (a foreign `Map` root named `content` then reads as a zero-length array, a
+    /// `Text` root as an array of single characters). So the check is that the array is
+    /// non-empty and that every entry reads back as a projected node — which is strictly
+    /// stronger than the type check this replaced, since a `content` list full of junk
+    /// would have passed that.
     pub fn load(bytes: &[u8]) -> Result<CollabDoc> {
         let update = Update::decode_v1(bytes)?;
-        let doc = CollabDoc::empty_doc();
-        doc.transact_mut().apply_update(update)?;
-        // Fail loud on bytes that are decodable but are not one of *our* snapshots,
-        // instead of silently adopting an empty document and collaborating on content
-        // no peer shares. yrs does not transmit a root type holding nothing, so an
-        // absent `content` root means the update carried no blocks — and a projection of
-        // an editor document always carries at least one, because an editor document
-        // always has at least one block.
-        //
-        // The check runs in its own scope: `get_or_insert_array` opens a transaction of
-        // its own, and a second acquisition while one is live deadlocks.
-        let has_content = {
-            let txn = doc.transact();
-            txn.get_array(CONTENT).is_some()
-        };
-        if !has_content {
-            return Err(CollabError::schema(
-                "these CRDT bytes carry no `content` blocks — not a rinch editor projection",
-            ));
+        let (ydoc, outbox, updates) = CollabDoc::blank();
+        {
+            let mut txn = ydoc.transact_mut_with(Origin::from(REMOTE_ORIGIN));
+            txn.apply_update(update)?;
         }
-        let content = doc.get_or_insert_array(CONTENT);
-        Ok(CollabDoc { doc, content })
+        let content = ydoc.get_or_insert_array(CONTENT);
+        {
+            let txn = ydoc.transact();
+            let n = content.len(&txn);
+            if n == 0 {
+                return Err(CollabError::schema(
+                    "these CRDT bytes carry no `content` blocks — not a rinch editor projection",
+                ));
+            }
+            for i in 0..n {
+                read_node_data(&txn, &content, i)?;
+            }
+        }
+        Ok(CollabDoc {
+            doc: ydoc,
+            content,
+            outbox,
+            _updates: updates,
+        })
     }
 
     /// Save the whole projection (for forking a peer): the complete document state as
@@ -1045,20 +1135,72 @@ mod tests {
         assert!(decode_mark_value(&Any::BigInt(5)).is_err()); // wrong kind
     }
 
+    /// Encode a whole foreign document as an update, for the `load` guard cases.
+    fn foreign_update(build: impl FnOnce(&Doc)) -> Vec<u8> {
+        let (doc, _outbox, _sub) = CollabDoc::blank();
+        build(&doc);
+        doc.transact()
+            .encode_state_as_update_v1(&StateVector::default())
+    }
+
     #[test]
     fn load_fails_loud_on_bytes_that_are_not_a_projection() {
-        // A decodable yrs update that is not one of our snapshots must not be silently
+        // A decodable yrs update that is not one of our projections must not be silently
         // adopted as an empty document — a guest joining on it would then collaborate on
         // content no peer shares, which is the silent-divergence class A22 exists to kill.
-        let foreign = CollabDoc::empty_doc();
-        let other = foreign.get_or_insert_map("something_else");
-        other.insert(&mut foreign.transact_mut(), "k", Any::Bool(true));
-        let bytes = foreign
-            .transact()
-            .encode_state_as_update_v1(&StateVector::default());
+        //
+        // The guard cannot key off the root's *type*: a root arriving from a peer reads as
+        // `UndefinedRef` whatever it is, and asking for it as an array reinterprets
+        // whatever is there. Each case below is a different way that reinterpretation can
+        // succeed, which is why the guard validates the blocks instead.
+
+        // (a) a differently-named root: `content` is absent, so it reinterprets as empty.
+        let elsewhere = foreign_update(|d| {
+            let m = d.get_or_insert_map("something_else");
+            m.insert(&mut d.transact_mut(), "k", Any::Bool(true));
+        });
         assert!(matches!(
-            CollabDoc::load(&bytes).unwrap_err(),
+            CollabDoc::load(&elsewhere).unwrap_err(),
             CollabError::Schema(_)
+        ));
+
+        // (b) a MAP root that happens to be named `content`: reinterprets as a
+        // zero-length array, so a type-blind `get_array(..).is_some()` check would let it
+        // through and `to_doc` would invent a paragraph.
+        let map_root = foreign_update(|d| {
+            let m = d.get_or_insert_map(CONTENT);
+            m.insert(&mut d.transact_mut(), "k", Any::Bool(true));
+        });
+        assert!(matches!(
+            CollabDoc::load(&map_root).unwrap_err(),
+            CollabError::Schema(_)
+        ));
+
+        // (c) a TEXT root named `content`: reinterprets as a *non-empty* array of single
+        // characters, so an emptiness check alone would let it through too.
+        let text_root = foreign_update(|d| {
+            let t = d.get_or_insert_text(CONTENT);
+            t.insert(&mut d.transact_mut(), 0, "hello");
+        });
+        assert!(matches!(
+            CollabDoc::load(&text_root).unwrap_err(),
+            CollabError::Schema(_)
+        ));
+
+        // (d) an array root named `content` holding junk rather than block maps.
+        let junk_array = foreign_update(|d| {
+            let a = d.get_or_insert_array(CONTENT);
+            a.insert(&mut d.transact_mut(), 0, Any::String("junk".into()));
+        });
+        assert!(matches!(
+            CollabDoc::load(&junk_array).unwrap_err(),
+            CollabError::Schema(_)
+        ));
+
+        // Undecodable bytes are an engine error, not a schema one.
+        assert!(matches!(
+            CollabDoc::load(&[0xff, 0xff, 0xff, 0xff]).unwrap_err(),
+            CollabError::Engine(_)
         ));
 
         // A real projection loads and rebuilds identically.
@@ -1070,6 +1212,111 @@ mod tests {
         let cdoc = CollabDoc::from_doc(&doc).unwrap();
         let loaded = CollabDoc::load(&cdoc.save()).unwrap();
         assert_eq!(loaded.to_doc(&s).unwrap(), doc);
+    }
+
+    #[test]
+    fn the_outbox_collects_local_writes_and_skips_applied_bytes() {
+        // The broadcast contract: a locally-projected transaction is a broadcast, an
+        // applied peer update is not (re-broadcasting it would echo).
+        let s = schema();
+        let para = s
+            .branch("paragraph", Fragment::from_node(s.text("hi").unwrap()))
+            .unwrap();
+        let doc = s.branch("doc", Fragment::from_node(para)).unwrap();
+
+        let mut a = CollabDoc::from_doc(&doc).unwrap();
+        assert_eq!(
+            a.outbox.borrow().len(),
+            1,
+            "the initial projection is a local write and is broadcast"
+        );
+
+        let mut b = CollabDoc::load(&a.save()).unwrap();
+        assert!(
+            b.outbox.borrow().is_empty(),
+            "joining from a snapshot must not queue the host's document for re-broadcast"
+        );
+
+        // A local edit on A fills A's outbox; applying it on B leaves B's empty.
+        let edited = {
+            let p = s
+                .branch("paragraph", Fragment::from_node(s.text("hi!").unwrap()))
+                .unwrap();
+            s.branch("doc", Fragment::from_node(p)).unwrap()
+        };
+        a.project_change(&doc, &edited).unwrap();
+        let delta = a.take_outbox().unwrap();
+        assert!(!delta.is_empty(), "a local edit produces a delta");
+        assert!(
+            a.take_outbox().unwrap().is_empty(),
+            "a drained outbox is empty, so a second save sends nothing"
+        );
+
+        b.apply_update(&delta).unwrap();
+        assert!(
+            b.outbox.borrow().is_empty(),
+            "an applied peer delta must not be queued for re-broadcast"
+        );
+    }
+
+    #[test]
+    fn a_broadcast_delta_does_not_regrow_with_deletion_history() {
+        // The regression the outbox exists to prevent. `encode_diff_v1` writes the whole
+        // delete set whatever state vector it is given, so a diff-based delta re-carries
+        // every past deletion on every keystroke and a "nothing new" diff is never empty.
+        // A transaction's own update carries only its own change.
+        let s = schema();
+        let text = |t: &str| {
+            let p = s
+                .branch("paragraph", Fragment::from_node(s.text(t).unwrap()))
+                .unwrap();
+            s.branch("doc", Fragment::from_node(p)).unwrap()
+        };
+
+        let long: String = std::iter::repeat_n("abcdefghij", 20).collect();
+        let start = text(&long);
+        let mut cdoc = CollabDoc::from_doc(&start).unwrap();
+        let _ = cdoc.take_outbox().unwrap(); // drop the initial projection
+
+        // Delete a lot, in many separate transactions, to build up deletion history.
+        let mut current = start;
+        for _ in 0..20 {
+            let shorter: String = current
+                .child(0)
+                .child(0)
+                .text()
+                .unwrap()
+                .chars()
+                .skip(5)
+                .collect();
+            let next = text(&shorter);
+            cdoc.project_change(&current, &next).unwrap();
+            let _ = cdoc.take_outbox().unwrap();
+            current = next;
+        }
+
+        // With history accumulated: nothing new must mean literally nothing.
+        assert!(
+            cdoc.take_outbox().unwrap().is_empty(),
+            "a save with no local edit since the last one must be empty even after deletions"
+        );
+        // And a one-character insert must cost about one character, not the history.
+        let with_char: String =
+            format!("{}Z", current.child(0).child(0).text().unwrap_or_default());
+        let next = text(&with_char);
+        cdoc.project_change(&current, &next).unwrap();
+        let one_char = cdoc.take_outbox().unwrap();
+        let history_diff = cdoc.diff_since(&cdoc.state_vector());
+        assert!(
+            one_char.len() < 40,
+            "a 1-char edit's delta should be small, got {} bytes",
+            one_char.len()
+        );
+        assert!(
+            !history_diff.is_empty(),
+            "precondition: the state-vector diff is NOT empty even with nothing new — \
+             which is exactly why it cannot be the broadcast mechanism"
+        );
     }
 
     #[test]

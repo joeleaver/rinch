@@ -99,12 +99,13 @@ impl EditorCore {
             return;
         }
         match bridge.session.record_local(&prev.doc, &next.doc) {
-            Ok(()) => {
-                let delta = bridge.session.save_incremental();
-                if !delta.is_empty() {
-                    (bridge.outbound)(delta);
-                }
-            }
+            // An empty delta means the projection produced no CRDT change at all, so
+            // there is nothing for peers to apply.
+            Ok(()) => match bridge.session.save_incremental() {
+                Ok(delta) if !delta.is_empty() => (bridge.outbound)(delta),
+                Ok(_) => {}
+                Err(e) => bridge.last_error = Some(e),
+            },
             // Design A22 fail-loud: an edit outside the staged flat-text scope
             // (a table, a nested block) cannot be projected. Surface it rather than
             // silently diverging; apps should keep such edits out of a collab

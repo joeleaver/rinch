@@ -338,7 +338,7 @@ fn incremental_broadcast_converges() {
     };
     a.type_at(6, " more");
     // broadcast delta from A to B
-    let delta = a.session.save_incremental();
+    let delta = a.session.save_incremental().expect("delta encodes");
     if let Some(ns) = b.session.integrate_incremental(&b.state, &delta).unwrap() {
         b.state = ns;
     }
@@ -709,6 +709,87 @@ fn unsupported_block_inside_a_list_item_fails_loud() {
     assert!(
         matches!(err, rinch_editor_collab::CollabError::Unsupported(_)),
         "an unsupported block nested in a list item must fail loud, got {err:?}"
+    );
+}
+
+#[test]
+fn a_delete_only_broadcast_delta_reaches_the_peer() {
+    // The session-layer twin of the handle-level deletion test. A state vector counts
+    // insertions, so a peer that only *deleted* leaves it unchanged — and yrs implements
+    // un-formatting by deleting format markers, so a mark removal is delete-only too.
+    // Any state-vector short-circuit in `save_incremental` or `integrate_incremental`
+    // drops these changes; this pins the broadcast path, where the sibling test pins the
+    // handle wiring and the fuzz suites pin it statistically.
+    let schema = Rc::new(Schema::starter_kit());
+    let (schema, mut a, mut b) = {
+        let _ = &schema;
+        two_peers(vec![para(&schema, "abcdef")])
+    };
+    // Drop whatever the initial projection queued; both peers already share it.
+    let _ = a.session.save_incremental().expect("drain");
+
+    let sv_before = a.session.state_vector();
+    a.local(|tr| {
+        tr.delete(3, 5).unwrap(); // remove "cd"
+    });
+    assert_eq!(
+        a.session.state_vector(),
+        sv_before,
+        "precondition: a delete-only edit leaves the state vector untouched"
+    );
+
+    let delta = a.session.save_incremental().expect("delta encodes");
+    assert!(
+        !delta.is_empty(),
+        "a delete-only edit must still produce something to broadcast"
+    );
+    if let Some(ns) = b
+        .session
+        .integrate_incremental(&b.state, &delta)
+        .expect("b integrates")
+    {
+        b.state = ns;
+    }
+    assert_converged(&a, &b, &schema);
+    assert!(
+        norm(&b.state.doc).contains("abef"),
+        "the deletion reached the peer: {}",
+        norm(&b.state.doc)
+    );
+}
+
+#[test]
+fn integrating_nothing_is_a_no_op_not_an_error() {
+    // `save_incremental` returns an empty Vec when there is nothing to send, and a
+    // reconciliation diff for an up-to-date peer encodes as the two-byte empty update.
+    // Neither decodes as an update, so both must be recognised rather than surfaced as a
+    // spurious decode error — a caller that forwards its own empty delta is not wrong.
+    let schema = Rc::new(Schema::starter_kit());
+    let (_schema, mut a, mut b) = {
+        let _ = &schema;
+        two_peers(vec![para(&schema, "steady")])
+    };
+    let before = norm(&b.state.doc);
+    for nothing in [Vec::new(), vec![0u8, 0u8]] {
+        assert!(
+            b.session
+                .integrate_incremental(&b.state, &nothing)
+                .expect("an empty update is a no-op, not an error")
+                .is_none(),
+            "nothing arrived, so nothing changed"
+        );
+    }
+    assert_eq!(norm(&b.state.doc), before, "the document is untouched");
+    // And an up-to-date peer's own reconciliation answer is exactly that empty update.
+    let self_diff = a
+        .session
+        .sync_diff(&a.session.state_vector())
+        .expect("self diff");
+    assert!(
+        a.session
+            .integrate_incremental(&a.state, &self_diff)
+            .expect("self diff integrates")
+            .is_none()
     );
 }
 

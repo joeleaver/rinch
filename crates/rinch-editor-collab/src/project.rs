@@ -87,8 +87,13 @@ impl CollabDoc {
             read_node(before.child(idx))?;
         }
 
-        // Writes — one transaction for the whole change. Past here only a corrupt-CRDT
-        // read-back can fail, not a content-scope check.
+        // Writes — one transaction for the whole change.
+        //
+        // The all-or-nothing guarantee the pre-pass buys covers the **content-scope**
+        // class only: no out-of-scope node can reach a write. An error raised from here on
+        // — a corrupt-CRDT read-back, a bounds check — still commits whatever this
+        // transaction wrote before it, because yrs has no rollback. Extending the pre-pass
+        // to cover that class too is tracked separately.
         let content = self.content.clone();
         let mut txn = self.doc.transact_mut();
         // Reconcile the overlapping changed blocks in place (keeps identity). A changed

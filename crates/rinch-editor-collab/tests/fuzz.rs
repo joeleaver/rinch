@@ -234,7 +234,7 @@ fn fuzz_trial(seed: u64, peers: usize, rounds: usize) {
                 );
             }
             states[p] = next;
-            let delta = sessions[p].save_incremental();
+            let delta = sessions[p].save_incremental().expect("delta encodes");
             if !delta.is_empty() {
                 queue.push(delta);
             }
