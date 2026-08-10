@@ -8,7 +8,7 @@
 
 use std::rc::Rc;
 
-use rinch_editor_collab::{CollabPlugin, CollabSession, RemoteOp, rebase_steps};
+use rinch_editor_collab::{CollabPlugin, CollabSession, rebase_steps};
 use rinch_editor_core::{
     AttrValue, Attrs, EditorState, Fragment, Mark, Node, Plugin, Pos, Schema, Selection, Slice,
     Step, Transaction, default_plugins,
@@ -115,7 +115,7 @@ fn two_peers(blocks: Vec<Node>) -> (Rc<Schema>, Peer, Peer) {
     let schema = Rc::new(Schema::starter_kit());
     let a_state = EditorState::create(schema.clone(), doc_of(&schema, blocks), plugins());
     let session_a = CollabSession::new(&a_state).expect("session A");
-    let mut a = Peer {
+    let a = Peer {
         state: a_state,
         session: session_a,
     };
@@ -131,35 +131,51 @@ fn two_peers(blocks: Vec<Node>) -> (Rc<Schema>, Peer, Peer) {
     (schema, a, b)
 }
 
-/// Run the full Automerge sync protocol between two peers until convergence.
+/// Reconcile two peers by exchanging **state vectors** and the diffs they imply.
+///
+/// This replaces automerge's stateful sync-message ping-pong: each side says what it has
+/// (`state_vector`), the other answers with exactly what is missing (`sync_diff`), and
+/// that answer is applied through the ordinary `integrate_incremental` entry point —
+/// there is no per-peer protocol state to keep.
+///
+/// The exchange is unconditional: equal state vectors do **not** mean "already
+/// converged", because a state vector records insertions only and the peers may still
+/// differ by a deletion or a mark removal. Settling is therefore detected the honest way
+/// — both sides integrating without a document change — and failure to settle panics
+/// rather than quietly leaving the peers apart.
 fn sync(a: &mut Peer, b: &mut Peer) {
-    use rinch_editor_collab::SyncState;
-    let mut sa = SyncState::new();
-    let mut sb = SyncState::new();
-    for _ in 0..100 {
-        let ma = a.session.generate_sync_message(&mut sa);
-        let mb = b.session.generate_sync_message(&mut sb);
-        let done = ma.is_none() && mb.is_none();
-        if let Some(m) = ma
-            && let Some(ns) = b
-                .session
-                .integrate_sync_message(&b.state, &mut sb, m)
-                .expect("b integrate")
+    for _ in 0..8 {
+        let a_sv = a.session.state_vector();
+        let b_sv = b.session.state_vector();
+        let to_b = a.session.sync_diff(&b_sv).expect("diff for b");
+        let to_a = b.session.sync_diff(&a_sv).expect("diff for a");
+        let b_changed = match b
+            .session
+            .integrate_incremental(&b.state, &to_b)
+            .expect("b integrate")
         {
-            b.state = ns;
-        }
-        if let Some(m) = mb
-            && let Some(ns) = a
-                .session
-                .integrate_sync_message(&a.state, &mut sa, m)
-                .expect("a integrate")
+            Some(ns) => {
+                b.state = ns;
+                true
+            }
+            None => false,
+        };
+        let a_changed = match a
+            .session
+            .integrate_incremental(&a.state, &to_a)
+            .expect("a integrate")
         {
-            a.state = ns;
-        }
-        if done {
-            break;
+            Some(ns) => {
+                a.state = ns;
+                true
+            }
+            None => false,
+        };
+        if !a_changed && !b_changed {
+            return;
         }
     }
+    panic!("the state-vector exchange did not settle");
 }
 
 /// A canonical, mark-order-independent, run-coalesced string form of a flat doc, so
@@ -322,32 +338,12 @@ fn incremental_broadcast_converges() {
     };
     a.type_at(6, " more");
     // broadcast delta from A to B
-    let delta = a.session.save_incremental();
+    let delta = a.session.save_incremental().expect("delta encodes");
     if let Some(ns) = b.session.integrate_incremental(&b.state, &delta).unwrap() {
         b.state = ns;
     }
     assert_converged(&a, &b, &schema);
     assert!(norm(&b.state.doc).contains("start more"));
-}
-
-#[test]
-fn remote_ops_translation_describes_a_remote_insert() {
-    // patches → RemoteOp translation (design: remote patches translated to steps).
-    let schema = Rc::new(Schema::starter_kit());
-    let (_schema, mut a, mut b) = {
-        let s = &schema;
-        two_peers(vec![para(s, "Hello")])
-    };
-    let before = b.session.heads();
-    a.type_at(6, " world"); // " world" at end
-    let delta = a.session.save_incremental();
-    b.session.integrate_incremental(&b.state, &delta).unwrap();
-    let ops = b.session.remote_ops_since(&before).unwrap();
-    assert!(
-        ops.iter()
-            .any(|o| matches!(o, RemoteOp::InsertText { text, .. } if text == " world")),
-        "expected an InsertText op for the remote insert, got {ops:?}"
-    );
 }
 
 #[test]
@@ -714,6 +710,193 @@ fn unsupported_block_inside_a_list_item_fails_loud() {
         matches!(err, rinch_editor_collab::CollabError::Unsupported(_)),
         "an unsupported block nested in a list item must fail loud, got {err:?}"
     );
+}
+
+#[test]
+fn a_delete_only_broadcast_delta_reaches_the_peer() {
+    // The session-layer twin of the handle-level deletion test. A state vector counts
+    // insertions, so a peer that only *deleted* leaves it unchanged — and yrs implements
+    // un-formatting by deleting format markers, so a mark removal is delete-only too.
+    // Any state-vector short-circuit in `save_incremental` or `integrate_incremental`
+    // drops these changes; this pins the broadcast path, where the sibling test pins the
+    // handle wiring and the fuzz suites pin it statistically.
+    let schema = Rc::new(Schema::starter_kit());
+    let (schema, mut a, mut b) = {
+        let _ = &schema;
+        two_peers(vec![para(&schema, "abcdef")])
+    };
+    // Drop whatever the initial projection queued; both peers already share it.
+    let _ = a.session.save_incremental().expect("drain");
+
+    let sv_before = a.session.state_vector();
+    a.local(|tr| {
+        tr.delete(3, 5).unwrap(); // remove "cd"
+    });
+    assert_eq!(
+        a.session.state_vector(),
+        sv_before,
+        "precondition: a delete-only edit leaves the state vector untouched"
+    );
+
+    let delta = a.session.save_incremental().expect("delta encodes");
+    assert!(
+        !delta.is_empty(),
+        "a delete-only edit must still produce something to broadcast"
+    );
+    if let Some(ns) = b
+        .session
+        .integrate_incremental(&b.state, &delta)
+        .expect("b integrates")
+    {
+        b.state = ns;
+    }
+    assert_converged(&a, &b, &schema);
+    assert!(
+        norm(&b.state.doc).contains("abef"),
+        "the deletion reached the peer: {}",
+        norm(&b.state.doc)
+    );
+}
+
+#[test]
+fn integrating_nothing_is_a_no_op_not_an_error() {
+    // `save_incremental` returns an empty Vec when there is nothing to send, and a
+    // reconciliation diff for an up-to-date peer encodes as the two-byte empty update.
+    // Neither decodes as an update, so both must be recognised rather than surfaced as a
+    // spurious decode error — a caller that forwards its own empty delta is not wrong.
+    let schema = Rc::new(Schema::starter_kit());
+    let (_schema, mut a, mut b) = {
+        let _ = &schema;
+        two_peers(vec![para(&schema, "steady")])
+    };
+    let before = norm(&b.state.doc);
+    for nothing in [Vec::new(), vec![0u8, 0u8]] {
+        assert!(
+            b.session
+                .integrate_incremental(&b.state, &nothing)
+                .expect("an empty update is a no-op, not an error")
+                .is_none(),
+            "nothing arrived, so nothing changed"
+        );
+    }
+    assert_eq!(norm(&b.state.doc), before, "the document is untouched");
+    // And an up-to-date peer's own reconciliation answer is exactly that empty update.
+    let self_diff = a
+        .session
+        .sync_diff(&a.session.state_vector())
+        .expect("self diff");
+    assert!(
+        a.session
+            .integrate_incremental(&a.state, &self_diff)
+            .expect("self diff integrates")
+            .is_none()
+    );
+}
+
+// --- astral (non-BMP) offsets --------------------------------------------------
+//
+// The model indexes **chars** (Unicode scalars); yrs indexes **UTF-16 code units**. Every
+// index crossing into a block's text is converted, and getting it wrong is *silent*: yrs
+// snaps an index landing mid surrogate pair to the nearest boundary instead of erroring.
+// So each test below uses **two** astral characters — with only one, a conversion that
+// simply passes the char offset through still lands on a legal boundary and the test
+// would pass while the arithmetic was wrong.
+
+#[test]
+fn projection_round_trips_marks_across_astral_pairs() {
+    let schema = Rc::new(Schema::starter_kit());
+    let bold = Mark::simple(schema.mark_type("bold").unwrap().clone());
+
+    // chars 0:'a' 1:'🐱' 2:'b' 3:'🐶' 4:'c' — UTF-16 units 0..7, so a mark over chars
+    // 1..4 is UTF-16 1..6.
+    let spanning = schema
+        .create_node(
+            "paragraph",
+            Default::default(),
+            Fragment::from_children(vec![
+                schema.text("a").unwrap(),
+                schema.text_with_marks("🐱b🐶", vec![bold.clone()]).unwrap(),
+                schema.text("c").unwrap(),
+            ]),
+        )
+        .unwrap();
+
+    // The sharper case: mark ONLY the second astral char (chars 1..2 of "🐱🐶", i.e.
+    // UTF-16 2..4). Passing the char offsets straight through would ask for UTF-16 1..2,
+    // land inside the first surrogate pair, and get snapped onto the *first* cat — the
+    // round-trip would then come back with the wrong character marked.
+    let second_only = schema
+        .create_node(
+            "paragraph",
+            Default::default(),
+            Fragment::from_children(vec![
+                schema.text("🐱").unwrap(),
+                schema.text_with_marks("🐶", vec![bold]).unwrap(),
+            ]),
+        )
+        .unwrap();
+
+    let doc = doc_of(&schema, vec![spanning, second_only]);
+    let cdoc = rinch_editor_collab::CollabDoc::from_doc(&doc).unwrap();
+    let back = cdoc.to_doc(&schema).unwrap();
+    assert_eq!(norm(&doc), norm(&back));
+    assert_eq!(doc, back, "astral marks must round-trip byte-for-byte");
+}
+
+#[test]
+fn astral_inserts_and_deletes_keep_model_and_projection_in_step() {
+    let schema = Rc::new(Schema::starter_kit());
+    let (schema, mut a, _b) = {
+        let _ = &schema;
+        two_peers(vec![para(&schema, "🐱🐶")])
+    };
+    // Char positions: 1 = before 🐱, 2 = between the two, 3 = after 🐶.
+    let check = |a: &Peer, want: &str| {
+        let projected = a.session.projected_doc(&schema).unwrap();
+        assert_eq!(
+            norm(&a.state.doc),
+            norm(&projected),
+            "model ≡ project(model) across astral text"
+        );
+        assert!(
+            norm(&projected).contains(want),
+            "expected {want:?} in {}",
+            norm(&projected)
+        );
+    };
+
+    a.type_at(2, "X"); // insert *between* two surrogate pairs
+    check(&a, "🐱X🐶");
+    a.type_at(4, "🐭"); // insert an astral char after 🐶
+    check(&a, "🐱X🐶🐭");
+    a.local(|tr| {
+        tr.delete(1, 2).unwrap();
+    }); // delete the leading astral char
+    check(&a, "X🐶🐭");
+    a.bold(2, 4); // mark the two remaining astral chars
+    check(&a, "🐶🐭");
+    assert!(
+        norm(&a.state.doc).contains("bold["),
+        "the astral mark landed: {}",
+        norm(&a.state.doc)
+    );
+}
+
+#[test]
+fn concurrent_edits_around_astral_pairs_converge() {
+    let schema = Rc::new(Schema::starter_kit());
+    let (schema, mut a, mut b) = {
+        let _ = &schema;
+        two_peers(vec![para(&schema, "🐱🐶")])
+    };
+    a.type_at(2, "A"); // A types between the two surrogate pairs
+    b.bold(1, 3); // B marks both astral chars
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    let t = norm(&a.session.projected_doc(&schema).unwrap());
+    assert!(t.contains('A'), "insert survived: {t}");
+    assert!(t.contains("bold["), "astral mark survived: {t}");
+    assert!(t.contains('🐱') && t.contains('🐶'), "text intact: {t}");
 }
 
 fn all_text(node: &Node) -> String {

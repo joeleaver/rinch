@@ -59,8 +59,8 @@ rinch-editor-core = { workspace = true, optional = true }
 # component, the registry, the caret-blink clock) — shared with the web editor
 # (rinch-web). This crate's `editor` module re-exports it and adds the desktop-only
 # pieces (Parley block virtualization, AccessKit a11y, the winit caret-blink driver).
-# `collaboration` forwards to this crate, which holds the only first-party automerge
-# link — so default builds (desktop AND web) link zero automerge.
+# `collaboration` forwards to this crate, which holds the only first-party CRDT link
+# — so default builds (desktop AND web) link zero CRDT code.
 rinch-editor-view = { workspace = true, optional = true }
 rinch-video = { workspace = true, optional = true }
 # HTTP client for the network image loader (image-network). Standalone, opt-in:
@@ -178,12 +178,11 @@ image-network = ["dep:rinch-http"]
 a11y = ["desktop", "rinch-editor-core/a11y", "dep:accesskit", "dep:accesskit_unix"]
 # Derive serde on the editor's durable wire shape (DocNode / BlockData).
 serde = ["rinch-editor-core/serde"]
-# Collaborative editing (M9): the Step↔Automerge adapter, wired into `EditorHandle`
-# inside rinch-editor-view. The ONLY thing in the workspace that links automerge —
+# Collaborative editing (M9): the Step↔CRDT adapter (yrs), wired into `EditorHandle`
+# inside rinch-editor-view. The ONLY thing in the workspace that links a CRDT engine —
 # opt-in, so it stays out of every default build (desktop AND web). Implies `desktop`
 # (the editor wiring is a desktop feature); forwards to the shared view crate, which is
-# wasm-compatible, so the web view reuses the SAME adapter (the web app supplies a wasm
-# randomness source for automerge→uuid).
+# wasm-compatible with no shims, so the web view reuses the SAME adapter.
 collaboration = ["desktop", "rinch-editor-view/collaboration"]
 
 # Probe app for the ignored e2e test tests/debug_event_latency.rs (issue #153).

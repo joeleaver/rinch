@@ -1,5 +1,5 @@
 //! Live collaborative editing demo (M9). Two **independent** `EditorHandle`s share
-//! one document through the `rinch-editor-collab` Step↔Automerge adapter.
+//! one document through the `rinch-editor-collab` Step↔CRDT (yrs) adapter.
 //!
 //! There is no network here — the two editors are wired into a synchronous,
 //! in-process **loopback**: each side's outbound delta is delivered straight to the
@@ -35,7 +35,7 @@ fn app() -> NodeHandle {
                 h2 { style: "margin: 0 0 4px; color: #1f2328;", "Collaborative editing" }
                 p {
                     style: "margin: 0; color: #57606a; font-size: 14px;",
-                    "Two independent editors sharing one Automerge CRDT. Click into either pane and type — the edit converges in the other."
+                    "Two independent editors sharing one yrs CRDT. Click into either pane and type — the edit converges in the other."
                 }
             }
             div {

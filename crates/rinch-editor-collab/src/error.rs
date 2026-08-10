@@ -13,9 +13,10 @@ use thiserror::Error;
 /// Why a collab projection / sync step failed.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum CollabError {
-    /// An underlying automerge operation failed (I/O, decode, sync-protocol error).
-    #[error("automerge error: {0}")]
-    Automerge(String),
+    /// An underlying CRDT-engine operation failed (decoding an update or a state
+    /// vector, integrating an update).
+    #[error("crdt engine error: {0}")]
+    Engine(String),
 
     /// The model shape is outside the staged first-milestone scope (nested blocks,
     /// inline atoms, deep nesting). **Fail-loud, never a silent drop** (design A22).
@@ -40,9 +41,15 @@ impl CollabError {
     }
 }
 
-impl From<automerge::AutomergeError> for CollabError {
-    fn from(e: automerge::AutomergeError) -> CollabError {
-        CollabError::Automerge(e.to_string())
+impl From<yrs::encoding::read::Error> for CollabError {
+    fn from(e: yrs::encoding::read::Error) -> CollabError {
+        CollabError::Engine(format!("decode failed: {e}"))
+    }
+}
+
+impl From<yrs::error::UpdateError> for CollabError {
+    fn from(e: yrs::error::UpdateError) -> CollabError {
+        CollabError::Engine(format!("update failed: {e}"))
     }
 }
 

@@ -128,11 +128,12 @@ jobs:
   # was never linted. Two real lints and a batch of `unexpected_cfgs` warnings hid
   # there; a green clippy meant less than it looked.
   #
-  # Per-crate, not `--workspace`: a workspace-wide wasm build pulls
-  # rinch-editor-collab -> automerge -> uuid -> getrandom, which refuses to build
-  # for wasm32 unless a *consuming app* enables its `js` feature. That layering is
-  # deliberate (see the collaboration notes in CLAUDE.md), so the crates that are
-  # meant to stand alone on wasm are listed explicitly instead.
+  # Per-crate, not `--workspace`: the workspace still contains crates that only make
+  # sense natively (rinch-dom, the shell, the debug server), so the crates that are
+  # meant to stand alone on wasm are listed explicitly. rinch-editor-collab is one of
+  # them since #190 — under automerge it could not be listed here at all, because
+  # automerge -> uuid -> getrandom refused to build for wasm32 unless a *consuming app*
+  # turned on a randomness feature. yrs needs no such shim.
   clippy-wasm:
     runs-on: ubuntu-latest
     steps:
@@ -157,8 +158,8 @@ jobs:
 
       - name: Run clippy (wasm32)
         run: |
-          for crate in rinch-core rinch-editor-core rinch-editor-view \
-                       rinch-http rinch-ws rinch-web; do
+          for crate in rinch-core rinch-editor-core rinch-editor-collab \
+                       rinch-editor-view rinch-http rinch-ws rinch-web; do
             echo "::group::clippy $crate (wasm32)"
             cargo clippy -p "$crate" --target wasm32-unknown-unknown \
               --all-targets -- -D warnings

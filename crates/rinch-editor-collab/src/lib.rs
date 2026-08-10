@@ -1,22 +1,22 @@
 //! # rinch-editor-collab
 //!
 //! Optional, **opt-in** collaborative-editing adapter for the Rinch editor, and the
-//! **only** first-party home of `automerge` in the workspace (design §2/§8). Gated
-//! behind the facade's `collaboration` feature so default builds — desktop *and* web —
-//! link zero automerge. The crate itself is pure model↔CRDT logic with no platform
-//! deps and is **wasm-compatible** (a wasm app just supplies a randomness source for
-//! the transitive `automerge → uuid`), so a future Rust web editor view can reuse this
-//! *same* adapter rather than bridging to a separate JS CRDT.
+//! **only** first-party home of a CRDT engine — [`yrs`] (Yjs) — in the workspace
+//! (design §2/§8, issue #190). Gated behind the facade's `collaboration` feature so
+//! default builds — desktop *and* web — link zero CRDT code. The crate itself is pure
+//! model↔CRDT logic with no platform deps and is **wasm-compatible with no shims**, so
+//! a Rust web editor view can reuse this *same* adapter rather than bridging to a
+//! separate JS CRDT.
 //!
-//! Automerge is *not* the document model — `rinch-editor-core` is. This crate projects
-//! that pure model onto an Automerge CRDT so concurrent edits converge, and translates
-//! remote CRDT changes back into editor [`Step`](rinch_editor_core::Step)s. The whole
-//! design rests on one invariant:
+//! The CRDT is *not* the document model — `rinch-editor-core` is. This crate projects
+//! that pure model onto a yrs CRDT so concurrent edits converge, and rebuilds remote
+//! CRDT changes back into editor [`Step`](rinch_editor_core::Step)s. The whole design
+//! rests on one invariant:
 //!
 //! > **`model ≡ project(model)`** — every local step is projected onto the CRDT
 //! > ([`CollabDoc::project_change`]); every remote CRDT change is rebuilt into the model
-//! > ([`CollabSession::integrate_incremental`]). Convergence then follows from
-//! > Automerge's own convergence.
+//! > ([`CollabSession::integrate_incremental`]). Convergence then follows from yrs's own
+//! > convergence.
 //!
 //! ## Staged scope (design A22)
 //!
@@ -39,9 +39,9 @@
 //! let state = EditorState::create(schema.clone(), doc, default_plugins());
 //!
 //! // Peer A starts a session and shares a snapshot.
-//! let mut a = CollabSession::new(&state).unwrap();
-//! let mut b = CollabSession::from_bytes(&a.snapshot()).unwrap();
-//! # let _ = (&mut a, &mut b, &state);
+//! let a = CollabSession::new(&state).unwrap();
+//! let b = CollabSession::from_bytes(&a.snapshot()).unwrap();
+//! # let _ = (&a, &b, &state);
 //! ```
 
 pub mod error;
@@ -56,10 +56,24 @@ pub mod sync;
 // here as an inherent-impl module.
 mod project;
 
+/// `CollabSession` and `CollabDoc` must stay **`Send`**: a server holds a session across
+/// an `.await`, so losing the bound breaks downstream consumers at their next upgrade —
+/// as a compile error in *their* tree, which is the worst place to find out.
+///
+/// It has been lost once already. Moving the broadcast delta to an observer-fed outbox
+/// (#190) introduced both an `Rc<RefCell<_>>` queue and yrs's `Subscription`, which is
+/// only `Send` with yrs's `sync` feature. Hence the queue is an `Arc<Mutex<_>>` and that
+/// feature is on — and hence this assertion, which stops the crate compiling if either
+/// ever regresses.
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<CollabDoc>();
+    assert_send::<CollabSession>();
+};
+
 pub use error::{CollabError, Result};
 pub use plugin::{COLLAB_KEY, CollabPlugin, CollabState};
 pub use projection::CollabDoc;
 pub use rebase::rebase_steps;
-pub use remote::{ORIGIN_REMOTE, RemoteOp, build_remote_transaction};
+pub use remote::{ORIGIN_REMOTE, build_remote_transaction};
 pub use session::CollabSession;
-pub use sync::{ChangeHash, SyncMessage, SyncState};

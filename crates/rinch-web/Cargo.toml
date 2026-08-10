@@ -24,7 +24,7 @@ rinch-editor-core = { workspace = true }
 # The renderer-agnostic rich-text editor (RinchDomEditorView/EditorHandle/Editor),
 # shared with the desktop editor. It projects onto WebDocument's DomDocument impl, so
 # the browser editor is the *same* model-first view — no contentEditable. Default
-# features only (collaboration is opt-in and links automerge; off here).
+# features only (collaboration is opt-in and links a CRDT engine; off here).
 rinch-editor-view = { workspace = true }
 
 # WASM bindings
@@ -58,8 +58,8 @@ wasm-bindgen-test = "0.3"
 
 [features]
 # Collaborative editing (M9): forwards to the editor view's collab adapter, which
-# is the only thing that links Automerge. Off by default, so a default web build
-# links zero automerge. A wasm app enabling this must also supply a randomness
-# source for the transitive automerge → uuid → getrandom (the getrandom 0.3
-# `wasm_js` backend) — see `examples/collab-editor-web`.
+# is the only thing that links a CRDT engine (yrs). Off by default, so a default web
+# build links zero CRDT code. Nothing else is required of a wasm app enabling it: yrs
+# carries `fastrand/js` itself and builds for wasm32 with no feature shims — see
+# `examples/collab-editor-web`.
 collaboration = ["rinch-editor-view/collaboration"]

@@ -8,8 +8,8 @@ description = "Renderer-agnostic rich-text editor view for Rinch: projects the p
 [dependencies]
 rinch-core = { workspace = true }
 rinch-editor-core = { workspace = true }
-# The Step↔Automerge collaboration adapter — opt-in, so default (desktop AND web)
-# builds link zero automerge. Enabled by the desktop `rinch`/`rinch-web` facades
+# The Step↔CRDT collaboration adapter (yrs) — opt-in, so default (desktop AND web)
+# builds link zero CRDT code. Enabled by the desktop `rinch`/`rinch-web` facades
 # only when their own `collaboration` feature is on.
 rinch-editor-collab = { workspace = true, optional = true }
 
