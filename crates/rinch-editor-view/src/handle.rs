@@ -887,7 +887,7 @@ impl EditorHandle {
         outbound: impl Fn(Vec<u8>) + 'static,
     ) -> Result<Vec<u8>, CollabError> {
         let mut core = self.inner.borrow_mut();
-        let mut session = CollabSession::new(&core.state)?;
+        let session = CollabSession::new(&core.state)?;
         let snapshot = session.snapshot();
         core.collab = Some(CollabBridge::new(session, Box::new(outbound)));
         Ok(snapshot)
@@ -973,97 +973,60 @@ impl EditorHandle {
     /// peer: hand it to a new guest's [`Self::start_collaboration_guest`] so they
     /// adopt the current content (not just the host's original document). `None`
     /// when this editor isn't collaborating. Assumes a reliable, ordered delta
-    /// transport between existing peers; for lossy / out-of-order reconciliation use
-    /// the sync protocol ([`Self::collab_generate_sync_message`] /
-    /// [`Self::collab_receive_sync_message`]) instead.
+    /// transport between existing peers; for lossy / out-of-order reconciliation
+    /// exchange state vectors instead ([`Self::collab_state_vector`] /
+    /// [`Self::collab_sync_diff`]).
     pub fn collab_snapshot(&self) -> Option<Vec<u8>> {
         self.inner
-            .borrow_mut()
+            .borrow()
             .collab
-            .as_mut()
+            .as_ref()
             .map(|b| b.session.snapshot())
     }
 
-    /// Generate the next Automerge **sync-protocol** message for the peer tracked by
-    /// `sync_state`, or `None` when that peer is up to date (or this editor isn't
-    /// collaborating).
+    /// This editor's CRDT **state vector**: the opaque summary of what it has seen, to
+    /// hand a peer so the peer can answer with [`Self::collab_sync_diff`]. `None` when
+    /// this editor isn't collaborating.
     ///
-    /// This is the state-negotiating alternative to the incremental-delta broadcast
-    /// (`outbound` + [`Self::collab_receive`]). Prefer it when the transport is not a
-    /// reliable ordered stream — an HTTP poll, a reconnecting socket, a peer that was
-    /// offline — because it reconciles from each side's actual heads instead of
-    /// assuming every delta arrived exactly once.
+    /// Together with `collab_sync_diff` this is the reconciliation path, for transports
+    /// where the delta broadcast (`outbound` + [`Self::collab_receive`]) cannot be
+    /// trusted to deliver every message exactly once: an HTTP poll, a reconnecting
+    /// socket, a peer that was offline. A client sends its state vector, the server
+    /// replies with the diff plus its own state vector, the client applies that and
+    /// answers with the diff the server is missing — one round trip per direction, with
+    /// no per-peer protocol state to keep on either side.
     ///
-    /// The caller owns the [`SyncState`], one per peer. Generating a message mutates
-    /// protocol bookkeeping only; the document is untouched, so nothing needs saving
-    /// as a result of this call.
+    /// **Not a convergence test.** A state vector summarises *insertions*; deletions
+    /// (and mark removals, which the engine implements by deleting format markers) do
+    /// not appear in it, so two editors can hold different documents behind equal state
+    /// vectors. Its job is to *request* a diff — and the diff it gets back always
+    /// carries the deletions in full.
     ///
-    /// Uses `try_borrow_mut` and yields `None` if the handle is already borrowed, for
-    /// the same reason [`Self::collab_receive`] does.
-    pub fn collab_generate_sync_message(
-        &self,
-        sync_state: &mut rinch_editor_collab::SyncState,
-    ) -> Option<rinch_editor_collab::SyncMessage> {
+    /// Uses `try_borrow` and yields `None` if the handle is already borrowed, for the
+    /// same reason [`Self::collab_receive`] does.
+    pub fn collab_state_vector(&self) -> Option<Vec<u8>> {
+        let core = self.inner.try_borrow().ok()?;
+        core.collab.as_ref().map(|b| b.session.state_vector())
+    }
+
+    /// The update a peer whose state vector is `remote_state_vector` is missing — feed
+    /// it to that peer's [`Self::collab_receive`]. `None` when this editor isn't
+    /// collaborating, or when the bytes are not a decodable state vector (the error is
+    /// recorded and readable via [`Self::collab_take_error`]).
+    ///
+    /// This is a pure read of the CRDT: it broadcasts nothing and leaves both the
+    /// document and the broadcast watermark untouched, so a caller may answer any number
+    /// of peers without disturbing the live delta stream.
+    pub fn collab_sync_diff(&self, remote_state_vector: &[u8]) -> Option<Vec<u8>> {
         let mut core = self.inner.try_borrow_mut().ok()?;
-        core.collab
-            .as_mut()?
-            .session
-            .generate_sync_message(sync_state)
-    }
-
-    /// Integrate a peer's Automerge **sync-protocol** message: merge it into the CRDT,
-    /// rebuild the model from the *converged* CRDT, and re-project the view. Like
-    /// [`Self::collab_receive`], the change lands as a non-undoable, remote-origin
-    /// transaction and is **not** re-broadcast. Returns whether the document changed
-    /// (a message that only advances protocol state returns `false`).
-    ///
-    /// Must run on the main thread. A projection failure is recorded and readable via
-    /// [`Self::collab_take_error`].
-    pub fn collab_receive_sync_message(
-        &self,
-        sync_state: &mut rinch_editor_collab::SyncState,
-        message: rinch_editor_collab::SyncMessage,
-    ) -> bool {
-        let Ok(mut core) = self.inner.try_borrow_mut() else {
-            return false;
-        };
-        if core.collab.is_none() {
-            return false;
-        }
-        let prev = core.state.clone();
-        let result = core
-            .collab
-            .as_mut()
-            .unwrap()
-            .session
-            .integrate_sync_message(&prev, sync_state, message);
-        match result {
-            Ok(Some(next)) => {
-                core.state = next.clone();
-                if let Some(view) = core.view.as_mut() {
-                    view.update_dom(&prev, &next);
-                }
-                true
-            }
-            Ok(None) => false,
+        let bridge = core.collab.as_mut()?;
+        match bridge.session.sync_diff(remote_state_vector) {
+            Ok(diff) => Some(diff),
             Err(e) => {
-                if let Some(bridge) = core.collab.as_mut() {
-                    bridge.last_error = Some(e);
-                }
-                false
+                bridge.last_error = Some(e);
+                None
             }
         }
-    }
-
-    /// The CRDT's current heads (its change frontier), or `None` when this editor
-    /// isn't collaborating. Useful for persisting "what this peer had" alongside a
-    /// snapshot, and for diffing against a later frontier.
-    pub fn collab_heads(&self) -> Option<Vec<rinch_editor_collab::ChangeHash>> {
-        self.inner
-            .borrow_mut()
-            .collab
-            .as_mut()
-            .map(|b| b.session.heads())
     }
 
     /// Detach the collaboration session (stop projecting and broadcasting). The
@@ -2008,7 +1971,7 @@ mod tests {
                 host.collab_receive(&d);
             }
 
-            // Automerge convergence: identical documents on both peers.
+            // CRDT convergence: identical documents on both peers.
             let h = doc_text(&host);
             let g = doc_text(&guest);
             assert_eq!(h, g, "concurrent edits converge to one document");
@@ -2018,26 +1981,25 @@ mod tests {
             );
         }
 
-        /// Run the Automerge sync protocol between two handles until both go quiet,
-        /// each side keeping its own [`SyncState`] — the shape a networked caller uses.
+        /// Reconcile two handles by exchanging state vectors and the diffs they imply —
+        /// the shape a networked caller uses when it cannot trust delta delivery.
+        ///
+        /// The exchange is unconditional in both directions: equal state vectors would
+        /// not prove convergence (they summarise insertions only), so settling is
+        /// detected by both sides integrating without a document change.
         fn sync_until_quiet(a: &EditorHandle, b: &EditorHandle) {
-            use rinch_editor_collab::SyncState;
-            let mut a_state = SyncState::new();
-            let mut b_state = SyncState::new();
             for _ in 0..20 {
-                let a_to_b = a.collab_generate_sync_message(&mut a_state);
-                if let Some(m) = a_to_b.clone() {
-                    b.collab_receive_sync_message(&mut b_state, m);
-                }
-                let b_to_a = b.collab_generate_sync_message(&mut b_state);
-                if let Some(m) = b_to_a.clone() {
-                    a.collab_receive_sync_message(&mut a_state, m);
-                }
-                if a_to_b.is_none() && b_to_a.is_none() {
+                let a_sv = a.collab_state_vector().expect("a is collaborating");
+                let b_sv = b.collab_state_vector().expect("b is collaborating");
+                let to_b = a.collab_sync_diff(&b_sv).expect("diff for b");
+                let to_a = b.collab_sync_diff(&a_sv).expect("diff for a");
+                let b_changed = b.collab_receive(&to_b);
+                let a_changed = a.collab_receive(&to_a);
+                if !a_changed && !b_changed {
                     return;
                 }
             }
-            panic!("sync protocol did not settle");
+            panic!("the state-vector exchange did not settle");
         }
 
         #[test]
@@ -2046,9 +2008,9 @@ mod tests {
             let host = mount(doc_node(&s, vec![para(&s, "hello")])).handle;
             let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
 
-            // Deltas go nowhere: this models the transport the sync protocol exists
-            // for — an HTTP poll, a dropped socket, a peer that was offline. The
-            // broadcast path alone would leave these two permanently diverged.
+            // Deltas go nowhere: this models the transport reconciliation exists for —
+            // an HTTP poll, a dropped socket, a peer that was offline. The broadcast
+            // path alone would leave these two permanently diverged.
             let snapshot = host.start_collaboration_host(|_d| {}).unwrap();
             guest.start_collaboration_guest(&snapshot, |_d| {}).unwrap();
 
@@ -2065,38 +2027,36 @@ mod tests {
             sync_until_quiet(&host, &guest);
 
             let h = doc_text(&host);
-            assert_eq!(h, doc_text(&guest), "the sync protocol converged the peers");
+            assert_eq!(h, doc_text(&guest), "reconciliation converged the peers");
             assert!(
                 h.contains("world") && h.contains('G'),
                 "both offline edits survived: {h}"
             );
             assert_eq!(
-                host.collab_heads(),
-                guest.collab_heads(),
-                "converged peers share one change frontier"
+                host.collab_state_vector(),
+                guest.collab_state_vector(),
+                "converged peers have seen the same changes"
             );
         }
 
         #[test]
         fn sync_methods_are_inert_without_a_session() {
-            use rinch_editor_collab::SyncState;
             let s = schema();
             let solo = mount(doc_node(&s, vec![para(&s, "local only")])).handle;
-            let mut state = SyncState::new();
-            assert!(solo.collab_generate_sync_message(&mut state).is_none());
-            assert!(solo.collab_heads().is_none());
+            assert!(solo.collab_state_vector().is_none());
+            assert!(solo.collab_sync_diff(&[0]).is_none());
             assert_eq!(doc_text(&solo), "local only", "the document is untouched");
         }
 
         #[test]
-        fn integrating_a_sync_message_does_not_echo() {
+        fn integrating_a_reconciliation_diff_does_not_echo() {
             let s = schema();
             let host = mount(doc_node(&s, vec![para(&s, "ab")])).handle;
             let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
 
             let snapshot = host.start_collaboration_host(|_d| {}).unwrap();
-            // A sync-integrated change must not fire the broadcast sink either — a
-            // caller running both transports would otherwise loop.
+            // A change that arrives by reconciliation must not fire the broadcast sink
+            // either — a caller running both paths would otherwise loop.
             let guest_emits = Rc::new(Cell::new(0usize));
             let ge = guest_emits.clone();
             guest
@@ -2111,8 +2071,40 @@ mod tests {
             assert_eq!(
                 guest_emits.get(),
                 0,
-                "integrating a sync message must not broadcast a delta back"
+                "integrating a reconciliation diff must not broadcast a delta back"
             );
+        }
+
+        #[test]
+        fn reconciliation_carries_a_deletion_that_the_state_vector_cannot_express() {
+            // A state vector counts insertions, so a peer that only *deleted* leaves it
+            // unchanged. If any part of the path short-circuits on state-vector equality
+            // the deletion is silently lost — which is exactly the class of bug the fuzz
+            // suites caught during the engine swap, so it is pinned here at the handle
+            // level too.
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "abcdef")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+
+            let snapshot = host.start_collaboration_host(|_d| {}).unwrap();
+            guest.start_collaboration_guest(&snapshot, |_d| {}).unwrap();
+            assert_eq!(doc_text(&guest), "abcdef", "guest joined on the host's doc");
+
+            let sv_before = host.collab_state_vector().unwrap();
+            host.update(|st| {
+                let mut tr = st.tr();
+                tr.delete(3, 5).ok()?; // drop "cd"
+                Some(tr)
+            });
+            assert_eq!(doc_text(&host), "abef", "the host really deleted");
+            assert_eq!(
+                host.collab_state_vector().unwrap(),
+                sv_before,
+                "precondition: a delete-only change leaves the state vector untouched"
+            );
+
+            sync_until_quiet(&host, &guest);
+            assert_eq!(doc_text(&guest), "abef", "the deletion reached the guest");
         }
 
         #[test]

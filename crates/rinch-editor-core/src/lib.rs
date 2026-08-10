@@ -5,7 +5,7 @@
 //! This crate is the single authoritative home of the editor's *document model*,
 //! *transform/step engine*, *schema*, *state*, *commands*, and *history*. It has
 //! **zero** dependency on `rinch-dom`, `winit`, `web_sys`, `parley`, `taffy`,
-//! `vello`, or `automerge`, and compiles cleanly to `wasm32`. Rendering and input
+//! `vello`, or a CRDT engine, and compiles cleanly to `wasm32`. Rendering and input
 //! live behind a `View` seam implemented by platform crates (desktop: `rinch`;
 //! web: `rinch-web`); collaboration is an optional, feature-gated adapter in
 //! `rinch-editor-collab`.

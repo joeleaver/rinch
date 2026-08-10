@@ -1,9 +1,9 @@
 //! Web collaborative rich-text editor demo for `rinch-web`.
 //!
 //! Two independent [`EditorHandle`]s share one document through the **same**
-//! `rinch-editor-collab` Step↔Automerge adapter the desktop uses — now running in the
-//! browser (Automerge compiled to wasm; randomness via the Web Crypto API, wired in
-//! `Cargo.toml` + `.cargo/config.toml`). The default web build links zero automerge;
+//! `rinch-editor-collab` Step↔CRDT adapter the desktop uses — now running in the
+//! browser (yrs compiled to wasm, with no randomness shim to wire up: it carries
+//! `fastrand/js` itself). The default web build links zero CRDT code;
 //! it is pulled in only by `rinch-web`'s `collaboration` feature.
 //!
 //! There is no network here — the two editors are wired into a synchronous, in-process
@@ -44,7 +44,7 @@ fn app() -> NodeHandle {
                 p {
                     id: "subtitle",
                     style: "margin: 0; color: #57606a; font-size: 14px;",
-                    "Two editors sharing one Automerge CRDT in the browser — the same adapter desktop uses. Click into either pane and type; the edit converges in the other."
+                    "Two editors sharing one yrs CRDT in the browser — the same adapter desktop uses. Click into either pane and type; the edit converges in the other."
                 }
             }
             div {

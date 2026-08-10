@@ -28,7 +28,7 @@ web-sys = { version = "0.3", features = [
 
 # Native-only test deps. Deliberately just `tempfile`: a key/blob store persists
 # opaque bytes, so its tests must not depend on any particular consumer's payload
-# format. (`rinch-editor-collab` is the workspace's only automerge link.)
+# format. (`rinch-editor-collab` is the workspace's only CRDT-engine link.)
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tempfile = "3"
 

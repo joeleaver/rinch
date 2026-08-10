@@ -66,11 +66,9 @@ pub use rinch_editor_view::{Editor, EditorHandle, create_editor};
 // (that is the desktop runtime's off-thread marshaller).
 #[cfg(feature = "collaboration")]
 pub use rinch_editor_view::{CollabError, collab_receive_for};
-// The Automerge sync-protocol types, for a caller driving
-// `EditorHandle::collab_generate_sync_message` / `collab_receive_sync_message` (the
-// reconciling alternative to delta broadcast, for poll/reconnect transports).
-#[cfg(feature = "collaboration")]
-pub use rinch_editor_view::{ChangeHash, SyncMessage, SyncState};
+// Reconciliation for poll/reconnect transports (`EditorHandle::collab_state_vector` /
+// `collab_sync_diff`) needs no extra imports: state vectors and diffs are opaque
+// `Vec<u8>`, and a diff is applied through the same `collab_receive` as a delta.
 
 // ============================================================================
 // Mounted-root registry + per-page guards

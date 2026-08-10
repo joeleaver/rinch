@@ -734,9 +734,7 @@ fn projection_round_trips_marks_across_astral_pairs() {
             Default::default(),
             Fragment::from_children(vec![
                 schema.text("a").unwrap(),
-                schema
-                    .text_with_marks("🐱b🐶", vec![bold.clone()])
-                    .unwrap(),
+                schema.text_with_marks("🐱b🐶", vec![bold.clone()]).unwrap(),
                 schema.text("c").unwrap(),
             ]),
         )

@@ -190,20 +190,33 @@ impl CollabDoc {
                 insert_node(&mut txn, &content, i as u32, node)?;
             }
         }
-        Ok(CollabDoc {
-            doc: ydoc,
-            content,
-        })
+        Ok(CollabDoc { doc: ydoc, content })
     }
 
     /// Load a projection from a peer's saved CRDT bytes (see [`CollabDoc::save`]).
     pub fn load(bytes: &[u8]) -> Result<CollabDoc> {
         let update = Update::decode_v1(bytes)?;
         let doc = CollabDoc::empty_doc();
-        // The root handle is resolved before the update is applied — a named root type
-        // is identified by name, so the incoming blocks land in this very array.
-        let content = doc.get_or_insert_array(CONTENT);
         doc.transact_mut().apply_update(update)?;
+        // Fail loud on bytes that are decodable but are not one of *our* snapshots,
+        // instead of silently adopting an empty document and collaborating on content
+        // no peer shares. yrs does not transmit a root type holding nothing, so an
+        // absent `content` root means the update carried no blocks — and a projection of
+        // an editor document always carries at least one, because an editor document
+        // always has at least one block.
+        //
+        // The check runs in its own scope: `get_or_insert_array` opens a transaction of
+        // its own, and a second acquisition while one is live deadlocks.
+        let has_content = {
+            let txn = doc.transact();
+            txn.get_array(CONTENT).is_some()
+        };
+        if !has_content {
+            return Err(CollabError::schema(
+                "these CRDT bytes carry no `content` blocks — not a rinch editor projection",
+            ));
+        }
+        let content = doc.get_or_insert_array(CONTENT);
         Ok(CollabDoc { doc, content })
     }
 
@@ -309,7 +322,12 @@ fn node_attrs<T: ReadTxn>(txn: &T, node: &MapRef) -> Attrs {
 /// index the projection writes comes from a model/CRDT pair it believes are in step, so
 /// a mismatch is a projection bug — and it must surface as a loud [`CollabError`], not
 /// as a panic that kills the host application.
-pub(crate) fn check_index<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32, allow_end: bool) -> Result<()> {
+pub(crate) fn check_index<T: ReadTxn>(
+    txn: &T,
+    list: &ArrayRef,
+    index: u32,
+    allow_end: bool,
+) -> Result<()> {
     let len = list.len(txn);
     if if allow_end { index <= len } else { index < len } {
         Ok(())
@@ -606,8 +624,7 @@ fn read_text_data<T: ReadTxn>(txn: &T, text: &TextRef) -> Result<(String, Vec<Sp
 fn read_node_data<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -> Result<NodeData> {
     let node = child_map(txn, list, index)
         .ok_or_else(|| CollabError::schema("read_node_data: missing node"))?;
-    let type_name =
-        node_type(txn, &node).ok_or_else(|| CollabError::schema("node has no type"))?;
+    let type_name = node_type(txn, &node).ok_or_else(|| CollabError::schema("node has no type"))?;
     let attrs = node_attrs(txn, &node);
     if let Some(text_obj) = block_text(txn, &node) {
         let (text, marks) = read_text_data(txn, &text_obj)?;
@@ -710,13 +727,7 @@ fn push_span(marks: &mut Vec<SpanMark>, m: &Mark, start: usize, end: usize) {
 
 /// The coalescing half of [`push_span`], shared with the CRDT read-back so both sides
 /// produce the same canonical span list for the same logical formatting.
-fn push_mark_span(
-    marks: &mut Vec<SpanMark>,
-    name: &str,
-    attrs: Attrs,
-    start: usize,
-    end: usize,
-) {
+fn push_mark_span(marks: &mut Vec<SpanMark>, name: &str, attrs: Attrs, start: usize, end: usize) {
     if let Some(prev) = marks
         .iter_mut()
         .find(|s| s.end == start && s.name == name && s.attrs == attrs)
@@ -838,13 +849,11 @@ fn same_mark_set(a: &[Mark], b: &[Mark]) -> bool {
 /// integer, not a stringified one.
 fn write_attrs(txn: &mut TransactionMut, obj: &MapRef, attrs: &Attrs) {
     for (k, v) in attrs.iter() {
-        match attr_to_any(v) {
-            Some(any) => {
-                obj.insert(txn, k.to_string(), any);
-            }
-            // `Null` means "explicitly absent"; storing it would be indistinguishable
-            // from a cleared key on read-back.
-            None => {}
+        // `attr_to_any` yields `None` for `AttrValue::Null`, which means "explicitly
+        // absent" — storing it would be indistinguishable from a cleared key on
+        // read-back.
+        if let Some(any) = attr_to_any(v) {
+            obj.insert(txn, k.to_string(), any);
         }
     }
 }
@@ -1034,6 +1043,33 @@ mod tests {
             .is_err()
         ); // non-integer
         assert!(decode_mark_value(&Any::BigInt(5)).is_err()); // wrong kind
+    }
+
+    #[test]
+    fn load_fails_loud_on_bytes_that_are_not_a_projection() {
+        // A decodable yrs update that is not one of our snapshots must not be silently
+        // adopted as an empty document — a guest joining on it would then collaborate on
+        // content no peer shares, which is the silent-divergence class A22 exists to kill.
+        let foreign = CollabDoc::empty_doc();
+        let other = foreign.get_or_insert_map("something_else");
+        other.insert(&mut foreign.transact_mut(), "k", Any::Bool(true));
+        let bytes = foreign
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+        assert!(matches!(
+            CollabDoc::load(&bytes).unwrap_err(),
+            CollabError::Schema(_)
+        ));
+
+        // A real projection loads and rebuilds identically.
+        let s = schema();
+        let para = s
+            .branch("paragraph", Fragment::from_node(s.text("hi").unwrap()))
+            .unwrap();
+        let doc = s.branch("doc", Fragment::from_node(para)).unwrap();
+        let cdoc = CollabDoc::from_doc(&doc).unwrap();
+        let loaded = CollabDoc::load(&cdoc.save()).unwrap();
+        assert_eq!(loaded.to_doc(&s).unwrap(), doc);
     }
 
     #[test]

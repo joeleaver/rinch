@@ -3,14 +3,14 @@ name = "rinch-editor-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Pure, renderer-agnostic core of the Rinch rich-text editor: document model, transforms (steps), schema, state, commands, history. No rinch-dom, winit, web_sys, parley, or automerge — wasm-clean."
+description = "Pure, renderer-agnostic core of the Rinch rich-text editor: document model, transforms (steps), schema, state, commands, history. No rinch-dom, winit, web_sys, parley, or CRDT engine — wasm-clean."
 
 [dependencies]
 thiserror.workspace = true
 # Input rules (M4): markdown-shortcut pattern matching. Pure Rust, wasm-clean.
 regex = "1"
 # Total, attr-aware serialization (M3). Both optional and wasm-clean.
-# NO automerge / rinch-dom / winit ever.
+# NO CRDT engine / rinch-dom / winit ever.
 serde = { version = "1", optional = true, features = ["derive"] }
 pulldown-cmark = { version = "0.12", optional = true, default-features = false }
 # Accessibility tree types (M7b). `accesskit` core is pure (only depends on uuid),
