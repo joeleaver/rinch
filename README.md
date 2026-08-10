@@ -86,7 +86,7 @@ rsx! {
 
 **Platform Integration.** Native menus via muda. File dialogs. Clipboard. System tray with minimize-to-tray. Transparent borderless windows with custom chrome. Keyboard shortcuts.
 
-**Rich Text Editing.** CRDT-backed editor (Automerge), 22 formatting extensions, markdown input rules, syntax highlighting, find & replace. Not a toy.
+**Rich Text Editing.** CRDT-backed editor (yrs), 22 formatting extensions, markdown input rules, syntax highlighting, find & replace. Not a toy.
 
 **Game Engine Embedding.** Two modes: `RenderSurface` (Rinch owns the window, your renderer submits frames) or `RinchContext` (your engine owns the window, Rinch produces a Vello scene you composite). Either way, Rinch handles the UI and gets out of your way.
 
@@ -410,7 +410,7 @@ The full layout is in `CLAUDE.md` if you want the gory details.
 
 ## Standing On Shoulders
 
-[Stylo](https://github.com/nickel-org/stylo) (CSS resolution) · [Taffy](https://github.com/DioxusLabs/taffy) (flexbox) · [Parley](https://github.com/linebender/parley) (text) · [Vello](https://github.com/linebender/vello) (GPU rendering) · [tiny-skia](https://github.com/nickel-org/tiny-skia) (software rendering) · [winit](https://github.com/rust-windowing/winit) (windowing) · [muda](https://github.com/tauri-apps/muda) (menus) · [Automerge](https://automerge.org/) (CRDT)
+[Stylo](https://github.com/nickel-org/stylo) (CSS resolution) · [Taffy](https://github.com/DioxusLabs/taffy) (flexbox) · [Parley](https://github.com/linebender/parley) (text) · [Vello](https://github.com/linebender/vello) (GPU rendering) · [tiny-skia](https://github.com/nickel-org/tiny-skia) (software rendering) · [winit](https://github.com/rust-windowing/winit) (windowing) · [muda](https://github.com/tauri-apps/muda) (menus) · [yrs](https://github.com/y-crdt/y-crdt) (CRDT)
 
 ## License
 

@@ -709,15 +709,17 @@ The editor ships its own default light/dark stylesheet (`editor/styles.rs`, inje
 
 ### Collaboration (optional, opt-in — M9)
 
-Real-time collaborative editing is a feature-gated adapter, **not** part of the model. The pure `rinch-editor-core` model stays renderer- and CRDT-agnostic; `rinch-editor-collab` projects it onto an **Automerge** CRDT so concurrent edits converge, then translates remote CRDT changes back into editor `Step`s. This crate is the **only** thing in the workspace that links `automerge`.
+Real-time collaborative editing is a feature-gated adapter, **not** part of the model. The pure `rinch-editor-core` model stays renderer- and CRDT-agnostic; `rinch-editor-collab` projects it onto a **yrs 0.27** (Yjs) CRDT so concurrent edits converge, then translates remote CRDT changes back into editor `Step`s. This crate is the **only** thing in the workspace that links a CRDT engine (yrs replaced Automerge in issue #190).
 
-It is gated behind the optional `collaboration` feature (which implies `desktop`, since the editor wiring lives there), so **default builds — desktop AND web — link zero automerge**. The adapter itself is pure model↔CRDT logic with no platform deps and is **wasm-compatible** (a wasm app supplies a randomness source for the transitive `automerge → uuid`, e.g. `uuid`/`getrandom` `js` feature), so a future Rust web editor view can reuse this *same* adapter rather than bridging to a separate JS CRDT.
+It is gated behind the optional `collaboration` feature (which implies `desktop`, since the editor wiring lives there), so **default builds — desktop AND web — link zero CRDT code**. The adapter itself is pure model↔CRDT logic with no platform deps and is **wasm-compatible with no shims** — yrs carries its own `fastrand/js` randomness source and builds for `wasm32-unknown-unknown` with no extra features — so a future Rust web editor view can reuse this *same* adapter rather than bridging to a separate JS CRDT.
 
 Enable with `features = ["collaboration"]` on the `rinch` facade (or depend on `rinch-editor-collab` directly).
 
-The design rests on one invariant — **`model ≡ project(model)`**: every local step is projected onto the CRDT, every remote CRDT change is rebuilt into the model. Convergence then follows from Automerge's own convergence.
+The design rests on one invariant — **`model ≡ project(model)`**: every local step is projected onto the CRDT, every remote CRDT change is rebuilt into the model. Convergence then follows from yrs's own convergence.
 
-**Staged scope (design A22):** the first milestone covers **flat text-blocks + marks** (`paragraph`/`heading`/`code_block` with text + bold/italic/link/… marks). Anything outside that scope — a nested block (blockquote, list, table), an inline atom (`image`, `hard_break`) — is `CollabError::Unsupported`: the adapter **fails loud** rather than silently dropping a change (a silent drop would reintroduce the exact divergence class the editor rewrite killed).
+**Staged scope (design A22):** the first milestone covers **flat text-blocks + marks** (`paragraph`/`heading`/`code_block` with text + bold/italic/link/… marks) plus the **list containers** `bullet_list`/`ordered_list`/`list_item`, nested into each other and around text-blocks to any depth. Anything else — `blockquote`, tables, `task_list`/`task_item`, or an inline atom (`image`, `hard_break`, `horizontal_rule`) — is `CollabError::Unsupported`: the adapter **fails loud** rather than silently dropping a change (a silent drop would reintroduce the exact divergence class the editor rewrite killed).
+
+**Collab bytes are opaque.** A snapshot, a broadcast delta, a state vector, and a sync diff are all just `Vec<u8>` in yrs's lib0 v1 encoding — callers move them between calls without decoding them.
 
 ```rust
 use rinch_editor_collab::CollabSession;
@@ -729,10 +731,14 @@ let mut b = CollabSession::from_bytes(&a.snapshot())?;
 // After the editor applies a local transaction, project before→after onto the CRDT:
 a.record_local(&old_state.doc, &new_state.doc)?;
 
-// Broadcast a delta (or use the full sync protocol: generate/integrate_sync_message):
-let delta = a.save_incremental();
+// Broadcast a delta:
+let delta = a.save_incremental()?;
 if let Some(next) = b.integrate_incremental(&b_state, &delta)? { b_state = next; }
 // `next` applies the remote change as a non-undoable `origin=remote` transaction.
+
+// Reconciliation for a peer that fell behind (offline, a dropped delta):
+let to_b = a.sync_diff(&b.state_vector())?;   // "what does b not have yet"
+if let Some(next) = b.integrate_incremental(&b_state, &to_b)? { b_state = next; }
 ```
 
 **The desktop editor wires this in for you** (M9) — you do not drive `CollabSession` directly. Every local edit through an `EditorHandle` projects + broadcasts automatically; a peer's delta integrates + re-projects through `collab_receive`. One peer **hosts** (owns the starting document), the others **join** from its snapshot. The transport is the app's concern — `outbound` carries bytes out, `post_remote_delta` carries them back in from any thread:
@@ -750,24 +756,34 @@ post_remote_delta(container_id, delta_bytes);
 |---|---|
 | `start_collaboration_host(outbound) -> Result<Vec<u8>, CollabError>` | Host a fresh session; returns the join snapshot |
 | `start_collaboration_guest(&snapshot, outbound) -> Result<(), CollabError>` | Join from a host snapshot (adopts its document) |
-| `collab_receive(&delta) -> bool` | Integrate a peer's delta (main thread, `try_borrow_mut`-soft); re-projects, does **not** re-broadcast |
+| `collab_receive(&delta) -> bool` | Integrate a peer's delta or reconciliation diff (main thread, `try_borrow_mut`-soft); re-projects, does **not** re-broadcast |
+| `collab_state_vector() -> Option<Vec<u8>>` | This editor's state vector, to hand a peer for `collab_sync_diff` |
+| `collab_sync_diff(remote_state_vector) -> Option<Vec<u8>>` | The update a peer at `remote_state_vector` is missing; feed the result to that peer's `collab_receive` |
 | `is_collaborating()` / `stop_collaboration()` | Query / detach the session |
 | `collab_snapshot() -> Option<Vec<u8>>` | Current shared-doc snapshot for a *late*-joining guest |
 | `collab_take_error() -> Option<CollabError>` | Take a fail-loud A22 projection error (the CRDT is left untouched — projection is all-or-nothing) |
 
 Free functions `collab_receive_for(container_id, &delta)` (main thread) and `post_remote_delta(container_id, delta)` (any thread) route an inbound delta to a registered editor. Runnable two-pane in-process loopback: `examples/collab-editor-demo`.
 
-`CollabPlugin` (key `"collab"`) folds collab bookkeeping (version + unconfirmed local steps) into `EditorState`; `rebase_steps(steps, &mapping)` is the ProseMirror rebase primitive (`Step::map`); `CollabDoc::patches_to_remote_ops` / `remote_ops_since` expose the surgical patch→`RemoteOp` translation. The session itself integrates via converged rebuild (`to_doc`), which is provably convergent.
+**The transport owns relaying.** `outbound` fires only for an editor's own local edits — a delta integrated via `collab_receive` is never re-broadcast (it's already in the shared CRDT; echoing it back would loop). So the transport must be a **full mesh** (every peer's `outbound` reaches every other peer) or a **hub** that fans each delta it receives out to the others, forwarding the raw bytes unchanged. A chain — A wired to B, B wired to C, nothing joining A and C — silently partitions: C never sees A's edits, and nothing errors. The repair for a peer that fell behind is the reconciliation pair above (`collab_state_vector` → `collab_sync_diff` → `collab_receive`).
+
+**Never use state-vector equality as a convergence test.** A yrs state vector counts *insertions* only — a deletion, or a mark *removal* (yrs un-formats a mark by deleting its format marker), leaves it unchanged, so two replicas can hold different documents behind equal state vectors. That's why `integrate_incremental`/`collab_receive` decide "did anything change" by rebuilding and comparing documents, never by comparing state vectors before/after — and why reconciliation always requests-and-applies a diff (whose reply carries the full delete set) rather than short-circuiting when two state vectors look equal.
+
+`CollabPlugin` (key `"collab"`) folds collab bookkeeping (version + unconfirmed local steps) into `EditorState`; `rebase_steps(steps, &mapping)` is the ProseMirror rebase primitive (`Step::map`). The session integrates by converged rebuild (`CollabDoc::to_doc` → `build_remote_transaction`), which is provably convergent — there's no separate patch→op translation layer. One used to exist (`CollabDoc::patches_to_remote_ops`/`remote_ops_since`, consuming `automerge::Patch`) but it was **deleted**, not ported, with the yrs migration: it was documented as non-convergence-critical and had no session consumer. `remote.rs`'s module doc notes it could be rebuilt on yrs observer deltas (`TextRef::observe` → `TextEvent`) if a future cursor-preserving refinement ever wants it.
 
 | File | Purpose |
 |------|---------|
-| `crates/rinch-editor-collab/src/projection.rs` | `CollabDoc` — the Automerge wire shape (`content: List<Block{type,attrs,text:Text}>`, marks over the Text), `from_doc`/`to_doc`, fail-loud validation |
+| `crates/rinch-editor-collab/src/projection.rs` | `CollabDoc` — the yrs wire shape (`content: Array<Map{type,attrs,text:Text}>`, marks as native yrs `Text` formatting attributes), `from_doc`/`to_doc`/`load`, the `observe_update_v1` broadcast outbox, fail-loud validation |
 | `crates/rinch-editor-collab/src/project.rs` | Local: `project_change` — block-list diff (Rc-identity prefix/suffix, minimal text splice) |
-| `crates/rinch-editor-collab/src/remote.rs` | Remote: `patches_to_remote_ops` (salvaged shape) + `build_remote_transaction` (converged rebuild) |
-| `crates/rinch-editor-collab/src/session.rs` | `CollabSession` — the imperative model↔CRDT lifecycle |
-| `crates/rinch-editor-collab/src/sync.rs` | Salvaged Automerge sync transport (sync protocol + incremental broadcast) |
+| `crates/rinch-editor-collab/src/remote.rs` | Remote: `build_remote_transaction` — converged rebuild into a minimal block-level `ReplaceStep`; no engine type appears in this file |
+| `crates/rinch-editor-collab/src/session.rs` | `CollabSession` — the imperative model↔CRDT lifecycle (`new`/`from_bytes`, `record_local`, `save_incremental`/`state_vector`/`sync_diff`, `integrate_incremental`) |
+| `crates/rinch-editor-collab/src/sync.rs` | The yrs bytes transport on `CollabDoc` (`state_vector`, `diff_since`, `apply_update`, the outbox drain) |
 | `crates/rinch-editor-collab/src/plugin.rs` | `CollabPlugin` + `CollabState` |
 | `crates/rinch-editor-collab/src/rebase.rs` | `rebase_steps` — local steps rebased over a remote mapping |
+| `crates/rinch-editor-collab/src/error.rs` | `CollabError` — the crate's one error type (`Engine`/`Unsupported`/`Schema`) |
+| `crates/rinch-editor-view/src/handle.rs` | `EditorHandle`'s collab methods (`start_collaboration_host/guest`, `collab_receive`, `collab_state_vector`, `collab_sync_diff`, `collab_snapshot`, `collab_take_error`, `stop_collaboration`, `is_collaborating`) — **not** in `rinch-editor-collab` |
+| `crates/rinch-editor-view/src/collab.rs` | `CollabBridge` — the seam driving `CollabSession` from an `EditorHandle` (outbound sink + last error) |
+| `crates/rinch-editor-view/src/registry.rs` | `collab_receive_for(container_id, &delta)` — routes an inbound delta to a registered editor |
 
 ## Drag and Drop
 
