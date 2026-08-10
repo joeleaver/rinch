@@ -31,7 +31,7 @@ use yrs::updates::decoder::Decode;
 use yrs::{Origin, ReadTxn, StateVector, Transact, Update, merge_updates_v1};
 
 use crate::error::Result;
-use crate::projection::{CollabDoc, REMOTE_ORIGIN};
+use crate::projection::{CollabDoc, ENGINE_APPLY_ORIGIN, lock_outbox};
 
 impl CollabDoc {
     /// The CRDT's current state vector — the insertions this replica has seen. What to
@@ -52,12 +52,14 @@ impl CollabDoc {
     /// point: a broadcast delta, a reconciliation diff and a whole-document snapshot are
     /// all the same encoding.
     ///
-    /// The transaction is tagged `REMOTE_ORIGIN` so the update observer leaves it out of
+    /// The transaction is tagged `ENGINE_APPLY_ORIGIN` so the update observer leaves it out of
     /// the broadcast outbox — these bytes are already shared, and re-broadcasting them
     /// would echo. Forwarding them to *other* peers is the transport's job.
     pub fn apply_update(&mut self, bytes: &[u8]) -> Result<()> {
         let update = Update::decode_v1(bytes)?;
-        let mut txn = self.doc.transact_mut_with(Origin::from(REMOTE_ORIGIN));
+        let mut txn = self
+            .doc
+            .transact_mut_with(Origin::from(ENGINE_APPLY_ORIGIN));
         txn.apply_update(update)?;
         Ok(())
     }
@@ -69,7 +71,7 @@ impl CollabDoc {
     /// Several parked updates are combined with [`merge_updates_v1`] rather than
     /// concatenated: concatenated updates are not a valid single update.
     pub(crate) fn take_outbox(&mut self) -> Result<Vec<u8>> {
-        let mut parked = self.outbox.borrow_mut();
+        let mut parked = lock_outbox(&self.outbox);
         match parked.len() {
             0 => Ok(Vec::new()),
             1 => Ok(parked.drain(..).next().unwrap_or_default()),

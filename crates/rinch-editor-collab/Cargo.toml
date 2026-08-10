@@ -13,8 +13,15 @@ rinch-editor-core = { workspace = true }
 # reuse this adapter as-is.
 #
 # The document is always built with `OffsetKind::Utf16` — never `Doc::new()`, whose
-# default is `OffsetKind::Bytes`. See `projection::CollabDoc::empty_doc`.
-yrs = "0.27"
+# default is `OffsetKind::Bytes`. See `projection::CollabDoc::blank`.
+#
+# `sync` is a marker feature (`sync = []` — it pulls in no dependencies, so it cannot
+# affect the wasm build) and it does NOT gate the `yrs::sync` module, which is always
+# there. What it does is make `Subscription` `Send`/`Sync` and tighten observer closures
+# to match. We need that: `CollabDoc` holds the update subscription that feeds the
+# broadcast outbox, and `CollabSession` must stay `Send` because a server holds one
+# across an `.await`. The `Send` bound is pinned by a static assertion in `lib.rs`.
+yrs = { version = "0.27", features = ["sync"] }
 thiserror.workspace = true
 
 [dev-dependencies]

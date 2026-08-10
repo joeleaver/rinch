@@ -58,7 +58,7 @@
 //! Every committed transaction hands its *own* update to an `observe_update_v1`
 //! subscription, which parks it in [`CollabDoc`]'s outbox for
 //! [`CollabSession::save_incremental`](crate::CollabSession::save_incremental) to drain.
-//! A transaction applying *foreign* bytes is tagged `REMOTE_ORIGIN` and skipped:
+//! A transaction applying *foreign* bytes is tagged `ENGINE_APPLY_ORIGIN` and skipped:
 //! those changes are already shared, so re-broadcasting them would echo. Locally
 //! projected writes are therefore exactly the broadcasts.
 //!
@@ -83,10 +83,8 @@
 //! `task_list`/`task_item`) and every inline atom (`hard_break`, `image`,
 //! `horizontal_rule`).
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use yrs::types::Attrs as YAttrs;
 use yrs::types::text::YChange;
@@ -107,16 +105,36 @@ const TYPE: &str = "type";
 const ATTRS: &str = "attrs";
 const TEXT: &str = "text";
 
-/// Origin tag for a transaction that applies bytes received from a peer, as opposed to one
-/// that projects a local edit. The update observer skips these: they are already shared,
-/// so putting them in the outbox would echo them back.
-pub(crate) const REMOTE_ORIGIN: &str = "collabRemoteOrigin";
+/// Origin tag for a yrs transaction that applies bytes received from a peer, as opposed to
+/// one that projects a local edit. The update observer skips these: they are already
+/// shared, so putting them in the outbox would echo them back.
+///
+/// Not to be confused with [`ORIGIN_REMOTE`](crate::ORIGIN_REMOTE), which is a *model*
+/// `Transaction` meta key marking the editor-side transaction as remote-originated. Two
+/// different mechanisms at two different layers.
+pub(crate) const ENGINE_APPLY_ORIGIN: &str = "collabEngineApply";
 
-/// Updates produced by locally-projected transactions, waiting to be broadcast. Shared
-/// with the update observer, which is why it is behind `Rc<RefCell<_>>`: without the
-/// `sync` cargo feature yrs asks nothing of the closure but `'static`, and the whole
-/// adapter is single-threaded.
-pub(crate) type Outbox = Rc<RefCell<Vec<Vec<u8>>>>;
+/// Updates produced by locally-projected transactions, waiting to be broadcast.
+///
+/// `Arc<Mutex<_>>` rather than `Rc<RefCell<_>>` even though the adapter is single-threaded:
+/// the outbox is captured by the update observer, which is held by [`CollabDoc`], so an
+/// `Rc` here would make `CollabDoc` — and therefore `CollabSession` — `!Send`. A server
+/// holds a session across an `.await`, so that must not happen; the bound is pinned by a
+/// static assertion in `lib.rs`.
+pub(crate) type Outbox = Arc<Mutex<Vec<Vec<u8>>>>;
+
+/// Lock the outbox, recovering from a poisoned mutex rather than failing on it.
+///
+/// The guarded value is a plain queue of encoded updates with no invariant spanning it, so
+/// a panic elsewhere while the lock was held cannot have left it inconsistent. Both
+/// alternatives are worse: the update observer's signature cannot return an error, so it
+/// would have to either drop a broadcast silently — the divergence class this adapter
+/// exists to prevent — or panic in the middle of a yrs commit.
+pub(crate) fn lock_outbox(outbox: &Outbox) -> std::sync::MutexGuard<'_, Vec<Vec<u8>>> {
+    outbox
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// One coalesced run of a single mark over a block's text (char offsets).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,7 +224,7 @@ impl std::fmt::Debug for CollabDoc {
         f.debug_struct("CollabDoc")
             .field("client_id", &self.doc.client_id())
             .field("blocks", &self.content.len(&self.doc.transact()))
-            .field("pending_updates", &self.outbox.borrow().len())
+            .field("pending_updates", &lock_outbox(&self.outbox).len())
             .finish()
     }
 }
@@ -227,16 +245,16 @@ impl CollabDoc {
             offset_kind: OffsetKind::Utf16,
             ..Default::default()
         });
-        let outbox: Outbox = Rc::new(RefCell::new(Vec::new()));
+        let outbox: Outbox = Arc::new(Mutex::new(Vec::new()));
         let sink = outbox.clone();
-        let remote = Origin::from(REMOTE_ORIGIN);
+        let remote = Origin::from(ENGINE_APPLY_ORIGIN);
         // yrs does not fire this for a transaction that changed nothing, so the outbox
         // never collects an empty update and "outbox is empty" really does mean "nothing
         // to send".
         let updates = doc
             .observe_update_v1(move |txn, e| {
                 if txn.origin() != Some(&remote) {
-                    sink.borrow_mut().push(e.update.clone());
+                    lock_outbox(&sink).push(e.update.clone());
                 }
             })
             .expect("a freshly built document has no live transaction to conflict with");
@@ -290,7 +308,7 @@ impl CollabDoc {
         let update = Update::decode_v1(bytes)?;
         let (ydoc, outbox, updates) = CollabDoc::blank();
         {
-            let mut txn = ydoc.transact_mut_with(Origin::from(REMOTE_ORIGIN));
+            let mut txn = ydoc.transact_mut_with(Origin::from(ENGINE_APPLY_ORIGIN));
             txn.apply_update(update)?;
         }
         let content = ydoc.get_or_insert_array(CONTENT);
@@ -1230,14 +1248,14 @@ mod tests {
 
         let mut a = CollabDoc::from_doc(&doc).unwrap();
         assert_eq!(
-            a.outbox.borrow().len(),
+            lock_outbox(&a.outbox).len(),
             1,
             "the initial projection is a local write and is broadcast"
         );
 
         let mut b = CollabDoc::load(&a.save()).unwrap();
         assert!(
-            b.outbox.borrow().is_empty(),
+            lock_outbox(&b.outbox).is_empty(),
             "joining from a snapshot must not queue the host's document for re-broadcast"
         );
 
@@ -1258,7 +1276,7 @@ mod tests {
 
         b.apply_update(&delta).unwrap();
         assert!(
-            b.outbox.borrow().is_empty(),
+            lock_outbox(&b.outbox).is_empty(),
             "an applied peer delta must not be queued for re-broadcast"
         );
     }
@@ -1302,7 +1320,7 @@ mod tests {
         a.project_change(&d1, &d2).unwrap();
         a.project_change(&d2, &d3).unwrap();
         assert_eq!(
-            a.outbox.borrow().len(),
+            lock_outbox(&a.outbox).len(),
             3,
             "each local transaction parks its own update, so the merge branch is what runs"
         );

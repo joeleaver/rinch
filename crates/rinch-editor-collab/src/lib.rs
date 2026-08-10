@@ -56,6 +56,21 @@ pub mod sync;
 // here as an inherent-impl module.
 mod project;
 
+/// `CollabSession` and `CollabDoc` must stay **`Send`**: a server holds a session across
+/// an `.await`, so losing the bound breaks downstream consumers at their next upgrade —
+/// as a compile error in *their* tree, which is the worst place to find out.
+///
+/// It has been lost once already. Moving the broadcast delta to an observer-fed outbox
+/// (#190) introduced both an `Rc<RefCell<_>>` queue and yrs's `Subscription`, which is
+/// only `Send` with yrs's `sync` feature. Hence the queue is an `Arc<Mutex<_>>` and that
+/// feature is on — and hence this assertion, which stops the crate compiling if either
+/// ever regresses.
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<CollabDoc>();
+    assert_send::<CollabSession>();
+};
+
 pub use error::{CollabError, Result};
 pub use plugin::{COLLAB_KEY, CollabPlugin, CollabState};
 pub use projection::CollabDoc;

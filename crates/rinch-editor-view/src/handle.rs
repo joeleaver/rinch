@@ -883,6 +883,23 @@ impl EditorHandle {
     /// re-enter the *same* handle — forward the bytes to a transport/channel or to a
     /// *peer* handle ([`Self::collab_receive`] is borrow-soft, but the mutation
     /// methods are not).
+    ///
+    /// # The transport owns relaying
+    ///
+    /// `outbound` fires for this editor's **own** edits only. A delta that arrives through
+    /// [`Self::collab_receive`] is deliberately *not* re-broadcast — it is already in the
+    /// shared CRDT, and echoing it would loop between peers. So the adapter never relays
+    /// transitively, and the transport must be one of:
+    ///
+    /// * a **full mesh**, where every peer's `outbound` reaches every other peer; or
+    /// * a **hub**, where the server fans each received delta out to the other peers
+    ///   itself, forwarding the raw bytes (they need no re-encoding).
+    ///
+    /// A chain — A wired to B, B wired to C, with nothing joining A and C — silently
+    /// partitions: C never sees A's edits. It will not error; the two ends simply drift.
+    /// If a peer may fall behind for any reason, the repair is the reconciliation pair
+    /// ([`Self::collab_state_vector`] / [`Self::collab_sync_diff`]), which catches a peer
+    /// up from whatever it is missing.
     pub fn start_collaboration_host(
         &self,
         outbound: impl Fn(Vec<u8>) + 'static,
@@ -900,6 +917,11 @@ impl EditorHandle {
     /// same content. `outbound` carries this guest's local deltas back to peers.
     /// Returns a [`CollabError`] if the snapshot is unreadable or its content is
     /// outside the staged scope.
+    ///
+    /// As on the host, `outbound` fires for this editor's own edits only — an integrated
+    /// remote delta is never re-broadcast, so the transport must mesh the peers or fan out
+    /// received deltas itself. See "The transport owns relaying" on
+    /// [`Self::start_collaboration_host`].
     pub fn start_collaboration_guest(
         &self,
         snapshot: &[u8],
