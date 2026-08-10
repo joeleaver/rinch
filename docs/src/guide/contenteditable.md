@@ -270,7 +270,7 @@ pub fn start() {
 ```
 
 A runnable demo is `examples/editor-web` (built with `trunk serve`). The browser
-build links **no** `rinch-dom`/Parley/automerge — the browser handles layout, text,
+build links **no** `rinch-dom`/Parley/CRDT engine — the browser handles layout, text,
 and painting.
 
 **Supported today:** typing, the full command/toolbar surface, keyboard shortcuts,
@@ -291,11 +291,11 @@ through it. This mirrors the CodeMirror / ProseMirror hidden-input technique.
 ## Collaboration (optional, `collaboration` feature)
 
 Two editors can share one live document. Enable the `collaboration` feature and the
-editor projects every local edit onto an [Automerge](https://automerge.org) CRDT,
-broadcasts the resulting delta, and rebuilds the model from a peer's delta when one
-arrives — so concurrent edits converge. The CRDT adapter
+editor projects every local edit onto a [yrs](https://github.com/y-crdt/y-crdt) (Yjs)
+CRDT, broadcasts the resulting delta, and rebuilds the model from a peer's delta when
+one arrives — so concurrent edits converge. The CRDT adapter
 ([`rinch-editor-collab`](https://docs.rs/rinch-editor-collab)) is the only thing in a
-rinch app that links automerge; default builds link none of it.
+rinch app that links a CRDT engine; default builds link none of it.
 
 ```toml
 rinch = { workspace = true, features = ["desktop", "collaboration"] }
@@ -316,29 +316,58 @@ guest.start_collaboration_guest(&snapshot, move |delta| transport.send(delta))?;
 guest.collab_receive(&delta_bytes);
 ```
 
-The transport is yours to pick — the seam is just bytes in and bytes out — and it
-should deliver deltas **reliably and in order** (the seam carries incremental
-Automerge changes; the full sync protocol for lossy/out-of-order resync is not yet
-exposed through the handle). From a background socket/data-channel thread, use the
-`Send`-safe entry point, which marshals the delta onto the main thread for you:
+**The transport owns relaying.** `outbound` fires only for an editor's own local
+edits — a delta that arrives through `collab_receive` is never re-broadcast (it's
+already in the shared CRDT; echoing it back would loop). So the transport must be a
+**full mesh** (every peer's `outbound` reaches every other peer directly) or a **hub**
+that fans each delta it receives out to the other peers, forwarding the raw bytes
+unchanged. A chain — A wired to B, B wired to C, with nothing joining A and C —
+silently partitions: C never sees A's edits, and nothing errors.
+
+If a peer might have missed deltas — offline, reconnecting, or polling over HTTP with
+no persistent connection at all — reconcile with a **state vector + diff** exchange
+instead of relying on delta delivery being perfect:
 
 ```rust
-use rinch::prelude::*;
-post_remote_delta(editor_container_id, delta_bytes); // any thread → main
+// The peer that might be behind sends its state vector...
+let my_sv = editor.collab_state_vector().unwrap();
+transport.send(my_sv);
+
+// ...the other side answers with what it's missing, plus its own state vector...
+let diff = peer.collab_sync_diff(&my_sv).unwrap();
+let peer_sv = peer.collab_state_vector().unwrap();
+transport.send((diff, peer_sv));
+
+// ...and the first peer applies it (and can answer the second peer's state vector
+// the same way, to reconcile in the other direction too):
+editor.collab_receive(&diff);
 ```
+
+`collab_receive` is the same entry point for a broadcast delta and a reconciliation
+diff — they're the same wire format, so there's no separate sync protocol and no
+per-peer state to keep on either side; a stateless server can answer each state
+vector it's handed with nothing held between requests.
+
+**Never use state-vector equality as a convergence check.** A state vector counts
+*insertions* only, so a deletion — or a mark *removal* (yrs un-formats a mark by
+deleting its format marker) — leaves it unchanged, and two editors can hold different
+documents behind equal state vectors. Always request and apply a diff instead; the
+diff reply always carries the full delete set, which is what actually converges the
+peer.
 
 `is_collaborating()`, `stop_collaboration()`, `collab_snapshot()` (a fresh snapshot
 for a *late*-joining peer to `start_collaboration_guest` from), and
 `collab_take_error()` round out the API. The first milestone covers **flat
-text-blocks + marks** (paragraphs, headings, code blocks, bold/italic/link/…); an
-edit outside that scope fails loud rather than silently diverging —
+text-blocks + marks** (paragraphs, headings, code blocks, bold/italic/link/…) plus
+list containers (bullet/ordered lists and list items, nested to any depth); an edit
+outside that scope fails loud rather than silently diverging —
 `collab_take_error()` surfaces it, and the CRDT is left untouched (the local edit is
 not projected). A runnable two-pane loopback (both editors in one window, no network)
 lives at `examples/collab-editor-demo/src/main.rs`.
 
 ### On the web
 
-The **same** adapter runs in the browser — Automerge compiled to wasm. Enable the
+The **same** adapter runs in the browser — yrs compiled to wasm. Enable the
 `collaboration` feature on `rinch-web`:
 
 ```toml
@@ -352,10 +381,11 @@ The `EditorHandle` collab API is identical to desktop, with two web specifics:
   `handle.collab_receive(&bytes)` (or `collab_receive_for(container_id, &bytes)`)
   directly. There is no `post_remote_delta` on web (that is the desktop runtime's
   off-thread marshaller).
-- **Randomness.** Automerge mints actor ids via `uuid`, which needs a randomness
-  source on `wasm32-unknown-unknown`. Add `uuid = { version = "1", features = ["js"] }`
-  to your app (it routes to the Web Crypto API); without it the wasm build won't
-  compile. `rinch-web` deliberately does not pin this — it is the app's choice.
+- **No randomness shim needed.** yrs carries its own `fastrand/js` source and builds
+  for `wasm32-unknown-unknown` with no extra features — unlike Automerge, which
+  needed the app to add `uuid = { version = "1", features = ["js"] }` just to make the
+  wasm build compile. `rinch-web`'s `collaboration` feature now needs nothing else
+  configured by the app.
 
 A runnable two-pane web loopback is `examples/collab-editor-web` (built with
 `trunk serve`), the browser counterpart of `collab-editor-demo`.
