@@ -1,78 +1,168 @@
 # AGENTS.md
 
-Guidance for AI agents working on the rinch codebase. See also `CLAUDE.md` for detailed API usage and examples.
+Guidance for AI agents working on the rinch codebase. `CLAUDE.md` is the detailed API
+and usage reference — read it for *how to write rinch code*. This file is about
+*working on rinch itself*: where things live, which invariants you must not break, and
+how to verify a change.
 
 ## Project Overview
 
-Rinch is a Rust-native GUI framework that uses HTML/CSS for layout with GPU rendering. The core design is **fine-grained reactivity** (SolidJS-style) — components run once, closures become Effects that surgically update individual DOM nodes. No virtual DOM, no diffing.
+Rinch is a Rust-native GUI framework that uses HTML/CSS for layout. The core design is
+**fine-grained reactivity** (SolidJS-style): components run **once**, closures become
+Effects that surgically update individual DOM nodes. No virtual DOM, no diffing, no
+re-renders.
 
-**Rendering pipeline:** Component → RenderScope/NodeHandle → RinchDocument (Stylo CSS + Taffy layout + Parley text) → Vello scene → wgpu
+**Desktop pipeline:** component → `RenderScope`/`NodeHandle` → `RinchDocument`
+(Stylo CSS + Taffy layout + Parley text) → `Painter` → window.
+The `Painter` is **tiny-skia + softbuffer by default**; the `gpu` feature swaps in
+Vello + wgpu.
+
+**Web pipeline:** the same component code → `WebDocument` (`rinch-web`) → real browser
+DOM. No Taffy/Parley/Vello — the browser lays out, shapes and paints.
+
+Both are the *same* `DomDocument` trait from `rinch-core`. That trait is the seam that
+makes the reactive layer renderer-agnostic; keep it that way.
 
 ## Workspace Structure
 
-```
-crates/
-├── rinch-core/          # Reactive primitives, DOM abstraction, hooks (7.6K lines)
-├── rinch-macros/        # rsx! macro, #[component] attribute (2.5K lines)
-├── rinch-dom/           # CSS + layout + paint engine (18.4K lines) — heaviest crate
-├── rinch-platform/      # Platform abstraction traits (500 lines)
-├── rinch/               # Desktop runtime, facade crate (15.8K lines)
-├── rinch-components/    # 56 Mantine-inspired components (17.8K lines, 113 files)
-├── rinch-theme/         # Theme system, CSS variables (1.5K lines)
-├── rinch-editor/        # ProseMirror-style rich-text editor (11.4K lines)
-├── rinch-editable/      # Text editing primitives (1.5K lines)
-├── rinch-editor-components/# Editor toolbar and controls (1.5K lines)
-├── rinch-editor-macros/ # Editor proc macros (231 lines)
-├── rinch-clipboard/     # Clipboard via arboard (373 lines)
-├── rinch-tabler-icons/  # 5000+ icons, fetched at build time (721 lines)
-├── rinch-debug/         # TCP IPC server for inspection (424 lines)
-├── rinch-mcp-server/    # MCP server for Claude integration (862 lines)
-├── rinch-visual-test/   # Visual regression test framework (2.1K lines)
-├── rinch-renderer/      # PLACEHOLDER — 9 lines, unused
-└── rinch-web/           # Browser-native DOM backend (WebDocument, event delegation, mount)
+`members = ["crates/*", "examples/*"]`, so **every** directory under `crates/` is a
+member unless listed in the root `exclude` (currently `crates/rinch-visual-test` plus
+the `*-web` examples). Verify against the root `Cargo.toml` rather than trusting this
+list if something looks off.
 
-examples/
-├── ui-zoo/              # Shared component showcase (primary dev target)
-├── ui-zoo-desktop/      # Desktop entry point
-├── ui-zoo-web/          # WASM entry (excluded from workspace; built on rinch-web)
-├── hello_rinch_dom/     # Minimal hello world
-├── fine_grained_window/ # Fine-grained rendering demo
-└── todo-app/
-```
+**Framework core**
+
+| Crate | Role |
+|---|---|
+| `rinch` | Facade + desktop runtime. `app/` (platform-agnostic app logic), `shell/` (winit + renderer), `menu/`, `editor/` (desktop editor wiring), `embed.rs`, `render_surface.rs`. |
+| `rinch-core` | The reactive kernel and the DOM abstraction. `reactive/` (Signal, Effect, Memo, Scope), `dom/` (NodeHandle, RenderScope, `DomDocument`), `events/`, control flow (`show.rs`, `for_loop.rs`, `match_dom.rs`), `context.rs`, `timer.rs`. Almost no external deps. |
+| `rinch-macros` | `rsx!` and `#[component]`. |
+| `rinch-platform` | Platform abstraction traits: `PlatformWindow`, `PlatformRenderer`, `PlatformEventLoop`, `PlatformMenu`, plus `PlatformEvent` / `AppAction`. |
+| `rinch-dom` | CSS + layout + paint engine (Stylo, Taffy, Parley, Vello/tiny-skia). The heaviest crate. |
+| `stylo-taffy` | Vendored Stylo↔Taffy interop. Pins Taffy alongside `rinch-dom`. |
+| `rinch-renderer` | Near-empty stub (two empty modules). Optional dep of `rinch` under `gpu`; nothing meaningful lives here yet. |
+
+**UI**
+
+| Crate | Role |
+|---|---|
+| `rinch-components` | The Mantine-inspired component library. |
+| `rinch-theme` | Theme system, colour palettes, CSS variable generation. |
+| `rinch-tabler-icons` | Tabler Icons; `build.rs` downloads them and generates `TablerIcon` / `TablerIconStyle` / `render_tabler_icon`. |
+
+**Rich-text editor** (see `docs/src/architecture/editor.md` for the full picture)
+
+| Crate | Role |
+|---|---|
+| `rinch-editor-core` | The pure model: document tree, `Pos`, schema/`ContentMatch`, `Step`s, `EditorState`/`Transaction`, commands, plugins, serialization. **wasm-clean; no renderer, no CRDT.** |
+| `rinch-editor-view` | Renderer-agnostic view: `RinchDomEditorView`, `EditorHandle`, the `Editor {}` component, the mounted-editor registry. Shared by desktop and web. |
+| `rinch-editor-collab` | Optional (`collaboration` feature) CRDT adapter over **yrs**. The only crate in the workspace that links a CRDT engine. |
+| `rinch-editable` | **Unrelated** engine for single-line `<input>`/`<textarea>`. Shares no code or types with the rich editor despite overlapping names (`Selection`, `Position`). |
+
+**Web**
+
+| Crate | Role |
+|---|---|
+| `rinch-web` | Browser-native backend: `WebDocument` over `web_sys`, document-level event delegation, `mount`, the browser editor glue. Depends on `rinch` with `default-features = false`, so it links no desktop stack. |
+
+**Platform services**
+
+`rinch-clipboard` (arboard / web-sys) · `rinch-storage` (filesystem / IndexedDB) ·
+`rinch-http` (ureq / fetch) · `rinch-ws` (tungstenite / WebSocket) · `rinch-android`
+(the JNI bridge to Android platform services: clipboard, IME, camera, permissions, …).
+
+**Media**
+
+`rinch-video` · `rinch-av` · `rinch-webrtc` (str0m / web_sys) · `rinch-signaling` ·
+`rinch-signaling-server` · `rinch-screen-capture`.
+
+**Tooling**
+
+| Crate | Role |
+|---|---|
+| `rinch-debug` | TCP IPC server embedded in an app (`debug` feature); writes `~/.rinch/debug/{pid}.json`. |
+| `rinch-mcp-server` | Standalone MCP server Claude talks to; discovers and drives running apps. |
+| `rinch-test` / `rinch-test-cli` | MCP-based test harness ("Playwright for rinch") and its CLI (binary name `rinch-test`). |
+| `rinch-visual-test` | Visual regression testing. **Excluded from the workspace.** |
+
+**Examples.** `ui-zoo-desktop` (+ the shared `ui-zoo` library) is the primary
+development target. The `*-web` examples (`ui-zoo-web`, `paint-web`, `editor-web`,
+`collab-editor-web`, `events-web`, `islands-web`, `webgpu-surface-web`) are **excluded
+from the workspace** — build them with `--target wasm32-unknown-unknown` or from their
+own directory. Others of note: `markdown-editor`, `collab-editor-demo`, `game-embed`,
+`gpu-device-config`, `todo-app`, `hello-android`.
 
 ## Crate Dependency Graph
 
 ```
 rinch (facade)
-  ├── rinch-core (always)
-  ├── rinch-macros (always)
-  ├── rinch-platform (always)
-  ├── rinch-dom (desktop feature)
-  ├── rinch-theme (theme feature)
-  ├── rinch-components (components feature → pulls theme)
-  ├── rinch-debug (debug feature)
-  └── winit, wgpu, vello, muda (desktop feature)
+  ├── rinch-core, rinch-macros, rinch-platform   (always)
+  ├── rinch-dom, rinch-editable, rinch-editor-core, rinch-editor-view,
+  │   winit, muda, parley, softbuffer            (desktop feature)
+  ├── vello, wgpu, rinch-renderer                (gpu feature → implies desktop)
+  ├── rinch-theme                                (theme feature)
+  ├── rinch-components                           (components feature → implies theme)
+  ├── rinch-clipboard / rfd / tray-icon / rinch-debug / rinch-video / rinch-http
+  │                                              (clipboard / file-dialogs /
+  │                                               system-tray / debug / video /
+  │                                               image-network)
+  └── rinch-editor-view/collaboration            (collaboration → implies desktop)
 
-rinch-dom
-  ├── rinch-core
-  └── stylo, stylo_taffy, taffy, parley, vello, cssparser
-
-rinch-components → rinch-core, rinch-theme, rinch-macros
-rinch-editor → rinch-core, rinch-editable, rinch-clipboard, automerge
+rinch-dom            → rinch-core + stylo, stylo_taffy, taffy, parley, vello,
+                       tiny-skia (software-renderer), cssparser
+rinch-components     → rinch-core, rinch-theme, rinch-macros, rinch-tabler-icons
+rinch-web            → rinch-core, rinch (no default features), rinch-editor-core,
+                       rinch-editor-view, wasm-bindgen/js-sys/web-sys
+rinch-editor-core    → thiserror, regex (+ optional serde, pulldown-cmark, accesskit)
+rinch-editor-view    → rinch-core, rinch-editor-core (+ optional rinch-editor-collab)
+rinch-editor-collab  → rinch-editor-core, yrs
 ```
+
+**Every heavy dependency in `rinch` is optional**, including `rinch-dom`, `parley` and
+`vello`. A build with `default-features = false` links none of them — which is exactly
+how `rinch-web` consumes the facade. Don't make a dep non-optional without checking the
+wasm build.
 
 ## Key Conventions
 
-### Reactivity Model
+### Reactivity model
 
-- `Signal<T>` and `Memo<T>` are `Copy` — no `.clone()` needed before closures
-- `{|| expr}` in rsx! creates an Effect for surgical DOM updates
-- `{expr}` without closure captures the value once at render time and never updates
-- Components run **once** to build the DOM. All reactive updates go through Effects.
+- `Signal<T>` and `Memo<T>` are `Copy` — never `.clone()` one before a closure.
+- `{|| expr}` in `rsx!` creates an Effect for surgical DOM updates. `{expr}` without
+  the closure captures once and **never** updates. This is the #1 source of "the UI
+  doesn't update" bugs.
+- Components run **once**. Never write code that rebuilds a DOM subtree to "refresh"
+  it — that is a re-render, and it is always the wrong fix.
 
-### RSX Macro Auto-Wrapping
+### Reactive resource ownership (#141)
 
-The `rsx!` macro auto-wraps component prop values. **Never** manually wrap in `Some(...)`, `Rc::new(...)`, or `Callback::new(...)`:
+A scope **owns** every `Signal`/`Memo`/`Effect`/event handler created while it was the
+ambient owner, and disposing the scope **frees** them: reads of a freed handle panic,
+writes are warn-once no-ops. Check with `is_alive()`. No ambient owner (`main()`, a
+timer callback, a detached thread) means app lifetime.
+
+Opt out inside a render with `unowned(|| …)` or `.leak()`. A process-lifetime registry
+that holds scope-owned state **must** call `rinch_core::reactive::on_cleanup` to let go.
+
+### Effect execution order is a contract (#154)
+
+Effects observing the same signal run in **registration order**, and the pending queue
+drains FIFO. This is enforced by `BTreeSet<ObserverId>` subscriber sets (ids are
+monotonic and never reused, so ascending id *is* registration order) plus `pop_front`
+in the flush. **Do not** swap either for a `HashSet` or a LIFO stack — an effect
+registered after an `rsx!` tree relies on seeing the post-patch DOM in the same flush.
+
+### Threading
+
+Rinch owns the main thread and all UI state is `!Send` (thread-local reactive system).
+`Signal::set()` / `update()` **panic** off the main thread; use `send()` /
+`update_send()`, which marshal onto the main thread. The runtime installs the
+dispatcher at startup via `register_main_thread()` + `set_cross_thread_dispatcher()`.
+
+### RSX macro auto-wrapping
+
+The `rsx!` macro auto-wraps component prop values. **Never** manually wrap in
+`Some(...)`, `Rc::new(...)`, or `Callback::new(...)`:
 
 ```rust
 // CORRECT — macro wraps for you
@@ -82,9 +172,15 @@ Button { variant: "filled", onclick: move || do_thing() }
 Button { variant: Some(String::from("filled")), onclick: Some(Callback::new(|| do_thing())) }
 ```
 
-### Native Control Flow in RSX
+The fallback codegen is `.into()`, so a bare `T` auto-wraps into an `Option<T>` field.
+The one exception: `Option<Rc<dyn Fn(...)>>` props still need `Some(Rc::new(...))`,
+because `.into()` cannot trigger Rust's unsizing coercion.
 
-The `rsx!` macro supports native Rust `if`/`for`/`match`. All control flow is **always reactive** — conditions and iterators are auto-wrapped in closures and tracked by Effects.
+### Native control flow in RSX
+
+`rsx!` supports native Rust `if`/`for`/`match`, and all of it is **always reactive** —
+conditions, iterators and scrutinees are auto-wrapped in closures and tracked by
+Effects.
 
 ```rust
 rsx! {
@@ -92,7 +188,7 @@ rsx! {
         // if/else — desugars to show_dom()
         if visible.get() { p { "Shown" } } else { p { "Hidden" } }
 
-        // for — desugars to for_each_dom_typed(), uses keyed reconciliation
+        // for — desugars to for_each_dom_typed(), keyed reconciliation (LIS)
         for todo in todos.get() {
             div { key: todo.id, {todo.name.clone()} }
         }
@@ -107,15 +203,16 @@ rsx! {
 }
 ```
 
-`if let`, `else if` chains, match guards, and pattern bindings are all supported. The `Show` and `For` components remain available but native syntax is preferred for new code.
+`if let`, `else if` chains, match guards and pattern bindings are all supported. For
+loop items need `Clone + PartialEq + 'static`, and a `key:` prop for stable identity.
 
-### Component Pattern
+### Component pattern
 
 ```rust
 #[component]
 fn my_component(title: &str) -> NodeHandle {
     // __scope is auto-injected by the macro
-    let count = use_signal(|| 0);
+    let count = Signal::new(0);
     rsx! {
         div {
             h1 { {title} }
@@ -126,161 +223,178 @@ fn my_component(title: &str) -> NodeHandle {
 }
 ```
 
-### Hooks Rules
+A **PascalCase** `#[component]` name generates a struct + `Component` impl instead;
+its params become public owned fields, and `children: &[NodeHandle]` is special-cased
+to the trait's `render`.
 
-Hooks must be called in the same order every render — no conditional hooks, no hooks inside event handlers or loops. Always call at the top of the component.
+There are **no hooks**. `use_signal`/`use_effect`/`use_memo`/`HookRegistry` were
+removed — call `Signal::new()` / `Effect::new()` / `Memo::new()` directly. There is no
+"hook ordering" rule to obey, and no `Show`/`For` components (only the runtime
+functions `show_dom()` / `for_each_dom_typed()` / `match_dom()`).
 
 ## Per-Crate Agent Guidance
 
-### rinch-core (reactive kernel)
+### rinch-core (reactive kernel) — highest risk
 
-**Key files:**
-- `reactive.rs` (1,384 lines) — Signal, Effect, Memo, reactive graph. **Highest risk** — bugs here break everything.
-- `dom.rs` (1,534 lines) — NodeHandle, RenderScope, DomDocument trait. This is the contract between the reactive layer and rendering.
-- `hooks.rs` (1,342 lines) — use_signal, use_effect, use_memo, use_derived, use_context, etc.
-- `for_loop.rs` — Keyed list reconciliation (LIS algorithm), `for_each_dom()` and `for_each_dom_typed()`
-- `show.rs` — Conditional rendering (`show_dom()`)
-- `match_dom.rs` — Multi-branch conditional rendering (`match_dom()`)
-- `element.rs` (593 lines) — Component trait, Element enum, callback types
-- `events.rs` (940 lines) — Event types, event handler registration
+`reactive/scope.rs` (ownership, disposal, the dispose fixpoint) and `reactive/mod.rs`
+(the runtime, subscriber sets, flush) are the most dangerous files in the workspace: a
+bug there breaks every app. `reactive/signal.rs`, `effect.rs`, `memo.rs` sit on top.
+`dom/traits.rs` (`DomDocument`), `dom/mod.rs` (`NodeHandle`) and `dom/render_scope.rs`
+(`RenderScope`) are the contract between the reactive layer and every renderer, so a
+signature change there ripples into `rinch-dom`, `rinch-web`, `rinch-editor-view` and
+`rinch` at once.
 
-**When working here:**
-- Changes to `DomDocument` trait signatures ripple through rinch-dom and rinch
-- Changes to `Signal`/`Effect`/`Memo` affect the entire framework
-- 65 tests cover reactivity, hooks, and reconciliation
+`dom/mock.rs` (`MockDomDocument`, behind the `test-util` feature) is how downstream
+crates test against the seam without a renderer. Prefer it over reaching for
+`rinch-dom` in a test.
 
 ### rinch-dom (CSS + layout + paint)
 
-**Key files:**
-- `computed_style.rs` (3,066 lines) — CSS computed style extraction from Stylo
-- `paint.rs` (2,353 lines) — Vello scene construction (backgrounds, borders, text, shadows, transforms)
-- `stylesheet.rs` (1,567 lines) — CSS parsing and stylesheet management
-- `style_resolution.rs` (1,040 lines) — Stylo style resolution bridge
-- `transition.rs` (1,003 lines) — CSS transitions engine
-- `dom_impl.rs` (972 lines) — `RinchDocument` implementing `DomDocument`
-- `layout.rs` (879 lines) — Taffy layout integration
-- `ifc.rs` (859 lines) — Inline formatting context (text layout)
-- `node.rs` (636 lines) — DOM node types, dirty flags, layout results
+`ifc.rs` (inline formatting / Parley), `paint/` (the `Painter` trait plus the Vello and
+tiny-skia backends), `layout_engine.rs` + `layout.rs` (Taffy), `computed_style/` (Stylo
+→ computed values), `style_resolution/`, `stylesheet/`, `dom_impl/` (`RinchDocument`),
+`stylo_impl.rs` (the Stylo DOM trait impls).
 
-**When working here:**
-- 207 tests across 7 dedicated test files in `tests/`
-- Stylo integration (`stylo_impl.rs`, `style_resolution.rs`) is complex — understand the Stylo DOM trait requirements
-- Paint order matters: backgrounds → borders → content → outlines → shadows
-- Layout uses Taffy for flexbox; inline text uses Parley for shaping
+- Stylo integration has many trait impls with subtle requirements — read before editing.
+- Paint order matters; layout measurement and paint must use the same font stack or
+  text clips.
+- Taffy is pinned at **0.12** in two places (`rinch-dom` and the vendored
+  `stylo-taffy`) which must move together.
 
 ### rinch-macros (proc macros)
 
-**Key files:**
-- `dom_codegen/mod.rs` — RSX macro code generation (dispatches to submodules)
-- `dom_codegen/control_flow.rs` — Codegen for Show, For, and native `if`/`for`/`match`
-- `dom_codegen/html.rs` — HTML element codegen
-- `dom_codegen/component_codegen.rs` — Component codegen
-- `element.rs` — Element parsing
-- `node.rs` — Node parsing (includes `RsxIfBlock`, `RsxForLoop`, `RsxMatchBlock`)
-
-**When working here:**
-- Changes affect every component in the project
-- 79 tests cover RSX parsing and codegen
-- Be careful with the auto-wrapping logic for component props (Some, Rc, callbacks)
-- Native control flow (`if`/`for`/`match`) desugars to `show_dom()`/`for_each_dom_typed()`/`match_dom()`
+`dom_codegen/` (`control_flow.rs` is the biggest and trickiest), `node.rs`,
+`element.rs`, `prop.rs`. Changes here affect every component in the project, and prop
+auto-wrapping is the subtlest part — a wrong wrap surfaces as a confusing type error in
+user code, far from the macro. Codegen is mostly permissive rather than validating (a
+prop the macro doesn't recognise falls through to `.into()`), so a typo in `rsx!`
+usually shows up as a type error at the component's field, not as a macro diagnostic.
 
 ### rinch (desktop runtime / facade)
 
-**Key files:**
-- `app.rs` (7,211 lines) — **Monolith.** Entire application lifecycle, event processing, rendering loop. Highest-coupling file in the project.
-- `shell/window_manager.rs` (2,491 lines) — Multi-window management
-- `shell/fine_grained_runtime.rs` (779 lines) — Fine-grained rendering runtime
-- `shell/rinch_runtime.rs` (745 lines) — Event loop, window creation
-- `shell/devtools.rs` — DevTools panel (F12)
-- `shell/transparent_renderer.rs` — Transparent window rendering
-- `menu/mod.rs` — Native menu system via muda
+`app/event_dispatch.rs` and `app/mod.rs` are the highest-coupling files — event
+processing, hit testing, focus, the render loop. `shell/rinch_runtime.rs` owns the
+winit event loop and window creation. Also here: `shell/desktop.rs` (wgpu / GPU device
+injection), `shell/softbuffer_renderer.rs`, `shell/devtools_panel.rs`,
+`render_surface.rs`, `embed.rs`, `menu/`, `editor/`.
 
-**When working here:**
-- `app.rs` is the most dangerous file to modify — side effects are likely
-- The `prelude` module re-exports everything from sub-crates
-- Feature flags gate heavy dependencies (desktop, components, theme, debug, etc.)
+The `prelude` re-exports everything downstream users need; feature flags gate the heavy
+dependencies.
 
-### rinch-components (56 components)
+### rinch-components
 
-**Key files:**
-- `styles/` directory — CSS generation for each component
-- Individual component files (e.g., `button.rs`, `text_input.rs`, `modal.rs`, `tabs.rs`)
-- `icons.rs` (855 lines) — SVG icon rendering
-- `tree.rs` (703 lines) — Most complex component
+Each component is self-contained and low-risk to modify individually. They implement
+`Component::render(&self, scope, children) -> NodeHandle`. Follow existing patterns —
+`badge.rs` for something simple, `tabs.rs` or `tree.rs` for something complex. `_fn`
+suffix props (`value_fn`, `checked_fn`) exist for surgical updates without a full
+component re-render. There are no unit tests here; verify visually through ui-zoo.
 
-**When working here:**
-- Each component is self-contained — low risk to modify individually
-- Components implement `Component::render(&self, scope, children) -> NodeHandle`
-- Follow existing patterns: look at `badge.rs` (simple) or `tabs.rs` (complex) as templates
-- **No unit tests** on individual components currently — test via ui-zoo visually
-- `_fn` suffix props (e.g., `value_fn`, `checked_fn`) enable surgical DOM updates
+### The editor crates
 
-### rinch-editor (rich-text editor)
-
-**Key files:**
-- `document/model.rs` (1,697 lines) — Document tree model
-- `schema/mod.rs` (807 lines) — Document schema definition
-- `extensions/starter_kit.rs` (1,457 lines) — Default extension pack
-- `view/input_bridge.rs` (878 lines) — Input handling bridge
-- `view/render.rs` (685 lines) — Editor rendering
-- `extensions/table_model.rs` (667 lines) — Table support
-
-**When working here:**
-- 294 tests — best-covered crate in the workspace
-- Schema-based: understand the node/mark type system before making changes
-- Uses Automerge CRDT for collaboration support
-- Extensions are modular — safe to add/modify individually
+Read `docs/src/architecture/editor.md` before touching any of them. The invariant that
+matters: **the model is the only source of truth and the host tree is derived from it.**
+Never read the host for content, never add a second mutation path, and keep
+`rinch-editor-core` free of renderer and CRDT dependencies (its manifest states the ban
+list; CI lints it for `wasm32`).
 
 ## Build & Test
 
 ```bash
-cargo build                         # Build all crates
-cargo build -p ui-zoo-desktop       # Build the main example
-cargo run -p ui-zoo-desktop         # Run it
-cargo test --workspace              # Run all 700 tests
-cargo clippy --workspace            # Lint (CI uses -D warnings)
-cargo fmt --check                   # Format check
+cargo build                          # Build all workspace crates
+cargo build -p ui-zoo-desktop        # Build the primary example
+cargo run --release -p ui-zoo-desktop  # Run it — ALWAYS use --release, debug is too slow
+cargo test --workspace               # Tests
+cargo clippy --workspace --all-targets -- -D warnings   # Lint (matches CI)
+cargo fmt --all -- --check           # Format check
 ```
 
-**System deps (Linux):** GTK3, Pango, Cairo development libraries.
+WASM: `cargo check --target wasm32-unknown-unknown`, or
+`cd examples/ui-zoo-web && trunk serve --release`. Android:
+`./examples/hello-android/build-apk.sh`.
 
-**wgpu fork:** The workspace patches 5 wgpu crates from `joeleaver/wgpu-fork` (branch `rinch-patch`) for transparent window support. Downstream consumers must copy the `[patch.crates-io]` section.
+**The pre-commit hook is the correctness gate.** `./scripts/setup-hooks.sh` installs a
+hook that runs fmt → clippy (`-D warnings`) → the `ui-zoo-web` wasm check → the full
+workspace test suite. It mirrors CI, so a clean hook run means a clean CI run.
+
+**CI jobs** (`.github/workflows/ci.yml`): `test` (workspace tests **plus** an explicit
+feature-gated set), `clippy`, `clippy-wasm` (per-crate `wasm32` lint for
+`rinch-core`, `rinch-editor-core`, `rinch-editor-collab`, `rinch-editor-view`,
+`rinch-http`, `rinch-ws`, `rinch-web`), `test-wasm` (headless Chrome, for
+`rinch-storage` and `rinch-web`), and `fmt`.
+
+**Feature-gated tests are a trap.** A test file whose `cfg` is false compiles to an
+*empty* binary that still prints `Running tests/x.rs` — only the test **count** reveals
+it. And `cargo test --workspace` unifies features across members, so a gated test can
+be alive purely because some unrelated example turns its feature on. If you add a
+gated test, add its feature combination to the "Run feature-gated tests" step; don't
+assume the workspace run covers it. (`--all-features` is not an option — it pulls a
+transitive `ashpd` that fails to build.)
+
+**System deps (Linux):** GTK3, GLib, ATK, Cairo, Pango, gdk-pixbuf, libxdo, libmpv
+development packages.
+
+**wgpu fork:** the workspace patches wgpu crates from `joeleaver/wgpu-fork` (branch
+`rinch-patch`) for transparent-window support. Cargo patches are not transitive, so
+downstream consumers must copy the `[patch.crates-io]` section into their own
+workspace.
 
 ## Common Pitfalls
 
-1. **Double-wrapping props** — The rsx! macro auto-wraps. Writing `Some(...)` or `Callback::new(...)` in rsx! causes confusing type errors.
-2. **Non-reactive expressions** — `{count.get()}` captures once; `{|| count.get()}` creates an Effect that updates. This is the #1 source of "UI doesn't update" bugs.
-3. **Conditional hooks** — Hooks must be called unconditionally, in the same order. Use `if`/`else` or `Show` for conditional rendering instead.
-4. **Missing `desktop` feature** — The workspace default-features is false. Without `features = ["desktop"]`, `run()` and rendering APIs are unavailable.
-5. **app.rs coupling** — The 7K-line monolith means changes to event handling, rendering, or window management can have unexpected interactions.
-6. **Stylo complexity** — The Firefox CSS engine integration has many trait implementations with subtle requirements. Read existing code carefully before modifying.
+1. **Non-reactive expressions.** `{count.get()}` captures once; `{|| count.get()}`
+   creates an Effect. The most common bug by a wide margin.
+2. **Double-wrapping props.** The `rsx!` macro auto-wraps; `Some(...)` or
+   `Callback::new(...)` inside `rsx!` produces confusing type errors.
+3. **Missing `desktop` feature.** The workspace dependency sets
+   `default-features = false`, so `run()` and the rendering APIs are unavailable
+   without `features = ["desktop"]`.
+4. **Cross-thread signal writes.** `set()`/`update()` panic off the main thread; use
+   `send()`/`update_send()`.
+5. **Using a disposed reactive handle.** Since #141, a freed `Signal`/`Memo` panics on
+   read. If a resource can outlive its component (a timer, a global registry, a parked
+   callback), cancel it on unmount or explicitly `.leak()` it.
+6. **Thread-local registries keyed by bare node id.** Node ids are per-document slab
+   indices and collide across documents on one thread (two windows, two embedded
+   contexts). Always key by `DomDocument::doc_key()` too.
+7. **`app/event_dispatch.rs` coupling.** Event handling, hit testing, focus and
+   rendering interact; changes there have non-obvious reach.
+8. **Stylo complexity.** The Firefox CSS engine integration has many trait impls with
+   subtle requirements. Read existing code carefully first.
+9. **Concurrent cargo processes** block on the target-dir file lock. Kill stale ones;
+   don't run cargo in parallel across agents.
+10. **`cargo check` inside `examples/ui-zoo-web`** fails on fontconfig — Parley pulls
+    it in on native Linux only. Always pass `--target wasm32-unknown-unknown` there.
 
 ## Testing with MCP
 
-The project includes a dedicated MCP server (`rinch-mcp-server`) for AI-driven visual testing:
+The `rinch-mcp-server` binary lets an agent see and drive a running app — screenshots,
+live DOM with layout bounds and computed styles, and input injection. Use it to
+*verify* a visual change instead of guessing.
 
 ```
-launch_app(package: "ui-zoo-desktop")  # Build, launch, auto-connect
-screenshot()                           # Inline PNG — directly viewable
-dom_tree()                             # Full DOM with layout + computed styles
-click(x: 100, y: 200)                 # Simulate input
-close_app()                            # Clean shutdown
+launch_app(package: "ui-zoo-desktop")   # Build, launch, auto-connect
+screenshot()                            # Inline PNG — directly viewable
+dom_tree()                              # Full DOM with layout + computed styles
+query_selector(selector: ".my-class")   # Find nodes
+get_computed_styles(id: 42)             # Resolved CSS for a node
+click(x: 100, y: 200) / wait_frame()    # Simulate input, then re-screenshot
+close_app()                             # Clean shutdown
 ```
 
-Build the MCP server first: `cargo build -p rinch-mcp-server`
+The repo's `.mcp.json` invokes `rinch-mcp-server` **by name**, so it must be on `PATH`:
+install it with `cargo install --path crates/rinch-mcp-server`, and **re-install after
+changing its source** — a `cargo build` alone won't update the installed binary. (An
+alternative `.mcp.json` can point `command` at `target/debug/rinch-mcp-server` instead.)
 
-## Test Coverage Map
+Node geometry is reported twice: `layout` is **parent-relative**, `absolute` is
+on-screen — pass `absolute` coordinates to `click()`. Headless: run under Xvfb with
+`DISPLAY` set (`launch_app` forwards it).
 
-| Crate | Tests | Notes |
-|-------|-------|-------|
-| rinch-editor | 294 | Best covered — model, schema, commands, history, tables |
-| rinch-dom | 207 | Computed styles, DOM ops, IFC, layout, paint, transitions |
-| rinch-macros | 79 | RSX parsing, codegen, native control flow |
-| rinch-core | 65 | Reactivity, hooks, reconciliation, show/for/match |
-| rinch-editor-components | 32 | Toolbar, controls |
-| rinch-visual-test | 22 | Capture, comparison, CSS export |
-| rinch-editable | 10 | Input, state |
-| rinch | 5 | HTML parser only |
-| rinch-components | 0 | No unit tests — tested visually via ui-zoo |
-| rinch-debug | 0 | No tests |
-| rinch-mcp-server | 0 | No tests |
+The app under test needs `features = ["debug"]`; the server auto-starts and can be
+disabled at runtime with `RINCH_DEBUG=0`.
+
+## Documentation Expectations
+
+User-facing changes must update the docs in the same change: the relevant page under
+`docs/src/guide/`, `docs/src/architecture/` for structural changes, doc comments on new
+public APIs, and `CLAUDE.md` when adding a reactive primitive, an element type, or an
+architectural boundary. Add new pages to `docs/src/SUMMARY.md`.

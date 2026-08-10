@@ -401,7 +401,8 @@ rinch-dom          <- Stylo + Taffy + Parley. The "browser engine" bits.
 rinch-components   <- 60+ UI components
 rinch-theme        <- CSS variable generation, color palettes
 rinch-tabler-icons <- 5000+ icons, downloaded at build time
-rinch-editor       <- Rich text editor core
+rinch-editor-core  <- Rich text editor model (pure, renderer-agnostic)
+rinch-editor-view  <- Rich text editor view (shared by desktop and web)
 rinch-debug        <- TCP IPC server for tooling
 rinch-mcp-server   <- MCP server for Claude Code integration
 ```

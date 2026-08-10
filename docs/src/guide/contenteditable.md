@@ -8,11 +8,11 @@ You add it with the `Editor {}` component and drive it through an `EditorHandle`
 > model — the document tree, steps and transactions, the schema, commands, and the
 > view seam — see the [Rich-Text Editor](./editor.md) guide.
 
-> **Desktop today.** The editor view is a **desktop** feature (gated behind the
-> `desktop` cargo feature). The editor *core* is renderer-agnostic; a web view (over
-> the browser's native contentEditable) is a planned follow-up. There is no
-> `contenteditable` HTML attribute and no DOM-level editing API to wire up — the
-> `Editor` component is the whole surface.
+> **Desktop and web.** On desktop the editor arrives with the `desktop` cargo feature;
+> in the browser `rinch-web` re-exports it (see [On the web](#on-the-web-rinch-web)
+> below) — the app code is identical, because both share the renderer-agnostic view in
+> `rinch-editor-view`. There is no `contenteditable` HTML attribute and no DOM-level
+> editing API to wire up — the `Editor` component is the whole surface.
 
 ## Quick start
 

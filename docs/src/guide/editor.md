@@ -1,10 +1,11 @@
 # Rich-Text Editor
 
 Rinch's rich-text editor is a **ProseMirror-faithful architecture in idiomatic
-Rust**: a pure, renderer-agnostic core (`rinch-editor-core`) plus a desktop view
-that projects it onto rinch-dom. This page is the conceptual guide to that core —
-the document model, schema, steps and transactions, state, commands, history, and
-the view seam.
+Rust**: a pure, renderer-agnostic core (`rinch-editor-core`) plus an equally
+renderer-agnostic view (`rinch-editor-view`) that projects it onto whichever host tree
+the platform provides — rinch-dom on desktop, the browser DOM on web. This page is the
+conceptual guide to that core — the document model, schema, steps and transactions,
+state, commands, history, and the view seam.
 
 > **Just adding an editor to a screen?** Start with the
 > [Rich-text editing](./contenteditable.md) guide — `create_editor()`, the
@@ -18,8 +19,8 @@ There is exactly one source of truth and exactly one way to change it:
    No DOM node is ever authoritative.
 2. **Every edit is a `Transaction` of invertible `Step`s**. `state.apply(tr)`
    returns a *new* `EditorState`; it is pure and side-effect-free.
-3. **The view is a pure function of state.** The desktop view diffs the old and new
-   document and patches the host tree; it renders the caret and selection from
+3. **The view is a pure function of state.** The view diffs the old and new document
+   and patches the host tree; it renders the caret and selection from
    `state.selection`. The host tree is never read back for content.
 4. **Input produces transactions, not DOM edits.** Keys, IME, paste, and pointer
    selection are translated into commands/transactions.
@@ -241,26 +242,30 @@ features compose without bloating the core.
 ## The view seam
 
 The core defines an `EditorView` trait and a small request/event vocabulary; it knows
-nothing about any renderer. The **desktop view lives in the `rinch` crate** — the
-only rinch-dom touchpoint — and a **web view (a follow-up) will live in `rinch-web`**,
-delegating to the browser's native contentEditable. Nothing else knows the renderer.
+nothing about any renderer. The view that implements it — `RinchDomEditorView` — lives
+in **`rinch-editor-view`** and is itself renderer-agnostic: it projects onto any
+`rinch-core` `DomDocument`, so the desktop (rinch-dom) and browser (`web_sys`) editors
+run the *same* view code. Only the thin input glue and the layout-coupled extras are
+per-platform (`rinch` on desktop, `rinch-web` in the browser).
 
-The desktop view, on each transaction:
+The view, on each transaction:
 
-1. **Diffs** `prev.doc` against `next.doc`. Because the model is persistent,
-   `Rc::ptr_eq` makes the diff cheap — unchanged subtrees are skipped entirely.
-2. **Patches** rinch-dom for the changed regions via the standard primitives
-   (`create_element` / `create_text` / `append_child` / `insert_before` / `remove` /
-   `set_text` / `set_attribute` / `set_style`), choosing tags from the schema-driven
-   serializer. **Leaf node-views** (image, horizontal rule, table cell) own their own
-   subtree; the diff stops at their boundary and delegates.
-3. **Renders the caret and selection from `state.selection`** (after layout),
-   converting the model's char `Pos` to a byte offset for Parley only at this render
-   edge.
+1. **Diffs** the new document against the descriptor tree it retained from the previous
+   one. Because the model is persistent, `Node::same_ref` (an `Rc::ptr_eq`) makes the
+   diff cheap — unchanged subtrees are skipped entirely. The diff is positional, and a
+   node whose tag or mark set changed is rebuilt rather than patched.
+2. **Patches** the host for the changed regions via the standard `DomDocument`
+   primitives (`create_element` / `create_text` / `append_child` / `insert_before` /
+   `remove` / `set_text` / `set_attribute` / `set_style`), choosing tags from the
+   schema-driven serializer. Decorations (placeholder, IME preedit) diff separately, so
+   a decoration-only transaction still produces a visible update.
+3. **Renders the caret and selection from `state.selection`** (after layout, in the
+   second phase), converting the model's char `Pos` to a byte offset for the platform's
+   text layout only at this render edge.
 
-The view also owns block virtualization (skipping layout for off-screen blocks while
-keeping their real height), IME positioning, and — under the opt-in `a11y` feature —
-deriving an accessibility tree from the state.
+Around that, the platform crates own block virtualization (skipping layout for
+off-screen blocks while keeping their real height), IME positioning, and — under the
+opt-in `a11y` feature — pushing an accessibility tree derived from the state.
 
 ## End-to-end edit flow
 
@@ -289,4 +294,5 @@ types are rejected on load, never silently dropped.
 - [Rich-text editing](./contenteditable.md) — the practical component + command API.
 - `examples/markdown-editor` and `examples/ui-zoo/src/sections/editor.rs` — working
   editors driving the command API.
-- [Editor Architecture](../architecture/editor.md) — deeper technical notes.
+- [Editor Architecture](../architecture/editor.md) — the crate boundaries, data flow,
+  and the invariants each boundary protects.

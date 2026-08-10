@@ -651,7 +651,7 @@ MenuItem::new("Reset Counter").on_click(move || count.set(0))
 
 ## Rich-Text Editor
 
-Rinch's rich-text editor is a ProseMirror-style, **model-first** editor. The document lives in `rinch-editor-core` (a pure, wasm-clean crate: `Node`/`Mark`/`Fragment`/`Slice`, one char-based `Pos` space, a real `ContentMatch` schema, invertible `Step`s, `Transaction`/`EditorState`, plugins/commands/keymap/input-rules, a single Step-based history). The desktop view (in `crates/rinch/src/editor/`) projects that model onto rinch-dom primitives and renders the caret/selection from `Selection` after layout. It is a **desktop feature** (folded into `desktop`); the web view is a follow-up. There is no `contenteditable` attribute engine anymore — mount the `Editor {}` component instead.
+Rinch's rich-text editor is a ProseMirror-style, **model-first** editor. The document lives in `rinch-editor-core` (a pure, wasm-clean crate: `Node`/`Mark`/`Fragment`/`Slice`, one char-based `Pos` space, a real `ContentMatch` schema, invertible `Step`s, `Transaction`/`EditorState`, plugins/commands/keymap/input-rules, a single Step-based history). The view lives in `rinch-editor-view` — **renderer-agnostic**: it projects that model onto any `rinch-core` `DomDocument` host and renders the caret/selection from `Selection` after layout, so desktop (rinch-dom) and web (`web_sys`) share one view. On desktop it arrives with the `desktop` feature and `crates/rinch/src/editor/` re-exports it; on web, `rinch-web` re-exports it. There is no `contenteditable` attribute engine anymore — mount the `Editor {}` component instead.
 
 **Mutation flows one way:** every edit is a `Transaction` applied by `EditorState::apply` → the view diffs old/new doc + decorations and patches the DOM. Commands read **state**, never the DOM.
 
@@ -692,19 +692,22 @@ Command names (dispatch by string): `toggleBold/Italic/Underline/Strike/Code/Hig
 
 **Markdown shortcuts (input rules).** As you type, the default `MarkdownInputRulesPlugin` rewrites markdown shortcuts (these run inside `EditorHandle::insert_text`, so every text-entry path gets them). Block shortcuts at the line start: `# `…`###### ` → headings, ` ``` ` → code block, `> ` → blockquote, `- `/`* `/`+ ` → bullet list, `1. ` → ordered list, `[ ] `/`[x] ` → task list. Inline mark shortcuts (fire on the closing delimiter): `**bold**`/`__bold__`, `*italic*`/`_italic_`, `~~strike~~`, `==highlight==`, `` `code` ``. The rule set lives in `rinch-editor-core/src/input_rules.rs` (`markdown_input_rules()`); add a `mark_input_rule`/`wrapping_input_rule` there to extend it. Task items render a checkbox from their `checked` attr via the default stylesheet (`[data-pm-type="task_item"]`); `Enter` makes a fresh unchecked item, `Enter` on an empty item exits the list.
 
-The editor ships its own default light/dark stylesheet (`editor/styles.rs`, injected once by the view); toggle dark mode with `handle.set_dark_mode(true)` (sets `data-pm-theme="dark"` on the container). Don't hand-roll editor CSS.
+The editor ships its own default light/dark stylesheet (`rinch-editor-view/src/styles.rs`, injected once by the view); toggle dark mode with `handle.set_dark_mode(true)` (sets `data-pm-theme="dark"` on the container). Don't hand-roll editor CSS.
 
 ### Key Source Files
 
 | File | Purpose |
 |------|---------|
-| `crates/rinch-editor-core/src/` | Pure model: `model/*`, `pos/*`, `schema/*`, `transform/*` (Steps), `state/*`, `commands/*`, `plugins/*`, `serialize/*`, `tables.rs`, `a11y.rs` |
-| `crates/rinch/src/editor/mod.rs` | `create_editor`, the registry, the two-phase caret/overlay passes |
-| `crates/rinch/src/editor/component.rs` | The `Editor {}` rsx component |
-| `crates/rinch/src/editor/handle.rs` | `EditorHandle` — the imperative app/component API |
-| `crates/rinch/src/editor/view.rs` | `RinchDomEditorView` (the `EditorView` impl: `ViewDesc` diff, caret/selection/decoration overlays) |
-| `crates/rinch/src/editor/styles.rs` | Default light/dark stylesheet |
-| `crates/rinch/src/editor/virtual_window.rs` | Block virtualization for large docs |
+| `crates/rinch-editor-core/src/` | Pure model: `model/*`, `pos/*`, `schema/*`, `transform/*` (Steps), `state/*`, `commands/*`, `plugins/*`, `serialize/*`, `tables.rs`, `a11y.rs`, and `view.rs` (the `EditorView` seam) |
+| `crates/rinch-editor-view/src/lib.rs` | `create_editor`, `mount_editor`, `caret_blink_tick` |
+| `crates/rinch-editor-view/src/handle.rs` | `EditorHandle` — the imperative app/component API |
+| `crates/rinch-editor-view/src/view.rs` | `RinchDomEditorView` (the `EditorView` impl: `ViewDesc` diff, caret/selection/decoration overlays) |
+| `crates/rinch-editor-view/src/component.rs` | The `Editor {}` rsx component |
+| `crates/rinch-editor-view/src/registry.rs` | The mounted-editor registry (keyed by `doc_key` + container id) and `update_all_carets`, the post-layout overlay pass |
+| `crates/rinch-editor-view/src/styles.rs` | Default light/dark stylesheet |
+| `crates/rinch/src/editor/` | **Desktop-only** wiring; re-exports all of `rinch-editor-view`. Block virtualization (`virtualization.rs` + `virtual_window.rs`), AccessKit (`a11y.rs`), and the `Send`-safe `post_remote_delta` |
+| `crates/rinch/src/app/event_dispatch.rs`, `app/focus.rs` | Desktop input glue: key/pointer/IME → `EditorHandle` calls, and the focus arbiter |
+| `crates/rinch-web/src/editor_input.rs` | The same glue for the browser (the web editor shares the view crate) |
 | `crates/rinch-editable/src/` | The separate single-line `<input>`/`<textarea>` engine (`EditCommand`, `InputHandler`) — unrelated to the rich editor |
 
 ### Collaboration (optional, opt-in — M9)
