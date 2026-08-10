@@ -34,6 +34,11 @@ pub use registry::{
 /// the [`EditorHandle`] collaboration methods.
 #[cfg(feature = "collaboration")]
 pub use rinch_editor_collab::CollabError;
+/// Automerge sync-protocol types (re-exported from `rinch-editor-collab`), so a caller
+/// driving [`EditorHandle::collab_generate_sync_message`] /
+/// [`EditorHandle::collab_receive_sync_message`] needs no direct `automerge` dependency.
+#[cfg(feature = "collaboration")]
+pub use rinch_editor_collab::{ChangeHash, SyncMessage, SyncState};
 pub use view::RinchDomEditorView;
 
 use std::rc::Rc;
