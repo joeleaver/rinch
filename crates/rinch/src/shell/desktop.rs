@@ -445,12 +445,8 @@ impl PlatformRenderer for WgpuRenderer {
         self.surface_config.width = width;
         self.surface_config.height = height;
         self.surface.configure(&self.device, &self.surface_config);
-        self.render_texture = Self::create_render_texture(
-            &self.device,
-            TextureFormat::Rgba8Unorm,
-            width,
-            height,
-        );
+        self.render_texture =
+            Self::create_render_texture(&self.device, TextureFormat::Rgba8Unorm, width, height);
         self.composited_texture = None;
     }
 
@@ -674,7 +670,12 @@ impl PlatformRenderer for WgpuRenderer {
             // Vello output is opaque here (base color is never transparent on
             // this path), so the alpha-over fullscreen draw writes every pixel
             // and the surface needs no clear.
-            compositor.overlay_ui(&self.device, &mut encoder, &self.render_texture, &surface_view);
+            compositor.overlay_ui(
+                &self.device,
+                &mut encoder,
+                &self.render_texture,
+                &surface_view,
+            );
         }
 
         self.queue.submit(Some(encoder.finish()));

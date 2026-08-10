@@ -22,10 +22,10 @@ fn quadrant_frame() -> Vec<u8> {
     for y in 0..SH {
         for x in 0..SW {
             let c = match (x < SW / 2, y < SH / 2) {
-                (true, true) => [255u8, 0, 0, 255],    // top-left: pure red
-                (false, true) => [0, 255, 0, 255],     // top-right: pure green
-                (true, false) => [0, 0, 255, 255],     // bottom-left: pure blue
-                (false, false) => [255, 128, 0, 255],  // bottom-right: orange
+                (true, true) => [255u8, 0, 0, 255],   // top-left: pure red
+                (false, true) => [0, 255, 0, 255],    // top-right: pure green
+                (true, false) => [0, 0, 255, 255],    // bottom-left: pure blue
+                (false, false) => [255, 128, 0, 255], // bottom-right: orange
             };
             px.extend_from_slice(&c);
         }
