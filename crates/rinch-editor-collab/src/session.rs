@@ -81,6 +81,14 @@ impl CollabSession {
     /// empty once anything has been deleted. A transaction's own update is constant-size
     /// and genuinely empty when there was no transaction.
     ///
+    /// The **first** delta of a session started with [`Self::new`] also carries the
+    /// initial projection of the document, by design: the outbox is armed before that
+    /// projection is written, so no content can ever escape the broadcast stream. A peer
+    /// that joined from [`Self::snapshot`] already has it and applies that part as a
+    /// no-op, since updates are idempotent. Draining the outbox in `snapshot` instead
+    /// would trade this one redundant delta for the risk of an *earlier* joiner missing a
+    /// real one.
+    ///
     /// Fails only if a parked update cannot be re-decoded to be merged with its
     /// neighbours, which would mean this replica produced a malformed update; the parked
     /// updates are left in place, so the error is not a silent loss.

@@ -197,6 +197,10 @@ pub struct CollabDoc {
 
 // `Subscription` is not `Debug`, and neither is the observer closure behind it, so the
 // derive is replaced by a summary of what a reader actually wants to see.
+//
+// CAUTION: this takes a **read transaction** to report the block count, so formatting a
+// `CollabDoc` while a transaction is live (a `dbg!` in the middle of a projection write,
+// say) deadlocks on native and panics on wasm — yrs cannot nest transaction acquisitions.
 impl std::fmt::Debug for CollabDoc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CollabDoc")
@@ -1256,6 +1260,68 @@ mod tests {
         assert!(
             b.outbox.borrow().is_empty(),
             "an applied peer delta must not be queued for re-broadcast"
+        );
+    }
+
+    #[test]
+    fn several_parked_updates_merge_into_one_delta_that_converges_a_peer() {
+        // The multi-update branch of `take_outbox`. More than one local transaction can
+        // pile up before a single save (the initial projection plus a first edit is the
+        // everyday case), and those updates must be *merged* into one valid update —
+        // concatenating them would produce bytes that are not an update at all — which a
+        // peer then applies in one go.
+        let s = schema();
+        let doc = |texts: &[&str]| {
+            let blocks: Vec<Node> = texts
+                .iter()
+                .map(|t| {
+                    let content = if t.is_empty() {
+                        Fragment::empty()
+                    } else {
+                        Fragment::from_node(s.text(t).unwrap())
+                    };
+                    s.branch("paragraph", content).unwrap()
+                })
+                .collect();
+            s.branch("doc", Fragment::from_children(blocks)).unwrap()
+        };
+
+        let d0 = doc(&["one", "two"]);
+        let mut a = CollabDoc::from_doc(&d0).unwrap();
+        let mut b = CollabDoc::load(&a.save()).unwrap();
+        // Drop the initial projection: the peer already has it from the snapshot, so what
+        // follows is a merge of edits only.
+        let _ = a.take_outbox().unwrap();
+
+        // Three separate transactions, touching different blocks and adding a mark, so the
+        // merge has to carry insertions in two text objects plus formatting.
+        let d1 = doc(&["oneA", "two"]);
+        let d2 = doc(&["oneA", "twoB"]);
+        let d3 = doc(&["oneA", "twoB!"]);
+        a.project_change(&d0, &d1).unwrap();
+        a.project_change(&d1, &d2).unwrap();
+        a.project_change(&d2, &d3).unwrap();
+        assert_eq!(
+            a.outbox.borrow().len(),
+            3,
+            "each local transaction parks its own update, so the merge branch is what runs"
+        );
+
+        let merged = a.take_outbox().unwrap();
+        b.apply_update(&merged).unwrap();
+        assert_eq!(
+            b.to_doc(&s).unwrap(),
+            a.to_doc(&s).unwrap(),
+            "one apply of the merged delta converges the peer"
+        );
+        assert_eq!(
+            b.to_doc(&s).unwrap(),
+            d3,
+            "and lands exactly on the document the three edits produced"
+        );
+        assert!(
+            a.take_outbox().unwrap().is_empty(),
+            "the merge drained the outbox"
         );
     }
 
