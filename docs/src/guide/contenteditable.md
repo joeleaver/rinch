@@ -316,6 +316,15 @@ guest.start_collaboration_guest(&snapshot, move |delta| transport.send(delta))?;
 guest.collab_receive(&delta_bytes);
 ```
 
+On desktop, network callbacks usually arrive on a background socket/data-channel
+thread — use the `Send`-safe entry point, which marshals the delta onto the main
+thread for you:
+
+```rust
+use rinch::prelude::*;
+post_remote_delta(editor_container_id, delta_bytes); // any thread → main
+```
+
 **The transport owns relaying.** `outbound` fires only for an editor's own local
 edits — a delta that arrives through `collab_receive` is never re-broadcast (it's
 already in the shared CRDT; echoing it back would loop). So the transport must be a
