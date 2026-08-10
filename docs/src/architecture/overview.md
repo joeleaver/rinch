@@ -20,17 +20,19 @@ Signal.set()
 rinch/
 ├── crates/
 │   ├── rinch/              # Main application crate
-│   │   ├── src/app.rs      # Platform-agnostic RinchApp
+│   │   ├── src/app/        # Platform-agnostic RinchApp
 │   │   └── src/shell/      # Desktop backend (winit + wgpu)
 │   ├── rinch-core/         # Core types, reactive primitives, DOM abstractions
 │   ├── rinch-macros/       # rsx! proc macro
 │   ├── rinch-dom/          # HTML/CSS DOM (Taffy + Parley + Stylo + Vello)
 │   ├── rinch-platform/     # Platform abstraction traits
 │   ├── rinch-web/          # Browser-native DOM backend (WebDocument over web_sys)
-│   ├── rinch-editor/       # Rich-text editor (CRDT)
+│   ├── rinch-editor-core/  # Rich-text editor model (pure, renderer-agnostic)
+│   ├── rinch-editor-view/  # Rich-text editor view (desktop + web projection)
+│   ├── rinch-editor-collab/# Optional CRDT collaboration adapter (yrs)
 │   ├── rinch-theme/        # Theme system (CSS variables)
-│   ├── rinch-components/   # UI component library (~55 components)
-│   ├── rinch-editable/     # Text editing abstractions
+│   ├── rinch-components/   # UI component library
+│   ├── rinch-editable/     # Single-line <input>/<textarea> editing primitives
 │   ├── rinch-clipboard/    # Cross-platform clipboard
 │   ├── rinch-tabler-icons/ # 5000+ Tabler Icons
 │   ├── rinch-debug/        # Debug IPC server
@@ -39,6 +41,9 @@ rinch/
     ├── ui-zoo-desktop/     # Desktop component showcase + rich-text editor
     └── ui-zoo-web/         # Web (WASM) component showcase using browser-native DOM
 ```
+
+These are the principal crates; the workspace `Cargo.toml` has the full member list
+(networking, storage, media, testing and platform-specific crates are omitted here).
 
 ## Layer Diagram
 
@@ -49,9 +54,9 @@ rinch/
 ├──────────────────────────────────────────────────────────────┤
 │                         rinch                                 │
 │  ┌──────────────────────────────────────────────────┐        │
-│  │          RinchApp (app.rs)                        │        │
+│  │          RinchApp (app/)                          │        │
 │  │  Platform-agnostic application logic              │        │
-│  │  handle_event(PlatformEvent) -> Vec<AppAction>    │        │
+│  │  handle_event(PlatformEvent, …) -> Vec<AppAction> │        │
 │  └──────────────────────────────────────────────────┘        │
 │                          │                                    │
 │         ┌────────────────┼────────────────┐                  │
@@ -69,7 +74,7 @@ rinch/
 │  Signal, Effect, Memo, RenderScope, NodeHandle, DomDocument  │
 ├──────────────────────────────────────────────────────────────┤
 │  rinch-dom    │  rinch-theme  │  rinch-components            │
-│  (HTML/CSS)   │  (CSS vars)   │  (~55 components)            │
+│  (HTML/CSS)   │  (CSS vars)   │  (component library)         │
 ├──────────────────────────────────────────────────────────────┤
 │                    External Crates                            │
 │  Taffy (layout) │ Parley (text) │ Stylo (CSS) │ Vello/tiny-skia │
@@ -83,13 +88,18 @@ Rinch uses a platform abstraction pattern to support multiple backends (desktop,
 ```rust
 // Platform-agnostic application logic
 impl RinchApp {
-    fn handle_event(&mut self, event: PlatformEvent) -> Vec<AppAction> {
+    pub fn handle_event(
+        &mut self,
+        event: PlatformEvent,
+        window_size: (u32, u32),
+        scale_factor: f64,
+    ) -> Vec<AppAction> {
         match event {
             PlatformEvent::MouseDown { x, y, button } => {
                 // Handle click, update DOM
                 vec![AppAction::RequestRedraw]
             }
-            PlatformEvent::KeyPress { key, modifiers } => {
+            PlatformEvent::KeyDown { key, modifiers, .. } => {
                 // Handle keyboard input
                 vec![AppAction::RequestRedraw]
             }
@@ -119,12 +129,13 @@ This separation allows:
 
 The foundation layer containing:
 
-- **Reactive primitives** - `Signal<T>`, `Effect`, `Memo<T>` for state management
+- **Reactive primitives** - `Signal::new()`, `Effect::new()`, `Memo::new()`, plus
+  scopes/ownership and `create_context()` / `create_store()`
 - **DOM abstractions** - `RenderScope`, `NodeHandle`, `DomDocument` trait
-- **Reactive Primitives** - `Signal::new()`, `Effect::new()`, `Memo::new()`, `create_context()`
+- **Control flow** - `show_dom()`, `for_each_dom_typed()`, `match_dom()` (what rsx
+  `if`/`for`/`match` desugar to)
 - **Element types** - Minimal enum: `Html`, `Fragment`, `Component` only
-- **Event handling** - Input and click event dispatch
-- **Icon enum** - Curated set of ~40 common icons for components
+- **Event handling** - Input, click, keyboard and drag event dispatch
 
 ### rinch-macros
 
@@ -148,10 +159,12 @@ rsx! {
 
 The main crate that ties everything together:
 
-- **RinchApp** (`app.rs`) - Platform-agnostic application logic
+- **RinchApp** (`app/`) - Platform-agnostic application logic (event dispatch, hit
+  testing, focus arbitration, text selection)
 - **Desktop backend** (`shell/rinch_runtime.rs`) - Event loop, window creation, rendering
-- **Event loop** (`shell/rinch_runtime.rs`) - Desktop runtime: event loop, window creation, rendering
 - **Menu Manager** - Native menu support via muda
+- **Editor wiring** (`editor/`) - Desktop-only editor pieces: block virtualization,
+  AccessKit accessibility, the cross-thread collaboration inbound
 
 ### rinch-platform
 
@@ -172,12 +185,16 @@ HTML/CSS DOM implementation:
 
 ### rinch-web
 
-Browser-native DOM backend (the WASM target). Consumed by `examples/ui-zoo-web` and `examples/paint-web`:
+Browser-native DOM backend (the WASM target). Consumed by the `*-web` examples —
+`ui-zoo-web`, `paint-web`, `editor-web`, `collab-editor-web`, and others:
 
 - **WebDocument** - Implements `DomDocument` via `web_sys`, creating real browser DOM elements
 - **No Taffy/Parley/Vello** - The browser handles layout, text shaping, and painting natively
 - **Event delegation** - `setup_event_delegation` installs document-level listeners that dispatch via `data-rid` attributes (plus drag, render-surface routing, and `data-onsubmit`/`data-oninput`)
 - **`mount` helper** - One call wires the WebDocument, builds the component tree, installs event delegation, and injects theme CSS
+- **Rich-text editor** - Re-exports `Editor` / `EditorHandle` / `create_editor` from
+  `rinch-editor-view` and owns the browser input glue, so editor app code is identical
+  to desktop
 - **Smaller binary** - ~3.2MB WASM (vs 11MB+ with Vello rendering)
 
 ### rinch-theme
@@ -189,25 +206,36 @@ Theme system with CSS variables:
 - Dark mode support
 - CSS variable generation for components
 
-### rinch-editor
+### rinch-editor-core / rinch-editor-view / rinch-editor-collab
 
-Rich-text editor with collaborative editing support:
+The ProseMirror-style rich-text editor, split by how much each crate may know about a
+renderer:
 
-- **CRDT-backed document** - Automerge for offline editing and conflict resolution
-- **Schema system** - Define valid document structure with nodes and marks
-- **22 StarterKit extensions** - Complete editing experience out of the box
-- **Command system** - All mutations go through named commands
-- **Extension system** - Add custom nodes, marks, commands, shortcuts
-- **Keyboard shortcuts** - 16+ built-in shortcuts (Mod-B, Mod-I, etc.)
-- **Markdown input rules** - Auto-convert markdown patterns (# heading, **bold**, etc.)
-- **Table editing** - Full table support with merge/split/navigation
-- **Local undo/redo** - Compatible with collaborative editing
+- **rinch-editor-core** — the **model-first** source of truth, and pure: no rinch-dom,
+  winit, web_sys, parley, taffy, vello, or CRDT engine, and it compiles to `wasm32`.
+  It holds the immutable `Node`/`Mark`/`Fragment`/`Slice` document tree, one char-based
+  `Pos` space, a `ContentMatch` schema that is *enforced* at the step boundary,
+  invertible `Step`s, `EditorState`/`Transaction`, the command catalogue and keymap,
+  markdown input rules, Step-based undo/redo, and total schema-derived serialization
+  (`DocNode` JSON, HTML, markdown). It defines the `EditorView` seam and knows nothing
+  about any renderer.
+- **rinch-editor-view** — the projection: `RinchDomEditorView` renders an
+  `EditorState` onto *any* `DomDocument` host, so the desktop (rinch-dom) and browser
+  (`web_sys`) editors share one view. Also the `Editor {}` component, the imperative
+  `EditorHandle`, the mounted-editor registry and the default stylesheet.
+- **rinch-editor-collab** — optional, off by default: projects the model onto a **yrs**
+  (Yjs) CRDT for real-time collaboration and rebuilds remote changes back into `Step`s.
+  The only crate in the workspace that links a CRDT engine.
+
+**Mutation flows one way:** every edit is a `Transaction` applied by
+`EditorState::apply`, after which the view diffs the document and patches the host.
+The host tree is never read back for content, and commands query state, never the DOM.
 
 See [Editor Architecture](./editor.md) for technical details.
 
 ### rinch-components
 
-UI component library (~55 components):
+UI component library:
 
 - Input components: TextInput, Checkbox, Switch, Select, Slider
 - Display components: Button, Badge, Alert, Card, Notification
@@ -219,11 +247,15 @@ UI component library (~55 components):
 
 ### rinch-editable
 
-Text editing abstractions:
+Editing primitives for single-line `<input>` and `<textarea>` widgets — a **separate
+engine**, unrelated to the rich-text editor above (they share no code and no types,
+despite both having a `Selection`):
 
 - **EditableDocument** - Trait for text editing operations
+- **StringDocument** - Single-line text document
 - **EditCommand** - Enum of editing commands (insert, delete, etc.)
 - **EditableState** - Cursor position, selection state
+- **InputHandler** - Maps keyboard input to commands
 
 ### rinch-clipboard
 
@@ -348,7 +380,7 @@ This is much more efficient than regenerating HTML and replacing the entire docu
 | **winit** | Cross-platform windowing and input |
 | **muda** | Native menu support (macOS/Windows/Linux) |
 | **arboard** | Cross-platform clipboard access |
-| **Automerge** | CRDT for collaborative editing (rinch-editor) |
+| **yrs** | CRDT for collaborative editing (rinch-editor-collab, opt-in) |
 
 ## Design Principles
 
