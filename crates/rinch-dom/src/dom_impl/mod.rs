@@ -221,6 +221,20 @@ impl RinchDocument {
                 margin: 0;
                 overflow-y: auto;
             }
+
+            /* A `data-viewport` node is a compositing hole: the game/video frame
+               shows through it (find_viewport_rects punches the background) and a
+               pointer landing on it belongs to whatever renders into it, not to
+               the rinch UI. That routing is decided by hit-testing the hole, so
+               the hole must be HITTABLE — `pointer-events: none` on it makes the
+               UI claim the mouse everywhere instead (issue #207). Declaring it
+               here also beats a `pointer-events: none` inherited from a HUD root
+               (issue #195) while still losing to any author declaration on the
+               hole itself, so an app can still opt out. */
+            [data-viewport] {
+                pointer-events: auto;
+                background: transparent;
+            }
         "#;
 
         let url_data = UrlExtraData::from(url::Url::parse("about:ua-stylesheet").unwrap());

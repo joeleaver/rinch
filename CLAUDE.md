@@ -1371,7 +1371,7 @@ Your game owns the window and wgpu device. Rinch runs headless — you feed it e
 | `RinchContext` | Main handle — `new()`, `update()`, `scene()`. Multiple contexts can coexist on one thread (#134): each holds its own `subscribe_signal_change` guard, and bounds signals / editor registrations / focus requests are scoped per document via `DomDocument::doc_key()`. Stores/contexts are namespaced per context with a thread-global fallback (#136): `create_store` inside a context lands in that context's namespace (cleared on drop), its effects/handlers resolve it first, and lookups fall back to stores created outside any context. |
 | `RinchContextConfig` | Width, height, scale factor, optional theme |
 | `RinchOverlayRenderer` | Convenience Vello-to-texture renderer |
-| `GameViewport` | Component marking a transparent hole for game rendering |
+| `GameViewport` | Component marking a transparent hole for game rendering. **Hittable by default** (#207): `wants_mouse` routes input by hit-testing the hole and walking up to `data-viewport`, so an unhittable hole makes the UI claim the mouse *everywhere*. `pointer-events: auto; background: transparent;` come from the UA stylesheet rule for `[data-viewport]` — not an inline style — so restyling the hole can't strip them, and a HUD root's inherited `pointer-events: none` can't reach it. Your own HUD controls under such a root still need `pointer-events: auto`. |
 | `LayoutRect` | `{x, y, width, height}` in logical pixels |
 
 **Typical game loop:**
