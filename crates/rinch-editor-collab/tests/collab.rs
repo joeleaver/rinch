@@ -120,15 +120,21 @@ fn two_peers(blocks: Vec<Node>) -> (Rc<Schema>, Peer, Peer) {
         session: session_a,
     };
 
-    let snap = a.session.snapshot();
-    let session_b = CollabSession::from_bytes(&snap).expect("session B");
-    let b_doc = session_b.projected_doc(&schema).expect("project B");
-    let b_state = EditorState::create(schema.clone(), b_doc, plugins());
-    let b = Peer {
-        state: b_state,
-        session: session_b,
-    };
+    let b = join(&schema, &a.session.snapshot());
     (schema, a, b)
+}
+
+/// Join an existing session from `snapshot`, adopting the document it projects — the
+/// session-level shape of `EditorHandle::start_collaboration_guest`.
+fn join(schema: &Rc<Schema>, snapshot: &[u8]) -> Peer {
+    let session = CollabSession::from_bytes(snapshot).expect("join from snapshot");
+    let doc = session
+        .projected_doc(schema)
+        .expect("project the joined document");
+    Peer {
+        state: EditorState::create(schema.clone(), doc, plugins()),
+        session,
+    }
 }
 
 /// Reconcile two peers by exchanging **state vectors** and the diffs they imply.
@@ -755,6 +761,114 @@ fn a_delete_only_broadcast_delta_reaches_the_peer() {
         norm(&b.state.doc).contains("abef"),
         "the deletion reached the peer: {}",
         norm(&b.state.doc)
+    );
+}
+
+// --- the zero-block state (issue #192) -----------------------------------------
+
+/// Delete block `index` outright (its open token through its close token).
+fn delete_block(peer: &mut Peer, index: usize) {
+    let doc = peer.state.doc.clone();
+    let start: usize = (0..index).map(|i| doc.child(i).node_size()).sum();
+    let end = start + doc.child(index).node_size();
+    peer.local(|tr| {
+        tr.delete(start, end).unwrap();
+    });
+}
+
+#[test]
+fn concurrent_deletion_of_different_blocks_empties_the_crdt_and_self_heals() {
+    // The #192 repro at the session layer. Two peers concurrently delete *different*
+    // blocks, so the union of the deletions is every block and the converged content
+    // array is empty — a state no model can mirror, since the schema requires a block.
+    // Before the fix the next local edit died with `Schema("reconcile_node: missing
+    // node")`, nothing was broadcast, and the session never recovered.
+    let schema = Rc::new(Schema::starter_kit());
+    let (schema, mut a, mut b) = {
+        let _ = &schema;
+        two_peers(vec![para(&schema, "one"), para(&schema, "two")])
+    };
+    delete_block(&mut a, 1); // A drops "two"
+    delete_block(&mut b, 0); // B drops "one"
+    assert_eq!(a.state.doc.child_count(), 1, "each peer deleted one block");
+    assert_eq!(b.state.doc.child_count(), 1);
+    sync(&mut a, &mut b);
+
+    // The invariant's one exception: with zero blocks in the CRDT the read-back is the
+    // starter paragraph — equal to each peer's model, but not backed by CRDT content.
+    let starter = norm(&doc_of(&schema, vec![para(&schema, "")]));
+    assert_eq!(
+        norm(&a.state.doc),
+        starter,
+        "A converged to the starter paragraph"
+    );
+    assert_eq!(
+        norm(&b.state.doc),
+        starter,
+        "B converged to the starter paragraph"
+    );
+    assert_converged(&a, &b, &schema);
+
+    // The next local edit on either peer must project, broadcast and converge.
+    a.type_at(1, "Z");
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert!(
+        norm(&b.state.doc).contains('Z'),
+        "A's first edit after the empty state reached B: {}",
+        norm(&b.state.doc)
+    );
+
+    b.type_at(1, "Y");
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    let t = norm(&a.state.doc);
+    assert!(
+        t.contains('Y') && t.contains('Z'),
+        "both post-recovery edits survived: {t}"
+    );
+}
+
+#[test]
+fn a_late_joiner_can_join_a_session_with_no_blocks_left() {
+    // The second symptom of #192: `load` used to reject a zero-block projection as "not a
+    // rinch editor projection", locking a late joiner out of a session that had reached
+    // that state. The format marker is the discriminator now, so the join succeeds and
+    // the joiner adopts the starter paragraph.
+    let schema = Rc::new(Schema::starter_kit());
+    let (schema, mut a, mut b) = {
+        let _ = &schema;
+        two_peers(vec![para(&schema, "one"), para(&schema, "two")])
+    };
+    delete_block(&mut a, 1);
+    delete_block(&mut b, 0);
+    sync(&mut a, &mut b);
+
+    let starter = norm(&doc_of(&schema, vec![para(&schema, "")]));
+    let mut c = join(&schema, &a.session.snapshot());
+    assert_eq!(
+        norm(&c.state.doc),
+        starter,
+        "the late joiner adopts the starter paragraph"
+    );
+
+    // And edits flow both ways between the joiner and an existing peer.
+    c.type_at(1, "L");
+    sync(&mut a, &mut c);
+    assert_converged(&a, &c, &schema);
+    assert!(
+        norm(&a.state.doc).contains('L'),
+        "the joiner's edit reached the existing peer: {}",
+        norm(&a.state.doc)
+    );
+
+    a.type_at(1, "H");
+    sync(&mut a, &mut c);
+    assert_converged(&a, &c, &schema);
+    let t = norm(&c.state.doc);
+    assert!(
+        t.contains('H') && t.contains('L'),
+        "both directions synced: {t}"
     );
 }
 

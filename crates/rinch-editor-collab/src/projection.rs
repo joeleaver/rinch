@@ -14,6 +14,9 @@
 //! *or* a container (carries a `content` array of child nodes):
 //!
 //! ```text
+//! root Map "meta"                 // the projection-format marker (see `load`)
+//!   "format" -> "rinch-editor-collab/yrs-1"
+//!
 //! root Array "content"            // a named root type, holding the top-level blocks
 //!   Node (Map):
 //!     "type"  -> string           // "paragraph" | "heading" | "bullet_list" | …
@@ -104,6 +107,20 @@ const CONTENT: &str = "content";
 const TYPE: &str = "type";
 const ATTRS: &str = "attrs";
 const TEXT: &str = "text";
+/// The root map holding the projection-format marker, and its one key.
+const META: &str = "meta";
+const FORMAT: &str = "format";
+
+/// The projection-format marker written into the `meta` root at creation and required
+/// by [`CollabDoc::load`]. It identifies bytes as *this* crate's projection at *this*
+/// wire version, which is what lets a legitimately empty document (zero content
+/// blocks — see [`CollabDoc::load`]) be told apart from a foreign CRDT that merely
+/// reinterprets as an empty `content` array.
+///
+/// Bump the trailing version when the wire shape changes incompatibly: an older peer
+/// then refuses the bytes loudly instead of half-understanding them. (Playweft's
+/// "wipe, don't convert" precedent — tag every blob, refuse an untagged one.)
+const FORMAT_TAG: &str = "rinch-editor-collab/yrs-1";
 
 /// Origin tag for a yrs transaction that applies bytes received from a peer, as opposed to
 /// one that projects a local edit. The update observer skips these: they are already
@@ -272,12 +289,19 @@ impl CollabDoc {
         }
 
         let (ydoc, outbox, updates) = CollabDoc::blank();
+        // Both roots are resolved before the write transaction opens: resolving one takes
+        // exclusive store access and panics if a transaction is already live.
         let content = ydoc.get_or_insert_array(CONTENT);
+        let meta = ydoc.get_or_insert_map(META);
         // A plain local transaction, so the initial projection lands in the outbox and is
         // broadcast like any other local change. A peer that joined from a snapshot
         // already has it and applies it as a no-op (updates are idempotent).
+        //
+        // The format marker rides in the **same** transaction as the content, so a
+        // fresh projection is still exactly one broadcast.
         {
             let mut txn = ydoc.transact_mut();
+            meta.insert(&mut txn, FORMAT, Any::String(FORMAT_TAG.into()));
             for (i, node) in nodes.iter().enumerate() {
                 insert_node(&mut txn, &content, i as u32, node)?;
             }
@@ -296,14 +320,27 @@ impl CollabDoc {
     /// projections, rather than silently adopting an empty document and collaborating on
     /// content no peer shares.
     ///
-    /// The guard validates **content, not the root's type**, because a root type carries
-    /// no type tag on the wire: a root arriving from a peer reads as `Out::UndefinedRef`
-    /// whatever it really is, and asking for it as an array *reinterprets* whatever is
-    /// there (a foreign `Map` root named `content` then reads as a zero-length array, a
-    /// `Text` root as an array of single characters). So the check is that the array is
-    /// non-empty and that every entry reads back as a projected node — which is strictly
-    /// stronger than the type check this replaced, since a `content` list full of junk
-    /// would have passed that.
+    /// Two gates, in this order:
+    ///
+    /// 1. **The format marker** ([`FORMAT_TAG`] under the `meta` root) must be present
+    ///    and exact. This is the discriminator for "are these our bytes at all", and it
+    ///    cannot be replaced by a check on the root's *type*, because a root type carries
+    ///    no type tag on the wire: a root arriving from a peer reads as
+    ///    `Out::UndefinedRef` whatever it really is, and asking for it as an array
+    ///    *reinterprets* whatever is there (a foreign `Map` root named `content` then
+    ///    reads as a zero-length array, a `Text` root as an array of single characters).
+    ///    A marker is an ordinary map entry, so it survives that hazard — it is *content*,
+    ///    and content is what the wire carries.
+    /// 2. **Every content entry** must read back as a projected node, so a `content`
+    ///    array full of junk is refused even if it somehow carried the marker.
+    ///
+    /// A **zero-block** document passes: that is a legitimate converged state (issue
+    /// #192 — two peers deleting different blocks concurrently leaves the content array
+    /// empty), and refusing it locked a late joiner out of such a session. Emptiness used
+    /// to stand in for gate 1; the marker replaces it, which is what makes admitting zero
+    /// blocks safe. [`CollabDoc::to_doc`] then hands the editor the starter paragraph its
+    /// schema requires, and the first local edit projects that paragraph into the CRDT
+    /// (see [`CollabDoc::project_change`]).
     pub fn load(bytes: &[u8]) -> Result<CollabDoc> {
         let update = Update::decode_v1(bytes)?;
         let (ydoc, outbox, updates) = CollabDoc::blank();
@@ -311,16 +348,22 @@ impl CollabDoc {
             let mut txn = ydoc.transact_mut_with(Origin::from(ENGINE_APPLY_ORIGIN));
             txn.apply_update(update)?;
         }
+        // Root handles first (each takes exclusive store access), then one read
+        // transaction for both gates.
         let content = ydoc.get_or_insert_array(CONTENT);
+        let meta = ydoc.get_or_insert_map(META);
         {
             let txn = ydoc.transact();
-            let n = content.len(&txn);
-            if n == 0 {
-                return Err(CollabError::schema(
-                    "these CRDT bytes carry no `content` blocks — not a rinch editor projection",
-                ));
+            match meta.get(&txn, FORMAT) {
+                Some(Out::Any(Any::String(tag))) if &*tag == FORMAT_TAG => {}
+                other => {
+                    return Err(CollabError::schema(format!(
+                        "these CRDT bytes are not a rinch editor projection: expected \
+                         `{META}.{FORMAT}` = `{FORMAT_TAG}`, found {other:?}"
+                    )));
+                }
             }
-            for i in 0..n {
+            for i in 0..content.len(&txn) {
                 read_node_data(&txn, &content, i)?;
             }
         }
@@ -342,6 +385,17 @@ impl CollabDoc {
 
     /// Rebuild the whole model document from the projection (the canonical, total
     /// read-back; both peers reconstruct identically, so equal CRDTs give equal docs).
+    ///
+    /// # The one exception to `model ≡ project(model)`
+    ///
+    /// A CRDT holding **zero** content blocks is a legitimate converged state (issue
+    /// #192), but the editor schema requires at least one block, so there is no model that
+    /// mirrors it. This returns the starter paragraph instead — an **unprojected** block:
+    /// the document equality still holds (both sides are `doc(paragraph())`), but that
+    /// paragraph has no CRDT content behind it. The exception is scoped to exactly that
+    /// state and is cured by the next local edit, which
+    /// [`CollabDoc::project_change`] projects wholesale rather than diffing against a
+    /// CRDT that does not hold it.
     pub fn to_doc(&self, schema: &Schema) -> Result<Node> {
         let mut blocks = {
             let txn = self.doc.transact();
@@ -354,7 +408,9 @@ impl CollabDoc {
             blocks
         };
         if blocks.is_empty() {
-            // An editor doc is never empty; mirror the starter empty paragraph.
+            // An editor doc is never empty; mirror the starter empty paragraph. See the
+            // exception documented on this method — this block is not in the CRDT, and
+            // `project_change` knows it.
             let para = schema
                 .branch("paragraph", Fragment::empty())
                 .map_err(CollabError::from)?;
@@ -1234,6 +1290,143 @@ mod tests {
         let cdoc = CollabDoc::from_doc(&doc).unwrap();
         let loaded = CollabDoc::load(&cdoc.save()).unwrap();
         assert_eq!(loaded.to_doc(&s).unwrap(), doc);
+    }
+
+    /// One projectable paragraph, for building foreign documents that *look* like a
+    /// projection.
+    fn plausible_block() -> NodeData {
+        NodeData::Block(BlockData {
+            type_name: "paragraph".into(),
+            attrs: Attrs::new(),
+            text: "hi".into(),
+            marks: vec![],
+        })
+    }
+
+    #[test]
+    fn load_requires_the_projection_format_marker() {
+        // The marker is the discriminator for "are these our bytes at all", which is what
+        // lets `load` admit a legitimately empty document (see the test below) without
+        // also admitting a foreign CRDT that merely reinterprets as an empty `content`
+        // array. Neither case below is caught by the content check: both carry a content
+        // array whose entries read back as perfectly valid projected nodes.
+
+        // A foreign document that would sail through a content-only guard: the right root
+        // name, holding a real projected block — but no format marker.
+        let markerless = foreign_update(|d| {
+            let a = d.get_or_insert_array(CONTENT);
+            let mut txn = d.transact_mut();
+            insert_node(&mut txn, &a, 0, &plausible_block()).unwrap();
+        });
+        let err = CollabDoc::load(&markerless).unwrap_err();
+        assert!(matches!(err, CollabError::Schema(_)), "got {err:?}");
+
+        // A *wrong* marker — e.g. a peer still speaking an older wire shape — must fail
+        // just as loudly as a missing one, rather than being half-understood.
+        let wrong_version = foreign_update(|d| {
+            let a = d.get_or_insert_array(CONTENT);
+            let m = d.get_or_insert_map(META);
+            let mut txn = d.transact_mut();
+            m.insert(
+                &mut txn,
+                FORMAT,
+                Any::String("rinch-editor-collab/yrs-0".into()),
+            );
+            insert_node(&mut txn, &a, 0, &plausible_block()).unwrap();
+        });
+        let err = CollabDoc::load(&wrong_version).unwrap_err();
+        assert!(matches!(err, CollabError::Schema(_)), "got {err:?}");
+
+        // A marker of the wrong *kind* (not a string) is not a marker either.
+        let wrong_kind = foreign_update(|d| {
+            let a = d.get_or_insert_array(CONTENT);
+            let m = d.get_or_insert_map(META);
+            let mut txn = d.transact_mut();
+            m.insert(&mut txn, FORMAT, Any::Bool(true));
+            insert_node(&mut txn, &a, 0, &plausible_block()).unwrap();
+        });
+        let err = CollabDoc::load(&wrong_kind).unwrap_err();
+        assert!(matches!(err, CollabError::Schema(_)), "got {err:?}");
+
+        // The `meta` root is subject to the same reinterpretation hazard as `content` — a
+        // foreign root of ANY type arrives untagged and is reinterpreted as the map we ask
+        // for. Reading a missing key out of a reinterpreted sequence must fail loud, not
+        // panic. Both sequence kinds, since they reinterpret differently.
+        for (label, build) in [
+            (
+                "text root named meta",
+                Box::new(|d: &Doc| {
+                    let t = d.get_or_insert_text(META);
+                    t.insert(&mut d.transact_mut(), 0, "format");
+                }) as Box<dyn FnOnce(&Doc)>,
+            ),
+            (
+                "array root named meta",
+                Box::new(|d: &Doc| {
+                    let a = d.get_or_insert_array(META);
+                    a.insert(&mut d.transact_mut(), 0, Any::String(FORMAT_TAG.into()));
+                }),
+            ),
+        ] {
+            let bytes = foreign_update(build);
+            let err = CollabDoc::load(&bytes).unwrap_err();
+            assert!(
+                matches!(err, CollabError::Schema(_)),
+                "{label}: got {err:?}"
+            );
+        }
+
+        // And the marker alone is not enough: the content entries are still validated.
+        let marked_junk = foreign_update(|d| {
+            let a = d.get_or_insert_array(CONTENT);
+            let m = d.get_or_insert_map(META);
+            let mut txn = d.transact_mut();
+            m.insert(&mut txn, FORMAT, Any::String(FORMAT_TAG.into()));
+            a.insert(&mut txn, 0, Any::String("junk".into()));
+        });
+        let err = CollabDoc::load(&marked_junk).unwrap_err();
+        assert!(matches!(err, CollabError::Schema(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn load_accepts_a_projection_that_has_no_blocks_left() {
+        // Zero blocks is a legitimate converged state (#192: two peers deleting different
+        // blocks concurrently), and refusing it locked a late joiner out of such a
+        // session. The marker — not emptiness — is what tells our bytes from a stranger's,
+        // so the empty document loads and projects to the starter paragraph the editor
+        // schema requires.
+        let s = schema();
+        let para = s
+            .branch("paragraph", Fragment::from_node(s.text("hi").unwrap()))
+            .unwrap();
+        let doc = s.branch("doc", Fragment::from_node(para)).unwrap();
+        let cdoc = CollabDoc::from_doc(&doc).unwrap();
+
+        // Empty the content array the way a converged double-delete does.
+        {
+            let mut txn = cdoc.doc.transact_mut();
+            cdoc.content.remove(&mut txn, 0);
+        }
+        assert_eq!(cdoc.content.len(&cdoc.doc.transact()), 0);
+
+        let starter = s
+            .branch(
+                "doc",
+                Fragment::from_node(s.branch("paragraph", Fragment::empty()).unwrap()),
+            )
+            .unwrap();
+        assert_eq!(
+            cdoc.to_doc(&s).unwrap(),
+            starter,
+            "an empty projection reads back as the starter paragraph"
+        );
+
+        let loaded = CollabDoc::load(&cdoc.save()).expect("a zero-block snapshot is joinable");
+        assert_eq!(
+            loaded.to_doc(&s).unwrap(),
+            starter,
+            "and a late joiner adopts that same starter paragraph"
+        );
     }
 
     #[test]

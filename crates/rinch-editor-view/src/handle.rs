@@ -2216,6 +2216,239 @@ mod tests {
             );
         }
 
+        // ── The zero-block state (issue #192) ────────────────────────────────
+        //
+        // Two peers deleting *different* blocks concurrently deletes every block, so
+        // the shared CRDT converges to an empty content list. No model can mirror that
+        // (the schema requires a block), so both peers show the starter paragraph while
+        // the CRDT holds nothing. That state used to wedge the session permanently: the
+        // next local edit tried to reconcile a block the CRDT did not have, failed with
+        // `Schema("reconcile_node: missing node")`, broadcast nothing, and never
+        // recovered.
+
+        /// Delete a whole block from `h` by its index, tokens included.
+        fn delete_block(h: &EditorHandle, index: usize) {
+            let doc = h.doc();
+            let start: usize = (0..index).map(|i| doc.child(i).node_size()).sum();
+            let end = start + doc.child(index).node_size();
+            h.update(|st| {
+                let mut tr = st.tr();
+                tr.delete(start, end).ok()?;
+                Some(tr)
+            });
+        }
+
+        /// Wire `host` and `guest` through a **buffered** loopback: deltas pile up
+        /// instead of being delivered, so edits made between exchanges are genuinely
+        /// concurrent. The returned closure drains both directions until quiet.
+        fn buffered_loopback(host: &EditorHandle, guest: &EditorHandle) -> impl Fn() {
+            let to_guest: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+            let to_host: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+            let tg = to_guest.clone();
+            let snapshot = host
+                .start_collaboration_host(move |d| tg.borrow_mut().push(d))
+                .expect("host projects its document");
+            let th = to_host.clone();
+            guest
+                .start_collaboration_guest(&snapshot, move |d| th.borrow_mut().push(d))
+                .expect("guest joins from the snapshot");
+            let h = host.clone();
+            let g = guest.clone();
+            move || {
+                // An integrated delta is never re-broadcast, so this settles in one
+                // pass; the loop keeps that from being an assumption.
+                for _ in 0..4 {
+                    let out_g: Vec<Vec<u8>> = to_guest.borrow_mut().drain(..).collect();
+                    let out_h: Vec<Vec<u8>> = to_host.borrow_mut().drain(..).collect();
+                    if out_g.is_empty() && out_h.is_empty() {
+                        return;
+                    }
+                    for d in out_g {
+                        g.collab_receive(&d);
+                    }
+                    for d in out_h {
+                        h.collab_receive(&d);
+                    }
+                }
+                panic!("the buffered loopback did not settle");
+            }
+        }
+
+        /// Drive two peers to the converged zero-block state: each deletes a different
+        /// block of a two-block document, then the deltas are exchanged.
+        fn empty_the_shared_document(
+            host: &EditorHandle,
+            guest: &EditorHandle,
+            exchange: &impl Fn(),
+        ) {
+            assert_eq!(doc_text(host), "one\ntwo");
+            assert_eq!(
+                doc_text(guest),
+                "one\ntwo",
+                "the guest joined on the host's doc"
+            );
+            delete_block(host, 1); // host drops "two"
+            delete_block(guest, 0); // guest drops "one"
+            assert_eq!(doc_text(host), "one");
+            assert_eq!(doc_text(guest), "two");
+            exchange();
+            assert_eq!(doc_text(host), "", "every block was deleted");
+            assert_eq!(doc_text(guest), "");
+            assert_eq!(
+                host.doc().child_count(),
+                1,
+                "the starter paragraph stands in"
+            );
+            assert_eq!(guest.doc().child_count(), 1);
+        }
+
+        #[test]
+        fn concurrent_block_deletions_do_not_wedge_the_session() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "one"), para(&s, "two")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            let exchange = buffered_loopback(&host, &guest);
+            empty_the_shared_document(&host, &guest, &exchange);
+            assert!(
+                host.collab_take_error().is_none() && guest.collab_take_error().is_none(),
+                "converging to an empty document is not an error"
+            );
+
+            // The host types: the edit must project, broadcast, and reach the guest.
+            host.set_selection(Selection::cursor(Pos(1)));
+            assert!(host.insert_text("Z"));
+            assert_eq!(doc_text(&host), "Z");
+            assert!(
+                host.collab_take_error().is_none(),
+                "the first edit after the empty state must project cleanly"
+            );
+            exchange();
+            assert_eq!(
+                doc_text(&guest),
+                "Z",
+                "the recovered edit reached the guest"
+            );
+
+            // And so must the guest's, in the other direction.
+            guest.set_selection(Selection::cursor(Pos(1)));
+            assert!(guest.insert_text("Y"));
+            assert_eq!(doc_text(&guest), "YZ");
+            assert!(guest.collab_take_error().is_none());
+            exchange();
+            assert_eq!(doc_text(&host), "YZ", "the guest's edit reached the host");
+            assert!(
+                host.collab_take_error().is_none() && guest.collab_take_error().is_none(),
+                "no collaboration error surfaced anywhere in the recovery"
+            );
+        }
+
+        #[test]
+        fn concurrent_first_edits_after_the_empty_state_converge() {
+            // Both peers type before seeing the other, so both project their starter
+            // paragraph into the CRDT. Two concurrent inserts into an empty array is
+            // ordinary CRDT behaviour: two blocks, identical on both peers.
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "one"), para(&s, "two")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            let exchange = buffered_loopback(&host, &guest);
+            empty_the_shared_document(&host, &guest, &exchange);
+
+            host.set_selection(Selection::cursor(Pos(1)));
+            assert!(host.insert_text("H"));
+            guest.set_selection(Selection::cursor(Pos(1)));
+            assert!(guest.insert_text("G"));
+            exchange();
+
+            use rinch_editor_core::serialize::node_to_html;
+            assert_eq!(
+                node_to_html(&host.doc()),
+                node_to_html(&guest.doc()),
+                "concurrent first edits out of the empty state converge"
+            );
+            assert_eq!(host.doc().child_count(), 2, "one block per peer");
+            let t = doc_text(&host);
+            assert!(
+                t.contains('H') && t.contains('G'),
+                "both edits survived: {t}"
+            );
+            assert!(host.collab_take_error().is_none() && guest.collab_take_error().is_none());
+        }
+
+        #[test]
+        fn a_late_joiner_can_join_a_session_with_no_blocks_left() {
+            // The second symptom of #192: `load` used to reject a zero-block projection
+            // as "not a rinch editor projection", locking a late joiner out of exactly
+            // the state above.
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "one"), para(&s, "two")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+
+            // Manual buffers rather than the helper: the host's deltas have to fan out to
+            // two peers once the late joiner arrives.
+            let to_peers: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+            let to_host: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+            let tp = to_peers.clone();
+            let snapshot = host
+                .start_collaboration_host(move |d| tp.borrow_mut().push(d))
+                .unwrap();
+            let th = to_host.clone();
+            guest
+                .start_collaboration_guest(&snapshot, move |d| th.borrow_mut().push(d))
+                .unwrap();
+
+            delete_block(&host, 1);
+            delete_block(&guest, 0);
+            for d in to_peers.borrow_mut().drain(..) {
+                guest.collab_receive(&d);
+            }
+            for d in to_host.borrow_mut().drain(..) {
+                host.collab_receive(&d);
+            }
+            assert_eq!(
+                doc_text(&host),
+                "",
+                "precondition: the CRDT holds no blocks"
+            );
+            assert_eq!(doc_text(&guest), "");
+
+            // A third peer joins from the host's CURRENT (zero-block) snapshot.
+            let late = mount(doc_node(&s, vec![para(&s, "stale")])).handle;
+            let late_out: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+            let lo = late_out.clone();
+            let snapshot = host.collab_snapshot().expect("host is collaborating");
+            late.start_collaboration_guest(&snapshot, move |d| lo.borrow_mut().push(d))
+                .expect("a zero-block snapshot is joinable");
+            assert_eq!(
+                doc_text(&late),
+                "",
+                "the late joiner adopts the starter paragraph"
+            );
+            assert_eq!(late.doc().child_count(), 1);
+
+            // The joiner types: the host converges.
+            late.set_selection(Selection::cursor(Pos(1)));
+            assert!(late.insert_text("L"));
+            for d in late_out.borrow_mut().drain(..) {
+                host.collab_receive(&d);
+                guest.collab_receive(&d);
+            }
+            assert_eq!(doc_text(&host), "L", "the joiner's edit reached the host");
+            assert!(late.collab_take_error().is_none());
+
+            // The host types: the joiner converges.
+            host.set_selection(Selection::cursor(Pos(2)));
+            assert!(host.insert_text("H"));
+            for d in to_peers.borrow_mut().drain(..) {
+                late.collab_receive(&d);
+                guest.collab_receive(&d);
+            }
+            assert_eq!(doc_text(&late), "LH", "the host's edit reached the joiner");
+            assert!(
+                host.collab_take_error().is_none() && late.collab_take_error().is_none(),
+                "no collaboration error surfaced in either direction"
+            );
+        }
+
         #[test]
         fn unsupported_local_edit_fails_loud_without_touching_the_peer() {
             let s = schema();
