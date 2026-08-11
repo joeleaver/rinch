@@ -810,7 +810,7 @@ fn read_text_data<T: ReadTxn>(txn: &T, text: &TextRef) -> Result<(String, Vec<Sp
 /// carrying a `text` object is a text-block; a node carrying a `content` array is a
 /// container, read recursively. Fails loud on a node that is neither (a corrupt
 /// projection), rather than materializing a broken shape.
-fn read_node_data<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -> Result<NodeData> {
+pub(crate) fn read_node_data<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -> Result<NodeData> {
     let node = child_map(txn, list, index)
         .ok_or_else(|| CollabError::schema("read_node_data: missing node"))?;
     let type_name = node_type(txn, &node).ok_or_else(|| CollabError::schema("node has no type"))?;
