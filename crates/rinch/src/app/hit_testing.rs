@@ -1216,4 +1216,120 @@ mod tests {
             "the ancestor's transform must not displace the fixed box's hit area"
         );
     }
+
+    /// Pins the viewport-point re-seed at the body level. A transform on `body`
+    /// itself is the only thing that makes it do work: paint paints the hoisted
+    /// fixed entries with *body's* `node_transform`, so viewport space for a
+    /// fixed box is body's post-transform space, not the raw input point.
+    #[test]
+    fn body_transform_applies_to_a_hoisted_fixed_descendant() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "transform: translate(40px, 30px)");
+        let outer = child_of(
+            &mut doc,
+            body,
+            "position: relative; width: 400px; height: 300px; transform: translate(200px, 100px)",
+        );
+        // Viewport box (50,60)-(150,100); painted at body's translate →
+        // (90,90)-(190,130). `outer`'s translate must not reach it.
+        let fixed = child_of(
+            &mut doc,
+            outer,
+            "position: fixed; left: 50px; top: 60px; width: 100px; height: 40px; z-index: 5",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        assert_eq!(
+            hit_test(&doc.tree, 140.0, 110.0),
+            Some(fixed.0),
+            "the fixed box is hit at its viewport box shifted by body's transform"
+        );
+        assert_ne!(
+            hit_test(&doc.tree, 100.0, 80.0),
+            Some(fixed.0),
+            "the un-shifted viewport box must not hit — body's transform does apply"
+        );
+        assert_ne!(
+            hit_test(&doc.tree, 290.0, 190.0),
+            Some(fixed.0),
+            "the transformed ancestor's own translate must still not reach the fixed box"
+        );
+    }
+
+    /// Pins the `display: contents` half of the zero-size guard in `local_point`.
+    /// A box collapsed on one axis keeps its transform box — `paint_node`'s
+    /// `(w == 0) != (h == 0)` branch composes the transform and paints the
+    /// overflowing children under it — so the guard must *not* fire here.
+    #[test]
+    fn one_axis_zero_size_node_still_transforms_its_children() {
+        let (mut doc, container) = container_doc();
+        let zerobox = child_of(
+            &mut doc,
+            container,
+            "position: absolute; left: 100px; top: 100px; width: 200px; height: 0; \
+             transform: translate(50px, 20px)",
+        );
+        // Overflows the zero-height parent: layout (100,100)-(140,130),
+        // painted (150,120)-(190,150).
+        let child = child_of(
+            &mut doc,
+            zerobox,
+            "position: absolute; left: 0; top: 0; width: 40px; height: 30px",
+        );
+        doc.resolve_layout(800.0, 600.0);
+        assert_eq!(
+            doc.tree.get(zerobox.0).unwrap().layout.height,
+            0.0,
+            "the test needs the one-axis-collapsed paint branch"
+        );
+
+        assert_eq!(
+            hit_test(&doc.tree, 170.0, 135.0),
+            Some(child.0),
+            "the child is hit under the collapsed parent's transform"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 120.0, 115.0),
+            Some(container.0),
+            "the child's untransformed layout box must miss"
+        );
+    }
+
+    /// Pins the zero-size half of the same guard. A `display: contents` node has
+    /// no box, so `paint_node` passes the parent transform straight through to
+    /// its children and the node's own `transform` never renders — hit testing
+    /// must ignore it too.
+    #[test]
+    fn display_contents_node_ignores_its_own_transform() {
+        let (mut doc, container) = container_doc();
+        let contents = child_of(
+            &mut doc,
+            container,
+            "display: contents; transform: translate(60px, 40px)",
+        );
+        let child = child_of(&mut doc, contents, "width: 40px; height: 30px");
+        doc.resolve_layout(800.0, 600.0);
+        let cn = doc.tree.get(contents.0).unwrap();
+        assert_eq!(
+            (cn.layout.width, cn.layout.height),
+            (0.0, 0.0),
+            "the test needs display:contents to have no box"
+        );
+        assert!(
+            !cn.computed_style.transform.is_identity,
+            "the test needs a real transform declared on the display:contents node"
+        );
+
+        assert_eq!(
+            hit_test(&doc.tree, 20.0, 15.0),
+            Some(child.0),
+            "the child is hit at its laid-out box, untouched by the contents node's transform"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 80.0, 55.0),
+            Some(container.0),
+            "where that transform would have put the child must miss"
+        );
+    }
 }
