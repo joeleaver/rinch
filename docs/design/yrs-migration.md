@@ -132,7 +132,10 @@ like any other data. The per-entry content check still runs afterwards, so a `co
 array full of junk is refused even if it somehow carried the marker. This is Playweft's
 "wipe, don't convert" precedent (`a734e11`): tag every blob, refuse an untagged one
 rather than guessing. Bump the trailing version if the wire shape ever changes
-incompatibly.
+incompatibly. One consequence is inherent and intended: a snapshot produced between the
+engine swap and this change carries no `meta` root at all, so it is refused like any other
+untagged blob — re-project such a document from the model rather than trying to load it.
+Nothing downstream had shipped on yrs, so that costs nobody.
 
 The marker **replaced emptiness as the discriminator**, and that was the point of adding
 it (issue #192). The original guard rejected a zero-block `content` array as "not a rinch

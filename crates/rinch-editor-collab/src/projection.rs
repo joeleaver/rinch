@@ -1430,6 +1430,42 @@ mod tests {
     }
 
     #[test]
+    fn two_independently_created_projections_merge_and_keep_one_readable_marker() {
+        // Every other path creates the second peer by *joining* the first
+        // (`load`/`from_bytes`), so both share one lineage and one marker write. Two peers
+        // that each ran `from_doc` instead both wrote `meta.format` under their own client
+        // id, and merging them is a map-key conflict. yrs resolves it to one writer; both
+        // wrote the same value, so the marker must still read back — and the merged
+        // document must still be joinable from its own snapshot.
+        let s = schema();
+        let doc_of = |t: &str| {
+            let p = s
+                .branch("paragraph", Fragment::from_node(s.text(t).unwrap()))
+                .unwrap();
+            s.branch("doc", Fragment::from_node(p)).unwrap()
+        };
+        let mut a = CollabDoc::from_doc(&doc_of("alpha")).unwrap();
+        let b = CollabDoc::from_doc(&doc_of("beta")).unwrap();
+        a.merge_from(&b).unwrap();
+
+        let merged = a.to_doc(&s).unwrap();
+        assert_eq!(merged.child_count(), 2, "both peers' blocks survived");
+        let meta = a.doc.get_or_insert_map(META);
+        assert!(
+            matches!(
+                meta.get(&a.doc.transact(), FORMAT),
+                Some(Out::Any(Any::String(tag))) if &*tag == FORMAT_TAG
+            ),
+            "the marker survives the conflicting write"
+        );
+        assert_eq!(
+            CollabDoc::load(&a.save()).unwrap().to_doc(&s).unwrap(),
+            merged,
+            "and the merged document is joinable from its own snapshot"
+        );
+    }
+
+    #[test]
     fn the_outbox_collects_local_writes_and_skips_applied_bytes() {
         // The broadcast contract: a locally-projected transaction is a broadcast, an
         // applied peer update is not (re-broadcasting it would echo).

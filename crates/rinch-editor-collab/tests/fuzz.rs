@@ -12,8 +12,13 @@
 //!    Once every peer has seen every delta, all peers must project to the *identical*
 //!    document. This is the exact incremental-delta path pimble / `EditorHandle` use.
 //!
-//! Deterministic (a fixed-seed xorshift PRNG) so any failure reproduces from its
-//! `(seed, peers, rounds)` triple.
+//! The **edit script** is deterministic — a fixed-seed xorshift PRNG — so a
+//! `(seed, peers, rounds)` triple always produces the same sequence of edits and
+//! deliveries. A failing trial is **not** replayable bit-for-bit, though: yrs breaks
+//! concurrent-insert ties by client id, `CollabDoc::blank()` takes yrs's default random
+//! one, and the resulting document feeds back into later positions, so two runs of the
+//! same binary at the same seed can diverge in edit count. Reproducing a failure exactly
+//! needs the client ids pinned as well.
 
 use std::rc::Rc;
 
