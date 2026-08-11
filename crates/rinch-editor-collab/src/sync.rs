@@ -57,11 +57,30 @@ impl CollabDoc {
     /// would echo. Forwarding them to *other* peers is the transport's job.
     pub fn apply_update(&mut self, bytes: &[u8]) -> Result<()> {
         let update = Update::decode_v1(bytes)?;
+        self.apply_decoded(update)
+    }
+
+    /// Apply an already-decoded update. Split from [`Self::apply_update`] for the
+    /// session's integrate path, which must tell a *decode* failure (the CRDT is
+    /// untouched — transient) from an *apply* failure (the update may be partially
+    /// integrated — yrs commits on drop and has no rollback), because only the latter
+    /// can leave the document unprojectable (issue #196).
+    pub(crate) fn apply_decoded(&mut self, update: Update) -> Result<()> {
         let mut txn = self
             .doc
             .transact_mut_with(Origin::from(ENGINE_APPLY_ORIGIN));
         txn.apply_update(update)?;
         Ok(())
+    }
+
+    /// Whether the store holds updates parked on **missing dependencies** — applied
+    /// bytes whose causal predecessors this replica has not seen yet (an out-of-order
+    /// delivery, or a misrouted reconciliation diff computed for a peer that had seen
+    /// more). While this is true, a failing content read-back may be cured by the
+    /// missing update alone, so the session must classify it *transient* — poisoning
+    /// would turn a self-healing state into a dead one (#196 review, F1).
+    pub(crate) fn has_pending_updates(&self) -> bool {
+        self.doc.transact().has_missing_updates()
     }
 
     /// Take everything the outbox has collected since the last drain, as one update.

@@ -374,6 +374,27 @@ outside that scope fails loud rather than silently diverging —
 not projected). A runnable two-pane loopback (both editors in one window, no network)
 lives at `examples/collab-editor-demo/src/main.rs`.
 
+**Errors: transient vs poisoned.** Most collaboration errors are *transient*: an
+undecodable blob from the transport, a local edit outside the staged scope, or a
+rebuild still waiting on an out-of-order delta's missing dependency — the session
+keeps collaborating, and `collab_take_error()` tells you what was refused. One
+class is not: inbound bytes that, once integrated, leave the shared CRDT document
+**unprojectable with nothing pending that could cure it** (e.g. bytes from a
+foreign, non-rinch yrs document, or a peer delta carrying content this build
+cannot read back). yrs has no rollback, so such a session cannot receive — and,
+before issue #196, it would keep *broadcasting* while receiving nothing, silently
+partitioning the peers. The session now **poisons** itself instead: sticky
+`CollabError::SessionPoisoned` on every affected call, in **both** directions
+(local edits stop being projected/broadcast, and receives keep failing — though
+they are still *attempted*, so an inbound update that makes the document
+rebuildable again clears the poison on its own). A heal re-syncs the editor to
+the converged shared document, discarding any local edits made during the
+poison window — each was already refused loudly when it happened — the same
+semantics as stopping and rejoining.
+`is_collaboration_poisoned()` queries the state; the recovery in practice is
+`stop_collaboration()` followed by rejoining from a healthy peer's snapshot
+(`collab_snapshot()` → `start_collaboration_guest`).
+
 ### On the web
 
 The **same** adapter runs in the browser — yrs compiled to wasm. Enable the

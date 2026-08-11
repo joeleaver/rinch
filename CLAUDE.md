@@ -767,8 +767,9 @@ post_remote_delta(container_id, delta_bytes);
 | `collab_state_vector() -> Option<Vec<u8>>` | This editor's state vector, to hand a peer for `collab_sync_diff` |
 | `collab_sync_diff(remote_state_vector) -> Option<Vec<u8>>` | The update a peer at `remote_state_vector` is missing; feed the result to that peer's `collab_receive` |
 | `is_collaborating()` / `stop_collaboration()` | Query / detach the session |
+| `is_collaboration_poisoned()` | Whether the session is **poisoned** (#196): an integrate left the shared CRDT unprojectable with nothing pending that could cure it (yrs has no rollback; a rebuild failure with updates parked on missing dependencies stays transient), so every convergence call — inbound AND outbound — fails sticky with `CollabError::SessionPoisoned` instead of one-way partitioning. Inbound is still attempted, and an update that makes the doc rebuildable again clears the poison; recovery in practice is `stop_collaboration()` + rejoin from a healthy peer's snapshot |
 | `collab_snapshot() -> Option<Vec<u8>>` | Current shared-doc snapshot for a *late*-joining guest |
-| `collab_take_error() -> Option<CollabError>` | Take a fail-loud A22 projection error (the CRDT is left untouched — projection is all-or-nothing) |
+| `collab_take_error() -> Option<CollabError>` | Take a fail-loud collab error. A22 projection errors are transient (the CRDT is left untouched — projection is all-or-nothing); a `SessionPoisoned` is not a one-off — taking it does not un-poison, every affected call re-fails with it |
 
 Free functions `collab_receive_for(container_id, &delta)` (main thread) and `post_remote_delta(container_id, delta)` (any thread) route an inbound delta to a registered editor. Runnable two-pane in-process loopback: `examples/collab-editor-demo`.
 
@@ -787,8 +788,8 @@ Free functions `collab_receive_for(container_id, &delta)` (main thread) and `pos
 | `crates/rinch-editor-collab/src/sync.rs` | The yrs bytes transport on `CollabDoc` (`state_vector`, `diff_since`, `apply_update`, the outbox drain) |
 | `crates/rinch-editor-collab/src/plugin.rs` | `CollabPlugin` + `CollabState` |
 | `crates/rinch-editor-collab/src/rebase.rs` | `rebase_steps` — local steps rebased over a remote mapping |
-| `crates/rinch-editor-collab/src/error.rs` | `CollabError` — the crate's one error type (`Engine`/`Unsupported`/`Schema`) |
-| `crates/rinch-editor-view/src/handle.rs` | `EditorHandle`'s collab methods (`start_collaboration_host/guest`, `collab_receive`, `collab_state_vector`, `collab_sync_diff`, `collab_snapshot`, `collab_take_error`, `stop_collaboration`, `is_collaborating`) — **not** in `rinch-editor-collab` |
+| `crates/rinch-editor-collab/src/error.rs` | `CollabError` — the crate's one error type (`Engine`/`Unsupported`/`Schema`, plus the sticky `SessionPoisoned` a session fails with in both directions once an integrate has left the CRDT unprojectable with nothing pending to cure it — #196; cleared by an inbound update that makes the doc rebuildable again) |
+| `crates/rinch-editor-view/src/handle.rs` | `EditorHandle`'s collab methods (`start_collaboration_host/guest`, `collab_receive`, `collab_state_vector`, `collab_sync_diff`, `collab_snapshot`, `collab_take_error`, `stop_collaboration`, `is_collaborating`, `is_collaboration_poisoned`) — **not** in `rinch-editor-collab` |
 | `crates/rinch-editor-view/src/collab.rs` | `CollabBridge` — the seam driving `CollabSession` from an `EditorHandle` (outbound sink + last error) |
 | `crates/rinch-editor-view/src/registry.rs` | `collab_receive_for(container_id, &delta)` — routes an inbound delta to a registered editor |
 

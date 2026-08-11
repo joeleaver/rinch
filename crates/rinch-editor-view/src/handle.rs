@@ -992,6 +992,33 @@ impl EditorHandle {
         self.inner.borrow().collab.is_some()
     }
 
+    /// Whether the attached collaboration session is **poisoned** (issue #196): an
+    /// inbound delta left the shared CRDT unprojectable with nothing pending that
+    /// could cure it, so the session cannot receive — and, to avoid the silent
+    /// one-way partition of a replica that keeps broadcasting while receiving
+    /// nothing, it refuses to send as well. Every affected call keeps failing with
+    /// the sticky [`CollabError::SessionPoisoned`] (also visible via
+    /// [`Self::collab_take_error`], which distinguishes it from a transient error
+    /// such as an undecodable blob or a rebuild still waiting on a missing
+    /// dependency). Inbound deltas are still *attempted*: one that makes the shared
+    /// document rebuildable again clears the poison. `false` when not collaborating.
+    ///
+    /// Recovery in practice: [`Self::stop_collaboration`], then rejoin from a
+    /// healthy peer's snapshot ([`Self::start_collaboration_guest`]).
+    ///
+    /// Uses `try_borrow` — soft, like [`Self::collab_receive`] — so an `outbound`
+    /// sink may call it without panicking. While the handle is borrowed a local edit
+    /// is being committed, which a poisoned session refuses, so `false` is the
+    /// consistent answer for that window.
+    pub fn is_collaboration_poisoned(&self) -> bool {
+        let Ok(core) = self.inner.try_borrow() else {
+            return false;
+        };
+        core.collab
+            .as_ref()
+            .is_some_and(|b| b.session.is_poisoned())
+    }
+
     /// A snapshot of the shared document **as it stands now**, for a *late-joining*
     /// peer: hand it to a new guest's [`Self::start_collaboration_guest`] so they
     /// adopt the current content (not just the host's original document). `None`
@@ -1061,6 +1088,12 @@ impl EditorHandle {
     /// Take (and clear) the most recent collaboration error — e.g. an edit outside
     /// the staged flat-text scope that could not be projected (design A22). `None`
     /// when not collaborating or no error is pending.
+    ///
+    /// A [`CollabError::SessionPoisoned`] here is **not** a one-off: the session is
+    /// dead in both directions and every affected call re-fails with it (taking it
+    /// does not un-poison — see [`Self::is_collaboration_poisoned`]). Anything else
+    /// (an undecodable blob, an out-of-scope local edit) is transient: the session
+    /// keeps collaborating.
     pub fn collab_take_error(&self) -> Option<CollabError> {
         self.inner
             .borrow_mut()
@@ -2214,6 +2247,132 @@ mod tests {
                 "hello world",
                 "a late joiner adopts the current shared document"
             );
+        }
+
+        // ── The poisoned session (issue #196) ────────────────────────────────
+        //
+        // Foreign bytes whose `content` root was created as the wrong yrs type leave
+        // the shared CRDT unprojectable once integrated, with nothing pending that
+        // could cure it (yrs has no rollback). The session must then go loud in BOTH
+        // directions — sticky `SessionPoisoned` on inbound and outbound — instead of
+        // one-way partitioning: keeping `record_local` Ok and broadcasting while
+        // every receive fails was the dangerous silent half. (Inbound stays
+        // *attempted*: an update that makes the document rebuildable again clears
+        // the poison — pinned at the session level in tests/poison.rs.)
+
+        /// Whole-document bytes of a foreign yrs doc whose `content` root is a
+        /// **Text** type — the issue's headline poison shape. Decodes and applies
+        /// fine; the read-back is what can never succeed.
+        fn foreign_text_root_bytes() -> Vec<u8> {
+            use yrs::{ReadTxn, Text, Transact};
+            let doc = yrs::Doc::new();
+            let t = doc.get_or_insert_text("content");
+            t.insert(&mut doc.transact_mut(), 0, "foreign");
+            doc.transact()
+                .encode_state_as_update_v1(&yrs::StateVector::default())
+        }
+
+        #[test]
+        fn a_poisoning_delta_turns_the_session_loud_in_both_directions() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "hello")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            loopback(&host, &guest);
+
+            // Foreign bytes reach the HOST mid-session.
+            assert!(!host.collab_receive(&foreign_text_root_bytes()));
+            assert!(
+                host.is_collaboration_poisoned(),
+                "the host session is poisoned"
+            );
+            assert!(
+                !guest.is_collaboration_poisoned(),
+                "the guest never saw the bytes and stays healthy"
+            );
+            assert!(
+                matches!(
+                    host.collab_take_error(),
+                    Some(CollabError::SessionPoisoned(_))
+                ),
+                "the parked error is the sticky kind, distinguishable from a transient one"
+            );
+
+            // The host keeps editing locally, but nothing may leave the poisoned
+            // replica — on unfixed code this edit was projected AND broadcast.
+            host.set_selection(Selection::cursor(Pos(6)));
+            assert!(host.insert_text("X"));
+            assert_eq!(doc_text(&host), "helloX", "the local model still edits");
+            assert_eq!(
+                doc_text(&guest),
+                "hello",
+                "no delta left the poisoned replica"
+            );
+            assert!(
+                matches!(
+                    host.collab_take_error(),
+                    Some(CollabError::SessionPoisoned(_))
+                ),
+                "each refused edit re-reports the sticky error"
+            );
+
+            // Inbound stays refused for perfectly valid peer deltas too.
+            guest.set_selection(Selection::cursor(Pos(1)));
+            assert!(guest.insert_text("G"));
+            assert_eq!(doc_text(&guest), "Ghello");
+            assert_eq!(
+                doc_text(&host),
+                "helloX",
+                "the poisoned host can no longer receive"
+            );
+
+            // Recovery: stop, rejoin from the healthy peer's snapshot.
+            host.stop_collaboration();
+            assert!(
+                !host.is_collaboration_poisoned(),
+                "no session, no poison to report"
+            );
+            let snapshot = guest.collab_snapshot().expect("guest is collaborating");
+            let g_in = guest.clone();
+            host.start_collaboration_guest(&snapshot, move |d| {
+                g_in.collab_receive(&d);
+            })
+            .expect("rejoining from a healthy snapshot works");
+            assert_eq!(
+                doc_text(&host),
+                "Ghello",
+                "the rejoined host adopts the healthy shared document"
+            );
+            host.set_selection(Selection::cursor(Pos(1)));
+            assert!(host.insert_text("R"));
+            assert_eq!(
+                doc_text(&guest),
+                "RGhello",
+                "collaboration flows again after the rejoin"
+            );
+        }
+
+        #[test]
+        fn an_undecodable_blob_is_transient_not_poison() {
+            // A garbage blob never touches the CRDT, so it must NOT trip the sticky
+            // state — the session keeps collaborating in both directions.
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "hello")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            loopback(&host, &guest);
+
+            assert!(!host.collab_receive(&[0xff, 0xff, 0xff, 0xff]));
+            assert!(
+                matches!(host.collab_take_error(), Some(CollabError::Engine(_))),
+                "a decode failure surfaces as a transient engine error"
+            );
+            assert!(!host.is_collaboration_poisoned());
+
+            guest.set_selection(Selection::cursor(Pos(1)));
+            assert!(guest.insert_text("G"));
+            assert_eq!(doc_text(&host), "Ghello", "inbound still works");
+            host.set_selection(Selection::cursor(Pos(7)));
+            assert!(host.insert_text("X"));
+            assert_eq!(doc_text(&guest), "GhelloX", "outbound still works");
         }
 
         // ── The zero-block state (issue #192) ────────────────────────────────
