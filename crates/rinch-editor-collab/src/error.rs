@@ -29,16 +29,21 @@ pub enum CollabError {
     Schema(String),
 
     /// The session integrated peer bytes that left the shared CRDT document
-    /// **permanently unprojectable** (issue #196). yrs has no rollback, so once such
-    /// bytes are applied they cannot be un-applied, and every future rebuild fails the
-    /// same way. The error is **sticky**: once a [`CollabSession`](crate::CollabSession)
-    /// is poisoned, every convergence-relevant operation — `integrate_incremental`
-    /// *and* `record_local`/`save_incremental`/`sync_diff`/`projected_doc` — fails with
-    /// it, in **both** directions. A replica that can never receive again must not keep
+    /// **unprojectable, with nothing pending that could cure it** (issue #196). yrs
+    /// has no rollback, so once such bytes are applied they cannot be un-applied, and
+    /// the rebuild keeps failing until some future inbound bytes change the content.
+    /// (A rebuild failure while updates are parked on *missing dependencies* is
+    /// deliberately **not** this — the missing delta cures it, so it stays a
+    /// transient `Engine`/`Schema`/`Unsupported` error.) The error is **sticky**:
+    /// once a [`CollabSession`](crate::CollabSession) is poisoned, every
+    /// convergence-relevant operation — `integrate_incremental` *and*
+    /// `record_local`/`save_incremental`/`sync_diff`/`projected_doc` — fails with it,
+    /// in **both** directions. A replica that cannot receive must not keep
     /// broadcasting as though it were converging: one-way silence is the divergence
-    /// class this crate exists to kill. Recovery is a fresh session: detach
-    /// (`stop_collaboration` at the handle level) and rejoin from a healthy peer's
-    /// snapshot.
+    /// class this crate exists to kill. Inbound integration is still *attempted*, and
+    /// an update that leaves the document rebuildable again clears the poison; the
+    /// recovery in practice is a fresh session — detach (`stop_collaboration` at the
+    /// handle level) and rejoin from a healthy peer's snapshot.
     #[error(
         "collab session poisoned — the shared CRDT is no longer projectable; stop and rejoin: {0}"
     )]

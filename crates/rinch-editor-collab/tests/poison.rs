@@ -16,16 +16,22 @@
 //! * **Array holding a valid projected block** — a legitimate merge; the transport
 //!   chose the peers, not a defect. Must stay adopted.
 //!
-//! Plus the two boundary cases: undecodable bytes never touch the CRDT (transient,
-//! no poison), and **interior damage** — a shared-lineage delta parking an embed
-//! inside one block's text, which changes no block count and so slipped every #218
-//! gate: on unfixed code that was the last remaining one-way partition (integrate
-//! `Err` forever, `record_local` of *another* block `Ok`, a delta broadcast).
+//! Plus the boundary cases: undecodable bytes never touch the CRDT (transient, no
+//! poison); **interior damage** — a shared-lineage delta parking an embed inside one
+//! block's text, which changes no block count and so slipped every #218 gate: on
+//! unfixed code that was the last remaining one-way partition (integrate `Err`
+//! forever, `record_local` of *another* block `Ok`, a delta broadcast); a rebuild
+//! failure with updates parked on **missing dependencies**, which must stay
+//! transient because the missing delta cures it (review finding F1); and the
+//! **heal**: poison clears when an inbound update makes the document rebuildable
+//! again, while outbound stays refused for the whole poisoned window.
 
 use std::rc::Rc;
 
 use rinch_editor_collab::{CollabError, CollabSession};
-use rinch_editor_core::{EditorState, Fragment, Node, Pos, Schema, Selection, default_plugins};
+use rinch_editor_core::{
+    Attrs, EditorState, Fragment, Node, Pos, Schema, Selection, default_plugins,
+};
 use yrs::updates::decoder::Decode;
 use yrs::{
     Any, Array, Doc, Map, MapPrelim, ReadTxn, StateVector, Text, TextPrelim, Transact, Update,
@@ -45,6 +51,25 @@ fn para(schema: &Schema, text: &str) -> Node {
 fn doc_of(schema: &Schema, blocks: Vec<Node>) -> Node {
     schema
         .branch("doc", Fragment::from_children(blocks))
+        .unwrap()
+}
+
+fn heading(schema: &Schema, level: i64, text: &str) -> Node {
+    schema
+        .create_node(
+            "heading",
+            Attrs::new().with("level", level),
+            Fragment::from_node(schema.text(text).unwrap()),
+        )
+        .unwrap()
+}
+
+fn code_block(schema: &Schema, text: &str) -> Node {
+    schema
+        .branch(
+            "code_block",
+            Fragment::from_node(schema.text(text).unwrap()),
+        )
         .unwrap()
 }
 
@@ -145,8 +170,9 @@ fn assert_poisoned_both_directions(l: &mut Live, valid_delta: &[u8], what: &str)
         ),
         "{what}: sync_diff must fail sticky"
     );
-    // Inbound: even a perfectly valid peer delta — and the empty update — is refused
-    // with the sticky kind, so an app polling errors sees "dead", not a mix.
+    // Inbound: integration is still *attempted*, but neither a perfectly valid peer
+    // delta nor the empty update removes the junk, so the rebuild keeps failing and
+    // both report the sticky kind — an app polling errors sees "dead", not a mix.
     let state = l.state.clone();
     assert!(
         matches!(
@@ -357,6 +383,201 @@ fn interior_damage_with_shared_lineage_poisons_and_silences_the_broadcast() {
         "no delta may leave the poisoned replica"
     );
     assert!(l.session.is_poisoned());
+}
+
+#[test]
+fn a_misrouted_reconciliation_diff_with_missing_dependencies_is_transient_and_heals() {
+    // PR #219 review finding F1. A rebuild failure while yrs holds updates parked on
+    // **missing dependencies** is NOT the permanent class: the missing bytes cure it.
+    //
+    // The reachable shape: C rewrites block 0's `type` (delete old item + insert
+    // C-item); B — who has seen C — rewrites it again (delete C-item + insert
+    // B-item). B answers *C's* state vector with a reconciliation diff, which a hub
+    // fans to A as opaque bytes (diffs and broadcasts are indistinguishable on the
+    // wire). That diff carries B's insertion and the COMPLETE delete set
+    // (`encode_diff_v1` always writes it) but not C's insertion — so at A the
+    // original `type` item is deleted while B's successor parks on the missing
+    // C-dependency, and the node reads back with no type. Poisoning here would turn
+    // a self-healing state into a dead one AND refuse the very bytes that heal it.
+    let schema = Rc::new(Schema::starter_kit());
+    let doc0 = doc_of(&schema, vec![para(&schema, "hello")]);
+    let a_state = EditorState::create(schema.clone(), doc0.clone(), default_plugins());
+    let mut a = CollabSession::new(&a_state).unwrap();
+    let _ = a.save_incremental().unwrap();
+
+    let mut b = CollabSession::from_bytes(&a.snapshot()).unwrap();
+    let mut c = CollabSession::from_bytes(&a.snapshot()).unwrap();
+
+    // C rewrites the block's type: paragraph -> heading.
+    let heading_doc = doc_of(&schema, vec![heading(&schema, 1, "hello")]);
+    c.record_local(&doc0, &heading_doc).unwrap();
+    let delta_c = c.save_incremental().unwrap();
+    assert!(!delta_c.is_empty());
+
+    // B integrates C, then rewrites the type again: heading -> code_block.
+    let b_state = EditorState::create(schema.clone(), doc0.clone(), default_plugins());
+    let b_state = b
+        .integrate_incremental(&b_state, &delta_c)
+        .unwrap()
+        .expect("B adopts C's rewrite");
+    let code_doc = doc_of(&schema, vec![code_block(&schema, "hello")]);
+    b.record_local(&b_state.doc, &code_doc).unwrap();
+    let _ = b.save_incremental().unwrap();
+
+    // The misroute: B's reconciliation answer FOR C, delivered to A.
+    let misrouted = b.sync_diff(&c.state_vector()).unwrap();
+    let err = a.integrate_incremental(&a_state, &misrouted).unwrap_err();
+    assert!(
+        !matches!(err, CollabError::SessionPoisoned(_)),
+        "a dependency-pending rebuild failure must stay transient, got {err:?}"
+    );
+    assert!(
+        !a.is_poisoned(),
+        "the session must not poison while updates are parked on missing dependencies"
+    );
+
+    // The missing dependency arrives (C's ordinary broadcast); the session heals.
+    let healed = a
+        .integrate_incremental(&a_state, &delta_c)
+        .unwrap()
+        .expect("the healing delta is a real document change");
+    assert!(!a.is_poisoned());
+    assert_eq!(
+        healed.doc.child(0).type_name(),
+        "code_block",
+        "A converged on B's rewrite once the dependency arrived"
+    );
+    let pa = a.projected_doc(&schema).unwrap();
+    let pb = b.projected_doc(&schema).unwrap();
+    assert_eq!(pa, pb, "A and B project the same converged document");
+
+    // And A keeps collaborating: a local edit projects and broadcasts.
+    let edited = doc_of(&schema, vec![code_block(&schema, "hello!")]);
+    a.record_local(&healed.doc, &edited).unwrap();
+    assert!(
+        !a.save_incremental().unwrap().is_empty(),
+        "the healed session broadcasts again"
+    );
+}
+
+#[test]
+fn poison_clears_when_inbound_bytes_make_the_document_projectable_again() {
+    // Poison is sticky, not fatal: inbound integration keeps being *attempted*, and
+    // an update that leaves the document rebuildable again — here the damaged-lineage
+    // peer deleting its own embedded range — clears the poison. Outbound stays
+    // refused for the whole poisoned window.
+    let mut l = live(&["alpha", "beta"]);
+
+    let peer_doc = Doc::new();
+    {
+        let update = Update::decode_v1(&l.session.snapshot()).unwrap();
+        peer_doc.transact_mut().apply_update(update).unwrap();
+    }
+    // The peer parks an embed inside block 0's text (interior damage)...
+    {
+        let content = peer_doc.get_or_insert_array("content");
+        let mut txn = peer_doc.transact_mut();
+        let Some(yrs::Out::YMap(node)) = content.get(&txn, 0) else {
+            panic!("block 0 must be a node map");
+        };
+        let Some(yrs::Out::YText(text)) = node.get(&txn, "text") else {
+            panic!("block 0 must carry a text");
+        };
+        text.insert_embed(&mut txn, 2, Any::Bool(true));
+    }
+    let damage = {
+        let sv = StateVector::decode_v1(&l.session.state_vector()).unwrap();
+        peer_doc.transact().encode_diff_v1(&sv)
+    };
+    let state = l.state.clone();
+    let err = l
+        .session
+        .integrate_incremental(&state, &damage)
+        .unwrap_err();
+    assert!(
+        matches!(err, CollabError::SessionPoisoned(_)),
+        "got {err:?}"
+    );
+    assert!(l.session.is_poisoned());
+    assert!(
+        matches!(l.type_at(8, "L"), Err(CollabError::SessionPoisoned(_))),
+        "outbound is refused while poisoned"
+    );
+
+    // ...then deletes the embedded range and sends that delta.
+    {
+        let content = peer_doc.get_or_insert_array("content");
+        let mut txn = peer_doc.transact_mut();
+        let Some(yrs::Out::YMap(node)) = content.get(&txn, 0) else {
+            panic!("block 0 must be a node map");
+        };
+        let Some(yrs::Out::YText(text)) = node.get(&txn, "text") else {
+            panic!("block 0 must carry a text");
+        };
+        text.remove_range(&mut txn, 2, 1); // the embed occupies one unit
+    }
+    let heal = {
+        let sv = StateVector::decode_v1(&l.session.state_vector()).unwrap();
+        peer_doc.transact().encode_diff_v1(&sv)
+    };
+    let state = l.state.clone();
+    let healed = l.session.integrate_incremental(&state, &heal).unwrap();
+    assert!(
+        !l.session.is_poisoned(),
+        "a successful converged rebuild clears the poison"
+    );
+    // The healed CRDT matches the model A already held, so integrating may report
+    // "no document change" — what matters is that the session works again.
+    let _ = healed;
+    assert!(l.type_at(8, "L").is_ok(), "outbound projects again");
+    assert!(
+        !l.session.save_incremental().unwrap().is_empty(),
+        "and broadcasts again"
+    );
+    let pd = l.session.projected_doc(&l.schema).unwrap();
+    assert_eq!(pd, l.state.doc, "model ≡ project(model) is restored");
+}
+
+#[test]
+fn merge_refuses_to_touch_or_spread_poison() {
+    // PR #219 review finding F2: pin `merge`'s refusal surface in BOTH directions —
+    // a poisoned session must not merge, and a healthy session must not pull a
+    // poisoned peer's document in.
+    let mut poisoned = live(&["hello"]);
+    let bytes = foreign_update(|d| {
+        let t = d.get_or_insert_text("content");
+        t.insert(&mut d.transact_mut(), 0, "foreign");
+    });
+    let state = poisoned.state.clone();
+    let _ = poisoned
+        .session
+        .integrate_incremental(&state, &bytes)
+        .unwrap_err();
+    assert!(poisoned.session.is_poisoned());
+
+    let mut healthy = live(&["clean"]);
+    assert!(
+        matches!(
+            poisoned.session.merge(&healthy.session),
+            Err(CollabError::SessionPoisoned(_))
+        ),
+        "a poisoned session refuses to merge (its own guard)"
+    );
+    assert!(
+        matches!(
+            healthy.session.merge(&poisoned.session),
+            Err(CollabError::SessionPoisoned(_))
+        ),
+        "a healthy session refuses to merge FROM a poisoned peer (the other-side guard)"
+    );
+    assert!(
+        !healthy.session.is_poisoned(),
+        "the refusal protected the healthy session"
+    );
+    assert!(
+        healthy.type_at(1, "X").is_ok() && !healthy.session.save_incremental().unwrap().is_empty(),
+        "the healthy session keeps collaborating"
+    );
 }
 
 #[test]

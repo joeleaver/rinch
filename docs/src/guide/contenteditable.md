@@ -375,17 +375,20 @@ not projected). A runnable two-pane loopback (both editors in one window, no net
 lives at `examples/collab-editor-demo/src/main.rs`.
 
 **Errors: transient vs poisoned.** Most collaboration errors are *transient*: an
-undecodable blob from the transport, or a local edit outside the staged scope —
-the session keeps collaborating, and `collab_take_error()` tells you what was
-refused. One class is not: inbound bytes that, once integrated, leave the shared
-CRDT document **unprojectable** (e.g. bytes from a foreign, non-rinch yrs document,
-or a peer delta carrying content this build can never read back). yrs has no
-rollback, so such a session could never receive again — and, before issue #196, it
-would keep *broadcasting* while receiving nothing, silently partitioning the
-peers. The session now **poisons** itself instead: sticky
+undecodable blob from the transport, a local edit outside the staged scope, or a
+rebuild still waiting on an out-of-order delta's missing dependency — the session
+keeps collaborating, and `collab_take_error()` tells you what was refused. One
+class is not: inbound bytes that, once integrated, leave the shared CRDT document
+**unprojectable with nothing pending that could cure it** (e.g. bytes from a
+foreign, non-rinch yrs document, or a peer delta carrying content this build
+cannot read back). yrs has no rollback, so such a session cannot receive — and,
+before issue #196, it would keep *broadcasting* while receiving nothing, silently
+partitioning the peers. The session now **poisons** itself instead: sticky
 `CollabError::SessionPoisoned` on every affected call, in **both** directions
-(receives are refused *and* local edits stop being projected/broadcast).
-`is_collaboration_poisoned()` queries the state; the recovery is
+(local edits stop being projected/broadcast, and receives keep failing — though
+they are still *attempted*, so an inbound update that makes the document
+rebuildable again clears the poison on its own).
+`is_collaboration_poisoned()` queries the state; the recovery in practice is
 `stop_collaboration()` followed by rejoining from a healthy peer's snapshot
 (`collab_snapshot()` → `start_collaboration_guest`).
 

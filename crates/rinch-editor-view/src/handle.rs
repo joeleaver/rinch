@@ -993,20 +993,28 @@ impl EditorHandle {
     }
 
     /// Whether the attached collaboration session is **poisoned** (issue #196): an
-    /// inbound delta left the shared CRDT permanently unprojectable, so the session
-    /// can never receive again — and, to avoid the silent one-way partition of a
-    /// replica that keeps broadcasting while receiving nothing, it refuses to send
-    /// as well. Every affected call keeps failing with the sticky
-    /// [`CollabError::SessionPoisoned`] (also visible via
+    /// inbound delta left the shared CRDT unprojectable with nothing pending that
+    /// could cure it, so the session cannot receive — and, to avoid the silent
+    /// one-way partition of a replica that keeps broadcasting while receiving
+    /// nothing, it refuses to send as well. Every affected call keeps failing with
+    /// the sticky [`CollabError::SessionPoisoned`] (also visible via
     /// [`Self::collab_take_error`], which distinguishes it from a transient error
-    /// such as an undecodable blob). `false` when not collaborating.
+    /// such as an undecodable blob or a rebuild still waiting on a missing
+    /// dependency). Inbound deltas are still *attempted*: one that makes the shared
+    /// document rebuildable again clears the poison. `false` when not collaborating.
     ///
-    /// Recovery: [`Self::stop_collaboration`], then rejoin from a healthy peer's
-    /// snapshot ([`Self::start_collaboration_guest`]).
+    /// Recovery in practice: [`Self::stop_collaboration`], then rejoin from a
+    /// healthy peer's snapshot ([`Self::start_collaboration_guest`]).
+    ///
+    /// Uses `try_borrow` — soft, like [`Self::collab_receive`] — so an `outbound`
+    /// sink may call it without panicking. While the handle is borrowed a local edit
+    /// is being committed, which a poisoned session refuses, so `false` is the
+    /// consistent answer for that window.
     pub fn is_collaboration_poisoned(&self) -> bool {
-        self.inner
-            .borrow()
-            .collab
+        let Ok(core) = self.inner.try_borrow() else {
+            return false;
+        };
+        core.collab
             .as_ref()
             .is_some_and(|b| b.session.is_poisoned())
     }
@@ -2244,11 +2252,13 @@ mod tests {
         // ── The poisoned session (issue #196) ────────────────────────────────
         //
         // Foreign bytes whose `content` root was created as the wrong yrs type leave
-        // the shared CRDT permanently unprojectable once integrated (yrs has no
-        // rollback). The session must then go loud in BOTH directions — sticky
-        // `SessionPoisoned` on inbound and outbound — instead of one-way
-        // partitioning: keeping `record_local` Ok and broadcasting while every
-        // receive fails forever was the dangerous silent half.
+        // the shared CRDT unprojectable once integrated, with nothing pending that
+        // could cure it (yrs has no rollback). The session must then go loud in BOTH
+        // directions — sticky `SessionPoisoned` on inbound and outbound — instead of
+        // one-way partitioning: keeping `record_local` Ok and broadcasting while
+        // every receive fails was the dangerous silent half. (Inbound stays
+        // *attempted*: an update that makes the document rebuildable again clears
+        // the poison — pinned at the session level in tests/poison.rs.)
 
         /// Whole-document bytes of a foreign yrs doc whose `content` root is a
         /// **Text** type — the issue's headline poison shape. Decodes and applies

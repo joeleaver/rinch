@@ -73,6 +73,16 @@ impl CollabDoc {
         Ok(())
     }
 
+    /// Whether the store holds updates parked on **missing dependencies** — applied
+    /// bytes whose causal predecessors this replica has not seen yet (an out-of-order
+    /// delivery, or a misrouted reconciliation diff computed for a peer that had seen
+    /// more). While this is true, a failing content read-back may be cured by the
+    /// missing update alone, so the session must classify it *transient* — poisoning
+    /// would turn a self-healing state into a dead one (#196 review, F1).
+    pub(crate) fn has_pending_updates(&self) -> bool {
+        self.doc.transact().has_missing_updates()
+    }
+
     /// Take everything the outbox has collected since the last drain, as one update.
     ///
     /// Empty when no locally-projected transaction has run since — unlike a

@@ -24,17 +24,27 @@
 //! yrs has no rollback: once inbound bytes are applied, they cannot be un-applied. If
 //! an integrate leaves the shared document **unprojectable** — foreign bytes whose
 //! `content` root was built as the wrong yrs type, or a peer delta that parked
-//! out-of-scope content (an embed) inside a block — every future rebuild fails the same
-//! way, so the session can never receive again. Detecting that costs nothing extra:
-//! the converged rebuild ([`CollabDoc::to_doc`]) already runs on every integrate, and
-//! its failure *after* bytes touched the CRDT **is** the diagnosis. The session then
-//! turns **sticky-loud in both directions**
+//! out-of-scope content (an embed) inside a block — the rebuild keeps failing until
+//! some future inbound bytes change the content, so the session cannot receive.
+//! Detecting that costs nothing extra: the converged rebuild ([`CollabDoc::to_doc`])
+//! already runs on every integrate, and its failure *after* bytes touched the CRDT
+//! **is** the diagnosis — with one carve-out. A rebuild failure while yrs holds
+//! updates parked on **missing dependencies** ([`CollabDoc::has_pending_updates`]) is
+//! *transient*, not poison: a misrouted reconciliation diff can delete a map item
+//! whose replacement waits on an insertion this replica has not seen, and the missing
+//! delta alone cures the read-back — poisoning there would kill a self-healing state
+//! and refuse the very bytes that heal it.
+//!
+//! A poisoned session turns **sticky-loud in both directions**
 //! ([`CollabError::SessionPoisoned`](crate::CollabError::SessionPoisoned)): inbound
 //! kept failing anyway, and outbound (`record_local`/`save_incremental`/`sync_diff`)
-//! now refuses too — a replica that can never converge must not keep broadcasting,
-//! and a poisoned document's diff must not be handed to healthy peers. A *decode*
-//! failure, by contrast, leaves the CRDT untouched and stays transient. Recovery is a
-//! fresh session from a healthy peer's snapshot.
+//! now refuses too — a replica that cannot converge must not keep broadcasting, and a
+//! poisoned document's diff must not be handed to healthy peers. Inbound integration
+//! is still *attempted*, though: an update that leaves the document rebuildable again
+//! (say, the damaged lineage deleting its own offending content) **clears** the
+//! poison; until then every attempt reports the sticky error. A *decode* failure
+//! leaves the CRDT untouched and stays transient. Recovery in practice is a fresh
+//! session from a healthy peer's snapshot.
 
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
@@ -81,9 +91,11 @@ impl CollabSession {
     }
 
     /// Whether this session is **poisoned** — an integrate left the shared CRDT
-    /// permanently unprojectable, so every convergence-relevant operation now fails
-    /// with the sticky [`CollabError::SessionPoisoned`] (see the module docs). The
-    /// only recovery is a fresh session from a healthy peer's snapshot.
+    /// unprojectable with nothing pending that could cure it, so every
+    /// convergence-relevant operation now fails with the sticky
+    /// [`CollabError::SessionPoisoned`] (see the module docs). Cleared by an inbound
+    /// integration that leaves the document rebuildable again; recovery in practice
+    /// is a fresh session from a healthy peer's snapshot.
     pub fn is_poisoned(&self) -> bool {
         self.poisoned.is_some()
     }
@@ -96,15 +108,43 @@ impl CollabSession {
         }
     }
 
-    /// Mark this session poisoned by `cause` and return the sticky error every
-    /// subsequent operation will keep failing with.
-    fn poison(&mut self, cause: &CollabError) -> CollabError {
+    /// The sticky poison error if this session is poisoned, otherwise `err`
+    /// unchanged — inbound failures on a poisoned session keep reporting the poison
+    /// rather than a shifting mix of underlying errors.
+    fn sticky_or(&self, err: CollabError) -> CollabError {
+        self.poisoned.clone().unwrap_or(err)
+    }
+
+    /// Classify an inbound failure that left the shared document failing its
+    /// converged rebuild, and return the error to surface.
+    ///
+    /// * Already poisoned → the sticky error, unchanged.
+    /// * Updates parked on missing dependencies → **transient** (`cause` as-is): the
+    ///   missing delta alone can cure the read-back, so this must neither poison nor
+    ///   be reported as poison (#196 review, F1 — a misrouted reconciliation diff is
+    ///   the reachable shape).
+    /// * Otherwise → poison: mark the session and return the sticky error every
+    ///   affected operation will keep failing with until an inbound integration
+    ///   heals it.
+    fn classify_unprojectable(&mut self, cause: CollabError) -> CollabError {
+        if let Some(sticky) = &self.poisoned {
+            return sticky.clone();
+        }
+        if self.cdoc.has_pending_updates() {
+            return cause;
+        }
         let err = CollabError::SessionPoisoned(cause.to_string());
         self.poisoned = Some(err.clone());
         err
     }
 
     /// Save the whole CRDT (hand to a peer so they can `from_bytes` and join).
+    ///
+    /// Not poison-guarded (the signature is infallible), so a poisoned session still
+    /// yields its bytes. Don't hand them to a joiner: [`CollabDoc::load`]'s content
+    /// gate validates *shape*, not schema, so some poisoned states (e.g. a block
+    /// `type` rewritten to a name the schema lacks) load fine and only fail loud one
+    /// step later, at the joiner's first [`Self::projected_doc`].
     pub fn snapshot(&self) -> Vec<u8> {
         self.cdoc.save()
     }
@@ -116,7 +156,7 @@ impl CollabSession {
     /// projection is all-or-nothing, issue #194) and the offending *local* content can
     /// be edited away (undo the table paste), after which projection resumes. On a
     /// [poisoned](Self::is_poisoned) session, though, this refuses with the sticky
-    /// error before reading anything: a replica that can never receive must not keep
+    /// error before reading anything: a replica that cannot receive must not keep
     /// projecting-and-broadcasting as though it were converging (issue #196).
     pub fn record_local(&mut self, before: &Node, after: &Node) -> Result<()> {
         self.guard()?;
@@ -146,8 +186,8 @@ impl CollabSession {
     /// Fails only if a parked update cannot be re-decoded to be merged with its
     /// neighbours, which would mean this replica produced a malformed update; the parked
     /// updates are left in place, so the error is not a silent loss — or, sticky, on a
-    /// [poisoned](Self::is_poisoned) session, so no delta leaves a replica that can
-    /// never converge (issue #196).
+    /// [poisoned](Self::is_poisoned) session, so no delta leaves a replica that
+    /// cannot converge (issue #196).
     pub fn save_incremental(&mut self) -> Result<Vec<u8>> {
         self.guard()?;
         self.cdoc.take_outbox()
@@ -203,44 +243,58 @@ impl CollabSession {
     /// * Bytes that don't **decode** never touch the CRDT — a transient
     ///   [`Engine`](CollabError::Engine) error; the next valid delta integrates fine.
     /// * Bytes that were **applied** but leave the document failing its converged
-    ///   rebuild ([`CollabDoc::to_doc`]) can never be un-applied (yrs has no rollback),
-    ///   so the session **poisons itself**: this call — and every subsequent
-    ///   convergence-relevant call, outbound included — fails with the sticky
-    ///   [`SessionPoisoned`](CollabError::SessionPoisoned). The read that decides this
-    ///   is the rebuild every integrate already performs, so a healthy delta pays
-    ///   nothing extra.
+    ///   rebuild ([`CollabDoc::to_doc`]) cannot be un-applied (yrs has no rollback).
+    ///   If yrs holds updates parked on **missing dependencies**, the failure is
+    ///   transient — the missing delta cures it. Otherwise the session **poisons
+    ///   itself**: this call — and every subsequent convergence-relevant call,
+    ///   outbound included — fails with the sticky
+    ///   [`SessionPoisoned`](CollabError::SessionPoisoned). The read that decides
+    ///   this is the rebuild every integrate already performs, so a healthy delta
+    ///   pays nothing extra.
+    /// * On a poisoned session, integration is still **attempted**: an update that
+    ///   leaves the document rebuildable again clears the poison and applies
+    ///   normally; any other inbound failure re-reports the sticky error.
     pub fn integrate_incremental(
         &mut self,
         state: &EditorState,
         changes: &[u8],
     ) -> Result<Option<EditorState>> {
-        self.guard()?;
         if changes.is_empty() || changes == EMPTY_UPDATE {
+            // Nothing to apply — and therefore nothing that could heal a poisoned
+            // session, so the sticky error still reports.
+            self.guard()?;
             return Ok(None);
         }
-        // Decode failure: the CRDT is untouched, so the error is transient by
-        // construction — never poison here.
-        let update = Update::decode_v1(changes)?;
+        // Decode failure: the CRDT is untouched, so this can neither poison nor heal.
+        let update = match Update::decode_v1(changes) {
+            Ok(update) => update,
+            Err(e) => return Err(self.sticky_or(e.into())),
+        };
         if let Err(apply_err) = self.cdoc.apply_decoded(update) {
             // yrs commits on drop with no rollback, so a failed apply may have
-            // partially integrated. Projectability decides transient vs permanent:
-            // if the document still rebuilds, the session is still convergent.
+            // partially integrated. Projectability decides how loud to be: if the
+            // document still rebuilds, the session is still convergent (transient);
+            // if not, classify (pending-aware) like any unprojectable state. The
+            // model was not advanced, so a still-projectable outcome does not clear
+            // an existing poison — only a full, successful integration does.
             return match self.cdoc.to_doc(state.schema()) {
-                Ok(_) => Err(apply_err),
-                Err(_) => Err(self.poison(&apply_err)),
+                Ok(_) => Err(self.sticky_or(apply_err)),
+                Err(_) => Err(self.classify_unprojectable(apply_err)),
             };
         }
-        // The converged rebuild. Its failure after a successful apply is the
-        // permanently-unprojectable state: these bytes are in the CRDT for good, and
-        // every future rebuild hits the same content.
+        // The converged rebuild — the projectability verdict for these bytes.
         let target = match self.cdoc.to_doc(state.schema()) {
             Ok(target) => target,
-            Err(cause) => return Err(self.poison(&cause)),
+            Err(cause) => return Err(self.classify_unprojectable(cause)),
         };
-        // Past this point the document is projectable, so a failure is not the
-        // permanent class: building/applying the model transaction reads only the
-        // validated rebuild (and is unreachable in practice for a doc `to_doc`
-        // admitted). Defense in depth, not a supported failure path.
+        // The document is projectable: a previously-poisoned session is healed by
+        // exactly this — a full inbound integration whose rebuild succeeds (the
+        // returned state below is what brings the model back in step).
+        self.poisoned = None;
+        // Past this point a failure is not the unprojectable class: building/applying
+        // the model transaction reads only the validated rebuild (and is unreachable
+        // in practice for a doc `to_doc` admitted). Defense in depth, not a supported
+        // failure path.
         match build_remote_transaction(state, &target)? {
             Some(tr) => Ok(Some(state.apply(tr))),
             None => Ok(None),
