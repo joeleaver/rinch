@@ -2,9 +2,56 @@
 
 /// Simple hit testing: find the deepest node whose layout rect contains (x, y).
 /// Respects CSS stacking contexts so that elements with higher z-index
-/// are tested before visually-behind siblings.
+/// are tested before visually-behind siblings, and CSS transforms so that a
+/// transformed subtree is hit where it is *painted* (#199).
 pub(crate) fn hit_test(tree: &rinch_dom::NodeTree, x: f32, y: f32) -> Option<usize> {
-    hit_test_node(tree, tree.body_id, 0.0, 0.0, x, y, true)
+    hit_test_node(tree, tree.body_id, 0.0, 0.0, x, y, x, y, true)
+}
+
+/// Map `(px, py)` — a point in the coordinate space the node's layout box lives
+/// in — into the node's own space by inverting the node's CSS transform.
+///
+/// `paint_node` draws a node's *untransformed* box under the affine composed by
+/// [`rinch_dom::paint::compose_node_transform`] and hands that same affine to the
+/// node's children. So the mirror image on the input side is to push the probe
+/// point through the inverse: every bounds test then happens in the box's own
+/// space, against the plain layout rect. Composition falls out for free — each
+/// level inverts only its own step, and the product of those inverses is the
+/// inverse of paint's accumulated transform.
+///
+/// `scale = 1.0` because hit testing works in layout pixels while paint works in
+/// physical pixels; the linear part (scale/rotate/skew) is invariant under that
+/// change of units, and `compose_node_transform` applies CSS-px translate
+/// components unscaled, so the two spaces agree exactly at DPI scale 1.
+///
+/// Returns `None` when the transform is not invertible (`scale(0)`, a degenerate
+/// matrix): such a subtree paints to zero area, so nothing in it can be hit.
+fn local_point(node: &rinch_dom::Node, nx: f32, ny: f32, px: f32, py: f32) -> Option<(f32, f32)> {
+    use peniko::kurbo::{Affine, Point};
+
+    if node.computed_style.transform.is_identity {
+        return Some((px, py));
+    }
+    // A display:contents node has no box, so paint gives it no transform box
+    // either — `paint_node`'s zero-size branch passes the parent transform
+    // straight through to the children.
+    if node.computed_style.display == rinch_dom::computed_style::DisplayValue::Contents
+        && (node.layout.width == 0.0 || node.layout.height == 0.0)
+    {
+        return Some((px, py));
+    }
+
+    let t =
+        rinch_dom::paint::compose_node_transform(node, nx as f64, ny as f64, 1.0, Affine::IDENTITY);
+    let det = t.determinant();
+    if !det.is_finite() || det.abs() < 1e-12 {
+        return None;
+    }
+    let p = t.inverse() * Point::new(px as f64, py as f64);
+    if !p.x.is_finite() || !p.y.is_finite() {
+        return None;
+    }
+    Some((p.x as f32, p.y as f32))
 }
 
 /// A stacking context entry for hit testing, with accumulated offset.
@@ -19,6 +66,13 @@ struct HitTestScEntry {
 /// Collect descendant stacking contexts for hit testing, mirroring the paint
 /// pipeline's `collect_stacking_contexts`. Walks children, stops at SC boundaries,
 /// accumulates offsets through intermediate non-SC nodes.
+///
+/// No transform handling is needed here, for the same reason paint's version
+/// needs none: a transformed node always creates a stacking context
+/// (`Node::creates_stacking_context`), so the walk stops at it and the offsets
+/// accumulated through the intermediate nodes never cross a transform. Every
+/// entry therefore lands in the collecting SC's own space — exactly the space
+/// the probe point is in when the entry is descended into.
 fn collect_sc_for_hit_test(
     tree: &rinch_dom::NodeTree,
     children: &[usize],
@@ -63,6 +117,14 @@ fn collect_sc_for_hit_test(
     }
 }
 
+/// Hit-test a subtree.
+///
+/// `x`/`y` is the probe point in the coordinate space `offset_x`/`offset_y` live
+/// in — i.e. the local (pre-transform) space of the nearest transformed ancestor,
+/// which is the same space paint accumulates its offsets in. `vx`/`vy` is the
+/// probe point in viewport space, kept for `position: fixed` subtrees which paint
+/// hoists out of every ancestor's offset *and* transform.
+#[allow(clippy::too_many_arguments)]
 fn hit_test_node(
     tree: &rinch_dom::NodeTree,
     node_id: usize,
@@ -70,12 +132,19 @@ fn hit_test_node(
     offset_y: f32,
     x: f32,
     y: f32,
+    vx: f32,
+    vy: f32,
     is_sc_root: bool,
 ) -> Option<usize> {
     let node = tree.get(node_id)?;
 
-    // position: fixed elements are viewport-relative — ignore parent offsets
+    // position: fixed elements are viewport-relative — ignore parent offsets.
+    // Paint hoists them to the body level (`collect_stacking_contexts_root` →
+    // `paint_node` with zeroed offsets and the *body's* transform), so their box
+    // lives in viewport space: drop the accumulated ancestor transforms exactly
+    // as the offsets are dropped, by resuming from the viewport-space point.
     let is_fixed = node.computed_style.position == rinch_dom::computed_style::PositionValue::Fixed;
+    let (x, y) = if is_fixed { (vx, vy) } else { (x, y) };
     let nx = if is_fixed {
         node.layout.x
     } else {
@@ -109,6 +178,19 @@ fn hit_test_node(
 
     let nw = node.layout.width;
     let nh = node.layout.height;
+
+    // Enter this node's transform space: from here down (including this node's
+    // own bounds test and its overflow clip) the point is expressed in the same
+    // space paint draws the untransformed boxes in.
+    let (x, y) = local_point(node, nx, ny, x, y)?;
+
+    // Fixed descendants resolve against the viewport, which paint models as the
+    // body level — so viewport space is body's *post-transform* space.
+    let (vx, vy) = if node_id == tree.body_id {
+        (x, y)
+    } else {
+        (vx, vy)
+    };
 
     // Skip entire subtree when visibility: hidden — per CSS spec, hidden elements
     // and their descendants don't receive pointer events. This also guards against
@@ -172,6 +254,8 @@ fn hit_test_node(
                     entry.offset_y,
                     x,
                     y,
+                    vx,
+                    vy,
                     true,
                 ) {
                     return Some(hit);
@@ -190,6 +274,8 @@ fn hit_test_node(
                     entry.offset_y,
                     x,
                     y,
+                    vx,
+                    vy,
                     true,
                 ) {
                     return Some(hit);
@@ -213,7 +299,9 @@ fn hit_test_node(
                 if child.is_text() && child.ifc_root.is_some() {
                     continue;
                 }
-                if let Some(hit) = hit_test_node(tree, child_id, nx - sx, ny - sy, x, y, false) {
+                if let Some(hit) =
+                    hit_test_node(tree, child_id, nx - sx, ny - sy, x, y, vx, vy, false)
+                {
                     return Some(hit);
                 }
             }
@@ -234,6 +322,8 @@ fn hit_test_node(
                     entry.offset_y,
                     x,
                     y,
+                    vx,
+                    vy,
                     true,
                 ) {
                     return Some(hit);
@@ -259,7 +349,9 @@ fn hit_test_node(
                 if child.is_text() && child.ifc_root.is_some() {
                     continue;
                 }
-                if let Some(hit) = hit_test_node(tree, child_id, nx - sx, ny - sy, x, y, false) {
+                if let Some(hit) =
+                    hit_test_node(tree, child_id, nx - sx, ny - sy, x, y, vx, vy, false)
+                {
                     return Some(hit);
                 }
             }
@@ -717,7 +809,7 @@ pub(crate) fn compute_absolute_y(tree: &rinch_dom::NodeTree, node_id: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::hit_test;
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::{DomDocument, NodeId};
     use rinch_dom::RinchDocument;
 
     /// Absolute (border-box) origin of a node, accumulated the same way
@@ -809,6 +901,435 @@ mod tests {
             hit_test(&doc.tree, paint_x - bl.width, paint_y + bl.height / 2.0),
             Some(button.0),
             "a point on the leading text must not resolve to the button"
+        );
+    }
+
+    // ── CSS transforms (#199) ────────────────────────────────────────────
+    //
+    // The correctness criterion for every test below: a point hits a node iff
+    // that point lands inside where the node is *painted*. Paint draws each box
+    // under `compose_node_transform` (rinch-dom/src/paint/mod.rs), so the
+    // expected rects here are hand-computed from the CSS transform, not from
+    // any hit-test helper.
+
+    /// Build a document with a `400x300` relative container as `body`'s only
+    /// child, returning `(doc, container)`. The container sits at the viewport
+    /// origin so absolute child offsets *are* viewport coordinates.
+    fn container_doc() -> (RinchDocument, NodeId) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "position: relative; width: 400px; height: 300px",
+        );
+        doc.append_child(body, container);
+        (doc, container)
+    }
+
+    fn child_of(doc: &mut RinchDocument, parent: NodeId, style: &str) -> NodeId {
+        let el = doc.create_element("div");
+        doc.set_attribute(el, "style", style);
+        doc.append_child(parent, el);
+        el
+    }
+
+    /// The motivating bug: the `left:50%; top:50%; translate(-50%,-50%)` modal
+    /// idiom rendered centered but hit-tested at its *un*translated layout box,
+    /// so every control inside it was unclickable.
+    #[test]
+    fn translate_centered_modal_is_hit_at_its_visual_position() {
+        let (mut doc, container) = container_doc();
+        // Layout box (200,150)-(300,210); painted box shifted by (-50,-30) to
+        // (150,120)-(250,180), i.e. centered on the container.
+        let modal = child_of(
+            &mut doc,
+            container,
+            "position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); \
+             width: 100px; height: 60px",
+        );
+        // In-flow child at the modal's origin: layout (200,150)-(240,170),
+        // painted (150,120)-(190,140).
+        let button = child_of(&mut doc, modal, "width: 40px; height: 20px");
+        doc.resolve_layout(800.0, 600.0);
+
+        assert_eq!(
+            hit_test(&doc.tree, 200.0, 150.0),
+            Some(modal.0),
+            "the modal's visual centre (= the container's centre) must hit the modal"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 170.0, 130.0),
+            Some(button.0),
+            "the button's painted centre must hit the button"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 275.0, 195.0),
+            Some(container.0),
+            "a point in the modal's untransformed layout box must miss the modal"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 220.0, 160.0),
+            Some(modal.0),
+            "the button's untransformed layout centre must miss the button"
+        );
+    }
+
+    /// Nested transforms compose: the child is hit where the parent's translate
+    /// and its own scale put it, not at either one alone.
+    #[test]
+    fn nested_transforms_compose() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let outer = doc.create_element("div");
+        doc.set_attribute(
+            outer,
+            "style",
+            "position: relative; width: 400px; height: 300px; transform: translate(100px, 50px)",
+        );
+        doc.append_child(body, outer);
+        // Layout (0,0)-(100,50) inside `outer`; scale(2) about its centre
+        // (50,25) → (-50,-25)-(150,75); + outer's translate → (50,25)-(250,125).
+        let inner = child_of(
+            &mut doc,
+            outer,
+            "position: absolute; left: 0; top: 0; width: 100px; height: 50px; transform: scale(2)",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        assert_eq!(
+            hit_test(&doc.tree, 60.0, 30.0),
+            Some(inner.0),
+            "top-left of the composed quad must hit the inner box"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 240.0, 120.0),
+            Some(inner.0),
+            "bottom-right of the composed quad must hit the inner box"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 260.0, 130.0),
+            Some(outer.0),
+            "just outside the composed quad falls through to the translated parent"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 20.0, 20.0),
+            Some(body.0),
+            "the parent's own layout box (before its translate) must not be hit"
+        );
+    }
+
+    /// A scaled box is hit over its scaled bounds, about its transform-origin.
+    #[test]
+    fn scaled_node_is_hit_over_its_scaled_bounds() {
+        let (mut doc, container) = container_doc();
+        // Default origin 50% 50%: (100,100)-(150,150) scaled 2x about (125,125)
+        // → (75,75)-(175,175).
+        let centred = child_of(
+            &mut doc,
+            container,
+            "position: absolute; left: 100px; top: 100px; width: 50px; height: 50px; \
+             transform: scale(2)",
+        );
+        // origin top left: (300,100)-(350,150) → (300,100)-(400,200).
+        let corner = child_of(
+            &mut doc,
+            container,
+            "position: absolute; left: 300px; top: 100px; width: 50px; height: 50px; \
+             transform: scale(2); transform-origin: top left",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        assert_eq!(
+            hit_test(&doc.tree, 80.0, 80.0),
+            Some(centred.0),
+            "inside the scaled bounds but outside the layout box must hit"
+        );
+        assert_eq!(hit_test(&doc.tree, 125.0, 125.0), Some(centred.0));
+        assert_eq!(
+            hit_test(&doc.tree, 180.0, 180.0),
+            Some(container.0),
+            "outside the scaled bounds must miss"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 390.0, 190.0),
+            Some(corner.0),
+            "a top-left-origin scale grows down/right only"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 285.0, 85.0),
+            Some(container.0),
+            "a top-left-origin scale must not grow up/left (that would be a 50% origin)"
+        );
+    }
+
+    /// Rotation is supported by the paint transform (`GenericTransformOperation::Rotate`),
+    /// so hit testing must follow the rotated quad.
+    #[test]
+    fn rotated_node_is_hit_inside_its_rotated_quad() {
+        let (mut doc, container) = container_doc();
+        // (100,140)-(300,160) rotated 90° about its centre (200,150)
+        // → a 20x200 quad, (190,50)-(210,250).
+        let bar = child_of(
+            &mut doc,
+            container,
+            "position: absolute; left: 100px; top: 140px; width: 200px; height: 20px; \
+             transform: rotate(90deg)",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        assert_eq!(
+            hit_test(&doc.tree, 200.0, 150.0),
+            Some(bar.0),
+            "the centre is fixed by the rotation"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 200.0, 60.0),
+            Some(bar.0),
+            "the top of the rotated quad must hit"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 200.0, 240.0),
+            Some(bar.0),
+            "the bottom of the rotated quad must hit"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 110.0, 150.0),
+            Some(container.0),
+            "the unrotated box's left end is outside the rotated quad"
+        );
+    }
+
+    /// Stacking-context order is unchanged by the transform mapping: a
+    /// transformed SC is tested at its visual position but in its z-index slot,
+    /// and an untransformed higher-z sibling still wins.
+    #[test]
+    fn transformed_sc_keeps_z_index_order() {
+        let (mut doc, container) = container_doc();
+        let back = child_of(
+            &mut doc,
+            container,
+            "position: absolute; left: 100px; top: 0; width: 200px; height: 200px; z-index: 1",
+        );
+        // Layout (300,50)-(400,150); painted (200,50)-(300,150).
+        let mid = child_of(
+            &mut doc,
+            container,
+            "position: absolute; left: 300px; top: 50px; width: 100px; height: 100px; \
+             z-index: 2; transform: translate(-100px, 0)",
+        );
+        let front = child_of(
+            &mut doc,
+            container,
+            "position: absolute; left: 250px; top: 100px; width: 100px; height: 100px; z-index: 3",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        assert_eq!(
+            hit_test(&doc.tree, 210.0, 60.0),
+            Some(mid.0),
+            "the transformed SC beats the lower-z sibling it visually covers"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 260.0, 110.0),
+            Some(front.0),
+            "an untransformed higher-z sibling still wins over the transformed SC"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 390.0, 60.0),
+            Some(container.0),
+            "the transformed SC is not hit at its untransformed layout box"
+        );
+        assert_eq!(hit_test(&doc.tree, 110.0, 190.0), Some(back.0));
+    }
+
+    /// A non-invertible transform (`scale(0)`) paints nothing, so it and its
+    /// subtree are unhittable — and the traversal must survive it (no panic, no
+    /// NaN leaking into the sibling that is tested next).
+    #[test]
+    fn scale_zero_subtree_is_unhittable() {
+        let (mut doc, container) = container_doc();
+        let collapsed = child_of(
+            &mut doc,
+            container,
+            "position: absolute; left: 100px; top: 100px; width: 100px; height: 100px; \
+             transform: scale(0)",
+        );
+        let inside = child_of(&mut doc, collapsed, "width: 50px; height: 50px");
+        let sibling = child_of(
+            &mut doc,
+            container,
+            "position: absolute; left: 250px; top: 100px; width: 50px; height: 50px",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        for (x, y) in [(150.0, 150.0), (100.0, 100.0), (105.0, 105.0)] {
+            let hit = hit_test(&doc.tree, x, y);
+            assert_eq!(
+                hit,
+                Some(container.0),
+                "({x}, {y}) must fall through the scale(0) subtree to the container"
+            );
+            assert_ne!(hit, Some(collapsed.0));
+            assert_ne!(hit, Some(inside.0));
+        }
+        assert_eq!(
+            hit_test(&doc.tree, 275.0, 125.0),
+            Some(sibling.0),
+            "the sibling tested after the degenerate subtree still hits"
+        );
+    }
+
+    /// `position: fixed` inside a transformed ancestor. Per CSS a transform
+    /// makes a containing block for fixed descendants, but rinch's paint path
+    /// hoists fixed SCs to the body level with zeroed offsets and the *body's*
+    /// transform (`collect_stacking_contexts_root`), so they render at their
+    /// viewport box with no ancestor transform. Hit testing mirrors paint —
+    /// consistency beats spec here, and diverging is the bug we are fixing.
+    #[test]
+    fn fixed_in_transformed_ancestor_is_hit_where_paint_puts_it() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let outer = doc.create_element("div");
+        doc.set_attribute(
+            outer,
+            "style",
+            "position: relative; width: 400px; height: 300px; transform: translate(200px, 100px)",
+        );
+        doc.append_child(body, outer);
+        let fixed = child_of(
+            &mut doc,
+            outer,
+            "position: fixed; left: 50px; top: 60px; width: 100px; height: 40px; z-index: 5",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        assert_eq!(
+            hit_test(&doc.tree, 60.0, 70.0),
+            Some(fixed.0),
+            "the fixed box is hit at its viewport position, as paint draws it"
+        );
+        assert_ne!(
+            hit_test(&doc.tree, 260.0, 170.0),
+            Some(fixed.0),
+            "the ancestor's transform must not displace the fixed box's hit area"
+        );
+    }
+
+    /// Pins the viewport-point re-seed at the body level. A transform on `body`
+    /// itself is the only thing that makes it do work: paint paints the hoisted
+    /// fixed entries with *body's* `node_transform`, so viewport space for a
+    /// fixed box is body's post-transform space, not the raw input point.
+    #[test]
+    fn body_transform_applies_to_a_hoisted_fixed_descendant() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "transform: translate(40px, 30px)");
+        let outer = child_of(
+            &mut doc,
+            body,
+            "position: relative; width: 400px; height: 300px; transform: translate(200px, 100px)",
+        );
+        // Viewport box (50,60)-(150,100); painted at body's translate →
+        // (90,90)-(190,130). `outer`'s translate must not reach it.
+        let fixed = child_of(
+            &mut doc,
+            outer,
+            "position: fixed; left: 50px; top: 60px; width: 100px; height: 40px; z-index: 5",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        assert_eq!(
+            hit_test(&doc.tree, 140.0, 110.0),
+            Some(fixed.0),
+            "the fixed box is hit at its viewport box shifted by body's transform"
+        );
+        assert_ne!(
+            hit_test(&doc.tree, 100.0, 80.0),
+            Some(fixed.0),
+            "the un-shifted viewport box must not hit — body's transform does apply"
+        );
+        assert_ne!(
+            hit_test(&doc.tree, 290.0, 190.0),
+            Some(fixed.0),
+            "the transformed ancestor's own translate must still not reach the fixed box"
+        );
+    }
+
+    /// Pins the `display: contents` half of the zero-size guard in `local_point`.
+    /// A box collapsed on one axis keeps its transform box — `paint_node`'s
+    /// `(w == 0) != (h == 0)` branch composes the transform and paints the
+    /// overflowing children under it — so the guard must *not* fire here.
+    #[test]
+    fn one_axis_zero_size_node_still_transforms_its_children() {
+        let (mut doc, container) = container_doc();
+        let zerobox = child_of(
+            &mut doc,
+            container,
+            "position: absolute; left: 100px; top: 100px; width: 200px; height: 0; \
+             transform: translate(50px, 20px)",
+        );
+        // Overflows the zero-height parent: layout (100,100)-(140,130),
+        // painted (150,120)-(190,150).
+        let child = child_of(
+            &mut doc,
+            zerobox,
+            "position: absolute; left: 0; top: 0; width: 40px; height: 30px",
+        );
+        doc.resolve_layout(800.0, 600.0);
+        assert_eq!(
+            doc.tree.get(zerobox.0).unwrap().layout.height,
+            0.0,
+            "the test needs the one-axis-collapsed paint branch"
+        );
+
+        assert_eq!(
+            hit_test(&doc.tree, 170.0, 135.0),
+            Some(child.0),
+            "the child is hit under the collapsed parent's transform"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 120.0, 115.0),
+            Some(container.0),
+            "the child's untransformed layout box must miss"
+        );
+    }
+
+    /// Pins the zero-size half of the same guard. A `display: contents` node has
+    /// no box, so `paint_node` passes the parent transform straight through to
+    /// its children and the node's own `transform` never renders — hit testing
+    /// must ignore it too.
+    #[test]
+    fn display_contents_node_ignores_its_own_transform() {
+        let (mut doc, container) = container_doc();
+        let contents = child_of(
+            &mut doc,
+            container,
+            "display: contents; transform: translate(60px, 40px)",
+        );
+        let child = child_of(&mut doc, contents, "width: 40px; height: 30px");
+        doc.resolve_layout(800.0, 600.0);
+        let cn = doc.tree.get(contents.0).unwrap();
+        assert_eq!(
+            (cn.layout.width, cn.layout.height),
+            (0.0, 0.0),
+            "the test needs display:contents to have no box"
+        );
+        assert!(
+            !cn.computed_style.transform.is_identity,
+            "the test needs a real transform declared on the display:contents node"
+        );
+
+        assert_eq!(
+            hit_test(&doc.tree, 20.0, 15.0),
+            Some(child.0),
+            "the child is hit at its laid-out box, untouched by the contents node's transform"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 80.0, 55.0),
+            Some(container.0),
+            "where that transform would have put the child must miss"
         );
     }
 }
