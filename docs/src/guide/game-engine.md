@@ -334,42 +334,42 @@ if ctx.wants_keyboard() {
 }
 ```
 
-> **Always give the viewport hole `pointer-events: auto`.** `wants_mouse` only
-> reports "the game wants this" when the hit-tested node has a `data-viewport`
-> ancestor. A hole that is not hittable therefore inverts the routing: the hit
-> falls through to `body` behind it, the walk up from `body` finds no
+> **A viewport hole must stay hittable — that is what routes the mouse.**
+> `wants_mouse` only reports "the game wants this" when the hit-tested node has a
+> `data-viewport` ancestor. A hole that is *not* hittable inverts the routing: the
+> hit falls through to `body` behind it, the walk up from `body` finds no
 > `data-viewport`, and `wants_mouse` answers `true` — **everywhere**. The game
 > silently receives no mouse input at all, with nothing in the layout or the
 > render looking wrong.
 >
-> Two separate things can make the hole unhittable, and you generally want to
-> defend against both at once:
+> Since #207 `GameViewport` needs no defending: every `data-viewport` node gets
+> `pointer-events: auto; background: transparent;` from the UA stylesheet, so both
+> `GameViewport { name: "main" }` and `GameViewport { name: "main", style: "flex: 1;" }`
+> route correctly. Because those defaults are a UA rule rather than an inline
+> style, restyling the hole cannot strip them — worth knowing, since a component's
+> universal `style:` prop **replaces** the component's inline style rather than
+> merging with it. Being a UA declaration, it also survives `pointer-events: none`
+> inherited from a HUD root, and still loses to any `pointer-events` you declare on
+> the viewport yourself (which is how you deliberately hand a region back to the
+> UI).
 >
-> 1. **`GameViewport` ships with `pointer-events: none` on the hole div**, so the
->    bare `GameViewport { name: "main" }` form is not hittable as-is. Passing a
->    `style:` prop happens to cure it, because a component's universal `style:`
->    **replaces** the component's own inline style rather than merging with it —
->    which also drops the built-in `background: transparent`, so restate that too
->    if you relied on it.
-> 2. **`pointer-events` is inherited.** Putting `pointer-events: none` on a HUD
->    root — the natural way to let clicks fall through to the game — pushes it
->    back down onto the hole even if the hole's own `style:` omitted it.
->
-> Being explicit covers both:
+> **The inheritance trap is still real for everything you build yourself.**
+> `pointer-events` is inherited, so `pointer-events: none` on a HUD root — the
+> natural way to let clicks fall through to the game — reaches every descendant.
+> Your own HUD controls, and any hand-rolled hole that isn't a `data-viewport`
+> node, need an explicit opt-in:
 >
 > ```rust
 > div { style: "pointer-events: none;",          // HUD root: clicks fall through
->     GameViewport { name: "main", style: "flex: 1; pointer-events: auto; background: transparent;" }
+>     GameViewport { name: "main", style: "flex: 1;" }   // hittable by default
 >     div { style: "pointer-events: auto;", /* real HUD controls */ }
 > }
 > ```
 >
-> The inheritance half is spec-correct, not a bug — but the overlay idiom that
-> triggers it is the obvious one to reach for, so it is worth designing around up
-> front. The same `pointer-events: auto` opt-in applies to any HUD control you
-> want clickable inside a `pointer-events: none` root. (`visibility: hidden` is
-> stronger still: it makes an entire subtree unhittable and *cannot* be re-enabled
-> on a descendant.)
+> That inheritance is spec-correct, not a bug — but the overlay idiom that triggers
+> it is the obvious one to reach for, so it is worth designing around up front.
+> (`visibility: hidden` is stronger still: it makes an entire subtree unhittable
+> and *cannot* be re-enabled on a descendant.)
 
 ### Split Layout (Viewport Hole)
 
@@ -387,7 +387,7 @@ fn editor_ui() -> NodeHandle {
             }
             div { style: "display: flex; flex: 1;",
                 div { style: "width: 200px;", /* side panel */ }
-                GameViewport { name: "main", style: "flex: 1; pointer-events: auto; background: transparent;" }
+                GameViewport { name: "main", style: "flex: 1;" }
             }
         }
     }

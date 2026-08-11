@@ -629,8 +629,16 @@ impl RinchOverlayRenderer {
 /// scene to show through. Use [`RinchContext::viewport_rect`] to query
 /// the computed layout rect and render your game into that region.
 ///
-/// The component renders as a transparent `div` with `pointer-events: none`
-/// so mouse events pass through to the game.
+/// The component renders as a transparent, **hittable** `div`. Hittability is
+/// what routes input: [`RinchContext::wants_mouse`] hit-tests the DOM and walks
+/// up from the hit node looking for `data-viewport`, so a pointer that lands on
+/// the hole answers "the game owns this" (issue #207). The transparent
+/// background and `pointer-events: auto` come from the UA stylesheet rule for
+/// `[data-viewport]`, not from an inline style, so passing `style:` (which
+/// *replaces* the style attribute) can neither restore nor break them.
+///
+/// To hand a region back to the UI, declare `pointer-events: none` on the
+/// viewport yourself — an author declaration still wins over the UA default.
 ///
 /// # Example
 ///
@@ -656,7 +664,6 @@ pub fn game_viewport(__scope: &mut RenderScope, name: &str) -> NodeHandle {
     let div = __scope.create_element("div");
     div.set_attribute("class", "rinch-game-viewport");
     div.set_attribute("data-viewport", name);
-    div.set_attribute("style", "pointer-events: none; background: transparent;");
     div
 }
 
