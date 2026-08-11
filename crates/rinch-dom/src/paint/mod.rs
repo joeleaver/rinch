@@ -221,9 +221,9 @@ pub fn compute_absolute_position(tree: &NodeTree, node_id: RawNodeId, scale: f64
 ///
 /// `x`/`y` are the node's absolute position in physical pixels. This is the
 /// single source of truth for transform composition — the paint arms, the
-/// dirty-region cull test, and dirty-region tracking must all agree on it
-/// (#142, #143).
-fn compose_node_transform(
+/// dirty-region cull test, dirty-region tracking, and hit testing must all
+/// agree on it (#142, #143, #199).
+pub fn compose_node_transform(
     node: &Node,
     x: f64,
     y: f64,
