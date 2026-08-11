@@ -208,6 +208,9 @@ deliberately not folded into PR1's scope:
 - **#193** — the mark/attr resync clears and re-applies *every* mark (or replaces
   the whole attrs map) on a changed block instead of diffing per mark/key, silently
   discarding a peer's concurrent unrelated mark or attr edit on the same block.
+  **Fixed** since (in its own change, not PR1): PR #216 diffs marks per span
+  (clear `current \ target`, apply `target \ current`) and attrs per key on the
+  existing map object, so an untouched mark or attr is never re-written.
 - **#194** — the A22 "all-or-nothing" guarantee only covers the validation pre-pass;
   an error partway through the write phase itself can commit a partial change and
   still broadcast it. PR1 narrowed an overclaiming comment describing this guarantee

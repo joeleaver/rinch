@@ -571,12 +571,14 @@ pub(crate) fn reconcile_node(
     if node_type(txn, &node).as_deref() != Some(target.type_name()) {
         node.insert(txn, TYPE, Any::String(target.type_name().into()));
     }
-    // attrs — only rebuild when they changed. Replacing the attrs object on every
-    // keystroke would churn the CRDT and clobber a concurrent remote attr edit on
-    // the same node.
-    if node_attrs(txn, &node) != *target.attrs() {
-        let attrs_obj = node.insert(txn, ATTRS, MapPrelim::default());
-        write_attrs(txn, &attrs_obj, target.attrs());
+    // attrs — diff per key when they changed. Replacing the whole attrs object would
+    // clobber a concurrent remote edit to a *different* key of the same node (issue
+    // #193): yrs merges map conflicts per key, but only within one map object — a
+    // freshly-installed object is a conflict on the node's `attrs` entry itself, one
+    // object wins wholesale, and the other peer's key is silently gone.
+    let current_attrs = node_attrs(txn, &node);
+    if current_attrs != *target.attrs() {
+        reconcile_attrs(txn, &node, &current_attrs, target.attrs());
     }
 
     match target {
@@ -719,9 +721,25 @@ fn apply_mark(txn: &mut TransactionMut, text: &TextRef, s: &str, m: &SpanMark) {
     text.format(txn, at, len, attrs);
 }
 
-/// Clear and reapply a `Text`'s formatting attributes to match `target` exactly.
+/// Bring a `Text`'s formatting attributes in step with `target` by **per-span
+/// difference**: clear only the spans no longer present (`current \ target`, via the
+/// Yjs convention that a `null` attribute value removes that format), apply only the
+/// spans that are new (`target \ current`). A span is a `(name, attrs, range)` run —
+/// the finest granularity the canonical span lists carry — so a mark the edit did not
+/// touch is not written at all.
+///
+/// It must not be: re-applying an unchanged mark gives it a fresh CRDT write that
+/// outlives a peer's *concurrent removal* of that very mark (issue #193). Both peers
+/// still converged — on a document that silently resurrected what the peer deleted.
+/// A mark the local edit really changed is still cleared/re-added, which is the honest
+/// same-mark conflict.
+///
 /// `current` is the text's present string and `current_marks` the spans read out of it
-/// (both **after** any splice), so the ranges being cleared are the live ones.
+/// (both **after** any splice), so the ranges being cleared are the live ones. Two
+/// spans of one name never overlap (both lists are canonical, coalesced runs), so a
+/// clear cannot blank a *kept* span of the same name — and all clears run before all
+/// applies, so a span that changed extent (cleared at the old range, re-applied at the
+/// new) nets out to exactly the new range.
 fn resync_marks(
     txn: &mut TransactionMut,
     text: &TextRef,
@@ -729,9 +747,10 @@ fn resync_marks(
     current_marks: &[SpanMark],
     target: &[SpanMark],
 ) {
-    // Clear every currently-active mark over its range. Per the Yjs convention a
-    // `null` attribute value removes that format.
     for m in current_marks {
+        if target.contains(m) {
+            continue;
+        }
         let (at, len) = u16_span(current, m.start, m.end);
         if len == 0 {
             continue;
@@ -744,7 +763,9 @@ fn resync_marks(
         );
     }
     for m in target {
-        apply_mark(txn, text, current, m);
+        if !current_marks.contains(m) {
+            apply_mark(txn, text, current, m);
+        }
     }
 }
 
@@ -1021,6 +1042,44 @@ fn write_attrs(txn: &mut TransactionMut, obj: &MapRef, attrs: &Attrs) {
         // absent" — storing it would be indistinguishable from a cleared key on
         // read-back.
         if let Some(any) = attr_to_any(v) {
+            obj.insert(txn, k.to_string(), any);
+        }
+    }
+}
+
+/// Bring a node's existing `attrs` map in step with `target` by **per-key**
+/// insert/remove on the same map object — never by replacing the object (see the
+/// caller, [`reconcile_node`], for why replacing loses concurrent peer edits).
+///
+/// `current` is the attr set already read back from the node (so the caller's
+/// changed-at-all check and this diff agree on what the CRDT holds). Keys the target
+/// no longer carries — or carries as [`AttrValue::Null`], which [`write_attrs`] never
+/// stores — are removed; keys whose value differs are written; equal keys are left
+/// untouched, keeping their CRDT history out of the transaction entirely.
+fn reconcile_attrs(txn: &mut TransactionMut, node: &MapRef, current: &Attrs, target: &Attrs) {
+    let obj = match node.get(txn, ATTRS) {
+        Some(Out::YMap(m)) => m,
+        // Every projected node is written with an attrs map (`write_node`), but a
+        // missing/foreign one is recoverable: install a fresh map, and the loop below
+        // fills it (nothing to remove — `current` is empty for a non-map entry).
+        _ => node.insert(txn, ATTRS, MapPrelim::default()),
+    };
+    // Remove stale keys. Collected first: the iteration holds a read borrow of the
+    // transaction. Iterating the live map (not `current`) also sweeps keys a foreign
+    // writer left in shapes `read_attrs` skips.
+    let stale: Vec<String> = obj
+        .iter(txn)
+        .map(|(k, _)| k.to_string())
+        .filter(|k| target.get(k).is_none_or(|v| attr_to_any(v).is_none()))
+        .collect();
+    for k in &stale {
+        obj.remove(txn, k);
+    }
+    // Write only the keys whose value actually changed.
+    for (k, v) in target.iter() {
+        if let Some(any) = attr_to_any(v)
+            && current.get(k) != Some(v)
+        {
             obj.insert(txn, k.to_string(), any);
         }
     }
