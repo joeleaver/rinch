@@ -18,6 +18,15 @@
 //! > ([`CollabSession::integrate_incremental`]). Convergence then follows from yrs's own
 //! > convergence.
 //!
+//! **The one exception**, scoped exactly: a CRDT holding **zero** content blocks
+//! projects to the *starter-paragraph* model, because the editor schema admits no empty
+//! document. The two documents are still equal — [`CollabDoc::to_doc`] supplies that
+//! paragraph — but it is not backed by CRDT content, so it is the one block
+//! [`CollabDoc::project_change`] must insert rather than reconcile. Zero blocks is a
+//! reachable converged state (two peers concurrently deleting different blocks, issue
+//! #192), and it is self-healing: the next local edit projects the model wholesale and a
+//! fully-backed equality is restored.
+//!
 //! ## Staged scope (design A22)
 //!
 //! The first milestone covers **flat text-blocks + marks** (`paragraph`/`heading`/

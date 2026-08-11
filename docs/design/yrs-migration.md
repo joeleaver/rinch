@@ -66,7 +66,7 @@ editor. It held. Unchanged by this migration:
 | Automerge (before) | yrs (after) |
 |---|---|
 | `AutoCommit` + `ObjId` object graph | `Doc::with_options(Options { offset_kind: OffsetKind::Utf16, .. })` |
-| `content: List<Block{type, attrs, text: Text}>` + marks over `Text` | `content: Array<Map{type, attrs, text: Text}>`; marks are the `Text`'s own native formatting attributes |
+| `content: List<Block{type, attrs, text: Text}>` + marks over `Text` | `content: Array<Map{type, attrs, text: Text}>`; marks are the `Text`'s own native formatting attributes; plus a `meta` root map carrying the projection-format marker (see `load()` below) |
 | JSON-string-encoded mark values (`encode_attrs`/`decode_mark_value`) | **Deleted.** yrs format attributes carry structured `Any` values natively — the JSON indirection existed only because Automerge marks carried a scalar |
 | `get_heads()` / `ChangeHash` compare | `state_vector()` bytes — but see "never a convergence test" below; the comparison semantics are not equivalent |
 | `save_incremental()` broadcast delta | an `observe_update_v1` outbox drained by `CollabSession::save_incremental` (see below — this is *not* a straight rename) |
@@ -112,7 +112,7 @@ draft of the reconciliation path; the regression tests at both the session and
 handle layer now pin the trap directly — they assert the state vector is unchanged
 as a *precondition*, then assert the deletion still propagates.
 
-## `load()` validates content, not a type tag
+## `load()` validates a format marker and the content, not a type tag
 
 Joining from a peer's snapshot (`CollabDoc::load`) has to reject bytes that aren't
 actually a rinch projection — otherwise a version mismatch or a stray CRDT document
@@ -121,12 +121,43 @@ check this by object type. yrs cannot: a root type carries **no wire type tag** 
 foreign root arrives as `Out::UndefinedRef`, and asking for it as a typed ref (e.g.
 `get_or_insert_array`) *reinterprets* whatever is actually there rather than failing
 (a foreign `Map` root named `content` reads back as a zero-length array; a `Text`
-root reads back as an array of single characters). So the guard applies the update
-first, then requires the `content` array to be non-empty and every one of its
-entries to read back as a valid projected node — strictly stronger than the type
-check it replaced, since a `content` array full of type-tag-passing junk would have
-sailed through the old check. This was probed against a 13-shape foreign-bytes
-matrix during review; every shape fails loud, none panic.
+root reads back as an array of single characters).
+
+So the projection tags itself. A `meta` root map carries
+`format = "rinch-editor-collab/yrs-1"`, written at creation in the same transaction as
+the initial content, and `load` requires it **first**: missing or mismatched is a loud
+`Schema` error. A marker is ordinary map *content*, which is exactly why it survives the
+hazard above — content is what the wire carries, and a non-empty root map is transmitted
+like any other data. The per-entry content check still runs afterwards, so a `content`
+array full of junk is refused even if it somehow carried the marker. This is Playweft's
+"wipe, don't convert" precedent (`a734e11`): tag every blob, refuse an untagged one
+rather than guessing. Bump the trailing version if the wire shape ever changes
+incompatibly. One consequence is inherent and intended: a snapshot produced between the
+engine swap and this change carries no `meta` root at all, so it is refused like any other
+untagged blob — re-project such a document from the model rather than trying to load it.
+Nothing downstream had shipped on yrs, so that costs nobody.
+
+The marker **replaced emptiness as the discriminator**, and that was the point of adding
+it (issue #192). The original guard rejected a zero-block `content` array as "not a rinch
+projection" — a heuristic that happened to catch the foreign shapes above because they all
+reinterpret as empty. But zero blocks is also a *legitimate* converged state: two peers
+concurrently deleting different blocks deletes every block, so the emptiness heuristic
+locked a late joiner out of a real session. With the marker doing the discriminating,
+`load` accepts any block count including zero. `to_doc` then supplies the starter
+paragraph the editor schema requires, `project_change` knows that paragraph is not in the
+CRDT and inserts it on the next local edit, and the invariant reads:
+
+> `model ≡ project(model)`, **except** that a CRDT holding zero content blocks projects
+> to the starter-paragraph model — an equality of documents that is not backed by CRDT
+> content, scoped to that one state, and cured by the next local edit.
+
+Eleven foreign-bytes shapes are pinned by unit tests — the four original foreign roots,
+undecodable bytes, a missing marker on an otherwise-valid projection, a wrong marker
+version, a marker of the wrong value kind, a `Text` and an `Array` root named `meta` (the
+reinterpretation hazard aimed at the marker itself), and a correct marker over junk
+content. All fail loud; none panic. Note that without the marker the shapes that
+reinterpret as *empty* would now sail through, so the two halves of this design are
+load-bearing together — which the tests pin from both directions.
 
 ## The `Send` contract, pinned
 
@@ -171,7 +202,9 @@ code-identical on `main` before this migration, not introduced by it, and
 deliberately not folded into PR1's scope:
 
 - **#192** — concurrent deletion of two different blocks by two peers converges to
-  an empty content list and permanently wedges the session.
+  an empty content list and permanently wedges the session. **Fixed** since (in its own
+  change, not PR1): see the `load()` section above for the marker and the scoped
+  invariant exception.
 - **#193** — the mark/attr resync clears and re-applies *every* mark (or replaces
   the whole attrs map) on a changed block instead of diffing per mark/key, silently
   discarding a peer's concurrent unrelated mark or attr edit on the same block.

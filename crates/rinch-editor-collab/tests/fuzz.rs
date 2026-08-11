@@ -12,8 +12,13 @@
 //!    Once every peer has seen every delta, all peers must project to the *identical*
 //!    document. This is the exact incremental-delta path pimble / `EditorHandle` use.
 //!
-//! Deterministic (a fixed-seed xorshift PRNG) so any failure reproduces from its
-//! `(seed, peers, rounds)` triple.
+//! The **edit script** is deterministic — a fixed-seed xorshift PRNG — so a
+//! `(seed, peers, rounds)` triple always produces the same sequence of edits and
+//! deliveries. A failing trial is **not** replayable bit-for-bit, though: yrs breaks
+//! concurrent-insert ties by client id, `CollabDoc::blank()` takes yrs's default random
+//! one, and the resulting document feeds back into later positions, so two runs of the
+//! same binary at the same seed can diverge in edit count. Reproducing a failure exactly
+//! needs the client ids pinned as well.
 
 use std::rc::Rc;
 
@@ -52,15 +57,24 @@ fn schema() -> Rc<Schema> {
     Rc::new(Schema::starter_kit())
 }
 
+fn para(schema: &Schema, text: &str) -> Node {
+    let content = if text.is_empty() {
+        Fragment::empty()
+    } else {
+        Fragment::from_node(schema.text(text).unwrap())
+    };
+    schema.branch("paragraph", content).unwrap()
+}
+
+fn doc_of(schema: &Schema, blocks: Vec<Node>) -> Node {
+    schema
+        .branch("doc", Fragment::from_children(blocks))
+        .unwrap()
+}
+
 /// `doc(paragraph("start"))` — the shared initial document.
 fn initial_state(schema: &Rc<Schema>) -> EditorState {
-    let para = schema
-        .branch(
-            "paragraph",
-            Fragment::from_node(schema.text("start").unwrap()),
-        )
-        .unwrap();
-    let doc = schema.branch("doc", Fragment::from_node(para)).unwrap();
+    let doc = doc_of(schema, vec![para(schema, "start")]);
     EditorState::create(schema.clone(), doc, default_plugins())
 }
 
@@ -183,116 +197,246 @@ fn same(a: &Node, b: &Node) -> bool {
     a == b
 }
 
+/// N peers sharing one CRDT lineage, plus the global delta queue and each peer's
+/// delivery watermark. Both fuzz shapes below drive this one harness: the random-edit
+/// trials and the scripted deletion-to-empty scenario.
+struct Swarm {
+    schema: Rc<Schema>,
+    states: Vec<EditorState>,
+    sessions: Vec<CollabSession>,
+    /// Every delta produced, in production order — a topological order of the change
+    /// DAG, so FIFO delivery always satisfies dependencies.
+    queue: Vec<Vec<u8>>,
+    /// `seen[p]` = how many of `queue`'s deltas peer `p` has integrated.
+    seen: Vec<usize>,
+    /// Local edits projected so far (a trial that made none proves nothing).
+    edits: usize,
+}
+
+impl Swarm {
+    /// `peers` peers over `doc`, the others joining from peer 0's snapshot.
+    fn new(schema: Rc<Schema>, doc: Node, peers: usize) -> Swarm {
+        let init = EditorState::create(schema.clone(), doc, default_plugins());
+        let host = CollabSession::new(&init).unwrap();
+        let snapshot = host.snapshot();
+
+        let mut states: Vec<EditorState> = Vec::with_capacity(peers);
+        let mut sessions: Vec<CollabSession> = Vec::with_capacity(peers);
+        states.push(init.clone());
+        sessions.push(host);
+        for _ in 1..peers {
+            states.push(init.clone());
+            sessions.push(CollabSession::from_bytes(&snapshot).unwrap());
+        }
+        Swarm {
+            schema,
+            states,
+            sessions,
+            queue: Vec::new(),
+            seen: vec![0usize; peers],
+            edits: 0,
+        }
+    }
+
+    fn peers(&self) -> usize {
+        self.states.len()
+    }
+
+    /// Project peer `p`'s move to `next`, check the load-bearing invariant, and queue
+    /// whatever it broadcasts.
+    fn record_local(&mut self, seed: u64, p: usize, next: EditorState) {
+        self.sessions[p]
+            .record_local(&self.states[p].doc, &next.doc)
+            .expect("flat edit projects cleanly");
+        let projected = self.sessions[p].projected_doc(&self.schema).unwrap();
+        if !same(&projected, &next.doc) {
+            use rinch_editor_core::serialize::node_to_html;
+            panic!(
+                "model ≡ project(model) violated on a local edit \
+                 (seed={seed}, peer={p}, edit#{})\n\
+                 BEFORE: {}\n  MODEL: {}\nPROJECTED: {}",
+                self.edits,
+                node_to_html(&self.states[p].doc),
+                node_to_html(&next.doc),
+                node_to_html(&projected),
+            );
+        }
+        self.states[p] = next;
+        let delta = self.sessions[p].save_incremental().expect("delta encodes");
+        if !delta.is_empty() {
+            self.queue.push(delta);
+        }
+        self.edits += 1;
+    }
+
+    /// Deliver peer `q`'s next unseen delta (a no-op when it is already caught up).
+    fn deliver(&mut self, seed: u64, q: usize) {
+        if self.seen[q] >= self.queue.len() {
+            return;
+        }
+        let delta = self.queue[self.seen[q]].clone();
+        self.seen[q] += 1;
+        if let Some(next) = self.sessions[q]
+            .integrate_incremental(&self.states[q], &delta)
+            .expect("delta integrates")
+        {
+            // A remote integration also lands the model at project(CRDT).
+            assert!(
+                same(
+                    &self.sessions[q].projected_doc(&self.schema).unwrap(),
+                    &next.doc
+                ),
+                "model ≡ project(model) violated after integrate (seed={seed}, peer={q})"
+            );
+            self.states[q] = next;
+        }
+    }
+
+    /// Every peer integrates every remaining delta.
+    fn flush(&mut self, seed: u64) {
+        for q in 0..self.peers() {
+            while self.seen[q] < self.queue.len() {
+                self.deliver(seed, q);
+            }
+        }
+    }
+
+    /// `rounds` interleaved random edit/deliver steps.
+    fn run_rounds(&mut self, seed: u64, rounds: usize, rng: &mut Rng) {
+        for _ in 0..rounds {
+            // 60% make a local edit, 40% deliver a pending delta.
+            if rng.chance(60) {
+                let p = rng.below(self.peers());
+                let Some(next) = random_edit(rng, &self.states[p]) else {
+                    continue;
+                };
+                self.record_local(seed, p, next);
+            } else {
+                let q = rng.below(self.peers());
+                self.deliver(seed, q);
+            }
+        }
+    }
+
+    /// Convergence: every peer projects to the identical document, and that document is
+    /// what its own model holds (model ≡ project, post-flush).
+    fn assert_converged(&self, seed: u64) {
+        let reference = self.sessions[0].projected_doc(&self.schema).unwrap();
+        for q in 0..self.peers() {
+            let projected = self.sessions[q].projected_doc(&self.schema).unwrap();
+            assert!(
+                same(&projected, &reference),
+                "peers diverged after flush (seed={seed}, peer {q} vs peer 0)"
+            );
+            assert!(
+                same(&self.states[q].doc, &reference),
+                "peer {q}'s model disagrees with its CRDT after flush (seed={seed})"
+            );
+        }
+        assert!(
+            self.edits > 0,
+            "trial should have made at least one edit (seed={seed})"
+        );
+    }
+}
+
 /// Run one fuzz trial: `peers` peers, `rounds` interleaved edit/deliver steps, then a
 /// flush, asserting the two invariants throughout.
 fn fuzz_trial(seed: u64, peers: usize, rounds: usize) {
     let schema = schema();
     let mut rng = Rng::new(seed);
+    let mut swarm = Swarm::new(schema.clone(), initial_state(&schema).doc.clone(), peers);
+    swarm.run_rounds(seed, rounds, &mut rng);
+    swarm.flush(seed);
+    swarm.assert_converged(seed);
+}
 
-    // All peers start from peer 0's snapshot, so they share one CRDT lineage.
-    let init = initial_state(&schema);
-    let host = CollabSession::new(&init).unwrap();
-    let snapshot = host.snapshot();
+/// Delete block `index` of `state`'s document outright (its open token through its
+/// close token).
+fn delete_block(state: &EditorState, index: usize) -> Option<EditorState> {
+    let doc = &state.doc;
+    let start: usize = (0..index).map(|i| doc.child(i).node_size()).sum();
+    let end = start + doc.child(index).node_size();
+    let mut tr = state.tr();
+    tr.delete(start, end).ok()?;
+    Some(state.apply(tr))
+}
 
-    let mut states: Vec<EditorState> = Vec::with_capacity(peers);
-    let mut sessions: Vec<CollabSession> = Vec::with_capacity(peers);
-    states.push(init.clone());
-    sessions.push(host);
-    for _ in 1..peers {
-        states.push(init.clone());
-        sessions.push(CollabSession::from_bytes(&snapshot).unwrap());
+/// Type `text` at model position `pos`.
+fn insert_at(state: &EditorState, pos: usize, text: &str) -> Option<EditorState> {
+    let mut tr = state.tr();
+    tr.set_selection(Selection::cursor(Pos(pos)));
+    tr.insert_text(text).ok()?;
+    Some(state.apply(tr))
+}
+
+/// The #192 scenario, scripted so it is exercised **by construction** rather than left to
+/// chance: `peers` peers over a document of one paragraph per peer, each deleting a
+/// *different* block before seeing anyone else's delta. The union of those deletions is
+/// every block, so the converged content array is provably empty — the state that used to
+/// wedge the session forever. Random edits then run on top of the healed state, so the
+/// ordinary invariant checks cover everything downstream of the recovery.
+fn fuzz_deletion_to_empty_trial(seed: u64, peers: usize, rounds: usize) {
+    assert!(peers >= 2, "the scenario needs two blocks to delete apart");
+    let schema = schema();
+    let mut rng = Rng::new(seed);
+    let blocks: Vec<Node> = (0..peers)
+        .map(|i| para(&schema, &format!("block{i}")))
+        .collect();
+    let mut swarm = Swarm::new(schema.clone(), doc_of(&schema, blocks), peers);
+
+    // Concurrent: every peer deletes its own block, none having seen the others'.
+    for p in 0..peers {
+        let next = delete_block(&swarm.states[p], p).expect("a whole-block delete applies");
+        assert_eq!(
+            next.doc.child_count(),
+            peers - 1,
+            "peer {p} deleted exactly one block (seed={seed})"
+        );
+        swarm.record_local(seed, p, next);
     }
+    swarm.flush(seed);
 
-    // A global FIFO of every delta produced (production order is a topological order
-    // of the change DAG, so FIFO delivery always satisfies dependencies). `seen[p]`
-    // is how many of the queue's deltas peer `p` has integrated.
-    let mut queue: Vec<Vec<u8>> = Vec::new();
-    let mut seen = vec![0usize; peers];
-
-    let mut edits = 0usize;
-    for _ in 0..rounds {
-        // 60% make a local edit, 40% deliver a pending delta.
-        if rng.chance(60) {
-            let p = rng.below(peers);
-            let Some(next) = random_edit(&mut rng, &states[p]) else {
-                continue;
-            };
-            // Project the local change and check the load-bearing invariant.
-            sessions[p]
-                .record_local(&states[p].doc, &next.doc)
-                .expect("flat edit projects cleanly");
-            let projected = sessions[p].projected_doc(&schema).unwrap();
-            if !same(&projected, &next.doc) {
-                use rinch_editor_core::serialize::node_to_html;
-                panic!(
-                    "model ≡ project(model) violated on a local edit \
-                     (seed={seed}, peer={p}, edit#{edits})\n\
-                     BEFORE: {}\n  MODEL: {}\nPROJECTED: {}",
-                    node_to_html(&states[p].doc),
-                    node_to_html(&next.doc),
-                    node_to_html(&projected),
-                );
-            }
-            states[p] = next;
-            let delta = sessions[p].save_incremental().expect("delta encodes");
-            if !delta.is_empty() {
-                queue.push(delta);
-            }
-            edits += 1;
-        } else {
-            // Deliver the next unseen delta to a random peer (FIFO per peer).
-            let q = rng.below(peers);
-            if seen[q] < queue.len() {
-                let delta = queue[seen[q]].clone();
-                seen[q] += 1;
-                if let Some(next) = sessions[q]
-                    .integrate_incremental(&states[q], &delta)
-                    .expect("delta integrates")
-                {
-                    // A remote integration also lands the model at project(CRDT).
-                    assert!(
-                        same(&sessions[q].projected_doc(&schema).unwrap(), &next.doc),
-                        "model ≡ project(model) violated after integrate (seed={seed}, peer={q})"
-                    );
-                    states[q] = next;
-                }
-            }
-        }
-    }
-
-    // Flush: every peer integrates every remaining delta.
-    for q in 0..peers {
-        while seen[q] < queue.len() {
-            let delta = queue[seen[q]].clone();
-            seen[q] += 1;
-            if let Some(next) = sessions[q]
-                .integrate_incremental(&states[q], &delta)
-                .expect("delta integrates on flush")
-            {
-                states[q] = next;
-            }
-        }
-    }
-
-    // Convergence: every peer projects to the identical document, and that document
-    // is what its own model holds (model ≡ project, post-flush).
-    let reference = sessions[0].projected_doc(&schema).unwrap();
-    for q in 0..peers {
-        let projected = sessions[q].projected_doc(&schema).unwrap();
+    // The invariant's ONE exception, asserted precisely. With zero blocks in the CRDT
+    // there is no model that mirrors it — the schema requires at least one block — so the
+    // read-back is the starter paragraph: equal to what every peer's model holds, but NOT
+    // backed by CRDT content. Nothing else is weakened; the equality itself must still
+    // hold on both sides, on every peer.
+    let starter = doc_of(&schema, vec![para(&schema, "")]);
+    for p in 0..peers {
+        let projected = swarm.sessions[p].projected_doc(&schema).unwrap();
         assert!(
-            same(&projected, &reference),
-            "peers diverged after flush (seed={seed}, peer {q} vs peer 0)"
+            same(&projected, &starter),
+            "every block was deleted, so peer {p} must project the starter paragraph \
+             (seed={seed})"
         );
         assert!(
-            same(&states[q].doc, &reference),
-            "peer {q}'s model disagrees with its CRDT after flush (seed={seed})"
+            same(&swarm.states[p].doc, &starter),
+            "peer {p}'s model must equal that projection (seed={seed})"
         );
     }
 
-    assert!(
-        edits > 0,
-        "trial should have made at least one edit (seed={seed})"
-    );
+    // Every peer now types from the empty state, so every peer exercises the recovery
+    // path — and they do it concurrently, which converges to one block per peer by
+    // ordinary concurrent-insert semantics rather than corrupting anything.
+    for p in 0..peers {
+        let next = insert_at(&swarm.states[p], 1, "R").expect("typing into the starter block");
+        swarm.record_local(seed, p, next);
+    }
+    swarm.flush(seed);
+    for p in 0..peers {
+        assert_eq!(
+            swarm.states[p].doc.child_count(),
+            peers,
+            "each peer's concurrent first edit became its own block (seed={seed})"
+        );
+    }
+    swarm.assert_converged(seed);
+
+    // Then the ordinary random interleaving on top of the healed state.
+    swarm.run_rounds(seed, rounds, &mut rng);
+    swarm.flush(seed);
+    swarm.assert_converged(seed);
 }
 
 #[test]
@@ -321,5 +465,22 @@ fn fuzz_many_peers_converge() {
     // A few wider trials: more peers, longer runs, to shake out tail cases.
     for seed in 300..=305u64 {
         fuzz_trial(seed, 6, 500);
+    }
+}
+
+#[test]
+fn fuzz_deletion_to_empty_recovers_and_converges() {
+    // Issue #192: the random trials above never reach a zero-block CRDT — a single peer's
+    // model cannot get there (the schema forbids it), and only concurrent deletions of
+    // *different* blocks empty it on every peer at once, which random editing effectively
+    // never produces. So the emptying is scripted, and the random fuzz resumes afterwards.
+    for seed in 400..=407u64 {
+        fuzz_deletion_to_empty_trial(seed, 2, 220);
+    }
+    for seed in 500..=505u64 {
+        fuzz_deletion_to_empty_trial(seed, 3, 320);
+    }
+    for seed in 600..=603u64 {
+        fuzz_deletion_to_empty_trial(seed, 4, 400);
     }
 }

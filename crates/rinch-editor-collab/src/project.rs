@@ -18,6 +18,11 @@
 //! keystroke inside one list item re-splices only that item's text object. Any node
 //! outside the supported scope (a non-list nested block, an inline atom) anywhere in
 //! `before` or `after` fails loud ([`CollabError::Unsupported`], design A22).
+//!
+//! The diff trusts `before` to describe what the CRDT holds — which is the invariant —
+//! with **one** exception it must handle itself: a CRDT holding zero blocks (issue #192)
+//! has no model that mirrors it, so `before` carries a starter paragraph the CRDT does
+//! not. That case skips the diff entirely and inserts the whole of `after`.
 
 use yrs::{Array, Transact};
 
@@ -43,6 +48,20 @@ impl CollabDoc {
     /// Project an arbitrary `before → after` document change (also the building block
     /// for loading content). Both must be within the projected scope.
     pub fn project_change(&mut self, before: &Node, after: &Node) -> Result<()> {
+        // A CRDT holding zero blocks is a legitimate converged state (issue #192: two
+        // peers deleting *different* blocks concurrently deletes every block), and the
+        // model cannot mirror it — the schema requires at least one block, so `to_doc`
+        // hands the editor a starter paragraph the CRDT does not contain. `before`
+        // therefore describes a block that is not there, and diffing against it would try
+        // to reconcile a node the CRDT lacks (`reconcile_node: missing node`, which used
+        // to wedge the session permanently: nothing projected, nothing broadcast, no
+        // recovery). With no blocks in the CRDT every block of `after` is an insert, and
+        // that restores `model ≡ project(model)` exactly.
+        let crdt_blocks = self.content.len(&self.doc.transact());
+        if crdt_blocks == 0 {
+            return self.project_whole_doc(after);
+        }
+
         let bn = before.child_count();
         let an = after.child_count();
 
@@ -114,6 +133,26 @@ impl CollabDoc {
         for idx in (prefix + common..prefix + pre_mid).rev() {
             check_index(&txn, &content, idx as u32, false)?;
             content.remove(&mut txn, idx as u32);
+        }
+        Ok(())
+    }
+
+    /// Insert every block of `doc` into a CRDT that holds **no** blocks — the recovery
+    /// path out of the zero-block state (see [`CollabDoc::project_change`]). There is
+    /// nothing to diff against, so this is an unconditional whole-document insert, which
+    /// leaves the CRDT projecting to exactly `doc`.
+    ///
+    /// The A22 pre-pass applies here too: validate every node before opening the write
+    /// transaction, so an out-of-scope document leaves the (empty) CRDT untouched.
+    fn project_whole_doc(&mut self, doc: &Node) -> Result<()> {
+        let mut nodes = Vec::with_capacity(doc.child_count());
+        for i in 0..doc.child_count() {
+            nodes.push(read_node(doc.child(i))?);
+        }
+        let content = self.content.clone();
+        let mut txn = self.doc.transact_mut();
+        for (i, nd) in nodes.iter().enumerate() {
+            insert_node(&mut txn, &content, i as u32, nd)?;
         }
         Ok(())
     }

@@ -780,7 +780,7 @@ Free functions `collab_receive_for(container_id, &delta)` (main thread) and `pos
 
 | File | Purpose |
 |------|---------|
-| `crates/rinch-editor-collab/src/projection.rs` | `CollabDoc` — the yrs wire shape (`content: Array<Map{type,attrs,text:Text}>`, marks as native yrs `Text` formatting attributes), `from_doc`/`to_doc`/`load`, the `observe_update_v1` broadcast outbox, fail-loud validation |
+| `crates/rinch-editor-collab/src/projection.rs` | `CollabDoc` — the yrs wire shape (`content: Array<Map{type,attrs,text:Text}>`, marks as native yrs `Text` formatting attributes, plus a `meta` root map carrying `format = "rinch-editor-collab/yrs-1"` — the marker `load` requires to tell our bytes from a foreign CRDT), `from_doc`/`to_doc`/`load`, the `observe_update_v1` broadcast outbox, fail-loud validation |
 | `crates/rinch-editor-collab/src/project.rs` | Local: `project_change` — block-list diff (Rc-identity prefix/suffix, minimal text splice) |
 | `crates/rinch-editor-collab/src/remote.rs` | Remote: `build_remote_transaction` — converged rebuild into a minimal block-level `ReplaceStep`; no engine type appears in this file |
 | `crates/rinch-editor-collab/src/session.rs` | `CollabSession` — the imperative model↔CRDT lifecycle (`new`/`from_bytes`, `record_local`, `save_incremental`/`state_vector`/`sync_diff`, `integrate_incremental`) |
