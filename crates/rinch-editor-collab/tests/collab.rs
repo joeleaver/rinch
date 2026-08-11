@@ -470,6 +470,137 @@ fn concurrent_heading_level_change_and_typing_converge() {
 }
 
 #[test]
+fn concurrent_bold_add_and_italic_removal_converge_without_resurrecting_the_italic() {
+    // Issue #193 repro (a). One paragraph, "one two three", italic over "three". One
+    // peer bolds "one"; the other concurrently REMOVES the italic. The two edits touch
+    // *different* marks, so both must survive: bold on "one", italic gone.
+    //
+    // Before the per-span diff, `resync_marks` cleared and re-applied EVERY mark on the
+    // block whenever ANY mark differed — so the bolding peer's resync re-wrote
+    // `italic: true` over "three", and that fresh write outlived the other peer's
+    // concurrent removal. Both peers converged (no divergence!) on a document that
+    // silently resurrected the italic. Deterministic in both role-orderings, hence the
+    // loop: the host owns the initial projection and yrs client ids break ties, so
+    // neither ordering may be assumed to cover the other.
+    for host_bolds in [true, false] {
+        let schema = Rc::new(Schema::starter_kit());
+        let italic = Mark::simple(schema.mark_type("italic").unwrap().clone());
+        let p = schema
+            .create_node(
+                "paragraph",
+                Default::default(),
+                Fragment::from_children(vec![
+                    schema.text("one two ").unwrap(),
+                    schema.text_with_marks("three", vec![italic]).unwrap(),
+                ]),
+            )
+            .unwrap();
+        let (schema, mut a, mut b) = {
+            let _ = &schema;
+            two_peers(vec![p])
+        };
+        // Model positions: "one" = 1..4, "three" = 9..14.
+        let unitalic = |peer: &mut Peer| {
+            // The mark handed to `remove_mark` must be the peer's OWN instance:
+            // `Mark`/`MarkType` equality is Rc-pointer identity, so one built from a
+            // different `Schema::starter_kit()` matches nothing and the removal is a
+            // silent no-op (the host's doc holds this test's outer-schema marks, a
+            // guest's holds its join-rebuild's). Pull it off the document itself.
+            let italic = {
+                let block = peer.state.doc.child(0);
+                (0..block.child_count())
+                    .flat_map(|i| block.child(i).marks().iter())
+                    .find(|m| m.type_name() == "italic")
+                    .expect("the italic mark is on the initial doc")
+                    .clone()
+            };
+            peer.local(|tr| {
+                tr.remove_mark(9, 14, italic).unwrap();
+            });
+        };
+        if host_bolds {
+            a.bold(1, 4);
+            unitalic(&mut b);
+        } else {
+            unitalic(&mut a);
+            b.bold(1, 4);
+        }
+        sync(&mut a, &mut b);
+        assert_converged(&a, &b, &schema);
+        let t = norm(&a.session.projected_doc(&schema).unwrap());
+        assert!(
+            t.contains("«one|bold[]»"),
+            "(host_bolds={host_bolds}) bold landed on exactly \"one\": {t}"
+        );
+        assert!(
+            !t.contains("italic"),
+            "(host_bolds={host_bolds}) the italic removal survived the concurrent \
+             unrelated-mark edit: {t}"
+        );
+    }
+}
+
+#[test]
+fn concurrent_edits_to_different_attrs_of_the_same_block_both_survive() {
+    // Issue #193 repro (b). A level-1 heading; one peer sets `level: 3`, the other
+    // concurrently sets `text_align: "center"`. Different keys of the same attrs map,
+    // so both edits must survive: level=3 AND text_align=center on both peers.
+    //
+    // Before the per-key diff, the attrs branch of `reconcile_node` replaced the WHOLE
+    // attrs map object whenever any attr differed. yrs merges map conflicts per key,
+    // but only within one map object — two peers each installing a fresh object is a
+    // conflict on the node's `attrs` key itself, one object wins wholesale, and the
+    // other peer's edit vanishes (converged, silently wrong: e.g. level=1 +
+    // text_align=center). Both role-orderings, as above.
+    for host_sets_level in [true, false] {
+        let schema = Rc::new(Schema::starter_kit());
+        let h = schema
+            .create_node(
+                "heading",
+                Attrs::new().with("level", 1i64),
+                Fragment::from_node(schema.text("Title").unwrap()),
+            )
+            .unwrap();
+        let (schema, mut a, mut b) = {
+            let _ = &schema;
+            two_peers(vec![h])
+        };
+        let set = |peer: &mut Peer, attr: &'static str, value: AttrValue| {
+            peer.local(|tr| {
+                tr.set_node_attr(0, attr, value).unwrap();
+            });
+        };
+        if host_sets_level {
+            set(&mut a, "level", AttrValue::Int(3));
+            set(&mut b, "text_align", AttrValue::from("center"));
+        } else {
+            set(&mut a, "text_align", AttrValue::from("center"));
+            set(&mut b, "level", AttrValue::Int(3));
+        }
+        sync(&mut a, &mut b);
+        assert_converged(&a, &b, &schema);
+        for (name, peer) in [("A", &a), ("B", &b)] {
+            let conv = peer.session.projected_doc(&schema).unwrap();
+            let attrs = conv.child(0).attrs().clone();
+            assert_eq!(
+                attrs.get_int("level"),
+                Some(3),
+                "(host_sets_level={host_sets_level}) peer {name}: the level change \
+                 survived the concurrent other-attr edit: {}",
+                norm(&conv)
+            );
+            assert_eq!(
+                attrs.get_str("text_align"),
+                Some("center"),
+                "(host_sets_level={host_sets_level}) peer {name}: the alignment change \
+                 survived the concurrent other-attr edit: {}",
+                norm(&conv)
+            );
+        }
+    }
+}
+
+#[test]
 fn multi_block_with_code_and_heading_round_trips() {
     let schema = Rc::new(Schema::starter_kit());
     let h = schema
