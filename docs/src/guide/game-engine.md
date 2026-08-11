@@ -89,9 +89,11 @@ let queue = &gpu.queue;
 let texture = device.create_texture(&wgpu::TextureDescriptor { /* ... */ });
 // ... render into texture ...
 
-// Register the texture view for compositing
+// Register the texture for compositing — pass BOTH the texture and its view.
+// rinch needs the texture for the GPU→CPU readback path (inline-painted
+// RenderSurface) and the view for compositing it directly.
 let view = texture.create_view(&Default::default());
-registrar.set_texture_source(view, width, height);
+registrar.set_texture_source(texture, view, width, height);
 registrar.notify_frame_ready();
 ```
 
@@ -226,7 +228,7 @@ Notes:
 | `set_resize_callback(cb)` | `FnMut(w, h)` fired on backing-size change (physical px) — reconfigure a GPU surface |
 | `layout_size()` | Get current physical `(width, height)` (web: CSS px × devicePixelRatio) |
 | `canvas_element()` | **(web only)** the `<canvas>` after mount — create a WebGPU/WebGL context on it |
-| `set_texture_source(view, w, h)` | **(desktop, gpu)** Set GPU texture directly (main thread only) |
+| `set_texture_source(texture, view, w, h)` | **(desktop, gpu)** Set GPU texture directly (main thread only) |
 | `has_texture_source()` | Check if a GPU texture is registered |
 | `id()` | Surface ID |
 | `viewport_name()` | Internal viewport name |
@@ -332,6 +334,43 @@ if ctx.wants_keyboard() {
 }
 ```
 
+> **Always give the viewport hole `pointer-events: auto`.** `wants_mouse` only
+> reports "the game wants this" when the hit-tested node has a `data-viewport`
+> ancestor. A hole that is not hittable therefore inverts the routing: the hit
+> falls through to `body` behind it, the walk up from `body` finds no
+> `data-viewport`, and `wants_mouse` answers `true` — **everywhere**. The game
+> silently receives no mouse input at all, with nothing in the layout or the
+> render looking wrong.
+>
+> Two separate things can make the hole unhittable, and you generally want to
+> defend against both at once:
+>
+> 1. **`GameViewport` ships with `pointer-events: none` on the hole div**, so the
+>    bare `GameViewport { name: "main" }` form is not hittable as-is. Passing a
+>    `style:` prop happens to cure it, because a component's universal `style:`
+>    **replaces** the component's own inline style rather than merging with it —
+>    which also drops the built-in `background: transparent`, so restate that too
+>    if you relied on it.
+> 2. **`pointer-events` is inherited.** Putting `pointer-events: none` on a HUD
+>    root — the natural way to let clicks fall through to the game — pushes it
+>    back down onto the hole even if the hole's own `style:` omitted it.
+>
+> Being explicit covers both:
+>
+> ```rust
+> div { style: "pointer-events: none;",          // HUD root: clicks fall through
+>     GameViewport { name: "main", style: "flex: 1; pointer-events: auto; background: transparent;" }
+>     div { style: "pointer-events: auto;", /* real HUD controls */ }
+> }
+> ```
+>
+> The inheritance half is spec-correct, not a bug — but the overlay idiom that
+> triggers it is the obvious one to reach for, so it is worth designing around up
+> front. The same `pointer-events: auto` opt-in applies to any HUD control you
+> want clickable inside a `pointer-events: none` root. (`visibility: hidden` is
+> stronger still: it makes an entire subtree unhittable and *cannot* be re-enabled
+> on a descendant.)
+
 ### Split Layout (Viewport Hole)
 
 Use `GameViewport` to mark a transparent region where the game renders:
@@ -348,7 +387,7 @@ fn editor_ui() -> NodeHandle {
             }
             div { style: "display: flex; flex: 1;",
                 div { style: "width: 200px;", /* side panel */ }
-                GameViewport { name: "main", style: "flex: 1;" }
+                GameViewport { name: "main", style: "flex: 1; pointer-events: auto; background: transparent;" }
             }
         }
     }
@@ -363,6 +402,21 @@ if let Some(rect) = ctx.viewport_rect("main") {
 }
 ```
 
+> **Overlays need a parent with real height.** On the embed path layout runs
+> through Taffy, which treats an absolutely positioned child's **direct parent**
+> as its containing block — it does not walk up to the nearest *positioned*
+> ancestor the way browser CSS does ([#204]). So a `position: absolute; inset: 0`
+> overlay sizes against whatever element directly encloses it, and if that element
+> has **auto** height the overlay gets essentially no height. Nothing errors and
+> the styles are correct, so this reads as a broken overlay. Give the enclosing
+> element an explicit height (`height: 100%` on the chain up from the root, or a
+> flex parent that stretches it) rather than assuming the overlay will fill the
+> window. This is also a porting difference worth knowing: the same markup can
+> lay out differently under `rinch-web`, where the real browser applies the
+> nearest-positioned-ancestor rule.
+
+[#204]: https://github.com/joeleaver/rinch/issues/204
+
 ### Resize and Scale Factor
 
 ```rust
@@ -370,6 +424,20 @@ ctx.resize(new_width, new_height);
 overlay.resize(&device, new_width, new_height);
 ctx.set_scale_factor(window.scale_factor());
 ```
+
+Hit testing is transform-aware, so the usual `position: absolute; left: 50%;
+top: 50%; transform: translate(-50%, -50%)` centering idiom is fully clickable —
+a transformed subtree is hit where it is *painted*.
+
+> **Caveat at HiDPI on the embed path.** The embed path resolves layout at logical
+> size, so `set_scale_factor` genuinely matters here — and paint currently applies
+> a CSS `translate` without multiplying it by that scale ([#202]). At any scale
+> other than `1.0`, a **translated** element therefore paints slightly off from
+> where it hit-tests. Only `translate` is affected (`rotate`/`scale`/`skew` are
+> unit-invariant), and only on the embed path. Centering with flexbox instead of a
+> `translate` sidesteps it entirely until that fix lands.
+
+[#202]: https://github.com/joeleaver/rinch/issues/202
 
 ### Platform Events
 
