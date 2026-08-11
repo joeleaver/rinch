@@ -40,9 +40,8 @@ crates/
 ├── rinch-core/               # Core types
 │   ├── src/element.rs        # Element enum (Html, Fragment, Component only), prop types
 │   ├── src/context.rs        # Context API (create_context, use_context)
-│   ├── src/reactive.rs       # Signal, Effect, Memo primitives
-│   ├── src/dom.rs            # NodeHandle, RenderScope, DomDocument trait
-│   └── src/icon.rs           # Icon enum for type-safe icons
+│   ├── src/reactive/         # Signal, Effect, Memo primitives
+│   └── src/dom/              # NodeHandle, RenderScope, DomDocument trait
 ├── rinch-theme/              # Theme system (optional, enable with `theme` feature)
 │   └── src/
 │       ├── colors.rs         # Mantine color palettes (10 shades each)
@@ -61,11 +60,16 @@ crates/
 │       ├── stack.rs          # Vertical flex layout
 │       ├── group.rs          # Horizontal flex layout
 │       ├── badge.rs          # Status indicator
-│       ├── icons.rs          # SVG icon rendering (render_icon function)
+│       ├── icons.rs          # Hand-built chrome glyphs (chevron_up_dom, checkmark_dom, ...)
 │       └── styles.rs         # Component CSS generation
-├── rinch-tabler-icons/       # 5000+ Tabler Icons (build.rs fetches from tabler.io)
-│   ├── build.rs              # Downloads and generates icon data from Tabler
+├── rinch-tabler-icons/       # ~4,980 Tabler Icons (generated from vendored JSON)
+│   ├── build.rs              # Generates the TablerIcon enum from data/ (downloads only as fallback)
+│   ├── data/                 # Vendored Tabler JSON, committed — lets the crate build offline
 │   └── src/lib.rs            # TablerIcon enum, render_tabler_icon function
+├── rinch-editor-core/        # Pure editor model: steps, schema, state, commands, history (wasm-clean)
+├── rinch-editor-view/        # Editor view over any DomDocument: EditorHandle, Editor component
+├── rinch-editor-collab/      # Optional collab adapter: model <-> yrs (Yjs) CRDT; off by default
+├── rinch-editable/           # Single-line <input>/<textarea> engine (not the rich editor)
 ├── rinch-debug/              # Debug IPC server (optional, enable with `debug` feature)
 │   ├── src/lib.rs            # Public API: attach(), CommandSender, CommandReceiver
 │   ├── src/protocol.rs       # Wire protocol: length-prefixed JSON, handshake
@@ -111,19 +115,16 @@ fn my_component() -> NodeHandle {
 
 ## Icon System
 
-Rinch has two icon systems:
+There is **one** icon system: the **`TablerIcon` enum** in `rinch-tabler-icons`, which is also what every component's icon prop takes (`Option<TablerIcon>`). There is no `Icon` enum in the workspace — an older curated `rinch-core` `Icon` enum was removed, so treat any doc comment or snippet still showing `Icon::CheckCircle` as stale.
 
-1. **`Icon` enum** (rinch-core) - A curated set of ~40 common icons, used by components
-2. **`TablerIcon` enum** (rinch-tabler-icons) - 5000+ icons from [Tabler Icons](https://tabler.io/icons)
-
-### Tabler Icons (Recommended)
-
-The `rinch-tabler-icons` crate provides 5000+ free SVG icons from [Tabler Icons](https://tabler.io/icons). Icons are downloaded at build time from the Tabler CDN.
+`TablerIcon` is **not** in the `rinch` prelude — the facade doesn't depend on `rinch-tabler-icons`. Any crate that names an icon variant (including one just passing `icon:` to a component) must depend on it directly.
 
 **Add to Cargo.toml:**
 ```toml
 rinch-tabler-icons = { workspace = true }
 ```
+
+The crate generates the enum at build time from **vendored JSON committed under `crates/rinch-tabler-icons/data/`**, pinned to `@tabler/icons@3.36.1`, so it builds with no network. It only downloads from unpkg if a vendored file is missing or invalid.
 
 **Usage:**
 ```rust
@@ -143,12 +144,17 @@ fn my_component() -> NodeHandle {
 }
 ```
 
+The `tabler_icon!` macro is a shorter equivalent when the icon is a literal variant name: `tabler_icon!(__scope, Home)` (Outline is the default style) or `tabler_icon!(__scope, Home, Filled)`.
+
+For size, stroke width, or a CSS class, use `render_tabler_icon_with_options(__scope, icon, TablerIconOptions { style, class, size, stroke_width })` — all fields but `style` are `Option`, so `..Default::default()` covers the rest.
+
 **Features:**
-- **5000+ icons** in both Outline and Filled styles
+- **4,983 icons** (`ICON_COUNT`; iterate `ALL_ICONS`), every one available in Outline
+- **Filled is a subset** — about 1,000 icons have real filled artwork. Asking for `TablerIconStyle::Filled` on any other icon silently falls back to its outline paths, so a glyph that still looks like an outline is expected, not a bug
 - **Type-safe** - Use enum variants instead of strings
-- **Tree-shaking friendly** - Rust dead code elimination removes unused icons
-- **Consistent styling** - All icons render at 24x24 with `currentColor`
-- **Build-time download** - Icons fetched from Tabler CDN during `cargo build`
+- **Scales with font size** - Icons carry a `0 0 24 24` viewBox and are sized `1em` unless you pass an explicit `size`, so they track the parent's `font-size`
+- **Themeable** - Outline icons use `stroke: currentColor` (default `stroke-width: 2`), filled icons `fill: currentColor`
+- **Offline build** - Generated from the vendored JSON in `data/`; no network needed
 
 **Using with ActionIcon:**
 ```rust
@@ -168,32 +174,27 @@ ActionIcon {
 - Media: `Photo`, `Video`, `Music`, `Microphone`, `Camera`, `PlayerPlay`
 - Files: `File`, `Folder`, `Download`, `Upload`, `Copy`, `ClipboardCopy`
 
-### Built-in Icon Enum (Legacy)
-
-The `Icon` enum in rinch-core provides a smaller curated set of ~40 icons. These are used internally by components like `Alert`, `Notification`, etc.
-
-| Category | Icons |
-|----------|-------|
-| **Navigation** | `ChevronUp`, `ChevronDown`, `ChevronLeft`, `ChevronRight`, `ChevronsLeft`, `ChevronsRight`, `ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight` |
-| **Actions** | `Close`, `Check`, `Plus`, `Minus`, `Search`, `Settings`, `Edit`, `Trash` |
-| **Status/Alerts** | `InfoCircle`, `CheckCircle`, `AlertCircle`, `AlertTriangle`, `XCircle` |
-| **Content** | `User`, `Mail`, `Phone`, `Calendar`, `Clock`, `File`, `Folder`, `Image`, `Link`, `ExternalLink` |
-| **UI** | `Eye`, `EyeOff`, `Menu`, `MoreHorizontal`, `MoreVertical`, `Loader`, `Quote` |
-
 ### Components with Icon Support
 
-| Component | Icon Props |
-|--------|-----------|
-| `Alert` | `icon: Option<Icon>` |
-| `Notification` | `icon: Option<Icon>` |
-| `AccordionControl` | `icon: Option<Icon>` |
-| `Blockquote` | `icon: Option<Icon>` |
-| `List`, `ListItem` | `icon: Option<Icon>` |
-| `Stepper` | `completed_icon`, `progress_icon: Option<Icon>` |
-| `StepperStep` | `icon`, `completed_icon`, `progress_icon: Option<Icon>` |
-| `NavLink` | `left_section`, `right_section: Option<Icon>` |
-| `DropdownMenuItem` | `left_section`, `right_section: Option<Icon>` |
-| `Tab` | `left_section`, `right_section: Option<Icon>` |
+Every one of these props is `Option<TablerIcon>`. The `rsx!` macro adds the `Some(...)` for you, so write `icon: TablerIcon::Check`, never `icon: Some(TablerIcon::Check)`.
+
+| Component | Icon props | Source |
+|--------|-----------|--------|
+| `ActionIcon` | `icon` | `action_icon.rs:122` |
+| `Alert` | `icon` | `alert.rs:161` |
+| `Notification` | `icon` | `notification.rs:112` |
+| `AccordionControl` | `icon` | `accordion.rs:242` |
+| `Blockquote` | `icon` | `blockquote.rs:25` |
+| `List`, `ListItem` | `icon` | `list.rs:102`, `list.rs:176` |
+| `Stepper` | `completed_icon`, `progress_icon` | `stepper.rs:104`, `:106` |
+| `StepperStep` | `icon`, `completed_icon`, `progress_icon` | `stepper.rs:185`, `:187`, `:189` |
+| `NavLink` | `left_section`, `right_section` | `navlink.rs:100`, `:102` |
+| `DropdownMenuItem` | `left_section`, `right_section` | `dropdown_menu.rs:472`, `:474` |
+| `Tab` | `left_section`, `right_section` | `tabs.rs:392`, `:394` |
+
+The `Tree` component takes its icons through data rather than a prop: `TreeNodeData::icon` (`tree.rs:56`), set with the `with_icon(TablerIcon)` builder.
+
+Paths are relative to `crates/rinch-components/src/`. `ActionIcon`'s `icon` prop is a convenience that renders the icon for you as Outline, sized from the component's own `size` prop. It is **mutually exclusive with children** — `loading` wins, then `icon`, and children render only if neither is set — so pass a rendered icon as a child (not via `icon:`) when you need a filled or custom-sized glyph.
 
 ## Dependencies and Imports
 
@@ -687,6 +688,9 @@ fn app() -> NodeHandle {
 | **Dispatch** | `command(name) -> bool`, `update(\|state\| -> Option<Transaction>)`, `insert_text(&str)`, `replace_selection_with_html/text(&str)`, `insert_image(src, alt)`, `toggle_link(href)` |
 | **Query (read state)** | `can_run(name)`, `is_mark_active(mark)`, `active_link_href() -> Option<String>`, `current_block_type()`, `in_node_type(type)`, `doc() -> Node`, `state()`, `selection()` |
 | **Content / selection** | `load_html(&str)`, `load_doc(Node)`, `set_selection(Selection)`, `selection_clipboard()`, `set_dark_mode(bool)` |
+| **Notification** | `on_change(impl Fn() + 'static)` — the autosave / dirty-marking hook |
+
+`on_change` fires only for **local, document-changing** edits: `update` (which typing, paste and IME commit all funnel through), `command`, and `insert_image`. It deliberately does **not** fire for selection-only changes, for `load_doc`/`load_html` (a programmatic load isn't a user edit — firing would make an autosave consumer immediately re-save what it just loaded), or for `collab_receive` (already in the shared CRDT). The callback runs with no internal borrow held, so it may re-enter the handle freely — e.g. call `doc()` to serialize for the save.
 
 Command names (dispatch by string): `toggleBold/Italic/Underline/Strike/Code/Highlight/Subscript/Superscript`, `setParagraph`, `setHeading1..6`, `setCodeBlock`, `setTextAlign{Left,Center,Right,Justify}`, `toggleBulletList`, `toggleOrderedList`, `toggleTaskList`, `wrapInBlockquote`, `sinkListItem`/`liftListItem` (indent/outdent), `insertHorizontalRule`, `insertHardBreak`, `insertTable`, `addRow{After,Before}`, `addColumn{After,Before}`, `deleteRow`/`deleteColumn`/`deleteTable`, `mergeCells`/`splitCell`, `removeLink`, `undo`/`redo`. (Adding a link needs an `href` arg, so it is **not** a string command — use `handle.toggle_link(href)`.)
 
@@ -1327,7 +1331,7 @@ std::thread::spawn(move || {
 
 // Or for GPU textures:
 let registrar = surface.gpu_registrar();
-registrar.set_texture_source(wgpu_view, w, h);
+registrar.set_texture_source(wgpu_texture, wgpu_view, w, h);
 registrar.notify_frame_ready();
 
 rsx! { RenderSurface { surface: Some(surface), style: "flex: 1;" } }
@@ -1611,7 +1615,7 @@ The `rsx!` macro **automatically wraps** component prop values. You must NOT man
 | `on*` (closure) | `onclick: move \|\| do_thing()` | `(Callback::new(move \|\| do_thing())).into()` |
 | `on*` (value) | `onclick: my_callback` | `(my_callback).into()` |
 | `*_fn` (reactive) | `value_fn: move \|\| text.get()` | `Some(Rc::new(move \|\| text.get()))` |
-| `icon`, `*_icon` | `icon: Icon::Check` | `Some(Icon::Check)` |
+| `icon`, `*_icon` | `icon: TablerIcon::Check` | `Some(TablerIcon::Check)` |
 | bool literal | `disabled: true` | `true` (no wrapping) |
 | int literal | `size: 42` | `Some(42)` |
 | float literal | `value: 30.0` | `Some(30.0)` |
@@ -1635,10 +1639,10 @@ Button { onclick: move || do_something() }
 // RIGHT - you can also forward an existing Callback directly
 Button { onclick: my_callback }
 
-// WRONG - double-wraps into Some(Some(Icon::Check))
-Alert { icon: Some(Icon::Check) }
+// WRONG - double-wraps into Some(Some(TablerIcon::Check))
+Alert { icon: Some(TablerIcon::Check) }
 // RIGHT - macro adds Some(...) for you
-Alert { icon: Icon::Check }
+Alert { icon: TablerIcon::Check }
 
 // WRONG - component expects String, not Option<String>
 Button { variant: Some(String::from("filled")) }
@@ -1772,7 +1776,7 @@ Make changes, rebuild, launch again. The full cycle:
 ### Common Issues
 
 - **Text wrapping/clipping**: Check that layout measurement and paint use the same font stack
-- **Elements stacking wrong**: Check `display` property — default is `flex row wrap`
+- **Elements stacking wrong**: Check the `display` property. `div` and other block elements default to `display: block` (per the UA stylesheet in `crates/rinch-dom/src/dom_impl/mod.rs`), so flex properties like `align-items` and `justify-content` do nothing until you set `display: flex` explicitly
 - **Text not updating**: Verify signal/effect wiring in the component
 - **No display (headless)**: Use Xvfb with `DISPLAY=:99` when running without a monitor
 - **MCP tools not available**: Ensure `rinch-mcp-server` is built (`cargo build -p rinch-mcp-server`) and `.mcp.json` points to the binary

@@ -1016,30 +1016,38 @@ Other types (e.g., custom structs) fall back to `Default::default()`, so they mu
 
 ## Icon System
 
-Rinch provides a type-safe icon system with a curated library of SVG icons. Instead of passing arbitrary HTML strings, components accept `Icon` enum values for discoverability and consistency.
+Rinch provides a type-safe icon system built on [Tabler Icons](https://tabler.io/icons). Instead of passing arbitrary HTML strings, components accept `TablerIcon` enum values for discoverability and consistency.
+
+`TablerIcon` lives in the `rinch-tabler-icons` crate and is **not** re-exported through the `rinch` prelude, so add it alongside `rinch`:
+
+```toml
+rinch-tabler-icons = { workspace = true }
+```
+
+> Older snippets may show a curated `Icon` enum from `rinch-core`. That enum no longer exists — every icon prop takes `Option<TablerIcon>`. A few names were spelled differently: `Icon::CheckCircle` is now `TablerIcon::CircleCheck`, and `Icon::XCircle` is `TablerIcon::CircleX`.
 
 ### Basic Usage
 
 ```rust
 use rinch::prelude::*;
-use rinch::components::*;
+use rinch_tabler_icons::TablerIcon;
 
 #[component]
 fn app() -> NodeHandle {
     rsx! {
-        Alert { icon: Icon::InfoCircle, color: "blue", title: "Information",
+        Alert { icon: TablerIcon::InfoCircle, color: "blue", title: "Information",
             "This is an informational message."
         }
 
-        Alert { icon: Icon::CheckCircle, color: "green", title: "Success",
+        Alert { icon: TablerIcon::CircleCheck, color: "green", title: "Success",
             "Operation completed successfully."
         }
 
-        Alert { icon: Icon::AlertTriangle, color: "yellow", title: "Warning",
+        Alert { icon: TablerIcon::AlertTriangle, color: "yellow", title: "Warning",
             "Please review this carefully."
         }
 
-        Alert { icon: Icon::XCircle, color: "red", title: "Error",
+        Alert { icon: TablerIcon::CircleX, color: "red", title: "Error",
             "Something went wrong."
         }
     }
@@ -1048,29 +1056,44 @@ fn app() -> NodeHandle {
 
 ### Available Icons
 
+All 4,983 Tabler icons are available as enum variants — browse them at
+[tabler.io/icons](https://tabler.io/icons), or iterate `ALL_ICONS` (with
+`ICON_COUNT`) to build a picker. A sample of the common ones:
+
 | Category | Icons |
 |----------|-------|
-| **Navigation** | `ChevronUp`, `ChevronDown`, `ChevronLeft`, `ChevronRight`, `ChevronsLeft`, `ChevronsRight`, `ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight` |
-| **Actions** | `Close`, `Check`, `Plus`, `Minus`, `Search`, `Settings`, `Edit`, `Trash` |
-| **Status/Alerts** | `InfoCircle`, `CheckCircle`, `AlertCircle`, `AlertTriangle`, `XCircle` |
-| **Content** | `User`, `Mail`, `Phone`, `Calendar`, `Clock`, `File`, `Folder`, `Image`, `Link`, `ExternalLink` |
-| **UI** | `Eye`, `EyeOff`, `Menu`, `MoreHorizontal`, `MoreVertical`, `Loader`, `Quote` |
+| **Navigation** | `Home`, `ChevronUp`, `ChevronDown`, `ArrowLeft`, `ArrowRight`, `Menu2` |
+| **Actions** | `Plus`, `Minus`, `X`, `Check`, `Search`, `Settings`, `Edit`, `Trash` |
+| **Status/Alerts** | `InfoCircle`, `CircleCheck`, `AlertCircle`, `AlertTriangle`, `CircleX` |
+| **Content** | `User`, `Mail`, `Phone`, `File`, `Folder`, `Photo`, `Copy` |
+| **UI** | `Bell`, `Message`, `Send`, `Share`, `Download`, `Upload` |
+
+Every icon has an Outline form; roughly a thousand also have real Filled
+artwork, and asking for `TablerIconStyle::Filled` on one that doesn't falls back
+to its outline paths. See [Icon System in CLAUDE.md](https://github.com/joeleaver/rinch/blob/main/CLAUDE.md#icon-system) for rendering icons standalone with `render_tabler_icon`.
 
 ### Components with Icon Support
 
+Every prop below is `Option<TablerIcon>`; `rsx!` supplies the `Some(...)`, so
+write `icon: TablerIcon::Check`, not `icon: Some(TablerIcon::Check)`.
+
 | Component | Icon Props |
 |--------|-----------|
-| `Alert` | `icon: Option<Icon>` |
-| `Notification` | `icon: Option<Icon>` |
-| `AccordionControl` | `icon: Option<Icon>` |
-| `Blockquote` | `icon: Option<Icon>` |
-| `List` | `icon: Option<Icon>` |
-| `ListItem` | `icon: Option<Icon>` |
-| `Stepper` | `completed_icon`, `progress_icon: Option<Icon>` |
-| `StepperStep` | `icon`, `completed_icon`, `progress_icon: Option<Icon>` |
-| `NavLink` | `left_section`, `right_section: Option<Icon>` |
-| `DropdownMenuItem` | `left_section`, `right_section: Option<Icon>` |
-| `Tab` | `left_section`, `right_section: Option<Icon>` |
+| `ActionIcon` | `icon` |
+| `Alert` | `icon` |
+| `Notification` | `icon` |
+| `AccordionControl` | `icon` |
+| `Blockquote` | `icon` |
+| `List` | `icon` |
+| `ListItem` | `icon` |
+| `Stepper` | `completed_icon`, `progress_icon` |
+| `StepperStep` | `icon`, `completed_icon`, `progress_icon` |
+| `NavLink` | `left_section`, `right_section` |
+| `DropdownMenuItem` | `left_section`, `right_section` |
+| `Tab` | `left_section`, `right_section` |
+
+`Tree` takes its icons through data instead: `TreeNodeData::icon`, set with the
+`with_icon(TablerIcon)` builder.
 
 ### Examples
 
@@ -1078,15 +1101,15 @@ fn app() -> NodeHandle {
 // NavLink with icons
 NavLink {
     label: "Dashboard",
-    left_section: Icon::Settings,
+    left_section: TablerIcon::Settings,
     active: true
 }
 
 // Tab with icon
 Tabs {
     TabsList {
-        Tab { value: "home", left_section: Icon::User, "Profile" }
-        Tab { value: "settings", left_section: Icon::Settings, "Settings" }
+        Tab { value: "home", left_section: TablerIcon::User, "Profile" }
+        Tab { value: "settings", left_section: TablerIcon::Settings, "Settings" }
     }
 }
 
@@ -1096,18 +1119,18 @@ DropdownMenu {
         Button { "Actions" }
     }
     DropdownMenuDropdown {
-        DropdownMenuItem { left_section: Icon::Edit, "Edit" }
-        DropdownMenuItem { left_section: Icon::Trash, color: "red", "Delete" }
+        DropdownMenuItem { left_section: TablerIcon::Edit, "Edit" }
+        DropdownMenuItem { left_section: TablerIcon::Trash, color: "red", "Delete" }
     }
 }
 
 // Blockquote with quote icon
-Blockquote { icon: Icon::Quote, cite: "— Unknown",
+Blockquote { icon: TablerIcon::Quote, cite: "— Unknown",
     "The best code is no code at all."
 }
 
 // Stepper with custom icons
-Stepper { active: 1, completed_icon: Icon::CheckCircle,
+Stepper { active: 1, completed_icon: TablerIcon::CircleCheck,
     StepperStep { label: "Account" }
     StepperStep { label: "Verify" }
     StepperStep { label: "Complete" }

@@ -58,7 +58,7 @@ rsx! {
 |---|---|
 | `onclick: \|\| do_thing()` | `Callback::new(\|\| do_thing()).into()` |
 | `oninput: move \|v: String\| ...` | `InputCallback::new(move \|v\| ...).into()` |
-| `icon: Icon::Check` | `Some(Icon::Check)` |
+| `icon: TablerIcon::Check` | `Some(TablerIcon::Check)` |
 | `variant: "filled"` | `String::from("filled")` |
 | `disabled: true` | `true` (no wrapping) |
 | `size: 42` | `Some(42)` |
