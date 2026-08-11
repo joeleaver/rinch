@@ -10,8 +10,8 @@ use std::rc::Rc;
 
 use rinch_editor_collab::{CollabPlugin, CollabSession, rebase_steps};
 use rinch_editor_core::{
-    AttrValue, Attrs, EditorState, Fragment, Mark, Node, Plugin, Pos, Schema, Selection, Slice,
-    Step, Transaction, default_plugins,
+    AttrValue, Attrs, EditorState, Fragment, Mark, Node, Plugin, Pos, Schema, Selection,
+    SetNodeAttrStep, Slice, Step, Transaction, default_plugins,
 };
 
 // --- harness -------------------------------------------------------------------
@@ -594,6 +594,76 @@ fn concurrent_edits_to_different_attrs_of_the_same_block_both_survive() {
                 Some("center"),
                 "(host_sets_level={host_sets_level}) peer {name}: the alignment change \
                  survived the concurrent other-attr edit: {}",
+                norm(&conv)
+            );
+        }
+    }
+}
+
+#[test]
+fn attr_set_vs_concurrent_attr_remove_of_different_key() {
+    // The stale-key sweep in `reconcile_attrs`, pinned directly — the sibling test
+    // above exercises only the insert half (mutation testing showed the sweep could
+    // be disabled with every directed test still green). Removing an attr projects
+    // as a per-key map REMOVE on the shared attrs object, which must coexist with a
+    // peer's concurrent write to a *different* key of the same object.
+    //
+    // A heading starts with both `level` and `text_align`; one peer sets `level: 3`,
+    // the other removes `text_align` outright (a `SetNodeAttrStep` with
+    // `value: None` — the model drops the key, so the projection's only way to
+    // mirror it is the sweep). Both edits must survive on both peers: level=3,
+    // text_align absent. Both role-orderings, as above.
+    for host_sets_level in [true, false] {
+        let schema = Rc::new(Schema::starter_kit());
+        let h = schema
+            .create_node(
+                "heading",
+                Attrs::new().with("level", 1i64).with("text_align", "left"),
+                Fragment::from_node(schema.text("Title").unwrap()),
+            )
+            .unwrap();
+        let (schema, mut a, mut b) = {
+            let _ = &schema;
+            two_peers(vec![h])
+        };
+        let set_level = |peer: &mut Peer| {
+            peer.local(|tr| {
+                tr.set_node_attr(0, "level", AttrValue::Int(3)).unwrap();
+            });
+        };
+        let remove_align = |peer: &mut Peer| {
+            peer.local(|tr| {
+                tr.step(Box::new(SetNodeAttrStep {
+                    pos: 0,
+                    attr: "text_align".into(),
+                    value: None,
+                }))
+                .unwrap();
+            });
+        };
+        if host_sets_level {
+            set_level(&mut a);
+            remove_align(&mut b);
+        } else {
+            remove_align(&mut a);
+            set_level(&mut b);
+        }
+        sync(&mut a, &mut b);
+        assert_converged(&a, &b, &schema);
+        for (name, peer) in [("A", &a), ("B", &b)] {
+            let conv = peer.session.projected_doc(&schema).unwrap();
+            let attrs = conv.child(0).attrs().clone();
+            assert_eq!(
+                attrs.get_int("level"),
+                Some(3),
+                "(host_sets_level={host_sets_level}) peer {name}: the level change \
+                 survived the concurrent removal of the other key: {}",
+                norm(&conv)
+            );
+            assert!(
+                attrs.get("text_align").is_none(),
+                "(host_sets_level={host_sets_level}) peer {name}: the text_align \
+                 removal survived the concurrent write to the other key: {}",
                 norm(&conv)
             );
         }
