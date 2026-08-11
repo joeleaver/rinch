@@ -27,6 +27,22 @@ pub enum CollabError {
     /// projection relied on was missing.
     #[error("schema/projection error: {0}")]
     Schema(String),
+
+    /// The session integrated peer bytes that left the shared CRDT document
+    /// **permanently unprojectable** (issue #196). yrs has no rollback, so once such
+    /// bytes are applied they cannot be un-applied, and every future rebuild fails the
+    /// same way. The error is **sticky**: once a [`CollabSession`](crate::CollabSession)
+    /// is poisoned, every convergence-relevant operation — `integrate_incremental`
+    /// *and* `record_local`/`save_incremental`/`sync_diff`/`projected_doc` — fails with
+    /// it, in **both** directions. A replica that can never receive again must not keep
+    /// broadcasting as though it were converging: one-way silence is the divergence
+    /// class this crate exists to kill. Recovery is a fresh session: detach
+    /// (`stop_collaboration` at the handle level) and rejoin from a healthy peer's
+    /// snapshot.
+    #[error(
+        "collab session poisoned — the shared CRDT is no longer projectable; stop and rejoin: {0}"
+    )]
+    SessionPoisoned(String),
 }
 
 impl CollabError {

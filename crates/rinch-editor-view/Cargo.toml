@@ -21,3 +21,8 @@ collaboration = ["dep:rinch-editor-collab"]
 # The MockDomDocument the view/handle tests project onto (proof the seam is
 # renderer-agnostic — no rinch-dom/Parley needed).
 rinch-core = { workspace = true, features = ["test-util"] }
+# Raw yrs, to forge the foreign CRDT bytes the poisoned-session tests feed
+# `collab_receive` (#196). Bytes-only coupling: the tests hand `Vec<u8>` across, so
+# this only needs to speak the same lib0 v1 wire encoding as rinch-editor-collab's
+# pin — no types are shared.
+yrs = "0.27"

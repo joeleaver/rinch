@@ -57,6 +57,15 @@ impl CollabDoc {
     /// would echo. Forwarding them to *other* peers is the transport's job.
     pub fn apply_update(&mut self, bytes: &[u8]) -> Result<()> {
         let update = Update::decode_v1(bytes)?;
+        self.apply_decoded(update)
+    }
+
+    /// Apply an already-decoded update. Split from [`Self::apply_update`] for the
+    /// session's integrate path, which must tell a *decode* failure (the CRDT is
+    /// untouched — transient) from an *apply* failure (the update may be partially
+    /// integrated — yrs commits on drop and has no rollback), because only the latter
+    /// can leave the document unprojectable (issue #196).
+    pub(crate) fn apply_decoded(&mut self, update: Update) -> Result<()> {
         let mut txn = self
             .doc
             .transact_mut_with(Origin::from(ENGINE_APPLY_ORIGIN));
