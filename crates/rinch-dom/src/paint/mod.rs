@@ -223,6 +223,10 @@ pub fn compute_absolute_position(tree: &NodeTree, node_id: RawNodeId, scale: f64
 /// single source of truth for transform composition — the paint arms, the
 /// dirty-region cull test, dirty-region tracking, and hit testing must all
 /// agree on it (#142, #143, #199).
+///
+/// The result is covariant in `scale`: composing at `(s·x, s·y, s)` equals
+/// `S · compose(x, y, 1) · S⁻¹` for `S = scale(s)`, which is what lets hit
+/// testing pass `scale = 1.0` and work in layout pixels (#202).
 pub fn compose_node_transform(
     node: &Node,
     x: f64,
@@ -240,6 +244,14 @@ pub fn compose_node_transform(
         m[4] += tf.translate_x_pct * node.layout.width as f64;
         m[5] += tf.translate_y_pct * node.layout.height as f64;
     }
+    // The translate components are *lengths*: `m[4]`/`m[5]` come from the
+    // stylesheet in CSS px and the percentage part resolves against the CSS-px
+    // layout box, so both need converting to the physical-pixel space this
+    // function composes in (its `x`/`y` inputs and the origin below already
+    // are). The linear part (a, b, c, d) is a pure ratio — unit-invariant —
+    // and must NOT be scaled (#202).
+    m[4] *= scale;
+    m[5] *= scale;
     let cs = &node.computed_style;
     let ox = cs.transform_origin_x.resolve(node.layout.width);
     let oy = cs.transform_origin_y.resolve(node.layout.height);

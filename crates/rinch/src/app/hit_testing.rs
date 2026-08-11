@@ -20,9 +20,10 @@ pub(crate) fn hit_test(tree: &rinch_dom::NodeTree, x: f32, y: f32) -> Option<usi
 /// inverse of paint's accumulated transform.
 ///
 /// `scale = 1.0` because hit testing works in layout pixels while paint works in
-/// physical pixels; the linear part (scale/rotate/skew) is invariant under that
-/// change of units, and `compose_node_transform` applies CSS-px translate
-/// components unscaled, so the two spaces agree exactly at DPI scale 1.
+/// physical pixels. `compose_node_transform` is covariant in that argument — it
+/// multiplies the CSS-px translate components by `scale`, and the linear part
+/// (scale/rotate/skew) is unit-invariant — so composing at `scale = 1.0` yields
+/// exactly paint's transform expressed in layout pixels, at any DPI (#202).
 ///
 /// Returns `None` when the transform is not invertible (`scale(0)`, a degenerate
 /// matrix): such a subtree paints to zero area, so nothing in it can be hit.

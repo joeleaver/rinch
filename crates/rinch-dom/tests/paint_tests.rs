@@ -566,12 +566,18 @@ mod transform_paint {
     /// Paint the document with the tiny-skia software painter for pixel
     /// assertions.
     fn paint_skia(doc: &mut RinchDocument, painter: &mut TinySkiaPainter) {
+        paint_skia_at(doc, painter, 1.0);
+    }
+
+    /// Same, at an explicit DPI scale (layout stays in CSS px — the paint
+    /// pipeline is what scales, exactly as the embed/Android runtimes drive it).
+    fn paint_skia_at(doc: &mut RinchDocument, painter: &mut TinySkiaPainter, scale: f64) {
         let mut paint_layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
         rinch_dom::paint::paint_document(
             &doc.tree,
             painter,
-            1.0,
-            (800.0, 600.0),
+            scale,
+            (800.0 * scale as f32, 600.0 * scale as f32),
             &mut doc.font_cx,
             &mut paint_layout_cx,
         );
@@ -784,6 +790,171 @@ mod transform_paint {
         assert!(
             region.y0 > 100.0,
             "region should not start at the untransformed layout rect, got {region:?}"
+        );
+    }
+
+    /// Bounding box of the opaque-red pixels as `(x0, y0, x1, y1)`, inclusive.
+    fn red_bbox(painter: &TinySkiaPainter) -> Option<(u32, u32, u32, u32)> {
+        let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0_u32, 0_u32);
+        let mut found = false;
+        for y in 0..painter.height() {
+            for x in 0..painter.width() {
+                if is_opaque_red(pixel_at(painter, x, y)) {
+                    found = true;
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x);
+                    y1 = y1.max(y);
+                }
+            }
+        }
+        found.then_some((x0, y0, x1, y1))
+    }
+
+    /// #202 (pixel level): a translated element must paint at
+    /// `scale · (layout + translate)`, not `scale · layout + translate`. The
+    /// painted box at scale 2 must therefore land at exactly twice the
+    /// coordinates it occupies at scale 1 — the covariance oracle, observed
+    /// through the software rasterizer.
+    #[test]
+    fn test_translate_scales_with_dpi() {
+        fn paint_at(scale: f64) -> (u32, u32, u32, u32) {
+            let mut doc = RinchDocument::new();
+            let body = doc.body();
+            let div = doc.create_element("div");
+            doc.set_attribute(
+                div,
+                "style",
+                "width: 20px; height: 20px; background-color: red; \
+                 transform: translate(40px, 30px)",
+            );
+            doc.append_child(body, div);
+            doc.resolve_layout(800.0, 600.0);
+
+            let mut painter = TinySkiaPainter::new(400, 400);
+            paint_skia_at(&mut doc, &mut painter, scale);
+            red_bbox(&painter).expect("translated red box should paint somewhere")
+        }
+
+        let at1 = paint_at(1.0);
+        let at2 = paint_at(2.0);
+
+        for (label, one, two) in [
+            ("x0", at1.0, at2.0),
+            ("y0", at1.1, at2.1),
+            ("x1", at1.2, at2.2),
+            ("y1", at1.3, at2.3),
+        ] {
+            let expected = 2 * one as i64;
+            assert!(
+                (two as i64 - expected).abs() <= 2,
+                "{label} at scale 2 should be ~2x its scale-1 value \
+                 (expected ~{expected}, got {two}); scale-1 bbox {at1:?}, \
+                 scale-2 bbox {at2:?} — an under-translated box means the CSS \
+                 translate was not multiplied by the DPI scale (#202)"
+            );
+        }
+    }
+}
+
+// ── #202: DPI-scale covariance of transform composition ──────────────────────
+
+/// The mechanical correctness criterion for `compose_node_transform`: it must be
+/// *covariant* under the physical/layout change of units. Composing at
+/// `(s·x, s·y, s)` has to equal `S · compose(x, y, 1.0) · S⁻¹` for `S = scale(s)`
+/// — i.e. "compose in physical px" and "compose in layout px, then convert" are
+/// the same map. That identity is exactly what lets hit testing (`local_point`
+/// in `crates/rinch/src/app/hit_testing.rs`) compose at `scale = 1.0` in layout
+/// space and still mirror paint at any DPI.
+///
+/// The linear part (rotate/scale/skew) is unit-invariant, so it satisfies this
+/// for free; the *translate* part is a length and only satisfies it when scaled
+/// (#202).
+mod transform_dpi_covariance {
+    use super::*;
+    use peniko::kurbo::Affine;
+
+    /// One `<div>` carrying `style`, laid out, plus its node id.
+    fn styled_div(style: &str) -> (RinchDocument, usize) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let div = doc.create_element("div");
+        doc.set_attribute(div, "style", style);
+        doc.append_child(body, div);
+        doc.resolve_layout(800.0, 600.0);
+        (doc, div.0)
+    }
+
+    fn affine_mismatch(actual: Affine, expected: Affine) -> Option<String> {
+        let (a, e) = (actual.as_coeffs(), expected.as_coeffs());
+        let bad = (0..6).find(|&i| (a[i] - e[i]).abs() >= 1e-6)?;
+        Some(format!(
+            "coefficient {bad} differs — got {a:?}, expected {e:?}"
+        ))
+    }
+
+    #[test]
+    fn compose_node_transform_is_covariant_in_scale() {
+        // (name, transform declaration)
+        let transforms: [(&str, &str); 6] = [
+            ("translate(px)", "transform: translate(30px, 15px)"),
+            ("translate(%)", "transform: translate(50%, -25%)"),
+            ("rotate", "transform: rotate(30deg)"),
+            ("scale", "transform: scale(1.5, 0.5)"),
+            (
+                "rotate+scale+translate",
+                "transform: rotate(20deg) scale(1.3) translate(12px, 7px)",
+            ),
+            (
+                "matrix() with m4/m5",
+                "transform: matrix(1.2, 0.3, -0.4, 0.9, 25, -18)",
+            ),
+        ];
+        let origins: [(&str, &str); 2] = [
+            ("default origin", ""),
+            ("non-default origin", "transform-origin: 10px 70%;"),
+        ];
+
+        // An arbitrary non-zero layout-space position for the node's box.
+        let (x, y) = (37.0_f64, 23.0_f64);
+        // Every case is checked before failing, so a regression report names
+        // *all* the transform kinds that broke, not just the first.
+        let mut failures: Vec<String> = Vec::new();
+
+        for (tf_name, tf) in transforms {
+            for (origin_name, origin) in origins {
+                let style = format!("width: 80px; height: 40px; {origin} {tf}");
+                let (doc, id) = styled_div(&style);
+                let node = doc.tree.get(id).expect("div should be in the tree");
+                assert!(
+                    !node.computed_style.transform.is_identity,
+                    "{tf_name} / {origin_name}: transform did not parse"
+                );
+
+                let base =
+                    rinch_dom::paint::compose_node_transform(node, x, y, 1.0, Affine::IDENTITY);
+
+                for s in [1.0_f64, 1.5, 2.0] {
+                    let scaled = rinch_dom::paint::compose_node_transform(
+                        node,
+                        s * x,
+                        s * y,
+                        s,
+                        Affine::IDENTITY,
+                    );
+                    let conjugated = Affine::scale(s) * base * Affine::scale(1.0 / s);
+                    if let Some(why) = affine_mismatch(scaled, conjugated) {
+                        failures.push(format!("{tf_name} / {origin_name} at scale {s}: {why}"));
+                    }
+                }
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "compose_node_transform is not covariant in scale for {} case(s) (#202):\n{}",
+            failures.len(),
+            failures.join("\n")
         );
     }
 }
