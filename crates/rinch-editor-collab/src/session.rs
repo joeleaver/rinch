@@ -35,6 +35,11 @@
 //! delta alone cures the read-back — poisoning there would kill a self-healing state
 //! and refuse the very bytes that heal it.
 //!
+//! The carve-out has a window: while dependencies are pending, even an
+//! interior-damage shape classifies transient and outbound stays open — exactly the
+//! pre-#196 baseline, no worse — and the latch fires on the first integrate after the
+//! pending set drains without curing the read-back.
+//!
 //! A poisoned session turns **sticky-loud in both directions**
 //! ([`CollabError::SessionPoisoned`](crate::CollabError::SessionPoisoned)): inbound
 //! kept failing anyway, and outbound (`record_local`/`save_incremental`/`sync_diff`)
@@ -42,9 +47,12 @@
 //! poisoned document's diff must not be handed to healthy peers. Inbound integration
 //! is still *attempted*, though: an update that leaves the document rebuildable again
 //! (say, the damaged lineage deleting its own offending content) **clears** the
-//! poison; until then every attempt reports the sticky error. A *decode* failure
-//! leaves the CRDT untouched and stays transient. Recovery in practice is a fresh
-//! session from a healthy peer's snapshot.
+//! poison; until then every attempt reports the sticky error. A heal re-syncs the
+//! model to the converged shared document, discarding any local edits made during the
+//! poison window — each was already refused loudly at commit time — the same
+//! semantics as stopping and rejoining. A *decode* failure leaves the CRDT untouched
+//! and stays transient. Recovery in practice is a fresh session from a healthy peer's
+//! snapshot.
 
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
@@ -110,9 +118,18 @@ impl CollabSession {
 
     /// The sticky poison error if this session is poisoned, otherwise `err`
     /// unchanged — inbound failures on a poisoned session keep reporting the poison
-    /// rather than a shifting mix of underlying errors.
+    /// rather than a shifting mix of underlying errors. The masked failure's own
+    /// message is appended for diagnostics (an app logging the error still sees why
+    /// *this* delta failed); the stored poison keeps the original cause, so repeated
+    /// failures do not accrete.
     fn sticky_or(&self, err: CollabError) -> CollabError {
-        self.poisoned.clone().unwrap_or(err)
+        match &self.poisoned {
+            Some(CollabError::SessionPoisoned(cause)) => {
+                CollabError::SessionPoisoned(format!("{cause}; latest inbound failure: {err}"))
+            }
+            Some(sticky) => sticky.clone(),
+            None => err,
+        }
     }
 
     /// Classify an inbound failure that left the shared document failing its

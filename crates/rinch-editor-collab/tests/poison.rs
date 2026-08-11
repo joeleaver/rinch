@@ -188,6 +188,21 @@ fn assert_poisoned_both_directions(l: &mut Live, valid_delta: &[u8], what: &str)
         ),
         "{what}: even the empty update is sticky-refused once poisoned"
     );
+    // An inbound failure that never touches the CRDT (an undecodable blob) also
+    // reports the sticky kind while poisoned, not its own transient kind — the
+    // shape `sticky_or` exists for (#219 review, R2-2).
+    assert!(
+        matches!(
+            l.session
+                .integrate_incremental(&state, &[0xff, 0xff, 0xff, 0xff]),
+            Err(CollabError::SessionPoisoned(_))
+        ),
+        "{what}: an undecodable blob while poisoned reports the sticky kind"
+    );
+    assert!(
+        l.session.is_poisoned(),
+        "{what}: still poisoned after the blob"
+    );
 }
 
 // --- the matrix ----------------------------------------------------------------

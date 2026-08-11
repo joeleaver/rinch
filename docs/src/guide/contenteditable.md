@@ -387,7 +387,10 @@ partitioning the peers. The session now **poisons** itself instead: sticky
 `CollabError::SessionPoisoned` on every affected call, in **both** directions
 (local edits stop being projected/broadcast, and receives keep failing — though
 they are still *attempted*, so an inbound update that makes the document
-rebuildable again clears the poison on its own).
+rebuildable again clears the poison on its own). A heal re-syncs the editor to
+the converged shared document, discarding any local edits made during the
+poison window — each was already refused loudly when it happened — the same
+semantics as stopping and rejoining.
 `is_collaboration_poisoned()` queries the state; the recovery in practice is
 `stop_collaboration()` followed by rejoining from a healthy peer's snapshot
 (`collab_snapshot()` → `start_collaboration_guest`).
