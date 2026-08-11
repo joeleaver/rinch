@@ -131,7 +131,9 @@ impl CollabDoc {
 
         // Pre-pass gate 3, CRDT side (issue #194): read back every CRDT node the write
         // phase will read — the blocks being reconciled in place, recursively (a
-        // container's whole subtree, exactly what `reconcile_node` walks). This
+        // container's whole subtree, at least what `reconcile_node` walks: on the
+        // kind-mismatch wholesale-replace path this reads a superset, which is
+        // over-strict in the safe direction, never a hole). This
         // surfaces every CRDT-side failure the model-side gates cannot see — an embed
         // parked in a block's text, a corrupt mark value, a node that is neither
         // text-block nor container — before the first write. Blocks being *deleted*
