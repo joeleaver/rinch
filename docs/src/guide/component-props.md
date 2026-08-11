@@ -422,7 +422,7 @@ Text input with inline color preview and dropdown ColorPicker.
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `cite` | `Option<String>` | `None` | Citation source |
-| `icon` | `Option<Icon>` | `None` | |
+| `icon` | `Option<TablerIcon>` | `None` | |
 | `color` | `Option<String>` | `None` | |
 | `radius` | `Option<String>` | `None` | |
 
@@ -532,10 +532,10 @@ Custom Default: `ignore_case` defaults to `true`.
 | `size` | `Option<String>` | `None` | |
 | `spacing` | `Option<String>` | `None` | |
 | `center` | `bool` | `false` | Center items with icons |
-| `icon` | `Option<Icon>` | `None` | Default icon for all items |
+| `icon` | `Option<TablerIcon>` | `None` | Default icon for all items |
 | `with_padding` | `bool` | `false` | |
 
-**ListItem:** `icon: Option<Icon>` — per-item icon override.
+**ListItem:** `icon: Option<TablerIcon>` — per-item icon override.
 
 ---
 
@@ -550,7 +550,7 @@ Custom Default: `ignore_case` defaults to `true`.
 | `title` | `Option<String>` | `None` | |
 | `radius` | `Option<String>` | `None` | |
 | `with_close_button` | `bool` | `false` | |
-| `icon` | `Option<Icon>` | `None` | |
+| `icon` | `Option<TablerIcon>` | `None` | |
 | `onclose` | `Option<Callback>` | `None` | |
 
 ### Loader
@@ -667,7 +667,7 @@ Custom Default: `with_close_button` defaults to `true`.
 | `radius` | `Option<String>` | `None` | |
 | `with_close_button` | `bool` | **`true`** | |
 | `with_border` | `bool` | `false` | |
-| `icon` | `Option<Icon>` | `None` | |
+| `icon` | `Option<TablerIcon>` | `None` | |
 | `auto_close` | `u32` | `0` | Auto-close delay in ms (0 = disabled) |
 | `loading` | `bool` | `false` | |
 | `z_index` | `Option<i32>` | `None` | |
@@ -725,8 +725,8 @@ Custom Default: `close_on_click_outside` and `close_on_item_click` default to `t
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `left_section` | `Option<Icon>` | `None` | |
-| `right_section` | `Option<Icon>` | `None` | |
+| `left_section` | `Option<TablerIcon>` | `None` | |
+| `right_section` | `Option<TablerIcon>` | `None` | |
 | `color` | `Option<String>` | `None` | |
 | `disabled` | `bool` | `false` | |
 | `onclick` | `Option<Callback>` | `None` | |
@@ -785,8 +785,8 @@ Sub-components: **HoverCardTarget** (no props), **HoverCardDropdown** (no props)
 |------|------|---------|-------------|
 | `value` | `Option<String>` | `None` | Tab identifier |
 | `disabled` | `bool` | `false` | |
-| `left_section` | `Option<Icon>` | `None` | |
-| `right_section` | `Option<Icon>` | `None` | |
+| `left_section` | `Option<TablerIcon>` | `None` | |
+| `right_section` | `Option<TablerIcon>` | `None` | |
 | `onclick` | `Option<Callback>` | `None` | |
 
 **TabsPanel:** `value: Option<String>` — matches the Tab value.
@@ -805,7 +805,7 @@ Sub-components: **HoverCardTarget** (no props), **HoverCardDropdown** (no props)
 
 **AccordionItem:** `value: Option<String>`.
 
-**AccordionControl:** `disabled: bool`, `icon: Option<Icon>`, `onclick: Option<Callback>`.
+**AccordionControl:** `disabled: bool`, `icon: Option<TablerIcon>`, `onclick: Option<Callback>`.
 
 **AccordionPanel:** No props.
 
@@ -848,8 +848,8 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 | `active_fn` | `Option<ReactiveBool>` | `None` | Reactive active binding (auto-wrapped) |
 | `variant` | `Option<String>` | `None` | "light", "filled", "subtle" |
 | `color` | `Option<String>` | `None` | |
-| `left_section` | `Option<Icon>` | `None` | |
-| `right_section` | `Option<Icon>` | `None` | |
+| `left_section` | `Option<TablerIcon>` | `None` | |
+| `right_section` | `Option<TablerIcon>` | `None` | |
 | `disabled` | `bool` | `false` | |
 | `children_offset` | `Option<String>` | `None` | Indentation for nested NavLinks |
 | `opened` | `bool` | `false` | Nested section expanded |
@@ -868,8 +868,8 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 | `radius` | `Option<String>` | `None` | |
 | `icon_size` | `Option<String>` | `None` | |
 | `allow_next_steps_select` | `bool` | `false` | |
-| `completed_icon` | `Option<Icon>` | `None` | Default completed icon for all steps |
-| `progress_icon` | `Option<Icon>` | `None` | Default in-progress icon |
+| `completed_icon` | `Option<TablerIcon>` | `None` | Default completed icon for all steps |
+| `progress_icon` | `Option<TablerIcon>` | `None` | Default in-progress icon |
 
 **StepperStep:**
 
@@ -877,9 +877,9 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 |------|------|---------|-------------|
 | `label` | `Option<String>` | `None` | |
 | `description` | `Option<String>` | `None` | |
-| `icon` | `Option<Icon>` | `None` | Default icon |
-| `completed_icon` | `Option<Icon>` | `None` | Per-step override |
-| `progress_icon` | `Option<Icon>` | `None` | Per-step override |
+| `icon` | `Option<TablerIcon>` | `None` | Default icon |
+| `completed_icon` | `Option<TablerIcon>` | `None` | Per-step override |
+| `progress_icon` | `Option<TablerIcon>` | `None` | Per-step override |
 | `allow_step_click` | `bool` | `false` | |
 | `allow_step_select` | `bool` | `false` | |
 | `loading` | `bool` | `false` | |
@@ -904,7 +904,7 @@ Custom Default: `level_offset` defaults to `Some("md")`, `expand_on_click` defau
 | `onexpand` | `Option<ValueCallback<String>>` | `None` | |
 | `oncollapse` | `Option<ValueCallback<String>>` | `None` | |
 
-**TreeNodeData:** `value: String`, `label: String`, `children: Vec<TreeNodeData>`, `disabled: bool`, `icon: Option<Icon>`, `payload: Option<Rc<dyn Any>>`.
+**TreeNodeData:** `value: String`, `label: String`, `children: Vec<TreeNodeData>`, `disabled: bool`, `icon: Option<TablerIcon>`, `payload: Option<Rc<dyn Any>>`.
 
 ---
 

@@ -148,7 +148,7 @@ rsx! {
         "Click me"
     }
 
-    Alert { icon: Icon::InfoCircle, color: "blue", title: "Info",
+    Alert { icon: TablerIcon::InfoCircle, color: "blue", title: "Info",
         "This is an informational message."
     }
 }
