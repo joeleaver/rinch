@@ -3,10 +3,11 @@
 //! An interactive color picker with a saturation panel, hue slider,
 //! optional alpha slider, hex input, and preset swatches.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Component, Drag, InputCallback, Signal, get_click_context};
+use rinch_core::{Component, Drag, InputCallback, Signal, batch, get_click_context};
 
 use crate::color_swatch::ColorSwatch;
 use crate::color_utils::{
@@ -15,6 +16,28 @@ use crate::color_utils::{
 
 /// Reactive callback type for string state.
 pub type ReactiveString = Rc<dyn Fn() -> String>;
+
+/// Raises the "an external value is being applied" flag for as long as it lives.
+///
+/// RAII rather than a set/clear pair because the batched writes it spans flush
+/// effects before the batch returns: arbitrary subscriber code runs inside the
+/// guarded window, and a panic anywhere in there would leave the flag up —
+/// muting the picker's `onchange` for the rest of the session, which is a
+/// worse failure than the one being prevented.
+struct ApplyGuard<'a>(&'a Cell<bool>);
+
+impl<'a> ApplyGuard<'a> {
+    fn raise(flag: &'a Cell<bool>) -> Self {
+        flag.set(true);
+        ApplyGuard(flag)
+    }
+}
+
+impl Drop for ApplyGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
 
 /// An interactive color picker with saturation panel, hue/alpha sliders, hex input, and swatches.
 #[derive(Default)]
@@ -80,6 +103,11 @@ impl Component for ColorPicker {
         let val = Signal::new(initial.v);
         let alpha = Signal::new(initial.a);
 
+        // Raised while the `value_fn` binding at the bottom of this function is
+        // writing those four signals, so the coordinating effect can tell the
+        // picker restoring itself from an author editing it.
+        let applying_external = Rc::new(Cell::new(false));
+
         // Root container
         let size_class = match self.size.as_str() {
             "sm" => " rinch-color-picker--sm",
@@ -128,13 +156,20 @@ impl Component for ColorPicker {
                 let ctx = get_click_context();
                 let px = ctx.percent_x() as f64;
                 let py = ctx.percent_y() as f64;
-                sat.set(px);
-                val.set(1.0 - py);
+                // One gesture position = one transition: batched, so every
+                // observer (onchange included) sees saturation and value land
+                // together, never a mixture of new saturation with stale value.
+                batch(|| {
+                    sat.set(px);
+                    val.set(1.0 - py);
+                });
 
                 Drag::percent()
                     .on_move(move |px, py| {
-                        sat.set(px as f64);
-                        val.set(1.0 - py as f64);
+                        batch(|| {
+                            sat.set(px as f64);
+                            val.set(1.0 - py as f64);
+                        });
                     })
                     .start();
             });
@@ -283,10 +318,15 @@ impl Component for ColorPicker {
             {
                 let handler_id = __scope.register_input_handler(move |value: String| {
                     if let Some(parsed) = parse_color(&value) {
-                        hue.set(parsed.h);
-                        sat.set(parsed.s);
-                        val.set(parsed.v);
-                        alpha.set(parsed.a);
+                        // One typed colour = one transition: batched, so
+                        // onchange reports the committed colour once, not once
+                        // per component with mixtures in between.
+                        batch(|| {
+                            hue.set(parsed.h);
+                            sat.set(parsed.s);
+                            val.set(parsed.v);
+                            alpha.set(parsed.a);
+                        });
                     }
                 });
                 hex_input.set_attribute("data-oninput", &handler_id.to_string());
@@ -343,10 +383,14 @@ impl Component for ColorPicker {
                         let color = color.clone();
                         move || {
                             if let Some(parsed) = parse_color(&color) {
-                                hue.set(parsed.h);
-                                sat.set(parsed.s);
-                                val.set(parsed.v);
-                                alpha.set(parsed.a);
+                                // One swatch = one transition (see the hex
+                                // handler above).
+                                batch(|| {
+                                    hue.set(parsed.h);
+                                    sat.set(parsed.s);
+                                    val.set(parsed.v);
+                                    alpha.set(parsed.a);
+                                });
                             }
                         }
                     })),
@@ -364,10 +408,22 @@ impl Component for ColorPicker {
         // (the caller already knows — they seeded `value:`). Firing on mount can
         // re-enter `flush_effects` from inside `run_effect`'s borrow_mut and panic
         // when the parent is mid-re-render. See GH #23.
+        //
+        // An external apply is the same principle carried to its conclusion: the
+        // caller knows every value it hands us, not just the first. The apply's
+        // four writes are batched into one transition, so this effect sees only
+        // the completed colour — but even that one coherent report would echo
+        // state the caller handed us, and a consumer that stores what it hears
+        // would re-enter the still-running apply with it. So an external apply
+        // is atomic and silent, and only an author's act is reported. See
+        // GH #229.
         if let Some(ref onchange) = self.onchange {
             let onchange = onchange.clone();
+            let applying_external = applying_external.clone();
             let mut first_run = true;
             __scope.create_effect(move || {
+                // Read all four before any early return, so this effect stays
+                // subscribed to each of them whatever it decides to do.
                 let hsv = Hsva {
                     h: hue.get(),
                     s: sat.get(),
@@ -376,6 +432,9 @@ impl Component for ColorPicker {
                 };
                 if first_run {
                     first_run = false;
+                    return;
+                }
+                if applying_external.get() {
                     return;
                 }
                 onchange.invoke(format_color(hsv, color_format));
@@ -400,15 +459,50 @@ impl Component for ColorPicker {
                         || (parsed.v - current.v).abs() > 0.005
                         || (parsed.a - current.a).abs() > 0.005
                     {
-                        hue.set(parsed.h);
-                        sat.set(parsed.s);
-                        val.set(parsed.v);
-                        alpha.set(parsed.a);
+                        // These four writes are one apply: batched, so every
+                        // observer runs once against the completed colour, and
+                        // silent — the caller handed us this value. The batch
+                        // flushes before it returns, still inside the guard's
+                        // window; the guard drops on the way out of the block,
+                        // including on unwind.
+                        let _applying = ApplyGuard::raise(&applying_external);
+                        batch(|| {
+                            hue.set(parsed.h);
+                            sat.set(parsed.s);
+                            val.set(parsed.v);
+                            alpha.set(parsed.a);
+                        });
                     }
                 }
             });
         }
 
         root
+    }
+}
+
+#[cfg(test)]
+mod apply_guard_tests {
+    use super::*;
+
+    /// The flag falls even when the apply unwinds.
+    ///
+    /// The batched writes an `ApplyGuard` spans flush effects before the batch
+    /// returns, so a panic in any subscriber lands inside the guarded window.
+    /// A flag left up there would mute `onchange` permanently. The panic this
+    /// test provokes is deliberate — its message on stderr is expected output.
+    #[test]
+    fn the_flag_falls_when_an_apply_panics() {
+        let flag = Rc::new(Cell::new(false));
+
+        let raised = flag.clone();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _applying = ApplyGuard::raise(&raised);
+            assert!(raised.get(), "raised for the duration of the apply");
+            panic!("a subscriber blew up mid-apply");
+        }));
+
+        assert!(outcome.is_err(), "the panic was not swallowed");
+        assert!(!flag.get(), "and the picker is not left muted");
     }
 }

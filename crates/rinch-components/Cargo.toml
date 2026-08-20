@@ -10,3 +10,8 @@ rinch-core.workspace = true
 rinch-theme.workspace = true
 rinch-macros.workspace = true
 rinch-tabler-icons.workspace = true
+
+[dev-dependencies]
+# The MockDomDocument the ColorPicker tests render onto — a component's effect
+# topology is driveable headlessly, with no rinch-dom.
+rinch-core = { workspace = true, features = ["test-util"] }

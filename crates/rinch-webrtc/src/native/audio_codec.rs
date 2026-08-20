@@ -132,7 +132,7 @@ fn run_encoder(
                     && config.channels == 1
                 {
                     // Stereo to mono downmix.
-                    for pair in chunk.samples.chunks_exact(2) {
+                    for pair in chunk.samples.as_chunks::<2>().0 {
                         pending.push((pair[0] + pair[1]) * 0.5);
                     }
                 } else if chunk.channels != config.channels

@@ -201,7 +201,7 @@ impl TrayIconBuilder {
         // Convert RGBA → ARGB32 (network byte order) for ksni.
         let icon_pixmap = if let Some((rgba, width, height)) = icon_data {
             let mut argb = Vec::with_capacity(rgba.len());
-            for pixel in rgba.chunks_exact(4) {
+            for pixel in rgba.as_chunks::<4>().0 {
                 argb.push(pixel[3]); // A
                 argb.push(pixel[0]); // R
                 argb.push(pixel[1]); // G
