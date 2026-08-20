@@ -126,9 +126,11 @@ batch(|| {
 });
 ```
 
-A top-level `batch()` flushes synchronously: by the time it returns, every effect its writes woke has run. Batches also **nest** — a `batch()` called inside another batch's closure joins the outer transaction, and the single flush happens when the outermost batch exits. (A `batch()` opened from *inside an effect* is its own outermost batch, even when that effect was woken by another batch's flush, so it still flushes before returning.)
+A top-level `batch()` flushes synchronously: by the time it returns, every effect its writes woke has run. Batches also **nest** — a `batch()` called inside another batch's closure joins the outer transaction, and the single flush happens when the outermost batch exits. (A `batch()` opened from inside an effect *run by a flush* is its own outermost batch — the flag is restored before the flush begins — so it still flushes before returning. An effect body that runs while a batch is still *open* is different: `Effect::new` runs its body immediately, so an effect created inside a batch closure runs inside that batch, and a `batch()` opened there joins the outer transaction instead of flushing.)
 
-If the closure **panics**, the panic propagates and the batching flag is restored on the way out, so later writes flush normally. Nothing is flushed during the unwind itself — the effects the aborted batch queued stay pending and run at the next flush.
+Until the flush, nothing has run: inside the closure — including after a nested `batch()` returns — effects have not executed, and `Memo::get` still returns the pre-batch value.
+
+If the closure **panics**, the panic propagates and the batching flag is restored on the way out, so later writes flush normally. Nothing is flushed during the unwind itself — the effects the aborted batch queued stay pending and run at the next flush (the next unbatched write or outermost batch exit; the runtime does not schedule one on its own).
 
 ## Reading Without Tracking
 

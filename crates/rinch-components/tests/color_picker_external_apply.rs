@@ -247,6 +247,35 @@ fn mounting_with_only_a_binding_adopts_it_silently() {
     );
 }
 
+/// The mount-adoption stays silent even when the whole mount happens inside an
+/// ambient `batch()`.
+///
+/// Batches nest (#232): the apply's own inner `batch()` joins the caller's
+/// transaction, so its flush lands only at the caller's batch exit — *after*
+/// the `ApplyGuard` has fallen. The deferred-apply marker keeps #229's
+/// contract on that path: the adopted colour was handed to us, so it is not
+/// reported, and an echoing consumer's store is untouched.
+#[test]
+fn mounting_inside_an_ambient_batch_adopts_silently_too() {
+    let picker = rinch_core::batch(|| Picker::mount_bound_only(REMOTE, Echo::Back));
+
+    assert_eq!(
+        picker.displayed(),
+        REMOTE,
+        "the bound colour is what the picker shows"
+    );
+    assert!(
+        picker.emissions().is_empty(),
+        "mounting is not an edit, batched or not: {:?}",
+        picker.emissions()
+    );
+    assert_eq!(
+        picker.published(),
+        vec![REMOTE.to_string()],
+        "and the bound data is untouched"
+    );
+}
+
 /// The guard is a window, not a state: an author's next act reports normally.
 #[test]
 fn a_user_act_after_an_external_apply_still_reports() {
