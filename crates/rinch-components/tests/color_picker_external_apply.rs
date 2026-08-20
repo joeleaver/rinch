@@ -144,7 +144,10 @@ impl Picker {
 }
 
 fn find_by_class(node: &NodeHandle, class: &str) -> Option<NodeHandle> {
-    if node.get_attribute("class").as_deref() == Some(class) {
+    let matches = node
+        .get_attribute("class")
+        .is_some_and(|attr| attr.split_whitespace().any(|c| c == class));
+    if matches {
         return Some(node.clone());
     }
     node.children().iter().find_map(|c| find_by_class(c, class))
@@ -254,14 +257,19 @@ fn a_user_act_after_an_external_apply_still_reports() {
     dispatch_input_event(hex, "#22aa55".to_string());
 
     assert_eq!(
-        picker.emissions().last().map(String::as_str),
-        Some("#22aa55"),
-        "the picker is not muted by the apply that preceded this edit"
+        picker.emissions(),
+        vec!["#22aa55".to_string()],
+        "the picker is not muted by the apply that preceded this edit — and \
+         the silent apply emitted nothing"
     );
     assert_eq!(picker.store.get(), "#22aa55");
 }
 
-/// A typed hex is a user act: it reports, and it commits to the store.
+/// A typed hex is a user act: it reports once, whole, and commits to the store.
+///
+/// One commit is one transition (the four component writes are batched), so
+/// exactly one colour is reported — never the per-component mixtures
+/// (`#7100ff`, `#9d4eff`) an unbatched sequence would leak to the consumer.
 #[test]
 fn a_hex_commit_reaches_the_consumer() {
     let picker = Picker::mount(START, Echo::Back);
@@ -270,9 +278,14 @@ fn a_hex_commit_reaches_the_consumer() {
     dispatch_input_event(hex, REMOTE.to_string());
 
     assert_eq!(
-        picker.emissions().last().map(String::as_str),
-        Some(REMOTE),
-        "the committed colour is what the consumer last heard"
+        picker.emissions(),
+        vec![REMOTE.to_string()],
+        "one commit reports once, with the completed colour"
+    );
+    assert_eq!(
+        picker.published(),
+        vec![START.to_string(), REMOTE.to_string()],
+        "and the store never held a colour nobody typed"
     );
     assert_eq!(picker.store.get(), REMOTE);
     assert_eq!(picker.displayed(), REMOTE);
@@ -300,8 +313,9 @@ fn a_swatch_click_reaches_the_consumer() {
     dispatch_event(id);
 
     assert_eq!(
-        picker.emissions().last().map(String::as_str),
-        Some("#22aa55")
+        picker.emissions(),
+        vec!["#22aa55".to_string()],
+        "one click reports once, with the swatch's colour"
     );
     assert_eq!(picker.store.get(), "#22aa55");
 }
@@ -316,13 +330,17 @@ fn a_saturation_drag_reports_each_frame_and_keeps_its_hue() {
 
     click_at(0.8, 0.1); // s = 0.8, v = 0.9
     dispatch_event(overlay);
-    let after_press = picker.emissions().len();
-    assert!(after_press > 0, "the press itself is a change");
+    assert_eq!(
+        picker.emissions().len(),
+        1,
+        "the press is one change: saturation and value land together"
+    );
 
     update_drag(120.0, 40.0); // s = 0.6, v = 0.8
-    assert!(
-        picker.emissions().len() > after_press,
-        "each drag frame reports"
+    assert_eq!(
+        picker.emissions().len(),
+        2,
+        "each drag frame reports exactly once"
     );
 
     let last = picker.emissions().last().cloned().expect("an emission");

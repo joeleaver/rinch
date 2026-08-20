@@ -352,10 +352,12 @@ Interactive color picker with saturation panel, hue/alpha sliders, hex input, an
 
 **`onchange` reports author edits only.** A value arriving through `value_fn` — a
 peer's edit, a programmatic set — is adopted silently: the picker applies all
-four of its internal components (hue, saturation, value, alpha) and fires
-nothing, because the caller already has that value. Only a drag, a typed hex or
-a swatch click reports. This is what lets a consumer bind `value_fn` to the same
-store `onchange` writes without the two chasing each other.
+four of its internal components (hue, saturation, value, alpha) as one batched
+transition and fires nothing, because the caller already has that value. Only a
+drag, a typed hex or a swatch click reports — once per act, with the completed
+colour, never a partially-applied mixture. This is what lets a consumer bind
+`value_fn` to the same store `onchange` writes without the two chasing each
+other.
 
 ### ColorInput
 
