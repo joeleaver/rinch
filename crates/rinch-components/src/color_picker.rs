@@ -3,6 +3,7 @@
 //! An interactive color picker with a saturation panel, hue slider,
 //! optional alpha slider, hex input, and preset swatches.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use rinch_core::dom::{NodeHandle, RenderScope};
@@ -15,6 +16,27 @@ use crate::color_utils::{
 
 /// Reactive callback type for string state.
 pub type ReactiveString = Rc<dyn Fn() -> String>;
+
+/// Raises the "an external value is being applied" flag for as long as it lives.
+///
+/// RAII rather than a set/clear pair because the writes it spans flush effects
+/// synchronously: arbitrary code runs between them, and a panic anywhere in
+/// there would leave the flag up — muting the picker's `onchange` for the rest
+/// of the session, which is a worse failure than the one being prevented.
+struct ApplyGuard<'a>(&'a Cell<bool>);
+
+impl<'a> ApplyGuard<'a> {
+    fn raise(flag: &'a Cell<bool>) -> Self {
+        flag.set(true);
+        ApplyGuard(flag)
+    }
+}
+
+impl Drop for ApplyGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
 
 /// An interactive color picker with saturation panel, hue/alpha sliders, hex input, and swatches.
 #[derive(Default)]
@@ -79,6 +101,11 @@ impl Component for ColorPicker {
         let sat = Signal::new(initial.s);
         let val = Signal::new(initial.v);
         let alpha = Signal::new(initial.a);
+
+        // Raised while the `value_fn` binding at the bottom of this function is
+        // writing those four signals, so the coordinating effect can tell the
+        // picker restoring itself from an author editing it.
+        let applying_external = Rc::new(Cell::new(false));
 
         // Root container
         let size_class = match self.size.as_str() {
@@ -364,10 +391,23 @@ impl Component for ColorPicker {
         // (the caller already knows — they seeded `value:`). Firing on mount can
         // re-enter `flush_effects` from inside `run_effect`'s borrow_mut and panic
         // when the parent is mid-re-render. See GH #23.
+        //
+        // An external apply is the same principle carried to its conclusion: the
+        // caller knows every value it hands us, not just the first. And it is not
+        // one write but four — hue, then saturation, then value, then alpha —
+        // each flushing this effect synchronously. Reporting them would report
+        // three colours that nobody chose (the new hue against the old
+        // saturation, and so on) and, for a consumer that stores what it hears,
+        // re-enter the still-running apply with its own echo. So an external
+        // apply is atomic and silent, and only an author's act is reported. See
+        // GH #229.
         if let Some(ref onchange) = self.onchange {
             let onchange = onchange.clone();
+            let applying_external = applying_external.clone();
             let mut first_run = true;
             __scope.create_effect(move || {
+                // Read all four before any early return, so this effect stays
+                // subscribed to each of them whatever it decides to do.
                 let hsv = Hsva {
                     h: hue.get(),
                     s: sat.get(),
@@ -376,6 +416,9 @@ impl Component for ColorPicker {
                 };
                 if first_run {
                     first_run = false;
+                    return;
+                }
+                if applying_external.get() {
                     return;
                 }
                 onchange.invoke(format_color(hsv, color_format));
@@ -400,6 +443,11 @@ impl Component for ColorPicker {
                         || (parsed.v - current.v).abs() > 0.005
                         || (parsed.a - current.a).abs() > 0.005
                     {
+                        // These four writes are one apply: nothing is reported
+                        // until all of them have landed, and then nothing is —
+                        // the caller handed us this value. The guard drops on
+                        // the way out of the block, including on unwind.
+                        let _applying = ApplyGuard::raise(&applying_external);
                         hue.set(parsed.h);
                         sat.set(parsed.s);
                         val.set(parsed.v);
@@ -410,5 +458,31 @@ impl Component for ColorPicker {
         }
 
         root
+    }
+}
+
+#[cfg(test)]
+mod apply_guard_tests {
+    use super::*;
+
+    /// The flag falls even when the apply unwinds.
+    ///
+    /// The writes an `ApplyGuard` spans flush effects synchronously, so a panic
+    /// in any subscriber lands inside the guarded window. A flag left up there
+    /// would mute `onchange` permanently. The panic this test provokes is
+    /// deliberate — its message on stderr is expected output.
+    #[test]
+    fn the_flag_falls_when_an_apply_panics() {
+        let flag = Rc::new(Cell::new(false));
+
+        let raised = flag.clone();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _applying = ApplyGuard::raise(&raised);
+            assert!(raised.get(), "raised for the duration of the apply");
+            panic!("a subscriber blew up mid-apply");
+        }));
+
+        assert!(outcome.is_err(), "the panic was not swallowed");
+        assert!(!flag.get(), "and the picker is not left muted");
     }
 }
