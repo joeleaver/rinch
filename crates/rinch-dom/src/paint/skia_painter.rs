@@ -330,7 +330,7 @@ impl TinySkiaPainter {
             let row_start = (row * pw + x0) as usize * 4;
             let row_end = (row * pw + x1) as usize * 4;
             let row_data = &mut data[row_start..row_end];
-            for pixel in row_data.chunks_exact_mut(4) {
+            for pixel in row_data.as_chunks_mut::<4>().0 {
                 pixel[0] = r;
                 pixel[1] = g;
                 pixel[2] = b;
@@ -389,7 +389,7 @@ impl TinySkiaPainter {
         // Create a pixmap from the source RGBA data.
         // tiny-skia expects premultiplied alpha, so premultiply in-place.
         let mut premul = pixels[..expected].to_vec();
-        for chunk in premul.chunks_exact_mut(4) {
+        for chunk in premul.as_chunks_mut::<4>().0 {
             let a = chunk[3] as u16;
             if a == 0 {
                 chunk[0] = 0;
