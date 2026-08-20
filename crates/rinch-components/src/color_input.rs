@@ -2,6 +2,7 @@
 //!
 //! A text input with an inline color preview swatch and a dropdown ColorPicker.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use rinch_core::dom::{NodeHandle, RenderScope};
@@ -9,7 +10,7 @@ use rinch_core::{Component, InputCallback, Signal};
 
 use crate::color_picker::ColorPicker;
 use crate::color_swatch::ColorSwatch;
-use crate::color_utils::{ColorFormat, format_color, parse_color};
+use crate::color_utils::{ColorFormat, denotes_same, format_color, parse_color};
 
 /// Reactive callback type for string state.
 pub type ReactiveString = Rc<dyn Fn() -> String>;
@@ -137,12 +138,21 @@ impl Component for ColorInput {
             text_input.set_attribute("readonly", "");
         }
 
+        // The last field text that parsed — same role as ColorPicker's record
+        // (GH #231): the display effect must be able to recognise the author's
+        // own text on the web backend, where the browser holds the live text
+        // and the `value` attribute lags behind it. Cleared whenever the
+        // effect actually rewrites the field.
+        let typed: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
         // Handle text input changes
         if !disallow_input {
             let onchange = self.onchange.clone();
+            let typed = typed.clone();
             let handler_id = __scope.register_input_handler(move |value: String| {
                 if let Some(parsed) = parse_color(&value) {
                     let formatted = format_color(parsed, color_format);
+                    *typed.borrow_mut() = Some(value);
                     current_value.set(formatted.clone());
                     if let Some(ref cb) = onchange {
                         cb.invoke(formatted);
@@ -210,8 +220,23 @@ impl Component for ColorInput {
                     );
                 }
 
-                // Update text input
-                text_input.set_attribute("value", &val);
+                // Update text input — unless its text already denotes this
+                // colour: a parseable prefix mid-typing lands here through the
+                // input handler, and writing the normalized form back would
+                // replace the text under the author's caret (GH #231). The
+                // field is rewritten only when the colour moves away from it —
+                // the dropdown picker, an external `value_fn` change.
+                let field_agrees = text_input
+                    .get_attribute("value")
+                    .is_some_and(|current| denotes_same(&current, &val, color_format))
+                    || typed
+                        .borrow()
+                        .as_deref()
+                        .is_some_and(|text| denotes_same(text, &val, color_format));
+                if !field_agrees {
+                    typed.borrow_mut().take();
+                    text_input.set_attribute("value", &val);
+                }
             });
         }
 

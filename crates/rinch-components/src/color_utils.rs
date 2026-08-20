@@ -324,6 +324,26 @@ pub fn format_color(hsv: Hsva, format: ColorFormat) -> String {
     }
 }
 
+/// Whether two colour strings denote the same colour when expressed in
+/// `format`.
+///
+/// Both parse → compare their `format_color` renderings, so every notation
+/// difference `format` erases compares equal: short vs long hex, digit case,
+/// an alpha pair a non-alpha format drops, an `rgb()` spelling under a hex
+/// format. Either fails to parse → compare the trimmed strings, so two copies
+/// of the same unfinished text still match and nothing else does.
+///
+/// This is the write-back guard the colour components share (GH #231): a
+/// field whose text already denotes the colour about to be displayed is the
+/// author's to keep, mid-keystroke text included. Deliberately public — the
+/// `value_fn` comparison end (GH #227) reuses the same equivalence.
+pub fn denotes_same(a: &str, b: &str, format: ColorFormat) -> bool {
+    match (parse_color(a), parse_color(b)) {
+        (Some(a), Some(b)) => format_color(a, format) == format_color(b, format),
+        _ => a.trim() == b.trim(),
+    }
+}
+
 /// Convert a hue value (0-360) to a hex color at full saturation and value.
 pub fn hue_to_rgb_hex(hue: f64) -> String {
     let rgb = hsv_to_rgb(Hsva {
@@ -551,5 +571,37 @@ mod tests {
         assert_eq!(hue_to_rgb_hex(0.0), "#ff0000");
         assert_eq!(hue_to_rgb_hex(120.0), "#00ff00");
         assert_eq!(hue_to_rgb_hex(240.0), "#0000ff");
+    }
+
+    #[test]
+    fn denotes_same_folds_notation_the_format_erases() {
+        // Short hex expands to the long form.
+        assert!(denotes_same("#336", "#333366", ColorFormat::Hex));
+        // Digit case is not a colour difference.
+        assert!(denotes_same("#FF0000", "#ff0000", ColorFormat::Hex));
+        // An alpha pair is dropped by a non-alpha format...
+        assert!(denotes_same("#3333666c", "#333366", ColorFormat::Hex));
+        // ...but is a real difference under one that keeps it.
+        assert!(!denotes_same("#3333666c", "#333366", ColorFormat::Hexa));
+        // Spelling across colour syntaxes folds too.
+        assert!(denotes_same("rgb(255, 0, 0)", "#ff0000", ColorFormat::Hex));
+    }
+
+    #[test]
+    fn denotes_same_separates_actual_colours() {
+        assert!(!denotes_same("#336", "#337", ColorFormat::Hex));
+        assert!(!denotes_same("rgb(255, 0, 0)", "#ff0001", ColorFormat::Hex));
+    }
+
+    #[test]
+    fn denotes_same_compares_unparseable_text_literally() {
+        // Two copies of the same unfinished prefix match, whitespace aside.
+        assert!(denotes_same("#33", "#33", ColorFormat::Hex));
+        assert!(denotes_same(" #33 ", "#33", ColorFormat::Hex));
+        // Different unfinished text does not.
+        assert!(!denotes_same("#33", "#34", ColorFormat::Hex));
+        // A prefix too short to parse never equals a parseable colour, even
+        // the one it is on its way to.
+        assert!(!denotes_same("#33", "#333333", ColorFormat::Hex));
     }
 }

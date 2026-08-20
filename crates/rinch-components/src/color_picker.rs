@@ -3,7 +3,7 @@
 //! An interactive color picker with a saturation panel, hue slider,
 //! optional alpha slider, hex input, and preset swatches.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rinch_core::dom::{NodeHandle, RenderScope};
@@ -11,7 +11,8 @@ use rinch_core::{Component, Drag, InputCallback, Signal, batch, get_click_contex
 
 use crate::color_swatch::ColorSwatch;
 use crate::color_utils::{
-    ColorFormat, Hsva, format_color, hsv_to_rgb, hue_to_rgb_hex, parse_color, rgb_to_hex,
+    ColorFormat, Hsva, denotes_same, format_color, hsv_to_rgb, hue_to_rgb_hex, parse_color,
+    rgb_to_hex,
 };
 
 /// Reactive callback type for string state.
@@ -341,9 +342,20 @@ impl Component for ColorPicker {
             let hex_input = rinch_macros::rsx! { input { class: "rinch-color-picker__hex-input" } };
             hex_input.set_attribute("value", &format_color(initial, color_format));
 
+            // The last field text that parsed — what the field really holds
+            // where this component can't see it. The desktop runtime mirrors
+            // typed text into the `value` attribute before dispatching
+            // `oninput`, but on web the browser owns the live text and the
+            // attribute lags behind it, so the display effect below needs the
+            // handler's own record to recognise the author's text. Cleared
+            // whenever the effect actually rewrites the field.
+            let typed: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
             {
+                let typed = typed.clone();
                 let handler_id = __scope.register_input_handler(move |value: String| {
                     if let Some(parsed) = parse_color(&value) {
+                        *typed.borrow_mut() = Some(value);
                         // One typed colour = one transition: batched, so
                         // onchange reports the committed colour once, not once
                         // per component with mixtures in between.
@@ -384,8 +396,28 @@ impl Component for ColorPicker {
                             ),
                         );
                     }
-                    // Update hex input
-                    hex_input.set_attribute("value", &format_color(hsv, color_format));
+                    // Update hex input — unless its text already denotes this
+                    // colour. A valid prefix mid-typing ("#336" on the way to
+                    // "#3366cc") parses and lands here through the oninput
+                    // handler; writing the normalized expansion ("#333366")
+                    // back would replace the text under the author's caret,
+                    // and every remaining keystroke would land on the
+                    // rewritten string (GH #231). The field is the author's
+                    // while its text and the picker agree on the colour; it is
+                    // rewritten only when the colour moves away from it — a
+                    // drag, a swatch, an external apply.
+                    let next = format_color(hsv, color_format);
+                    let field_agrees = hex_input
+                        .get_attribute("value")
+                        .is_some_and(|current| denotes_same(&current, &next, color_format))
+                        || typed
+                            .borrow()
+                            .as_deref()
+                            .is_some_and(|text| denotes_same(text, &next, color_format));
+                    if !field_agrees {
+                        typed.borrow_mut().take();
+                        hex_input.set_attribute("value", &next);
+                    }
                 });
             }
         }

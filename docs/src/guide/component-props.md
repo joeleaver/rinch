@@ -359,6 +359,18 @@ colour, never a partially-applied mixture. This is what lets a consumer bind
 `value_fn` to the same store `onchange` writes without the two chasing each
 other.
 
+**The text field is the author's while they type.** The hex field parses on
+every keystroke, and a valid *prefix* of the colour being typed (`#336` on the
+way to `#3366cc`) is already a parseable colour — it updates the preview and
+reports through `onchange` live, but the picker never rewrites the field under
+the author's caret while its text denotes the colour the picker already holds.
+The field text is normalized to the output format only when the colour actually
+moves away from it: a drag, a swatch click, an external `value_fn` change. (The
+flip side: an equivalent-but-differently-notated string — `rgb(255, 0, 0)`
+under a hex format — stays as typed, since there is no blur/commit event to
+normalize on; see issue #226.) `ColorInput`'s text field follows the same
+contract.
+
 ### ColorInput
 
 Text input with inline color preview and dropdown ColorPicker.
