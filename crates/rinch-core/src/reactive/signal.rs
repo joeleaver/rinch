@@ -236,16 +236,13 @@ impl<T: 'static> Signal<T> {
                 rt.pending_effects.len()
             );
 
-            // If not batching, flush immediately
-            // Effects must run BEFORE on_signal_change callback so fine-grained
-            // updates are queued before the callback decides whether to do a full re-render
+            // If not batching, flush immediately: effects, then the UI
+            // re-render callbacks — the ordering contract lives in
+            // `flush_effects_and_notify`.
             if !rt.batching {
                 drop(rt);
 
-                super::flush_effects();
-
-                // Invoke the UI re-render callbacks AFTER Effects have run
-                super::notify_signal_change();
+                super::flush_effects_and_notify();
             }
         });
     }

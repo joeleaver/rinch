@@ -19,11 +19,16 @@ pub type ReactiveString = Rc<dyn Fn() -> String>;
 
 /// Raises the "an external value is being applied" flag for as long as it lives.
 ///
-/// RAII rather than a set/clear pair because the batched writes it spans flush
-/// effects before the batch returns: arbitrary subscriber code runs inside the
-/// guarded window, and a panic anywhere in there would leave the flag up —
-/// muting the picker's `onchange` for the rest of the session, which is a
-/// worse failure than the one being prevented.
+/// RAII rather than a set/clear pair because the batched writes it spans
+/// normally flush effects before the batch returns: arbitrary subscriber code
+/// runs inside the guarded window, and a panic anywhere in there would leave
+/// the flag up — muting the picker's `onchange` for the rest of the session,
+/// which is a worse failure than the one being prevented.
+///
+/// The window is not always enough on its own: when the apply runs while an
+/// ambient `batch()` is open (rinch-core batches nest), the flush is deferred
+/// past this guard's drop, so the picker also records the applied colour in a
+/// `last_external_apply` marker for the coordinating effect to recognise.
 struct ApplyGuard<'a>(&'a Cell<bool>);
 
 impl<'a> ApplyGuard<'a> {
@@ -37,6 +42,17 @@ impl Drop for ApplyGuard<'_> {
     fn drop(&mut self) {
         self.0.set(false);
     }
+}
+
+/// Whether two colours are within the tolerance the `value_fn` binding uses to
+/// decide an external value is "meaningfully different". Kept as the single
+/// definition so a deferred apply is recognised by exactly the values that
+/// were considered worth writing.
+fn same_hsva(a: Hsva, b: Hsva) -> bool {
+    (a.h - b.h).abs() <= 0.5
+        && (a.s - b.s).abs() <= 0.005
+        && (a.v - b.v).abs() <= 0.005
+        && (a.a - b.a).abs() <= 0.005
 }
 
 /// An interactive color picker with saturation panel, hue/alpha sliders, hex input, and swatches.
@@ -107,6 +123,16 @@ impl Component for ColorPicker {
         // writing those four signals, so the coordinating effect can tell the
         // picker restoring itself from an author editing it.
         let applying_external = Rc::new(Cell::new(false));
+
+        // The colour of the most recent external apply whose flush did NOT
+        // land inside the `ApplyGuard` window. Normally the apply's batch
+        // flushes before it returns (still inside the window) and this stays
+        // unused — but when the apply's effect body runs while an ambient
+        // `batch()` is open (component construction inside a caller's batch:
+        // rinch-core batches nest since #232), the flush is deferred past the
+        // guard's drop. The coordinating effect recognises the recorded colour
+        // and stays silent about it — GH #229 must hold on that path too.
+        let last_external_apply: Rc<Cell<Option<Hsva>>> = Rc::new(Cell::new(None));
 
         // Root container
         let size_class = match self.size.as_str() {
@@ -420,6 +446,7 @@ impl Component for ColorPicker {
         if let Some(ref onchange) = self.onchange {
             let onchange = onchange.clone();
             let applying_external = applying_external.clone();
+            let last_applied = last_external_apply.clone();
             let mut first_run = true;
             __scope.create_effect(move || {
                 // Read all four before any early return, so this effect stays
@@ -435,7 +462,19 @@ impl Component for ColorPicker {
                     return;
                 }
                 if applying_external.get() {
+                    // Observed inside the guard window — the deferred-apply
+                    // marker below is not needed for this apply.
+                    last_applied.set(None);
                     return;
+                }
+                if let Some(applied) = last_applied.take() {
+                    if same_hsva(hsv, applied) {
+                        // A *deferred* external apply: the flush ran after the
+                        // ApplyGuard fell (the apply happened under an ambient
+                        // batch), but this is still the colour the caller
+                        // handed us — silent, per GH #229.
+                        return;
+                    }
                 }
                 onchange.invoke(format_color(hsv, color_format));
             });
@@ -444,6 +483,7 @@ impl Component for ColorPicker {
         // === value_fn binding: external value → internal signals ===
         if let Some(ref value_fn) = self.value_fn {
             let value_fn = value_fn.clone();
+            let last_applied = last_external_apply.clone();
             __scope.create_effect(move || {
                 let external = value_fn();
                 if let Some(parsed) = parse_color(&external) {
@@ -454,17 +494,20 @@ impl Component for ColorPicker {
                         v: val.get(),
                         a: alpha.get(),
                     };
-                    if (parsed.h - current.h).abs() > 0.5
-                        || (parsed.s - current.s).abs() > 0.005
-                        || (parsed.v - current.v).abs() > 0.005
-                        || (parsed.a - current.a).abs() > 0.005
-                    {
+                    if !same_hsva(parsed, current) {
                         // These four writes are one apply: batched, so every
                         // observer runs once against the completed colour, and
-                        // silent — the caller handed us this value. The batch
-                        // flushes before it returns, still inside the guard's
-                        // window; the guard drops on the way out of the block,
-                        // including on unwind.
+                        // silent — the caller handed us this value. When this
+                        // body runs during a flush, the batch below is a fresh
+                        // outermost batch and flushes before it returns, still
+                        // inside the guard's window; the guard drops on the
+                        // way out of the block, including on unwind. When it
+                        // runs while an ambient batch is open (creation run
+                        // inside a caller's `batch()`), the flush is deferred
+                        // past the guard's drop — the marker records the
+                        // applied colour so the coordinating effect can stay
+                        // silent about it when the flush finally lands.
+                        last_applied.set(Some(parsed));
                         let _applying = ApplyGuard::raise(&applying_external);
                         batch(|| {
                             hue.set(parsed.h);
