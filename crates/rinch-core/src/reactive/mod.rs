@@ -607,10 +607,56 @@ pub(crate) fn free_memo(id: u32, generation: u32) {
 // Batching
 // ============================================================================
 
+/// RAII guard for the batching flag.
+///
+/// Saves the previous flag value on construction and restores it on drop —
+/// including while unwinding. A bare set/clear pair has two failure modes:
+/// a panic between them leaks `batching = true`, after which every later
+/// write queues observers that nothing ever flushes (a silent UI freeze,
+/// issue #232); and a nested `batch()` clearing to `false` ends the *outer*
+/// batch's transaction early. Restoring the saved value fixes both — only
+/// the outermost guard restores `false`.
+struct BatchGuard {
+    prev: bool,
+}
+
+impl BatchGuard {
+    fn raise() -> Self {
+        let prev = RUNTIME.with(|rt| std::mem::replace(&mut rt.borrow_mut().batching, true));
+        BatchGuard { prev }
+    }
+}
+
+impl Drop for BatchGuard {
+    fn drop(&mut self) {
+        // `try_with`: TLS may already be torn down at thread exit.
+        let _ = RUNTIME.try_with(|rt| {
+            if let Ok(mut rt) = rt.try_borrow_mut() {
+                rt.batching = self.prev;
+            }
+        });
+    }
+}
+
 /// Batch multiple signal updates to avoid redundant effect runs.
 ///
 /// Effects will only run once after the batch completes, even if multiple
 /// signals they depend on are updated.
+///
+/// Batches nest: a `batch()` inside another batch's *closure* joins the outer
+/// transaction, and effects flush once, when the outermost batch exits. A
+/// `batch()` entered during a *flush* — from inside an effect the outer batch
+/// woke — is instead a fresh outermost batch (the outer flag has already been
+/// restored by then), so it keeps the top-level contract: the flush completes
+/// synchronously before `batch()` returns.
+///
+/// # Panics
+///
+/// A panic inside the closure propagates, and the batching flag is restored on
+/// the way out. Nothing is flushed while unwinding — running arbitrary effect
+/// code mid-panic would be worse than the panic itself — so the effects the
+/// aborted batch queued stay pending and run at the next flush (the next
+/// signal write outside a batch, or the next outermost batch exit).
 ///
 /// # Example
 ///
@@ -625,21 +671,23 @@ pub(crate) fn free_memo(id: u32, generation: u32) {
 /// });
 /// ```
 pub fn batch<R>(f: impl FnOnce() -> R) -> R {
-    RUNTIME.with(|rt| {
-        rt.borrow_mut().batching = true;
-    });
+    let guard = BatchGuard::raise();
+    let outermost = !guard.prev;
 
     let result = f();
 
-    RUNTIME.with(|rt| {
-        rt.borrow_mut().batching = false;
-    });
+    // Restore the flag *before* flushing: `Signal::set` inside a flushed
+    // effect must see `batching = false` again, and a `batch()` opened there
+    // must count as a fresh outermost batch.
+    drop(guard);
 
-    flush_effects();
+    if outermost {
+        flush_effects();
 
-    // Invoke the UI re-render callbacks AFTER Effects have run
-    // This allows fine-grained updates to be queued before the callbacks check
-    notify_signal_change();
+        // Invoke the UI re-render callbacks AFTER Effects have run
+        // This allows fine-grained updates to be queued before the callbacks check
+        notify_signal_change();
+    }
 
     result
 }
@@ -1052,6 +1100,124 @@ mod tests {
         // Effect only ran once more
         assert_eq!(run_count.get(), 2);
         assert_eq!(count.get(), 3);
+    }
+
+    /// A panic inside the closure must not leak `batching = true` (#232).
+    ///
+    /// A leaked flag makes every later write queue observers that nothing ever
+    /// flushes — the UI silently freezes, which is strictly worse than the
+    /// panic itself. Nothing flushes *during* the unwind either: the queued
+    /// effects stay pending and run at the next flush. The panic this test
+    /// provokes is deliberate — its message on stderr is expected output.
+    #[test]
+    fn a_panicking_batch_does_not_leak_the_batching_flag() {
+        let count = Signal::new(0);
+        let runs = Rc::new(Cell::new(0));
+
+        let r = runs.clone();
+        let _effect = Effect::new(move || {
+            count.get();
+            r.set(r.get() + 1);
+        });
+        assert_eq!(runs.get(), 1, "the effect runs once at creation");
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            batch(|| {
+                count.set(1);
+                panic!("boom");
+            });
+        }));
+        assert!(result.is_err(), "the batch closure must have panicked");
+        assert_eq!(runs.get(), 1, "nothing flushes while unwinding");
+        assert!(
+            !RUNTIME.with(|rt| rt.borrow().batching),
+            "the flag must be restored by the unwind"
+        );
+
+        // The observer the aborted batch queued is not lost: the next
+        // unbatched write flushes it along with its own.
+        count.set(2);
+        assert_eq!(runs.get(), 2, "later writes must still flush");
+        assert_eq!(count.get(), 2);
+    }
+
+    /// Nested batches are one transaction (#232): nothing flushes until the
+    /// outermost batch exits, and then each queued effect runs exactly once,
+    /// in registration order — nesting does not disturb #154.
+    #[test]
+    fn nested_batches_flush_once_at_the_outermost_exit() {
+        let a = Signal::new(0);
+        let b = Signal::new(0);
+
+        let log = Rc::new(RefCell::new(Vec::new()));
+
+        let l = Rc::clone(&log);
+        let _first = Effect::new(move || {
+            a.get();
+            l.borrow_mut().push("first");
+        });
+        let l = Rc::clone(&log);
+        let _second = Effect::new(move || {
+            b.get();
+            l.borrow_mut().push("second");
+        });
+        log.borrow_mut().clear(); // discard the creation runs
+
+        let l = Rc::clone(&log);
+        batch(|| {
+            a.set(1);
+            batch(|| b.set(1));
+            assert!(
+                l.borrow().is_empty(),
+                "the inner batch must not flush the outer transaction"
+            );
+        });
+
+        assert_eq!(
+            *log.borrow(),
+            vec!["first", "second"],
+            "one flush at the outermost exit, in registration order"
+        );
+    }
+
+    /// A batch opened *during* another batch's flush — from inside an effect —
+    /// is a fresh outermost batch and flushes synchronously before it returns.
+    ///
+    /// ColorPicker's `value_fn` echo path relies on this composition: the
+    /// batched writes its `ApplyGuard` spans must flush inside the guard's
+    /// window, even though that whole apply runs from an effect another
+    /// batch woke.
+    #[test]
+    fn a_batch_inside_a_flush_still_flushes_before_returning() {
+        let outer_sig = Signal::new(0);
+        let inner_sig = Signal::new(0);
+
+        let inner_runs = Rc::new(Cell::new(0));
+        let r = Rc::clone(&inner_runs);
+        let _inner_effect = Effect::new(move || {
+            inner_sig.get();
+            r.set(r.get() + 1);
+        });
+
+        // What `inner_runs` read as, right after the nested batch returned.
+        let seen_after_nested_batch = Rc::new(Cell::new(0));
+        let seen = Rc::clone(&seen_after_nested_batch);
+        let ir = Rc::clone(&inner_runs);
+        let _outer_effect = Effect::new(move || {
+            if outer_sig.get() == 0 {
+                return; // skip the creation run
+            }
+            batch(|| inner_sig.set(7));
+            seen.set(ir.get());
+        });
+
+        let runs_before = inner_runs.get();
+        batch(|| outer_sig.set(1));
+        assert_eq!(
+            seen_after_nested_batch.get(),
+            runs_before + 1,
+            "the nested batch must have flushed inside the outer effect's body"
+        );
     }
 
     #[test]

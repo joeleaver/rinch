@@ -126,6 +126,10 @@ batch(|| {
 });
 ```
 
+A top-level `batch()` flushes synchronously: by the time it returns, every effect its writes woke has run. Batches also **nest** — a `batch()` called inside another batch's closure joins the outer transaction, and the single flush happens when the outermost batch exits. (A `batch()` opened from *inside an effect* is its own outermost batch, even when that effect was woken by another batch's flush, so it still flushes before returning.)
+
+If the closure **panics**, the panic propagates and the batching flag is restored on the way out, so later writes flush normally. Nothing is flushed during the unwind itself — the effects the aborted batch queued stay pending and run at the next flush.
+
 ## Reading Without Tracking
 
 Sometimes you want to read a signal without creating a subscription. Use `untracked()`:
