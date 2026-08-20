@@ -83,7 +83,7 @@ pub fn capture_texture_rgba(
         match format {
             TextureFormat::Bgra8Unorm | TextureFormat::Bgra8UnormSrgb => {
                 // BGRA -> RGBA
-                for pixel in row_data.chunks_exact(4) {
+                for pixel in row_data.as_chunks::<4>().0 {
                     rgba.push(pixel[2]); // R
                     rgba.push(pixel[1]); // G
                     rgba.push(pixel[0]); // B

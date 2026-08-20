@@ -919,7 +919,7 @@ impl App {
         // ── Rinch UI update + render to texture ─────────────────────────────
 
         let ctx = self.rinch_ctx.as_mut().unwrap();
-        let events: Vec<_> = self.pending_events.drain(..).collect();
+        let events = std::mem::take(&mut self.pending_events);
         let _actions = ctx.update(&events);
         let scene = ctx.scene();
 

@@ -159,7 +159,7 @@ fn RemoteVideo() -> NodeHandle {
     surface.set_render_callback(|writer, w, h| {
         // Dark background when no remote video
         let mut pixels = vec![0u8; (w * h * 4) as usize];
-        for chunk in pixels.chunks_exact_mut(4) {
+        for chunk in pixels.as_chunks_mut::<4>().0 {
             chunk[0] = 30;
             chunk[1] = 30;
             chunk[2] = 30;

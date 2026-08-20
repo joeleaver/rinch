@@ -63,7 +63,7 @@ impl PaintState {
     fn new() -> Self {
         let size = (CANVAS_W * CANVAS_H * 4) as usize;
         let mut canvas = vec![255u8; size];
-        for chunk in canvas.chunks_exact_mut(4) {
+        for chunk in canvas.as_chunks_mut::<4>().0 {
             chunk[3] = 255;
         }
         Self {
@@ -116,7 +116,7 @@ impl PaintState {
 
     fn clear(&mut self) {
         self.push_undo();
-        for chunk in self.canvas.chunks_exact_mut(4) {
+        for chunk in self.canvas.as_chunks_mut::<4>().0 {
             chunk[0] = 255;
             chunk[1] = 255;
             chunk[2] = 255;

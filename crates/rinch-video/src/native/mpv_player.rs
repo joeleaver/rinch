@@ -331,7 +331,7 @@ impl MpvPlayer {
         self.do_sw_render(buf.as_mut_ptr(), w, h, stride);
 
         // Fix alpha channel: rgb0 format gives A=0, we need A=255 for opaque video
-        for pixel in buf.chunks_exact_mut(4) {
+        for pixel in buf.as_chunks_mut::<4>().0 {
             pixel[3] = 255;
         }
 
