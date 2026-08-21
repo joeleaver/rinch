@@ -3,7 +3,7 @@
 //! An interactive color picker with a saturation panel, hue slider,
 //! optional alpha slider, hex input, and preset swatches.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rinch_core::dom::{NodeHandle, RenderScope};
@@ -12,6 +12,7 @@ use rinch_core::{Component, Drag, InputCallback, Signal, batch, get_click_contex
 use crate::color_swatch::ColorSwatch;
 use crate::color_utils::{
     ColorFormat, Hsva, format_color, hsv_to_rgb, hue_to_rgb_hex, parse_color, rgb_to_hex,
+    text_denotes,
 };
 
 /// Reactive callback type for string state.
@@ -48,6 +49,13 @@ impl Drop for ApplyGuard<'_> {
 /// decide an external value is "meaningfully different". Kept as the single
 /// definition so a deferred apply is recognised by exactly the values that
 /// were considered worth writing.
+///
+/// Distinct from `color_utils::denotes_same`/`text_denotes` (string-level,
+/// format-quantized): those judge whether *text* already shows a colour, this
+/// judges whether an *apply* is worth performing — and the deferred-apply
+/// recognition in the coordinating effect must always use the same predicate
+/// as the apply decision, whichever that is (GH #227: if the apply gate ever
+/// changes predicate, change both together).
 fn same_hsva(a: Hsva, b: Hsva) -> bool {
     (a.h - b.h).abs() <= 0.5
         && (a.s - b.s).abs() <= 0.005
@@ -66,7 +74,8 @@ pub struct ColorPicker {
     pub value_fn: Option<ReactiveString>,
     /// Fires formatted color string on change.
     pub onchange: Option<InputCallback>,
-    /// Show alpha slider. Defaults to true.
+    /// Show alpha slider. Off unless set (`#[derive(Default)]`: false) —
+    /// `component-props.md` documents the real default.
     pub alpha: bool,
     /// Preset swatch colors.
     pub swatches: Vec<String>,
@@ -74,7 +83,7 @@ pub struct ColorPicker {
     pub swatches_per_row: Option<usize>,
     /// Size: xs, sm, md, lg, xl.
     pub size: String,
-    /// Show hex text input. Defaults to true.
+    /// Show hex text input. Off unless set (`#[derive(Default)]`: false).
     pub with_input: bool,
 }
 
@@ -341,9 +350,26 @@ impl Component for ColorPicker {
             let hex_input = rinch_macros::rsx! { input { class: "rinch-color-picker__hex-input" } };
             hex_input.set_attribute("value", &format_color(initial, color_format));
 
+            // The field's live text, as this component last heard it: every
+            // `oninput` records here — parseable or not, because a record
+            // that survives an edit it no longer describes would later veto
+            // a legitimate rewrite (type "#336", backspace to "#33", click a
+            // #333366 swatch: a parse-gated record still says "#336" and the
+            // field would stay stuck at "#33"). The display effect prefers
+            // this record over the `value` attribute: on desktop both track
+            // the live text, but on web the attribute holds only what was
+            // last *written* programmatically — during typing it is a fossil
+            // that must not speak for the field. Cleared whenever the effect
+            // rewrites the field (the write becomes the live text on both
+            // backends).
+            let typed: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
             {
+                let typed = typed.clone();
                 let handler_id = __scope.register_input_handler(move |value: String| {
-                    if let Some(parsed) = parse_color(&value) {
+                    let parsed = parse_color(&value);
+                    *typed.borrow_mut() = Some(value);
+                    if let Some(parsed) = parsed {
                         // One typed colour = one transition: batched, so
                         // onchange reports the committed colour once, not once
                         // per component with mixtures in between.
@@ -384,8 +410,37 @@ impl Component for ColorPicker {
                             ),
                         );
                     }
-                    // Update hex input
-                    hex_input.set_attribute("value", &format_color(hsv, color_format));
+                    // Update hex input — unless its text already denotes this
+                    // colour. A valid prefix mid-typing ("#336" on the way to
+                    // "#3366cc") parses and lands here through the oninput
+                    // handler; writing the normalized expansion ("#333366")
+                    // back would replace the text under the author's caret,
+                    // and every remaining keystroke would land on the
+                    // rewritten string (GH #231). The field is the author's
+                    // while its text and the picker agree on the colour; it is
+                    // rewritten only when the colour moves away from it — a
+                    // drag, a swatch, an external apply.
+                    //
+                    // "The field's text" is the `typed` record when one
+                    // exists (the live text on both backends), else the
+                    // `value` attribute (live only until the first keystroke
+                    // on web — but `typed` covers from then on). Agreement is
+                    // `text == next` (the steady state: the string this
+                    // effect last wrote) or `text_denotes` — the full colour,
+                    // alpha included, so a typed "#3333666c" survives while
+                    // the picker really holds that alpha, yet an alpha-slider
+                    // move under a hex format still rewrites it.
+                    let next = format_color(hsv, color_format);
+                    let field_text = typed
+                        .borrow()
+                        .clone()
+                        .or_else(|| hex_input.get_attribute("value"));
+                    let field_agrees = field_text
+                        .is_some_and(|text| text.trim() == next || text_denotes(&text, hsv));
+                    if !field_agrees {
+                        *typed.borrow_mut() = None;
+                        hex_input.set_attribute("value", &next);
+                    }
                 });
             }
         }

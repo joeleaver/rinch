@@ -141,6 +141,20 @@ impl Picker {
                 .expect("handler id is numeric"),
         )
     }
+
+    /// Type `text` into the hex field the way the runtime delivers it: the
+    /// field's text is mirrored into the `value` attribute *before* `oninput`
+    /// dispatches. The #231 write-back guard reads that attribute — the field
+    /// is the author's while its text denotes the colour the picker holds.
+    fn type_hex(&self, text: &str) {
+        find_by_class(&self.root, "rinch-color-picker__hex-input")
+            .expect("hex input")
+            .set_attribute("value", text);
+        dispatch_input_event(
+            self.handler("rinch-color-picker__hex-input", "data-oninput"),
+            text.to_string(),
+        );
+    }
 }
 
 fn find_by_class(node: &NodeHandle, class: &str) -> Option<NodeHandle> {
@@ -282,8 +296,7 @@ fn a_user_act_after_an_external_apply_still_reports() {
     let picker = Picker::mount(START, Echo::Back);
     picker.store.set(REMOTE.to_string());
 
-    let hex = picker.handler("rinch-color-picker__hex-input", "data-oninput");
-    dispatch_input_event(hex, "#22aa55".to_string());
+    picker.type_hex("#22aa55");
 
     assert_eq!(
         picker.emissions(),
@@ -302,9 +315,8 @@ fn a_user_act_after_an_external_apply_still_reports() {
 #[test]
 fn a_hex_commit_reaches_the_consumer() {
     let picker = Picker::mount(START, Echo::Back);
-    let hex = picker.handler("rinch-color-picker__hex-input", "data-oninput");
 
-    dispatch_input_event(hex, REMOTE.to_string());
+    picker.type_hex(REMOTE);
 
     assert_eq!(
         picker.emissions(),
