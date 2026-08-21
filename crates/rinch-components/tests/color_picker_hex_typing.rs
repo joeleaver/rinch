@@ -133,11 +133,6 @@ impl Mounted {
                 .parse()
                 .expect("handler id is numeric"),
         );
-        set_click_context(ClickContext {
-            element_width: 200.0,
-            element_height: 200.0,
-            ..Default::default()
-        });
         dispatch_event(id);
     }
 }
@@ -300,6 +295,24 @@ fn color_input_typing_is_not_hijacked_either() {
     );
 }
 
+/// ColorInput on the web shape: the attribute lags the live text, so only
+/// the handler's own record can recognise the author's prefix — a guard that
+/// consults the attribute alone would rewrite the field here.
+#[test]
+fn color_input_prefix_with_lagging_attribute_is_left_alone() {
+    let input = Mounted::color_input("#ff0000");
+
+    // No attribute mirror before dispatch, as mid-typing on web.
+    dispatch_input_event(input.field_handler(), "#336".to_string());
+
+    assert_eq!(
+        input.field_text(),
+        "#ff0000",
+        "the display effect must not write at all while the author's text \
+         denotes the colour the input holds"
+    );
+}
+
 /// And the same non-freeze control: a pick from the dropdown picker rewrites
 /// the ColorInput's field.
 #[test]
@@ -316,4 +329,157 @@ fn color_input_field_follows_the_dropdown_picker() {
         vec!["#333366".to_string(), "#22aa55".to_string()],
         "the prefix previewed, then the picked colour committed"
     );
+}
+
+/// The typed-text record must track every edit, parseable or not: a record
+/// frozen at the last *parseable* text would survive a backspace into a dead
+/// prefix and then veto the very rewrite a swatch click earns — even though
+/// the field no longer holds the text the record describes.
+#[test]
+fn a_dead_prefix_does_not_veto_the_next_rewrite() {
+    let picker = Mounted::picker("#ff0000", "hex");
+
+    picker.type_text("#22aa55"); // parses; the guard leaves the field alone
+    picker.type_text("#22aa5"); // backspace: unparseable, but still recorded
+
+    picker.click_swatch(); // the swatch is "#22aa55" — what the STALE record
+    // would have denoted, had it survived
+
+    assert_eq!(
+        picker.field_text(),
+        "#22aa55",
+        "the swatch click moved the colour; the field must follow, not stay \
+         stuck on the dead prefix"
+    );
+}
+
+/// Web shape of the same class: the `value` attribute holds only what was
+/// last *written* (mount value or a previous rewrite), so once the author has
+/// typed, the attribute must never speak for the field — otherwise a colour
+/// moving BACK to the attribute's fossil value is wrongly judged "already
+/// shown" and the live text is never fixed.
+#[test]
+fn a_return_to_the_last_written_colour_still_rewrites_on_web() {
+    let picker = Mounted::picker("#ff0000", "hex");
+
+    picker.click_swatch(); // rewrite lands: attribute (and live text) "#22aa55"
+    assert_eq!(picker.field_text(), "#22aa55");
+
+    // Web-shaped typing: the live text changes, the attribute does not.
+    dispatch_input_event(picker.field_handler(), "#336".to_string());
+
+    picker.click_swatch(); // back to "#22aa55" — equal to the fossil attribute
+
+    // The write must land: on web it is the only thing that repairs the live
+    // text (via the value-property mirror). The typed record ("#336") is the
+    // field's truth here, and it disagrees.
+    assert_eq!(
+        picker.field_text(),
+        "#22aa55",
+        "the colour moved away from the author's text; the field must be rewritten \
+         even though the stale attribute already spelled the target colour"
+    );
+}
+
+/// The display comparison is against the *colour*, alpha included — not the
+/// format-projected string. A typed 8-digit hex may keep asserting its alpha
+/// only while the picker really holds that alpha; the moment the alpha slider
+/// moves it, the text no longer denotes the colour and must be rewritten,
+/// even though a hex format renders both states identically.
+#[test]
+fn an_alpha_move_rewrites_a_typed_alpha_pair_under_a_hex_format() {
+    let picker = Mounted::picker("#333366", "hex");
+
+    picker.type_text("#3333666c"); // alpha 0x6c lands internally; text kept
+    assert_eq!(picker.field_text(), "#3333666c");
+
+    // Drag the alpha slider to fully opaque.
+    let overlay =
+        find_by_class(&picker.root, "rinch-color-picker__alpha-overlay").expect("alpha overlay");
+    let id = EventHandlerId(
+        overlay
+            .get_attribute("data-rid")
+            .expect("alpha overlay is clickable")
+            .parse()
+            .expect("handler id is numeric"),
+    );
+    set_click_context(ClickContext {
+        element_width: 200.0,
+        element_height: 20.0,
+        mouse_x: 200.0, // percent_x = 1.0 → alpha 1.0
+        ..Default::default()
+    });
+    dispatch_event(id);
+
+    assert_eq!(
+        picker.field_text(),
+        "#333366",
+        "the picker no longer holds the alpha the text asserts; keeping \
+         \"#3333666c\" would let a copy of the field reproduce a dead alpha"
+    );
+}
+
+/// ColorInput's field-display effect must not react to the dropdown state:
+/// clicking the input group (the text field included) toggles `opened`, and
+/// an effect coupled to it would rewrite the field while the author's
+/// mid-typing text is still unparseable — with no colour change at all.
+#[test]
+fn an_opened_toggle_does_not_clobber_unparseable_midtyping_text() {
+    let input = Mounted::color_input("#ff0000");
+
+    input.type_text("#33"); // unparseable: no colour change, nothing to show
+
+    // The author clicks in the field to reposition the caret — the input
+    // group's click handler toggles the dropdown.
+    let group = find_by_class(&input.root, "rinch-color-input__input-group").expect("input group");
+    let id = EventHandlerId(
+        group
+            .get_attribute("data-rid")
+            .expect("group is clickable")
+            .parse()
+            .expect("handler id is numeric"),
+    );
+    dispatch_event(id);
+
+    assert_eq!(
+        input.field_text(),
+        "#33",
+        "no colour change happened; the author's text must survive the toggle"
+    );
+}
+
+/// An emptied field is not "still the author's": select-all + delete records
+/// the empty text, so the next real colour movement (a dropdown pick of the
+/// previously typed colour included) repopulates the field.
+#[test]
+fn an_emptied_field_is_repopulated_by_the_next_pick() {
+    let input = Mounted::color_input("#ff0000");
+
+    input.type_text("#22aa55"); // commits; guard leaves the author's text
+    input.type_text(""); // select-all + delete: recorded, unparseable
+
+    input.click_swatch(); // picks "#22aa55" — the same colour again
+
+    assert_eq!(
+        input.field_text(),
+        "#22aa55",
+        "the field was empty; an explicit pick must repopulate it even though \
+         the colour value did not change"
+    );
+}
+
+/// Multibyte text whose hex part is 3, 6, or 8 *bytes* long ("#é3") must be
+/// "not a colour", not a byte-slice panic — it flows through `parse_color`
+/// on every keystroke and through the guard on every display-effect run.
+#[test]
+fn multibyte_text_is_not_a_colour_and_not_a_panic() {
+    // Guard path: a multibyte value prop sits in the attribute at mount.
+    let input = Mounted::color_input("#é3");
+    assert_eq!(input.field_text(), "#é3");
+
+    // Handler path: typing it into the picker's hex field.
+    let picker = Mounted::picker("#ff0000", "hex");
+    picker.type_text("#é3");
+    assert_eq!(picker.field_text(), "#é3");
+    assert_eq!(picker.emissions(), Vec::<String>::new());
 }
