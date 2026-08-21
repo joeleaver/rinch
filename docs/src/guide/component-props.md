@@ -359,6 +359,19 @@ colour, never a partially-applied mixture. This is what lets a consumer bind
 `value_fn` to the same store `onchange` writes without the two chasing each
 other.
 
+**The picker's state survives its own round trip.** An echoing binding — a store
+that `value_fn` reads and `onchange` writes back into — no longer degrades the
+picker's hue, saturation, or alpha. Emitted colour strings quantize to 8-bit
+RGB, so the echo of the picker's own emission routinely parses to a slightly
+different hue/saturation than the internal state it was formatted from (and to
+*no* hue at grey, or no alpha under an alpha-less format like `hex`); the picker
+recognises such an echo as its own state and leaves the internal signals
+untouched, so dragging saturation down to grey and back resumes the original
+hue, and the alpha slider works under the default `hex` format. A genuinely
+foreign value (one that denotes a different colour, alpha included) still
+applies — and even then, channels the value cannot carry are kept rather than
+fabricated: a grey keeps the current hue, a black keeps hue and saturation.
+
 **The text field is the author's while they type.** The hex field parses on
 every keystroke, and a valid *prefix* of the colour being typed (`#336` on the
 way to `#3366cc`) is already a parseable colour — it updates the preview and

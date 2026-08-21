@@ -142,6 +142,17 @@ impl Picker {
         )
     }
 
+    /// The style attribute of a thumb element — where the picker says a
+    /// degree of freedom currently sits. The #227 tests assert on thumbs (or
+    /// emissions), never on the hex field: the field shows the round trip,
+    /// which hides hue/sat loss at any s > 0.
+    fn thumb_style(&self, class: &str) -> String {
+        find_by_class(&self.root, class)
+            .expect("thumb exists")
+            .get_attribute("style")
+            .expect("thumb is positioned")
+    }
+
     /// Type `text` into the hex field the way the runtime delivers it: the
     /// field's text is mirrored into the `value` attribute *before* `oninput`
     /// dispatches. The #231 write-back guard reads that attribute — the field
@@ -182,6 +193,24 @@ fn click_at(px: f32, py: f32) {
 
 fn hue_of(color: &str) -> f64 {
     parse_color(color).expect("a formatted colour parses").h
+}
+
+fn sat_of(color: &str) -> f64 {
+    parse_color(color).expect("a formatted colour parses").s
+}
+
+/// The `key`-prefixed percentage in a thumb's style string, e.g.
+/// `percent_of(&style, "left: ")`. Click-derived positions carry f32→f64
+/// noise ("left: 40.000000596%"), so callers compare within a tolerance.
+fn percent_of(style: &str, key: &str) -> f64 {
+    let start = style.find(key).expect("style carries the key") + key.len();
+    style[start..]
+        .split('%')
+        .next()
+        .expect("a % terminates the value")
+        .trim()
+        .parse()
+        .expect("the value is numeric")
 }
 
 /// An external value change is not a user act, so it emits nothing.
@@ -362,8 +391,9 @@ fn a_swatch_click_reaches_the_consumer() {
 }
 
 /// A saturation drag reports every frame, and does not lose the hue it started
-/// from. (Hue *is* re-derived from the round trip below s·v ≈ 0.235 — issue
-/// #227, untouched here; this drag stays well above that.)
+/// from. (This drag stays above s·v ≈ 0.235, where even the pre-#227 epsilon
+/// gate survived its own round trip; the #227 tests below cover the region
+/// underneath.)
 #[test]
 fn a_saturation_drag_reports_each_frame_and_keeps_its_hue() {
     let picker = Picker::mount(REMOTE, Echo::Back);
@@ -394,5 +424,234 @@ fn a_saturation_drag_reports_each_frame_and_keeps_its_hue() {
     assert!(
         (hue_of(&last) - hue_of(REMOTE)).abs() < 1.0,
         "dragging saturation must not move the hue: {last}"
+    );
+}
+
+// === #227: the picker's state survives its own round trip ===
+//
+// `format_color` quantizes to 8-bit RGB, and `rgb_to_hsv` amplifies that
+// quantization by 60/(s·v): the round trip of the picker's own emission
+// routinely differs from the internal state it was formatted from (mean hue
+// error ≈ 0.072/(s·v) degrees against a 0.5° epsilon; at s = 0 the round
+// trip returns hue exactly 0). Pre-fix, the `value_fn` gate compared that
+// round trip against the live signals with per-channel epsilons and
+// "corrected" the picker with its own echo. These tests assert the internal
+// degrees of freedom — thumbs and emissions — never the hex field, which
+// shows the round trip and therefore hides the loss.
+
+/// The headline (#227): drag saturation to grey and back — the hue survives.
+///
+/// Pre-fix, the grey emission `#808080` round-trips to hue 0, the gate calls
+/// that "meaningfully different", and the apply snaps the hue thumb to red;
+/// re-approaching saturation then picks from red, observed emission
+/// `#801a1a` (hue 0) instead of a violet (hue ≈ 266.7).
+#[test]
+fn dragging_saturation_to_grey_and_back_keeps_the_hue() {
+    let picker = Picker::mount(REMOTE, Echo::Back); // h ≈ 266.7
+    let overlay = picker.handler("rinch-color-picker__saturation-overlay", "data-rid");
+
+    click_at(0.0, 0.5); // s = 0, v = 0.5 — the emission is a pure grey
+    dispatch_event(overlay);
+
+    let hue_left = percent_of(
+        &picker.thumb_style("rinch-color-picker__hue-thumb"),
+        "left: ",
+    );
+    assert!(
+        (hue_left - hue_of(REMOTE) / 3.6).abs() < 0.01,
+        "the hue thumb must hold at grey, not snap to red: left {hue_left}%"
+    );
+
+    update_drag(160.0, 100.0); // s = 0.8 — re-approach saturation
+    let last = picker.emissions().last().cloned().expect("an emission");
+    assert!(
+        (hue_of(&last) - hue_of(REMOTE)).abs() < 1.0,
+        "re-approaching saturation must resume the hue the drag started from: {last}"
+    );
+}
+
+/// The everyday case: one click in the dark/desaturated region, echoed back.
+///
+/// At s = 0.3, v = 0.2 a single round trip moves the hue by ≈ 1.3° and the
+/// saturation by ≈ 0.006 — both past the pre-fix epsilons in one frame, so
+/// the thumbs drifted off the point the author had just clicked.
+#[test]
+fn a_dark_desaturated_click_survives_its_own_echo() {
+    let picker = Picker::mount(REMOTE, Echo::Back);
+    let overlay = picker.handler("rinch-color-picker__saturation-overlay", "data-rid");
+
+    click_at(0.3, 0.8); // s = 0.3, v = 0.2
+    dispatch_event(overlay);
+
+    let hue_left = percent_of(
+        &picker.thumb_style("rinch-color-picker__hue-thumb"),
+        "left: ",
+    );
+    assert!(
+        (hue_left - hue_of(REMOTE) / 3.6).abs() < 0.05,
+        "the hue is not the echo's to move: left {hue_left}%"
+    );
+    let sat_left = percent_of(&picker.thumb_style("rinch-color-picker__thumb"), "left: ");
+    assert!(
+        (sat_left - 30.0).abs() < 0.05,
+        "the saturation stays where it was clicked: left {sat_left}%"
+    );
+}
+
+/// The alpha slider works under the default Hex format with an echoing store.
+///
+/// Hex drops alpha, so the echo always parses opaque; pre-fix the gate read
+/// `|1.0 − a| > 0.005` as an external change and re-applied opaque on every
+/// frame — the thumb snapped back to 100% as it was dragged.
+#[test]
+fn an_alpha_drag_under_the_hex_format_keeps_its_alpha() {
+    let picker = Picker::mount(REMOTE, Echo::Back); // default format: Hex
+    let overlay = picker.handler("rinch-color-picker__alpha-overlay", "data-rid");
+
+    click_at(0.4, 0.5);
+    dispatch_event(overlay);
+    let left = percent_of(
+        &picker.thumb_style("rinch-color-picker__alpha-thumb"),
+        "left: ",
+    );
+    assert!(
+        (left - 40.0).abs() < 0.01,
+        "the alpha thumb holds where it was pressed: left {left}%"
+    );
+
+    update_drag(120.0, 100.0); // alpha = 0.6
+    let left = percent_of(
+        &picker.thumb_style("rinch-color-picker__alpha-thumb"),
+        "left: ",
+    );
+    assert!(
+        (left - 60.0).abs() < 0.01,
+        "and follows the drag instead of snapping opaque: left {left}%"
+    );
+}
+
+/// A genuinely foreign grey applies — and keeps the hue it cannot carry.
+///
+/// A grey denotes no hue (`rgb_to_hsv` returns 0 by convention), so adopting
+/// the parse would fabricate red. The apply keeps the current hue, stays
+/// silent (#229), and a later saturation click resumes from the kept hue.
+#[test]
+fn a_foreign_grey_keeps_the_hue_it_cannot_carry() {
+    let picker = Picker::mount(REMOTE, Echo::Back);
+
+    picker.store.set("#404040".to_string());
+
+    assert_eq!(picker.displayed(), "#404040", "the grey itself applies");
+    assert!(
+        picker.emissions().is_empty(),
+        "an external apply is silent: {:?}",
+        picker.emissions()
+    );
+    let hue_left = percent_of(
+        &picker.thumb_style("rinch-color-picker__hue-thumb"),
+        "left: ",
+    );
+    assert!(
+        (hue_left - hue_of(REMOTE) / 3.6).abs() < 0.01,
+        "the hue the grey cannot express is kept: left {hue_left}%"
+    );
+
+    let overlay = picker.handler("rinch-color-picker__saturation-overlay", "data-rid");
+    click_at(0.7, 0.13); // re-approach saturation
+    dispatch_event(overlay);
+    let last = picker.emissions().last().cloned().expect("an emission");
+    assert!(
+        (hue_of(&last) - hue_of(REMOTE)).abs() < 1.0,
+        "and colour returns along the kept hue: {last}"
+    );
+}
+
+/// A genuinely foreign black keeps both hue and saturation.
+///
+/// At v = 0 the parse carries neither: adopting it would reset the whole
+/// saturation panel to its top-left corner.
+#[test]
+fn a_foreign_black_keeps_hue_and_saturation() {
+    let picker = Picker::mount(REMOTE, Echo::Back);
+
+    picker.store.set("#000000".to_string());
+
+    assert_eq!(picker.displayed(), "#000000");
+    assert!(picker.emissions().is_empty());
+    let hue_left = percent_of(
+        &picker.thumb_style("rinch-color-picker__hue-thumb"),
+        "left: ",
+    );
+    assert!((hue_left - hue_of(REMOTE) / 3.6).abs() < 0.01);
+    let sat_style = picker.thumb_style("rinch-color-picker__thumb");
+    let sat_left = percent_of(&sat_style, "left: ");
+    assert!(
+        (sat_left - sat_of(REMOTE) * 100.0).abs() < 0.01,
+        "saturation is kept: left {sat_left}%"
+    );
+    assert!(
+        (percent_of(&sat_style, "top: ") - 100.0).abs() < 0.01,
+        "while the value itself — what black does carry — applies"
+    );
+}
+
+/// An inbound change that differs only in alpha still applies, even though
+/// the display format drops alpha.
+///
+/// This is the boundary of the echo test: the gate must not compare under
+/// the display format (Hex would erase the difference and the change would
+/// never land) — the comparison is full-channel, so a value the picker's own
+/// emission could not have produced is foreign.
+#[test]
+fn an_inbound_alpha_only_change_still_applies() {
+    let picker = Picker::mount(REMOTE, Echo::Back); // default format: Hex
+
+    picker.store.set("rgba(136, 68, 221, 0.25)".to_string());
+
+    let left = percent_of(
+        &picker.thumb_style("rinch-color-picker__alpha-thumb"),
+        "left: ",
+    );
+    assert!(
+        (left - 25.0).abs() < 0.01,
+        "the foreign alpha lands: left {left}%"
+    );
+    assert!(
+        picker.emissions().is_empty(),
+        "and silently, like any external apply: {:?}",
+        picker.emissions()
+    );
+}
+
+/// A channel-preserving apply under an ambient batch is still recognised as
+/// external when its flush finally lands.
+///
+/// The deferred-apply marker must record what the apply *wrote* — the merged
+/// colour with the kept hue — not the raw parse: the coordinating effect
+/// compares the flushed signals against the marker, and a marker holding the
+/// parse's hue 0 would fail to match the kept hue, mis-reporting the adopted
+/// value as an author's act (#229 broken on exactly the #227 path).
+#[test]
+fn a_foreign_grey_arriving_at_mount_inside_a_batch_stays_silent() {
+    let picker = rinch_core::batch(|| Picker::mount_with(REMOTE, "#404040", Echo::Back));
+
+    assert_eq!(picker.displayed(), "#404040");
+    assert!(
+        picker.emissions().is_empty(),
+        "adopting the bound grey is not an edit, batched or not: {:?}",
+        picker.emissions()
+    );
+    assert_eq!(
+        picker.published(),
+        vec!["#404040".to_string()],
+        "and the bound data is untouched"
+    );
+    let hue_left = percent_of(
+        &picker.thumb_style("rinch-color-picker__hue-thumb"),
+        "left: ",
+    );
+    assert!(
+        (hue_left - hue_of(REMOTE) / 3.6).abs() < 0.01,
+        "the seed's hue survives the grey it was bound to: left {hue_left}%"
     );
 }
