@@ -195,6 +195,109 @@ impl RinchDocument {
         // Mark stylesheets as changed so they'll be flushed on next style computation
         self.stylist
             .force_stylesheet_origins_dirty(Origin::Author.into());
+
+        self.recompute_bare_focus_rules();
+    }
+
+    /// Recompute [`Self::has_bare_focus_rules`] over the theme sheet and every
+    /// app author sheet. See the field's doc for why bare (unanchored) focus
+    /// selectors defeat the `focus_sensitive` invalidation scheme: stylo's
+    /// `SelectorMap` puts them in a bucket that is only consulted while the
+    /// element already has focus state, so matching never reaches them on an
+    /// unfocused node. (The UA sheet is not scanned — it carries no focus
+    /// rules.)
+    fn recompute_bare_focus_rules(&mut self) {
+        let sheets: Vec<style::stylesheets::DocumentStyleSheet> = self
+            .theme_stylesheet
+            .iter()
+            .chain(self.author_stylesheets.iter())
+            .cloned()
+            .collect();
+        let guard = self.tree.guard.read();
+        let found = sheets.iter().any(|sheet| {
+            let contents = sheet.0.contents.read_with(&guard);
+            Self::rules_have_bare_focus(contents.rules(&guard), &guard)
+        });
+        drop(guard);
+        self.has_bare_focus_rules = found;
+    }
+
+    /// Whether any style rule in `rules` (recursing into `@media` / `@supports`)
+    /// has a selector whose rightmost compound contains a focus pseudo-class and
+    /// no tag/class/id/attribute anchor — the shape stylo buckets into the
+    /// state-gated `rare_pseudo_classes` map.
+    fn rules_have_bare_focus(
+        rules: &[style::stylesheets::CssRule],
+        guard: &style::shared_lock::SharedRwLockReadGuard,
+    ) -> bool {
+        use style::stylesheets::CssRule;
+        rules.iter().any(|rule| match rule {
+            CssRule::Style(locked) => {
+                let style_rule = locked.read_with(guard);
+                style_rule
+                    .selectors
+                    .slice()
+                    .iter()
+                    .any(Self::selector_is_bare_focus)
+            }
+            CssRule::Media(media) => {
+                Self::rules_have_bare_focus(&media.rules.read_with(guard).0, guard)
+            }
+            CssRule::Supports(supports) => {
+                Self::rules_have_bare_focus(&supports.rules.read_with(guard).0, guard)
+            }
+            _ => false,
+        })
+    }
+
+    /// Whether a selector's rightmost compound contains a focus pseudo-class
+    /// (`:focus`, `:focus-visible`, `:focus-within` — directly or inside
+    /// `:not()`/`:is()`/`:where()`) without any tag/class/id/attribute/`:root`
+    /// anchor. Over-matching here is safe (it only costs an extra invalidation
+    /// on focus change); under-matching re-introduces the never-restyled ring.
+    fn selector_is_bare_focus(
+        selector: &selectors::parser::Selector<style::selector_parser::SelectorImpl>,
+    ) -> bool {
+        use selectors::parser::Component;
+        use style::selector_parser::NonTSPseudoClass;
+
+        fn component_has_focus(c: &Component<style::selector_parser::SelectorImpl>) -> bool {
+            match c {
+                Component::NonTSPseudoClass(pc) => matches!(
+                    pc,
+                    NonTSPseudoClass::Focus
+                        | NonTSPseudoClass::FocusVisible
+                        | NonTSPseudoClass::FocusWithin
+                ),
+                Component::Negation(list) | Component::Is(list) | Component::Where(list) => list
+                    .slice()
+                    .iter()
+                    .any(|s| s.iter().any(component_has_focus)),
+                _ => false,
+            }
+        }
+
+        let mut anchored = false;
+        let mut has_focus = false;
+        // `iter()` walks the rightmost compound only (stops at the first
+        // combinator), which is exactly the compound stylo buckets by.
+        for component in selector.iter() {
+            match component {
+                Component::LocalName(_)
+                | Component::ID(_)
+                | Component::Class(_)
+                | Component::AttributeInNoNamespaceExists { .. }
+                | Component::AttributeInNoNamespace { .. }
+                | Component::AttributeOther(_)
+                | Component::Root => anchored = true,
+                other => {
+                    if component_has_focus(other) {
+                        has_focus = true;
+                    }
+                }
+            }
+        }
+        has_focus && !anchored
     }
 
     /// Install (or replace) the theme stylesheet.
@@ -236,6 +339,8 @@ impl RinchDocument {
 
         self.stylist
             .force_stylesheet_origins_dirty(Origin::Author.into());
+
+        self.recompute_bare_focus_rules();
     }
 
     /// Get the default display type for a node based on its tag.

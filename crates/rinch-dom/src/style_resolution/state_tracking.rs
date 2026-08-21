@@ -102,10 +102,20 @@ impl RinchDocument {
     }
 
     fn node_is_focus_sensitive(&self, id: usize) -> bool {
-        self.tree
-            .nodes
-            .get(id)
-            .is_some_and(|n| n.focus_sensitive.get())
+        // The per-node flag is set by Stylo *matching* a focus pseudo-class
+        // against the node — but a rule whose rightmost compound is a bare
+        // focus pseudo (the theme's `:focus-visible { outline }`) lives in
+        // stylo's state-gated `rare_pseudo_classes` bucket, which is skipped
+        // entirely while the node is unfocused. The flag can then never be set
+        // before the first focus arrives, so with such rules loaded every node
+        // must be treated as focus-sensitive or the ring never paints
+        // (`has_bare_focus_rules`, recomputed on stylesheet load).
+        self.has_bare_focus_rules
+            || self
+                .tree
+                .nodes
+                .get(id)
+                .is_some_and(|n| n.focus_sensitive.get())
     }
 
     fn invalidate_hover_node(&mut self, id: usize) {

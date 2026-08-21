@@ -254,7 +254,9 @@ pub struct Node {
     pub computed_style_str: String,
     /// Whether this node is currently under the cursor (for CSS :hover).
     pub is_hovered: bool,
-    /// Whether this node or an ancestor has focus (for CSS :focus).
+    /// Whether this node is the focused node (for CSS :focus). Set on exactly
+    /// one node — `update_focus` never propagates it to ancestors (unlike
+    /// `update_active`).
     pub is_focused: bool,
     /// Whether focus arrived via the keyboard (for CSS :focus-visible).
     /// Only ever set on the focused node: Tab-driven focus sets it,

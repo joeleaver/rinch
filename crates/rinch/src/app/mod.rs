@@ -236,6 +236,12 @@ pub struct RinchApp {
     /// (`focused_input_*`, the surface/editor registries) via
     /// [`Self::set_focus_target`].
     pub(crate) focus_target: FocusTarget,
+    /// The Enter/Space key currently latched by a `FocusTarget::Node`
+    /// activation (issue #228). OS auto-repeat delivers indistinguishable
+    /// KeyDowns (`PlatformEvent::KeyDown` carries no repeat flag), so a held
+    /// key must activate once per physical press; cleared on the matching
+    /// KeyUp.
+    pub(crate) node_activation_held: Option<KeyCode>,
     /// The open native-`<select>` popup, if any. Present exactly when
     /// `focus_target == FocusTarget::Select(_)`. Holds the app-created popup DOM
     /// node ids and the keyboard highlight state (issue #121).
@@ -310,6 +316,7 @@ impl RinchApp {
             focused_input_node_id: None,
             focused_input_preedit: None,
             focus_target: FocusTarget::None,
+            node_activation_held: None,
             open_select: None,
             select_css_injected: false,
             #[cfg(feature = "desktop")]
@@ -1559,10 +1566,14 @@ impl RinchApp {
         // resolved upward to its nearest focusable ancestor (a pointer click
         // focuses the deepest hit element, so a click inside a focusable node
         // must still anchor Tab there).
-        let current = self.focused_input_node_id.or(match self.focus_target {
-            FocusTarget::Node(id) => Some(id),
-            _ => None,
-        });
+        let current = match self.focus_target {
+            // The arbiter is the source of truth; `focused_input_node_id` only
+            // ever accompanies `Input` (kept as a fallback so a broken
+            // invariant degrades to the same answer rather than anchoring Tab
+            // on a stale input).
+            FocusTarget::Input(id) | FocusTarget::Node(id) => Some(id),
+            _ => self.focused_input_node_id,
+        };
 
         let current_idx = current
             .and_then(|id| focusable.iter().position(|&fid| fid == id))
@@ -1604,16 +1615,28 @@ impl RinchApp {
                 continue;
             };
 
-            // A disabled or tabindex="-1" node is not itself focusable, but its
-            // children still are (web semantics remove only the node from the
-            // Tab order, not its subtree). Same for zero-size (invisible) nodes.
+            // A disabled or negative-tabindex node is not itself focusable, but
+            // its children still are (web semantics remove only the node from
+            // the Tab order, not its subtree). Same for zero-size or
+            // `visibility: hidden` (invisible, unclickable) nodes. The tabindex
+            // test parses like the focusable test below so `-2`, `-01`, … are
+            // negative too, not just the literal string "-1".
             let skip_self = node
                 .attributes
                 .get("data-disabled")
                 .is_some_and(|v| v == "true")
-                || node.attributes.get("tabindex").is_some_and(|v| v == "-1")
+                || node
+                    .attributes
+                    .get("tabindex")
+                    .and_then(|v| v.parse::<i32>().ok())
+                    .is_some_and(|v| v < 0)
                 || node.layout.width <= 0.0
-                || node.layout.height <= 0.0;
+                || node.layout.height <= 0.0
+                || matches!(
+                    node.computed_style.visibility,
+                    rinch_dom::computed_style::VisibilityValue::Hidden
+                        | rinch_dom::computed_style::VisibilityValue::Collapse
+                );
 
             if !skip_self {
                 // Check if focusable
@@ -1662,11 +1685,24 @@ impl RinchApp {
             self.set_focus_target(FocusTarget::Node(node_id));
         }
 
-        // Update DOM focus state and mark the keyboard focus ring.
-        if let Some(doc) = &self.doc {
+        // Update DOM focus state and mark the keyboard focus ring — but only
+        // when the arbiter actually claimed this node. `try_focus_input` bails
+        // on a malformed `data-oninput` (or a vanished node); painting `:focus`
+        // + the ring on a node that owns no keys would split the visual focus
+        // from the keyboard focus.
+        let claimed = matches!(
+            self.focus_target,
+            FocusTarget::Input(id) | FocusTarget::Node(id) if id == node_id
+        );
+        if claimed && let Some(doc) = &self.doc {
             let mut d = doc.borrow_mut();
             d.update_focus(Some(node_id));
             d.set_focus_visible(node_id, true);
+            // Sequential focus navigation scrolls the new focus into view
+            // (applied by `apply_scroll_into_view` after the next layout pass),
+            // like browsers — Tab must never land on a control the user can't
+            // see because it sits below the fold of a scroll container.
+            d.request_scroll_into_view(rinch_core::dom::NodeId(node_id));
         }
 
         self.scene_dirty = true;
@@ -1676,11 +1712,11 @@ impl RinchApp {
     /// the click handler of the nearest ancestor-or-self carrying a **live**
     /// `data-rid` (the same liveness probe as the pointer path — a freed
     /// handler must not swallow the key), with a `ClickContext` synthesized
-    /// from the handler node's absolute rect, cursor at its center. Returns
-    /// whether a handler was dispatched.
-    fn activate_focused_node(&mut self, node_id: usize, vp_w: f32, vp_h: f32) -> bool {
+    /// from the handler node's absolute rect, cursor at its center. A node with
+    /// no live handler anywhere in its chain is a quiet no-op.
+    fn activate_focused_node(&mut self, node_id: usize, vp_w: f32, vp_h: f32) {
         let Some(doc) = self.doc.clone() else {
-            return false;
+            return;
         };
         let d = doc.borrow();
         let mut current = Some(node_id);
@@ -1690,23 +1726,12 @@ impl RinchApp {
                 && let Ok(handler_id) = rid_str.parse::<usize>()
                 && events::has_click_handler(events::EventHandlerId(handler_id))
             {
-                let (elem_x, elem_y, elem_w, elem_h) = {
-                    let mut ax = node.layout.x;
-                    let mut ay = node.layout.y;
-                    let mut pid = node.parent;
-                    while let Some(p) = pid {
-                        if let Some(pn) = d.tree.get(p) {
-                            ax += pn.layout.x;
-                            ay += pn.layout.y;
-                            ax -= pn.scroll_offset.0 as f32;
-                            ay -= pn.scroll_offset.1 as f32;
-                            pid = pn.parent;
-                        } else {
-                            break;
-                        }
-                    }
-                    (ax, ay, node.layout.width, node.layout.height)
-                };
+                // The same absolute-rect walk as the pointer path, via the
+                // shared helper (it stops at `position: fixed`, which is
+                // viewport-relative — the hand-rolled copy this replaces did
+                // not).
+                let (elem_x, elem_y) = Self::compute_absolute_position(&d.tree, nid);
+                let (elem_w, elem_h) = (node.layout.width, node.layout.height);
 
                 events::set_click_context(events::ClickContext {
                     mouse_x: elem_x + elem_w / 2.0,
@@ -1732,9 +1757,40 @@ impl RinchApp {
                     self.try_focus_input(focus_node_id);
                 }
                 self.scene_dirty = true;
-                return true;
+                return;
             }
             current = node.parent;
+        }
+    }
+
+    /// Whether a `FocusTarget::Node` claim still names a live, attached,
+    /// focusable node. Node ids are recycled slab indices (the same hazard
+    /// [`Self::live_focused_input_handler`] documents for inputs), so a claim
+    /// that outlived its node must be dropped before it swallows Enter/Space,
+    /// anchors Tab, or activates whatever unrelated node reused the slot. A
+    /// recycled slot that happens to hold another focusable node is still
+    /// accepted — full protection needs an unmount notification (like the
+    /// editor registry gives the Editor target).
+    fn node_target_is_live(&self, node_id: usize) -> bool {
+        let Some(doc) = &self.doc else { return false };
+        let d = doc.borrow();
+        let focusable = d.tree.get(node_id).is_some_and(|n| {
+            n.attributes
+                .get("tabindex")
+                .and_then(|v| v.parse::<i32>().ok())
+                .is_some()
+        });
+        if !focusable {
+            return false;
+        }
+        // Attached to the root? A detached node keeps its slab slot (and its
+        // attributes) but must not stay focus-owner.
+        let mut cur = Some(node_id);
+        while let Some(nid) = cur {
+            if nid == 0 {
+                return true;
+            }
+            cur = d.tree.get(nid).and_then(|n| n.parent);
         }
         false
     }
@@ -1762,11 +1818,15 @@ impl RinchApp {
         };
 
         let Some(oninput_str) = node.attributes.get("data-oninput") else {
+            // Any parseable tabindex makes a node programmatically focusable —
+            // including negative ones: `tabindex="-1"` is the standard
+            // focusable-but-not-tabbable idiom (`element.focus()` into a
+            // just-opened dialog), and only the Tab collector excludes it.
             let focusable = node
                 .attributes
                 .get("tabindex")
                 .and_then(|v| v.parse::<i32>().ok())
-                .is_some_and(|v| v >= 0);
+                .is_some();
             drop(d);
             if focusable {
                 self.set_focus_target(FocusTarget::Node(node_id));
@@ -1786,6 +1846,14 @@ impl RinchApp {
         // Take input focus through the arbiter (tears down a prior surface / CE /
         // editor / different input; re-focusing the same input is a no-op).
         self.set_focus_target(FocusTarget::Input(node_id));
+
+        // Move DOM `:focus` too, like the generic-node branch above — the
+        // programmatic path has no mousedown to do it, and the Node teardown
+        // may just have blurred the previous holder, so skipping this would
+        // leave the newly focused input matching no `:focus` CSS at all.
+        if let Some(doc) = &self.doc {
+            doc.borrow_mut().update_focus(Some(node_id));
+        }
 
         self.focused_input_handler_id = Some(handler_id);
         self.focused_input_value = value.clone();
@@ -2306,14 +2374,9 @@ mod tab_focus_tests {
     fn abs_center(app: &RinchApp, id: usize) -> (f32, f32) {
         let d = app.doc.as_ref().unwrap().borrow();
         let n = d.tree.get(id).unwrap();
-        let (mut ax, mut ay) = (n.layout.x, n.layout.y);
-        let mut pid = n.parent;
-        while let Some(p) = pid {
-            let pn = d.tree.get(p).unwrap();
-            ax += pn.layout.x;
-            ay += pn.layout.y;
-            pid = pn.parent;
-        }
+        // The same walk the click/hit paths use (scroll offsets included), so
+        // these clicks stay on target if a fixture ever gains a scroller.
+        let (ax, ay) = RinchApp::compute_absolute_position(&d.tree, id);
         (ax + n.layout.width / 2.0, ay + n.layout.height / 2.0)
     }
 
@@ -2380,6 +2443,56 @@ mod tab_focus_tests {
 
         key(&mut app, KeyCode::Space, Some(" "), false);
         assert_eq!(clicks.get(), 2, "Space dispatches the click handler once");
+    }
+
+    /// A held key auto-repeats KeyDown with no repeat flag: activation must
+    /// latch until the matching KeyUp — one physical press, one activation
+    /// (a held Space on the web activates exactly once).
+    #[test]
+    fn held_key_activates_once_per_physical_press() {
+        let (mut app, _input_id, div_id, clicks) = mount_input_and_div();
+        key(&mut app, KeyCode::Tab, None, false);
+        key(&mut app, KeyCode::Tab, None, false);
+        assert_eq!(app.focus_target, FocusTarget::Node(div_id));
+
+        key(&mut app, KeyCode::Enter, None, false);
+        key(&mut app, KeyCode::Enter, None, false); // OS auto-repeat
+        key(&mut app, KeyCode::Enter, None, false); // OS auto-repeat
+        assert_eq!(clicks.get(), 1, "auto-repeat must not re-activate");
+
+        app.handle_event(
+            PlatformEvent::KeyUp {
+                key: KeyCode::Enter,
+                modifiers: Modifiers::default(),
+            },
+            (800, 600),
+            1.0,
+        );
+        key(&mut app, KeyCode::Enter, None, false);
+        assert_eq!(clicks.get(), 2, "a fresh press after KeyUp activates again");
+    }
+
+    /// A mousedown outside the focused node releases the arbiter claim right
+    /// away — even for presses that never reach `handle_click` (empty space,
+    /// draggables, scrollbars) — so an invisible claim can't keep swallowing
+    /// Enter.
+    #[test]
+    fn mousedown_outside_releases_the_node_claim() {
+        let (mut app, _input_id, div_id, clicks) = mount_input_and_div();
+        key(&mut app, KeyCode::Tab, None, false);
+        key(&mut app, KeyCode::Tab, None, false);
+        assert_eq!(app.focus_target, FocusTarget::Node(div_id));
+
+        // Far below the content: hits empty space (or at most the root), not
+        // the div's subtree.
+        click(&mut app, 700.0, 500.0);
+        assert_eq!(
+            app.focus_target,
+            FocusTarget::None,
+            "an outside press must release the Node claim"
+        );
+        key(&mut app, KeyCode::Enter, None, false);
+        assert_eq!(clicks.get(), 0, "the blurred node must not activate");
     }
 
     /// A focused node with no live `data-rid` in its ancestor chain: Enter is

@@ -905,3 +905,38 @@ fn focus_visible_rule_needs_the_keyboard_flag() {
         "update_focus(None) must clear is_focus_visible on the old node"
     );
 }
+
+/// The theme's focus ring is a *bare* `:focus-visible { ... }` rule — stylo
+/// buckets it into a state-gated `rare_pseudo_classes` map that is never
+/// consulted for an unfocused node, so `focus_sensitive` cannot be set ahead
+/// of the first focus. The `has_bare_focus_rules` fallback must invalidate
+/// anyway or the default theme's ring never paints on the first Tab. (The
+/// test above sidesteps this with `div:focus-visible`, which buckets by tag.)
+#[test]
+fn bare_focus_visible_rule_paints_on_first_focus() {
+    let mut doc = RinchDocument::new();
+    doc.load_css(":focus-visible { outline-width: 2px; outline-style: solid; }");
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "style", "width: 100px; height: 100px");
+    doc.set_attribute(div, "tabindex", "0");
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+    let outline = |doc: &RinchDocument| doc.tree.get(div.0).unwrap().computed_style.outline_width;
+    assert_eq!(outline(&doc), 0.0, "unfocused: no ring");
+
+    // First keyboard focus this node has ever seen: with the bare rule in a
+    // state-gated bucket, only the has_bare_focus_rules fallback invalidates.
+    doc.update_focus(Some(div.0));
+    doc.set_focus_visible(div.0, true);
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        outline(&doc),
+        2.0,
+        "a bare :focus-visible ring must paint on the FIRST focus"
+    );
+
+    doc.update_focus(None);
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(outline(&doc), 0.0, "blur drops the bare ring");
+}
