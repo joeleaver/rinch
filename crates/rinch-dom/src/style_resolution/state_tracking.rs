@@ -102,10 +102,20 @@ impl RinchDocument {
     }
 
     fn node_is_focus_sensitive(&self, id: usize) -> bool {
-        self.tree
-            .nodes
-            .get(id)
-            .is_some_and(|n| n.focus_sensitive.get())
+        // The per-node flag is set by Stylo *matching* a focus pseudo-class
+        // against the node — but a rule whose rightmost compound is a bare
+        // focus pseudo (the theme's `:focus-visible { outline }`) lives in
+        // stylo's state-gated `rare_pseudo_classes` bucket, which is skipped
+        // entirely while the node is unfocused. The flag can then never be set
+        // before the first focus arrives, so with such rules loaded every node
+        // must be treated as focus-sensitive or the ring never paints
+        // (`has_bare_focus_rules`, recomputed on stylesheet load).
+        self.has_bare_focus_rules
+            || self
+                .tree
+                .nodes
+                .get(id)
+                .is_some_and(|n| n.focus_sensitive.get())
     }
 
     fn invalidate_hover_node(&mut self, id: usize) {
@@ -130,11 +140,13 @@ impl RinchDocument {
             return false;
         }
 
-        // Clear old focus state
+        // Clear old focus state. A blurred node can't show the keyboard focus
+        // ring, so :focus-visible drops with :focus.
         if let Some(old_id) = old_focused
             && let Some(node) = self.tree.nodes.get_mut(old_id)
         {
             node.is_focused = false;
+            node.is_focus_visible = false;
         }
 
         // Set new focus state
@@ -166,6 +178,26 @@ impl RinchDocument {
         }
 
         needs_repaint
+    }
+
+    /// Set or clear the keyboard focus ring (CSS `:focus-visible`) on a node.
+    /// Tab-driven focus sets it; pointer-driven focus clears it (`update_focus`
+    /// is a no-op when the clicked node already holds focus, so the pointer
+    /// path clears the ring through here). Invalidates styles only when some
+    /// CSS rule depends on this node's focus state.
+    ///
+    /// Returns `true` if a repaint is needed.
+    pub fn set_focus_visible(&mut self, node_id: usize, visible: bool) -> bool {
+        match self.tree.nodes.get_mut(node_id) {
+            Some(node) if node.is_focus_visible != visible => node.is_focus_visible = visible,
+            _ => return false,
+        }
+        if self.node_is_focus_sensitive(node_id) {
+            self.invalidate_hover_node(node_id);
+            self.tree.styles_dirty = true;
+            return true;
+        }
+        false
     }
 
     /// Update active (mouse-pressed) state: set the active node and its

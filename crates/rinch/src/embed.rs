@@ -329,12 +329,17 @@ impl RinchContext {
         true
     }
 
-    /// Returns `true` if a text input or contenteditable is focused.
+    /// Returns `true` if a text input, contenteditable, or generic focusable
+    /// node (`tabindex`, issue #228) is focused.
     ///
     /// When this returns `true`, the game should route keyboard events to
-    /// rinch instead of handling them as game input.
+    /// rinch instead of handling them as game input. A Tab-focused generic
+    /// node counts: rinch consumes Enter/Space to activate it, so a host that
+    /// kept the keyboard would double-handle those keys.
     pub fn wants_keyboard(&self) -> bool {
-        self.app.has_focused_input() || self.app.has_focused_contenteditable()
+        self.app.has_focused_input()
+            || self.app.has_focused_contenteditable()
+            || self.app.has_focused_node()
     }
 
     /// Register font data for text rendering **after** the initial mount.

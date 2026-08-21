@@ -71,6 +71,16 @@ pub struct RinchDocument {
     pub(crate) theme_stylesheet: Option<style::stylesheets::DocumentStyleSheet>,
     /// App author stylesheets, in insertion (source) order.
     pub(crate) author_stylesheets: Vec<style::stylesheets::DocumentStyleSheet>,
+    /// Whether any loaded stylesheet has a rule whose rightmost compound is a
+    /// bare focus pseudo-class (`:focus` / `:focus-visible` / `:focus-within`
+    /// with no tag/class/id/attribute anchor) — e.g. the theme's
+    /// `:focus-visible { outline: ... }`. Stylo buckets such rules into a
+    /// state-gated `rare_pseudo_classes` map that is only consulted while the
+    /// element ALREADY has focus state, so `focus_sensitive` can never be set
+    /// on an unfocused node by them; focus changes must then invalidate
+    /// unconditionally (see `node_is_focus_sensitive`). Recomputed whenever a
+    /// stylesheet is loaded or the theme sheet is replaced.
+    pub(crate) has_bare_focus_rules: bool,
 }
 
 impl Default for RinchDocument {
@@ -132,6 +142,7 @@ impl RinchDocument {
             stylist,
             theme_stylesheet: None,
             author_stylesheets: Vec::new(),
+            has_bare_focus_rules: false,
         };
 
         // Set up default file-based image loader

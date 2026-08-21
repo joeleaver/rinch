@@ -454,15 +454,59 @@ impl RinchApp {
                 // Update :active and :focus pseudo-class state.
                 // Don't request redraw here — AboutToWait will pick up the
                 // dirty styles and batch them into a single repaint.
-                if let Some(doc) = &self.doc {
+                if let Some(doc) = self.doc.clone() {
                     let hit = {
                         let d = doc.borrow();
                         hit_test(&d.tree, x, y)
                     };
-                    // :active applies while mouse is pressed
-                    doc.borrow_mut().update_active(hit);
-                    // :focus applies to the clicked element (persists after release)
-                    doc.borrow_mut().update_focus(hit);
+                    // An arbiter-held generic node (issue #228): a press inside
+                    // its subtree keeps both the claim and the node's own DOM
+                    // `:focus` (web-style — clicking a child of a focusable
+                    // focuses the focusable, not the child); a press anywhere
+                    // else releases the claim right here, so paths that return
+                    // before `handle_click` (pending drag, scrollbar, no hit)
+                    // can't strand an invisible, still-Enter-activatable claim.
+                    let node_claim = if let FocusTarget::Node(fid) = self.focus_target {
+                        let d = doc.borrow();
+                        let mut cur = hit;
+                        let mut inside = false;
+                        while let Some(nid) = cur {
+                            if nid == fid {
+                                inside = true;
+                                break;
+                            }
+                            cur = d.tree.get(nid).and_then(|n| n.parent);
+                        }
+                        Some((fid, inside))
+                    } else {
+                        None
+                    };
+                    // Any mousedown drops the keyboard focus ring wherever it
+                    // is (it only ever lives on the focused node): pointer
+                    // interaction never shows :focus-visible, and `update_focus`
+                    // below is a no-op when the hit node already holds
+                    // (Tab-driven) focus.
+                    {
+                        let mut d = doc.borrow_mut();
+                        if let Some(prev) = d.tree.focused_node {
+                            d.set_focus_visible(prev, false);
+                        }
+                        // :active applies while mouse is pressed
+                        d.update_active(hit);
+                        // :focus applies to the clicked element (persists after
+                        // release); anchored on the focused node itself for a
+                        // press inside it.
+                        let focus_to = match node_claim {
+                            Some((fid, true)) => Some(fid),
+                            _ => hit,
+                        };
+                        d.update_focus(focus_to);
+                    }
+                    if let Some((_, false)) = node_claim {
+                        // No outstanding doc borrow here (set_focus_target's
+                        // teardown re-borrows).
+                        self.set_focus_target(FocusTarget::None);
+                    }
                 }
 
                 // Check for draggable element — enter pending drag instead of
@@ -919,11 +963,26 @@ impl RinchApp {
                             return actions;
                         }
                     }
-                    // No widget owns the key, or a plain `<input>` does (its editing
+                    // No widget owns the key, a plain `<input>` does (its editing
                     // commands live in the global handlers, gated internally on
-                    // `focused_input_state`). Falls through to DevTools / inspect /
-                    // Tab navigation / read-only text-selection caret motion.
-                    FocusTarget::Input(_) | FocusTarget::None => {
+                    // `focused_input_state`), or a generic focusable node does
+                    // (Enter/Space activate it below; everything else falls
+                    // through so Tab keeps moving). Falls through to DevTools /
+                    // inspect / Tab navigation / read-only text-selection caret
+                    // motion.
+                    FocusTarget::Input(_) | FocusTarget::None | FocusTarget::Node(_) => {
+                        // Self-heal a stale Node claim before routing, exactly
+                        // like the Editor arm's unmount handling above: node ids
+                        // are recycled slab indices (see
+                        // `live_focused_input_handler`), so a claim whose node
+                        // was unmounted must not swallow Enter/Space, anchor
+                        // Tab, or — worst — activate whatever unrelated node
+                        // reused the slot.
+                        if let FocusTarget::Node(id) = self.focus_target
+                            && !self.node_target_is_live(id)
+                        {
+                            self.set_focus_target(FocusTarget::None);
+                        }
                         #[cfg(feature = "desktop")]
                         if key == KeyCode::F12 {
                             actions.push(AppAction::ToggleDevTools);
@@ -948,7 +1007,26 @@ impl RinchApp {
                             KeyCode::KeyC if ctrl => self.handle_copy(),
                             KeyCode::KeyV if ctrl => self.handle_paste(),
                             KeyCode::KeyX if ctrl => self.handle_cut(),
+                            KeyCode::Enter | KeyCode::Space
+                                if !ctrl && matches!(self.focus_target, FocusTarget::Node(_)) =>
+                            {
+                                if let FocusTarget::Node(id) = self.focus_target {
+                                    // One activation per physical press: the OS
+                                    // auto-repeats KeyDown and `PlatformEvent`
+                                    // carries no repeat flag, so latch until the
+                                    // matching KeyUp (on the web a held Space
+                                    // activates exactly once, on keyup).
+                                    if self.node_activation_held != Some(key) {
+                                        self.node_activation_held = Some(key);
+                                        self.activate_focused_node(id, vp_w, vp_h);
+                                        actions.push(AppAction::RequestRedraw);
+                                    }
+                                }
+                            }
                             KeyCode::Enter if !ctrl => self.handle_enter(),
+                            // Space with no Node target falls through to the `_`
+                            // arm below — the one text-input path (pre-#228), so
+                            // a future change to that gate can't miss Space.
                             KeyCode::ArrowUp => self.handle_arrow_up(shift),
                             KeyCode::ArrowDown => self.handle_arrow_down(shift),
                             _ => {
@@ -964,6 +1042,11 @@ impl RinchApp {
                 }
             }
             PlatformEvent::KeyUp { key, modifiers } => {
+                // Release the Enter/Space activation latch (issue #228): the
+                // next KeyDown of this key is a fresh physical press.
+                if self.node_activation_held == Some(key) {
+                    self.node_activation_held = None;
+                }
                 // Forward key release to focused render surface.
                 if let Some(surface_id) = crate::render_surface::focused_surface_id() {
                     let key_str = format!("{:?}", key);

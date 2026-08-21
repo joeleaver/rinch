@@ -45,18 +45,45 @@ impl RinchApp {
                 // `set_focused_surface` dispatches `FocusLost` to the old surface.
                 crate::render_surface::set_focused_surface(None);
             }
-            FocusTarget::Input(_) => {
+            FocusTarget::Input(prev) => {
                 self.clear_input_focus_attrs();
                 self.focused_input_handler_id = None;
                 self.focused_input_value.clear();
                 self.focused_input_state = None;
                 self.focused_input_node_id = None;
                 self.focused_input_preedit = None;
+                // Clear the input's DOM focus and keyboard focus ring, exactly
+                // like the Node arm below — otherwise a blur that never goes
+                // through a left-mousedown (a click into the rich-text editor,
+                // a right/middle click, the stale-handler self-heal) leaves the
+                // input painting `:focus-visible` while something else owns the
+                // keyboard. The `focused_node` guard keeps a successor that
+                // already moved DOM focus from being blurred by this teardown.
+                if let Some(doc) = &self.doc {
+                    let mut d = doc.borrow_mut();
+                    d.set_focus_visible(prev, false);
+                    if d.tree.focused_node == Some(prev) {
+                        d.update_focus(None);
+                    }
+                }
             }
             FocusTarget::Select(_) => {
                 // Tearing down select focus dismisses its popup: remove the
                 // app-created backdrop + panel nodes.
                 self.remove_select_popup_nodes();
+            }
+            FocusTarget::Node(prev) => {
+                // Clear the node's DOM focus and keyboard focus ring. The
+                // `focused_node` guard keeps a successor that already moved DOM
+                // focus (the pointer path updates it on mousedown, before the
+                // arbiter runs) from being blurred by this teardown.
+                if let Some(doc) = &self.doc {
+                    let mut d = doc.borrow_mut();
+                    d.set_focus_visible(prev, false);
+                    if d.tree.focused_node == Some(prev) {
+                        d.update_focus(None);
+                    }
+                }
             }
             #[cfg(feature = "desktop")]
             FocusTarget::Editor(prev) => {
@@ -98,6 +125,13 @@ impl RinchApp {
                 enabled: true,
                 cursor_area: self.input_caret_area(node_id),
             },
+            // A generic focusable node is not a text target — explicit rather
+            // than folded into `_` so a future text-capable variant can't land
+            // here silently (issue #176 documents that trap for Surface).
+            FocusTarget::Node(_) => ImeState {
+                enabled: false,
+                cursor_area: None,
+            },
             // Surfaces and no focus do not drive desktop IME.
             _ => ImeState {
                 enabled: false,
@@ -109,6 +143,15 @@ impl RinchApp {
     /// Whether a text input element is currently focused.
     pub fn has_focused_input(&self) -> bool {
         matches!(self.focus_target, FocusTarget::Input(_))
+    }
+
+    /// Whether a generic focusable node (`tabindex`, `FocusTarget::Node`,
+    /// issue #228) holds focus. It consumes Enter/Space (and anchors Tab), so
+    /// embed hosts must route keyboard input to rinch while one is focused
+    /// (`RinchContext::wants_keyboard` includes it). Public beside
+    /// [`Self::has_focused_input`] / [`Self::has_focused_contenteditable`].
+    pub fn has_focused_node(&self) -> bool {
+        matches!(self.focus_target, FocusTarget::Node(_))
     }
 
     /// The container id of the focused new-editor, if one holds focus. Drives the
