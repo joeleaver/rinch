@@ -256,6 +256,10 @@ pub struct Node {
     pub is_hovered: bool,
     /// Whether this node or an ancestor has focus (for CSS :focus).
     pub is_focused: bool,
+    /// Whether focus arrived via the keyboard (for CSS :focus-visible).
+    /// Only ever set on the focused node: Tab-driven focus sets it,
+    /// pointer-driven focus clears it, and losing focus clears it.
+    pub is_focus_visible: bool,
     /// Whether this node is currently being pressed (for CSS :active).
     pub is_active: bool,
     /// Whether this is an anonymous block box created by the layout engine.
@@ -348,6 +352,7 @@ impl Node {
             computed_style_str: String::new(),
             is_hovered: false,
             is_focused: false,
+            is_focus_visible: false,
             is_active: false,
             is_anonymous_block_box: false,
             is_pseudo_element: false,
@@ -392,6 +397,7 @@ impl Node {
             computed_style_str: String::new(),
             is_hovered: false,
             is_focused: false,
+            is_focus_visible: false,
             is_active: false,
             is_anonymous_block_box: false,
             is_pseudo_element: false,
@@ -435,6 +441,7 @@ impl Node {
             computed_style_str: String::new(),
             is_hovered: false,
             is_focused: false,
+            is_focus_visible: false,
             is_active: false,
             is_anonymous_block_box: false,
             is_pseudo_element: false,
@@ -476,6 +483,7 @@ impl Node {
             computed_style_str: String::new(),
             is_hovered: false,
             is_focused: false,
+            is_focus_visible: false,
             is_active: false,
             is_anonymous_block_box: false,
             is_pseudo_element: false,

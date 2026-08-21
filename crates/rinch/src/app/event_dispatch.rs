@@ -459,10 +459,21 @@ impl RinchApp {
                         let d = doc.borrow();
                         hit_test(&d.tree, x, y)
                     };
-                    // :active applies while mouse is pressed
-                    doc.borrow_mut().update_active(hit);
-                    // :focus applies to the clicked element (persists after release)
-                    doc.borrow_mut().update_focus(hit);
+                    // Any mousedown drops the keyboard focus ring wherever it
+                    // is (it only ever lives on the focused node): pointer
+                    // interaction never shows :focus-visible, and `update_focus`
+                    // below is a no-op when the hit node already holds
+                    // (Tab-driven) focus.
+                    {
+                        let mut d = doc.borrow_mut();
+                        if let Some(prev) = d.tree.focused_node {
+                            d.set_focus_visible(prev, false);
+                        }
+                        // :active applies while mouse is pressed
+                        d.update_active(hit);
+                        // :focus applies to the clicked element (persists after release)
+                        d.update_focus(hit);
+                    }
                 }
 
                 // Check for draggable element — enter pending drag instead of
@@ -919,11 +930,14 @@ impl RinchApp {
                             return actions;
                         }
                     }
-                    // No widget owns the key, or a plain `<input>` does (its editing
+                    // No widget owns the key, a plain `<input>` does (its editing
                     // commands live in the global handlers, gated internally on
-                    // `focused_input_state`). Falls through to DevTools / inspect /
-                    // Tab navigation / read-only text-selection caret motion.
-                    FocusTarget::Input(_) | FocusTarget::None => {
+                    // `focused_input_state`), or a generic focusable node does
+                    // (Enter/Space activate it below; everything else falls
+                    // through so Tab keeps moving). Falls through to DevTools /
+                    // inspect / Tab navigation / read-only text-selection caret
+                    // motion.
+                    FocusTarget::Input(_) | FocusTarget::None | FocusTarget::Node(_) => {
                         #[cfg(feature = "desktop")]
                         if key == KeyCode::F12 {
                             actions.push(AppAction::ToggleDevTools);
@@ -948,7 +962,24 @@ impl RinchApp {
                             KeyCode::KeyC if ctrl => self.handle_copy(),
                             KeyCode::KeyV if ctrl => self.handle_paste(),
                             KeyCode::KeyX if ctrl => self.handle_cut(),
-                            KeyCode::Enter if !ctrl => self.handle_enter(),
+                            KeyCode::Enter if !ctrl => {
+                                if let FocusTarget::Node(id) = self.focus_target {
+                                    self.activate_focused_node(id, vp_w, vp_h);
+                                } else {
+                                    self.handle_enter();
+                                }
+                            }
+                            KeyCode::Space if !ctrl => {
+                                if let FocusTarget::Node(id) = self.focus_target {
+                                    self.activate_focused_node(id, vp_w, vp_h);
+                                } else if let Some(t) = &text
+                                    && !t.is_empty()
+                                {
+                                    // Preserve the pre-#228 path: Space is text
+                                    // input for a focused `<input>`.
+                                    self.handle_text_input(t);
+                                }
+                            }
                             KeyCode::ArrowUp => self.handle_arrow_up(shift),
                             KeyCode::ArrowDown => self.handle_arrow_down(shift),
                             _ => {

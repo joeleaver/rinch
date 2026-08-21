@@ -373,6 +373,13 @@ impl<'a> Element for RinchNode<'a> {
                 self.node().focus_sensitive.set(true);
                 self.node().is_focused
             }
+            NonTSPseudoClass::FocusVisible => {
+                // Shares `focus_sensitive`: the flag only ever changes on the
+                // (gaining/losing) focused node, so focus-change invalidation
+                // covers :focus-visible rules too.
+                self.node().focus_sensitive.set(true);
+                self.node().is_focus_visible
+            }
             NonTSPseudoClass::Enabled => true,
             NonTSPseudoClass::Disabled => false,
             NonTSPseudoClass::Checked => {
@@ -556,6 +563,9 @@ impl<'a> TElement for RinchNode<'a> {
         }
         if self.node().is_focused {
             state |= ElementState::FOCUS;
+        }
+        if self.node().is_focus_visible {
+            state |= ElementState::FOCUSRING;
         }
         if self.node().is_active {
             state |= ElementState::ACTIVE;

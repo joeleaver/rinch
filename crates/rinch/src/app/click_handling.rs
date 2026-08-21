@@ -257,6 +257,21 @@ impl RinchApp {
             None
         };
 
+        // A click on or inside a keyboard-focused generic node keeps its focus
+        // (the ring already dropped on mousedown); a click elsewhere blurs it.
+        let hit_inside_focused_node = if let FocusTarget::Node(fid) = self.focus_target {
+            let mut cur = Some(hit_id);
+            loop {
+                match cur {
+                    Some(nid) if nid == fid => break true,
+                    Some(nid) => cur = d.tree.get(nid).and_then(|n| n.parent),
+                    None => break false,
+                }
+            }
+        } else {
+            false
+        };
+
         // Drop the borrow before calling methods that re-borrow self.doc
         drop(d);
 
@@ -276,14 +291,16 @@ impl RinchApp {
             self.focused_input_state = Some(state);
             self.sync_input_cursor_to_dom();
             self.scene_dirty = true;
-        } else if matches!(
-            self.focus_target,
-            FocusTarget::Input(_) | FocusTarget::Surface(_)
-        ) {
-            // Clicked a non-input target: drop input/surface focus. Editor focus is
-            // preserved here so its toolbar buttons (data-rid, dispatched below) keep
-            // working; an empty/non-toolbar click already blurred the editor in
-            // Phase 2 (`ClickFocus::Blur`).
+        } else if !hit_inside_focused_node
+            && matches!(
+                self.focus_target,
+                FocusTarget::Input(_) | FocusTarget::Surface(_) | FocusTarget::Node(_)
+            )
+        {
+            // Clicked a non-input target: drop input/surface/generic-node focus.
+            // Editor focus is preserved here so its toolbar buttons (data-rid,
+            // dispatched below) keep working; an empty/non-toolbar click already
+            // blurred the editor in Phase 2 (`ClickFocus::Blur`).
             self.set_focus_target(FocusTarget::None);
         }
 

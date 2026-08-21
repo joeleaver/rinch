@@ -58,6 +58,19 @@ impl RinchApp {
                 // app-created backdrop + panel nodes.
                 self.remove_select_popup_nodes();
             }
+            FocusTarget::Node(prev) => {
+                // Clear the node's DOM focus and keyboard focus ring. The
+                // `focused_node` guard keeps a successor that already moved DOM
+                // focus (the pointer path updates it on mousedown, before the
+                // arbiter runs) from being blurred by this teardown.
+                if let Some(doc) = &self.doc {
+                    let mut d = doc.borrow_mut();
+                    d.set_focus_visible(prev, false);
+                    if d.tree.focused_node == Some(prev) {
+                        d.update_focus(None);
+                    }
+                }
+            }
             #[cfg(feature = "desktop")]
             FocusTarget::Editor(prev) => {
                 // Hide the blurred editor's caret and selection highlight so an
@@ -97,6 +110,13 @@ impl RinchApp {
             FocusTarget::Input(node_id) => ImeState {
                 enabled: true,
                 cursor_area: self.input_caret_area(node_id),
+            },
+            // A generic focusable node is not a text target — explicit rather
+            // than folded into `_` so a future text-capable variant can't land
+            // here silently (issue #176 documents that trap for Surface).
+            FocusTarget::Node(_) => ImeState {
+                enabled: false,
+                cursor_area: None,
             },
             // Surfaces and no focus do not drive desktop IME.
             _ => ImeState {
