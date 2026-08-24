@@ -77,6 +77,31 @@ fn same_element(a: &web_sys::Element, b: &web_sys::Element) -> bool {
 /// [`events::ClickContext`] (cursor + element bounds + button + modifiers from
 /// `event`), and dispatch the registered handler. Mirrors the `data-rid`
 /// pattern; used for `data-onmousedown`/`data-onmouseup`/`data-onmousemove`.
+/// The user-visible value of a native form control, read identically by the
+/// `input` and `change` listeners — provided we read the right property off
+/// each control kind.
+fn form_control_value(target: &web_sys::EventTarget) -> Option<String> {
+    if let Ok(input) = target.clone().dyn_into::<web_sys::HtmlInputElement>() {
+        // Checkbox/radio carry their state in `.checked`; their `.value`
+        // is the static attribute (e.g. "on"), which never changes. Emit
+        // the boolean as "true"/"false" so a Fn(String) handler can
+        // observe toggles (a text input keeps delivering its `.value`).
+        match input.type_().as_str() {
+            "checkbox" | "radio" => Some(input.checked().to_string()),
+            _ => Some(input.value()),
+        }
+    } else if let Ok(textarea) = target.clone().dyn_into::<web_sys::HtmlTextAreaElement>() {
+        Some(textarea.value())
+    } else if let Ok(select) = target.clone().dyn_into::<web_sys::HtmlSelectElement>() {
+        // A native <select> fires `input`/`change` on selection change; deliver
+        // the selected option's value. Without this, `oninput`/`onchange`
+        // on a <select> were silently dropped (issue #95).
+        Some(select.value())
+    } else {
+        None
+    }
+}
+
 fn dispatch_mouse_attr(el: &web_sys::Element, attr: &str, event: &web_sys::MouseEvent) {
     let selector = format!("[{attr}]");
     if let Ok(Some(target_el)) = el.closest(&selector)
@@ -1402,44 +1427,20 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // Input delegation: find [data-oninput] on the target or ancestors.
     let browser_doc2 = browser_doc.clone();
     let input_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
-        if let Some(target) = event.target() {
-            // Extract the control's user-visible value. Every native form
-            // control fires `input` on user modification, so this one listener
-            // covers text inputs, textareas, <select>, and checkbox/radio —
-            // provided we read the right property off each.
-            let value = if let Ok(input) = target.clone().dyn_into::<web_sys::HtmlInputElement>() {
-                // Checkbox/radio carry their state in `.checked`; their `.value`
-                // is the static attribute (e.g. "on"), which never changes. Emit
-                // the boolean as "true"/"false" so a Fn(String) handler can
-                // observe toggles (a text input keeps delivering its `.value`).
-                match input.type_().as_str() {
-                    "checkbox" | "radio" => Some(input.checked().to_string()),
-                    _ => Some(input.value()),
-                }
-            } else if let Ok(textarea) = target.clone().dyn_into::<web_sys::HtmlTextAreaElement>() {
-                Some(textarea.value())
-            } else if let Ok(select) = target.clone().dyn_into::<web_sys::HtmlSelectElement>() {
-                // A native <select> fires `input` on selection change; deliver
-                // the selected option's value. Without this, `oninput`/`onchange`
-                // on a <select> were silently dropped (issue #95).
-                Some(select.value())
-            } else {
-                None
-            };
-
-            if let Some(value) = value {
-                // Walk up from target to find [data-oninput]
-                if let Ok(el) = target.dyn_into::<web_sys::Element>() {
-                    let mut current: Option<web_sys::Element> = Some(el);
-                    while let Some(el) = current {
-                        if let Some(handler_str) = el.get_attribute("data-oninput")
-                            && let Ok(handler_id) = handler_str.parse::<usize>()
-                        {
-                            events::dispatch_input_event(events::EventHandlerId(handler_id), value);
-                            break;
-                        }
-                        current = el.parent_element();
+        if let Some(target) = event.target()
+            && let Some(value) = form_control_value(&target)
+        {
+            // Walk up from target to find [data-oninput]
+            if let Ok(el) = target.dyn_into::<web_sys::Element>() {
+                let mut current: Option<web_sys::Element> = Some(el);
+                while let Some(el) = current {
+                    if let Some(handler_str) = el.get_attribute("data-oninput")
+                        && let Ok(handler_id) = handler_str.parse::<usize>()
+                    {
+                        events::dispatch_input_event(events::EventHandlerId(handler_id), value);
+                        break;
                     }
+                    current = el.parent_element();
                 }
             }
         }
@@ -1448,6 +1449,35 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         .add_event_listener_with_callback("input", input_closure.as_ref().unchecked_ref())
         .unwrap();
     input_closure.forget();
+
+    // Change delegation (issue #226): find [data-onchange] on the target or
+    // ancestors. The browser fires `change` exactly at the commit boundary the
+    // attribute promises — blur after modification, Enter, a <select> pick —
+    // with its own only-if-modified bookkeeping, so the native event is simply
+    // delegated (desktop's rule is written to match the browser). `change`
+    // bubbles, so one document-level listener covers every control.
+    let browser_doc_change = browser_doc.clone();
+    let change_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        if let Some(target) = event.target()
+            && let Some(value) = form_control_value(&target)
+            && let Ok(el) = target.dyn_into::<web_sys::Element>()
+        {
+            let mut current: Option<web_sys::Element> = Some(el);
+            while let Some(el) = current {
+                if let Some(handler_str) = el.get_attribute("data-onchange")
+                    && let Ok(handler_id) = handler_str.parse::<usize>()
+                {
+                    events::dispatch_input_event(events::EventHandlerId(handler_id), value);
+                    break;
+                }
+                current = el.parent_element();
+            }
+        }
+    }) as Box<dyn FnMut(_)>);
+    browser_doc_change
+        .add_event_listener_with_callback("change", change_closure.as_ref().unchecked_ref())
+        .unwrap();
+    change_closure.forget();
 
     // Contextmenu delegation: dispatch data-oncontextmenu and suppress the
     // native browser menu when a handler is found.

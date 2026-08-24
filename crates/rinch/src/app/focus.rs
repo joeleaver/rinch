@@ -35,10 +35,19 @@ impl RinchApp {
     ///
     /// Must be called with no outstanding borrow of `self.doc` (it writes DOM
     /// attributes while clearing input/CE focus).
+    ///
+    /// Tearing down an `Input` whose value changed since focus dispatches its
+    /// `data-onchange` commit (issue #226) — after the transition completes, so
+    /// the handler runs against consistent arbiter state.
     pub(crate) fn set_focus_target(&mut self, target: FocusTarget) -> bool {
         if self.focus_target == target {
             return false;
         }
+        // The `data-onchange` commit for a blurred input (issue #226): collected
+        // in the Input arm, dispatched only after the transition completes —
+        // user code must never run mid-teardown, where the arbiter state is
+        // inconsistent and a re-entrant focus change would compound it.
+        let mut pending_change: Option<(usize, String)> = None;
         match self.focus_target {
             FocusTarget::None => {}
             FocusTarget::Surface(_) => {
@@ -46,9 +55,27 @@ impl RinchApp {
                 crate::render_surface::set_focused_surface(None);
             }
             FocusTarget::Input(prev) => {
+                // Focus leaving the input ends the typed gesture: fire
+                // `data-onchange` with the final text, HTML-style — only if the
+                // value actually changed since the gesture began (baseline), and
+                // only through a still-live handler (a scope-disposal self-heal
+                // lands here with the input's handlers already freed).
+                if self.focused_input_value != self.focused_input_baseline
+                    && let Some(doc) = &self.doc
+                {
+                    let d = doc.borrow();
+                    pending_change = d
+                        .tree
+                        .get(prev)
+                        .and_then(|n| n.attributes.get("data-onchange"))
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .filter(|&hid| events::has_input_handler(events::EventHandlerId(hid)))
+                        .map(|hid| (hid, self.focused_input_value.clone()));
+                }
                 self.clear_input_focus_attrs();
                 self.focused_input_handler_id = None;
                 self.focused_input_value.clear();
+                self.focused_input_baseline.clear();
                 self.focused_input_state = None;
                 self.focused_input_node_id = None;
                 self.focused_input_preedit = None;
@@ -99,6 +126,11 @@ impl RinchApp {
         }
         self.focus_target = target;
         self.scene_dirty = true;
+        // Dispatch the commit with the transition complete and no doc borrow
+        // outstanding — the handler may mutate the DOM or re-enter focus APIs.
+        if let Some((hid, value)) = pending_change {
+            events::dispatch_input_event(events::EventHandlerId(hid), value);
+        }
         true
     }
 

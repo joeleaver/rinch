@@ -98,6 +98,10 @@ pub struct NumberInput {
     pub ondecrement: Option<Callback>,
     /// Callback when value changes (from direct input).
     pub oninput: Option<InputCallback>,
+    /// Callback when the typed gesture commits (focus leaves the input after a
+    /// modification, or Enter) — HTML `change` semantics, receives the final
+    /// value. Fires only if the value changed since focus (issue #226).
+    pub onchange: Option<InputCallback>,
 }
 
 impl std::fmt::Debug for NumberInput {
@@ -129,6 +133,7 @@ impl std::fmt::Debug for NumberInput {
                 &self.ondecrement.as_ref().map(|_| "<callback>"),
             )
             .field("oninput", &self.oninput.as_ref().map(|_| "<callback>"))
+            .field("onchange", &self.onchange.as_ref().map(|_| "<callback>"))
             .finish()
     }
 }
@@ -222,13 +227,27 @@ impl Component for NumberInput {
 
         wrapper.append_child(&input);
 
-        // Input handler for direct text entry
-        if let Some(callback) = &self.oninput {
+        // Input handler for direct text entry — always registered so the
+        // runtime can route focus and typed text to this element (an
+        // onchange-only NumberInput must still be focusable), matching
+        // TextInput.
+        {
+            let callback = self.oninput.clone();
+            let handler_id = __scope.register_input_handler(move |value| {
+                if let Some(cb) = &callback {
+                    cb.invoke(value);
+                }
+            });
+            input.set_attribute("data-oninput", &handler_id.to_string());
+        }
+
+        // Change handler — the commit boundary (issue #226)
+        if let Some(callback) = &self.onchange {
             let callback = callback.clone();
             let handler_id = __scope.register_input_handler(move |value| {
                 callback.invoke(value);
             });
-            input.set_attribute("data-oninput", &handler_id.to_string());
+            input.set_attribute("data-onchange", &handler_id.to_string());
         }
 
         // Suffix

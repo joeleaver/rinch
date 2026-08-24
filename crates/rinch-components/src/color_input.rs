@@ -36,7 +36,10 @@ pub struct ColorInput {
     pub value: String,
     /// Reactive value binding.
     pub value_fn: Option<ReactiveString>,
-    /// Fires formatted color string on change.
+    /// Fires the formatted color string when a color change commits: a pick in
+    /// the dropdown picker, or a typed edit at its commit boundary (focus
+    /// leaves the field, or Enter — issue #226). Typing previews live in the
+    /// swatch but reports here only on commit.
     pub onchange: Option<InputCallback>,
     /// Output format: hex, hexa, rgb, rgba, hsl, hsla.
     pub format: String,
@@ -147,22 +150,47 @@ impl Component for ColorInput {
         // the effect rewrites the field.
         let typed: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
-        // Handle text input changes
+        // Handle text input changes. Per-keystroke this is internal only —
+        // record the live text, parse, and preview through `current_value`
+        // (swatch, dropdown picker). `self.onchange` fires from the commit
+        // handler below, not here: the prop promises a committed color, not a
+        // live preview per parseable keystroke (issue #226).
         if !disallow_input {
-            let onchange = self.onchange.clone();
-            let typed = typed.clone();
+            let typed_in = typed.clone();
             let handler_id = __scope.register_input_handler(move |value: String| {
                 let parsed = parse_color(&value);
-                *typed.borrow_mut() = Some(value);
+                *typed_in.borrow_mut() = Some(value);
                 if let Some(parsed) = parsed {
-                    let formatted = format_color(parsed, color_format);
-                    current_value.set(formatted.clone());
-                    if let Some(ref cb) = onchange {
-                        cb.invoke(formatted);
-                    }
+                    current_value.set(format_color(parsed, color_format));
                 }
             });
             text_input.set_attribute("data-oninput", &handler_id.to_string());
+
+            // The commit boundary (issue #226): the typed gesture ended, so the
+            // author's mid-typing claim to the field (GH #231) lapses. A
+            // parseable commit reports through `onchange` and normalizes the
+            // field to the canonical form ("336" → "#333366"); an unparseable
+            // one reverts the field to the color the input still holds. Either
+            // rewrite clears the typed record, like any effect rewrite.
+            let onchange = self.onchange.clone();
+            let typed_commit = typed.clone();
+            let text_input_commit = text_input.clone();
+            let handler_id = __scope.register_input_handler(move |value: String| {
+                let committed = match parse_color(&value) {
+                    Some(parsed) => {
+                        let formatted = format_color(parsed, color_format);
+                        current_value.set_if_changed(formatted.clone());
+                        if let Some(ref cb) = onchange {
+                            cb.invoke(formatted.clone());
+                        }
+                        formatted
+                    }
+                    None => current_value.get(),
+                };
+                *typed_commit.borrow_mut() = None;
+                text_input_commit.set_attribute("value", &committed);
+            });
+            text_input.set_attribute("data-onchange", &handler_id.to_string());
         }
 
         input_group.append_child(&text_input);

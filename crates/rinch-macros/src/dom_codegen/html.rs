@@ -79,17 +79,41 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
         .collect();
 
     // Generate event handler registration
+    let has_oninput = event_props.iter().any(|prop| prop.name == "oninput");
     let event_code: Vec<TokenStream2> = event_props
         .iter()
         .map(|prop| {
             let handler = &prop.value;
             let event_name = prop.name.to_string();
-            if event_name == "oninput" || event_name == "onchange" {
+            if event_name == "oninput" {
                 // Input events use register_input_handler with Fn(String)
                 quote! {
                     {
                         let __handler_id = __scope.register_input_handler(#handler);
                         #elem_var.set_attribute("data-oninput", &__handler_id.0.to_string());
+                    }
+                }
+            } else if event_name == "onchange" {
+                // Commit boundary (issue #226): fires once when the typed
+                // gesture ends (blur after modification, Enter, a <select>
+                // pick) with the final value — HTML `change` semantics, no
+                // longer an alias for the per-keystroke `oninput`. The runtime
+                // recognizes a text input by `data-oninput`, so an
+                // onchange-only element also gets a no-op input handler to
+                // stay focusable and receive typed text.
+                let ensure_oninput = if has_oninput {
+                    quote! {}
+                } else {
+                    quote! {
+                        let __noop_id = __scope.register_input_handler(|_: String| {});
+                        #elem_var.set_attribute("data-oninput", &__noop_id.0.to_string());
+                    }
+                };
+                quote! {
+                    {
+                        let __handler_id = __scope.register_input_handler(#handler);
+                        #elem_var.set_attribute("data-onchange", &__handler_id.0.to_string());
+                        #ensure_oninput
                     }
                 }
             } else if event_name == "onscroll" {

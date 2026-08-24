@@ -161,6 +161,7 @@ Icon-only button. For text-based action buttons, use `Button` with compact styli
 | `value` | `Option<String>` | `None` | Static value |
 | `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding (auto-wrapped) |
 | `oninput` | `Option<InputCallback>` | `None` | Receives `String` |
+| `onchange` | `Option<InputCallback>` | `None` | Commit boundary (#226): fires once with the final value when the gesture ends (blur after a modification, or Enter); only if the value changed since focus |
 | `onsubmit` | `Option<Callback>` | `None` | Fires on Enter key |
 
 ### Textarea
@@ -180,6 +181,7 @@ Icon-only button. For text-based action buttons, use `Button` with compact styli
 | `value` | `Option<String>` | `None` | |
 | `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding (auto-wrapped) |
 | `oninput` | `Option<InputCallback>` | `None` | Receives `String` |
+| `onchange` | `Option<InputCallback>` | `None` | Commit boundary (#226): fires once with the final value when the gesture ends (blur after a modification); only if the value changed since focus |
 
 ### PasswordInput
 
@@ -203,6 +205,7 @@ Custom Default: `toggle_visibility` defaults to `true`.
 | `toggle_visibility` | `bool` | **`true`** | Show/hide the eye toggle button |
 | `ontoggle` | `Option<Callback>` | `None` | Fires when visibility toggled |
 | `oninput` | `Option<InputCallback>` | `None` | Receives `String` |
+| `onchange` | `Option<InputCallback>` | `None` | Commit boundary (#226): fires once with the final value when the gesture ends (blur after a modification, or Enter); only if the value changed since focus |
 
 ### NumberInput
 
@@ -228,6 +231,7 @@ Custom Default: `toggle_visibility` defaults to `true`.
 | `onincrement` | `Option<Callback>` | `None` | |
 | `ondecrement` | `Option<Callback>` | `None` | |
 | `oninput` | `Option<InputCallback>` | `None` | Receives `String` from direct text entry |
+| `onchange` | `Option<InputCallback>` | `None` | Commit boundary (#226): fires once with the final value when the gesture ends (blur after a modification, or Enter); only if the value changed since focus |
 
 ### Checkbox
 
@@ -388,11 +392,13 @@ every keystroke, and a valid *prefix* of the colour being typed (`#336` on the
 way to `#3366cc`) is already a parseable colour — it updates the preview and
 reports through `onchange` live, but the picker never rewrites the field under
 the author's caret while its text denotes the colour the picker already holds.
-The field text is normalized to the output format only when the colour actually
-moves away from it: a drag, a swatch click, an external `value_fn` change. (The
-flip side: an equivalent-but-differently-notated string — `rgb(255, 0, 0)`
-under a hex format — stays as typed, since there is no blur/commit event to
-normalize on; see issue #226.) `ColorInput`'s text field follows the same
+The field text is normalized to the output format when the colour actually
+moves away from it (a drag, a swatch click, an external `value_fn` change) —
+and, since issue #226, when the typed gesture *commits* (focus leaves the
+field, or Enter): a committed shorthand like `336` normalizes to `#333366`,
+and committed text that parses as no colour reverts to the colour the picker
+holds, so an attribute-reading consumer never sees a stale shorthand outlive
+the gesture that typed it. `ColorInput`'s text field follows the same
 contract.
 
 ### ColorInput
@@ -410,7 +416,7 @@ Text input with inline color preview and dropdown ColorPicker.
 | `disabled` | `bool` | `false` | Disable the input |
 | `value` | `String` | `""` | Current color value |
 | `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding |
-| `onchange` | `Option<InputCallback>` | `None` | Fires formatted color string on change |
+| `onchange` | `Option<InputCallback>` | `None` | Fires the formatted color string when a change *commits*: a pick in the dropdown picker, or a typed edit at its commit boundary — blur or Enter (#226). Typing previews live in the swatch but reports only on commit |
 | `format` | `String` | `"hex"` | Output format |
 | `alpha` | `bool` | `false` | Show alpha slider in picker |
 | `swatches` | `Vec<String>` | `[]` | Preset swatch colors |

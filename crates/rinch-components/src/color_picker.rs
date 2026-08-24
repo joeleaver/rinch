@@ -400,6 +400,39 @@ impl Component for ColorPicker {
                 hex_input.set_attribute("data-oninput", &handler_id.to_string());
             }
 
+            // The commit boundary (issue #226): the typed gesture ended, so
+            // the author's mid-typing claim to the field (GH #231) lapses.
+            // Normalize a parseable commit to the canonical form ("336" →
+            // "#333366") — the #231 guard protects the author's text only
+            // while the gesture is live, and a committed shorthand left in
+            // the field would mislead any attribute-reading consumer (#235's
+            // residual). An unparseable commit reverts to the color the
+            // picker still holds. Either rewrite clears the typed record,
+            // like any effect rewrite. The signals are NOT touched here: every
+            // parseable state already landed through `oninput`, and re-setting
+            // them would re-notify the onchange coordinating effect.
+            {
+                let typed = typed.clone();
+                let hex_input_commit = hex_input.clone();
+                let handler_id = __scope.register_input_handler(move |value: String| {
+                    let committed = match parse_color(&value) {
+                        Some(parsed) => format_color(parsed, color_format),
+                        None => format_color(
+                            Hsva {
+                                h: hue.get(),
+                                s: sat.get(),
+                                v: val.get(),
+                                a: alpha.get(),
+                            },
+                            color_format,
+                        ),
+                    };
+                    *typed.borrow_mut() = None;
+                    hex_input_commit.set_attribute("value", &committed);
+                });
+                hex_input.set_attribute("data-onchange", &handler_id.to_string());
+            }
+
             controls.append_child(&hex_input);
             root.append_child(&controls);
 

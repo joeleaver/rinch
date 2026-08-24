@@ -279,10 +279,16 @@ impl RinchApp {
             // Take input focus through the arbiter: tears down a prior surface /
             // CE / editor / different input (re-clicking the same input is a no-op
             // teardown, so we just move its cursor below).
-            self.set_focus_target(FocusTarget::Input(nid));
+            let focus_changed = self.set_focus_target(FocusTarget::Input(nid));
             self.focused_input_handler_id = Some(handler_id);
             self.focused_input_value = value.clone();
             self.focused_input_node_id = Some(nid);
+            if focus_changed {
+                // A fresh gesture: snapshot the commit baseline (issue #226). A
+                // re-click inside the already-focused input is a caret move —
+                // the gesture (and its baseline) continues.
+                self.focused_input_baseline = value.clone();
+            }
 
             // Create EditableState from the current value
             let mut state = EditableState::new(StringDocument::with_text(&value));

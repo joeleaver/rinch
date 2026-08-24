@@ -335,25 +335,40 @@ impl RinchApp {
             return;
         };
 
-        let handler_id = {
+        let (input_handler_id, change_handler_id, value_changed) = {
             let mut d = doc.borrow_mut();
+            let old_value = d
+                .tree
+                .get(select_id)
+                .and_then(|n| n.attributes.get("value").cloned());
             // The resolver reads `value` back, so the closed control repaints with
             // the new label; mark the control dirty so paint re-runs.
             d.set_attribute(NodeId(select_id), "value", &value);
             d.mark_dirty(NodeId(select_id));
-            d.tree
-                .get(select_id)
-                .and_then(|n| n.attributes.get("data-oninput"))
-                .and_then(|s| s.parse::<usize>().ok())
+            let handler = |attr: &str| {
+                d.tree
+                    .get(select_id)
+                    .and_then(|n| n.attributes.get(attr))
+                    .and_then(|s| s.parse::<usize>().ok())
+            };
+            (
+                handler("data-oninput"),
+                handler("data-onchange"),
+                old_value.as_deref() != Some(&value),
+            )
         };
 
         self.close_select_popup();
 
-        // Report the chosen value to the app's onchange/oninput handler. Native
-        // `<select onchange>`/`oninput` both register as `data-oninput` (a
-        // `Fn(String)`), exactly like `<input>`. Dispatched with no doc borrow
-        // held, since the handler may mutate the DOM.
-        if let Some(hid) = handler_id {
+        // Report the chosen value to the app's handlers, `Fn(String)` exactly
+        // like `<input>`: `oninput` on every commit, then `onchange` — the
+        // commit boundary (issue #226) — only when the selection actually
+        // changed the value, matching HTML `<select>` semantics. Dispatched
+        // with no doc borrow held, since the handlers may mutate the DOM.
+        if let Some(hid) = input_handler_id {
+            events::dispatch_input_event(events::EventHandlerId(hid), value.clone());
+        }
+        if value_changed && let Some(hid) = change_handler_id {
             events::dispatch_input_event(events::EventHandlerId(hid), value);
         }
         self.scene_dirty = true;

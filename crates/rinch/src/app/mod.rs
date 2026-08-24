@@ -12,6 +12,8 @@ mod debug_commands;
 mod event_dispatch;
 mod focus;
 pub(crate) mod hit_testing;
+#[cfg(test)]
+mod input_commit_tests;
 mod select_widget;
 mod text_selection;
 
@@ -222,6 +224,15 @@ pub struct RinchApp {
     pub(crate) focused_input_handler_id: Option<usize>,
     /// Current accumulated text value for the focused text input.
     pub(crate) focused_input_value: String,
+    /// The focused input's value at the last commit point — focus-take, or an
+    /// Enter commit — for the `data-onchange` commit boundary (issue #226).
+    /// `focused_input_value` is the live per-keystroke buffer, so "did the
+    /// gesture change anything" needs this separate snapshot: re-reading the
+    /// `value` attribute at teardown would be circular for controlled inputs
+    /// (the attribute tracks the live buffer). Seeded only when
+    /// [`Self::set_focus_target`] reports an actual focus change — a re-click
+    /// inside the already-focused input moves the caret, not the baseline.
+    pub(crate) focused_input_baseline: String,
     /// Editable state for the focused text input (cursor, selection, undo).
     pub(crate) focused_input_state: Option<EditableState<StringDocument>>,
     /// DOM node ID of the currently focused text input.
@@ -312,6 +323,7 @@ impl RinchApp {
             has_previous_frame: false,
             focused_input_handler_id: None,
             focused_input_value: String::new(),
+            focused_input_baseline: String::new(),
             focused_input_state: None,
             focused_input_node_id: None,
             focused_input_preedit: None,
@@ -1408,47 +1420,81 @@ impl RinchApp {
         self.handle_input_edit_command(cmd);
     }
     fn handle_enter(&mut self) {
-        // Check if a text input is focused and has an onsubmit handler.
+        // Check if a text input is focused and has onchange/onsubmit handlers.
         // Probe liveness first: with a freed id the block below still runs, the
         // node lookups match nothing, and Enter is swallowed rather than falling
         // through to the global handlers (issue #141).
-        if self.live_focused_input_handler().is_some() {
-            // Use stored node_id if available, else linear scan
-            let submit_handler_id = if let Some(node_id) = self.focused_input_node_id {
-                if let Some(doc) = &self.doc {
-                    let d = doc.borrow();
-                    d.tree.nodes.get(node_id).and_then(|node| {
-                        node.attributes
-                            .get("data-onsubmit")
-                            .and_then(|s| s.parse::<usize>().ok())
-                    })
-                } else {
-                    None
-                }
-            } else if let Some(doc) = &self.doc {
+        if self.live_focused_input_handler().is_none() {
+            return;
+        }
+        // Resolve the focused input's node: the stored id, else a linear scan
+        // for the node carrying the focused oninput handler.
+        let node_id = self.focused_input_node_id.or_else(|| {
+            let doc = self.doc.as_ref()?;
+            let d = doc.borrow();
+            d.tree.nodes.iter().find_map(|(id, node)| {
+                node.attributes
+                    .get("data-oninput")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .filter(|&h| Some(h) == self.focused_input_handler_id)
+                    .map(|_| id)
+            })
+        });
+        let (change_handler_id, submit_handler_id) = match (node_id, &self.doc) {
+            (Some(nid), Some(doc)) => {
                 let d = doc.borrow();
-                d.tree.nodes.iter().find_map(|(_, node)| {
-                    node.attributes
-                        .get("data-oninput")
-                        .and_then(|s| s.parse::<usize>().ok())
-                        .filter(|&h| Some(h) == self.focused_input_handler_id)
-                        .and_then(|_| {
+                d.tree
+                    .nodes
+                    .get(nid)
+                    .map(|node| {
+                        let handler = |attr: &str| {
                             node.attributes
-                                .get("data-onsubmit")
+                                .get(attr)
                                 .and_then(|s| s.parse::<usize>().ok())
-                        })
-                })
-            } else {
-                None
-            };
-            if let Some(handler_id) = submit_handler_id {
-                events::dispatch_event(events::EventHandlerId(handler_id));
+                        };
+                        (handler("data-onchange"), handler("data-onsubmit"))
+                    })
+                    .unwrap_or((None, None))
+            }
+            _ => (None, None),
+        };
 
-                // After onsubmit, the handler may have changed the signal (e.g., cleared it).
-                // Re-read value and rebuild EditableState to stay in sync.
+        // Enter is an explicit commit (issue #226): fire `data-onchange` before
+        // `data-onsubmit` — HTML orders change before submit — and only if the
+        // value changed since the gesture began.
+        if self.focused_input_value != self.focused_input_baseline
+            && let Some(hid) = change_handler_id
+            && events::has_input_handler(events::EventHandlerId(hid))
+        {
+            events::dispatch_input_event(
+                events::EventHandlerId(hid),
+                self.focused_input_value.clone(),
+            );
+            // A controlled change handler may have rewritten the value (e.g. a
+            // normalize-on-commit); pull the rewrite into the editable state.
+            // Skipped when nothing was rewritten so the caret stays put.
+            let dom_value = node_id.and_then(|nid| {
+                let doc = self.doc.as_ref()?;
+                let d = doc.borrow();
+                d.tree
+                    .nodes
+                    .get(nid)
+                    .and_then(|n| n.attributes.get("value").cloned())
+            });
+            if dom_value.is_some_and(|v| v != self.focused_input_value) {
                 self.resync_input_state_from_dom();
             }
         }
+        if let Some(handler_id) = submit_handler_id {
+            events::dispatch_event(events::EventHandlerId(handler_id));
+
+            // After onsubmit, the handler may have changed the signal (e.g., cleared it).
+            // Re-read value and rebuild EditableState to stay in sync.
+            self.resync_input_state_from_dom();
+        }
+        // Enter committed: the gesture measures from here on, so the eventual
+        // real blur doesn't re-fire an already-committed change.
+        self.focused_input_baseline = self.focused_input_value.clone();
     }
     fn handle_arrow_up(&mut self, _shift: bool) {}
     fn handle_arrow_down(&mut self, _shift: bool) {}
@@ -1845,7 +1891,7 @@ impl RinchApp {
 
         // Take input focus through the arbiter (tears down a prior surface / CE /
         // editor / different input; re-focusing the same input is a no-op).
-        self.set_focus_target(FocusTarget::Input(node_id));
+        let focus_changed = self.set_focus_target(FocusTarget::Input(node_id));
 
         // Move DOM `:focus` too, like the generic-node branch above — the
         // programmatic path has no mousedown to do it, and the Node teardown
@@ -1858,6 +1904,11 @@ impl RinchApp {
         self.focused_input_handler_id = Some(handler_id);
         self.focused_input_value = value.clone();
         self.focused_input_node_id = Some(node_id);
+        if focus_changed {
+            // A fresh gesture: snapshot the commit baseline (issue #226) —
+            // re-focusing the already-focused input continues its gesture.
+            self.focused_input_baseline = value.clone();
+        }
 
         // Create EditableState with cursor at end
         let mut state = EditableState::new(StringDocument::with_text(&value));
