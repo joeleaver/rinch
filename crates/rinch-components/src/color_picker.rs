@@ -11,8 +11,8 @@ use rinch_core::{Component, Drag, InputCallback, Signal, batch, get_click_contex
 
 use crate::color_swatch::ColorSwatch;
 use crate::color_utils::{
-    ColorFormat, Hsva, format_color, hsv_to_rgb, hue_to_rgb_hex, parse_color, rgb_to_hex,
-    text_denotes,
+    ColorFormat, Hsva, denotes_same, format_color, hsv_to_rgb, hue_to_rgb_hex, parse_color,
+    rgb_to_hex, text_denotes,
 };
 
 /// Reactive callback type for string state.
@@ -45,22 +45,38 @@ impl Drop for ApplyGuard<'_> {
     }
 }
 
-/// Whether two colours are within the tolerance the `value_fn` binding uses to
-/// decide an external value is "meaningfully different". Kept as the single
-/// definition so a deferred apply is recognised by exactly the values that
-/// were considered worth writing.
+/// Merge a genuinely-foreign parsed colour into the picker's current state,
+/// keeping the degrees of freedom the value cannot carry (GH #227 part B):
+/// a grey keeps the current hue, a black keeps hue and saturation, so
+/// dragging back out of grey resumes the colour the author was working from.
 ///
-/// Distinct from `color_utils::denotes_same`/`text_denotes` (string-level,
-/// format-quantized): those judge whether *text* already shows a colour, this
-/// judges whether an *apply* is worth performing — and the deferred-apply
-/// recognition in the coordinating effect must always use the same predicate
-/// as the apply decision, whichever that is (GH #227: if the apply gate ever
-/// changes predicate, change both together).
-fn same_hsva(a: Hsva, b: Hsva) -> bool {
-    (a.h - b.h).abs() <= 0.5
-        && (a.s - b.s).abs() <= 0.005
-        && (a.v - b.v).abs() <= 0.005
-        && (a.a - b.a).abs() <= 0.005
+/// Carryability is judged at the same 8-bit precision as the echo gate's
+/// denotation comparisons: a value whose *rendering* is grey carries no
+/// usable hue — an `rgb()` written with fractional near-equal channels
+/// parses to a microscopic saturation whose derived hue is quantization
+/// noise, not intent — and a rendered black carries neither hue nor
+/// saturation. One exception adopts instead of keeping: `hsl(h, 0%, l)`
+/// states its hue outright, and the parser preserves it against an exact
+/// `s == 0.0` (every RGB-family grey parses to hue exactly 0.0 by
+/// convention — `rgb_to_hsv`'s `delta == 0` arm — so a nonzero hue at
+/// exactly zero saturation was authored, not fabricated; the zeros are
+/// exact in every parser arm).
+fn merge_unrepresentable(parsed: Hsva, current: Hsva) -> Hsva {
+    let rendered = hsv_to_rgb(parsed);
+    let level = |c: f64| (c * 255.0).round() as u8;
+    let (r, g, b) = (level(rendered.r), level(rendered.g), level(rendered.b));
+    let grey = r == g && g == b;
+    let black = grey && r == 0;
+    let hue_stated = parsed.s == 0.0 && parsed.h != 0.0;
+    Hsva {
+        h: if grey && !hue_stated {
+            current.h
+        } else {
+            parsed.h
+        },
+        s: if black { current.s } else { parsed.s },
+        ..parsed
+    }
 }
 
 /// An interactive color picker with saturation panel, hue/alpha sliders, hex input, and swatches.
@@ -523,11 +539,18 @@ impl Component for ColorPicker {
                     return;
                 }
                 if let Some(applied) = last_applied.take() {
-                    if same_hsva(hsv, applied) {
-                        // A *deferred* external apply: the flush ran after the
-                        // ApplyGuard fell (the apply happened under an ambient
-                        // batch), but this is still the colour the caller
-                        // handed us — silent, per GH #229.
+                    // A *deferred* external apply: the flush ran after the
+                    // ApplyGuard fell (the apply happened under an ambient
+                    // batch), but this is still the colour the caller handed
+                    // us — silent, per GH #229. Exact equality is the right
+                    // recognition (GH #227/#229): the marker holds what the
+                    // apply actually *wrote* — the merged colour, kept
+                    // channels included, never the raw parse — and no
+                    // arithmetic sits between those signal writes and this
+                    // read, so the caller's apply flushes back bit-identical,
+                    // while anything an author changed in between fails the
+                    // match and reports below, as it must.
+                    if hsv == applied {
                         return;
                     }
                 }
@@ -541,15 +564,52 @@ impl Component for ColorPicker {
             let last_applied = last_external_apply.clone();
             __scope.create_effect(move || {
                 let external = value_fn();
+                // Only a parseable external value can apply: garbage and
+                // half-typed text change nothing.
                 if let Some(parsed) = parse_color(&external) {
-                    // Only update if meaningfully different to avoid feedback loops
                     let current = Hsva {
                         h: hue.get(),
                         s: sat.get(),
                         v: val.get(),
                         a: alpha.get(),
                     };
-                    if !same_hsva(parsed, current) {
+                    // Apply only a genuinely foreign value — never the round
+                    // trip of this picker's own state (GH #227). Formatting
+                    // quantizes to 8-bit RGB and `rgb_to_hsv` amplifies the
+                    // quantization by 60/(s·v), so an echoed emission
+                    // routinely parses to a hue and saturation measurably off
+                    // the signals it was formatted from (at s = 0 the round
+                    // trip returns hue exactly 0) — per-channel epsilons
+                    // mistook that drift for an external change and rewrote
+                    // the picker with its own echo. The external value is
+                    // "self" when it denotes the colour the picker holds
+                    // (full-channel — `text_denotes`), or the colour the
+                    // picker currently *emits* (`denotes_same` against the
+                    // formatted emission): a display format that drops alpha
+                    // makes the emission legitimately differ from the held
+                    // colour in alpha alone, so an alpha drag under `Hex`
+                    // echoes back opaque and only the second comparison
+                    // recognises it. Both comparisons render under `Hexa`,
+                    // never the display format itself — comparing under `Hex`
+                    // would erase a genuinely inbound alpha-only change. The
+                    // dual corner is accepted: under an alpha-dropping
+                    // format, an inbound value that restates the emission's
+                    // RGB with an explicitly opaque alpha ("rgba(r, g, b,
+                    // 1)") is indistinguishable from a normalizing store's
+                    // echo of that emission, and does not apply — alpha is
+                    // externally drivable under the formats that carry it.
+                    let echoes_self = text_denotes(&external, current)
+                        || denotes_same(
+                            &external,
+                            &format_color(current, color_format),
+                            ColorFormat::Hexa,
+                        );
+                    if !echoes_self {
+                        // A foreign value still cannot carry every degree of
+                        // freedom — keep the channels it cannot express
+                        // rather than adopting fabricated ones; see
+                        // `merge_unrepresentable`.
+                        let applied = merge_unrepresentable(parsed, current);
                         // These four writes are one apply: batched, so every
                         // observer runs once against the completed colour, and
                         // silent — the caller handed us this value. When this
@@ -561,14 +621,18 @@ impl Component for ColorPicker {
                         // inside a caller's `batch()`), the flush is deferred
                         // past the guard's drop — the marker records the
                         // applied colour so the coordinating effect can stay
-                        // silent about it when the flush finally lands.
-                        last_applied.set(Some(parsed));
+                        // silent about it when the flush finally lands. The
+                        // marker holds `applied` — what the batch writes,
+                        // kept channels included — never the raw parse, so
+                        // the coordinating effect can recognise the flush by
+                        // exact equality.
+                        last_applied.set(Some(applied));
                         let _applying = ApplyGuard::raise(&applying_external);
                         batch(|| {
-                            hue.set(parsed.h);
-                            sat.set(parsed.s);
-                            val.set(parsed.v);
-                            alpha.set(parsed.a);
+                            hue.set(applied.h);
+                            sat.set(applied.s);
+                            val.set(applied.v);
+                            alpha.set(applied.a);
                         });
                     }
                 }

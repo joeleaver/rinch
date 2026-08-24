@@ -282,7 +282,7 @@ fn parse_rgb_css(s: &str) -> Option<Hsva> {
         1.0
     };
     // f64::FromStr accepts "nan"/"inf": a NaN channel would poison the
-    // picker's signals (every `same_hsva` involving NaN is false, so a
+    // picker's signals (every comparison involving NaN is false, so a
     // value_fn apply of such a string re-applies forever). Not a colour.
     if ![r, g, b, a].iter().all(|c| c.is_finite()) {
         return None;
@@ -356,7 +356,9 @@ pub fn format_color(hsv: Hsva, format: ColorFormat) -> String {
 /// This is the write-back guard the colour components share (GH #231): a
 /// field whose text already denotes the colour about to be displayed is the
 /// author's to keep, mid-keystroke text included. Deliberately public — the
-/// `value_fn` comparison end (GH #227) reuses the same equivalence.
+/// `value_fn` apply gate (GH #227) reuses the same equivalence, passing
+/// [`ColorFormat::Hexa`] so the comparison keeps every channel instead of
+/// folding away what the display format drops.
 pub fn denotes_same(a: &str, b: &str, format: ColorFormat) -> bool {
     let (a, b) = (a.trim(), b.trim());
     if a == b {
