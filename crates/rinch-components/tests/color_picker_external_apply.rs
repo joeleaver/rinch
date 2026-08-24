@@ -204,13 +204,9 @@ fn sat_of(color: &str) -> f64 {
 /// noise ("left: 40.000000596%"), so callers compare within a tolerance.
 fn percent_of(style: &str, key: &str) -> f64 {
     let start = style.find(key).expect("style carries the key") + key.len();
-    style[start..]
-        .split('%')
-        .next()
-        .expect("a % terminates the value")
-        .trim()
-        .parse()
-        .expect("the value is numeric")
+    let rest = &style[start..];
+    let end = rest.find('%').expect("a % terminates the value");
+    rest[..end].trim().parse().expect("the value is numeric")
 }
 
 /// An external value change is not a user act, so it emits nothing.
@@ -653,5 +649,106 @@ fn a_foreign_grey_arriving_at_mount_inside_a_batch_stays_silent() {
     assert!(
         (hue_left - hue_of(REMOTE) / 3.6).abs() < 0.01,
         "the seed's hue survives the grey it was bound to: left {hue_left}%"
+    );
+}
+
+/// An achromatic value that *states* its hue — `hsl(h, 0%, l)` — carries it.
+///
+/// The hsl parse path preserves a stated hue against an exact `s == 0`
+/// (RGB-family greys parse to hue exactly 0 by convention), so the merge
+/// adopts the authored hue instead of keeping the current one: a consumer
+/// persisting picker state as hsl round-trips grey without losing the hue.
+#[test]
+fn a_foreign_hsl_grey_carries_its_stated_hue() {
+    let picker = Picker::mount(REMOTE, Echo::Back); // h ≈ 266.7
+
+    picker.store.set("hsl(240, 0%, 50%)".to_string());
+
+    assert_eq!(picker.displayed(), "#808080", "the grey itself applies");
+    let hue_left = percent_of(
+        &picker.thumb_style("rinch-color-picker__hue-thumb"),
+        "left: ",
+    );
+    assert!(
+        (hue_left - 240.0 / 3.6).abs() < 0.01,
+        "the stated hue lands instead of being merged away: left {hue_left}%"
+    );
+    assert!(
+        picker.emissions().is_empty(),
+        "an external apply is silent: {:?}",
+        picker.emissions()
+    );
+}
+
+/// Carryability is judged at the gate's own 8-bit precision: an `rgb()` grey
+/// written with fractional channels parses to a microscopic saturation whose
+/// derived hue is quantization noise — rendered grey, it carries no more hue
+/// than `#808080` does, and the current hue is kept.
+#[test]
+fn a_fractional_near_grey_is_still_a_grey() {
+    let picker = Picker::mount(REMOTE, Echo::Back);
+
+    picker
+        .store
+        .set("rgb(127.9999999999, 128, 128)".to_string());
+
+    assert_eq!(picker.displayed(), "#808080");
+    let hue_left = percent_of(
+        &picker.thumb_style("rinch-color-picker__hue-thumb"),
+        "left: ",
+    );
+    assert!(
+        (hue_left - hue_of(REMOTE) / 3.6).abs() < 0.01,
+        "sub-8-bit chroma is noise, not a stated hue: left {hue_left}%"
+    );
+}
+
+/// A value that *renders* black carries neither hue nor saturation, even
+/// when a sub-8-bit channel gives its parse a full-range saturation.
+///
+/// `rgb(0, 0, 0.001)` parses to s = 1.0, h = 240 — but it denotes `#000000`,
+/// so adopting that parse would snap the panel to a corner nobody can see.
+#[test]
+fn a_sub_8bit_blue_black_is_still_a_black() {
+    let picker = Picker::mount(REMOTE, Echo::Back);
+
+    picker.store.set("rgb(0, 0, 0.001)".to_string());
+
+    assert_eq!(picker.displayed(), "#000000");
+    let hue_left = percent_of(
+        &picker.thumb_style("rinch-color-picker__hue-thumb"),
+        "left: ",
+    );
+    assert!((hue_left - hue_of(REMOTE) / 3.6).abs() < 0.01, "hue kept");
+    let sat_left = percent_of(&picker.thumb_style("rinch-color-picker__thumb"), "left: ");
+    assert!(
+        (sat_left - sat_of(REMOTE) * 100.0).abs() < 0.01,
+        "saturation kept: left {sat_left}%"
+    );
+}
+
+/// The accepted dual of the emission comparison: under an alpha-dropping
+/// display format, an inbound value that restates the current RGB with an
+/// explicitly opaque alpha is indistinguishable from a normalizing store's
+/// echo of the emission — it does not apply.
+///
+/// This pins the trade-off, not a defect: recognising it as foreign would
+/// make a normalizing store's echo snap a mid-drag alpha back to opaque
+/// (the exact #227 failure mode). Alpha is externally drivable under the
+/// formats whose emission carries it (`hexa`, `rgba`, `hsla`).
+#[test]
+fn an_opaque_restatement_of_the_emission_reads_as_echo_under_hex() {
+    let picker = Picker::mount(REMOTE, Echo::Back); // default format: Hex
+
+    picker.store.set("rgba(136, 68, 221, 0.25)".to_string());
+    picker.store.set("rgba(136, 68, 221, 1)".to_string());
+
+    let left = percent_of(
+        &picker.thumb_style("rinch-color-picker__alpha-thumb"),
+        "left: ",
+    );
+    assert!(
+        (left - 25.0).abs() < 0.01,
+        "indistinguishable from a normalizing echo, so the alpha holds: left {left}%"
     );
 }

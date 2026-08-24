@@ -282,7 +282,7 @@ fn parse_rgb_css(s: &str) -> Option<Hsva> {
         1.0
     };
     // f64::FromStr accepts "nan"/"inf": a NaN channel would poison the
-    // picker's signals (every `same_hsva` involving NaN is false, so a
+    // picker's signals (every comparison involving NaN is false, so a
     // value_fn apply of such a string re-applies forever). Not a colour.
     if ![r, g, b, a].iter().all(|c| c.is_finite()) {
         return None;

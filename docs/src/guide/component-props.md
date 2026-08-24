@@ -370,7 +370,18 @@ untouched, so dragging saturation down to grey and back resumes the original
 hue, and the alpha slider works under the default `hex` format. A genuinely
 foreign value (one that denotes a different colour, alpha included) still
 applies — and even then, channels the value cannot carry are kept rather than
-fabricated: a grey keeps the current hue, a black keeps hue and saturation.
+fabricated: a grey keeps the current hue (unless it *states* one, as
+`hsl(240, 0%, 50%)` does — a stated hue is adopted), a black keeps hue and
+saturation, judged by what the value renders at 8-bit rather than by exact
+parse floats. One corner is deliberately conceded: under an alpha-dropping
+display format, an inbound value that restates the picker's current RGB with
+an explicitly opaque alpha (`rgba(r, g, b, 1)`) is indistinguishable from a
+normalizing store's echo of the emission and does not apply — bind an
+alpha-carrying format (`hexa`, `rgba`, `hsla`) when external writes need to
+drive alpha. More generally, the echo test judges identity at 8-bit RGB: an
+inbound change too small to move the rendered colour by a full 8-bit step —
+such as a small stated-hue move at very low chroma on an `hsl`-format wire —
+reads as an echo and does not apply.
 
 **The text field is the author's while they type.** The hex field parses on
 every keystroke, and a valid *prefix* of the colour being typed (`#336` on the
