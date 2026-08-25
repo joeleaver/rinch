@@ -16,7 +16,18 @@
 //! **Focus is click-driven** (design A10, like desktop): a `mousedown` inside a
 //! `[data-pm-editor]` focuses that editor; a `mousedown` into another text field blurs
 //! it. Physical keys (all Latin text, shortcuts, navigation, selection) are handled via
-//! the document-level listeners — no `contenteditable` needed.
+//! the document-level listeners — no `contenteditable` needed. A *touch* tap also
+//! focuses the capture target from its `pointerup` (see [`handle_touch_tap`]), because
+//! the compatibility `mousedown` a tap synthesizes is too late to count as the user
+//! gesture iOS requires before it will raise the on-screen keyboard.
+//!
+//! **Software keyboards never reach `keydown`.** Android reports every printable key as
+//! `key: "Unidentified"` / `keyCode: 229` and carries the text on `beforeinput` alone;
+//! the same is true of swipe typing, dictation, and the platform edit menu. So the
+//! capture target also listens for `beforeinput` ([`on_before_input`]), which maps the
+//! event's `inputType` onto the same handle calls the keymap uses. The two channels
+//! cannot double up: a key `handle_keydown` consumes is `preventDefault`ed, and a
+//! cancelled `keydown` fires no `beforeinput`.
 //!
 //! **Clipboard + IME ride a hidden capture target.** A plain `<div>` (the container is
 //! deliberately not `contenteditable`) receives no `paste`/`cut`/`copy`/
@@ -60,7 +71,16 @@ thread_local! {
     /// Whether an IME composition is in progress. While set, the keydown handler yields
     /// every key to the textarea + IME (the composed text arrives via composition events).
     static COMPOSING: Cell<bool> = const { Cell::new(false) };
+    /// The in-flight touch/pen contact that started inside an editor, as
+    /// `(pointer_id, client_x, client_y)`. A release near that point is a tap rather
+    /// than a scroll, and focuses the capture target (see `handle_touch_tap`).
+    static TOUCH_TAP: Cell<Option<(i32, f32, f32)>> = const { Cell::new(None) };
 }
+
+/// How far (CSS px) a touch/pen contact may drift between `pointerdown` and `pointerup`
+/// and still count as a tap. Past this it was a scroll, and raising the on-screen
+/// keyboard for a scroll would be maddening.
+const TAP_SLOP: f32 = 10.0;
 
 fn focused_editor() -> Option<usize> {
     FOCUSED_EDITOR.with(|c| c.get())
@@ -205,14 +225,19 @@ fn blur_capture_target() {
     }
 }
 
-/// Attach the clipboard + IME composition listeners to the capture target, once
-/// when it is created. These events only fire on the focused editable, so scoping
-/// them to our textarea avoids hijacking copy/paste for any other page input.
+/// Attach the clipboard, IME composition, and `beforeinput` listeners to the capture
+/// target, once when it is created. These events only fire on the focused editable, so
+/// scoping them to our textarea avoids hijacking copy/paste — or a soft keyboard's
+/// edits — for any other page input.
 fn install_capture_listeners(ta: &web_sys::HtmlTextAreaElement) {
     let target: &web_sys::EventTarget = ta.as_ref();
     add_target_listener(target, "copy", |e: web_sys::ClipboardEvent| on_copy(&e));
     add_target_listener(target, "cut", |e: web_sys::ClipboardEvent| on_cut(&e));
     add_target_listener(target, "paste", |e: web_sys::ClipboardEvent| on_paste(&e));
+    add_target_listener(target, "beforeinput", |e: web_sys::InputEvent| {
+        on_before_input(&e);
+    });
+    add_target_listener(target, "input", |_e: web_sys::InputEvent| on_input());
     add_target_listener(
         target,
         "compositionstart",
@@ -374,6 +399,136 @@ fn on_composition_end(event: &web_sys::CompositionEvent) {
     }
     // The textarea accumulated the composed text; clear it so it stays empty.
     if let Some(ta) = capture_target() {
+        ta.set_value("");
+    }
+}
+
+// ── `beforeinput` (software keyboards, dictation, the edit menu) ──────────────
+//
+// A physical key never gets here: `handle_keydown` consumes it and `preventDefault`s,
+// and a cancelled `keydown` fires no `beforeinput`. What is left is everything a
+// `keydown` cannot express — Android's `Unidentified` / 229 keys, swipe typing,
+// dictation, the platform edit menu, and the undo/redo gestures — all of which the
+// browser describes only by `inputType`.
+
+/// What a `beforeinput` `inputType` asks the model to do.
+///
+/// Split out from [`on_before_input`] so the mapping is testable without a browser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditIntent {
+    /// Insert the event's `data` (replacing any selection).
+    InsertText,
+    /// Run a named editor command.
+    Command(&'static str),
+    /// Extend the selection over `motion`, then delete it — the word/line deletes a
+    /// soft keyboard asks for, which the base keymap has no single command for.
+    DeleteTo(CursorMotion),
+    /// Not ours: already applied by a dedicated handler, owned by the composition
+    /// events, or not expressible on the model.
+    Ignore,
+}
+
+/// Map a `beforeinput` `inputType` onto an [`EditIntent`].
+///
+/// Names come from the Input Events spec; the set here is what browsers actually emit
+/// for an editable host. Anything unlisted is [`EditIntent::Ignore`] — silently doing
+/// nothing beats guessing at an edit the user did not ask for.
+fn edit_intent(input_type: &str) -> EditIntent {
+    match input_type {
+        // Plain typing, swipe typing, dictation, an emoji picker.
+        "insertText" => EditIntent::InsertText,
+        // The composition events own the preedit overlay and the commit; applying this
+        // as well would type every composed word twice.
+        "insertCompositionText" => EditIntent::Ignore,
+        // Autocorrect / a suggestion-bar tap. Honouring it means replacing the range in
+        // `getTargetRanges()`, which we cannot resolve to model positions here — a bare
+        // insert would duplicate the corrected word. The capture target sets
+        // `autocorrect="off"` and `spellcheck=false`, so this should never fire.
+        "insertReplacementText" => EditIntent::Ignore,
+        "insertParagraph" => EditIntent::Command("enter"),
+        "insertLineBreak" => EditIntent::Command("insertHardBreak"),
+        // `deleteContent*` is a single char (or the selection, which both commands
+        // delete first); `deleteContent` itself only ever means "the selection".
+        "deleteContent" => EditIntent::Command("deleteSelection"),
+        "deleteContentBackward" => EditIntent::Command("deleteCharBackward"),
+        "deleteContentForward" => EditIntent::Command("deleteCharForward"),
+        "deleteWordBackward" => EditIntent::DeleteTo(CursorMotion::WordLeft),
+        "deleteWordForward" => EditIntent::DeleteTo(CursorMotion::WordRight),
+        "deleteSoftLineBackward" | "deleteHardLineBackward" => {
+            EditIntent::DeleteTo(CursorMotion::LineStart)
+        }
+        "deleteSoftLineForward" | "deleteHardLineForward" => {
+            EditIntent::DeleteTo(CursorMotion::LineEnd)
+        }
+        "historyUndo" => EditIntent::Command("undo"),
+        "historyRedo" => EditIntent::Command("redo"),
+        // The `cut` / `paste` listeners already ran and applied their own edit.
+        "deleteByCut" | "insertFromPaste" | "insertFromPasteAsQuotation" => EditIntent::Ignore,
+        _ => EditIntent::Ignore,
+    }
+}
+
+/// Delete from the caret to `motion`'s target. An already non-empty selection is
+/// deleted as it stands, matching what the browser would have done.
+fn delete_to(handle: &EditorHandle, motion: CursorMotion) -> bool {
+    if handle.selection().is_empty() {
+        handle.move_cursor(motion, true);
+    }
+    handle.command("deleteSelection")
+}
+
+/// Route a `beforeinput` on the capture textarea into the focused editor's model.
+///
+/// The textarea is never the document — whatever the browser was about to do to it is
+/// wrong — so every event we recognise is `preventDefault`ed and mirrored onto the
+/// model instead. An in-flight composition is left entirely alone: cancelling
+/// `insertCompositionText` breaks the IME, and the composition events already commit it.
+fn on_before_input(event: &web_sys::InputEvent) {
+    if event.is_composing() || COMPOSING.with(|c| c.get()) {
+        return;
+    }
+    let Some((_, handle)) = focused_handle() else {
+        return;
+    };
+    let intent = edit_intent(&event.input_type());
+    if intent == EditIntent::Ignore {
+        // Still keep the textarea out of it: the default would leave text behind for a
+        // later `copy` to pick up (see `on_input`).
+        event.prevent_default();
+        return;
+    }
+    event.prevent_default();
+    let handled = match intent {
+        EditIntent::InsertText => match event.data() {
+            Some(text) if !text.is_empty() => handle.insert_text(&text),
+            _ => false,
+        },
+        EditIntent::Command(name) => handle.command(name),
+        EditIntent::DeleteTo(motion) => delete_to(&handle, motion),
+        EditIntent::Ignore => false,
+    };
+    // Typing is a caret move as much as an edit: drop any vertical-motion goal column
+    // so a following Up/Down starts from where the text actually landed.
+    set_goal_x(None);
+    if handled {
+        refresh_caret();
+    }
+}
+
+/// Keep the capture textarea empty.
+///
+/// [`on_before_input`] cancels everything it sees, so this normally has nothing to do —
+/// but a browser that skipped `beforeinput`, or an `inputType` that arrived while the
+/// editor was unfocused, can still leave text in the textarea. A non-empty textarea is
+/// what a subsequent `copy` would put on the clipboard, so clear it. Composition is
+/// exempt: the IME needs its buffer until `compositionend`.
+fn on_input() {
+    if COMPOSING.with(|c| c.get()) {
+        return;
+    }
+    if let Some(ta) = capture_target()
+        && !ta.value().is_empty()
+    {
         ta.set_value("");
     }
 }
@@ -770,15 +925,74 @@ fn blink_tick() {
 
 // ── Installation ─────────────────────────────────────────────────────────────
 
-/// True when a pointerdown lands inside a mounted editor (`[data-pm-editor]`),
-/// so the editor consumes it in the capture phase before the generic delegation
-/// (mirrors `handle_mousedown` returning `true` for an in-editor click).
-fn pointerdown_targets_editor(event: &web_sys::PointerEvent) -> bool {
+/// True when a pointer event lands inside a mounted editor (`[data-pm-editor]`).
+/// On `pointerdown` this is what makes the editor consume it in the capture phase
+/// before the generic delegation (mirroring `handle_mousedown` returning `true` for an
+/// in-editor click); on `pointerup` it gates the touch-tap focus below.
+fn pointer_targets_editor(event: &web_sys::PointerEvent) -> bool {
     event
         .target()
         .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
         .and_then(|el| el.closest("[data-pm-editor]").ok().flatten())
         .is_some()
+}
+
+/// Whether a contact that went down at `start` and came up at `end` was a tap rather
+/// than a scroll — both axes within [`TAP_SLOP`].
+fn is_tap(start: (f32, f32), end: (f32, f32)) -> bool {
+    (end.0 - start.0).abs() <= TAP_SLOP && (end.1 - start.1).abs() <= TAP_SLOP
+}
+
+/// Record a touch/pen contact that went down inside an editor, so its release can be
+/// classified as a tap. Mouse pointers are ignored — they get focus from `mousedown`.
+fn note_touch_down(event: &web_sys::PointerEvent) {
+    if event.pointer_type() == "mouse" || !event.is_primary() {
+        return;
+    }
+    TOUCH_TAP.with(|c| {
+        c.set(Some((
+            event.pointer_id(),
+            event.client_x() as f32,
+            event.client_y() as f32,
+        )))
+    });
+}
+
+/// Focus an editor from a touch/pen **tap**, placing the caret where it landed.
+///
+/// The mouse path cannot cover this. A tap's compatibility `mousedown` is synthesized
+/// late, after `pointerup` — too late to be the *user gesture* iOS requires before it
+/// will raise the on-screen keyboard for a programmatic `.focus()` — and on a page that
+/// consumes the pointer sequence it may never be synthesized at all, leaving the editor
+/// visibly focused but with no model focus, so every keystroke went nowhere. Running
+/// the same handler here, from the real touch event, makes the tap self-sufficient; the
+/// compatibility `mousedown` that may follow is idempotent (same point, same caret).
+///
+/// A contact that drifted past [`TAP_SLOP`] was a scroll, not a tap, and is dropped —
+/// panning a manuscript must not pop the keyboard.
+fn handle_touch_tap(event: &web_sys::PointerEvent, doc: &web_sys::Document) {
+    // Read before clearing, and clear only for the contact we recorded: a second
+    // finger's release must not discard the tap the first one is still making.
+    let Some((pointer_id, x, y)) = TOUCH_TAP.with(|c| c.get()) else {
+        return;
+    };
+    if event.pointer_id() != pointer_id {
+        return;
+    }
+    TOUCH_TAP.with(|c| c.set(None));
+    if !is_tap((x, y), (event.client_x() as f32, event.client_y() as f32)) {
+        return;
+    }
+    if !pointer_targets_editor(event) {
+        return;
+    }
+    // `PointerEvent` *is* a `MouseEvent`, so the click handler takes it as-is. Its
+    // `detail` is 0 for touch, which lands on the plain place-the-caret arm; a
+    // double-tap's word select still comes from the compatibility `mousedown`.
+    handle_mousedown(event.as_ref(), doc);
+    // Drag-select follows `mousemove` with a button held — unreachable from touch — so
+    // never leave a touch tap's anchor armed behind it.
+    registry::end_drag();
 }
 
 /// Add a capture-phase `document` listener leaked for the page lifetime.
@@ -885,9 +1099,23 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
         browser_doc,
         "pointerdown",
         move |e: web_sys::PointerEvent| {
-            if pointerdown_targets_editor(&e) {
+            if pointer_targets_editor(&e) {
+                // Remember the contact so `pointerup` can tell a tap from a scroll and
+                // raise the on-screen keyboard inside the gesture (see `handle_touch_tap`).
+                note_touch_down(&e);
                 e.stop_propagation();
             }
+        },
+    );
+    let doc = browser_doc.clone();
+    add_capture(browser_doc, "pointerup", move |e: web_sys::PointerEvent| {
+        handle_touch_tap(&e, &doc);
+    });
+    add_capture(
+        browser_doc,
+        "pointercancel",
+        move |_e: web_sys::PointerEvent| {
+            TOUCH_TAP.with(|c| c.set(None));
         },
     );
     let doc = browser_doc.clone();
@@ -923,5 +1151,114 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
         )
         .ok();
         tick.forget();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── `beforeinput` → model intent ──────────────────────────────────────────
+    //
+    // This mapping is the whole soft-keyboard path: Android reports printable keys as
+    // `Unidentified` / 229, so `handle_keydown` never sees them and `inputType` is the
+    // only description of the edit we get.
+
+    #[test]
+    fn plain_typing_inserts_the_events_data() {
+        assert_eq!(edit_intent("insertText"), EditIntent::InsertText);
+    }
+
+    #[test]
+    fn enter_and_shift_enter_split_and_break() {
+        assert_eq!(edit_intent("insertParagraph"), EditIntent::Command("enter"));
+        assert_eq!(
+            edit_intent("insertLineBreak"),
+            EditIntent::Command("insertHardBreak")
+        );
+    }
+
+    #[test]
+    fn the_delete_family_maps_to_commands_or_motions() {
+        assert_eq!(
+            edit_intent("deleteContent"),
+            EditIntent::Command("deleteSelection")
+        );
+        assert_eq!(
+            edit_intent("deleteContentBackward"),
+            EditIntent::Command("deleteCharBackward")
+        );
+        assert_eq!(
+            edit_intent("deleteContentForward"),
+            EditIntent::Command("deleteCharForward")
+        );
+        assert_eq!(
+            edit_intent("deleteWordBackward"),
+            EditIntent::DeleteTo(CursorMotion::WordLeft)
+        );
+        assert_eq!(
+            edit_intent("deleteWordForward"),
+            EditIntent::DeleteTo(CursorMotion::WordRight)
+        );
+        // "soft" and "hard" line deletes differ only in how the browser found the
+        // boundary; both mean "to the edge of this line" on the model.
+        for t in ["deleteSoftLineBackward", "deleteHardLineBackward"] {
+            assert_eq!(
+                edit_intent(t),
+                EditIntent::DeleteTo(CursorMotion::LineStart)
+            );
+        }
+        for t in ["deleteSoftLineForward", "deleteHardLineForward"] {
+            assert_eq!(edit_intent(t), EditIntent::DeleteTo(CursorMotion::LineEnd));
+        }
+    }
+
+    #[test]
+    fn history_gestures_reach_the_history_plugin() {
+        assert_eq!(edit_intent("historyUndo"), EditIntent::Command("undo"));
+        assert_eq!(edit_intent("historyRedo"), EditIntent::Command("redo"));
+    }
+
+    #[test]
+    fn edits_another_handler_already_applied_are_ignored() {
+        // Composition: the composition events show the preedit and commit it. Applying
+        // this too would type every composed word twice.
+        assert_eq!(edit_intent("insertCompositionText"), EditIntent::Ignore);
+        // Clipboard: `on_cut` / `on_paste` ran on the native ClipboardEvent.
+        for t in [
+            "deleteByCut",
+            "insertFromPaste",
+            "insertFromPasteAsQuotation",
+        ] {
+            assert_eq!(edit_intent(t), EditIntent::Ignore);
+        }
+    }
+
+    #[test]
+    fn autocorrect_is_ignored_rather_than_duplicated() {
+        // Honouring it needs `getTargetRanges()` resolved to model positions; a bare
+        // insert would leave both the typo and the correction.
+        assert_eq!(edit_intent("insertReplacementText"), EditIntent::Ignore);
+    }
+
+    #[test]
+    fn an_unknown_input_type_is_a_no_op() {
+        assert_eq!(edit_intent("insertFromDrop"), EditIntent::Ignore);
+        assert_eq!(edit_intent("formatBold"), EditIntent::Ignore);
+        assert_eq!(edit_intent(""), EditIntent::Ignore);
+    }
+
+    // ── Tap vs scroll ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_still_contact_is_a_tap_and_a_swipe_is_not() {
+        assert!(is_tap((100.0, 200.0), (100.0, 200.0)));
+        // Fingers wobble; a few px is still a tap.
+        assert!(is_tap((100.0, 200.0), (104.0, 197.0)));
+        assert!(is_tap((100.0, 200.0), (100.0 + TAP_SLOP, 200.0 - TAP_SLOP)));
+        // A scroll must not raise the keyboard, in either direction or axis.
+        assert!(!is_tap((100.0, 200.0), (100.0, 260.0)));
+        assert!(!is_tap((100.0, 200.0), (100.0, 140.0)));
+        assert!(!is_tap((100.0, 200.0), (160.0, 200.0)));
     }
 }
