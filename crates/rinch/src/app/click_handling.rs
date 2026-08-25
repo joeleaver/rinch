@@ -272,17 +272,67 @@ impl RinchApp {
             false
         };
 
+        // Pre-resolve the click's claim (data-rid / data-drag-window) BEFORE
+        // any focus change below: a blurred input's `data-onchange` commit
+        // (issue #226) is user code that may re-render the clicked subtree, and
+        // node ids are recycled slab indices — walking with the stale `hit_id`
+        // after the commit dispatched an unrelated element's handler in the
+        // #244 review's empirical probe. The claim is re-verified against the
+        // post-commit tree before dispatching.
+        //
+        // The liveness probe is what keeps a *stale* `data-rid` from swallowing
+        // the click. Disposing a scope frees its handlers (issue #141) but
+        // nothing strips the attribute from a node that outlives them, and this
+        // walk commits to the first node carrying one — so without the probe a
+        // dead button would consume clicks that belong to the row, backdrop or
+        // modal wrapping it, silently and permanently.
+        enum ClickClaim {
+            Rid(usize, usize), // (node_id, handler_id)
+            DragWindow,
+        }
+        let click_claim = {
+            let mut claim = None;
+            let mut cur = Some(hit_id);
+            while let Some(node_id) = cur {
+                let Some(node) = d.tree.get(node_id) else {
+                    break;
+                };
+                if let Some(rid_str) = node.attributes.get("data-rid")
+                    && let Ok(handler_id) = rid_str.parse::<usize>()
+                    && events::has_click_handler(events::EventHandlerId(handler_id))
+                {
+                    claim = Some(ClickClaim::Rid(node_id, handler_id));
+                    break;
+                }
+                if node.attributes.contains_key("data-drag-window") {
+                    claim = Some(ClickClaim::DragWindow);
+                    break;
+                }
+                cur = node.parent;
+            }
+            claim
+        };
+
         // Drop the borrow before calling methods that re-borrow self.doc
         drop(d);
 
         if let Some((nid, handler_id, value)) = found_input_focus {
             // Take input focus through the arbiter: tears down a prior surface /
             // CE / editor / different input (re-clicking the same input is a no-op
-            // teardown, so we just move its cursor below).
-            self.set_focus_target(FocusTarget::Input(nid));
+            // teardown, so we just move its cursor below). The blurred input's
+            // change commit is deferred until this input's state is installed —
+            // the handler is user code and may rewrite the very input being
+            // focused (#244 review).
+            let (focus_changed, commit) = self.set_focus_target_deferred(FocusTarget::Input(nid));
             self.focused_input_handler_id = Some(handler_id);
             self.focused_input_value = value.clone();
             self.focused_input_node_id = Some(nid);
+            if focus_changed {
+                // A fresh gesture: snapshot the commit baseline (issue #226). A
+                // re-click inside the already-focused input is a caret move —
+                // the gesture (and its baseline) continues.
+                self.focused_input_baseline = value.clone();
+            }
 
             // Create EditableState from the current value
             let mut state = EditableState::new(StringDocument::with_text(&value));
@@ -291,6 +341,17 @@ impl RinchApp {
             self.focused_input_state = Some(state);
             self.sync_input_cursor_to_dom();
             self.scene_dirty = true;
+
+            // Installation complete: fire the blurred input's commit, then adopt
+            // any rewrite its handler made to THIS input (the Enter path's
+            // pattern — resync no-ops when the DOM value already matches, so
+            // the click-placed caret survives the common case).
+            let commit_fired = commit.is_some();
+            Self::fire_input_commit(commit);
+            if commit_fired {
+                self.resync_input_state_from_dom();
+                self.focused_input_baseline = self.focused_input_value.clone();
+            }
         } else if !hit_inside_focused_node
             && matches!(
                 self.focus_target,
@@ -304,81 +365,79 @@ impl RinchApp {
             self.set_focus_target(FocusTarget::None);
         }
 
-        // Re-borrow for the data-rid walk
-        let d = doc.borrow();
-        let mut current = Some(hit_id);
-        while let Some(node_id) = current {
-            if let Some(node) = d.tree.get(node_id) {
-                // Check for click handler.
-                //
-                // The liveness probe is what keeps a *stale* `data-rid` from
-                // swallowing the click. Disposing a scope frees its handlers
-                // (issue #141) but nothing strips the attribute from a node that
-                // outlives them, and this walk commits to the first node
-                // carrying one — so without the probe a dead button would
-                // consume clicks that belong to the row, backdrop or modal
-                // wrapping it, silently and permanently.
-                if let Some(rid_str) = node.attributes.get("data-rid")
-                    && let Ok(handler_id) = rid_str.parse::<usize>()
-                    && events::has_click_handler(events::EventHandlerId(handler_id))
-                {
-                    let text_hit = Self::compute_text_hit_info(&d.tree, hit_id, x, y);
-
-                    let (elem_x, elem_y, elem_w, elem_h) = {
-                        let mut ax = node.layout.x;
-                        let mut ay = node.layout.y;
-                        let mut pid = node.parent;
-                        while let Some(p) = pid {
-                            if let Some(pn) = d.tree.get(p) {
-                                ax += pn.layout.x;
-                                ay += pn.layout.y;
-                                ax -= pn.scroll_offset.0 as f32;
-                                ay -= pn.scroll_offset.1 as f32;
-                                pid = pn.parent;
-                            } else {
-                                break;
-                            }
-                        }
-                        (ax, ay, node.layout.width, node.layout.height)
-                    };
-
-                    events::set_click_context(events::ClickContext {
-                        mouse_x: x,
-                        mouse_y: y,
-                        element_x: elem_x,
-                        element_y: elem_y,
-                        element_width: elem_w,
-                        element_height: elem_h,
-                        text_hit,
-                        viewport_width,
-                        viewport_height,
-                        button: events::MouseButton::Left,
-                        modifiers: self.modifier_state(),
+        // Dispatch the pre-resolved click claim. For a data-rid claim the node
+        // is re-verified against the (possibly commit-mutated) tree: it must
+        // still carry the SAME handler id, still live — a re-rendered or
+        // recycled slot fails the check and the click lands nowhere, exactly
+        // like a browser click on an element that was removed under the
+        // pointer.
+        match click_claim {
+            Some(ClickClaim::Rid(node_id, handler_id)) => {
+                let d = doc.borrow();
+                let still_valid = d
+                    .tree
+                    .get(node_id)
+                    .and_then(|n| n.attributes.get("data-rid"))
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .is_some_and(|h| {
+                        h == handler_id
+                            && events::has_click_handler(events::EventHandlerId(handler_id))
                     });
-                    events::set_click_ancestors(Self::collect_click_ancestors(&d.tree, node_id));
+                if !still_valid {
+                    return actions;
+                }
+                let text_hit = Self::compute_text_hit_info(&d.tree, hit_id, x, y);
 
-                    drop(d);
-                    events::dispatch_event(events::EventHandlerId(handler_id));
-                    // Process any pending focus request from the event handler
-                    // (e.g., a handler may call request_focus on an input element).
-                    if let Some(focus_node_id) =
-                        rinch_core::take_pending_focus_request(self.doc_key())
-                    {
-                        self.try_focus_input(focus_node_id);
+                let (elem_x, elem_y, elem_w, elem_h) = {
+                    let node = d.tree.get(node_id).expect("verified above");
+                    let mut ax = node.layout.x;
+                    let mut ay = node.layout.y;
+                    let mut pid = node.parent;
+                    while let Some(p) = pid {
+                        if let Some(pn) = d.tree.get(p) {
+                            ax += pn.layout.x;
+                            ay += pn.layout.y;
+                            ax -= pn.scroll_offset.0 as f32;
+                            ay -= pn.scroll_offset.1 as f32;
+                            pid = pn.parent;
+                        } else {
+                            break;
+                        }
                     }
-                    actions.push(AppAction::RequestRedraw);
-                    return actions;
+                    (ax, ay, node.layout.width, node.layout.height)
+                };
+
+                events::set_click_context(events::ClickContext {
+                    mouse_x: x,
+                    mouse_y: y,
+                    element_x: elem_x,
+                    element_y: elem_y,
+                    element_width: elem_w,
+                    element_height: elem_h,
+                    text_hit,
+                    viewport_width,
+                    viewport_height,
+                    button: events::MouseButton::Left,
+                    modifiers: self.modifier_state(),
+                });
+                events::set_click_ancestors(Self::collect_click_ancestors(&d.tree, node_id));
+
+                drop(d);
+                events::dispatch_event(events::EventHandlerId(handler_id));
+                // Process any pending focus request from the event handler
+                // (e.g., a handler may call request_focus on an input element).
+                if let Some(focus_node_id) = rinch_core::take_pending_focus_request(self.doc_key())
+                {
+                    self.try_focus_input(focus_node_id);
                 }
-                // Check for drag-window region
-                if node.attributes.contains_key("data-drag-window") {
-                    drop(d);
-                    actions.push(AppAction::DragWindow);
-                    return actions;
-                }
-                current = node.parent;
-            } else {
-                break;
+                actions.push(AppAction::RequestRedraw);
+                return actions;
             }
+            Some(ClickClaim::DragWindow) => {
+                actions.push(AppAction::DragWindow);
+                return actions;
+            }
+            None => {}
         }
         actions
     }

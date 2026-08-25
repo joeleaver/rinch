@@ -36,7 +36,10 @@ pub struct ColorInput {
     pub value: String,
     /// Reactive value binding.
     pub value_fn: Option<ReactiveString>,
-    /// Fires formatted color string on change.
+    /// Fires the formatted color string when a color change commits: a pick in
+    /// the dropdown picker, or a typed edit at its commit boundary (focus
+    /// leaves the field, or Enter — issue #226). Typing previews live in the
+    /// swatch but reports here only on commit.
     pub onchange: Option<InputCallback>,
     /// Output format: hex, hexa, rgb, rgba, hsl, hsla.
     pub format: String,
@@ -147,22 +150,72 @@ impl Component for ColorInput {
         // the effect rewrites the field.
         let typed: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
-        // Handle text input changes
+        // The last color the app actually holds: the mount value, then every
+        // commit point — a reported typed commit, a dropdown pick, an external
+        // `value_fn` write. `current_value` cannot play this role: parseable
+        // keystrokes preview through it without reporting, so it can hold a
+        // color the app has never heard of.
+        let last_committed: Rc<RefCell<String>> = Rc::new(RefCell::new(initial_color.to_string()));
+
+        // Handle text input changes. Per-keystroke this is internal only —
+        // record the live text, parse, and preview through `current_value`
+        // (swatch, dropdown picker). `self.onchange` fires from the commit
+        // handler below, not here: the prop promises a committed color, not a
+        // live preview per parseable keystroke (issue #226).
         if !disallow_input {
-            let onchange = self.onchange.clone();
-            let typed = typed.clone();
+            let typed_in = typed.clone();
             let handler_id = __scope.register_input_handler(move |value: String| {
                 let parsed = parse_color(&value);
-                *typed.borrow_mut() = Some(value);
+                *typed_in.borrow_mut() = Some(value);
                 if let Some(parsed) = parsed {
-                    let formatted = format_color(parsed, color_format);
-                    current_value.set(formatted.clone());
-                    if let Some(ref cb) = onchange {
-                        cb.invoke(formatted);
-                    }
+                    current_value.set(format_color(parsed, color_format));
                 }
             });
             text_input.set_attribute("data-oninput", &handler_id.to_string());
+
+            // The commit boundary (issue #226): the typed gesture ended, so the
+            // author's mid-typing claim to the field (GH #231) lapses. A
+            // parseable commit normalizes the field to the canonical form
+            // ("336" → "#333366") and reports through `onchange` — but only
+            // when the color differs from the last one the app holds
+            // (`last_committed`): re-spelling the same color in another
+            // notation is not a color change. The report is deliberately the
+            // LAST step, with no field write after it, so a controlled
+            // handler's synchronous rewrite (signal → value_fn effect →
+            // display effect) lands after ours and wins. An unparseable
+            // commit reverts the field — and any leaked preview in
+            // `current_value`, swatch included — to the last committed color,
+            // never to the live preview: the preview was never reported, so
+            // keeping it would durably display a color the app never
+            // received. Either rewrite clears the typed record, like any
+            // effect rewrite.
+            let onchange = self.onchange.clone();
+            let typed_commit = typed.clone();
+            let text_input_commit = text_input.clone();
+            let last_committed_commit = last_committed.clone();
+            let handler_id =
+                __scope.register_input_handler(move |value: String| match parse_color(&value) {
+                    Some(parsed) => {
+                        let formatted = format_color(parsed, color_format);
+                        let changed = *last_committed_commit.borrow() != formatted;
+                        *typed_commit.borrow_mut() = None;
+                        text_input_commit.set_attribute("value", &formatted);
+                        current_value.set_if_changed(formatted.clone());
+                        *last_committed_commit.borrow_mut() = formatted.clone();
+                        if changed {
+                            if let Some(ref cb) = onchange {
+                                cb.invoke(formatted);
+                            }
+                        }
+                    }
+                    None => {
+                        let committed = last_committed_commit.borrow().clone();
+                        *typed_commit.borrow_mut() = None;
+                        current_value.set_if_changed(committed.clone());
+                        text_input_commit.set_attribute("value", &committed);
+                    }
+                });
+            text_input.set_attribute("data-onchange", &handler_id.to_string());
         }
 
         input_group.append_child(&text_input);
@@ -180,7 +233,11 @@ impl Component for ColorInput {
             with_input: false, // The outer input serves as the text input
             onchange: Some(InputCallback::new({
                 let onchange = self.onchange.clone();
+                let last_committed = last_committed.clone();
                 move |value: String| {
+                    // A pick is a commit in its own right: record it as the
+                    // last color the app holds before reporting it.
+                    *last_committed.borrow_mut() = value.clone();
                     current_value.set(value.clone());
                     if let Some(ref cb) = onchange {
                         cb.invoke(value);
@@ -268,8 +325,11 @@ impl Component for ColorInput {
         // propagated current_value ← picker ← cb ← external).
         if let Some(ref value_fn) = self.value_fn {
             let value_fn = value_fn.clone();
+            let last_committed = last_committed.clone();
             __scope.create_effect(move || {
                 let external = value_fn();
+                // An external write is by definition app-held.
+                *last_committed.borrow_mut() = external.clone();
                 current_value.set_if_changed(external);
             });
         }

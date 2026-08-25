@@ -76,6 +76,10 @@ pub struct TextInput {
     pub value_fn: Option<ReactiveString>,
     /// Callback when input value changes.
     pub oninput: Option<InputCallback>,
+    /// Callback when the typed gesture commits (focus leaves the input after a
+    /// modification, or Enter) — HTML `change` semantics, receives the final
+    /// value. Fires only if the value changed since focus (issue #226).
+    pub onchange: Option<InputCallback>,
     /// Callback when Enter is pressed (form submission).
     pub onsubmit: Option<Callback>,
 }
@@ -95,6 +99,7 @@ impl std::fmt::Debug for TextInput {
             .field("value", &self.value)
             .field("value_fn", &self.value_fn.as_ref().map(|_| "<reactive>"))
             .field("oninput", &self.oninput.as_ref().map(|_| "<callback>"))
+            .field("onchange", &self.onchange.as_ref().map(|_| "<callback>"))
             .field("onsubmit", &self.onsubmit.as_ref().map(|_| "<callback>"))
             .finish()
     }
@@ -189,6 +194,15 @@ impl Component for TextInput {
                 }
             });
             input.set_attribute("data-oninput", &handler_id.to_string());
+        }
+
+        // Change handler — the commit boundary (issue #226)
+        if let Some(callback) = &self.onchange {
+            let callback = callback.clone();
+            let handler_id = __scope.register_input_handler(move |value| {
+                callback.invoke(value);
+            });
+            input.set_attribute("data-onchange", &handler_id.to_string());
         }
 
         // Submit handler (Enter key)

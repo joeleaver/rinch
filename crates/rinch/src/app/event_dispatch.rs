@@ -2228,7 +2228,11 @@ impl RinchApp {
     /// Apply an [`ImeEvent`] to the focused `<input>`: preedit is rendered inline
     /// at the caret via the `data-preedit` attribute, commit clears it and inserts
     /// the text, delete-surrounding maps to backward/forward deletes.
-    fn dispatch_input_ime(&mut self, node_id: usize, ime: ImeEvent) {
+    ///
+    /// `pub(super)` so the focus arbiter can flush a pending composition as an
+    /// implicit commit when the input blurs (issue #226) — the browser's
+    /// compositionend-before-blur.
+    pub(super) fn dispatch_input_ime(&mut self, node_id: usize, ime: ImeEvent) {
         match ime {
             ImeEvent::Enabled => {}
             ImeEvent::Preedit { text, cursor } => {
