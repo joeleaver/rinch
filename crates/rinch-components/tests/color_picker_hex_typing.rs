@@ -1,7 +1,7 @@
 //! ColorPicker/ColorInput: the field is the author's while they type (#231).
 //!
-//! `parse_color` accepts hex of length 3, 6, or 8, so a valid *prefix* of the
-//! colour being typed — `#336` on the way to `#3366cc` — parses on `oninput`,
+//! `parse_color` accepts hex of length 3, 4, 6, or 8, so a valid *prefix* of
+//! the colour being typed — `#336` on the way to `#3366cc` — parses on `oninput`,
 //! and the display effect used to write the normalized expansion (`#333366`)
 //! back into the focused field: every remaining keystroke then landed on the
 //! rewritten string, committing a colour nobody chose. The fix: the effect
@@ -188,9 +188,16 @@ fn a_parseable_prefix_is_not_expanded_under_the_authors_caret() {
 
     assert_eq!(
         picker.emissions(),
-        vec!["#333366".to_string(), "#3366cc".to_string()],
-        "each parseable state reports the colour it denotes — the prefix as a \
-         live preview, then the finished colour — and nothing else"
+        vec![
+            "#333366".to_string(),
+            "#333366".to_string(),
+            "#3366cc".to_string(),
+        ],
+        "each parseable state reports the colour it denotes and nothing else: \
+         the three-digit prefix, then \"#3366\" — a 4-digit #rgba since #243, \
+         a real alpha transition (0x66) whose hex rendering happens to repeat \
+         the previous report, exactly as an alpha drag under a hex format \
+         does — then the finished colour"
     );
 }
 

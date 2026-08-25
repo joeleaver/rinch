@@ -387,6 +387,15 @@ inbound change too small to move the rendered colour by a full 8-bit step —
 such as a small stated-hue move at very low chroma on an `hsl`-format wire —
 reads as an echo and does not apply.
 
+**Accepted colour notations** (everywhere a colour string is read — `value`,
+`value_fn`, typed text, swatches): hex in 3, 4, 6, or 8 digits (`#rgb`,
+`#rgba`, `#rrggbb`, `#rrggbbaa`, with or without the `#`), `rgb()`/`rgba()`
+and `hsl()`/`hsla()` in both the legacy comma syntax and the modern
+space-separated syntax (`rgb(51 51 102 / 0.5)`; alpha as a number or a
+percentage), and the CSS named colours (`red`, `rebeccapurple`,
+`transparent` — case-insensitive). Out-of-range channels clamp to their CSS
+ranges; hue wraps (#243).
+
 **The text field is the author's while they type.** The hex field parses on
 every keystroke, and a valid *prefix* of the colour being typed (`#336` on the
 way to `#3366cc`) is already a parseable colour — it updates the preview and
