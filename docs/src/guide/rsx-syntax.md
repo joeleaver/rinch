@@ -124,7 +124,10 @@ leaves the control after a modification, Enter commits explicitly, or a
 control was focused. Use `oninput` for live previews and controlled inputs,
 `onchange` for validate-on-commit, autosave-on-leave, and undo bracketing.
 On Enter, `onchange` fires before `onsubmit`, and the eventual blur does not
-re-fire an already-committed value.
+re-fire an already-committed value. Enter commits **single-line inputs
+only** — in a `<textarea>` (as in HTML) the gesture runs until blur. Like the
+browser's `change`, the event bubbles: `data-onchange` on an ancestor of the
+control receives the commit too.
 
 Mouse and click handlers read per-event data from `get_click_context()`:
 `mouse_x`/`mouse_y`, element bounds (`relative_x()`, `percent_x()`, …),

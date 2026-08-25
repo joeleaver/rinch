@@ -47,6 +47,11 @@ pub(crate) struct OpenSelect {
     pub typeahead: String,
     /// When the last type-ahead key landed (buffer resets after a gap).
     pub typeahead_at: Option<Instant>,
+    /// The value the closed control displayed when the popup opened — the
+    /// reference for "did the pick change anything" (issue #226). The `value`
+    /// attribute alone can't serve: a value-less `<select>` already displays
+    /// its resolved default option, and re-picking it is not a change.
+    pub initial_value: String,
 }
 
 /// Popup stylesheet, injected once. Uses theme variables with light fallbacks so
@@ -133,16 +138,31 @@ impl RinchApp {
         // Start from a clean slate (also tears down any prior popup / focus).
         self.close_select_popup();
 
+        // Route keyboard to the popup, tearing the previous focus owner down
+        // NOW — before the option model and popup geometry are resolved. A
+        // blurred input's change commit (issue #226) is user code that may
+        // re-render the select or relayout the page; building the popup first
+        // would snapshot pre-commit options, coordinates, and (recyclable)
+        // node ids (#244 review). This also matches the browser, where
+        // mousedown on a select blurs (and commits) the input before the
+        // popup opens.
+        self.set_focus_target(FocusTarget::Select(select_id));
+
         let Some(doc) = self.doc.clone() else { return };
 
-        let (rect, model) = {
+        let (rect, model, still_select) = {
             let d = doc.borrow();
             (
                 Self::absolute_rect(&d.tree, select_id),
                 resolve_select_model(&d.tree, select_id),
+                d.tree.get(select_id).and_then(|n| n.tag()) == Some("select"),
             )
         };
-        if model.options.is_empty() {
+        if !still_select || model.options.is_empty() {
+            // The commit unmounted/replaced the select (node ids are recycled
+            // slab slots), or there is nothing to pop up: don't leave Select
+            // focus pointing at a phantom popup.
+            self.set_focus_target(FocusTarget::None);
             return;
         }
         let (sx, sy, sw, sh) = rect;
@@ -212,6 +232,11 @@ impl RinchApp {
         d.append_child(body, panel);
         drop(d);
 
+        let initial_value = model
+            .options
+            .get(selected)
+            .map(|o| o.value.clone())
+            .unwrap_or_default();
         self.open_select = Some(OpenSelect {
             select_id,
             backdrop_id: backdrop.0,
@@ -223,10 +248,9 @@ impl RinchApp {
             highlighted: selected,
             typeahead: String::new(),
             typeahead_at: None,
+            initial_value,
         });
-        // Route keyboard to the popup. Teardown of the previous focus already ran
-        // via close_select_popup above, so this just installs Select focus.
-        self.set_focus_target(FocusTarget::Select(select_id));
+        // Select focus was installed at the top, before the popup was built.
         self.scene_dirty = true;
         self.resolve_and_repaint(vp_w, vp_h);
         self.scroll_highlight_into_view(vp_w, vp_h);
@@ -335,26 +359,29 @@ impl RinchApp {
             return;
         };
 
+        let initial_value = open.initial_value.clone();
         let (input_handler_id, change_handler_id, value_changed) = {
             let mut d = doc.borrow_mut();
-            let old_value = d
+            // Did the pick change the value? Compared BEFORE the write, against
+            // the `value` attribute when present, else against the option the
+            // control displayed when the popup opened — a value-less `<select>`
+            // already displays its resolved default, and re-picking it is not
+            // a change (HTML fires no change event for it).
+            let value_changed = d
                 .tree
                 .get(select_id)
-                .and_then(|n| n.attributes.get("value").cloned());
+                .and_then(|n| n.attributes.get("value"))
+                .map_or(initial_value != value, |v| v != &value);
             // The resolver reads `value` back, so the closed control repaints with
             // the new label; mark the control dirty so paint re-runs.
             d.set_attribute(NodeId(select_id), "value", &value);
             d.mark_dirty(NodeId(select_id));
-            let handler = |attr: &str| {
-                d.tree
-                    .get(select_id)
-                    .and_then(|n| n.attributes.get(attr))
-                    .and_then(|s| s.parse::<usize>().ok())
-            };
+            // Handlers may sit on an ancestor: `input`/`change` bubble on the
+            // web, so the desktop walk matches the browser's delegation.
             (
-                handler("data-oninput"),
-                handler("data-onchange"),
-                old_value.as_deref() != Some(&value),
+                Self::input_attr_handler_up(&d.tree, select_id, "data-oninput"),
+                Self::input_attr_handler_up(&d.tree, select_id, "data-onchange"),
+                value_changed,
             )
         };
 

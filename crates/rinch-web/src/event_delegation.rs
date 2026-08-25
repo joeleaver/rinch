@@ -1,7 +1,8 @@
 //! Global browser event delegation for the browser-native DOM backend.
 //!
 //! Installs document-level listeners (pointerdown/pointermove/pointerup/
-//! pointercancel/keydown/input) that delegate to rinch's event-handler registry,
+//! pointercancel/keydown/input/focusin/change) that delegate to rinch's
+//! event-handler registry,
 //! drag system, and render-surface focus routing. Using Pointer Events (instead
 //! of raw mouse events) means the same code path covers mouse, touch, and pen —
 //! so the element drag-and-drop suite works on touch devices, where no synthetic
@@ -73,10 +74,6 @@ fn same_element(a: &web_sys::Element, b: &web_sys::Element) -> bool {
     a_node.is_same_node(Some(b_node))
 }
 
-/// Walk up from `el` to the nearest ancestor carrying `attr`, set the
-/// [`events::ClickContext`] (cursor + element bounds + button + modifiers from
-/// `event`), and dispatch the registered handler. Mirrors the `data-rid`
-/// pattern; used for `data-onmousedown`/`data-onmouseup`/`data-onmousemove`.
 /// The user-visible value of a native form control, read identically by the
 /// `input` and `change` listeners — provided we read the right property off
 /// each control kind.
@@ -102,6 +99,53 @@ fn form_control_value(target: &web_sys::EventTarget) -> Option<String> {
     }
 }
 
+/// JS expando property recording the value a form control held when it gained
+/// focus (written by the document-level `focusin` listener). The Enter commit
+/// path compares against it to implement only-if-modified semantics
+/// (issue #226).
+const FOCUS_VALUE_PROP: &str = "__rinch_focus_value";
+
+/// JS expando property recording the last value committed to `data-onchange`
+/// during the current focus session. Lets the `change` listener skip the
+/// browser's deferred duplicate of a commit the Enter branch already delivered
+/// (issue #226). Cleared on `focusin`.
+const COMMITTED_VALUE_PROP: &str = "__rinch_committed";
+
+/// Read a string-valued JS expando property off `el` (the same
+/// `js_sys::Reflect` pattern as `__nid` in `web_document.rs`). `None` when
+/// the property is absent or not a string.
+fn get_expando_string(el: &web_sys::Element, prop: &str) -> Option<String> {
+    js_sys::Reflect::get(el, &prop.into()).ok()?.as_string()
+}
+
+/// Write a JS expando property on `el`; `JsValue::UNDEFINED` clears it.
+fn set_expando(el: &web_sys::Element, prop: &str, value: &JsValue) {
+    let _ = js_sys::Reflect::set(el, &prop.into(), value);
+}
+
+/// Walk up from `target` to the nearest ancestor carrying `attr` (a
+/// handler-id attribute like `data-oninput`/`data-onchange`) and dispatch the
+/// registered input handler with `value`. Reports whether a handler fired.
+fn dispatch_form_value_attr(target: &web_sys::EventTarget, attr: &str, value: String) -> bool {
+    if let Ok(el) = target.clone().dyn_into::<web_sys::Element>() {
+        let mut current: Option<web_sys::Element> = Some(el);
+        while let Some(el) = current {
+            if let Some(handler_str) = el.get_attribute(attr)
+                && let Ok(handler_id) = handler_str.parse::<usize>()
+            {
+                events::dispatch_input_event(events::EventHandlerId(handler_id), value);
+                return true;
+            }
+            current = el.parent_element();
+        }
+    }
+    false
+}
+
+/// Walk up from `el` to the nearest ancestor carrying `attr`, set the
+/// [`events::ClickContext`] (cursor + element bounds + button + modifiers from
+/// `event`), and dispatch the registered handler. Mirrors the `data-rid`
+/// pattern; used for `data-onmousedown`/`data-onmouseup`/`data-onmousemove`.
 fn dispatch_mouse_attr(el: &web_sys::Element, attr: &str, event: &web_sys::MouseEvent) {
     let selector = format!("[{attr}]");
     if let Ok(Some(target_el)) = el.closest(&selector)
@@ -963,8 +1007,10 @@ fn dispatch_click_at(
 /// `data-onmousedown`/`up`/`move`, slider drag tracking, text-hit resolution,
 /// hover `data-onenter`/`data-onleave`, and the element drag-and-drop
 /// `data-ondrag*` suite — which now works on touch/pen as well as mouse),
-/// `keydown` (render-surface routing, keyboard interceptor, `data-onsubmit` on
-/// Enter, Escape drag-cancel), `input` (`data-oninput`), `contextmenu`
+/// `keydown` (render-surface routing, keyboard interceptor, the Enter
+/// change-before-submit commit + `data-onsubmit`, Escape drag-cancel), `input`
+/// (`data-oninput`), `focusin` (the issue #226 commit baseline), `change`
+/// (`data-onchange`, deduplicated against the Enter commit), `contextmenu`
 /// (`data-oncontextmenu`), and capture-phase `scroll` (`data-onscroll`).
 ///
 /// Pointer Events are used (rather than raw mouse events) so a single code path
@@ -1376,20 +1422,37 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             // composition the Enter that commits the candidate is skipped
             // (isComposing) so it confirms the text instead of submitting.
             if let Some(target) = event.target()
-                && let Ok(el) = target.dyn_into::<web_sys::Element>()
+                && let Ok(el) = target.clone().dyn_into::<web_sys::Element>()
             {
-                let mut current: Option<web_sys::Element> = Some(el);
-                while let Some(el) = current {
-                    if let Some(handler_str) = el.get_attribute("data-onsubmit")
+                let mut current: Option<web_sys::Element> = Some(el.clone());
+                while let Some(cur) = current {
+                    if let Some(handler_str) = cur.get_attribute("data-onsubmit")
                         && let Ok(handler_id) = handler_str.parse::<usize>()
                     {
                         // Prevent the browser from also inserting a newline
                         // (in a textarea) or running a native form submit.
                         event.prevent_default();
+                        // preventDefault also suppresses the browser's native
+                        // change-on-Enter commit, so deliver the
+                        // `data-onchange` commit ourselves — before onsubmit,
+                        // matching desktop's change-before-submit ordering —
+                        // and only if the value was modified since focus
+                        // (mirroring the browser's only-if-modified rule).
+                        // Record the committed value on the control so the
+                        // `change` listener can skip the browser's deferred
+                        // duplicate at the eventual blur (issue #226).
+                        if let Some(value) = form_control_value(&target) {
+                            let focus_value = get_expando_string(&el, FOCUS_VALUE_PROP);
+                            if focus_value.as_deref() != Some(value.as_str())
+                                && dispatch_form_value_attr(&target, "data-onchange", value.clone())
+                            {
+                                set_expando(&el, COMMITTED_VALUE_PROP, &JsValue::from_str(&value));
+                            }
+                        }
                         events::dispatch_event(events::EventHandlerId(handler_id));
                         break;
                     }
-                    current = el.parent_element();
+                    current = cur.parent_element();
                 }
             }
         }
@@ -1430,19 +1493,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         if let Some(target) = event.target()
             && let Some(value) = form_control_value(&target)
         {
-            // Walk up from target to find [data-oninput]
-            if let Ok(el) = target.dyn_into::<web_sys::Element>() {
-                let mut current: Option<web_sys::Element> = Some(el);
-                while let Some(el) = current {
-                    if let Some(handler_str) = el.get_attribute("data-oninput")
-                        && let Ok(handler_id) = handler_str.parse::<usize>()
-                    {
-                        events::dispatch_input_event(events::EventHandlerId(handler_id), value);
-                        break;
-                    }
-                    current = el.parent_element();
-                }
-            }
+            dispatch_form_value_attr(&target, "data-oninput", value);
         }
     }) as Box<dyn FnMut(_)>);
     browser_doc2
@@ -1450,27 +1501,52 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         .unwrap();
     input_closure.forget();
 
+    // Focus-gesture baseline (issue #226): `focusin` (which, unlike `focus`,
+    // bubbles to the document) snapshots the control's value at the start of
+    // each focus session so the keydown Enter branch can implement
+    // only-if-modified commit semantics, and clears the committed-value
+    // bookkeeping left over from the previous session.
+    let browser_doc_focusin = browser_doc.clone();
+    let focusin_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        if let Some(target) = event.target()
+            && let Some(value) = form_control_value(&target)
+            && let Ok(el) = target.dyn_into::<web_sys::Element>()
+        {
+            set_expando(&el, FOCUS_VALUE_PROP, &JsValue::from_str(&value));
+            set_expando(&el, COMMITTED_VALUE_PROP, &JsValue::UNDEFINED);
+        }
+    }) as Box<dyn FnMut(_)>);
+    browser_doc_focusin
+        .add_event_listener_with_callback("focusin", focusin_closure.as_ref().unchecked_ref())
+        .unwrap();
+    focusin_closure.forget();
+
     // Change delegation (issue #226): find [data-onchange] on the target or
     // ancestors. The browser fires `change` exactly at the commit boundary the
     // attribute promises — blur after modification, Enter, a <select> pick —
     // with its own only-if-modified bookkeeping, so the native event is simply
     // delegated (desktop's rule is written to match the browser). `change`
-    // bubbles, so one document-level listener covers every control.
+    // bubbles, so one document-level listener covers every control. One
+    // exception: when Enter hit a [data-onsubmit] ancestor, its
+    // preventDefault suppressed the browser's change-on-Enter, so the keydown
+    // branch above delivered the commit itself — a later native `change`
+    // repeating that exact value is the browser's deferred duplicate and is
+    // skipped.
     let browser_doc_change = browser_doc.clone();
     let change_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
         if let Some(target) = event.target()
             && let Some(value) = form_control_value(&target)
-            && let Ok(el) = target.dyn_into::<web_sys::Element>()
+            && let Ok(el) = target.clone().dyn_into::<web_sys::Element>()
         {
-            let mut current: Option<web_sys::Element> = Some(el);
-            while let Some(el) = current {
-                if let Some(handler_str) = el.get_attribute("data-onchange")
-                    && let Ok(handler_id) = handler_str.parse::<usize>()
-                {
-                    events::dispatch_input_event(events::EventHandlerId(handler_id), value);
-                    break;
-                }
-                current = el.parent_element();
+            if get_expando_string(&el, COMMITTED_VALUE_PROP).as_deref() == Some(value.as_str()) {
+                // The browser's deferred duplicate of the Enter commit we
+                // already delivered — skip it.
+                return;
+            }
+            if dispatch_form_value_attr(&target, "data-onchange", value.clone()) {
+                // Keep the bookkeeping coherent when several commits happen
+                // within one focus session (Enter, more typing, blur).
+                set_expando(&el, COMMITTED_VALUE_PROP, &JsValue::from_str(&value));
             }
         }
     }) as Box<dyn FnMut(_)>);

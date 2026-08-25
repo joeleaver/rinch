@@ -227,11 +227,14 @@ impl Component for NumberInput {
 
         wrapper.append_child(&input);
 
-        // Input handler for direct text entry — always registered so the
-        // runtime can route focus and typed text to this element (an
-        // onchange-only NumberInput must still be focusable), matching
-        // TextInput.
-        {
+        // Input handler for direct text entry — registered whenever any commit
+        // consumer exists (oninput OR onchange), so the runtime can route
+        // focus and typed text to this element (an onchange-only NumberInput
+        // must still be focusable). An instance with NEITHER callback stays
+        // inert like pre-#226: registering anyway would make a spinner-only
+        // NumberInput tab-focusable and freely editable, with the edits
+        // reported nowhere (#244 review).
+        if self.oninput.is_some() || self.onchange.is_some() {
             let callback = self.oninput.clone();
             let handler_id = __scope.register_input_handler(move |value| {
                 if let Some(cb) = &callback {

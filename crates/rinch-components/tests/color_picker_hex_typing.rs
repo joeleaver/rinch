@@ -345,21 +345,24 @@ fn color_input_prefix_with_lagging_attribute_is_left_alone() {
 }
 
 /// And the same non-freeze control: a pick from the dropdown picker rewrites
-/// the ColorInput's field. A pick is a commit in its own right, so it reports
-/// through `onchange`; the typed prefix before it previewed silently (#226).
+/// the ColorInput's field. On the real desktop runtime a swatch click blurs
+/// the field before the click handler runs, and the blur dispatches the
+/// commit boundary — so the typed "#336" commits first (reporting its
+/// normalized "#333366"), and then the pick commits "#22aa55".
 #[test]
 fn color_input_field_follows_the_dropdown_picker() {
     let input = Mounted::color_input("#ff0000");
     input.type_text("#336");
     assert_eq!(input.field_text(), "#336");
 
+    input.commit("#336"); // the click's blur commits the typed prefix first
     input.click_swatch();
 
     assert_eq!(input.field_text(), "#22aa55");
     assert_eq!(
         input.emissions(),
-        vec!["#22aa55".to_string()],
-        "only the picked colour committed; the typed prefix was a live preview"
+        vec!["#333366".to_string(), "#22aa55".to_string()],
+        "two commits: the blurred typed prefix, then the pick"
     );
 }
 
@@ -588,6 +591,76 @@ fn color_input_reverts_an_unparseable_commit() {
 
     assert_eq!(input.field_text(), "#ff0000");
     assert_eq!(input.emissions(), Vec::<String>::new());
+}
+
+/// A preview is not a commit: a parseable keystroke moves the internal colour
+/// (the swatch follows) without reporting, so an unparseable commit must
+/// revert to the last colour the app actually holds — never to that leaked
+/// preview. Pre-fix the revert target was `current_value`, so typing "336",
+/// spoiling it to "336x", and blurring left the field (and swatch) durably
+/// showing #333366 while the app still believed #ff0000.
+#[test]
+fn a_preview_never_committed_is_reverted_on_unparseable_commit() {
+    let input = Mounted::color_input("#ff0000");
+    let swatch_style = || {
+        find_by_class(&input.root, "rinch-color-input__swatch-preview")
+            .expect("preview swatch")
+            .children()
+            .first()
+            .expect("swatch overlay")
+            .get_attribute("style")
+            .expect("overlay styled")
+    };
+
+    input.type_text("336"); // parseable: previews internally, reports nothing
+    assert_eq!(input.field_text(), "336");
+    assert!(
+        swatch_style().contains("#333366"),
+        "the preview reached the swatch: {}",
+        swatch_style()
+    );
+    input.type_text("336x"); // unparseable: the preview stays behind internally
+
+    input.commit("336x");
+
+    assert_eq!(
+        input.field_text(),
+        "#ff0000",
+        "the revert target is the last committed colour, not the leaked preview"
+    );
+    assert_eq!(
+        input.emissions(),
+        Vec::<String>::new(),
+        "nothing was ever committed, so nothing reports"
+    );
+    assert!(
+        swatch_style().contains("#ff0000"),
+        "the swatch returned with the field: {}",
+        swatch_style()
+    );
+}
+
+/// Re-spelling the held colour in another notation is not a colour change:
+/// committing "rgb(255, 0, 0)" over #ff0000 still normalizes the field, but
+/// reports nothing — the prop promises a report when a colour CHANGE commits,
+/// and a phantom report would echo the app's own value back at it.
+#[test]
+fn a_notation_only_commit_reports_nothing() {
+    let input = Mounted::color_input("#ff0000");
+
+    input.type_text("rgb(255, 0, 0)");
+    input.commit("rgb(255, 0, 0)");
+
+    assert_eq!(
+        input.field_text(),
+        "#ff0000",
+        "the commit still normalizes the field to the canonical form"
+    );
+    assert_eq!(
+        input.emissions(),
+        Vec::<String>::new(),
+        "the colour did not change; nothing reports"
+    );
 }
 
 /// Multibyte text whose hex part is 3, 6, or 8 *bytes* long ("#é3") must be

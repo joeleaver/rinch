@@ -396,3 +396,193 @@ fn a_select_commit_fires_change_only_when_the_value_changed() {
         "re-committing the same value is not a change"
     );
 }
+
+/// A value-less `<select>` already displays its resolved default option, so
+/// re-picking that default is NOT a change — the reference is the displayed
+/// option at popup-open, not the (absent) `value` attribute (#244 review).
+#[test]
+fn picking_the_displayed_default_option_is_not_a_change() {
+    let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let input_id = register_input_handler(InputCallback::new({
+        let log = log.clone();
+        move |v: String| log.borrow_mut().push(format!("input:{v}"))
+    }));
+    let change_id = register_input_handler(InputCallback::new({
+        let log = log.clone();
+        move |v: String| log.borrow_mut().push(format!("change:{v}"))
+    }));
+
+    let ids: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let ids_in = ids.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let sel = scope.create_element("select");
+        sel.set_attribute("style", "width: 200px; height: 30px");
+        sel.set_attribute("data-oninput", &input_id.0.to_string());
+        sel.set_attribute("data-onchange", &change_id.0.to_string());
+        for (value, label) in [("a", "Apple"), ("b", "Banana")] {
+            let o = scope.create_element("option");
+            o.set_attribute("value", value);
+            let t = scope.create_text(label);
+            o.append_child(&t);
+            sel.append_child(&o);
+        }
+        root.append_child(&sel);
+        ids_in.set(Some(sel.node_id().0));
+        root
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    let sel_id = ids.get().expect("select id captured");
+
+    // Open and immediately commit the highlighted default ("a", displayed).
+    click_center(&mut app, sel_id);
+    key(&mut app, KeyCode::Enter, None);
+    assert_eq!(
+        *log.borrow(),
+        vec!["input:a".to_string()],
+        "committing the already-displayed default fires input but not change"
+    );
+}
+
+/// Enter in a `<textarea>` is not a commit: browsers never fire change there
+/// on Enter, so the gesture (and its baseline) runs until blur (#244 review).
+#[test]
+fn enter_in_a_textarea_does_not_commit() {
+    let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let input_id = register_input_handler(InputCallback::new(|_| {}));
+    let change_id = register_input_handler(InputCallback::new({
+        let log = log.clone();
+        move |v: String| log.borrow_mut().push(format!("change:{v}"))
+    }));
+
+    let ids: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let ids_in = ids.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let ta = scope.create_element("textarea");
+        ta.set_attribute("style", "width: 200px; height: 60px");
+        ta.set_attribute("data-oninput", &input_id.0.to_string());
+        ta.set_attribute("data-onchange", &change_id.0.to_string());
+        root.append_child(&ta);
+        ids_in.set(Some(ta.node_id().0));
+        root
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    let ta_id = ids.get().expect("textarea id captured");
+
+    click_center(&mut app, ta_id);
+    type_str(&mut app, "x");
+    key(&mut app, KeyCode::Enter, None);
+    assert!(
+        log.borrow().is_empty(),
+        "Enter in a textarea must not commit: {:?}",
+        log.borrow()
+    );
+
+    click(&mut app, 700.0, 500.0);
+    assert_eq!(
+        *log.borrow(),
+        vec!["change:x".to_string()],
+        "the textarea gesture commits at blur, carrying the full text"
+    );
+}
+
+/// `change` bubbles in the browser, so a delegating ancestor's
+/// `data-onchange` must receive the commit on desktop too (#244 review).
+#[test]
+fn an_ancestor_onchange_receives_the_commit() {
+    let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let input_id = register_input_handler(InputCallback::new(|_| {}));
+    let change_id = register_input_handler(InputCallback::new({
+        let log = log.clone();
+        move |v: String| log.borrow_mut().push(format!("change:{v}"))
+    }));
+
+    let ids: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let ids_in = ids.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let wrapper = scope.create_element("div");
+        wrapper.set_attribute("style", "width: 300px; height: 50px");
+        wrapper.set_attribute("data-onchange", &change_id.0.to_string());
+        let input = scope.create_element("input");
+        input.set_attribute("style", "width: 200px; height: 30px");
+        input.set_attribute("data-oninput", &input_id.0.to_string());
+        wrapper.append_child(&input);
+        root.append_child(&wrapper);
+        ids_in.set(Some(input.node_id().0));
+        root
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    let input_id_node = ids.get().expect("input id captured");
+
+    click_center(&mut app, input_id_node);
+    type_str(&mut app, "q");
+    click(&mut app, 700.0, 500.0);
+
+    assert_eq!(
+        *log.borrow(),
+        vec!["change:q".to_string()],
+        "the wrapper's data-onchange received the input's commit"
+    );
+}
+
+/// The commit payload is the live `value` attribute — what the field displays
+/// and what the web backend delivers — so a programmatic rewrite that landed
+/// mid-gesture is committed as displayed, not as last typed (#244 review).
+/// The user-edit gate itself stays on the keystroke buffer: without a user
+/// edit, a programmatic write alone never commits (the browser's dirty flag).
+#[test]
+fn a_programmatic_rewrite_mid_gesture_commits_the_displayed_value() {
+    let (mut app, a_id, b_id, _div_id, log) = mount_fixture();
+
+    click_center(&mut app, a_id);
+    type_str(&mut app, "hi");
+    // An app effect rewrites the displayed value under the gesture.
+    {
+        let doc = app.doc.clone().expect("doc");
+        let mut d = doc.borrow_mut();
+        d.set_attribute(rinch_core::dom::NodeId(a_id), "value", "HI!");
+    }
+    click_center(&mut app, b_id);
+
+    let changes: Vec<String> = log
+        .borrow()
+        .iter()
+        .filter(|e| e.starts_with("a-change"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        changes,
+        vec!["a-change:HI!".to_string()],
+        "the commit carries the displayed (rewritten) value"
+    );
+}
+
+/// Blur mid-IME-composition commits the pending preedit first — the browser's
+/// compositionend-before-blur — so the composed text is not silently dropped
+/// and the change commit carries it (#244 review).
+#[test]
+fn blur_mid_composition_commits_the_preedit() {
+    let (mut app, a_id, b_id, _div_id, log) = mount_fixture();
+
+    click_center(&mut app, a_id);
+    app.handle_event(
+        PlatformEvent::Ime(ImeEvent::Preedit {
+            text: "ni".to_string(),
+            cursor: None,
+        }),
+        (800, 600),
+        1.0,
+    );
+    click_center(&mut app, b_id);
+
+    assert_eq!(
+        *log.borrow(),
+        vec!["a-input:ni".to_string(), "a-change:ni".to_string()],
+        "the composition committed (oninput) and the commit carried it (change)"
+    );
+}
