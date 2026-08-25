@@ -958,3 +958,83 @@ mod transform_dpi_covariance {
         );
     }
 }
+
+/// Regression for the paint half of issue #61 (see `ifc.rs`,
+/// `mark_inline_descendants`).
+///
+/// rsx emits a comment marker for every `if`/`for`/`match`/component, and a
+/// `display:contents` wrapper for `Vec<NodeHandle>` children. Comments count as
+/// inline children, so a block container holding a marker becomes an inline
+/// formatting context root. The IFC machinery then marked *every*
+/// `display:contents` child of that root with `ifc_root`, which tells the paint
+/// tree-walk "the IFC draws this, skip it" — so a wrapper full of **block**
+/// content, and its entire subtree, silently vanished from the scene while
+/// keeping perfectly correct layout boxes.
+#[test]
+fn test_block_content_behind_display_contents_still_paints() {
+    /// Builds `<div width:400px><!--for--> [wrapper] <div 100x40 red></div>`,
+    /// with the red block either behind a `display:contents` wrapper or a
+    /// direct child, and returns (draw op count, wrapper's `ifc_root`).
+    fn build(wrapped: bool) -> (usize, Option<usize>) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        // A block container that becomes an IFC root purely because of an rsx
+        // control-flow marker comment.
+        let container = doc.create_element("div");
+        doc.set_attribute(container, "style", "width: 400px");
+        doc.append_child(body, container);
+        let marker = doc.create_comment("for");
+        doc.append_child(container, marker);
+
+        let parent = if wrapped {
+            let wrapper = doc.create_element("div");
+            doc.set_attribute(wrapper, "style", "display: contents");
+            doc.append_child(container, wrapper);
+            wrapper
+        } else {
+            container
+        };
+
+        let painted = doc.create_element("div");
+        doc.set_attribute(
+            painted,
+            "style",
+            "width: 100px; height: 40px; background-color: red",
+        );
+        doc.append_child(parent, painted);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        // Layout is unaffected either way — the box is there, it just never drew.
+        let l = doc.tree.get(painted.0).unwrap().layout;
+        assert_eq!((l.width, l.height), (100.0, 40.0), "block box laid out");
+
+        let mut painter = VelloPainter::new();
+        paint(&mut doc, &mut painter);
+        let draws = painter.scene().encoding().draw_tags.len();
+        let ifc_root = if wrapped {
+            doc.tree.get(parent.0).unwrap().ifc_root
+        } else {
+            None
+        };
+        (draws, ifc_root)
+    }
+
+    let (control_draws, _) = build(false);
+    let (wrapped_draws, wrapper_ifc_root) = build(true);
+
+    assert_eq!(
+        wrapped_draws, control_draws,
+        "a block box behind a display:contents wrapper must produce the same \
+         draw operations as the same box without the wrapper \
+         (wrapped={wrapped_draws}, control={control_draws})"
+    );
+
+    // The mechanism: the wrapper wraps a block, so it is not IFC content.
+    assert_eq!(
+        wrapper_ifc_root, None,
+        "a display:contents wrapper holding block content must not be marked \
+         as IFC content — paint skips every node whose ifc_root is set"
+    );
+}

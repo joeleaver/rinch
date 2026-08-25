@@ -836,6 +836,27 @@ impl RinchDocument {
         }
     }
 
+    /// Whether a `display:contents` node is *transparent to the surrounding
+    /// inline formatting context* — i.e. it wraps no block-level box, so every
+    /// box it flattens into the ancestor belongs to that ancestor's IFC.
+    ///
+    /// `display:contents` is common in rsx output (`Vec<NodeHandle>` children,
+    /// reactive text spans), and such a wrapper very often holds *block*
+    /// content. A wrapper like that is NOT part of the ancestor's IFC: its
+    /// blocks are ordinary in-flow boxes that the paint tree-walk must descend
+    /// into. Marking it with `ifc_root` (which tells paint "the IFC draws this,
+    /// skip it") would silently drop the whole subtree from the scene (#61
+    /// regression: rows kept their layout boxes but were never drawn).
+    ///
+    /// Unlike [`Self::contents_wraps_only_inline`] this does not require that
+    /// inline content actually be found: an empty or comment-only wrapper has
+    /// nothing to paint either way, and treating it as transparent keeps
+    /// document order intact for the inline content around it.
+    fn contents_is_inline_transparent(nodes: &slab::Slab<Node>, node_id: usize) -> bool {
+        let mut found_inline = false;
+        Self::scan_contents_children(nodes, node_id, &mut found_inline)
+    }
+
     /// Recursively classify `node_id`'s children, descending only through
     /// `display:contents` wrappers. Sets `found_inline` when inline content is
     /// seen under a contents wrapper. Returns false as soon as a block-level
@@ -896,6 +917,14 @@ impl RinchDocument {
                 None => continue,
             };
             if is_contents {
+                // Only a wrapper that holds *no block-level box* is part of
+                // this IFC. One that wraps blocks (an rsx `Vec<NodeHandle>`
+                // child, a component's subtree) keeps `ifc_root == None` so the
+                // paint tree-walk still descends into it — marking it would
+                // make paint skip the wrapper and every box beneath it.
+                if !Self::contents_is_inline_transparent(&self.tree.nodes, child_id) {
+                    continue;
+                }
                 if let Some(c) = self.tree.nodes.get_mut(child_id) {
                     c.ifc_root = Some(root_id);
                 }
@@ -1579,11 +1608,17 @@ impl RinchDocument {
                 }
                 NodeKind::Element(_)
                     if child.computed_style.display
-                        == crate::computed_style::values::DisplayValue::Contents =>
+                        == crate::computed_style::values::DisplayValue::Contents
+                        && Self::contents_is_inline_transparent(nodes, child_id) =>
                 {
                     // `display:contents` generates no box — it is transparent.
                     // Recurse without pushing a style span so its inline
                     // descendants flow into this IFC in document order (#61).
+                    //
+                    // A wrapper holding block-level content is *not* transparent
+                    // to the IFC: it falls through to the `_` arm below and
+                    // breaks the inline flow, exactly as the block it wraps
+                    // would if it were a direct child.
                     Self::walk_inline_children(
                         nodes,
                         child_id,
