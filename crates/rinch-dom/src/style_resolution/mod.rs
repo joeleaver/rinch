@@ -817,6 +817,14 @@ impl RinchDocument {
                 taffy_style.size.height = taffy::Dimension::length(est_h);
             }
 
+            // A childless block container is one line box tall. The IFC pass
+            // writes that floor straight onto the Taffy style, and this function
+            // rebuilds the style from the computed values — so the floor has to
+            // be re-applied here or the next restyle of the node drops it — it
+            // would come back only on a structural change, the one thing that
+            // re-runs the IFC pass. See `apply_empty_block_line_floor`.
+            crate::ifc::apply_empty_block_line_floor(&self.tree.nodes[node_id], &mut taffy_style);
+
             // Only call set_style if the Taffy style actually changed.
             // This avoids marking the Taffy tree dirty for paint-only changes
             // (e.g. background-color on hover) which don't affect layout.
