@@ -135,6 +135,41 @@ Mouse and click handlers read per-event data from `get_click_context()`:
 (`shift`/`ctrl`/`alt`/`meta`). These behave identically on the desktop and web
 (WASM) backends.
 
+### Keyboard activation
+
+**Enter** and **Space** on a keyboard-focused element run its `onclick` — the
+same handler as a pointer press, on both backends — so anything reachable by
+Tab (a `<button>`, or an element with `tabindex="0"`) is also operable without
+a mouse. The handler receives a `ClickContext` whose cursor sits at the
+element's centre (`mouse_x`/`mouse_y` = the middle of `element_x`/`element_y`
++ size), with `button: Left` and no text hit, so placement logic that reads
+`get_click_context()` (a `Select` flipping to fit the viewport, say) keeps
+working for a keyboard user.
+
+On desktop, activation latches once per physical press (a held key does not
+repeat). On web, two routes cover the two kinds of element:
+
+- **Natively activatable elements** — `<button>`, `<a href>`, `<summary>`,
+  checkbox/radio and button-type inputs — use the browser's own activation:
+  the `click` the browser synthesises for Enter/Space is what dispatches the
+  handler. The browser's semantics apply, so `<a href>` also **navigates**
+  (exactly as a mouse click on it already does), a checkbox still toggles, and
+  a held Enter repeats at the browser's key-repeat rate.
+- **`tabindex` elements** (a `<div tabindex="0">` such as a `Tree` node) get no
+  browser click, so rinch dispatches from `keydown`: once per press (auto-repeat
+  is ignored), and the activating Space is consumed so it does not scroll the
+  page. Ctrl/Alt/Meta chords are left alone.
+
+Neither route double-fires with the mouse: a pointer press dispatches from
+`pointerdown`, and the trailing `click` of that same interaction — including
+the extra click a `<label>` fires at its control — is suppressed. Clicks
+dispatched by assistive technology or `element.click()` (no pointer press)
+are honoured. Enter inside an `<input>`/`<textarea>` or the rich-text editor
+is never an activation of a surrounding clickable; it is the `onsubmit`
+gesture described above. An element with no live handler in its ancestry is a
+quiet no-op — the key falls through to the browser, so Tab and scrolling keep
+their usual meaning.
+
 ### Sizing a `<textarea>`
 
 A `<textarea>` holds its value in an attribute rather than as child text, so it

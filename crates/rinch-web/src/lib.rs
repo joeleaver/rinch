@@ -49,6 +49,8 @@ use rinch_core::dom::{DomDocument, NodeHandle, RenderScope, clear_render_scope, 
 use rinch_core::element::ThemeProviderProps;
 use rinch_core::events;
 
+#[doc(hidden)]
+pub use event_delegation::__set_trust_override;
 pub use event_delegation::setup_event_delegation;
 pub use web_document::WebDocument;
 

@@ -1,7 +1,7 @@
 //! Global browser event delegation for the browser-native DOM backend.
 //!
 //! Installs document-level listeners (pointerdown/pointermove/pointerup/
-//! pointercancel/keydown/input/focusin/change) that delegate to rinch's
+//! pointercancel/click/keydown/input/focusin/change) that delegate to rinch's
 //! event-handler registry,
 //! drag system, and render-surface focus routing. Using Pointer Events (instead
 //! of raw mouse events) means the same code path covers mouse, touch, and pen —
@@ -27,6 +27,33 @@ thread_local! {
     /// backend, which keys on the raw hit-test node and may re-fire.
     static LAST_HOVER: std::cell::RefCell<Option<web_sys::Element>> =
         const { std::cell::RefCell::new(None) };
+
+    /// Whether the most recent input on the page was a pointer press rather
+    /// than a key press — the gate for the `click` listener (issue #240).
+    /// `data-rid` dispatches from `pointerdown`, so every trusted `click`
+    /// that belongs to a pointer interaction is a duplicate: the browser's
+    /// own click after the press, the deferred touch click, and the trusted,
+    /// `detail == 0` click a `<label>` fires at its control. A `keydown`
+    /// re-opens the path, so the browser's keyboard-synthesised click on a
+    /// focused `<button>` dispatches. Set in the *capture* phase (ahead of
+    /// `editor_input`, which stops an in-editor pointerdown/keydown from
+    /// propagating) and deliberately never cleared on pointerup or in the
+    /// click listener — the clicks it must suppress arrive after both.
+    static POINTER_INTERACTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+
+    /// Test-only override for `Event.isTrusted` as read by the `click` gate
+    /// (see [`__set_trust_override`]).
+    static TRUST_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// **Test-only.** Make the `click` gate treat every click as trusted
+/// (`Some(true)`) / untrusted (`Some(false)`) instead of reading
+/// `Event.isTrusted`. A browser test can only dispatch untrusted events, which
+/// the gate always lets through, so the double-dispatch suppression cases are
+/// unreachable without this seam. `None` restores the real value.
+#[doc(hidden)]
+pub fn __set_trust_override(trusted: Option<bool>) {
+    TRUST_OVERRIDE.with(|t| t.set(trusted));
 }
 
 /// Map a browser `MouseEvent.button` index onto the core button enum.
@@ -390,6 +417,65 @@ mod drag_machine {
 }
 
 use drag_machine::{PendingMove, PointerKind, pending_move_decision};
+
+/// The keyboard-activation gates (issue #240), kept free of `web_sys` so they
+/// can be unit-tested on the host target like `drag_machine`.
+mod activation {
+    /// Whether a browser `click` should dispatch `data-rid`, given whether the
+    /// page's last input was a pointer press and whether the event is trusted.
+    ///
+    /// A pointer interaction already dispatched from `pointerdown`, so its
+    /// trusted click is a duplicate. An *untrusted* click — assistive
+    /// technology, `element.click()` — has no pointerdown behind it and always
+    /// dispatches. The gate is about the interaction, not the event's shape:
+    /// `detail == 0` cannot separate a keyboard click from the trusted,
+    /// detail-0 click a `<label>` fires at its control after a mouse press.
+    pub fn click_should_dispatch(pointer_interaction: bool, is_trusted: bool) -> bool {
+        !is_trusted || !pointer_interaction
+    }
+
+    /// Whether `key` (a `KeyboardEvent.key` value) activates a focused
+    /// element, mirroring desktop's Enter | Space (`"Spacebar"` is the legacy
+    /// spelling some engines still report).
+    pub fn key_activates(key: &str) -> bool {
+        matches!(key, "Enter" | " " | "Spacebar")
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_trusted_click_after_a_pointer_press_is_suppressed() {
+            assert!(!click_should_dispatch(true, true));
+        }
+
+        #[test]
+        fn a_trusted_click_with_no_pointer_press_dispatches() {
+            // The browser's keyboard-synthesised click on a focused <button>.
+            assert!(click_should_dispatch(false, true));
+        }
+
+        #[test]
+        fn an_untrusted_click_always_dispatches() {
+            // AT / element.click(): no pointerdown precedes it, whatever the
+            // last physical input was.
+            assert!(click_should_dispatch(true, false));
+            assert!(click_should_dispatch(false, false));
+        }
+
+        #[test]
+        fn only_enter_and_space_activate() {
+            assert!(key_activates("Enter"));
+            assert!(key_activates(" "));
+            assert!(key_activates("Spacebar"));
+            assert!(!key_activates("Tab"));
+            assert!(!key_activates("a"));
+            assert!(!key_activates("Escape"));
+            assert!(!key_activates(""));
+        }
+    }
+}
 
 struct WebDragState {
     /// The `draggable="true"` source element.
@@ -927,6 +1013,89 @@ fn walk_text_nodes_for_offset(
     false
 }
 
+/// The nearest `[data-rid]` ancestor-or-self of `el` and its parsed handler id.
+fn nearest_rid(el: &web_sys::Element) -> Option<(web_sys::Element, events::EventHandlerId)> {
+    let rid_el = el.closest("[data-rid]").ok().flatten()?;
+    let id = rid_el.get_attribute("data-rid")?.parse::<usize>().ok()?;
+    Some((rid_el, events::EventHandlerId(id)))
+}
+
+/// The nearest ancestor-or-self of `el` carrying a **live** `data-rid` —
+/// desktop's `activate_focused_node` rule: a freed handler (its scope
+/// disposed, the attribute outliving it — issue #141) is walked past rather
+/// than swallowing the activation.
+fn nearest_live_rid(el: &web_sys::Element) -> Option<(web_sys::Element, events::EventHandlerId)> {
+    let mut current = nearest_rid(el);
+    while let Some((rid_el, id)) = current {
+        if events::has_click_handler(id) {
+            return Some((rid_el, id));
+        }
+        current = rid_el.parent_element().and_then(|p| nearest_rid(&p));
+    }
+    None
+}
+
+/// Ancestor chain of `rid_el` (immediate parent → root, absolute viewport
+/// bounds) so handlers can use `find_click_ancestor()`/`click_ancestors()` —
+/// matches the desktop backend. getBoundingClientRect already returns
+/// absolute logical px, so no manual offset accumulation is needed.
+fn click_ancestors_of(rid_el: &web_sys::Element) -> Vec<events::AncestorBounds> {
+    let mut ancestors = Vec::new();
+    let mut parent = rid_el.parent_element();
+    while let Some(p) = parent {
+        let p_rect = p.get_bounding_client_rect();
+        ancestors.push(events::AncestorBounds {
+            tag: p.tag_name().to_lowercase(),
+            id: p.id(),
+            class: p.class_name(),
+            x: p_rect.x() as f32,
+            y: p_rect.y() as f32,
+            width: p_rect.width() as f32,
+            height: p_rect.height() as f32,
+        });
+        parent = p.parent_element();
+    }
+    ancestors
+}
+
+/// Publish the [`events::ClickContext`] and ancestor chain for a `data-rid`
+/// dispatch on `rid_el`. `cursor` is the pointer position; `None` is a
+/// keyboard (or otherwise pointer-less) activation, which takes the element's
+/// centre like desktop's `activate_focused_node` — a synthesised click carries
+/// `clientX = clientY = 0`, which would be wrong. `CLICK_CONTEXT` is never
+/// cleared, so every dispatch path must set it or the handler reads the last
+/// mouse click's coordinates (`Select` computes flip placement from them).
+fn set_click_context_for(
+    rid_el: &web_sys::Element,
+    cursor: Option<(f32, f32)>,
+    text_hit: events::TextHitInfo,
+    button: events::MouseButton,
+    modifiers: events::ModifierState,
+) {
+    let rect = rid_el.get_bounding_client_rect();
+    let (element_x, element_y) = (rect.x() as f32, rect.y() as f32);
+    let (element_width, element_height) = (rect.width() as f32, rect.height() as f32);
+    let (mouse_x, mouse_y) = cursor.unwrap_or((
+        element_x + element_width / 2.0,
+        element_y + element_height / 2.0,
+    ));
+    let (vp_w, vp_h) = viewport_dims();
+    events::set_click_context(events::ClickContext {
+        mouse_x,
+        mouse_y,
+        element_x,
+        element_y,
+        element_width,
+        element_height,
+        text_hit,
+        viewport_width: vp_w,
+        viewport_height: vp_h,
+        button,
+        modifiers,
+    });
+    events::set_click_ancestors(click_ancestors_of(rid_el));
+}
+
 /// Dispatch the click (`data-rid`) handler nearest to `el`, with a full
 /// [`events::ClickContext`] (cursor, element bounds, text-hit, button,
 /// modifiers) and `prevent_default`. Used for the mousedown click and for the
@@ -937,52 +1106,16 @@ fn dispatch_click_at(
     browser_doc: &web_sys::Document,
     event: &web_sys::MouseEvent,
 ) {
-    if let Ok(Some(rid_el)) = el.closest("[data-rid]")
-        && let Some(rid_str) = rid_el.get_attribute("data-rid")
-        && let Ok(rid) = rid_str.parse::<usize>()
-    {
-        let rect = rid_el.get_bounding_client_rect();
-        let (vp_w, vp_h) = viewport_dims();
-        let text_hit = resolve_text_hit(
-            browser_doc,
-            event.client_x() as f32,
-            event.client_y() as f32,
-        )
-        .unwrap_or_default();
-        events::set_click_context(events::ClickContext {
-            mouse_x: event.client_x() as f32,
-            mouse_y: event.client_y() as f32,
-            element_x: rect.x() as f32,
-            element_y: rect.y() as f32,
-            element_width: rect.width() as f32,
-            element_height: rect.height() as f32,
+    if let Some((rid_el, rid)) = nearest_rid(el) {
+        let cursor = (event.client_x() as f32, event.client_y() as f32);
+        let text_hit = resolve_text_hit(browser_doc, cursor.0, cursor.1).unwrap_or_default();
+        set_click_context_for(
+            &rid_el,
+            Some(cursor),
             text_hit,
-            viewport_width: vp_w,
-            viewport_height: vp_h,
-            button: mouse_button_from_event(event),
-            modifiers: modifiers_from_event(event),
-        });
-
-        // Ancestor chain (immediate parent → root, absolute viewport bounds) so
-        // handlers can use find_click_ancestor()/click_ancestors() — matches the
-        // desktop backend. getBoundingClientRect already returns absolute logical
-        // px, so no manual offset accumulation is needed.
-        let mut ancestors = Vec::new();
-        let mut parent = rid_el.parent_element();
-        while let Some(p) = parent {
-            let p_rect = p.get_bounding_client_rect();
-            ancestors.push(events::AncestorBounds {
-                tag: p.tag_name().to_lowercase(),
-                id: p.id(),
-                class: p.class_name(),
-                x: p_rect.x() as f32,
-                y: p_rect.y() as f32,
-                width: p_rect.width() as f32,
-                height: p_rect.height() as f32,
-            });
-            parent = p.parent_element();
-        }
-        events::set_click_ancestors(ancestors);
+            mouse_button_from_event(event),
+            modifiers_from_event(event),
+        );
 
         // Prevent browser default behavior (e.g. text selection during slider
         // drag, <label> synthesizing extra events) — but only if a handler
@@ -995,9 +1128,58 @@ fn dispatch_click_at(
         // default unconditionally would then be strictly worse than doing
         // nothing: text selection, `<label>` activation, native form submit and
         // the context menu are all cancelled while nothing is dispatched.
-        if events::dispatch_event(events::EventHandlerId(rid)) {
+        if events::dispatch_event(rid) {
             event.prevent_default();
         }
+    }
+}
+
+/// Keyboard / pointer-less activation of the nearest **live** `data-rid`
+/// above `el` (issue #240): the keyboard-synthesised or AT `click`, and
+/// Enter/Space on a focused `tabindex` element. Left button, no text hit, and
+/// the element's centre unless the event carried a real `cursor`. Never
+/// `prevent_default`s — on the click path that would cancel `<a href>`
+/// navigation, the label→checkbox toggle and native form submit for keyboard
+/// users only; the keydown caller consumes its own key. Returns whether a
+/// handler ran; an element with no live handler in its chain is a quiet
+/// no-op so the key falls through and Tab keeps working.
+fn dispatch_activation(
+    el: &web_sys::Element,
+    cursor: Option<(f32, f32)>,
+    modifiers: events::ModifierState,
+) -> bool {
+    let Some((rid_el, rid)) = nearest_live_rid(el) else {
+        return false;
+    };
+    set_click_context_for(
+        &rid_el,
+        cursor,
+        events::TextHitInfo::default(),
+        events::MouseButton::Left,
+        modifiers,
+    );
+    events::dispatch_event(rid)
+}
+
+/// Elements whose keys belong to a text control or the rich-text editor
+/// (the guard `editor_input` uses): Enter there is a submit/newline/commit,
+/// never an activation of a surrounding clickable.
+const TEXT_CONTROL_SELECTOR: &str = "input, textarea, select, [contenteditable], [data-pm-editor]";
+
+/// Elements the browser activates itself on Enter/Space by synthesising a
+/// `click` (which the click listener dispatches) — the keydown path must stay
+/// out of them or they would fire twice. The `input` types overlap with
+/// [`TEXT_CONTROL_SELECTOR`]; each list states its own reason.
+const NATIVELY_ACTIVATABLE_SELECTOR: &str = "button, a[href], summary, [type=button], \
+     [type=submit], [type=reset], [type=checkbox], [type=radio]";
+
+/// Read the keyboard modifier state carried by a browser keyboard event.
+fn modifiers_from_key_event(event: &web_sys::KeyboardEvent) -> events::ModifierState {
+    events::ModifierState {
+        shift: event.shift_key(),
+        ctrl: event.ctrl_key(),
+        alt: event.alt_key(),
+        meta: event.meta_key(),
     }
 }
 
@@ -1007,8 +1189,11 @@ fn dispatch_click_at(
 /// `data-onmousedown`/`up`/`move`, slider drag tracking, text-hit resolution,
 /// hover `data-onenter`/`data-onleave`, and the element drag-and-drop
 /// `data-ondrag*` suite — which now works on touch/pen as well as mouse),
-/// `keydown` (render-surface routing, keyboard interceptor, the Enter
-/// change-before-submit commit + `data-onsubmit`, Escape drag-cancel), `input`
+/// `click` (keyboard / AT activation of `data-rid`, gated on the pointer
+/// interaction flag — issue #240), `keydown` (render-surface routing, keyboard
+/// interceptor, Enter/Space activation of a focused `tabindex` element, the
+/// Enter change-before-submit commit + `data-onsubmit`, Escape drag-cancel),
+/// `input`
 /// (`data-oninput`), `focusin` (the issue #226 commit baseline), `change`
 /// (`data-onchange`, deduplicated against the Enter commit), `contextmenu`
 /// (`data-oncontextmenu`), and capture-phase `scroll` (`data-onscroll`).
@@ -1024,6 +1209,36 @@ fn dispatch_click_at(
 pub fn setup_event_delegation(doc: &WebDocument) {
     let browser_doc = doc.browser_document().clone();
     let browser_doc_for_click = browser_doc.clone();
+
+    // The pointer-interaction flag (issue #240) observes the raw input stream
+    // in the capture phase, ahead of every consumer: `editor_input` stops an
+    // in-editor pointerdown/keydown from propagating to the bubble listeners
+    // below, and the flag must still see both — otherwise a mouse click inside
+    // an editor nested in a clickable card would pass its trusted `click`
+    // through to the card, and typing in the editor after a mouse click would
+    // leave the flag stuck and swallow the next keyboard activation.
+    let mark_pointer = Closure::wrap(Box::new(move |_: web_sys::PointerEvent| {
+        POINTER_INTERACTION.with(|p| p.set(true));
+    }) as Box<dyn FnMut(_)>);
+    browser_doc
+        .add_event_listener_with_callback_and_bool(
+            "pointerdown",
+            mark_pointer.as_ref().unchecked_ref(),
+            true, // capture phase
+        )
+        .unwrap();
+    mark_pointer.forget();
+    let mark_key = Closure::wrap(Box::new(move |_: web_sys::KeyboardEvent| {
+        POINTER_INTERACTION.with(|p| p.set(false));
+    }) as Box<dyn FnMut(_)>);
+    browser_doc
+        .add_event_listener_with_callback_and_bool(
+            "keydown",
+            mark_key.as_ref().unchecked_ref(),
+            true, // capture phase
+        )
+        .unwrap();
+    mark_key.forget();
 
     // Pointerdown delegation: find nearest [data-rid] ancestor and dispatch.
     // We use pointerdown (not click) so drag operations (sliders, element DnD)
@@ -1349,6 +1564,42 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         .unwrap();
     pointercancel_closure.forget();
 
+    // Click delegation (issue #240): the browser's *own* click is what
+    // keyboard activation of a native control produces — Enter/Space on a
+    // focused <button>, Enter on <a href>, Space on a checkbox — and what
+    // assistive technology and `element.click()` dispatch. None of those has
+    // a pointerdown behind it, so `data-rid` never fired for them. A click
+    // that belongs to a pointer interaction is the duplicate of the
+    // pointerdown dispatch and is suppressed (see POINTER_INTERACTION). No
+    // `prevent_default` here: it would cancel link navigation, the
+    // label→control toggle and native form submit for keyboard users only.
+    let click_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+        let trusted = TRUST_OVERRIDE
+            .with(|t| t.get())
+            .unwrap_or_else(|| event.is_trusted());
+        if !activation::click_should_dispatch(POINTER_INTERACTION.with(|p| p.get()), trusted) {
+            return;
+        }
+        if let Some(target) = event.target()
+            && let Ok(el) = target.dyn_into::<web_sys::Element>()
+            // The editor consumes its own pointer input (`editor_input` stops
+            // an in-editor pointerdown before the generic delegation), so a
+            // click inside it must not reach an enclosing clickable either.
+            && el.closest("[data-pm-editor]").ok().flatten().is_none()
+        {
+            // A synthesised click (keyboard, AT, label activation) carries
+            // `detail == 0` and `clientX = clientY = 0`: activate at the
+            // element's centre. A real pointer position is kept.
+            let cursor =
+                (event.detail() != 0).then(|| (event.client_x() as f32, event.client_y() as f32));
+            dispatch_activation(&el, cursor, modifiers_from_event(&event));
+        }
+    }) as Box<dyn FnMut(_)>);
+    browser_doc
+        .add_event_listener_with_callback("click", click_closure.as_ref().unchecked_ref())
+        .unwrap();
+    click_closure.forget();
+
     // Suppress the browser's native HTML5 drag for rinch draggables: the element
     // drag-and-drop above is synthesized from pointer events, and a native drag
     // would otherwise hijack the gesture (suppressing pointermove/pointerup).
@@ -1415,6 +1666,33 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         if events::dispatch_keyboard_event(&key_data) {
             event.prevent_default();
             event.stop_propagation();
+        } else if activation::key_activates(&event.key())
+            && !event.ctrl_key()
+            && !event.meta_key()
+            && !event.alt_key()
+            // Once per physical press (desktop's `node_activation_held`): the
+            // browser flags auto-repeat keydowns, so a held key is ignored.
+            && !event.repeat()
+            && !event.is_composing()
+            && let Some(target) = event.target()
+            && let Ok(el) = target.dyn_into::<web_sys::Element>()
+            // Keys in a text control / the editor are theirs (Enter is the
+            // submit gesture below); a natively activatable element gets its
+            // click from the browser, dispatched by the click listener.
+            && el.closest(TEXT_CONTROL_SELECTOR).ok().flatten().is_none()
+            && el
+                .closest(NATIVELY_ACTIVATABLE_SELECTOR)
+                .ok()
+                .flatten()
+                .is_none()
+            && dispatch_activation(&el, None, modifiers_from_key_event(&event))
+        {
+            // Enter/Space activated a focused `tabindex` element (issue #240
+            // — the `Tree` node shape, which the browser never synthesises a
+            // click for). Consume the key: this is what stops Space from also
+            // scrolling the page. A node with no live handler fell through
+            // above, leaving the key to the browser.
+            event.prevent_default();
         } else if event.key() == "Enter" && !event.shift_key() && !event.is_composing() {
             // Enter (without Shift) fires the nearest ancestor's data-onsubmit,
             // matching a native form submit. Shift+Enter is left alone so

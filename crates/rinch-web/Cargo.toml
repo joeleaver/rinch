@@ -39,6 +39,9 @@ web-sys = { version = "0.3", features = [
     # Pointer Events unify mouse + touch + pen so the element drag-and-drop
     # delegation activates and tracks on touch devices (not just mouse).
     "PointerEvent",
+    # Event constructors, so the browser-driven tests (tests/) can synthesise
+    # the pointerdown/click/keydown sequences the delegation gates on (#240).
+    "MouseEventInit", "KeyboardEventInit", "PointerEventInit",
     "EventTarget", "FocusOptions",
     "Range",
     # Clipboard + IME on the editor's hidden capture textarea: clipboard read/write
