@@ -677,84 +677,63 @@ pub fn parse_font_size(style_str: &str) -> Option<f32> {
     }
 }
 
-/// Parse a CSS color value to a peniko Color.
+/// Parse a CSS `<color>` to a peniko Color.
 ///
-/// Supports:
-/// - Named colors: red, green, blue, black, white, gray, transparent, etc.
-/// - Hex colors: #rgb, #rrggbb, #rrggbbaa
-/// - rgb(r, g, b) and rgba(r, g, b, a)
+/// Delegates to stylo — the same CSS Color 4 parser the stylesheet and
+/// `style=""` paths use — so it accepts everything stylo accepts as an
+/// *absolute* colour: the full named table (matched case-insensitively),
+/// `transparent`, 3/4/6/8-digit hex, legacy and modern `rgb()`/`rgba()`/
+/// `hsl()`/`hsla()`, `hwb()`, `lab()`/`lch()`/`oklab()`/`oklch()`, `color()`,
+/// and a `color-mix()` of absolute colours. Out-of-range components clamp as
+/// CSS specifies (`rgb(300, 0, 0)` is red); trailing junk and unknown
+/// identifiers are rejected.
+///
+/// Returns `None` for anything that is not an absolute colour — including
+/// `currentcolor`, by design: it depends on the element, so the caller resolves
+/// it (see `paint::svg::resolve_svg_color`).
 pub fn parse_color(value: &str) -> Option<peniko::Color> {
-    use peniko::color::{AlphaColor, Srgb};
-    let value = value.trim();
+    use cssparser::{Parser, ParserInput};
+    use style::values::specified::Color;
 
-    // Named colors
-    match value {
-        "red" => return Some(AlphaColor::<Srgb>::from_rgba8(255, 0, 0, 255)),
-        "green" => return Some(AlphaColor::<Srgb>::from_rgba8(0, 128, 0, 255)),
-        "blue" => return Some(AlphaColor::<Srgb>::from_rgba8(0, 0, 255, 255)),
-        "black" => return Some(AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255)),
-        "white" => return Some(AlphaColor::<Srgb>::from_rgba8(255, 255, 255, 255)),
-        "gray" | "grey" => return Some(AlphaColor::<Srgb>::from_rgba8(128, 128, 128, 255)),
-        "transparent" => return Some(AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 0)),
-        "orange" => return Some(AlphaColor::<Srgb>::from_rgba8(255, 165, 0, 255)),
-        "yellow" => return Some(AlphaColor::<Srgb>::from_rgba8(255, 255, 0, 255)),
-        "purple" => return Some(AlphaColor::<Srgb>::from_rgba8(128, 0, 128, 255)),
-        "pink" => return Some(AlphaColor::<Srgb>::from_rgba8(255, 192, 203, 255)),
-        "cyan" => return Some(AlphaColor::<Srgb>::from_rgba8(0, 255, 255, 255)),
-        _ => {}
+    let mut input = ParserInput::new(value.trim());
+    let mut parser = Parser::new(&mut input);
+    // `parse_and_compute` parses the whole input (junk rejects) and computes
+    // without a device, which leaves `currentcolor` & co. non-absolute.
+    let computed =
+        with_value_parser_context(|context| Color::parse_and_compute(context, &mut parser, None))?;
+    computed
+        .as_absolute()
+        .and_then(crate::computed_style::color_from_absolute)
+}
+
+/// Run `f` with a stylo `ParserContext` for parsing a bare property value:
+/// author origin, `about:blank` URL data, no quirks, no error reporting.
+fn with_value_parser_context<R>(f: impl FnOnce(&style::parser::ParserContext<'_>) -> R) -> R {
+    use style::context::QuirksMode;
+    use style::parser::ParserContext;
+    use style::stylesheets::{CssRuleType, Origin, UrlExtraData};
+    use style_traits::ParsingMode;
+
+    thread_local! {
+        // Building `UrlExtraData` parses a URL; do that once per thread, not
+        // once per SVG child per paint. The context itself only borrows it.
+        static URL_DATA: UrlExtraData =
+            UrlExtraData::from(url::Url::parse("about:blank").expect("about:blank is a URL"));
     }
 
-    // Hex colors
-    if let Some(hex) = value.strip_prefix('#') {
-        return match hex.len() {
-            3 => {
-                let r = u8::from_str_radix(&hex[0..1], 16).ok()?;
-                let g = u8::from_str_radix(&hex[1..2], 16).ok()?;
-                let b = u8::from_str_radix(&hex[2..3], 16).ok()?;
-                Some(AlphaColor::<Srgb>::from_rgba8(r * 17, g * 17, b * 17, 255))
-            }
-            6 => {
-                let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-                let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-                Some(AlphaColor::<Srgb>::from_rgba8(r, g, b, 255))
-            }
-            8 => {
-                let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-                let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-                let a = u8::from_str_radix(&hex[6..8], 16).ok()?;
-                Some(AlphaColor::<Srgb>::from_rgba8(r, g, b, a))
-            }
-            _ => None,
-        };
-    }
-
-    // rgb(r, g, b) and rgba(r, g, b, a)
-    if let Some(inner) = value
-        .strip_prefix("rgba(")
-        .and_then(|s| s.strip_suffix(')'))
-    {
-        let parts: Vec<&str> = inner.split(',').collect();
-        if parts.len() == 4 {
-            let r = parts[0].trim().parse::<u8>().ok()?;
-            let g = parts[1].trim().parse::<u8>().ok()?;
-            let b = parts[2].trim().parse::<u8>().ok()?;
-            let a = parts[3].trim().parse::<f32>().ok()?;
-            return Some(AlphaColor::<Srgb>::from_rgba8(r, g, b, (a * 255.0) as u8));
-        }
-    }
-    if let Some(inner) = value.strip_prefix("rgb(").and_then(|s| s.strip_suffix(')')) {
-        let parts: Vec<&str> = inner.split(',').collect();
-        if parts.len() == 3 {
-            let r = parts[0].trim().parse::<u8>().ok()?;
-            let g = parts[1].trim().parse::<u8>().ok()?;
-            let b = parts[2].trim().parse::<u8>().ok()?;
-            return Some(AlphaColor::<Srgb>::from_rgba8(r, g, b, 255));
-        }
-    }
-
-    None
+    URL_DATA.with(|url_data| {
+        let context = ParserContext::new(
+            Origin::Author,
+            url_data,
+            Some(CssRuleType::Style),
+            ParsingMode::DEFAULT,
+            QuirksMode::NoQuirks,
+            /* namespaces = */ Default::default(),
+            None,
+            None,
+        );
+        f(&context)
+    })
 }
 
 /// Check if a style string contains "display: contents".

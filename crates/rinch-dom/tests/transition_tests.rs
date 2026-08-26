@@ -392,3 +392,90 @@ fn test_apply_value_background_color() {
         _ => panic!("Expected Color background"),
     }
 }
+
+// ── #250: `@keyframes` colour stops use the same colour parser as everything else ──
+
+/// Build a document whose one div runs `animation: tint 1000ms linear` from the
+/// given `@keyframes` body, with animations enabled from the first layout on.
+fn animated_div(keyframes: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::NodeId) {
+    use rinch_core::dom::DomDocument;
+
+    let mut doc = rinch_dom::RinchDocument::new();
+    let body = doc.body();
+
+    let style_el = doc.create_element("style");
+    let css = doc.create_text(&format!(
+        "@keyframes tint {{ {keyframes} }} \
+         .tint {{ animation: tint 1000ms linear; width: 10px; height: 10px; }}"
+    ));
+    doc.append_child(style_el, css);
+    doc.append_child(body, style_el);
+
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "class", "tint");
+    doc.set_attribute(div, "style", "color: rgb(10, 20, 30)");
+    doc.append_child(body, div);
+
+    // Animations are held off until the first layout has completed (the
+    // page-load guard); this test wants the very first resolve to start them.
+    doc.tree.transitions_enabled = true;
+    doc.resolve_layout(800.0, 600.0);
+    (doc, div)
+}
+
+/// The animated `background-color` of the div's first active animation at
+/// `elapsed_ms` into it.
+fn animated_background(
+    doc: &rinch_dom::RinchDocument,
+    div: rinch_core::dom::NodeId,
+    elapsed_ms: f64,
+) -> Option<peniko::Color> {
+    let anim = doc
+        .tree
+        .active_animations
+        .get(&div.0)
+        .and_then(|anims| anims.first())
+        .expect("the div's animation should be active after layout");
+    let rinch_dom::animation::AnimationResult::Values(values) =
+        anim.values_at(anim.start_time_ms + elapsed_ms)
+    else {
+        panic!("a running animation should yield values");
+    };
+    values.iter().find_map(|(prop, value)| match (prop, value) {
+        (TransitionProperty::BackgroundColor, AnimatableValue::Color(c)) => Some(*c),
+        _ => None,
+    })
+}
+
+/// #250 (B): stylo serialises an authored colour keyword verbatim, and the
+/// keyframe extractor used to re-parse that text with a private 11-name table,
+/// so `rebeccapurple` / `aqua` stops silently dropped out of the animation.
+#[test]
+fn keyframes_named_colour_stops_animate() {
+    let (doc, div) =
+        animated_div("from { background-color: rebeccapurple; } to { background-color: aqua; }");
+
+    let mid = animated_background(&doc, div, 500.0)
+        .expect("both colour stops should parse, so background-color animates")
+        .to_rgba8();
+    // Halfway from rebeccapurple (102, 51, 153) to aqua (0, 255, 255).
+    for (channel, got, want) in [("r", mid.r, 51), ("g", mid.g, 153), ("b", mid.b, 204)] {
+        assert!(
+            (got as i32 - want).abs() <= 2,
+            "{channel} at 50% should be ~{want}, got {got}"
+        );
+    }
+}
+
+/// A `currentcolor` stop resolves against the element's own `color`, as before.
+#[test]
+fn keyframes_currentcolor_stop_uses_element_colour() {
+    let (doc, div) = animated_div(
+        "from { background-color: currentcolor; } to { background-color: currentcolor; }",
+    );
+
+    let mid = animated_background(&doc, div, 500.0)
+        .expect("currentcolor stops should resolve against the element's color")
+        .to_rgba8();
+    assert_eq!((mid.r, mid.g, mid.b), (10, 20, 30));
+}

@@ -1844,6 +1844,7 @@ close_app()                         # Done
 |-------|-------|--------------|
 | Borders appearing unexpectedly | `border_*_width` should be 0 for `border: none` | `computed_style.rs` - check `border-style` |
 | SVG icons 0x0 | Missing inline width/height styles | Add `style="width: Xpx; height: Xpx"` |
+| SVG `fill`/`stroke` attribute not painting | The value must be a CSS `<color>` — attributes are parsed by stylo via `layout::parse_color` (full named table, hex, `rgb()`/`hsl()`…); `none`/`currentcolor` match case-insensitively | `paint/svg.rs` `resolve_svg_color` |
 | currentColor not resolving | Check `is_currentcolor()` handling | `computed_style.rs` |
 | Reactive state not updating | Need `{|| expr}` closure syntax | Component render method |
 | Menu active state stale | Missing reactive effect | Add `create_effect()` for class updates |

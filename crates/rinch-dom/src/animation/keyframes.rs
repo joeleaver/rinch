@@ -1,11 +1,14 @@
 //! Extract keyframe stop values from Stylo's KeyframesAnimation.
 
-use peniko::Color;
 use style::properties::{LonghandId, PropertyDeclaration, PropertyDeclarationId};
 use style::shared_lock::SharedRwLockReadGuard;
 use style::stylesheets::keyframes_rule::{KeyframesAnimation, KeyframesStepValue};
+use style::values::specified::Color as SpecifiedColor;
 
-use crate::computed_style::{DimensionValue, LengthPercentageAutoValue, LengthPercentageValue};
+use crate::computed_style::{
+    ComputedStyle, DimensionValue, LengthPercentageAutoValue, LengthPercentageValue,
+    color_from_specified,
+};
 use crate::transition::types::{AnimatableValue, TransformOp, TransitionProperty};
 
 use super::types::KeyframeStop;
@@ -14,10 +17,11 @@ use crate::transition::types::TimingFunction;
 /// Extract KeyframeStops from a Stylo KeyframesAnimation.
 ///
 /// For `ComputedValues` steps (auto-generated 0%/100%), we use `base_style` values.
-/// For `Declarations` steps, we serialize property values to CSS text and parse back.
+/// For `Declarations` steps, colours are read as typed stylo values; the other
+/// properties are serialized to CSS text and parsed back.
 pub fn extract_keyframe_stops(
     animation: &KeyframesAnimation,
-    base_style: &crate::computed_style::ComputedStyle,
+    base_style: &ComputedStyle,
     guard: &SharedRwLockReadGuard,
 ) -> Vec<KeyframeStop> {
     let mut stops = Vec::new();
@@ -57,10 +61,10 @@ pub fn extract_keyframe_stops(
     stops
 }
 
-/// Extract animatable values from a PropertyDeclarationBlock by serializing to CSS text.
+/// Extract animatable values from a PropertyDeclarationBlock.
 fn extract_declaration_values(
     block: &style::properties::PropertyDeclarationBlock,
-    base_style: &crate::computed_style::ComputedStyle,
+    base_style: &ComputedStyle,
 ) -> Vec<(TransitionProperty, AnimatableValue)> {
     let mut values = Vec::new();
 
@@ -75,12 +79,21 @@ fn extract_declaration_values(
 
 /// Convert a single PropertyDeclaration to our (TransitionProperty, AnimatableValue).
 ///
-/// Uses ToCss serialization to convert specified values to CSS text,
-/// then parses the numeric/color value from the text.
+/// Colour longhands are read as typed stylo values. Everything else goes
+/// through ToCss serialization and is parsed back from the text.
 fn convert_declaration(
     declaration: &PropertyDeclaration,
-    base_style: &crate::computed_style::ComputedStyle,
+    base_style: &ComputedStyle,
 ) -> Option<(TransitionProperty, AnimatableValue)> {
+    if let Some((property, color)) = color_declaration(declaration) {
+        let color = match color {
+            // The element's own colour, as for every other `currentcolor`.
+            SpecifiedColor::CurrentColor => base_style.color?,
+            other => color_from_specified(other)?,
+        };
+        return Some((property, AnimatableValue::Color(color)));
+    }
+
     let id = declaration.id();
     let css_text = {
         let mut s = String::new();
@@ -95,50 +108,6 @@ fn convert_declaration(
                 TransitionProperty::Opacity,
                 AnimatableValue::Float(val.clamp(0.0, 1.0)),
             ))
-        }
-        PropertyDeclarationId::Longhand(LonghandId::BackgroundColor) => {
-            parse_css_color(&css_text, base_style).map(|c| {
-                (
-                    TransitionProperty::BackgroundColor,
-                    AnimatableValue::Color(c),
-                )
-            })
-        }
-        PropertyDeclarationId::Longhand(LonghandId::Color) => {
-            parse_css_color(&css_text, base_style)
-                .map(|c| (TransitionProperty::Color, AnimatableValue::Color(c)))
-        }
-        PropertyDeclarationId::Longhand(LonghandId::BorderTopColor) => {
-            parse_css_color(&css_text, base_style).map(|c| {
-                (
-                    TransitionProperty::BorderTopColor,
-                    AnimatableValue::Color(c),
-                )
-            })
-        }
-        PropertyDeclarationId::Longhand(LonghandId::BorderRightColor) => {
-            parse_css_color(&css_text, base_style).map(|c| {
-                (
-                    TransitionProperty::BorderRightColor,
-                    AnimatableValue::Color(c),
-                )
-            })
-        }
-        PropertyDeclarationId::Longhand(LonghandId::BorderBottomColor) => {
-            parse_css_color(&css_text, base_style).map(|c| {
-                (
-                    TransitionProperty::BorderBottomColor,
-                    AnimatableValue::Color(c),
-                )
-            })
-        }
-        PropertyDeclarationId::Longhand(LonghandId::BorderLeftColor) => {
-            parse_css_color(&css_text, base_style).map(|c| {
-                (
-                    TransitionProperty::BorderLeftColor,
-                    AnimatableValue::Color(c),
-                )
-            })
         }
         PropertyDeclarationId::Longhand(LonghandId::Width) => parse_css_dimension(&css_text)
             .map(|d| (TransitionProperty::Width, AnimatableValue::Dimension(d))),
@@ -248,9 +217,7 @@ fn convert_declaration(
 }
 
 /// Extract all animatable values from a ComputedStyle (for auto-generated keyframes).
-fn extract_base_style_values(
-    style: &crate::computed_style::ComputedStyle,
-) -> Vec<(TransitionProperty, AnimatableValue)> {
+fn extract_base_style_values(style: &ComputedStyle) -> Vec<(TransitionProperty, AnimatableValue)> {
     use crate::computed_style::BackgroundValue;
 
     let mut values = Vec::new();
@@ -288,140 +255,29 @@ fn extract_base_style_values(
     values
 }
 
+/// The animatable colour longhands, with their typed specified value.
+///
+/// Typed on purpose: stylo serialises an authored keyword verbatim, so
+/// re-parsing the CSS text needs a colour parser of its own — and the private
+/// one that used to live here knew eleven names, which is how a
+/// `rebeccapurple` stop silently dropped out of its animation (#250).
+fn color_declaration(
+    declaration: &PropertyDeclaration,
+) -> Option<(TransitionProperty, &SpecifiedColor)> {
+    Some(match declaration {
+        PropertyDeclaration::BackgroundColor(c) => (TransitionProperty::BackgroundColor, c),
+        PropertyDeclaration::Color(c) => (TransitionProperty::Color, &c.0),
+        PropertyDeclaration::BorderTopColor(c) => (TransitionProperty::BorderTopColor, c),
+        PropertyDeclaration::BorderRightColor(c) => (TransitionProperty::BorderRightColor, c),
+        PropertyDeclaration::BorderBottomColor(c) => (TransitionProperty::BorderBottomColor, c),
+        PropertyDeclaration::BorderLeftColor(c) => (TransitionProperty::BorderLeftColor, c),
+        _ => return None,
+    })
+}
+
 // =============================================================================
 // CSS text parsing helpers
 // =============================================================================
-
-/// Parse a CSS color value from text. Handles common formats:
-/// rgb(), rgba(), hex, named colors, currentColor, transparent.
-fn parse_css_color(css: &str, base_style: &crate::computed_style::ComputedStyle) -> Option<Color> {
-    let css = css.trim();
-
-    if css.eq_ignore_ascii_case("currentcolor") || css.eq_ignore_ascii_case("currentColor") {
-        return base_style.color;
-    }
-
-    if css.eq_ignore_ascii_case("transparent") {
-        return Some(Color::from_rgba8(0, 0, 0, 0));
-    }
-
-    parse_color_simple(css)
-}
-
-/// Simple color parser for common formats.
-fn parse_color_simple(css: &str) -> Option<Color> {
-    let css = css.trim();
-
-    // Hex colors
-    if let Some(hex) = css.strip_prefix('#') {
-        return parse_hex_color(hex);
-    }
-
-    // rgb() / rgba()
-    if let Some(inner) = css
-        .strip_prefix("rgb(")
-        .or_else(|| css.strip_prefix("rgba("))
-    {
-        if let Some(inner) = inner.strip_suffix(')') {
-            return parse_rgb_values(inner);
-        }
-    }
-
-    // Named colors
-    match css.to_lowercase().as_str() {
-        "black" => return Some(Color::from_rgba8(0, 0, 0, 255)),
-        "white" => return Some(Color::from_rgba8(255, 255, 255, 255)),
-        "red" => return Some(Color::from_rgba8(255, 0, 0, 255)),
-        "green" => return Some(Color::from_rgba8(0, 128, 0, 255)),
-        "blue" => return Some(Color::from_rgba8(0, 0, 255, 255)),
-        "yellow" => return Some(Color::from_rgba8(255, 255, 0, 255)),
-        "cyan" | "aqua" => return Some(Color::from_rgba8(0, 255, 255, 255)),
-        "magenta" | "fuchsia" => return Some(Color::from_rgba8(255, 0, 255, 255)),
-        "gray" | "grey" => return Some(Color::from_rgba8(128, 128, 128, 255)),
-        "orange" => return Some(Color::from_rgba8(255, 165, 0, 255)),
-        "purple" => return Some(Color::from_rgba8(128, 0, 128, 255)),
-        _ => {}
-    }
-
-    None
-}
-
-fn parse_hex_color(hex: &str) -> Option<Color> {
-    match hex.len() {
-        3 => {
-            let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
-            let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
-            let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
-            Some(Color::from_rgba8(r, g, b, 255))
-        }
-        4 => {
-            let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
-            let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
-            let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
-            let a = u8::from_str_radix(&hex[3..4], 16).ok()? * 17;
-            Some(Color::from_rgba8(r, g, b, a))
-        }
-        6 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            Some(Color::from_rgba8(r, g, b, 255))
-        }
-        8 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            let a = u8::from_str_radix(&hex[6..8], 16).ok()?;
-            Some(Color::from_rgba8(r, g, b, a))
-        }
-        _ => None,
-    }
-}
-
-fn parse_rgb_values(inner: &str) -> Option<Color> {
-    // Handle both comma-separated and space-separated (CSS4) syntax
-    let parts: Vec<&str> = inner
-        .split([',', '/'])
-        .flat_map(|s| s.split_whitespace())
-        .collect();
-
-    if parts.len() >= 3 {
-        let r = parse_color_component(parts[0])?;
-        let g = parse_color_component(parts[1])?;
-        let b = parse_color_component(parts[2])?;
-        let a = if parts.len() >= 4 {
-            parse_alpha_component(parts[3])?
-        } else {
-            255
-        };
-        Some(Color::from_rgba8(r, g, b, a))
-    } else {
-        None
-    }
-}
-
-fn parse_color_component(s: &str) -> Option<u8> {
-    let s = s.trim();
-    if let Some(pct) = s.strip_suffix('%') {
-        let pct: f32 = pct.parse().ok()?;
-        Some((pct / 100.0 * 255.0).round().clamp(0.0, 255.0) as u8)
-    } else {
-        let v: f32 = s.parse().ok()?;
-        Some(v.round().clamp(0.0, 255.0) as u8)
-    }
-}
-
-fn parse_alpha_component(s: &str) -> Option<u8> {
-    let s = s.trim();
-    if let Some(pct) = s.strip_suffix('%') {
-        let pct: f32 = pct.parse().ok()?;
-        Some((pct / 100.0 * 255.0).round().clamp(0.0, 255.0) as u8)
-    } else {
-        let v: f32 = s.parse().ok()?;
-        // Alpha is 0-1 float
-        Some((v * 255.0).round().clamp(0.0, 255.0) as u8)
-    }
-}
 
 /// Parse a CSS dimension value (width/height): "100px", "auto", etc.
 fn parse_css_dimension(css: &str) -> Option<DimensionValue> {

@@ -291,16 +291,22 @@ pub(super) fn resolve_current_color(tree: &NodeTree, node: &Node) -> AlphaColor<
     AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255)
 }
 
-/// Resolve an SVG color attribute value, handling "none" and "currentColor".
+/// Resolve an SVG `fill`/`stroke` attribute: `none`, `currentcolor` (any
+/// casing — the spec spells it `currentcolor`, Tabler emits `currentColor`),
+/// or a CSS `<color>`.
 pub(super) fn resolve_svg_color(
     attr: Option<&str>,
     current_color: AlphaColor<Srgb>,
 ) -> Option<AlphaColor<Srgb>> {
-    match attr {
-        None => None,
-        Some("none") => None,
-        Some("currentColor") => Some(current_color),
-        Some(v) => parse_color(v),
+    let value = attr?.trim();
+    if value.eq_ignore_ascii_case("none") {
+        None
+    } else if value.eq_ignore_ascii_case("currentcolor") {
+        // Checked before the parse: this runs per SVG child per paint, and
+        // every icon says it.
+        Some(current_color)
+    } else {
+        parse_color(value)
     }
 }
 

@@ -206,30 +206,80 @@ fn test_paint_rgba_color() {
     assert!(!painter.scene().encoding().is_empty());
 }
 
+/// `parse_color` as `(r, g, b, a)`, for exact assertions.
+fn rgba(value: &str) -> Option<(u8, u8, u8, u8)> {
+    rinch_dom::layout::parse_color(value).map(|c| {
+        let c = c.to_rgba8();
+        (c.r, c.g, c.b, c.a)
+    })
+}
+
 #[test]
 fn test_parse_color_named() {
-    use rinch_dom::layout::parse_color;
-    assert!(parse_color("red").is_some());
-    assert!(parse_color("blue").is_some());
-    assert!(parse_color("transparent").is_some());
-    assert!(parse_color("unknown_color").is_none());
+    assert_eq!(rgba("red"), Some((255, 0, 0, 255)));
+    assert_eq!(rgba("blue"), Some((0, 0, 255, 255)));
+    assert_eq!(rgba("transparent"), Some((0, 0, 0, 0)));
+    assert_eq!(rgba("unknown_color"), None);
+}
+
+/// #250: the whole CSS named-colour table, matched case-insensitively — not a
+/// private dozen. `rebeccapurple` is the last name the spec added.
+#[test]
+fn test_parse_color_full_named_table_case_insensitive() {
+    assert_eq!(rgba("rebeccapurple"), Some((102, 51, 153, 255)));
+    assert_eq!(rgba("aqua"), Some((0, 255, 255, 255)));
+    assert_eq!(rgba("Aqua"), Some((0, 255, 255, 255)));
+    assert_eq!(rgba("AQUA"), Some((0, 255, 255, 255)));
+    assert_eq!(rgba("  RebeccaPurple  "), Some((102, 51, 153, 255)));
 }
 
 #[test]
 fn test_parse_color_hex() {
-    use rinch_dom::layout::parse_color;
-    assert!(parse_color("#f00").is_some());
-    assert!(parse_color("#ff0000").is_some());
-    assert!(parse_color("#ff000080").is_some());
-    assert!(parse_color("#xyz").is_none());
+    assert_eq!(rgba("#f00"), Some((255, 0, 0, 255)));
+    assert_eq!(rgba("#ff0000"), Some((255, 0, 0, 255)));
+    assert_eq!(rgba("#ff000080"), Some((255, 0, 0, 128)));
+    // #250: 4-digit hex is CSS Color 4 (#rgba).
+    assert_eq!(rgba("#1234"), Some((0x11, 0x22, 0x33, 0x44)));
+    assert_eq!(rgba("#xyz"), None);
+    assert_eq!(rgba("#12"), None);
 }
 
 #[test]
 fn test_parse_color_rgb_rgba() {
-    use rinch_dom::layout::parse_color;
-    assert!(parse_color("rgb(255, 0, 0)").is_some());
-    assert!(parse_color("rgba(255, 0, 0, 0.5)").is_some());
-    assert!(parse_color("rgb(255, 0)").is_none());
+    assert_eq!(rgba("rgb(255, 0, 0)"), Some((255, 0, 0, 255)));
+    assert_eq!(rgba("rgba(255, 0, 0, 0.5)"), Some((255, 0, 0, 128)));
+    // #250: modern space-separated syntax, with and without a `/ alpha`.
+    assert_eq!(rgba("rgb(0 128 255)"), Some((0, 128, 255, 255)));
+    assert_eq!(rgba("rgb(0 128 255 / 50%)"), Some((0, 128, 255, 128)));
+    // #250: CSS clamps out-of-range components; it does not reject them.
+    assert_eq!(rgba("rgb(300, 0, 0)"), Some((255, 0, 0, 255)));
+    assert_eq!(rgba("rgb(255, 0)"), None);
+    assert_eq!(rgba("rgb(0, 0)"), None);
+}
+
+/// #250: `hsl()`/`hsla()` were not parsed at all.
+#[test]
+fn test_parse_color_hsl() {
+    assert_eq!(rgba("hsl(270 50% 40%)"), Some((102, 51, 153, 255)));
+    assert_eq!(rgba("hsla(270, 50%, 40%, 0.5)"), Some((102, 51, 153, 128)));
+}
+
+#[test]
+fn test_parse_color_rejects_junk() {
+    assert_eq!(rgba(""), None);
+    assert_eq!(rgba("   "), None);
+    assert_eq!(rgba("red junk"), None);
+    assert_eq!(rgba("red; background: blue"), None);
+    assert_eq!(rgba("red !important"), None);
+}
+
+/// `currentcolor` is not an absolute colour: the caller owns its resolution
+/// (`resolve_svg_color` walks the tree for it), so `parse_color` must say no
+/// rather than invent a value.
+#[test]
+fn test_parse_color_currentcolor_is_not_absolute() {
+    assert_eq!(rgba("currentcolor"), None);
+    assert_eq!(rgba("currentColor"), None);
 }
 
 #[test]
@@ -565,7 +615,7 @@ mod transform_paint {
 
     /// Paint the document with the tiny-skia software painter for pixel
     /// assertions.
-    fn paint_skia(doc: &mut RinchDocument, painter: &mut TinySkiaPainter) {
+    pub(super) fn paint_skia(doc: &mut RinchDocument, painter: &mut TinySkiaPainter) {
         paint_skia_at(doc, painter, 1.0);
     }
 
@@ -584,7 +634,7 @@ mod transform_paint {
     }
 
     /// Premultiplied RGBA pixel at (x, y).
-    fn pixel_at(painter: &TinySkiaPainter, x: u32, y: u32) -> [u8; 4] {
+    pub(super) fn pixel_at(painter: &TinySkiaPainter, x: u32, y: u32) -> [u8; 4] {
         let idx = ((y * painter.width() + x) * 4) as usize;
         let d = painter.pixels();
         [d[idx], d[idx + 1], d[idx + 2], d[idx + 3]]
@@ -956,5 +1006,87 @@ mod transform_dpi_covariance {
             failures.len(),
             failures.join("\n")
         );
+    }
+}
+
+// ── SVG presentation attributes (#250): `fill`/`stroke` are parsed with the
+// same CSS colour parser as stylesheets, and `currentcolor` is matched the
+// way the spec spells it. Pixel assertions use the software renderer.
+
+#[cfg(feature = "software-renderer")]
+mod svg_paint {
+    use super::transform_paint::{paint_skia, pixel_at};
+    use super::*;
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+
+    /// Paint a 20×20 `<svg viewBox="0 0 10 10">` holding one full-viewBox
+    /// `<rect fill=…>` at the top-left of the page and return the pixel at its
+    /// centre. `svg_style` is the `<svg>`'s own inline style (for `color`).
+    fn rect_centre_pixel(fill: &str, svg_style: &str) -> [u8; 4] {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let svg = doc.create_element("svg");
+        doc.set_attribute(svg, "viewBox", "0 0 10 10");
+        doc.set_attribute(svg, "width", "20");
+        doc.set_attribute(svg, "height", "20");
+        doc.set_attribute(
+            svg,
+            "style",
+            &format!("display: block; width: 20px; height: 20px; {svg_style}"),
+        );
+        doc.append_child(body, svg);
+        let rect = doc.create_element("rect");
+        doc.set_attribute(rect, "x", "0");
+        doc.set_attribute(rect, "y", "0");
+        doc.set_attribute(rect, "width", "10");
+        doc.set_attribute(rect, "height", "10");
+        doc.set_attribute(rect, "fill", fill);
+        doc.append_child(svg, rect);
+        doc.resolve_layout(800.0, 600.0);
+
+        let layout = doc.tree.get(svg.0).unwrap().layout;
+        assert_eq!(
+            (layout.x, layout.y, layout.width, layout.height),
+            (0.0, 0.0, 20.0, 20.0),
+            "the svg should sit at the page origin at its styled size"
+        );
+
+        let mut painter = TinySkiaPainter::new(40, 40);
+        paint_skia(&mut doc, &mut painter);
+        pixel_at(&painter, 10, 10)
+    }
+
+    #[test]
+    fn svg_fill_named_colour_outside_legacy_table_paints() {
+        assert_eq!(rect_centre_pixel("rebeccapurple", ""), [102, 51, 153, 255]);
+    }
+
+    #[test]
+    fn svg_fill_hsl_paints() {
+        assert_eq!(
+            rect_centre_pixel("hsl(270 50% 40%)", ""),
+            [102, 51, 153, 255]
+        );
+    }
+
+    #[test]
+    fn svg_fill_currentcolor_lowercase_resolves_to_css_color() {
+        assert_eq!(
+            rect_centre_pixel("currentcolor", "color: rgb(1, 2, 3)"),
+            [1, 2, 3, 255]
+        );
+    }
+
+    #[test]
+    fn svg_fill_currentcolor_camelcase_resolves_to_css_color() {
+        assert_eq!(
+            rect_centre_pixel("currentColor", "color: rgb(1, 2, 3)"),
+            [1, 2, 3, 255]
+        );
+    }
+
+    #[test]
+    fn svg_fill_none_paints_nothing() {
+        assert_eq!(rect_centre_pixel("none", ""), [0, 0, 0, 0]);
     }
 }
