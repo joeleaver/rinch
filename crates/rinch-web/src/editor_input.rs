@@ -71,6 +71,10 @@ thread_local! {
     /// Whether an IME composition is in progress. While set, the keydown handler yields
     /// every key to the textarea + IME (the composed text arrives via composition events).
     static COMPOSING: Cell<bool> = const { Cell::new(false) };
+    /// What we last wrote into the capture textarea — the caret's textblock, mirrored
+    /// so a soft keyboard has real text to replace. `None` when no editor is focused.
+    /// [`reconcile_mirror`] diffs the textarea against this to recover the edit.
+    static MIRROR: RefCell<Option<Mirror>> = const { RefCell::new(None) };
     /// The in-flight touch/pen contact that started inside an editor, as
     /// `(pointer_id, client_x, client_y)`. A release near that point is a tap rather
     /// than a scroll, and focuses the capture target (see `handle_touch_tap`).
@@ -168,6 +172,205 @@ fn focused_handle() -> Option<(usize, EditorHandle)> {
 fn refresh_caret() {
     BLINK_ON.with(|c| c.set(true));
     registry::update_all_carets(None, focused_editor());
+    // Keep the capture textarea mirroring the caret's block. Every edit and every
+    // caret move comes through here, which is exactly when a keyboard's idea of the
+    // surrounding text goes stale.
+    if let Some((_, handle)) = focused_handle() {
+        sync_mirror(&handle);
+    }
+}
+
+// ── The capture mirror ────────────────────────────────────────────────────────
+//
+// The capture textarea used to be held empty, which cost us every edit a keyboard
+// expresses as a *replacement* of text it believes is already there. Tapping an
+// autocorrect suggestion, for instance, sets a composing region over the word behind
+// the caret and then commits the correction; with an empty field that region covers
+// nothing, so "word" + a tap on "world" committed as a bare insert and produced
+// "wordworld".
+//
+// So the textarea mirrors the caret's textblock and tracks the model selection. The
+// keyboard's ranges then land on real characters, and the edit is recovered by diffing
+// the textarea against what we wrote — which handles insert, replace, and delete
+// uniformly, whatever inputType (or composition) the keyboard chose to express it with.
+// This is the same mirror-and-diff CodeMirror uses for exactly these keyboards.
+
+/// The capture textarea's contents as we last wrote them: one textblock's text and the
+/// DOM id of the block it came from.
+#[derive(Clone)]
+struct Mirror {
+    textblock_nid: usize,
+    text: String,
+    /// The selection we wrote, in UTF-16 code units — what the textarea counts in.
+    /// Kept so a redundant re-sync can be skipped.
+    sel: (u32, u32),
+}
+
+/// The byte offset of char index `i` (its length in bytes for `i` past the end).
+fn byte_of_char(text: &str, i: usize) -> usize {
+    text.char_indices().nth(i).map_or(text.len(), |(b, _)| b)
+}
+
+/// Length of `text` in UTF-16 code units — the unit `selectionStart`/`selectionEnd` use.
+fn utf16_len(text: &str) -> u32 {
+    text.chars().map(|c| c.len_utf16() as u32).sum()
+}
+
+/// The byte offset in `text` of UTF-16 code-unit offset `units` — the inverse of
+/// [`utf16_len`], for reading `selectionStart`/`selectionEnd` back off the textarea.
+/// An offset inside a surrogate pair rounds down to that character's start.
+fn byte_of_utf16(text: &str, units: u32) -> usize {
+    let mut seen = 0u32;
+    for (byte, ch) in text.char_indices() {
+        // `units` lands on this character's start, or part-way into it (an offset
+        // between a surrogate pair's halves). Either way this character's start is the
+        // nearest real boundary.
+        if seen + (ch.len_utf16() as u32) > units {
+            return byte;
+        }
+        seen += ch.len_utf16() as u32;
+    }
+    text.len()
+}
+
+/// The minimal replacement turning `base` into `now`: `(from, to, inserted)` where
+/// `from..to` is a **char** range in `base`. `None` when they are equal.
+///
+/// Trimming the common prefix and suffix keeps the edit as small as the change really
+/// was: a suggestion that rewrites "word" to "world" comes back as "insert `l` at 3",
+/// not "replace the whole word", so marks either side survive and undo stays granular.
+fn text_diff(base: &str, now: &str) -> Option<(usize, usize, String)> {
+    if base == now {
+        return None;
+    }
+    let b: Vec<char> = base.chars().collect();
+    let n: Vec<char> = now.chars().collect();
+    let mut prefix = 0;
+    while prefix < b.len() && prefix < n.len() && b[prefix] == n[prefix] {
+        prefix += 1;
+    }
+    // The suffix may not reach back into the prefix from either side.
+    let mut suffix = 0;
+    while suffix < b.len() - prefix
+        && suffix < n.len() - prefix
+        && b[b.len() - 1 - suffix] == n[n.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    let inserted: String = n[prefix..n.len() - suffix].iter().collect();
+    Some((prefix, b.len() - suffix, inserted))
+}
+
+/// Rewrite the capture textarea to mirror the caret's textblock, and remember what we
+/// wrote. A no-op mid-composition — the IME owns the field until it commits.
+fn sync_mirror(handle: &EditorHandle) {
+    if COMPOSING.with(|c| c.get()) {
+        return;
+    }
+    let Some(ta) = capture_target() else {
+        return;
+    };
+    let selection = handle.selection();
+    let Some((textblock_nid, head_byte)) = handle.caret_address(selection.head()) else {
+        // No text caret (a node selection, or an unmounted editor): nothing to mirror.
+        MIRROR.with(|m| *m.borrow_mut() = None);
+        if !ta.value().is_empty() {
+            ta.set_value("");
+        }
+        return;
+    };
+    let Some(block) = node_by_nid(textblock_nid) else {
+        return;
+    };
+    let text = block.text_content().unwrap_or_default();
+    let head = utf16_len(&text[..head_byte.min(text.len())]);
+    // Mirror the selection too, but only when it lies in this same block — a
+    // cross-block selection has no honest representation in one block's text.
+    let anchor = match handle.caret_address(selection.anchor()) {
+        Some((nid, byte)) if nid == textblock_nid => utf16_len(&text[..byte.min(text.len())]),
+        _ => head,
+    };
+    let sel = (anchor.min(head), anchor.max(head));
+
+    let unchanged = MIRROR.with(|m| {
+        m.borrow()
+            .as_ref()
+            .is_some_and(|p| p.textblock_nid == textblock_nid && p.text == text && p.sel == sel)
+    });
+    if unchanged && ta.value() == text {
+        return;
+    }
+    ta.set_value(&text);
+    let _ = ta.set_selection_range(sel.0, sel.1);
+    MIRROR.with(|m| {
+        *m.borrow_mut() = Some(Mirror {
+            textblock_nid,
+            text,
+            sel,
+        })
+    });
+}
+
+/// Apply whatever the browser did to the capture textarea to the model, by diffing it
+/// against the mirror. Returns whether an edit was applied.
+///
+/// This is the recovery path for every edit we let the browser express in the textarea
+/// rather than intercepting: composition commits, autocorrect replacements, and
+/// anything else a keyboard writes without an `inputType` we recognise.
+fn reconcile_mirror(handle: &EditorHandle) -> bool {
+    let Some(ta) = capture_target() else {
+        return false;
+    };
+    let Some(mirror) = MIRROR.with(|m| m.borrow().clone()) else {
+        return false;
+    };
+    let Some((from_char, to_char, inserted)) = text_diff(&mirror.text, &ta.value()) else {
+        return false;
+    };
+    let from_byte = byte_of_char(&mirror.text, from_char);
+    let to_byte = byte_of_char(&mirror.text, to_char);
+    let (Some(from), Some(to)) = (
+        handle.pos_at(mirror.textblock_nid, from_byte),
+        handle.pos_at(mirror.textblock_nid, to_byte),
+    ) else {
+        return false;
+    };
+    handle.set_selection(Selection::text(from, to));
+    let applied = if inserted.is_empty() {
+        handle.command("deleteSelection")
+    } else {
+        // `insert_text` replaces a non-empty selection, so this covers both a pure
+        // insertion and a replacement in one call.
+        handle.insert_text(&inserted)
+    };
+    if applied {
+        adopt_field_caret(handle, &ta, mirror.textblock_nid);
+    }
+    applied
+}
+
+/// Move the model caret to wherever the browser left the textarea's caret.
+///
+/// The minimal diff ends where the *characters* stopped differing, which is not where
+/// the keyboard means the caret to be: correcting "here" to "there" is one inserted
+/// `t`, so the edit ends at offset 13 while the user expects the caret after "there".
+/// The field already holds the right answer — the browser placed it — so take it from
+/// there rather than inferring it.
+fn adopt_field_caret(
+    handle: &EditorHandle,
+    ta: &web_sys::HtmlTextAreaElement,
+    textblock_nid: usize,
+) {
+    let text = ta.value();
+    let start = ta.selection_start().ok().flatten().unwrap_or(0);
+    let end = ta.selection_end().ok().flatten().unwrap_or(start);
+    let (Some(from), Some(to)) = (
+        handle.pos_at(textblock_nid, byte_of_utf16(&text, start)),
+        handle.pos_at(textblock_nid, byte_of_utf16(&text, end)),
+    ) else {
+        return;
+    };
+    handle.set_selection(Selection::text(from, to));
 }
 
 // ── Hidden capture target (clipboard + IME) ───────────────────────────────────
@@ -392,15 +595,25 @@ fn on_composition_update(event: &web_sys::CompositionEvent) {
 }
 
 fn on_composition_end(event: &web_sys::CompositionEvent) {
-    COMPOSING.with(|c| c.set(false));
-    if let Some((_, handle)) = focused_handle() {
+    let Some((_, handle)) = focused_handle() else {
+        COMPOSING.with(|c| c.set(false));
+        return;
+    };
+    // Drop the overlay first: from here the composed text belongs to the document.
+    handle.ime_clear_preedit();
+    // The textarea now holds the block with the composition applied — including any
+    // text the IME replaced, which is the whole reason the mirror exists. Diff it
+    // rather than inserting `event.data()` at the caret: a commit that rewrote the
+    // word behind the caret would otherwise be appended to it ("word" + "world"
+    // committing as "wordworld").
+    let applied = reconcile_mirror(&handle);
+    if !applied {
+        // No mirror to diff against (composition began before the block was mirrored).
+        // Fall back to the plain commit — an append, but better than dropping the text.
         handle.ime_commit(&event.data().unwrap_or_default());
-        refresh_caret();
     }
-    // The textarea accumulated the composed text; clear it so it stays empty.
-    if let Some(ta) = capture_target() {
-        ta.set_value("");
-    }
+    COMPOSING.with(|c| c.set(false));
+    refresh_caret();
 }
 
 // ── `beforeinput` (software keyboards, dictation, the edit menu) ──────────────
@@ -423,6 +636,10 @@ enum EditIntent {
     /// Extend the selection over `motion`, then delete it — the word/line deletes a
     /// soft keyboard asks for, which the base keymap has no single command for.
     DeleteTo(CursorMotion),
+    /// Let the browser make the edit in the mirrored textarea and recover it by diff
+    /// on the following `input` — the only honest way to apply an edit whose extent
+    /// lives in the keyboard's replacement range rather than in the event itself.
+    Reconcile,
     /// Not ours: already applied by a dedicated handler, owned by the composition
     /// events, or not expressible on the model.
     Ignore,
@@ -440,11 +657,10 @@ fn edit_intent(input_type: &str) -> EditIntent {
         // The composition events own the preedit overlay and the commit; applying this
         // as well would type every composed word twice.
         "insertCompositionText" => EditIntent::Ignore,
-        // Autocorrect / a suggestion-bar tap. Honouring it means replacing the range in
-        // `getTargetRanges()`, which we cannot resolve to model positions here — a bare
-        // insert would duplicate the corrected word. The capture target sets
-        // `autocorrect="off"` and `spellcheck=false`, so this should never fire.
-        "insertReplacementText" => EditIntent::Ignore,
+        // Autocorrect / a suggestion-bar tap: the event says what to insert but not what
+        // it replaces (`getTargetRanges()` is empty on a textarea, by spec). Let the
+        // browser apply it to the mirror and read the replacement back off the diff.
+        "insertReplacementText" => EditIntent::Reconcile,
         "insertParagraph" => EditIntent::Command("enter"),
         "insertLineBreak" => EditIntent::Command("insertHardBreak"),
         // `deleteContent*` is a single char (or the selection, which both commands
@@ -491,9 +707,13 @@ fn on_before_input(event: &web_sys::InputEvent) {
         return;
     };
     let intent = edit_intent(&event.input_type());
+    if intent == EditIntent::Reconcile {
+        // Let it land in the textarea; `on_input` diffs the mirror and applies it.
+        return;
+    }
     if intent == EditIntent::Ignore {
-        // Still keep the textarea out of it: the default would leave text behind for a
-        // later `copy` to pick up (see `on_input`).
+        // Cancel it anyway: an edit we are not applying must not desync the mirror
+        // from the document either.
         event.prevent_default();
         return;
     }
@@ -505,7 +725,7 @@ fn on_before_input(event: &web_sys::InputEvent) {
         },
         EditIntent::Command(name) => handle.command(name),
         EditIntent::DeleteTo(motion) => delete_to(&handle, motion),
-        EditIntent::Ignore => false,
+        EditIntent::Reconcile | EditIntent::Ignore => false,
     };
     // Typing is a caret move as much as an edit: drop any vertical-motion goal column
     // so a following Up/Down starts from where the text actually landed.
@@ -515,21 +735,28 @@ fn on_before_input(event: &web_sys::InputEvent) {
     }
 }
 
-/// Keep the capture textarea empty.
+/// Reconcile the document with whatever the browser just did to the capture textarea.
 ///
-/// [`on_before_input`] cancels everything it sees, so this normally has nothing to do —
-/// but a browser that skipped `beforeinput`, or an `inputType` that arrived while the
-/// editor was unfocused, can still leave text in the textarea. A non-empty textarea is
-/// what a subsequent `copy` would put on the clipboard, so clear it. Composition is
-/// exempt: the IME needs its buffer until `compositionend`.
+/// Most edits are intercepted at `beforeinput` and never reach the textarea, so this
+/// usually finds it already matching the mirror and does nothing. It is the path for
+/// the ones we deliberately let through ([`EditIntent::Reconcile`]) and the safety net
+/// for a keyboard that edits the field with no `inputType` we know. Composition is
+/// exempt — the IME owns the field until `compositionend`, which reconciles it.
 fn on_input() {
     if COMPOSING.with(|c| c.get()) {
         return;
     }
-    if let Some(ta) = capture_target()
-        && !ta.value().is_empty()
-    {
-        ta.set_value("");
+    let Some((_, handle)) = focused_handle() else {
+        // Nothing to apply it to; just don't leave text for a later `copy` to pick up.
+        if let Some(ta) = capture_target()
+            && !ta.value().is_empty()
+        {
+            ta.set_value("");
+        }
+        return;
+    };
+    if reconcile_mirror(&handle) {
+        refresh_caret();
     }
 }
 
@@ -1235,10 +1462,11 @@ mod tests {
     }
 
     #[test]
-    fn autocorrect_is_ignored_rather_than_duplicated() {
-        // Honouring it needs `getTargetRanges()` resolved to model positions; a bare
-        // insert would leave both the typo and the correction.
-        assert_eq!(edit_intent("insertReplacementText"), EditIntent::Ignore);
+    fn autocorrect_is_reconciled_rather_than_inserted() {
+        // The event says what to insert but not what it replaces, so it is applied to
+        // the mirrored textarea and read back off the diff. Inserting `data` at the
+        // caret would leave both the typo and the correction.
+        assert_eq!(edit_intent("insertReplacementText"), EditIntent::Reconcile);
     }
 
     #[test]
@@ -1246,6 +1474,126 @@ mod tests {
         assert_eq!(edit_intent("insertFromDrop"), EditIntent::Ignore);
         assert_eq!(edit_intent("formatBold"), EditIntent::Ignore);
         assert_eq!(edit_intent(""), EditIntent::Ignore);
+    }
+
+    // ── The mirror diff ───────────────────────────────────────────────────────
+    //
+    // What the browser did to the mirrored textarea has to be recovered from the text
+    // alone: a keyboard's replacement range never reaches us (`getTargetRanges()` is
+    // empty on a textarea, and a composition's region is not exposed at all).
+
+    /// `(from, to, inserted)` rendered as a readable expectation.
+    fn diff(base: &str, now: &str) -> Option<(usize, usize, String)> {
+        text_diff(base, now)
+    }
+
+    #[test]
+    fn an_unchanged_field_is_no_edit() {
+        assert_eq!(diff("hello", "hello"), None);
+        assert_eq!(diff("", ""), None);
+    }
+
+    #[test]
+    fn a_suggestion_narrows_to_the_characters_that_actually_changed() {
+        // The reported bug: "word" + a tap on the "world" suggestion. The keyboard
+        // replaces the whole word, but the minimal edit is one inserted `l` — which is
+        // what keeps the surrounding marks intact and undo granular.
+        assert_eq!(diff("word", "world"), Some((3, 3, "l".into())));
+        // Mid-block, with text either side that must not be touched.
+        assert_eq!(
+            diff("hello word here", "hello world here"),
+            Some((9, 9, "l".into()))
+        );
+    }
+
+    #[test]
+    fn a_replacement_sharing_no_edges_spans_the_whole_word() {
+        assert_eq!(diff("teh", "the"), Some((1, 3, "he".into())));
+        // The transposition is the only thing that moved: "ht" → "th", with the
+        // sentence either side untouched.
+        assert_eq!(
+            diff("say hte thing", "say the thing"),
+            Some((4, 6, "th".into()))
+        );
+    }
+
+    #[test]
+    fn plain_typing_and_deleting_are_ordinary_diffs() {
+        assert_eq!(diff("wor", "word"), Some((3, 3, "d".into())));
+        assert_eq!(diff("word", "wor"), Some((3, 4, String::new())));
+        assert_eq!(diff("", "a"), Some((0, 0, "a".into())));
+        assert_eq!(diff("a", ""), Some((0, 1, String::new())));
+    }
+
+    #[test]
+    fn a_word_delete_reports_an_empty_insertion() {
+        assert_eq!(
+            diff("hello world here", "hello  here"),
+            Some((6, 11, String::new()))
+        );
+    }
+
+    #[test]
+    fn the_prefix_and_suffix_scans_never_overlap() {
+        // A repeated run is where a naive two-ended scan double-counts and reports a
+        // negative-width range. "aaa" → "aa" must be one deletion, not two.
+        assert_eq!(diff("aaa", "aa"), Some((2, 3, String::new())));
+        assert_eq!(diff("aa", "aaa"), Some((2, 2, "a".into())));
+        let (from, to, _) = diff("aaaa", "aa").unwrap();
+        assert!(from <= to, "range inverted: {from}..{to}");
+    }
+
+    #[test]
+    fn offsets_are_chars_so_multibyte_text_maps_correctly() {
+        // Char indices, not bytes: the caller turns them into byte offsets against the
+        // same string. An accent or an emoji must not shift the range.
+        assert_eq!(diff("café", "cafés"), Some((4, 4, "s".into())));
+        assert_eq!(diff("naïve", "native"), Some((2, 3, "ti".into())));
+        assert_eq!(diff("hi 👋", "hi 👋!"), Some((4, 4, "!".into())));
+    }
+
+    #[test]
+    fn char_offsets_convert_back_to_byte_offsets() {
+        let s = "café!";
+        assert_eq!(byte_of_char(s, 0), 0);
+        assert_eq!(byte_of_char(s, 3), 3);
+        // `é` is two bytes, so everything after it shifts.
+        assert_eq!(byte_of_char(s, 4), 5);
+        assert_eq!(byte_of_char(s, 5), 6);
+        // Past the end clamps to the length, so a stale mirror cannot panic.
+        assert_eq!(byte_of_char(s, 99), s.len());
+    }
+
+    #[test]
+    fn utf16_lengths_are_what_the_textarea_counts_in() {
+        assert_eq!(utf16_len("abc"), 3);
+        assert_eq!(utf16_len("café"), 4);
+        // Astral characters are surrogate pairs — two units, one char.
+        assert_eq!(utf16_len("👋"), 2);
+    }
+
+    #[test]
+    fn a_textarea_caret_offset_converts_back_to_a_byte_offset() {
+        assert_eq!(byte_of_utf16("abc", 0), 0);
+        assert_eq!(byte_of_utf16("abc", 3), 3);
+        // `é` is one UTF-16 unit but two bytes.
+        assert_eq!(byte_of_utf16("café!", 4), 5);
+        // `👋` is two UTF-16 units and four bytes: offset 3 is past it.
+        assert_eq!(byte_of_utf16("hi 👋!", 3), 3);
+        assert_eq!(byte_of_utf16("hi 👋!", 5), 7);
+        // Inside a surrogate pair rounds down to the character's start, and past the
+        // end clamps — a selection read after the field moved on must not panic.
+        assert_eq!(byte_of_utf16("hi 👋!", 4), 3);
+        assert_eq!(byte_of_utf16("hi 👋!", 99), "hi 👋!".len());
+    }
+
+    #[test]
+    fn utf16_offsets_round_trip_through_bytes() {
+        for text in ["", "plain", "café", "hi 👋 there", "aaa"] {
+            let units = utf16_len(text);
+            assert_eq!(byte_of_utf16(text, units), text.len(), "{text:?}");
+            assert_eq!(byte_of_utf16(text, 0), 0, "{text:?}");
+        }
     }
 
     // ── Tap vs scroll ─────────────────────────────────────────────────────────
