@@ -39,6 +39,9 @@ web-sys = { version = "0.3", features = [
     # Pointer Events unify mouse + touch + pen so the element drag-and-drop
     # delegation activates and tracks on touch devices (not just mouse).
     "PointerEvent",
+    # Event constructors, so the browser-driven tests (tests/) can synthesise
+    # the pointerdown/click/keydown sequences the delegation gates on (#240).
+    "MouseEventInit", "KeyboardEventInit", "PointerEventInit",
     "EventTarget", "FocusOptions",
     "Range",
     # Clipboard + IME on the editor's hidden capture textarea: clipboard read/write
@@ -55,6 +58,9 @@ web-sys = { version = "0.3", features = [
 #     cargo test -p rinch-web --target wasm32-unknown-unknown
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
+# Awaiting a macrotask in the keyboard-activation tests (#240): the pointer-gesture
+# flag clears at the end of the task that consumed the trailing click.
+wasm-bindgen-futures = "0.4"
 
 [features]
 # Collaborative editing (M9): forwards to the editor view's collab adapter, which
