@@ -922,6 +922,66 @@ mod transform_paint {
     }
 }
 
+// ── #236: a set_style inset move must paint where layout puts it ─────────────
+
+/// The set_style inset fast path skips Stylo; the pixel it paints must still
+/// be the one a full resolve of the same declaration would paint. Before the
+/// fix the fast path wrote `layout.x = left_px` (no parent border) and never
+/// marked layout dirty, so the child painted short of its true position.
+#[cfg(feature = "software-renderer")]
+mod inset_fast_path_paint {
+    use super::transform_paint::{paint_skia, pixel_at};
+    use super::*;
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+
+    fn is_opaque_red(p: [u8; 4]) -> bool {
+        p[0] > 200 && p[1] < 50 && p[2] < 50 && p[3] > 200
+    }
+
+    #[test]
+    fn set_style_left_paints_at_layout_position() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        // A 30px border is wider than the child, so the box the old fast path
+        // painted ([40, 60)) and the true box ([70, 90)) do not overlap.
+        let parent = doc.create_element("div");
+        doc.set_attribute(
+            parent,
+            "style",
+            "position: relative; width: 300px; height: 200px; \
+             border-left: 30px solid black; border-top: 0 solid black",
+        );
+        doc.append_child(body, parent);
+        let child = doc.create_element("div");
+        doc.set_attribute(
+            child,
+            "style",
+            "position: absolute; left: 0; top: 0; width: 20px; height: 20px; \
+             background-color: red",
+        );
+        doc.append_child(parent, child);
+        doc.resolve_layout(800.0, 600.0);
+
+        doc.set_style(child, "left", "40px");
+        doc.resolve_layout(800.0, 600.0);
+
+        let mut painter = TinySkiaPainter::new(200, 100);
+        paint_skia(&mut doc, &mut painter);
+
+        let layout = doc.tree.get(child.0).unwrap().layout;
+        assert!(
+            is_opaque_red(pixel_at(&painter, 80, 10)),
+            "the child must paint at its laid-out centre (80, 10) — border (30) + \
+             left (40) + half its width; layout.x = {}",
+            layout.x
+        );
+        assert!(
+            !is_opaque_red(pixel_at(&painter, 50, 10)),
+            "nothing at the padding-box-relative position the old fast path wrote"
+        );
+    }
+}
+
 // ── #202: DPI-scale covariance of transform composition ──────────────────────
 
 /// The mechanical correctness criterion for `compose_node_transform`: it must be

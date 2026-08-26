@@ -1660,3 +1660,226 @@ fn test_scroll_clamp_is_queued_for_notification() {
     // Drained — a second drain yields nothing.
     assert!(doc.drain_scroll_clamps().is_empty());
 }
+
+// --- #236: the set_style inset fast path ------------------------------------
+//
+// `set_style("left" | "top" | "right" | "bottom", …)` on an out-of-flow element
+// skips Stylo and writes the Taffy inset directly. Whatever that shortcut does,
+// the laid-out box must be indistinguishable from a full resolve of the same
+// declaration — so every test here compares against a *twin* document that had
+// the value in its style attribute from the start. Taffy's containing-block
+// arithmetic and rounding are the oracle, never hand-computed.
+//
+// Before the fix the fast path assigned `layout.x = left_px + margin` itself
+// and skipped `layout_dirty`, so the number it wrote (padding-box-relative, no
+// parent border, percentages/auto/viewport units as 0, `em`/`calc()`/`var()`
+// as `auto`) persisted until an unrelated mutation triggered a real layout —
+// at which point the element visibly jumped.
+
+mod inset_fast_path {
+    use super::*;
+    use rinch_core::dom::NodeId;
+    use rinch_dom::LayoutResult;
+    use rinch_dom::computed_style::LengthPercentageAutoValue;
+
+    /// A bordered containing block: the border is what separates the
+    /// padding-box-relative inset from the border-box-relative `LayoutResult`.
+    const PARENT: &str = "position: relative; width: 300px; height: 200px; \
+                          border-left: 5px solid black; border-top: 7px solid black";
+    const CHILD: &str = "position: absolute; left: 0; top: 0; width: 10px; height: 10px";
+
+    /// body > parent > child, laid out once; returns the document and the child.
+    fn positioned(parent_style: &str, child_style: &str) -> (RinchDocument, NodeId) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let parent = doc.create_element("div");
+        doc.set_attribute(parent, "style", parent_style);
+        doc.append_child(body, parent);
+        let child = doc.create_element("div");
+        doc.set_attribute(child, "style", child_style);
+        doc.append_child(parent, child);
+        doc.resolve_layout(800.0, 600.0);
+        (doc, child)
+    }
+
+    fn layout_of(doc: &RinchDocument, node: NodeId) -> LayoutResult {
+        doc.tree.get(node.0).unwrap().layout
+    }
+
+    /// The oracle: the same tree with `overrides` appended to the child's
+    /// style attribute (a later declaration wins), fully resolved.
+    fn twin(parent_style: &str, child_style: &str, overrides: &[(&str, &str)]) -> LayoutResult {
+        let mut style = child_style.to_string();
+        for (property, value) in overrides {
+            style.push_str(&format!("; {property}: {value}"));
+        }
+        let (doc, child) = positioned(parent_style, &style);
+        layout_of(&doc, child)
+    }
+
+    /// Apply `overrides` one `set_style` at a time, then run the normal
+    /// resolve cycle.
+    fn set_and_resolve(doc: &mut RinchDocument, node: NodeId, overrides: &[(&str, &str)]) {
+        for (property, value) in overrides {
+            doc.set_style(node, property, value);
+        }
+        doc.resolve_layout(800.0, 600.0);
+    }
+
+    /// (a) A pixel inset is padding-box-relative; the layout field is
+    /// border-box-relative. The parent's border must survive the fast path.
+    #[test]
+    fn set_style_left_top_px_includes_parent_border() {
+        let (mut doc, child) = positioned(PARENT, CHILD);
+        let baseline = layout_of(&doc, child);
+        assert_eq!(
+            (baseline.x, baseline.y),
+            (5.0, 7.0),
+            "baseline: `left: 0; top: 0` sits inside the parent's border"
+        );
+
+        let overrides = [("left", "10px"), ("top", "20px")];
+        set_and_resolve(&mut doc, child, &overrides);
+
+        let expected = twin(PARENT, CHILD, &overrides);
+        assert_eq!(
+            (expected.x, expected.y),
+            (15.0, 27.0),
+            "oracle sanity: full layout places the child border + inset"
+        );
+        assert_eq!(
+            layout_of(&doc, child),
+            expected,
+            "set_style must land where a full resolve of the same value lands"
+        );
+    }
+
+    /// (b) A percentage inset needs the containing block; it must not read as 0.
+    #[test]
+    fn set_style_left_percent_matches_full_layout() {
+        let (mut doc, child) = positioned(PARENT, CHILD);
+        let overrides = [("left", "50%")];
+        set_and_resolve(&mut doc, child, &overrides);
+
+        let expected = twin(PARENT, CHILD, &overrides);
+        assert!(
+            expected.x > 100.0,
+            "oracle sanity: 50% of a 300px block is far from the left edge, got {}",
+            expected.x
+        );
+        assert_eq!(layout_of(&doc, child), expected);
+    }
+
+    /// (c) `left: auto` with a `right` set anchors to the right edge; the
+    /// fast path used to place it at `0 + margin`.
+    #[test]
+    fn set_style_left_auto_defers_to_right_anchor() {
+        let child = "position: absolute; left: 0; right: 20px; top: 0; width: 10px; height: 10px";
+        let (mut doc, node) = positioned(PARENT, child);
+        let overrides = [("left", "auto")];
+        set_and_resolve(&mut doc, node, &overrides);
+
+        let expected = twin(PARENT, child, &overrides);
+        assert!(
+            expected.x > 200.0,
+            "oracle sanity: right-anchored child sits near the right edge, got {}",
+            expected.x
+        );
+        assert_eq!(layout_of(&doc, node), expected);
+    }
+
+    /// (d) Values the fast path's parser cannot represent must reach Stylo
+    /// rather than being written as `auto` and lost.
+    #[test]
+    fn set_style_unparseable_lengths_reach_stylo() {
+        let parent = format!("{PARENT}; --x: 25px");
+        let (mut doc, child) = positioned(&parent, CHILD);
+
+        for value in ["2em", "calc(10px + 5px)", "var(--x)"] {
+            let overrides = [("left", value)];
+            set_and_resolve(&mut doc, child, &overrides);
+
+            let computed = doc.tree.get(child.0).unwrap().computed_style.left;
+            assert!(
+                !matches!(computed, LengthPercentageAutoValue::Auto),
+                "`left: {value}` was written as Auto — the author's value was lost"
+            );
+            let expected = twin(&parent, CHILD, &overrides);
+            assert!(
+                expected.x > 5.0,
+                "oracle sanity: `left: {value}` must move the child, got {}",
+                expected.x
+            );
+            assert_eq!(
+                layout_of(&doc, child),
+                expected,
+                "`left: {value}` must lay out like a full resolve"
+            );
+        }
+    }
+
+    /// Viewport units resolve against the live viewport, not a default one.
+    #[test]
+    fn set_style_viewport_units_use_live_viewport() {
+        let (mut doc, child) = positioned(PARENT, CHILD);
+        let overrides = [("left", "10vw"), ("top", "10vh")];
+        set_and_resolve(&mut doc, child, &overrides);
+
+        let expected = twin(PARENT, CHILD, &overrides);
+        assert_eq!(
+            (expected.x, expected.y),
+            (85.0, 67.0),
+            "oracle sanity: 10vw/10vh of 800x600 plus the border"
+        );
+        assert_eq!(layout_of(&doc, child), expected);
+    }
+
+    /// (e) `position: fixed` is viewport-relative with no margin applied;
+    /// the fast path's `+ margin` was wrong in the other direction.
+    #[test]
+    fn set_style_left_on_fixed_ignores_margin() {
+        let child = "position: fixed; margin-left: 4px; left: 0; top: 0; width: 10px; height: 10px";
+        let (mut doc, node) = positioned(PARENT, child);
+        let overrides = [("left", "10px")];
+        set_and_resolve(&mut doc, node, &overrides);
+
+        let expected = twin(PARENT, child, &overrides);
+        assert_eq!(
+            expected.x, 10.0,
+            "oracle sanity: a fixed element's inset is viewport-relative"
+        );
+        assert_eq!(layout_of(&doc, node), expected);
+    }
+
+    /// (g) The batch path already deferred to layout; it must keep doing so.
+    #[test]
+    fn set_styles_inset_batch_matches_full_layout() {
+        let (mut doc, child) = positioned(PARENT, CHILD);
+        let overrides = [("left", "10px"), ("top", "10px")];
+        doc.set_styles(child, &overrides);
+        doc.resolve_layout(800.0, 600.0);
+
+        let expected = twin(PARENT, CHILD, &overrides);
+        assert_eq!((expected.x, expected.y), (15.0, 17.0));
+        assert_eq!(layout_of(&doc, child), expected);
+    }
+
+    /// The batch path with an unrepresentable value must decline too.
+    #[test]
+    fn set_styles_unparseable_length_reaches_stylo() {
+        let (mut doc, child) = positioned(PARENT, CHILD);
+        let overrides = [("left", "2em"), ("top", "1em")];
+        doc.set_styles(child, &overrides);
+        doc.resolve_layout(800.0, 600.0);
+
+        let computed = &doc.tree.get(child.0).unwrap().computed_style;
+        assert!(
+            !matches!(computed.left, LengthPercentageAutoValue::Auto)
+                && !matches!(computed.top, LengthPercentageAutoValue::Auto),
+            "em insets were written as Auto — the author's values were lost"
+        );
+        let expected = twin(PARENT, CHILD, &overrides);
+        assert_eq!((expected.x, expected.y), (37.0, 23.0));
+        assert_eq!(layout_of(&doc, child), expected);
+    }
+}

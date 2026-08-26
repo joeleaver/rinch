@@ -9,6 +9,7 @@ use servo_arc::Arc as ServoArc;
 
 use style::context::QuirksMode;
 
+use crate::computed_style::LengthPercentageAutoValue;
 use crate::node::{DirtyFlags, DisplayMode, Node, NodeContext, NodeKind, TextMeasure};
 
 use super::{RinchDocument, parse_style_string};
@@ -520,109 +521,7 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_style(&mut self, node: NodeId, property: &str, value: &str) {
-        // ── Fast path: inset-only changes on absolute/fixed elements ─────
-        // Changing left/top/right/bottom on an out-of-flow element only moves
-        // it within its containing block — children and siblings are unaffected.
-        // Skip Stylo re-parse and style resolution entirely. Update
-        // ComputedStyle and Taffy inset directly.
-        //
-        // Taffy's set_style calls mark_dirty which clears this node's cache,
-        // but children's caches are preserved. On next compute_layout, Taffy
-        // recomputes this node's position (cheap) and children hit their cache
-        // (free). The expensive part we skip is Stylo parse_style_attribute +
-        // style resolution + IFC invalidation.
-        if matches!(property, "left" | "top" | "right" | "bottom")
-            && matches!(
-                self.tree.nodes[node.0].computed_style.position,
-                crate::computed_style::PositionValue::Absolute
-                    | crate::computed_style::PositionValue::Fixed
-            )
-        {
-            // Update the style attribute string (for consistency / serialization)
-            let mut styles: HashMap<String, String> = self.tree.nodes[node.0]
-                .attributes
-                .get("style")
-                .map(|s| parse_style_string(s))
-                .unwrap_or_default();
-            styles.insert(property.to_string(), value.to_string());
-            let style_str = styles
-                .iter()
-                .map(|(k, v)| format!("{}: {}", k, v))
-                .collect::<Vec<_>>()
-                .join("; ");
-            self.tree.nodes[node.0]
-                .attributes
-                .insert("style".to_string(), style_str.clone());
-
-            // Re-parse PDB so Stylo stays consistent for future full re-resolutions.
-            // This is cheap — it's the cascade/resolution we're skipping.
-            {
-                use style::properties::parse_style_attribute;
-                use style::stylesheets::CssRuleType;
-                use url::Url;
-                let url = Url::parse("about:blank").unwrap();
-                let extra_data = style::stylesheets::UrlExtraData::from(url);
-                let pdb = parse_style_attribute(
-                    &style_str,
-                    &extra_data,
-                    None,
-                    QuirksMode::NoQuirks,
-                    CssRuleType::Style,
-                );
-                self.tree.nodes[node.0].style_attribute_cache =
-                    Some(ServoArc::new(self.tree.guard.wrap(pdb)));
-            }
-
-            // Update ComputedStyle directly (skip Stylo)
-            let vp = &crate::layout::Viewport::default();
-            let new_val = crate::computed_style::LengthPercentageAutoValue::parse(value, vp);
-            match property {
-                "left" => self.tree.nodes[node.0].computed_style.left = new_val,
-                "top" => self.tree.nodes[node.0].computed_style.top = new_val,
-                "right" => self.tree.nodes[node.0].computed_style.right = new_val,
-                "bottom" => self.tree.nodes[node.0].computed_style.bottom = new_val,
-                _ => unreachable!(),
-            }
-
-            // Update Taffy inset directly (skip full style resolution).
-            if let Some(taffy_id) = self.tree.nodes[node.0].taffy_id {
-                if let Ok(mut taffy_style) = self.tree.taffy.style(taffy_id).cloned() {
-                    let taffy_val = new_val.to_taffy();
-                    match property {
-                        "left" => taffy_style.inset.left = taffy_val,
-                        "top" => taffy_style.inset.top = taffy_val,
-                        "right" => taffy_style.inset.right = taffy_val,
-                        "bottom" => taffy_style.inset.bottom = taffy_val,
-                        _ => unreachable!(),
-                    }
-                    let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
-                }
-            }
-
-            // For left/top with pixel values, compute the layout position directly
-            // instead of triggering a full Taffy compute_layout (which walks the
-            // entire tree). Account for margin so the position is correct even on
-            // elements with non-zero margins.
-            match property {
-                "left" => {
-                    let margin = self.tree.nodes[node.0].computed_style.margin_left.to_px();
-                    self.tree.nodes[node.0].layout.x = new_val.to_px() + margin;
-                }
-                "top" => {
-                    let margin = self.tree.nodes[node.0].computed_style.margin_top.to_px();
-                    self.tree.nodes[node.0].layout.y = new_val.to_px() + margin;
-                }
-                // right/bottom need containing block size — fall back to full layout
-                "right" | "bottom" => {
-                    self.tree.layout_dirty = true;
-                }
-                _ => unreachable!(),
-            }
-
-            // Mark paint dirty (not layout dirty for left/top — we computed it above).
-            self.tree.nodes[node.0].dirty.insert(DirtyFlags::PAINT);
-            self.tree.dirty_nodes.insert(node.0);
-            self.tree.full_repaint_needed = true;
+        if self.apply_inset_fast_path(node, &[(property, value)]) {
             return;
         }
 
@@ -683,92 +582,7 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_styles(&mut self, node: NodeId, properties: &[(&str, &str)]) {
-        // ── Fast path: inset-only batch on absolute/fixed elements ────────
-        let all_inset = !properties.is_empty()
-            && properties
-                .iter()
-                .all(|(p, _)| matches!(*p, "left" | "top" | "right" | "bottom"));
-        let is_out_of_flow = matches!(
-            self.tree.nodes[node.0].computed_style.position,
-            crate::computed_style::PositionValue::Absolute
-                | crate::computed_style::PositionValue::Fixed
-        );
-
-        if all_inset && is_out_of_flow {
-            // Update style attribute string
-            let mut styles: HashMap<String, String> = self.tree.nodes[node.0]
-                .attributes
-                .get("style")
-                .map(|s| parse_style_string(s))
-                .unwrap_or_default();
-            for &(property, value) in properties {
-                styles.insert(property.to_string(), value.to_string());
-            }
-            let style_str = styles
-                .iter()
-                .map(|(k, v)| format!("{}: {}", k, v))
-                .collect::<Vec<_>>()
-                .join("; ");
-            self.tree.nodes[node.0]
-                .attributes
-                .insert("style".to_string(), style_str.clone());
-
-            // Re-parse PDB for Stylo consistency
-            {
-                use style::properties::parse_style_attribute;
-                use style::stylesheets::CssRuleType;
-                use url::Url;
-                let url = Url::parse("about:blank").unwrap();
-                let extra_data = style::stylesheets::UrlExtraData::from(url);
-                let pdb = parse_style_attribute(
-                    &style_str,
-                    &extra_data,
-                    None,
-                    QuirksMode::NoQuirks,
-                    CssRuleType::Style,
-                );
-                self.tree.nodes[node.0].style_attribute_cache =
-                    Some(ServoArc::new(self.tree.guard.wrap(pdb)));
-            }
-
-            // Update ComputedStyle + Taffy inset directly (skip style resolution)
-            let vp = &crate::layout::Viewport::default();
-
-            if let Some(taffy_id) = self.tree.nodes[node.0].taffy_id {
-                if let Ok(mut ts) = self.tree.taffy.style(taffy_id).cloned() {
-                    for &(property, value) in properties {
-                        let new_val =
-                            crate::computed_style::LengthPercentageAutoValue::parse(value, vp);
-                        match property {
-                            "left" => {
-                                self.tree.nodes[node.0].computed_style.left = new_val;
-                                ts.inset.left = new_val.to_taffy();
-                            }
-                            "top" => {
-                                self.tree.nodes[node.0].computed_style.top = new_val;
-                                ts.inset.top = new_val.to_taffy();
-                            }
-                            "right" => {
-                                self.tree.nodes[node.0].computed_style.right = new_val;
-                                ts.inset.right = new_val.to_taffy();
-                            }
-                            "bottom" => {
-                                self.tree.nodes[node.0].computed_style.bottom = new_val;
-                                ts.inset.bottom = new_val.to_taffy();
-                            }
-                            _ => unreachable!(),
-                        }
-                    }
-                    let _ = self.tree.taffy.set_style(taffy_id, ts);
-                    self.tree.layout_dirty = true;
-                }
-            }
-
-            self.tree.nodes[node.0]
-                .dirty
-                .insert(DirtyFlags::LAYOUT | DirtyFlags::PAINT);
-            self.tree.dirty_nodes.insert(node.0);
-            self.tree.full_repaint_needed = true;
+        if self.apply_inset_fast_path(node, properties) {
             return;
         }
 
@@ -1161,5 +975,139 @@ impl DomDocument for RinchDocument {
             .into_iter()
             .map(|(id, offset)| (NodeId(id), offset))
             .collect()
+    }
+}
+
+impl RinchDocument {
+    /// The inset-only fast path shared by [`DomDocument::set_style`] and
+    /// [`DomDocument::set_styles`].
+    ///
+    /// Changing only `left`/`top`/`right`/`bottom` on an out-of-flow element
+    /// (`position: absolute | fixed`) moves it within its containing block —
+    /// siblings and children are unaffected — so the Stylo re-parse, cascade
+    /// and IFC invalidation the normal path pays are skipped. The style
+    /// attribute and its cached declaration block are still rebuilt (a later
+    /// full re-resolution must see the new value), then `ComputedStyle` and
+    /// the Taffy inset are written directly and the tree is marked
+    /// layout-dirty.
+    ///
+    /// The node's *position* is never computed here. `LayoutResult` is
+    /// parent-border-box-relative (viewport-relative for `fixed`), an inset is
+    /// padding-box-relative with the margin on top, and only Taffy — or the
+    /// `fixed` override in `read_layout_results` — knows the containing block,
+    /// the border and the rounding. Taffy's `set_style` clears this node's
+    /// cache but not its children's, so the recompute on the next
+    /// `resolve_layout` repositions the node and reuses everything below it.
+    /// Writing the position by hand is how #236 happened.
+    ///
+    /// Returns `false`, having touched nothing, when the change is not an
+    /// inset-only change on an out-of-flow element, or when a value is one
+    /// [`LengthPercentageAutoValue`] cannot represent (`em`, `calc()`,
+    /// `var()`, …). Those must reach Stylo, which resolves them; writing the
+    /// parser's `auto` fallback here would replace the author's value with
+    /// nothing marking `styles_dirty` to ever correct it.
+    pub(crate) fn apply_inset_fast_path(
+        &mut self,
+        node: NodeId,
+        properties: &[(&str, &str)],
+    ) -> bool {
+        let all_inset = !properties.is_empty()
+            && properties
+                .iter()
+                .all(|(p, _)| matches!(*p, "left" | "top" | "right" | "bottom"));
+        let is_out_of_flow = matches!(
+            self.tree.nodes[node.0].computed_style.position,
+            crate::computed_style::PositionValue::Absolute
+                | crate::computed_style::PositionValue::Fixed
+        );
+        if !all_inset || !is_out_of_flow {
+            return false;
+        }
+        // `vh`/`vw` resolve against the viewport the tree was last laid out at
+        // — the one Stylo's device holds — not `Viewport::default()`.
+        let vp = self.tree.viewport;
+        let mut parsed: Vec<(&str, LengthPercentageAutoValue)> =
+            Vec::with_capacity(properties.len());
+        for &(property, value) in properties {
+            match LengthPercentageAutoValue::try_parse(value, &vp) {
+                Some(v) => parsed.push((property, v)),
+                None => return false,
+            }
+        }
+
+        // Update the style attribute string (for consistency / serialization).
+        let mut styles: HashMap<String, String> = self.tree.nodes[node.0]
+            .attributes
+            .get("style")
+            .map(|s| parse_style_string(s))
+            .unwrap_or_default();
+        for &(property, value) in properties {
+            styles.insert(property.to_string(), value.to_string());
+        }
+        let style_str = styles
+            .iter()
+            .map(|(k, v)| format!("{}: {}", k, v))
+            .collect::<Vec<_>>()
+            .join("; ");
+        self.tree.nodes[node.0]
+            .attributes
+            .insert("style".to_string(), style_str.clone());
+
+        // Re-parse the declaration block so Stylo stays consistent for future
+        // full re-resolutions. This is cheap — it's the cascade we're skipping.
+        {
+            use style::properties::parse_style_attribute;
+            use style::stylesheets::CssRuleType;
+            use url::Url;
+            let url = Url::parse("about:blank").unwrap();
+            let extra_data = style::stylesheets::UrlExtraData::from(url);
+            let pdb = parse_style_attribute(
+                &style_str,
+                &extra_data,
+                None,
+                QuirksMode::NoQuirks,
+                CssRuleType::Style,
+            );
+            self.tree.nodes[node.0].style_attribute_cache =
+                Some(ServoArc::new(self.tree.guard.wrap(pdb)));
+        }
+
+        // Write ComputedStyle and the Taffy inset directly (skip style resolution).
+        let computed = &mut self.tree.nodes[node.0].computed_style;
+        for &(property, value) in &parsed {
+            match property {
+                "left" => computed.left = value,
+                "top" => computed.top = value,
+                "right" => computed.right = value,
+                "bottom" => computed.bottom = value,
+                _ => unreachable!(),
+            }
+        }
+        if let Some(taffy_id) = self.tree.nodes[node.0].taffy_id
+            && let Ok(mut ts) = self.tree.taffy.style(taffy_id).cloned()
+        {
+            for &(property, value) in &parsed {
+                let taffy_val = value.to_taffy();
+                match property {
+                    "left" => ts.inset.left = taffy_val,
+                    "top" => ts.inset.top = taffy_val,
+                    "right" => ts.inset.right = taffy_val,
+                    "bottom" => ts.inset.bottom = taffy_val,
+                    _ => unreachable!(),
+                }
+            }
+            let _ = self.tree.taffy.set_style(taffy_id, ts);
+        }
+
+        // Let Taffy place the node on the next resolve_layout. Unconditional:
+        // a node without a Taffy id (or whose style could not be read) must
+        // still be re-laid out rather than silently kept where it was.
+        self.tree.layout_dirty = true;
+        self.tree.nodes[node.0]
+            .dirty
+            .insert(DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+        self.tree.dirty_nodes.insert(node.0);
+        self.tree.full_repaint_needed = true;
+        true
     }
 }

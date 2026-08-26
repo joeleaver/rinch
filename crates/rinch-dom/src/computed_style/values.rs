@@ -282,45 +282,56 @@ pub enum LengthPercentageAutoValue {
 
 impl LengthPercentageAutoValue {
     /// Parse from CSS string value with viewport support.
+    ///
+    /// A value this parser cannot represent (`em`, `calc()`, `var()`, `pt`, …)
+    /// reads as `Auto`. Use [`Self::try_parse`] wherever that fallback must
+    /// not be mistaken for the author's value.
     pub fn parse(value: &str, viewport: &Viewport) -> Self {
+        Self::try_parse(value, viewport).unwrap_or(Self::Auto)
+    }
+
+    /// Like [`Self::parse`], but `None` for a value this parser cannot
+    /// represent, so a caller that bypasses Stylo can decline and let Stylo
+    /// resolve the value instead of writing `Auto` over it (#236).
+    pub fn try_parse(value: &str, viewport: &Viewport) -> Option<Self> {
         let value = value.trim();
         if value == "auto" {
-            return Self::Auto;
+            return Some(Self::Auto);
         }
         // Viewport units
         if let Some(num_str) = value.strip_suffix("vh")
             && let Ok(v) = num_str.trim().parse::<f32>()
         {
-            return Self::Length(v * viewport.height / 100.0);
+            return Some(Self::Length(v * viewport.height / 100.0));
         }
         if let Some(num_str) = value.strip_suffix("vw")
             && let Ok(v) = num_str.trim().parse::<f32>()
         {
-            return Self::Length(v * viewport.width / 100.0);
+            return Some(Self::Length(v * viewport.width / 100.0));
         }
         // Percentage
         if let Some(pct) = value.strip_suffix('%')
             && let Ok(v) = pct.trim().parse::<f32>()
         {
-            return Self::Percent(v / 100.0);
+            return Some(Self::Percent(v / 100.0));
         }
         // Pixels
         if let Some(px) = value.strip_suffix("px")
             && let Ok(v) = px.trim().parse::<f32>()
         {
-            return Self::Length(v);
+            return Some(Self::Length(v));
         }
         // Rem
         if let Some(rem_str) = value.strip_suffix("rem")
             && let Ok(v) = rem_str.trim().parse::<f32>()
         {
-            return Self::Length(v * 16.0);
+            return Some(Self::Length(v * 16.0));
         }
         // Plain number
         if let Ok(v) = value.parse::<f32>() {
-            return Self::Length(v);
+            return Some(Self::Length(v));
         }
-        Self::Auto
+        None
     }
 
     /// Convert to Taffy LengthPercentageAuto.
