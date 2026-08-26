@@ -1,7 +1,7 @@
 //! Stylo-to-ComputedStyle conversion methods.
 
 mod box_model;
-mod color;
+pub(crate) mod color;
 mod grid;
 mod layout;
 mod typography;

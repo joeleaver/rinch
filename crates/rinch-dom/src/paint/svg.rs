@@ -49,12 +49,20 @@ pub(super) fn paint_svg(
         viewbox_to_box_transform(viewbox, (x, y, w, h), preserve_aspect);
     let transform = css_transform * Affine::new([vb_sx, 0.0, 0.0, vb_sy, vb_tx, vb_ty]);
 
-    // Resolve "currentColor" — walk up the tree to find a `color` CSS property
-    let current_color = resolve_current_color(tree, node);
-
-    // Parse SVG-level fill/stroke defaults
-    let svg_fill = node.attributes.get("fill").map(|v| v.as_str());
-    let svg_stroke = node.attributes.get("stroke").map(|v| v.as_str());
+    // The `<svg>`-level fill/stroke, resolved once for every child that
+    // inherits them. SVG's initial `fill` is black; its initial `stroke` is
+    // `none`.
+    let svg_current_color = resolve_current_color(tree, node);
+    let svg_fill = InheritedPaint::new(
+        node.attributes.get("fill").map(|v| v.as_str()),
+        svg_current_color,
+        Some(SVG_INITIAL_FILL),
+    );
+    let svg_stroke = InheritedPaint::new(
+        node.attributes.get("stroke").map(|v| v.as_str()),
+        svg_current_color,
+        None,
+    );
     let svg_stroke_width = node
         .attributes
         .get("stroke-width")
@@ -81,17 +89,19 @@ pub(super) fn paint_svg(
             continue;
         };
 
+        // `currentcolor` is the child's own cascaded `color` (a child that
+        // declares none inherits the `<svg>`'s).
+        let current_color = resolve_current_color(tree, child);
+
         // Per-element fill/stroke (override SVG defaults)
-        let fill_attr = child
-            .attributes
-            .get("fill")
-            .map(|v| v.as_str())
-            .or(svg_fill);
-        let stroke_attr = child
-            .attributes
-            .get("stroke")
-            .map(|v| v.as_str())
-            .or(svg_stroke);
+        let fill_color = match child.attributes.get("fill") {
+            Some(own) => resolve_svg_color(Some(own), current_color),
+            None => svg_fill.for_child(current_color),
+        };
+        let stroke_color = match child.attributes.get("stroke") {
+            Some(own) => resolve_svg_color(Some(own), current_color),
+            None => svg_stroke.for_child(current_color),
+        };
         let stroke_w = child
             .attributes
             .get("stroke-width")
@@ -107,9 +117,6 @@ pub(super) fn paint_svg(
             .get("stroke-linejoin")
             .map(|v| parse_linejoin(v))
             .unwrap_or(svg_stroke_linejoin);
-
-        let fill_color = resolve_svg_color(fill_attr, current_color);
-        let stroke_color = resolve_svg_color(stroke_attr, current_color);
 
         match el.tag.as_str() {
             "path" => {
@@ -291,16 +298,57 @@ pub(super) fn resolve_current_color(tree: &NodeTree, node: &Node) -> AlphaColor<
     AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255)
 }
 
-/// Resolve an SVG color attribute value, handling "none" and "currentColor".
+/// Resolve an SVG `fill`/`stroke` attribute: `none`, `currentcolor` (any
+/// casing — the spec spells it `currentcolor`, Tabler emits `currentColor`),
+/// or a CSS `<color>`.
 pub(super) fn resolve_svg_color(
     attr: Option<&str>,
     current_color: AlphaColor<Srgb>,
 ) -> Option<AlphaColor<Srgb>> {
-    match attr {
-        None => None,
-        Some("none") => None,
-        Some("currentColor") => Some(current_color),
-        Some(v) => parse_color(v),
+    let value = attr?.trim();
+    if value.eq_ignore_ascii_case("none") {
+        None
+    } else if value.eq_ignore_ascii_case("currentcolor") {
+        // `parse_color` cannot resolve this — it depends on the element — so
+        // the caller's tree walk does. Every icon says it, so this also skips
+        // the parse.
+        Some(current_color)
+    } else {
+        parse_color(value)
+    }
+}
+
+/// SVG's initial `fill`: a shape with no `fill` anywhere paints black.
+const SVG_INITIAL_FILL: AlphaColor<Srgb> = AlphaColor::<Srgb>::BLACK;
+
+/// An `<svg>`-level `fill`/`stroke`, resolved once so the children that
+/// inherit it don't re-parse it per paint. `currentcolor` stays symbolic: it
+/// resolves against each child's own `color`.
+enum InheritedPaint {
+    CurrentColor,
+    Fixed(Option<AlphaColor<Srgb>>),
+}
+
+impl InheritedPaint {
+    /// `attr` is the `<svg>`'s own attribute; `initial` applies when it has
+    /// none.
+    fn new(
+        attr: Option<&str>,
+        svg_current_color: AlphaColor<Srgb>,
+        initial: Option<AlphaColor<Srgb>>,
+    ) -> Self {
+        match attr {
+            None => Self::Fixed(initial),
+            Some(v) if v.trim().eq_ignore_ascii_case("currentcolor") => Self::CurrentColor,
+            Some(v) => Self::Fixed(resolve_svg_color(Some(v), svg_current_color)),
+        }
+    }
+
+    fn for_child(&self, child_current_color: AlphaColor<Srgb>) -> Option<AlphaColor<Srgb>> {
+        match self {
+            Self::CurrentColor => Some(child_current_color),
+            Self::Fixed(color) => *color,
+        }
     }
 }
 
