@@ -393,8 +393,8 @@ reads as an echo and does not apply.
 and `hsl()`/`hsla()` in both the legacy comma syntax and the modern
 space-separated syntax (`rgb(51 51 102 / 0.5)`; alpha as a number or a
 percentage), and the CSS named colours (`red`, `rebeccapurple`,
-`transparent` — case-insensitive). Out-of-range channels clamp to their CSS
-ranges; hue wraps (#243).
+`transparent`). Named colours and function names are case-insensitive, as
+in CSS. Out-of-range channels clamp to their CSS ranges; hue wraps (#243).
 
 **The text field is the author's while they type.** The hex field parses on
 every keystroke, and a valid *prefix* of the colour being typed (`#336` on the

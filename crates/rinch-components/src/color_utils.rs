@@ -184,52 +184,32 @@ pub fn hex_to_rgb(hex: &str) -> Option<Rgba> {
         return None;
     }
     match hex.len() {
-        3 => {
-            let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).ok()?;
-            let g = u8::from_str_radix(&hex[1..2].repeat(2), 16).ok()?;
-            let b = u8::from_str_radix(&hex[2..3].repeat(2), 16).ok()?;
+        // #rgb / #rgba (GH #243): each digit doubles, alpha included — the
+        // CSS Color 4 short forms ("3" → 0x33, i.e. digit × 17).
+        3 | 4 => {
+            let d = |i: usize| u8::from_str_radix(&hex[i..i + 1], 16).ok().map(|v| v * 17);
             Some(Rgba {
-                r: r as f64 / 255.0,
-                g: g as f64 / 255.0,
-                b: b as f64 / 255.0,
-                a: 1.0,
+                r: d(0)? as f64 / 255.0,
+                g: d(1)? as f64 / 255.0,
+                b: d(2)? as f64 / 255.0,
+                a: if hex.len() == 4 {
+                    d(3)? as f64 / 255.0
+                } else {
+                    1.0
+                },
             })
         }
-        // #rgba (GH #243): each digit doubles, alpha included — the CSS
-        // Color 4 short form of #rrggbbaa.
-        4 => {
-            let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).ok()?;
-            let g = u8::from_str_radix(&hex[1..2].repeat(2), 16).ok()?;
-            let b = u8::from_str_radix(&hex[2..3].repeat(2), 16).ok()?;
-            let a = u8::from_str_radix(&hex[3..4].repeat(2), 16).ok()?;
+        6 | 8 => {
+            let d = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
             Some(Rgba {
-                r: r as f64 / 255.0,
-                g: g as f64 / 255.0,
-                b: b as f64 / 255.0,
-                a: a as f64 / 255.0,
-            })
-        }
-        6 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            Some(Rgba {
-                r: r as f64 / 255.0,
-                g: g as f64 / 255.0,
-                b: b as f64 / 255.0,
-                a: 1.0,
-            })
-        }
-        8 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            let a = u8::from_str_radix(&hex[6..8], 16).ok()?;
-            Some(Rgba {
-                r: r as f64 / 255.0,
-                g: g as f64 / 255.0,
-                b: b as f64 / 255.0,
-                a: a as f64 / 255.0,
+                r: d(0)? as f64 / 255.0,
+                g: d(2)? as f64 / 255.0,
+                b: d(4)? as f64 / 255.0,
+                a: if hex.len() == 8 {
+                    d(6)? as f64 / 255.0
+                } else {
+                    1.0
+                },
             })
         }
         _ => None,
@@ -250,7 +230,14 @@ pub fn rgba_to_css(rgb: Rgba) -> String {
 
 /// Format an HSLA value as a CSS hsl()/hsla() string.
 pub fn hsla_to_css(hsl: Hsla) -> String {
-    let h = hsl.h.round() as i32;
+    // Round, then wrap: a hue in [359.5, 360) rounds to 360, and emitting
+    // "hsl(360, …)" would desync emit from parse — `parse_color` wraps hue
+    // into [0, 360), so the emitted string would re-parse as hue 0, format
+    // back as "hsl(0, …)", and `denotes_same` under an hsl display format
+    // would call two spellings of the same colour different (rewriting the
+    // field under the author's caret — the GH #231 class). Wrapping on the
+    // emit side keeps `format_color` a fixed point of `parse_color`.
+    let h = hsl.h.round().rem_euclid(360.0) as i32;
     let s = (hsl.s * 100.0).round() as i32;
     let l = (hsl.l * 100.0).round() as i32;
     if hsl.a < 1.0 {
@@ -265,27 +252,53 @@ pub fn hsla_to_css(hsl: Hsla) -> String {
 /// Supports: `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa` (with or without the
 /// `#`), `rgb()`/`rgba()` and `hsl()`/`hsla()` in both the legacy comma
 /// syntax and the modern space syntax (`rgb(51 51 102 / 0.5)`), and the CSS
-/// named colours (`red`, `rebeccapurple`, `transparent` — case-insensitive).
+/// named colours (`red`, `rebeccapurple`, `transparent`). Keywords and
+/// function names are matched case-insensitively, as in CSS.
 ///
 /// Out-of-range channels clamp to their CSS ranges (rgb 0–255, percentages
 /// 0–100%, alpha 0–1); hue wraps into [0, 360).
 pub fn parse_color(s: &str) -> Option<Hsva> {
     let s = s.trim();
     if s.starts_with('#') {
-        let rgb = hex_to_rgb(s)?;
-        Some(rgb_to_hsv(rgb))
-    } else if s.starts_with("rgba(") || s.starts_with("rgb(") {
-        parse_rgb_css(s)
-    } else if s.starts_with("hsla(") || s.starts_with("hsl(") {
-        parse_hsl_css(s)
-    } else if let Some(rgb) = named_to_rgb(s) {
+        return hex_to_rgb(s).map(rgb_to_hsv);
+    }
+    if let Some(inner) = strip_function_ci(s, "rgba").or_else(|| strip_function_ci(s, "rgb")) {
+        return parse_rgb_css(inner);
+    }
+    if let Some(inner) = strip_function_ci(s, "hsla").or_else(|| strip_function_ci(s, "hsl")) {
+        return parse_hsl_css(inner);
+    }
+    if let Some(rgb) = named_to_rgb(s) {
         // Before the bare-hex fallback, though no name collides with one: a
         // keyword is a keyword wherever hex would also be legal.
-        Some(rgb_to_hsv(rgb))
-    } else {
-        // Try as bare hex
-        hex_to_rgb(s).map(rgb_to_hsv)
+        return Some(rgb_to_hsv(rgb));
     }
+    // Try as bare hex
+    hex_to_rgb(s).map(rgb_to_hsv)
+}
+
+/// Strip a CSS function wrapper: `name(` from the front — ASCII
+/// case-insensitively, since CSS function names are case-insensitive
+/// (`RGB(255, 0, 0)` is as valid as `rgb(255, 0, 0)`) — and one `)` from the
+/// back. Exactly one of each: repeat-stripping (`trim_start_matches`/
+/// `trim_end_matches`) quietly accepted `rgb(rgb(1, 2, 3))` and
+/// `rgb(1, 2, 3)))`, which are not colours. The close paren stays optional,
+/// as it always has been: `rgb(51, 51, 102` mid-typing previews, and the
+/// commit boundary normalizes it.
+fn strip_function_ci<'a>(s: &'a str, name: &str) -> Option<&'a str> {
+    let prefix_len = name.len() + 1;
+    if s.len() < prefix_len {
+        return None;
+    }
+    // Byte-wise, not a str slice: `s` flows in per keystroke and may be
+    // non-ASCII, where slicing at an arbitrary byte offset panics mid-char.
+    let head = &s.as_bytes()[..prefix_len];
+    if !head[..name.len()].eq_ignore_ascii_case(name.as_bytes()) || head[name.len()] != b'(' {
+        return None;
+    }
+    // The matched prefix bytes are ASCII, so this offset is a char boundary.
+    let tail = &s[prefix_len..];
+    Some(tail.strip_suffix(')').unwrap_or(tail))
 }
 
 /// Split the inside of an `rgb()`/`hsl()` function into its three channel
@@ -322,38 +335,37 @@ fn split_function_args(inner: &str) -> Option<(Vec<&str>, Option<&str>)> {
     }
 }
 
-/// An alpha token: a number 0–1 or a percentage, clamped into [0, 1].
+/// Parse one channel token: a number clamped into [0, `max`] and scaled into
+/// [0, 1]. Every channel of every function syntax funnels through here, so
+/// the two ordering invariants live in one place:
 ///
-/// f64::FromStr accepts "nan"/"inf": a NaN channel would poison the picker's
-/// signals (every comparison involving NaN is false, so a value_fn apply of
-/// such a string re-applies forever). Not a colour — and `clamp` alone would
-/// pass NaN through, so the finite check must come first. Both apply to the
-/// channel closures in the parsers below too.
-fn parse_alpha(token: &str) -> Option<f64> {
-    let (raw, scale) = match token.strip_suffix('%') {
-        Some(p) => (p, 100.0),
-        None => (token, 1.0),
-    };
-    let v = raw.parse::<f64>().ok()?;
-    v.is_finite().then(|| (v / scale).clamp(0.0, 1.0))
+/// - f64::FromStr accepts "nan"/"inf": a NaN channel would poison the
+///   picker's signals (every comparison involving NaN is false, so a
+///   value_fn apply of such a string re-applies forever). Not a colour.
+/// - `clamp` alone would pass NaN through, so the finite check comes first.
+///
+/// Clamping in the parser (GH #243): everything downstream — the picker's
+/// signals, the thumb positions, the #241 merge and echo gates — assumes
+/// canonical CSS ranges, and CSS itself clamps out-of-range channels.
+fn parse_channel(token: &str, max: f64) -> Option<f64> {
+    let v = token.parse::<f64>().ok()?;
+    v.is_finite().then(|| v.clamp(0.0, max) / max)
 }
 
-fn parse_rgb_css(s: &str) -> Option<Hsva> {
-    let inner = s
-        .trim_start_matches("rgba(")
-        .trim_start_matches("rgb(")
-        .trim_end_matches(')');
+/// An alpha token: a number 0–1 or a percentage, clamped into [0, 1].
+fn parse_alpha(token: &str) -> Option<f64> {
+    match token.strip_suffix('%') {
+        Some(p) => parse_channel(p, 100.0),
+        None => parse_channel(token, 1.0),
+    }
+}
+
+/// The inside of an `rgb()`/`rgba()` wrapper (see [`strip_function_ci`]).
+fn parse_rgb_css(inner: &str) -> Option<Hsva> {
     let (channels, alpha) = split_function_args(inner)?;
-    // Clamp in the parser (GH #243): everything downstream — the picker's
-    // signals, the thumb positions, the #241 merge and echo gates — assumes
-    // canonical CSS ranges, and CSS itself clamps out-of-range channels.
-    let channel = |t: &str| -> Option<f64> {
-        let v = t.parse::<f64>().ok()?;
-        v.is_finite().then(|| v.clamp(0.0, 255.0) / 255.0)
-    };
-    let r = channel(channels[0])?;
-    let g = channel(channels[1])?;
-    let b = channel(channels[2])?;
+    let r = parse_channel(channels[0], 255.0)?;
+    let g = parse_channel(channels[1], 255.0)?;
+    let b = parse_channel(channels[2], 255.0)?;
     let a = match alpha {
         Some(t) => parse_alpha(t)?,
         None => 1.0,
@@ -361,14 +373,13 @@ fn parse_rgb_css(s: &str) -> Option<Hsva> {
     Some(rgb_to_hsv(Rgba { r, g, b, a }))
 }
 
-fn parse_hsl_css(s: &str) -> Option<Hsva> {
-    let inner = s
-        .trim_start_matches("hsla(")
-        .trim_start_matches("hsl(")
-        .trim_end_matches(')');
+/// The inside of an `hsl()`/`hsla()` wrapper (see [`strip_function_ci`]).
+fn parse_hsl_css(inner: &str) -> Option<Hsva> {
     let (channels, alpha) = split_function_args(inner)?;
     let h = channels[0].parse::<f64>().ok()?;
     if !h.is_finite() {
+        // Before `rem_euclid`, which maps ±inf/NaN to NaN — see
+        // `parse_channel` for why NaN must never reach the signals.
         return None;
     }
     // Hue's range discipline is wrapping, not clamping: hsl(-30, …) means
@@ -376,10 +387,14 @@ fn parse_hsl_css(s: &str) -> Option<Hsva> {
     // keeps the raw parse out of the hue *signal*, where -30 would put the
     // hue thumb at a negative offset (GH #243).
     let h = h.rem_euclid(360.0);
-    let percent = |t: &str| -> Option<f64> {
-        let v = t.trim_end_matches('%').parse::<f64>().ok()?;
-        v.is_finite().then(|| v.clamp(0.0, 100.0) / 100.0)
-    };
+    // rem_euclid can land on exactly 360.0: for a vanishingly negative hue,
+    // `h + 360.0` rounds up to 360.0 in f64 (-1e-14 does). Snap the boundary
+    // so the documented [0, 360) contract — and the hue thumb — hold.
+    let h = if h >= 360.0 { 0.0 } else { h };
+    // At most one '%' (`strip_suffix`, not `trim_end_matches`): "50%%" is
+    // not a percentage. The bare-number form stays accepted, as it always
+    // has been.
+    let percent = |t: &str| parse_channel(t.strip_suffix('%').unwrap_or(t), 100.0);
     let s_val = percent(channels[1])?;
     let l = percent(channels[2])?;
     let a = match alpha {
@@ -1146,5 +1161,67 @@ mod tests {
             !text_denotes("#3366", navy),
             "the 4-digit alpha is part of the colour"
         );
+    }
+
+    // === Review follow-ups: emit/parse stay a fixed point ===
+
+    #[test]
+    fn the_emitted_hsl_never_desyncs_from_the_parser() {
+        // #ff0001 has hue 359.76…, which rounds to 360 in hsl output. When
+        // the emit side printed "hsl(360, …)" while the parser wrapped hue
+        // into [0, 360), one colour had two spellings `denotes_same` called
+        // different — and ColorInput's display effect rewrote the field
+        // under the author's caret (the GH #231 class, resurrected under an
+        // hsl display format). The emit side wraps too: round, then wrap.
+        let emitted = format_color(parse_color("#ff0001").unwrap(), ColorFormat::Hsl);
+        assert_eq!(emitted, "hsl(0, 100%, 50%)");
+        assert!(
+            denotes_same("#ff0001", &emitted, ColorFormat::Hsl),
+            "a colour must denote the same colour as its own emission"
+        );
+
+        // The same desync leaked through the picker's serializer for a grey
+        // held at hue ∈ [359.5, 360): "hsl(360, 0%, l)" re-parsed as the
+        // convention-grey hue 0 instead of a stated hue.
+        let grey = Hsva {
+            h: 359.8,
+            s: 0.0,
+            v: 0.5,
+            a: 1.0,
+        };
+        assert_eq!(format_color(grey, ColorFormat::Hsl), "hsl(0, 0%, 50%)");
+    }
+
+    #[test]
+    fn a_vanishingly_negative_hue_stays_inside_the_wrap_contract() {
+        // f64: -1e-14 + 360.0 rounds up to exactly 360.0, so `rem_euclid`
+        // alone can return 360.0 — outside the documented [0, 360), and a
+        // full-offset hue thumb.
+        let h = parse_color("hsl(-0.00000000000001, 100%, 50%)").unwrap().h;
+        assert!((0.0..360.0).contains(&h), "hue {h} escaped [0, 360)");
+    }
+
+    #[test]
+    fn css_function_names_are_case_insensitive() {
+        let hex = |s: &str| parse_color(s).map(|c| format_color(c, ColorFormat::Hex));
+        assert_eq!(hex("RGB(255, 0, 0)"), Some("#ff0000".into()));
+        assert_eq!(hex("Hsl(0 100% 50%)"), Some("#ff0000".into()));
+        assert!(approx_eq(
+            parse_color("RGBA(0, 0, 255, 0.5)").unwrap().a,
+            0.5
+        ));
+        assert_eq!(hex("HSLA(240, 100%, 50%, 1)"), Some("#0000ff".into()));
+    }
+
+    #[test]
+    fn a_function_wrapper_is_stripped_exactly_once() {
+        // Repeat-stripping used to accept all of these.
+        assert!(parse_color("rgb(rgb(1, 2, 3))").is_none());
+        assert!(parse_color("rgb(1, 2, 3)))").is_none());
+        assert!(parse_color("hsl(0, 50%%, 50%)").is_none());
+        // The close paren stays optional: mid-typing text previews, and the
+        // commit boundary normalizes it.
+        assert!(parse_color("rgb(255, 0, 0").is_some());
+        assert!(parse_color("hsl(0, 100%, 50%").is_some());
     }
 }

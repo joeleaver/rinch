@@ -197,7 +197,16 @@ impl Component for ColorInput {
                 __scope.register_input_handler(move |value: String| match parse_color(&value) {
                     Some(parsed) => {
                         let formatted = format_color(parsed, color_format);
-                        let changed = *last_committed_commit.borrow() != formatted;
+                        // By denotation, not raw text: the last committed
+                        // string can hold the colour in another notation
+                        // entirely — the raw mount value or a `value_fn`
+                        // write ("red", "rgb(51 51 102)") — and re-spelling
+                        // that colour is not a colour change (GH #243).
+                        let changed = !denotes_same(
+                            &last_committed_commit.borrow(),
+                            &formatted,
+                            color_format,
+                        );
                         *typed_commit.borrow_mut() = None;
                         text_input_commit.set_attribute("value", &formatted);
                         current_value.set_if_changed(formatted.clone());

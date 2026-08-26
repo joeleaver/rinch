@@ -60,7 +60,13 @@ impl Drop for ApplyGuard<'_> {
 /// `s == 0.0` (every RGB-family grey parses to hue exactly 0.0 by
 /// convention — `rgb_to_hsv`'s `delta == 0` arm — so a nonzero hue at
 /// exactly zero saturation was authored, not fabricated; the zeros are
-/// exact in every parser arm).
+/// exact in every parser arm). One disclosed corner since GH #243: the
+/// parser wraps hue into [0, 360), so a stated hue that is a multiple of
+/// 360 — `hsl(360, 0%, l)`, `hsl(-360, 0%, l)` — lands on exactly 0.0 and
+/// reads as the convention, just as `hsl(0, 0%, l)` always has. That is
+/// CSS's own equivalence (`hsl(360, …)` *is* `hsl(0, …)`), and the picker's
+/// serializer never emits a wrapped-out hue (`hsla_to_css` wraps after
+/// rounding), so only hand-authored spellings reach it.
 fn merge_unrepresentable(parsed: Hsva, current: Hsva) -> Hsva {
     let rendered = hsv_to_rgb(parsed);
     let level = |c: f64| (c * 255.0).round() as u8;

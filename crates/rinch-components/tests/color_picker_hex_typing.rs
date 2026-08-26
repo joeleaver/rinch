@@ -670,6 +670,30 @@ fn a_notation_only_commit_reports_nothing() {
     );
 }
 
+/// The same principle when the app-held string is in another notation
+/// entirely (GH #243 made these parseable): `last_committed` holds the raw
+/// mount value — "red" — and a commit of "#f00" re-spells exactly that
+/// colour. A raw-text gate saw "red" != "#ff0000" and fired a phantom
+/// report; the gate must judge by denotation.
+#[test]
+fn a_notation_only_commit_over_a_named_mount_value_reports_nothing() {
+    let input = Mounted::color_input("red");
+
+    input.type_text("#f00");
+    input.commit("#f00");
+
+    assert_eq!(
+        input.field_text(),
+        "#ff0000",
+        "the commit still normalizes the field to the canonical form"
+    );
+    assert_eq!(
+        input.emissions(),
+        Vec::<String>::new(),
+        "#f00 re-spells the red the app already holds; nothing reports"
+    );
+}
+
 /// Multibyte text whose hex part is 3, 6, or 8 *bytes* long ("#é3") must be
 /// "not a colour", not a byte-slice panic — it flows through `parse_color`
 /// on every keystroke and through the guard on every display-effect run.
