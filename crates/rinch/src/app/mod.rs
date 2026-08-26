@@ -2749,3 +2749,124 @@ mod tab_focus_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod click_viewport_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// A moto g stylus 5G: a 1080x2460 surface at density 400 (2.5x), which is
+    /// a 432x984 CSS-pixel viewport. Dividing that surface twice — once in the
+    /// shell, once here — gives 173x394.
+    const PHYSICAL: (u32, u32) = (1080, 2460);
+    const SCALE: f64 = 2.5;
+
+    /// Mount a clickable 200x48 box at `viewport`, click its middle with
+    /// `handle_event` told `window_size`/`scale`, and report the viewport the
+    /// handler's `ClickContext` carried.
+    fn viewport_seen_by_a_click(
+        viewport: (f32, f32),
+        window_size: (u32, u32),
+        scale: f64,
+    ) -> Option<(f32, f32)> {
+        let seen: Rc<Cell<Option<(f32, f32)>>> = Rc::new(Cell::new(None));
+        let seen_in = seen.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let target = scope.create_element("div");
+            target.set_attribute("style", "width: 200px; height: 48px");
+            let seen = seen_in.clone();
+            let rid = scope.register_handler(move || {
+                let ctx = rinch_core::events::get_click_context();
+                seen.set(Some((ctx.viewport_width, ctx.viewport_height)));
+            });
+            target.set_attribute("data-rid", &rid.0.to_string());
+            root.append_child(&target);
+            root
+        });
+        app.mount_component(viewport.0, viewport.1);
+        app.resolve_and_repaint(viewport.0, viewport.1);
+        app.handle_event(
+            PlatformEvent::MouseDown {
+                x: 100.0,
+                y: 24.0,
+                button: MouseButton::Left,
+            },
+            window_size,
+            scale,
+        );
+        seen.get()
+    }
+
+    /// `handle_event` is handed the *physical* surface size and derives the
+    /// CSS-pixel viewport itself, so a shell that pre-divides leaves
+    /// `ClickContext` reporting `physical / scale²`. Hit-testing never notices —
+    /// pointer coordinates are converted separately and the document is laid out
+    /// at the logical size either way — but anything that positions against the
+    /// viewport does: a dropdown opened halfway down a 984px screen sees 394px
+    /// of screen, decides there is no room below, and opens upward off the top
+    /// of its scroll box.
+    #[test]
+    fn click_context_viewport_is_the_logical_size_not_the_surface() {
+        assert_eq!(
+            viewport_seen_by_a_click((432.0, 984.0), PHYSICAL, SCALE),
+            Some((432.0, 984.0)),
+            "a 1080x2460 surface at 2.5x is a 432x984 viewport, not the surface \
+             itself and not the 173x394 that dividing it twice gives"
+        );
+    }
+
+    /// The same parameter also drives every re-layout `handle_event` runs, and
+    /// those read it as the CSS-pixel viewport. Handing the surface size
+    /// straight to `resolve_and_repaint` lays the document out `scale_factor`
+    /// times too wide — the desktop fault of #246, reached here through the
+    /// event path rather than the paint preamble.
+    #[test]
+    fn a_re_layout_from_an_event_uses_the_logical_viewport() {
+        let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id_in = id.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let full = scope.create_element("div");
+            full.set_attribute("style", "width: 100%; height: 40px");
+            id_in.set(Some(full.node_id().0));
+            root.append_child(&full);
+            root
+        });
+        app.mount_component(432.0, 984.0);
+        app.resolve_and_repaint(432.0, 984.0);
+        let full_id = id.get().expect("node id captured at mount");
+
+        // Dirty the tree so the re-layout actually runs (`resolve_and_repaint`
+        // short-circuits on a clean document).
+        {
+            let doc = app.doc.as_ref().unwrap();
+            doc.borrow_mut().tree.dirty_nodes.insert(full_id);
+        }
+        app.handle_event(
+            PlatformEvent::UserEvent(UserEvent::ReRender),
+            PHYSICAL,
+            SCALE,
+        );
+
+        let width = {
+            let d = app.doc.as_ref().unwrap().borrow();
+            d.tree.get(full_id).unwrap().layout.width
+        };
+        assert_eq!(
+            width, 432.0,
+            "a width:100% box spans the 432px logical viewport, not the 1080px surface"
+        );
+    }
+
+    /// The other direction: at 1x the surface *is* the viewport, so removing the
+    /// division rather than fixing the call site would still be wrong.
+    #[test]
+    fn click_context_viewport_equals_the_surface_at_1x() {
+        assert_eq!(
+            viewport_seen_by_a_click((800.0, 600.0), (800, 600), 1.0),
+            Some((800.0, 600.0)),
+            "an unscaled surface is its own viewport"
+        );
+    }
+}

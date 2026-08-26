@@ -167,12 +167,15 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         let lw = (w as f64 / scale_factor).round() as u32;
                         let lh = (h as f64 / scale_factor).round() as u32;
 
+                        // `Resized` carries the layout viewport, which is logical;
+                        // `handle_event`'s `window_size` is the physical surface,
+                        // which it divides by the scale factor itself.
                         let actions = app.handle_event(
                             PlatformEvent::Resized {
                                 width: lw,
                                 height: lh,
                             },
-                            (lw, lh),
+                            physical_size,
                             scale_factor,
                         );
                         process_actions(&actions, &mut running);
@@ -212,7 +215,9 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
             continue;
         }
 
-        // Process touch / key input — must drain after poll_events returns
+        // The layout viewport, in CSS pixels: what the document is laid out and
+        // painted at. `handle_event` is *not* given this — it takes the physical
+        // surface size and derives the same value itself (see the calls below).
         let logical_size = (
             (physical_size.0 as f64 / scale_factor).round() as u32,
             (physical_size.1 as f64 / scale_factor).round() as u32,
@@ -224,7 +229,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
             &mut combining_accent,
         );
         for event in &input_events {
-            let actions = app.handle_event(event.clone(), logical_size, scale_factor);
+            let actions = app.handle_event(event.clone(), physical_size, scale_factor);
             process_actions(&actions, &mut running);
         }
 
@@ -256,7 +261,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         text: Some(ch.to_string()),
                         modifiers: Modifiers::default(),
                     },
-                    logical_size,
+                    physical_size,
                     scale_factor,
                 );
                 process_actions(&actions, &mut running);
@@ -273,7 +278,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         text: None,
                         modifiers: Modifiers::default(),
                     },
-                    logical_size,
+                    physical_size,
                     scale_factor,
                 );
                 process_actions(&actions, &mut running);
@@ -286,7 +291,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         text: None,
                         modifiers: Modifiers::default(),
                     },
-                    logical_size,
+                    physical_size,
                     scale_factor,
                 );
                 process_actions(&actions, &mut running);

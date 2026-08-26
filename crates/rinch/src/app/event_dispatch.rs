@@ -4,6 +4,14 @@ use super::*;
 
 impl RinchApp {
     /// Process a platform event and return a list of actions for the shell.
+    ///
+    /// `window_size` is the **physical** surface size, in device pixels — the
+    /// shell hands over what the window actually is and this divides by
+    /// `scale_factor` itself. A shell that pre-divides gets a viewport of
+    /// `physical / scale²`: on a 2.5x phone `ClickContext` would read 173x394
+    /// for a 432x984 screen, and anything that positions against the viewport
+    /// (a dropdown deciding whether to open upward) believes the screen ends
+    /// where the fold is.
     #[allow(clippy::too_many_lines)]
     pub fn handle_event(
         &mut self,
@@ -12,7 +20,9 @@ impl RinchApp {
         scale_factor: f64,
     ) -> Vec<AppAction> {
         let mut actions = Vec::new();
-        // Logical viewport dimensions for ClickContext
+        // The layout viewport in CSS pixels: what `ClickContext` reports and what
+        // every re-layout below resolves at, since the document is laid out in
+        // CSS pixels and paint scales it back up.
         let vp_w = window_size.0 as f32 / scale_factor as f32;
         let vp_h = window_size.1 as f32 / scale_factor as f32;
 
@@ -223,8 +233,7 @@ impl RinchApp {
                 // Handle component drag (sliders, floating panels, etc.)
                 let (drag_active, drag_forward_surface) = rinch_core::update_drag(x, y);
                 if drag_active && !drag_forward_surface {
-                    let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                    self.resolve_and_repaint(w, h);
+                    self.resolve_and_repaint(vp_w, vp_h);
                     actions.push(AppAction::RequestRedraw);
                     return actions;
                 }
@@ -919,8 +928,7 @@ impl RinchApp {
                             // its block if it reparented), re-layout, then the
                             // post-layout caret pass finalizes it with fresh geometry.
                             self.refresh_editor_overlays();
-                            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                            self.resolve_and_repaint(w, h);
+                            self.resolve_and_repaint(vp_w, vp_h);
                             actions.push(AppAction::RequestRedraw);
                         } else {
                             // The focused editor was unmounted out from under us:
@@ -1077,8 +1085,7 @@ impl RinchApp {
                         {
                             self.dispatch_editor_ime(&handle, ime);
                             self.refresh_editor_overlays();
-                            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                            self.resolve_and_repaint(w, h);
+                            self.resolve_and_repaint(vp_w, vp_h);
                             actions.push(AppAction::RequestRedraw);
                         } else {
                             // Focused editor unmounted out from under us.
@@ -1098,8 +1105,7 @@ impl RinchApp {
                 actions.push(AppAction::RequestRedraw);
             }
             PlatformEvent::UserEvent(UserEvent::ReRender) => {
-                let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                if self.resolve_and_repaint(w, h) {
+                if self.resolve_and_repaint(vp_w, vp_h) {
                     actions.push(AppAction::RequestRedraw);
                 }
                 // Process any pending input focus request (e.g., from an Effect
@@ -1211,8 +1217,7 @@ impl RinchApp {
                 }
 
                 if self.has_dirty_nodes() {
-                    let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                    if self.resolve_and_repaint(w, h) {
+                    if self.resolve_and_repaint(vp_w, vp_h) {
                         actions.push(AppAction::RequestRedraw);
                     }
                 }
@@ -1243,8 +1248,7 @@ impl RinchApp {
 
                 // Video polling may have dirtied nodes (signal updates) — check again
                 if any_video && self.has_dirty_nodes() {
-                    let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                    if self.resolve_and_repaint(w, h) {
+                    if self.resolve_and_repaint(vp_w, vp_h) {
                         actions.push(AppAction::RequestRedraw);
                     }
                 }
