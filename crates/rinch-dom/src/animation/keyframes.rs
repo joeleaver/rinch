@@ -18,10 +18,12 @@ use crate::transition::types::TimingFunction;
 ///
 /// For `ComputedValues` steps (auto-generated 0%/100%), we use `base_style` values.
 /// For `Declarations` steps, colours are read as typed stylo values; the other
-/// properties are serialized to CSS text and parsed back.
+/// properties are serialized to CSS text and parsed back. `parent_color` is
+/// what a `color: currentcolor` stop inherits.
 pub fn extract_keyframe_stops(
     animation: &KeyframesAnimation,
     base_style: &ComputedStyle,
+    parent_color: Option<peniko::Color>,
     guard: &SharedRwLockReadGuard,
 ) -> Vec<KeyframeStop> {
     let mut stops = Vec::new();
@@ -37,7 +39,7 @@ pub fn extract_keyframe_stops(
             }
             KeyframesStepValue::Declarations { block } => {
                 let block = block.read_with(guard);
-                let values = extract_declaration_values(block, base_style);
+                let values = extract_declaration_values(block, base_style, parent_color);
 
                 // Extract per-keyframe timing function if declared
                 let tf = if step.declared_timing_function {
@@ -65,11 +67,12 @@ pub fn extract_keyframe_stops(
 fn extract_declaration_values(
     block: &style::properties::PropertyDeclarationBlock,
     base_style: &ComputedStyle,
+    parent_color: Option<peniko::Color>,
 ) -> Vec<(TransitionProperty, AnimatableValue)> {
     let mut values = Vec::new();
 
     for declaration in block.normal_declaration_iter() {
-        if let Some((prop, val)) = convert_declaration(declaration, base_style) {
+        if let Some((prop, val)) = convert_declaration(declaration, base_style, parent_color) {
             values.push((prop, val));
         }
     }
@@ -84,9 +87,15 @@ fn extract_declaration_values(
 fn convert_declaration(
     declaration: &PropertyDeclaration,
     base_style: &ComputedStyle,
+    parent_color: Option<peniko::Color>,
 ) -> Option<(TransitionProperty, AnimatableValue)> {
     if let Some((property, color)) = color_declaration(declaration) {
         let color = match color {
+            // On `color` itself, `currentcolor` means `inherit` (CSS Color 4
+            // §7.1): the parent's colour, not the element's own.
+            SpecifiedColor::CurrentColor if property == TransitionProperty::Color => {
+                parent_color.or(base_style.color)?
+            }
             // The element's own colour, as for every other `currentcolor`.
             SpecifiedColor::CurrentColor => base_style.color?,
             other => color_from_specified(other)?,

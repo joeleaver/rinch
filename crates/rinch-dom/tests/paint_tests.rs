@@ -264,6 +264,21 @@ fn test_parse_color_hsl() {
     assert_eq!(rgba("hsla(270, 50%, 40%, 0.5)"), Some((102, 51, 153, 128)));
 }
 
+/// The rest of the CSS Color 4 grammar `parse_color`'s doc promises, one
+/// vector per family; `in srgb` keeps the mix exact.
+#[test]
+fn test_parse_color_css_color_4_functions() {
+    assert_eq!(rgba("hwb(270 20% 40%)"), Some((102, 51, 153, 255)));
+    assert_eq!(rgba("color(srgb 0.4 0.2 0.6)"), Some((102, 51, 153, 255)));
+    assert_eq!(rgba("oklch(0 0 0)"), Some((0, 0, 0, 255)));
+    assert_eq!(
+        rgba("color-mix(in srgb, red 25%, blue)"),
+        Some((64, 0, 191, 255))
+    );
+    // A mix over `currentcolor` is not absolute on its own.
+    assert_eq!(rgba("color-mix(in srgb, currentcolor, blue)"), None);
+}
+
 #[test]
 fn test_parse_color_rejects_junk() {
     assert_eq!(rgba(""), None);
@@ -1020,15 +1035,22 @@ mod svg_paint {
     use rinch_dom::paint::skia_painter::TinySkiaPainter;
 
     /// Paint a 20×20 `<svg viewBox="0 0 10 10">` holding one full-viewBox
-    /// `<rect fill=…>` at the top-left of the page and return the pixel at its
-    /// centre. `svg_style` is the `<svg>`'s own inline style (for `color`).
-    fn rect_centre_pixel(fill: &str, svg_style: &str) -> [u8; 4] {
+    /// `<rect>` at the top-left of the page and return the pixel at its
+    /// centre. `svg_fill`/`rect_fill` are the `fill` attributes (`None` for
+    /// absent); `svg_style`/`rect_style` the inline styles (for `color`).
+    fn svg_rect_centre_pixel(
+        svg_fill: Option<&str>,
+        svg_style: &str,
+        rect_fill: Option<&str>,
+        rect_style: &str,
+    ) -> [u8; 4] {
         let mut doc = RinchDocument::new();
         let body = doc.body();
         let svg = doc.create_element("svg");
         doc.set_attribute(svg, "viewBox", "0 0 10 10");
-        doc.set_attribute(svg, "width", "20");
-        doc.set_attribute(svg, "height", "20");
+        if let Some(fill) = svg_fill {
+            doc.set_attribute(svg, "fill", fill);
+        }
         doc.set_attribute(
             svg,
             "style",
@@ -1036,11 +1058,14 @@ mod svg_paint {
         );
         doc.append_child(body, svg);
         let rect = doc.create_element("rect");
-        doc.set_attribute(rect, "x", "0");
-        doc.set_attribute(rect, "y", "0");
         doc.set_attribute(rect, "width", "10");
         doc.set_attribute(rect, "height", "10");
-        doc.set_attribute(rect, "fill", fill);
+        if let Some(fill) = rect_fill {
+            doc.set_attribute(rect, "fill", fill);
+        }
+        if !rect_style.is_empty() {
+            doc.set_attribute(rect, "style", rect_style);
+        }
         doc.append_child(svg, rect);
         doc.resolve_layout(800.0, 600.0);
 
@@ -1054,6 +1079,11 @@ mod svg_paint {
         let mut painter = TinySkiaPainter::new(40, 40);
         paint_skia(&mut doc, &mut painter);
         pixel_at(&painter, 10, 10)
+    }
+
+    /// `svg_rect_centre_pixel` for a rect with its own `fill`.
+    fn rect_centre_pixel(fill: &str, svg_style: &str) -> [u8; 4] {
+        svg_rect_centre_pixel(None, svg_style, Some(fill), "")
     }
 
     #[test]
@@ -1088,5 +1118,44 @@ mod svg_paint {
     #[test]
     fn svg_fill_none_paints_nothing() {
         assert_eq!(rect_centre_pixel("none", ""), [0, 0, 0, 0]);
+    }
+
+    /// SVG's initial `fill` is black: a shape with no `fill` anywhere paints.
+    #[test]
+    fn svg_fill_absent_paints_black() {
+        assert_eq!(svg_rect_centre_pixel(None, "", None, ""), [0, 0, 0, 255]);
+    }
+
+    /// A child with no `fill` inherits the `<svg>`'s.
+    #[test]
+    fn svg_fill_inherits_svg_level_fill() {
+        assert_eq!(
+            svg_rect_centre_pixel(Some("rebeccapurple"), "", None, ""),
+            [102, 51, 153, 255]
+        );
+    }
+
+    /// `currentcolor` resolves against the child's own `color`, not the
+    /// `<svg>`'s — whether the child says it or inherits it.
+    #[test]
+    fn svg_fill_currentcolor_uses_child_colour() {
+        assert_eq!(
+            svg_rect_centre_pixel(
+                None,
+                "color: rgb(1, 2, 3)",
+                Some("currentcolor"),
+                "color: rgb(4, 5, 6)"
+            ),
+            [4, 5, 6, 255]
+        );
+        assert_eq!(
+            svg_rect_centre_pixel(
+                Some("currentColor"),
+                "color: rgb(1, 2, 3)",
+                None,
+                "color: rgb(4, 5, 6)"
+            ),
+            [4, 5, 6, 255]
+        );
     }
 }

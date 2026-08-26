@@ -693,47 +693,37 @@ pub fn parse_font_size(style_str: &str) -> Option<f32> {
 /// it (see `paint::svg::resolve_svg_color`).
 pub fn parse_color(value: &str) -> Option<peniko::Color> {
     use cssparser::{Parser, ParserInput};
+    use std::sync::LazyLock;
+    use style::context::QuirksMode;
+    use style::parser::ParserContext;
+    use style::stylesheets::{CssRuleType, Origin, UrlExtraData};
     use style::values::specified::Color;
+    use style_traits::ParsingMode;
 
+    // Building `UrlExtraData` parses a URL; do that once, not once per SVG
+    // child per paint. The context only borrows it.
+    static BLANK_URL_DATA: LazyLock<UrlExtraData> = LazyLock::new(|| {
+        UrlExtraData::from(url::Url::parse("about:blank").expect("about:blank is a URL"))
+    });
+
+    // A bare-value context built the way stylo's own `parse_style_attribute`
+    // builds it: author origin, `about:blank`, no quirks, no error reporting.
+    let context = ParserContext::new(
+        Origin::Author,
+        &BLANK_URL_DATA,
+        Some(CssRuleType::Style),
+        ParsingMode::DEFAULT,
+        QuirksMode::NoQuirks,
+        /* namespaces = */ Default::default(),
+        None,
+        None,
+    );
     let mut input = ParserInput::new(value.trim());
     let mut parser = Parser::new(&mut input);
     // `parse_and_compute` parses the whole input (junk rejects) and computes
     // without a device, which leaves `currentcolor` & co. non-absolute.
-    let computed =
-        with_value_parser_context(|context| Color::parse_and_compute(context, &mut parser, None))?;
-    computed
-        .as_absolute()
-        .and_then(crate::computed_style::color_from_absolute)
-}
-
-/// Run `f` with a stylo `ParserContext` for parsing a bare property value:
-/// author origin, `about:blank` URL data, no quirks, no error reporting.
-fn with_value_parser_context<R>(f: impl FnOnce(&style::parser::ParserContext<'_>) -> R) -> R {
-    use style::context::QuirksMode;
-    use style::parser::ParserContext;
-    use style::stylesheets::{CssRuleType, Origin, UrlExtraData};
-    use style_traits::ParsingMode;
-
-    thread_local! {
-        // Building `UrlExtraData` parses a URL; do that once per thread, not
-        // once per SVG child per paint. The context itself only borrows it.
-        static URL_DATA: UrlExtraData =
-            UrlExtraData::from(url::Url::parse("about:blank").expect("about:blank is a URL"));
-    }
-
-    URL_DATA.with(|url_data| {
-        let context = ParserContext::new(
-            Origin::Author,
-            url_data,
-            Some(CssRuleType::Style),
-            ParsingMode::DEFAULT,
-            QuirksMode::NoQuirks,
-            /* namespaces = */ Default::default(),
-            None,
-            None,
-        );
-        f(&context)
-    })
+    let computed = Color::parse_and_compute(&context, &mut parser, None)?;
+    crate::computed_style::color_from_stylo(&computed)
 }
 
 /// Check if a style string contains "display: contents".

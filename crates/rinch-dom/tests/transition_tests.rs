@@ -397,11 +397,13 @@ fn test_apply_value_background_color() {
 
 /// Build a document whose one div runs `animation: tint 1000ms linear` from the
 /// given `@keyframes` body, with animations enabled from the first layout on.
+/// The body's `color` is `rgb(7, 8, 9)`, the div's own `rgb(10, 20, 30)`.
 fn animated_div(keyframes: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::NodeId) {
     use rinch_core::dom::DomDocument;
 
     let mut doc = rinch_dom::RinchDocument::new();
     let body = doc.body();
+    doc.set_attribute(body, "style", "color: rgb(7, 8, 9)");
 
     let style_el = doc.create_element("style");
     let css = doc.create_text(&format!(
@@ -423,12 +425,13 @@ fn animated_div(keyframes: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::
     (doc, div)
 }
 
-/// The animated `background-color` of the div's first active animation at
+/// The animated colour of `property` on the div's first active animation at
 /// `elapsed_ms` into it.
-fn animated_background(
+fn animated_colour(
     doc: &rinch_dom::RinchDocument,
     div: rinch_core::dom::NodeId,
     elapsed_ms: f64,
+    property: TransitionProperty,
 ) -> Option<peniko::Color> {
     let anim = doc
         .tree
@@ -441,8 +444,8 @@ fn animated_background(
     else {
         panic!("a running animation should yield values");
     };
-    values.iter().find_map(|(prop, value)| match (prop, value) {
-        (TransitionProperty::BackgroundColor, AnimatableValue::Color(c)) => Some(*c),
+    values.iter().find_map(|(prop, value)| match value {
+        AnimatableValue::Color(c) if *prop == property => Some(*c),
         _ => None,
     })
 }
@@ -455,16 +458,11 @@ fn keyframes_named_colour_stops_animate() {
     let (doc, div) =
         animated_div("from { background-color: rebeccapurple; } to { background-color: aqua; }");
 
-    let mid = animated_background(&doc, div, 500.0)
+    let mid = animated_colour(&doc, div, 500.0, TransitionProperty::BackgroundColor)
         .expect("both colour stops should parse, so background-color animates")
         .to_rgba8();
     // Halfway from rebeccapurple (102, 51, 153) to aqua (0, 255, 255).
-    for (channel, got, want) in [("r", mid.r, 51), ("g", mid.g, 153), ("b", mid.b, 204)] {
-        assert!(
-            (got as i32 - want).abs() <= 2,
-            "{channel} at 50% should be ~{want}, got {got}"
-        );
-    }
+    assert_eq!((mid.r, mid.g, mid.b), (51, 153, 204));
 }
 
 /// A `currentcolor` stop resolves against the element's own `color`, as before.
@@ -474,8 +472,20 @@ fn keyframes_currentcolor_stop_uses_element_colour() {
         "from { background-color: currentcolor; } to { background-color: currentcolor; }",
     );
 
-    let mid = animated_background(&doc, div, 500.0)
+    let mid = animated_colour(&doc, div, 500.0, TransitionProperty::BackgroundColor)
         .expect("currentcolor stops should resolve against the element's color")
         .to_rgba8();
     assert_eq!((mid.r, mid.g, mid.b), (10, 20, 30));
+}
+
+/// On `color` itself, a `currentcolor` stop is `inherit`: the parent's colour
+/// (CSS Color 4 §7.1), not the element's own.
+#[test]
+fn keyframes_color_currentcolor_stop_uses_parent_colour() {
+    let (doc, div) = animated_div("from { color: currentcolor; } to { color: currentcolor; }");
+
+    let mid = animated_colour(&doc, div, 500.0, TransitionProperty::Color)
+        .expect("currentcolor stops on `color` should resolve against the parent's colour")
+        .to_rgba8();
+    assert_eq!((mid.r, mid.g, mid.b), (7, 8, 9));
 }

@@ -10,7 +10,7 @@ mod taffy_conversion;
 mod text_layout;
 pub mod values;
 
-pub(crate) use from_stylo::color::{color_from_absolute, color_from_specified};
+pub(crate) use from_stylo::color::{color_from_specified, color_from_stylo};
 pub use values::*;
 
 use serde::Serialize;
