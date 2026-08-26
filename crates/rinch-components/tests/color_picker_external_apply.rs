@@ -46,11 +46,10 @@ enum Echo {
 struct Picker {
     // These three are kept alive for the test's duration: the document owns the
     // nodes the effects patch, the scope owns the picker's effects and
-    // handlers, and the recorder observes the store. A picker sharing a store
-    // with a peer (see [`Peers`]) holds no recorder of its own.
+    // handlers, and the recorder observes the store.
     _doc: Rc<RefCell<MockDomDocument>>,
     _scope: RenderScope,
-    _recorder: Option<Effect>,
+    _recorder: Effect,
     root: NodeHandle,
     store: Signal<String>,
     emissions: Rc<RefCell<Vec<String>>>,
@@ -71,31 +70,22 @@ impl Picker {
         Self::mount_with("", stored, echo)
     }
 
-    /// The default display format (`format: ""` → `hex`), which every test
-    /// above the #242 section runs under.
+    /// The default display format (`format: ""` → `hex`).
     fn mount_with(seed: &str, stored: &str, echo: Echo) -> Self {
         Self::mount_with_format(seed, stored, "", echo)
     }
 
     /// A picker bound to a fresh store holding `stored`, emitting in `format`.
     fn mount_with_format(seed: &str, stored: &str, format: &str, echo: Echo) -> Self {
-        let store = Signal::new(stored.to_string());
-        let published = Rc::new(RefCell::new(Vec::new()));
-        let recorder = record_store(store, &published);
-        Self::mount_on(seed, store, format, echo, published, Some(recorder))
+        Self::mount_on(seed, Signal::new(stored.to_string()), format, echo)
     }
 
-    /// A picker bound to a store it shares with others. The store's recorder
-    /// is the caller's — registered before any picker, so it sees each write
-    /// in order.
-    fn mount_on(
-        seed: &str,
-        store: Signal<String>,
-        format: &str,
-        echo: Echo,
-        published: Rc<RefCell<Vec<String>>>,
-        recorder: Option<Effect>,
-    ) -> Self {
+    /// A picker bound to `store` — possibly one it shares with a peer. Its
+    /// recorder is registered before the picker's own effects, so it sees
+    /// each write in order.
+    fn mount_on(seed: &str, store: Signal<String>, format: &str, echo: Echo) -> Self {
+        let (published, recorder) = record_store(store);
+
         let doc = Rc::new(RefCell::new(MockDomDocument::new()));
         let body = doc.borrow().body();
         let mut scope = RenderScope::new(doc.clone(), body);
@@ -183,46 +173,34 @@ impl Picker {
     }
 }
 
-/// Record every value `store` ever holds into `published` — what a peer on
-/// the other end of a collaborative document would receive.
-fn record_store(store: Signal<String>, published: &Rc<RefCell<Vec<String>>>) -> Effect {
+/// Record every value `store` ever holds — what a peer on the other end of a
+/// collaborative document would receive — returning the log and the effect
+/// that keeps it.
+fn record_store(store: Signal<String>) -> (Rc<RefCell<Vec<String>>>, Effect) {
+    let published: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let recorded = published.clone();
-    Effect::new(move || {
+    let recorder = Effect::new(move || {
         let value = store.get();
         recorded.borrow_mut().push(value);
-    })
+    });
+    (published, recorder)
 }
 
 /// Two pickers synced through one store — the shape #242 was reported in:
 /// each reads the store through `value_fn` and writes its own edits back
 /// through `onchange`, so every act of one arrives at the other as an
-/// external value.
+/// external value. `a.store` is the shared store and `a.published()` its
+/// history: `a`'s recorder is registered before either picker's effects.
 struct Peers {
-    _recorder: Effect,
     a: Picker,
     b: Picker,
-    store: Signal<String>,
-    published: Rc<RefCell<Vec<String>>>,
 }
 
 impl Peers {
     fn mount(stored: &str, format: &str) -> Self {
-        let store = Signal::new(stored.to_string());
-        let published = Rc::new(RefCell::new(Vec::new()));
-        let recorder = record_store(store, &published);
-        let a = Picker::mount_on(stored, store, format, Echo::Back, published.clone(), None);
-        let b = Picker::mount_on(stored, store, format, Echo::Back, published.clone(), None);
-        Self {
-            _recorder: recorder,
-            a,
-            b,
-            store,
-            published,
-        }
-    }
-
-    fn published(&self) -> Vec<String> {
-        self.published.borrow().clone()
+        let a = Picker::mount_with_format(stored, stored, format, Echo::Back);
+        let b = Picker::mount_on(stored, a.store, format, Echo::Back);
+        Self { a, b }
     }
 }
 
@@ -712,10 +690,10 @@ fn a_foreign_grey_arriving_at_mount_inside_a_batch_stays_silent() {
 
 /// An achromatic value that *states* its hue — `hsl(h, 0%, l)` — carries it.
 ///
-/// The hsl parse path preserves a stated hue against an exact `s == 0`
-/// (RGB-family greys parse to hue exactly 0 by convention), so the merge
-/// adopts the authored hue instead of keeping the current one: a consumer
-/// persisting picker state as hsl round-trips grey without losing the hue.
+/// An `hsl()` string states its hue whatever its chroma (the notation is the
+/// tell), so the merge adopts the authored hue instead of keeping the current
+/// one: a consumer persisting picker state as hsl round-trips grey without
+/// losing the hue.
 #[test]
 fn a_foreign_hsl_grey_carries_its_stated_hue() {
     let picker = Picker::mount(REMOTE, Echo::Back); // h ≈ 266.7
@@ -738,8 +716,8 @@ fn a_foreign_hsl_grey_carries_its_stated_hue() {
     );
 }
 
-/// Carryability is judged at the gate's own 8-bit precision: an `rgb()` grey
-/// written with fractional channels parses to a microscopic saturation whose
+/// Carryability is judged at the 8-bit rendering: an `rgb()` grey written
+/// with fractional channels parses to a microscopic saturation whose
 /// derived hue is quantization noise — rendered grey, it carries no more hue
 /// than `#808080` does, and the current hue is kept.
 #[test]
@@ -865,7 +843,7 @@ fn a_peers_hue_move_is_not_reverted_by_the_next_local_act() {
     click_at(205.0 / 360.0, 0.5);
     dispatch_event(a_hue);
     assert_eq!(
-        peers.store.get(),
+        peers.a.store.get(),
         LOW_CHROMA_MOVED,
         "A's edit reaches the shared store"
     );
@@ -877,13 +855,13 @@ fn a_peers_hue_move_is_not_reverted_by_the_next_local_act() {
     click_at(0.5, 0.5);
     dispatch_event(b_sat);
 
-    let after_a: Vec<String> = peers.published().into_iter().skip(1).collect();
+    let after_a: Vec<String> = peers.a.published().into_iter().skip(1).collect();
     assert!(
         !after_a.is_empty() && after_a.iter().all(|v| hue_of(v) == 205.0),
         "once A moved the hue to 205°, no write may carry it back to 200°: {after_a:?}"
     );
     assert_eq!(
-        peers.store.get(),
+        peers.a.store.get(),
         "hsl(205, 33%, 38%)",
         "B's saturation click is built on A's hue, not on the stale one"
     );
@@ -969,5 +947,112 @@ fn a_stated_hue_survives_a_sub_percent_hsl_saturation() {
         picker.emissions().is_empty(),
         "an external apply is silent: {:?}",
         picker.emissions()
+    );
+}
+
+/// A stated hue of exactly 0 is a stated hue too: `hsl(0, 0%, 50%)` names
+/// red at no saturation, and the merge adopts it like any other hsl grey.
+///
+/// The old rule kept the current hue at hue 0 (the RGB-grey convention,
+/// `rgb_to_hsv`'s `delta == 0` arm) — but an hsl string never parses through
+/// that arm, so the carve-out only ever bit genuine hsl emissions: a 1°-wide
+/// dead band at red on an hsl wire, and an apply that was not a fixed point
+/// (the kept hue re-formats as `hsl(267, 0%, 50%)`, never the store's text).
+#[test]
+fn an_hsl_stated_hue_of_zero_is_adopted() {
+    let picker = Picker::mount(REMOTE, Echo::Back); // h ≈ 266.7
+
+    picker.store.set("hsl(0, 0%, 50%)".to_string());
+
+    assert_eq!(picker.displayed(), "#808080", "the grey itself applies");
+    let hue_left = percent_of(
+        &picker.thumb_style("rinch-color-picker__hue-thumb"),
+        "left: ",
+    );
+    assert!(
+        hue_left.abs() < 0.01,
+        "hue 0 is stated, not the convention: left {hue_left}%"
+    );
+    let emissions = picker.emissions();
+    assert!(
+        emissions.is_empty(),
+        "an external apply is silent: {emissions:?}"
+    );
+}
+
+/// The dead band at red, in the two-picker shape: A drags the hue to 0° at
+/// grey, and B must build its next act on 0°, not revert A to 200°.
+#[test]
+fn a_peers_hue_move_to_zero_at_grey_is_not_reverted() {
+    let peers = Peers::mount("hsl(200, 0%, 50%)", "hsla");
+
+    // A drags the hue to 0°.
+    let a_hue = peers
+        .a
+        .handler("rinch-color-picker__hue-overlay", "data-rid");
+    click_at(0.0, 0.5);
+    dispatch_event(a_hue);
+    assert_eq!(
+        peers.a.store.get(),
+        "hsl(0, 0%, 50%)",
+        "A's edit reaches the shared store"
+    );
+
+    // B's next local act: a click in its saturation panel.
+    let b_sat = peers
+        .b
+        .handler("rinch-color-picker__saturation-overlay", "data-rid");
+    click_at(0.5, 0.5);
+    dispatch_event(b_sat);
+
+    let after_a: Vec<String> = peers.a.published().into_iter().skip(1).collect();
+    assert!(
+        !after_a.is_empty() && after_a.iter().all(|v| hue_of(v) == 0.0),
+        "once A moved the hue to 0°, no write may carry it back to 200°: {after_a:?}"
+    );
+    assert_eq!(
+        peers.a.store.get(),
+        "hsl(0, 33%, 38%)",
+        "B's saturation click is built on A's hue, not on the stale one"
+    );
+}
+
+/// The field's write-back guard judges at the same resolution as the gate:
+/// once a peer's low-chroma hue move applies on an hsl wire, the field —
+/// whose text renders to the same 8-bit hex as the new colour — is rewritten
+/// too, so the field, the thumb and the store agree.
+///
+/// Pre-fix the field guard compared at 8-bit only: the thumb moved to 200°
+/// while the field kept saying 205°, and the commit boundary would have
+/// normalized that stale text without touching the signals.
+#[test]
+fn the_field_follows_a_peers_low_chroma_hue_move_on_an_hsl_wire() {
+    let picker = Picker::mount_with_format(LOW_CHROMA, LOW_CHROMA, "hsla", Echo::Back);
+
+    // The author typed 205° — the field is theirs while it denotes the colour.
+    picker.type_hex(LOW_CHROMA_MOVED);
+    assert_eq!(picker.displayed(), LOW_CHROMA_MOVED);
+    assert_eq!(picker.emissions(), vec![LOW_CHROMA_MOVED.to_string()]);
+
+    // A peer moves the hue back to 200°: same hex, different hsl spelling.
+    picker.store.set(LOW_CHROMA.to_string());
+
+    let hue_left = percent_of(
+        &picker.thumb_style("rinch-color-picker__hue-thumb"),
+        "left: ",
+    );
+    assert!(
+        (hue_left - 200.0 / 3.6).abs() < 0.01,
+        "the peer's 200° lands: left {hue_left}%"
+    );
+    assert_eq!(
+        picker.displayed(),
+        LOW_CHROMA,
+        "the field no longer denotes the colour at the hsl wire's resolution, so it is rewritten"
+    );
+    assert_eq!(
+        picker.emissions(),
+        vec![LOW_CHROMA_MOVED.to_string()],
+        "the external apply and the rewrite are silent"
     );
 }
