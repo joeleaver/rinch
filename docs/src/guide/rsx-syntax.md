@@ -105,7 +105,7 @@ Supported HTML-element event attributes:
 
 | Attribute | Fires | Closure |
 |---|---|---|
-| `onclick` | Primary press (rinch dispatches click on mousedown) | `Fn()` |
+| `onclick` | Primary press (dispatched on pointerdown), or Enter/Space on the focused element — see [Keyboard activation](#keyboard-activation) | `Fn()` |
 | `onmousedown` / `onmouseup` | Pointer press / release (any button) | `Fn()` |
 | `onmousemove` | Pointer moves over the element | `Fn()` |
 | `onmouseenter` / `onmouseleave` | Pointer enters / leaves the element | `Fn()` |
@@ -138,37 +138,49 @@ Mouse and click handlers read per-event data from `get_click_context()`:
 ### Keyboard activation
 
 **Enter** and **Space** on a keyboard-focused element run its `onclick` — the
-same handler as a pointer press, on both backends — so anything reachable by
-Tab (a `<button>`, or an element with `tabindex="0"`) is also operable without
-a mouse. The handler receives a `ClickContext` whose cursor sits at the
+same handler as a pointer press, on both backends. What Tab can reach differs
+by backend: on web the browser makes `<button>`, `<a href>` and the like Tab
+stops on its own; on desktop only an element with `tabindex` (or a text input)
+is a Tab stop today, so a bare `<button>` needs `tabindex="0"` there (issue
+#252). The handler receives a `ClickContext` whose cursor sits at the
 element's centre (`mouse_x`/`mouse_y` = the middle of `element_x`/`element_y`
 + size), with `button: Left` and no text hit, so placement logic that reads
 `get_click_context()` (a `Select` flipping to fit the viewport, say) keeps
-working for a keyboard user.
+working for a keyboard user. Ctrl/Meta chords are left alone; Shift and Alt
+ride along in `modifiers`.
 
 On desktop, activation latches once per physical press (a held key does not
 repeat). On web, two routes cover the two kinds of element:
 
-- **Natively activatable elements** — `<button>`, `<a href>`, `<summary>`,
-  checkbox/radio and button-type inputs — use the browser's own activation:
-  the `click` the browser synthesises for Enter/Space is what dispatches the
-  handler. The browser's semantics apply, so `<a href>` also **navigates**
-  (exactly as a mouse click on it already does), a checkbox still toggles, and
-  a held Enter repeats at the browser's key-repeat rate.
+- **Natively activatable elements** — `<button>` and `<summary>` on Enter or
+  Space, `<a href>` on Enter, checkbox/radio inputs on Space — use the
+  browser's own activation: the `click` the browser synthesises is what
+  dispatches the handler. The browser's semantics apply, so `<a href>` also
+  **navigates** on Enter (exactly as a mouse click on it already does), a
+  checkbox still toggles, and a held Enter repeats at the browser's key-repeat
+  rate. Where the browser has no activation for a key — **Space on a link**
+  — rinch dispatches it from `keydown` instead (the handler runs, the page
+  does not scroll, and nothing navigates), matching desktop.
 - **`tabindex` elements** (a `<div tabindex="0">` such as a `Tree` node) get no
-  browser click, so rinch dispatches from `keydown`: once per press (auto-repeat
-  is ignored), and the activating Space is consumed so it does not scroll the
-  page. Ctrl/Alt/Meta chords are left alone.
+  browser click, so rinch dispatches from `keydown`: once per press, and the
+  key is consumed for the whole press — including its auto-repeats — so a held
+  Space neither re-activates nor scrolls the page. Elements the browser
+  focuses on its own without `tabindex` (a keyboard-focusable scroll
+  container, `<video controls>`) keep their keys: Space there scrolls or plays,
+  it does not activate the clickable around them.
 
 Neither route double-fires with the mouse: a pointer press dispatches from
-`pointerdown`, and the trailing `click` of that same interaction — including
-the extra click a `<label>` fires at its control — is suppressed. Clicks
-dispatched by assistive technology or `element.click()` (no pointer press)
-are honoured. Enter inside an `<input>`/`<textarea>` or the rich-text editor
-is never an activation of a surrounding clickable; it is the `onsubmit`
-gesture described above. An element with no live handler in its ancestry is a
-quiet no-op — the key falls through to the browser, so Tab and scrolling keep
-their usual meaning.
+`pointerdown`, and the trailing `click` of that same gesture — including the
+extra click a `<label>` fires at its control — is suppressed, even if a key
+was pressed while the button was held. Clicks with no pointer gesture behind
+them — assistive technology (whose clicks are *trusted*, with no pointer or
+key event of their own on Firefox/WebKit), `element.click()` — are honoured
+once, and a click a handler raises itself (`hidden_input.click()`) does not
+re-enter that handler. Enter inside an `<input>`/`<textarea>`, an editable
+region or the rich-text editor is never an activation of a surrounding
+clickable; it is the `onsubmit` gesture described above. An element with no
+live handler in its ancestry is a quiet no-op — the key falls through to the
+browser, so Tab and scrolling keep their usual meaning.
 
 ### Sizing a `<textarea>`
 

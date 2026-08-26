@@ -58,6 +58,9 @@ web-sys = { version = "0.3", features = [
 #     cargo test -p rinch-web --target wasm32-unknown-unknown
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
+# Awaiting a macrotask in the keyboard-activation tests (#240): the pointer-gesture
+# flag clears at the end of the task that consumed the trailing click.
+wasm-bindgen-futures = "0.4"
 
 [features]
 # Collaborative editing (M9): forwards to the editor view's collab adapter, which
