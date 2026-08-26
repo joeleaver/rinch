@@ -224,6 +224,14 @@ div {
 }
 ```
 
+On Android there is no right button, so a **long press** stands in for it: a
+finger held still for 500ms — `ViewConfiguration.getLongPressTimeout()`, the
+same deadline the platform's own widgets use — synthesises the same event
+through the same dispatch. The press must stay within 8dp to count; moving
+further makes it a scroll instead, and lifting before the deadline makes it a
+tap. A long press that fires the menu does **not** also fire `onclick`, so a
+target can safely carry both.
+
 ## Complete Example
 
 ```rust

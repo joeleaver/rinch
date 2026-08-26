@@ -30,6 +30,13 @@ pub mod android_runtime;
 #[cfg(any(all(feature = "android", target_os = "android"), test))]
 pub(crate) mod android_ime;
 
+// The Android touch recogniser. `android_runtime` compiles only for
+// `target_os = "android"`, but the translation from finger to pointer events is
+// pure and is the part that has to be pinned down by tests, so it is compiled
+// for the host test build too.
+#[cfg(any(all(feature = "android", target_os = "android"), test))]
+pub(crate) mod touch_gesture;
+
 pub use devtools_store::DevToolsStore;
 #[cfg(feature = "desktop")]
 pub use rinch_runtime::inject_platform_event;
