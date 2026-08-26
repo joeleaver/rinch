@@ -62,6 +62,39 @@ impl ColorFormat {
     }
 }
 
+/// The family a colour string is *written* in — what
+/// [`parse_color_with_notation`] reports.
+///
+/// Distinct from [`ColorFormat`], which names an output spelling and has
+/// alpha-dropping variants: a notation never drops a channel, so a consumer
+/// judging two strings at a notation's resolution keeps every channel, and
+/// an inbound value that differs in alpha alone still reads as different.
+/// [`Notation::with_alpha`] is the serializer that writes the family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Notation {
+    /// `#rrggbb`-family hex, with or without the `#`, and the CSS named
+    /// colours: 8-bit channels, alpha included.
+    Hex,
+    /// `rgb()` / `rgba()`: 8-bit channels, alpha at two decimals.
+    Rgb,
+    /// `hsl()` / `hsla()`: whole degrees and whole percents, alpha at two
+    /// decimals.
+    Hsl,
+}
+
+impl Notation {
+    /// The alpha-carrying [`ColorFormat`] whose serializer writes this family
+    /// — the resolution a colour has once it has been through
+    /// [`format_color`] in this notation.
+    pub fn with_alpha(self) -> ColorFormat {
+        match self {
+            Notation::Hex => ColorFormat::Hexa,
+            Notation::Rgb => ColorFormat::Rgba,
+            Notation::Hsl => ColorFormat::Hsla,
+        }
+    }
+}
+
 /// Convert HSV to RGB.
 pub fn hsv_to_rgb(hsv: Hsva) -> Rgba {
     // rem_euclid, not `%`: a negative hue is valid CSS ("hsl(-30, …)" means
@@ -118,6 +151,11 @@ pub fn rgb_to_hsv(rgb: Rgba) -> Hsva {
     };
 
     let h = if h < 0.0 { h + 360.0 } else { h };
+    // The [0, 360) contract, as `parse_hsl_css` keeps it: a vanishingly
+    // negative sextant offset rounds `h + 360.0` up to exactly 360.0, and a
+    // `-0.0` channel keeps its sign through the arithmetic — either would
+    // put the hue thumb off the scale for what is pure red.
+    let h = if h == 0.0 || h >= 360.0 { 0.0 } else { h };
 
     let s = if max == 0.0 { 0.0 } else { delta / max };
     let v = max;
@@ -236,7 +274,10 @@ pub fn hsla_to_css(hsl: Hsla) -> String {
     // back as "hsl(0, …)", and `denotes_same` under an hsl display format
     // would call two spellings of the same colour different (rewriting the
     // field under the author's caret — the GH #231 class). Wrapping on the
-    // emit side keeps `format_color` a fixed point of `parse_color`.
+    // emit side keeps the hue spelling a fixed point of `parse_color`. (Alpha
+    // is not one everywhere: an alpha in [0.995, 1) writes `1.00`, which
+    // re-parses opaque and re-formats without the alpha — the reason
+    // `denotes_emitted` re-parses an emission rather than comparing text.)
     let h = hsl.h.round().rem_euclid(360.0) as i32;
     let s = (hsl.s * 100.0).round() as i32;
     let l = (hsl.l * 100.0).round() as i32;
@@ -258,23 +299,44 @@ pub fn hsla_to_css(hsl: Hsla) -> String {
 /// Out-of-range channels clamp to their CSS ranges (rgb 0–255, percentages
 /// 0–100%, alpha 0–1); hue wraps into [0, 360).
 pub fn parse_color(s: &str) -> Option<Hsva> {
+    parse_color_with_notation(s).map(|(colour, _)| colour)
+}
+
+/// [`parse_color`], also reporting the [`Notation`] the string was written
+/// in: [`Notation::Hex`] for hex (with or without the `#`) and the named
+/// colours, [`Notation::Rgb`] for `rgb()`/`rgba()`, [`Notation::Hsl`] for
+/// `hsl()`/`hsla()`.
+///
+/// The notation names the grid this crate's own serializer writes the family
+/// at (whole degrees and percents for hsl, 8-bit channels for hex and rgb) —
+/// the parser itself accepts finer channels. A consumer judging whether an
+/// inbound string denotes a colour compares at that grid, in the inbound
+/// string's own notation (GH #242): see [`denotes_emitted`] and the
+/// `value_fn` gate in `color_picker.rs`.
+///
+/// `parse_color` is defined *through* this function, so the two dispatch
+/// identically by construction: there is one classifier, and the notation
+/// it reports is the branch that actually parsed the string.
+pub fn parse_color_with_notation(s: &str) -> Option<(Hsva, Notation)> {
     let s = s.trim();
+    // A keyword names an 8-bit colour, so its notation is hex's.
+    let eight_bit = |rgb: Rgba| (rgb_to_hsv(rgb), Notation::Hex);
     if s.starts_with('#') {
-        return hex_to_rgb(s).map(rgb_to_hsv);
+        return hex_to_rgb(s).map(eight_bit);
     }
     if let Some(inner) = strip_function_ci(s, "rgba").or_else(|| strip_function_ci(s, "rgb")) {
-        return parse_rgb_css(inner);
+        return parse_rgb_css(inner).map(|colour| (colour, Notation::Rgb));
     }
     if let Some(inner) = strip_function_ci(s, "hsla").or_else(|| strip_function_ci(s, "hsl")) {
-        return parse_hsl_css(inner);
+        return parse_hsl_css(inner).map(|colour| (colour, Notation::Hsl));
     }
     if let Some(rgb) = named_to_rgb(s) {
         // Before the bare-hex fallback, though no name collides with one: a
         // keyword is a keyword wherever hex would also be legal.
-        return Some(rgb_to_hsv(rgb));
+        return Some(eight_bit(rgb));
     }
     // Try as bare hex
-    hex_to_rgb(s).map(rgb_to_hsv)
+    hex_to_rgb(s).map(eight_bit)
 }
 
 /// Strip a CSS function wrapper: `name(` from the front — ASCII
@@ -443,12 +505,12 @@ pub fn format_color(hsv: Hsva, format: ColorFormat) -> String {
 /// format. Either fails to parse → compare the trimmed strings, so two copies
 /// of the same unfinished text still match and nothing else does.
 ///
-/// This is the write-back guard the colour components share (GH #231): a
-/// field whose text already denotes the colour about to be displayed is the
-/// author's to keep, mid-keystroke text included. Deliberately public — the
-/// `value_fn` apply gate (GH #227) reuses the same equivalence, passing
-/// [`ColorFormat::Hexa`] so the comparison keeps every channel instead of
-/// folding away what the display format drops.
+/// This is `ColorInput`'s write-back guard (GH #231): a field whose text
+/// already denotes the colour about to be displayed is the author's to keep,
+/// mid-keystroke text included. `ColorPicker`'s guard and its `value_fn`
+/// apply gate (GH #227) judge at the inbound text's own notation instead —
+/// [`text_denotes`] / [`denotes_emitted`] — so nothing the display format
+/// drops is folded away.
 pub fn denotes_same(a: &str, b: &str, format: ColorFormat) -> bool {
     let (a, b) = (a.trim(), b.trim());
     if a == b {
@@ -463,19 +525,46 @@ pub fn denotes_same(a: &str, b: &str, format: ColorFormat) -> bool {
     }
 }
 
-/// Whether `text` denotes exactly the colour `colour` holds — every channel,
-/// alpha included, quantized to 8 bits (the finest any supported notation
-/// expresses).
+/// Whether `parsed`, read from a string written in `notation`, denotes the
+/// colour that `emitted` — a string this crate's serializer produced — spells,
+/// judged at `notation`'s own grid (GH #242): 8-bit channels for hex and
+/// rgb, whole degrees and whole percents for hsl, alpha at two decimals
+/// under `rgb()`/`hsl()`. Every channel counts — the notation is always the
+/// alpha-carrying one.
+///
+/// `emitted` is re-parsed rather than compared as text because format →
+/// parse → format is not a fixed point everywhere: an alpha in [0.995, 1)
+/// formats as `1.00`, which re-parses opaque and re-formats without the
+/// alpha, and a store that normalises the emission spells it the second way.
+/// Both sides go through the same parse → format, so the two spellings meet.
+/// This is the one predicate behind [`text_denotes`] and `ColorPicker`'s
+/// `value_fn` apply gate; the gate calls it directly with the parse it
+/// already holds.
+pub fn denotes_emitted(parsed: Hsva, notation: Notation, emitted: &str) -> bool {
+    let format = notation.with_alpha();
+    parse_color(emitted).is_some_and(|e| format_color(parsed, format) == format_color(e, format))
+}
+
+/// Whether `text` denotes the colour `colour` holds — every channel, alpha
+/// included — at the resolution of the notation `text` is written in (see
+/// [`denotes_emitted`]).
 ///
 /// This is `ColorPicker`'s write-back guard comparison (GH #231): unlike
 /// [`denotes_same`] under the display format, it does **not** fold away
 /// channels the format cannot express — a typed `#3333666c` agrees with the
 /// picker while the picker's alpha really is `6c`, and stops agreeing the
 /// moment the alpha slider moves it, so the field is rewritten exactly when
-/// the colour leaves the text behind. Unparseable text denotes nothing.
+/// the colour leaves the text behind. Judging at the text's own notation is
+/// what keeps the field in step with the apply gate (GH #242): a typed
+/// `hsl(205, 3%, 49%)` stops agreeing when a peer moves the hue to 200°,
+/// though both render `#797e81`. Unparseable text denotes nothing.
 pub fn text_denotes(text: &str, colour: Hsva) -> bool {
-    parse_color(text).is_some_and(|parsed| {
-        format_color(parsed, ColorFormat::Hexa) == format_color(colour, ColorFormat::Hexa)
+    parse_color_with_notation(text).is_some_and(|(parsed, notation)| {
+        denotes_emitted(
+            parsed,
+            notation,
+            &format_color(colour, notation.with_alpha()),
+        )
     })
 }
 
@@ -1211,6 +1300,103 @@ mod tests {
             0.5
         ));
         assert_eq!(hex("HSLA(240, 100%, 50%, 1)"), Some("#0000ff".into()));
+    }
+
+    /// The notation reported is the family the string was written in, for
+    /// every branch of the classifier. (The colour half needs no test:
+    /// `parse_color` is defined as this function minus the notation.)
+    #[test]
+    fn parse_color_with_notation_reports_the_written_notation() {
+        use Notation::{Hex, Hsl, Rgb};
+        let corpus = [
+            // hex: 3/4/6/8 digits, with and without the '#', any digit case
+            ("#abc", Some(Hex)),
+            ("#abcd", Some(Hex)),
+            ("#aabbcc", Some(Hex)),
+            ("#aabbccdd", Some(Hex)),
+            ("#AABBCC", Some(Hex)),
+            ("abc", Some(Hex)),
+            ("aabbcc", Some(Hex)),
+            ("AABBCCDD", Some(Hex)),
+            ("  #336  ", Some(Hex)),
+            // named colours, transparent, mixed case
+            ("red", Some(Hex)),
+            ("rebeccapurple", Some(Hex)),
+            ("Transparent", Some(Hex)),
+            ("LightGoldenrodYellow", Some(Hex)),
+            // rgb()/rgba(): legacy commas, modern spaces, case, percent alpha
+            ("rgb(51, 51, 102)", Some(Rgb)),
+            ("rgba(51, 51, 102, 0.5)", Some(Rgb)),
+            ("rgb(51 51 102)", Some(Rgb)),
+            ("rgb(51 51 102 / 0.5)", Some(Rgb)),
+            ("rgba(51 51 102 / 50%)", Some(Rgb)),
+            ("RGB(255, 0, 0)", Some(Rgb)),
+            ("rgb(127.9999999999, 128, 128)", Some(Rgb)),
+            ("rgb(51, 51, 102", Some(Rgb)),
+            // hsl()/hsla(): legacy, modern, case, bare-number percents
+            ("hsl(200, 3%, 49%)", Some(Hsl)),
+            ("hsla(200, 3%, 49%, 0.5)", Some(Hsl)),
+            ("hsl(200 3% 49%)", Some(Hsl)),
+            ("hsl(200 3% 49% / 0.5)", Some(Hsl)),
+            ("HSL(240, 0%, 50%)", Some(Hsl)),
+            ("hsl(-30, 100, 50)", Some(Hsl)),
+            ("hsl(205, 0.3%, 49%)", Some(Hsl)),
+            // junk
+            ("", None),
+            ("#", None),
+            ("#33", None),
+            ("rgb(1, 2)", None),
+            ("hsl(nan, 0%, 0%)", None),
+        ];
+        for (text, expected) in corpus {
+            assert_eq!(
+                parse_color_with_notation(text).map(|(_, n)| n),
+                expected,
+                "notation for {text:?}"
+            );
+        }
+    }
+
+    /// `text_denotes` judges at the text's own notation: a hue move the hsl
+    /// wire spells but 8-bit cannot see is a difference, and the alpha
+    /// spelling wart (`1.00` re-parses opaque) is folded by the re-parse of
+    /// the emission.
+    #[test]
+    fn text_denotes_judges_at_the_texts_own_notation() {
+        let at_200 = parse_color("hsl(200, 3%, 49%)").unwrap();
+        let at_205 = parse_color("hsl(205, 3%, 49%)").unwrap();
+        assert_eq!(
+            format_color(at_200, ColorFormat::Hex),
+            format_color(at_205, ColorFormat::Hex),
+            "the premise: both render #797e81"
+        );
+        assert!(text_denotes("hsl(205, 3%, 49%)", at_205));
+        assert!(!text_denotes("hsl(205, 3%, 49%)", at_200));
+        // The same two colours written in hex are one colour.
+        assert!(text_denotes("#797e81", at_200));
+        assert!(text_denotes("#797e81", at_205));
+
+        // An alpha the serializer writes as `1.00` is opaque on its wire.
+        let nearly_opaque = Hsva { a: 0.996, ..at_200 };
+        assert!(text_denotes("hsl(200, 3%, 49%)", nearly_opaque));
+        assert!(text_denotes("hsla(200, 3%, 49%, 1.00)", nearly_opaque));
+        assert!(!text_denotes("hsla(200, 3%, 49%, 0.99)", nearly_opaque));
+    }
+
+    /// The `[0, 360)` hue contract holds on the RGB-family arms too, not only
+    /// through `parse_hsl_css`'s snap: a vanishingly negative sextant offset
+    /// lands `h + 360.0` on exactly 360.0 in f64, and a `-0.0` channel keeps
+    /// its sign through the arithmetic — both would put the hue thumb at
+    /// `left: 100%` / `left: -0%` for what is pure red.
+    #[test]
+    fn rgb_derived_hue_stays_inside_the_wrap_contract() {
+        let h = parse_color("rgb(255, 0, 1e-300)").unwrap().h;
+        assert!(
+            h == 0.0 && h.is_sign_positive(),
+            "h + 360 rounded to 360: {h}"
+        );
+        let h = parse_color("rgb(255, -0.0, 0)").unwrap().h;
+        assert!(h.is_sign_positive(), "a -0.0 hue formats as '-0': {h}");
     }
 
     #[test]

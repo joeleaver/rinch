@@ -365,27 +365,40 @@ other.
 
 **The picker's state survives its own round trip.** An echoing binding — a store
 that `value_fn` reads and `onchange` writes back into — no longer degrades the
-picker's hue, saturation, or alpha. Emitted colour strings quantize to 8-bit
-RGB, so the echo of the picker's own emission routinely parses to a slightly
-different hue/saturation than the internal state it was formatted from (and to
-*no* hue at grey, or no alpha under an alpha-less format like `hex`); the picker
+picker's hue, saturation, or alpha. Emitted colour strings quantize — to 8-bit
+RGB under the hex and rgb formats, to whole degrees and percents under hsl — so
+the echo of the picker's own emission routinely parses to a slightly different
+hue/saturation than the internal state it was formatted from (and to *no* hue
+at grey, or no alpha under an alpha-less format like `hex`); the picker
 recognises such an echo as its own state and leaves the internal signals
 untouched, so dragging saturation down to grey and back resumes the original
 hue, and the alpha slider works under the default `hex` format. A genuinely
 foreign value (one that denotes a different colour, alpha included) still
 applies — and even then, channels the value cannot carry are kept rather than
-fabricated: a grey keeps the current hue (unless it *states* one, as
-`hsl(240, 0%, 50%)` does — a stated hue is adopted), a black keeps hue and
-saturation, judged by what the value renders at 8-bit rather than by exact
-parse floats. One corner is deliberately conceded: under an alpha-dropping
-display format, an inbound value that restates the picker's current RGB with
-an explicitly opaque alpha (`rgba(r, g, b, 1)`) is indistinguishable from a
-normalizing store's echo of the emission and does not apply — bind an
-alpha-carrying format (`hexa`, `rgba`, `hsla`) when external writes need to
-drive alpha. More generally, the echo test judges identity at 8-bit RGB: an
-inbound change too small to move the rendered colour by a full 8-bit step —
-such as a small stated-hue move at very low chroma on an `hsl`-format wire —
-reads as an echo and does not apply.
+fabricated: a grey keeps the current hue (unless it *states* one, as any
+`hsl()` value does — `hsl(240, 0%, 50%)`, the sub-percent
+`hsl(205, 0.3%, 49%)`, and `hsl(0, 0%, 50%)` alike — a stated hue is adopted;
+note that a store which re-spells an RGB grey as `hsl()` writes hue 0, and the
+picker adopts it), a black keeps hue and saturation, judged by what the value
+renders at 8-bit rather than by exact parse floats. One corner is deliberately
+conceded: under an alpha-dropping display format, an inbound value that
+restates the picker's current RGB with an explicitly opaque alpha
+(`rgba(r, g, b, 1)`) is indistinguishable from a normalizing store's echo of
+the emission and does not apply — bind an alpha-carrying format (`hexa`,
+`rgba`, `hsla`) when external writes need to drive alpha. More generally, the
+echo test judges identity at the resolution of the picker's own emission in
+the notation the inbound value is written in — 8-bit channels for a hex, named
+or `rgb()` value, whole degrees and whole percents for an `hsl()` value, alpha
+at two decimals under `rgb()`/`hsl()` — never finer than that notation's
+serializer writes, whatever finer channels the parser accepts. A difference the
+emission could not have spelled folds as an echo, in both directions: on an
+`hsl`-format wire a stated-hue move of a whole degree applies even at very low
+chroma, where it does not move the rendered colour by an 8-bit step, while an
+inbound `hsl()` value that shares a spelling with the picker's current colour
+folds even where 8-bit could tell them apart (a normalizing store re-spelling
+the picker's own hex emission as `hsl()` is indistinguishable from it). The
+text field's write-back guard judges at the same resolution, so field, thumbs
+and store stay in step.
 
 **Accepted colour notations** (everywhere a colour string is read — `value`,
 `value_fn`, typed text, swatches): hex in 3, 4, 6, or 8 digits (`#rgb`,
