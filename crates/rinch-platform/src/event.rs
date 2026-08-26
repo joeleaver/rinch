@@ -36,6 +36,24 @@ pub enum PlatformEvent {
         delta_x: f64,
         delta_y: f64,
     },
+    /// The pointer interaction in flight was taken away, and must not be
+    /// completed.
+    ///
+    /// The native twin of the `pointercancel` the web backend already listens
+    /// for (`rinch-web`'s `event_delegation`), and the event `Drag::cancel` was
+    /// written for. Everything a press is holding — a pending click, an element
+    /// drag, a pointer-capture drag, a scrollbar or text-selection drag, the
+    /// `:active` style — is released *without* the click, drop or `on_end`
+    /// commit that a [`MouseUp`](Self::MouseUp) would carry.
+    ///
+    /// Android's touch recogniser sends it when a press it had not yet resolved
+    /// becomes a scroll: the finger is still down and still moving, but whatever
+    /// the document thought was being pressed is not being pressed any more.
+    ///
+    /// It carries no position on purpose. A cancel is not a place — nothing it
+    /// tears down is hit-tested, and the coordinates a browser puts on
+    /// `pointercancel` would only invite treating it as a release.
+    PointerCancel,
     /// Key pressed.
     KeyDown {
         /// The **physical** key (layout-independent position).
