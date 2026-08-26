@@ -12,7 +12,7 @@ use rinch_core::{Component, Drag, InputCallback, Signal, batch, get_click_contex
 use crate::color_swatch::ColorSwatch;
 use crate::color_utils::{
     ColorFormat, Hsva, denotes_same, format_color, hsv_to_rgb, hue_to_rgb_hex, parse_color,
-    rgb_to_hex, text_denotes,
+    parse_color_with_notation, rgb_to_hex, text_denotes,
 };
 
 /// Reactive callback type for string state.
@@ -50,30 +50,32 @@ impl Drop for ApplyGuard<'_> {
 /// a grey keeps the current hue, a black keeps hue and saturation, so
 /// dragging back out of grey resumes the colour the author was working from.
 ///
-/// Carryability is judged at the same 8-bit precision as the echo gate's
-/// denotation comparisons: a value whose *rendering* is grey carries no
-/// usable hue — an `rgb()` written with fractional near-equal channels
-/// parses to a microscopic saturation whose derived hue is quantization
-/// noise, not intent — and a rendered black carries neither hue nor
-/// saturation. One exception adopts instead of keeping: `hsl(h, 0%, l)`
-/// states its hue outright, and the parser preserves it against an exact
-/// `s == 0.0` (every RGB-family grey parses to hue exactly 0.0 by
-/// convention — `rgb_to_hsv`'s `delta == 0` arm — so a nonzero hue at
-/// exactly zero saturation was authored, not fabricated; the zeros are
-/// exact in every parser arm). One disclosed corner since GH #243: the
-/// parser wraps hue into [0, 360), so a stated hue that is a multiple of
-/// 360 — `hsl(360, 0%, l)`, `hsl(-360, 0%, l)` — lands on exactly 0.0 and
-/// reads as the convention, just as `hsl(0, 0%, l)` always has. That is
-/// CSS's own equivalence (`hsl(360, …)` *is* `hsl(0, …)`), and the picker's
-/// serializer never emits a wrapped-out hue (`hsla_to_css` wraps after
-/// rounding), so only hand-authored spellings reach it.
-fn merge_unrepresentable(parsed: Hsva, current: Hsva) -> Hsva {
+/// Carryability is judged at 8-bit precision: a value whose *rendering* is
+/// grey carries no usable hue — an `rgb()` written with fractional
+/// near-equal channels parses to a microscopic saturation whose derived hue
+/// is quantization noise, not intent — and a rendered black carries neither
+/// hue nor saturation. One exception adopts instead of keeping: an `hsl()`
+/// string *states* its hue outright, whatever its chroma, so a rendered grey
+/// written in the hsl notation carries the hue it names (`hsl(240, 0%, 50%)`
+/// — and since GH #242 `hsl(205, 0.3%, 49%)` too, whose sub-percent
+/// saturation is not the exact zero the exception used to key on). The
+/// notation is the tell, not the parse: every RGB-family grey parses to hue
+/// exactly 0.0 by convention (`rgb_to_hsv`'s `delta == 0` arm), so the
+/// `h != 0.0` guard keeps `hsl(0, 0%, l)` reading as the convention too. One
+/// disclosed corner since GH #243: the parser wraps hue into [0, 360), so a
+/// stated hue that is a multiple of 360 — `hsl(360, 0%, l)`,
+/// `hsl(-360, 0%, l)` — lands on exactly 0.0 and reads as the convention,
+/// just as `hsl(0, 0%, l)` always has. That is CSS's own equivalence
+/// (`hsl(360, …)` *is* `hsl(0, …)`), and the picker's serializer never emits
+/// a wrapped-out hue (`hsla_to_css` wraps after rounding), so only
+/// hand-authored spellings reach it.
+fn merge_unrepresentable(parsed: Hsva, notation: ColorFormat, current: Hsva) -> Hsva {
     let rendered = hsv_to_rgb(parsed);
     let level = |c: f64| (c * 255.0).round() as u8;
     let (r, g, b) = (level(rendered.r), level(rendered.g), level(rendered.b));
     let grey = r == g && g == b;
     let black = grey && r == 0;
-    let hue_stated = parsed.s == 0.0 && parsed.h != 0.0;
+    let hue_stated = notation == ColorFormat::Hsla && parsed.h != 0.0;
     Hsva {
         h: if grey && !hue_stated {
             current.h
@@ -605,7 +607,7 @@ impl Component for ColorPicker {
                 let external = value_fn();
                 // Only a parseable external value can apply: garbage and
                 // half-typed text change nothing.
-                if let Some(parsed) = parse_color(&external) {
+                if let Some((parsed, notation)) = parse_color_with_notation(&external) {
                     let current = Hsva {
                         h: hue.get(),
                         s: sat.get(),
@@ -614,41 +616,56 @@ impl Component for ColorPicker {
                     };
                     // Apply only a genuinely foreign value — never the round
                     // trip of this picker's own state (GH #227). Formatting
-                    // quantizes to 8-bit RGB and `rgb_to_hsv` amplifies the
-                    // quantization by 60/(s·v), so an echoed emission
-                    // routinely parses to a hue and saturation measurably off
-                    // the signals it was formatted from (at s = 0 the round
-                    // trip returns hue exactly 0) — per-channel epsilons
-                    // mistook that drift for an external change and rewrote
-                    // the picker with its own echo. The external value is
-                    // "self" when it denotes the colour the picker holds
-                    // (full-channel — `text_denotes`), or the colour the
-                    // picker currently *emits* (`denotes_same` against the
-                    // formatted emission): a display format that drops alpha
-                    // makes the emission legitimately differ from the held
-                    // colour in alpha alone, so an alpha drag under `Hex`
-                    // echoes back opaque and only the second comparison
-                    // recognises it. Both comparisons render under `Hexa`,
-                    // never the display format itself — comparing under `Hex`
-                    // would erase a genuinely inbound alpha-only change. The
-                    // dual corner is accepted: under an alpha-dropping
-                    // format, an inbound value that restates the emission's
-                    // RGB with an explicitly opaque alpha ("rgba(r, g, b,
-                    // 1)") is indistinguishable from a normalizing store's
-                    // echo of that emission, and does not apply — alpha is
-                    // externally drivable under the formats that carry it.
-                    let echoes_self = text_denotes(&external, current)
-                        || denotes_same(
-                            &external,
-                            &format_color(current, color_format),
-                            ColorFormat::Hexa,
-                        );
+                    // quantizes — to 8-bit RGB under hex/rgb, to integer
+                    // degrees and percents under hsl — and the parse of an
+                    // echoed emission routinely lands measurably off the
+                    // signals it was formatted from (`rgb_to_hsv` amplifies
+                    // 8-bit quantization by 60/(s·v); at s = 0 the round trip
+                    // returns hue exactly 0) — per-channel epsilons mistook
+                    // that drift for an external change and rewrote the
+                    // picker with its own echo. The external value is "self"
+                    // when it denotes the colour the picker holds, or the
+                    // colour the picker currently *emits*: a display format
+                    // that drops alpha makes the emission legitimately differ
+                    // from the held colour in alpha alone, so an alpha drag
+                    // under `Hex` echoes back opaque and only the second
+                    // comparison recognises it.
+                    //
+                    // "Denotes" is judged in the notation the external value
+                    // is written in (GH #242) — the alpha-carrying variant,
+                    // never the display format itself (comparing under `Hex`
+                    // would erase a genuinely inbound alpha-only change). That
+                    // is the resolution the wire that carried it can express:
+                    // 8-bit channels for a hex/rgb string, whole degrees and
+                    // percents for an hsl string, which never touches RGB8 on
+                    // its way through `hsla_to_css`. Judging every notation at
+                    // 8-bit RGB folded a peer's genuine low-chroma hue move
+                    // on an hsl wire (`hsl(200, 3%, 49%)` and `hsl(205, 3%,
+                    // 49%)` both render `#797e81`), and the picker's next
+                    // local act re-emitted the stale hue over the peer's. The
+                    // gate is symmetric by construction: a difference the
+                    // wire could not have written folds in both directions,
+                    // and the picker would lose it on its next emission
+                    // anyway. The dual corner is accepted: under an
+                    // alpha-dropping format, an inbound value that restates
+                    // the emission's RGB with an explicitly opaque alpha
+                    // ("rgba(r, g, b, 1)") is indistinguishable from a
+                    // normalizing store's echo of that emission, and does not
+                    // apply — alpha is externally drivable under the formats
+                    // that carry it.
+                    let echoes_self =
+                        denotes_same(&external, &format_color(current, notation), notation)
+                            || denotes_same(
+                                &external,
+                                &format_color(current, color_format),
+                                notation,
+                            );
                     if !echoes_self {
                         // A foreign value still cannot carry every degree of
                         // freedom — keep the channels it cannot express
                         // rather than adopting fabricated ones; see
                         // `merge_unrepresentable`.
-                        let applied = merge_unrepresentable(parsed, current);
+                        let applied = merge_unrepresentable(parsed, notation, current);
                         // These four writes are one apply: batched, so every
                         // observer runs once against the completed colour, and
                         // silent — the caller handed us this value. When this

@@ -258,23 +258,47 @@ pub fn hsla_to_css(hsl: Hsla) -> String {
 /// Out-of-range channels clamp to their CSS ranges (rgb 0–255, percentages
 /// 0–100%, alpha 0–1); hue wraps into [0, 360).
 pub fn parse_color(s: &str) -> Option<Hsva> {
+    parse_color_with_notation(s).map(|(colour, _)| colour)
+}
+
+/// [`parse_color`], also reporting the *notation* the string was written in:
+/// the alpha-carrying [`ColorFormat`] whose serializer writes that family —
+/// [`ColorFormat::Hexa`] for hex (with or without the `#`) and the named
+/// colours, [`ColorFormat::Rgba`] for `rgb()`/`rgba()`, [`ColorFormat::Hsla`]
+/// for `hsl()`/`hsla()`.
+///
+/// The notation is the resolution the string can express a colour at: an
+/// hsl string is integer degrees and integer percents once it has been
+/// through [`format_color`], a hex or rgb string is 8-bit channels. A
+/// consumer judging whether two strings denote the same colour compares in
+/// the inbound string's own notation (GH #242) — `denotes_same(a, b,
+/// notation)` — so a difference the wire could never have written folds,
+/// and one it did write does not. The alpha-carrying variant is always the
+/// answer, never `Hex`/`Rgb`/`Hsl`: those drop a channel, and an inbound
+/// value that differs in alpha alone must still read as different.
+///
+/// `parse_color` is defined *through* this function, so the two dispatch
+/// identically by construction: there is one classifier, and the notation
+/// it reports is the branch that actually parsed the string.
+pub fn parse_color_with_notation(s: &str) -> Option<(Hsva, ColorFormat)> {
     let s = s.trim();
     if s.starts_with('#') {
-        return hex_to_rgb(s).map(rgb_to_hsv);
+        return hex_to_rgb(s).map(|rgb| (rgb_to_hsv(rgb), ColorFormat::Hexa));
     }
     if let Some(inner) = strip_function_ci(s, "rgba").or_else(|| strip_function_ci(s, "rgb")) {
-        return parse_rgb_css(inner);
+        return parse_rgb_css(inner).map(|colour| (colour, ColorFormat::Rgba));
     }
     if let Some(inner) = strip_function_ci(s, "hsla").or_else(|| strip_function_ci(s, "hsl")) {
-        return parse_hsl_css(inner);
+        return parse_hsl_css(inner).map(|colour| (colour, ColorFormat::Hsla));
     }
     if let Some(rgb) = named_to_rgb(s) {
         // Before the bare-hex fallback, though no name collides with one: a
-        // keyword is a keyword wherever hex would also be legal.
-        return Some(rgb_to_hsv(rgb));
+        // keyword is a keyword wherever hex would also be legal. A keyword
+        // names an 8-bit colour, so its notation is hex's.
+        return Some((rgb_to_hsv(rgb), ColorFormat::Hexa));
     }
     // Try as bare hex
-    hex_to_rgb(s).map(rgb_to_hsv)
+    hex_to_rgb(s).map(|rgb| (rgb_to_hsv(rgb), ColorFormat::Hexa))
 }
 
 /// Strip a CSS function wrapper: `name(` from the front — ASCII
@@ -1211,6 +1235,69 @@ mod tests {
             0.5
         ));
         assert_eq!(hex("HSLA(240, 100%, 50%, 1)"), Some("#0000ff".into()));
+    }
+
+    /// `parse_color` is `parse_color_with_notation` minus the notation: for
+    /// every branch of the classifier the colour halves agree exactly, and
+    /// the notation is the family the string was written in. Guards the
+    /// gate that compares in the inbound notation (GH #242) against the two
+    /// parsers ever dispatching differently.
+    #[test]
+    fn parse_color_with_notation_agrees_with_parse_color() {
+        use ColorFormat::{Hexa, Hsla, Rgba};
+        let corpus: [(&str, Option<ColorFormat>); 33] = [
+            // hex: 3/4/6/8 digits, with and without the '#', any digit case
+            ("#abc", Some(Hexa)),
+            ("#abcd", Some(Hexa)),
+            ("#aabbcc", Some(Hexa)),
+            ("#aabbccdd", Some(Hexa)),
+            ("#AABBCC", Some(Hexa)),
+            ("abc", Some(Hexa)),
+            ("aabbcc", Some(Hexa)),
+            ("AABBCCDD", Some(Hexa)),
+            ("  #336  ", Some(Hexa)),
+            // named colours, transparent, mixed case
+            ("red", Some(Hexa)),
+            ("rebeccapurple", Some(Hexa)),
+            ("Transparent", Some(Hexa)),
+            ("LightGoldenrodYellow", Some(Hexa)),
+            // rgb()/rgba(): legacy commas, modern spaces, case, percent alpha
+            ("rgb(51, 51, 102)", Some(Rgba)),
+            ("rgba(51, 51, 102, 0.5)", Some(Rgba)),
+            ("rgb(51 51 102)", Some(Rgba)),
+            ("rgb(51 51 102 / 0.5)", Some(Rgba)),
+            ("rgba(51 51 102 / 50%)", Some(Rgba)),
+            ("RGB(255, 0, 0)", Some(Rgba)),
+            ("rgb(127.9999999999, 128, 128)", Some(Rgba)),
+            ("rgb(51, 51, 102", Some(Rgba)),
+            // hsl()/hsla(): legacy, modern, case, bare-number percents
+            ("hsl(200, 3%, 49%)", Some(Hsla)),
+            ("hsla(200, 3%, 49%, 0.5)", Some(Hsla)),
+            ("hsl(200 3% 49%)", Some(Hsla)),
+            ("hsl(200 3% 49% / 0.5)", Some(Hsla)),
+            ("HSL(240, 0%, 50%)", Some(Hsla)),
+            ("hsl(-30, 100, 50)", Some(Hsla)),
+            ("hsl(205, 0.3%, 49%)", Some(Hsla)),
+            // junk
+            ("", None),
+            ("#", None),
+            ("#33", None),
+            ("rgb(1, 2)", None),
+            ("hsl(nan, 0%, 0%)", None),
+        ];
+        for (text, expected) in corpus {
+            let with_notation = parse_color_with_notation(text);
+            assert_eq!(
+                with_notation.map(|(c, _)| c),
+                parse_color(text),
+                "colour halves disagree for {text:?}"
+            );
+            assert_eq!(
+                with_notation.map(|(_, n)| n),
+                expected,
+                "notation for {text:?}"
+            );
+        }
     }
 
     #[test]

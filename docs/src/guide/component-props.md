@@ -374,18 +374,24 @@ untouched, so dragging saturation down to grey and back resumes the original
 hue, and the alpha slider works under the default `hex` format. A genuinely
 foreign value (one that denotes a different colour, alpha included) still
 applies — and even then, channels the value cannot carry are kept rather than
-fabricated: a grey keeps the current hue (unless it *states* one, as
-`hsl(240, 0%, 50%)` does — a stated hue is adopted), a black keeps hue and
-saturation, judged by what the value renders at 8-bit rather than by exact
-parse floats. One corner is deliberately conceded: under an alpha-dropping
+fabricated: a grey keeps the current hue (unless it *states* one, as any
+`hsl()` value with a nonzero hue does — `hsl(240, 0%, 50%)`, or the
+sub-percent `hsl(205, 0.3%, 49%)` — a stated hue is adopted), a black keeps
+hue and saturation, judged by what the value renders at 8-bit rather than by
+exact parse floats. One corner is deliberately conceded: under an alpha-dropping
 display format, an inbound value that restates the picker's current RGB with
 an explicitly opaque alpha (`rgba(r, g, b, 1)`) is indistinguishable from a
 normalizing store's echo of the emission and does not apply — bind an
 alpha-carrying format (`hexa`, `rgba`, `hsla`) when external writes need to
-drive alpha. More generally, the echo test judges identity at 8-bit RGB: an
-inbound change too small to move the rendered colour by a full 8-bit step —
-such as a small stated-hue move at very low chroma on an `hsl`-format wire —
-reads as an echo and does not apply.
+drive alpha. More generally, the echo test judges identity at the resolution
+of the notation the inbound value is written in — 8-bit channels for a hex,
+named or `rgb()` value, whole degrees and whole percents for an `hsl()` value
+(the resolution the picker's own `hsl` emission carries; alpha compares at two
+decimals under `rgba()`/`hsla()`). A change the wire could not have written is
+folded as an echo: on an `hsl`-format wire a stated-hue move of a whole degree
+applies even at very low chroma, where it does not move the rendered colour by
+an 8-bit step, while distinct 8-bit colours that share one `hsl` spelling fold
+when written in `hsl`.
 
 **Accepted colour notations** (everywhere a colour string is read — `value`,
 `value_fn`, typed text, swatches): hex in 3, 4, 6, or 8 digits (`#rgb`,
