@@ -14,6 +14,8 @@ mod focus;
 pub(crate) mod hit_testing;
 #[cfg(test)]
 mod input_commit_tests;
+#[cfg(test)]
+mod input_ime_tests;
 mod select_widget;
 mod text_selection;
 

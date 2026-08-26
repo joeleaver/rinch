@@ -269,6 +269,20 @@ impl RinchApp {
         matches!(self.focus_target, FocusTarget::Input(_))
     }
 
+    /// The focused `<input>`'s node id, if one holds focus.
+    ///
+    /// The Android shell watches this rather than [`Self::has_focused_input`]:
+    /// a soft keyboard's composing region belongs to the field it was started
+    /// in, and moving between two fields is invisible to Android (one
+    /// `RinchInputView` holds focus throughout), so the shell has to notice the
+    /// move itself and restart the IME.
+    pub fn focused_input_node(&self) -> Option<usize> {
+        match self.focus_target {
+            FocusTarget::Input(id) => Some(id),
+            _ => None,
+        }
+    }
+
     /// Whether a generic focusable node (`tabindex`, `FocusTarget::Node`,
     /// issue #228) holds focus. It consumes Enter/Space (and anchors Tab), so
     /// embed hosts must route keyboard input to rinch while one is focused

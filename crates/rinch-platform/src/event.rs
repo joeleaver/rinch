@@ -84,8 +84,12 @@ pub enum PlatformEvent {
 ///
 /// Backends translate into this:
 /// - **Desktop:** winit `WindowEvent::Ime(Ime)` → one of these variants.
-/// - **Android:** `drain_committed_text()` → [`ImeEvent::Commit`],
-///   `drain_deletions()` → [`ImeEvent::DeleteSurrounding`].
+/// - **Android:** the `InputConnection` call stream, through
+///   `rinch::shell::android_ime`: `setComposingText` → [`ImeEvent::Preedit`],
+///   `deleteSurroundingText` → [`ImeEvent::DeleteSurrounding`]. The two calls
+///   that *end* a composition (`commitText`, `finishComposingText`) clear the
+///   preedit through [`ImeEvent::Preedit`] and then apply their text as key
+///   input rather than as [`ImeEvent::Commit`] — see that module for why.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ImeEvent {
     /// Composition became available for the focused target. The target may

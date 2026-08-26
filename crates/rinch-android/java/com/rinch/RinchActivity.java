@@ -130,6 +130,26 @@ public class RinchActivity extends NativeActivity {
         });
     }
 
+    /**
+     * Start the IME's input session over on the (unchanged) input view.
+     *
+     * Rinch moves focus between its own text fields without Android seeing
+     * anything — there is one RinchInputView and it holds focus throughout —
+     * so a keyboard part-way through composing a word would carry that word
+     * into whichever field got focus next. This is called when rinch has
+     * abandoned such a composition, and tells the keyboard to do the same.
+     * showKeyboard() already does this for the field that raises the keyboard;
+     * this is the same thing for a move between two fields, where the keyboard
+     * is already up.
+     */
+    public void restartInput() {
+        runOnUiThread(() -> {
+            if (imm != null && inputView != null) {
+                imm.restartInput(inputView);
+            }
+        });
+    }
+
     // ── Clipboard ───────────────────────────────────────────────────────
 
     public void copyToClipboard(String text) {

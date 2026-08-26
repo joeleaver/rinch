@@ -23,6 +23,13 @@ pub mod window;
 #[cfg(all(feature = "android", target_os = "android"))]
 pub mod android_runtime;
 
+// The Android IME composition translator. `android_runtime` compiles only for
+// `target_os = "android"`, but the composing region is a state machine over
+// `InputConnection` calls — pure, and the part that has to be pinned down by
+// tests — so it is compiled for the host test build too.
+#[cfg(any(all(feature = "android", target_os = "android"), test))]
+pub(crate) mod android_ime;
+
 pub use devtools_store::DevToolsStore;
 #[cfg(feature = "desktop")]
 pub use rinch_runtime::inject_platform_event;

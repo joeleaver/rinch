@@ -15,9 +15,10 @@ use android_activity::{AndroidApp, MainEvent, PollEvent};
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::element::ThemeProviderProps;
 use rinch_core::events;
-use rinch_platform::{AppAction, KeyCode, Modifiers, MouseButton, PlatformEvent};
+use rinch_platform::{AppAction, ImeEvent, KeyCode, Modifiers, MouseButton, PlatformEvent};
 
 use crate::app::RinchApp;
+use crate::shell::android_ime::{ImeAction, ImeComposition};
 
 // ── Cross-thread dispatch ────────────────────────────────────────────────────
 
@@ -112,6 +113,11 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
     let mut gesture = TouchGesture::new();
     let mut combining_accent: Option<char> = None;
     let mut keyboard_visible = false;
+    // The IME's composing region, and the field it belongs to. See
+    // `shell::android_ime` for why the region is mirrored on this side at all.
+    let mut composition = ImeComposition::new();
+    let mut composing_field: Option<usize> = None;
+    let mut backgrounded = false;
 
     while running {
         android_app.poll_events(Some(Duration::from_millis(16)), |event| match event {
@@ -193,6 +199,9 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                 }
                 MainEvent::Pause => {
                     rinch_android::lifecycle::notify_paused();
+                    // Flushed below, where the viewport this loop dispatches
+                    // against is in scope.
+                    backgrounded = true;
                 }
                 MainEvent::Destroy => {
                     running = false;
@@ -239,57 +248,54 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
             }
         }
 
-        // Drain IME committed text from InputConnection.
-        //
-        // This synthesizes per-character `KeyDown`s rather than a single
-        // `PlatformEvent::Ime(Commit)`. The focused `<input>` accepts these text
-        // `KeyDown`s already (Android has no rich-text editor — that view is
-        // desktop-only). Switching to `ImeEvent::Commit` (one edit, better undo
-        // grouping) is now unblocked since the legacy CE is gone, but it changes
-        // Android text-input behavior and should be validated on a device first.
-        for text in rinch_android::ime::drain_committed_text() {
-            for ch in text.chars() {
-                let actions = app.handle_event(
-                    PlatformEvent::KeyDown {
-                        key: KeyCode::Other,
-                        logical_key: None,
-                        text: Some(ch.to_string()),
-                        modifiers: Modifiers::default(),
-                    },
-                    logical_size,
-                    scale_factor,
-                );
-                process_actions(&actions, &mut running);
+        // The focused field changed while the IME was composing into the old
+        // one. The focus arbiter has already committed that composition into
+        // the field that lost focus (`set_focus_target_deferred`'s
+        // compositionend-before-blur), so nothing is inserted here — but the
+        // keyboard still believes it is composing, and would deliver the same
+        // word again into the field that just gained focus. Restarting its
+        // input session is the only way to say so; Android cannot see the move
+        // itself, because one `RinchInputView` holds focus throughout.
+        let focused_field = app.focused_input_node();
+        if focused_field != composing_field {
+            composing_field = focused_field;
+            if composition.abandon() {
+                rinch_android::ime::restart_input();
             }
         }
 
-        // Drain IME deletions
-        for deletion in rinch_android::ime::drain_deletions() {
-            for _ in 0..deletion.before {
-                let actions = app.handle_event(
-                    PlatformEvent::KeyDown {
-                        key: KeyCode::Backspace,
-                        logical_key: None,
-                        text: None,
-                        modifiers: Modifiers::default(),
-                    },
-                    logical_size,
-                    scale_factor,
-                );
-                process_actions(&actions, &mut running);
+        // Drain what the IME did, in the order it did it. `android_ime` turns
+        // the `InputConnection` call stream into the actions below; it holds
+        // the composing region and every rule about when one ends.
+        for update in rinch_android::ime::drain_updates() {
+            let actions = match update {
+                rinch_android::ime::ImeUpdate::SetComposingText {
+                    text,
+                    new_cursor_position,
+                } => composition.set_composing_text(text, new_cursor_position),
+                rinch_android::ime::ImeUpdate::FinishComposingText => {
+                    composition.finish_composing_text()
+                }
+                rinch_android::ime::ImeUpdate::CommitText(text) => composition.commit_text(text),
+                rinch_android::ime::ImeUpdate::DeleteSurroundingText { before, after } => {
+                    composition.delete_surrounding_text(before, after)
+                }
+            };
+            for action in actions {
+                apply_ime_action(&mut app, action, logical_size, scale_factor, &mut running);
             }
-            for _ in 0..deletion.after {
-                let actions = app.handle_event(
-                    PlatformEvent::KeyDown {
-                        key: KeyCode::Delete,
-                        logical_key: None,
-                        text: None,
-                        modifiers: Modifiers::default(),
-                    },
-                    logical_size,
-                    scale_factor,
-                );
-                process_actions(&actions, &mut running);
+        }
+
+        // Backgrounding ends the IME session. Android finishes the composition
+        // on the connection when it does, but this process is on its way to
+        // being frozen and may not be scheduled to see it — so the composition
+        // is committed here instead, and a half-typed word survives the way it
+        // would in an `EditText`, where the composing characters are already
+        // real text in the buffer. Emptying the mirror makes the framework's
+        // own `finishComposingText` a no-op rather than a second insertion.
+        if std::mem::take(&mut backgrounded) {
+            for action in composition.finish_composing_text() {
+                apply_ime_action(&mut app, action, logical_size, scale_factor, &mut running);
             }
         }
 
@@ -483,6 +489,76 @@ impl TouchGesture {
         self.velocity_x *= MOMENTUM_FRICTION;
         self.velocity_y *= MOMENTUM_FRICTION;
         true
+    }
+}
+
+// ── IME ──────────────────────────────────────────────────────────────────────
+
+/// Apply one [`ImeAction`] from the composition translator.
+///
+/// A commit is still applied as per-character `KeyDown`s rather than as
+/// `ImeEvent::Commit`. That path is the one that has been watched working on a
+/// device, and composition does not need it changed: what a preedit requires is
+/// that the composition be *cleared before* the text that replaces it arrives,
+/// which the action list already orders. Switching commits to one
+/// `ImeEvent::Commit` (one edit, better undo grouping) remains worth doing and
+/// remains a separate change — it alters what every keystroke on Android does,
+/// including the ones that never compose.
+fn apply_ime_action(
+    app: &mut RinchApp,
+    action: ImeAction,
+    window_size: (u32, u32),
+    scale_factor: f64,
+    running: &mut bool,
+) {
+    let mut dispatch = |event: PlatformEvent, running: &mut bool| {
+        let actions = app.handle_event(event, window_size, scale_factor);
+        process_actions(&actions, running);
+    };
+    match action {
+        ImeAction::Preedit { text, cursor } => {
+            dispatch(
+                PlatformEvent::Ime(ImeEvent::Preedit { text, cursor }),
+                running,
+            );
+        }
+        ImeAction::Insert(text) => {
+            for ch in text.chars() {
+                dispatch(
+                    PlatformEvent::KeyDown {
+                        key: KeyCode::Other,
+                        logical_key: None,
+                        text: Some(ch.to_string()),
+                        modifiers: Modifiers::default(),
+                    },
+                    running,
+                );
+            }
+        }
+        ImeAction::Delete { before, after } => {
+            for _ in 0..before {
+                dispatch(
+                    PlatformEvent::KeyDown {
+                        key: KeyCode::Backspace,
+                        logical_key: None,
+                        text: None,
+                        modifiers: Modifiers::default(),
+                    },
+                    running,
+                );
+            }
+            for _ in 0..after {
+                dispatch(
+                    PlatformEvent::KeyDown {
+                        key: KeyCode::Delete,
+                        logical_key: None,
+                        text: None,
+                        modifiers: Modifiers::default(),
+                    },
+                    running,
+                );
+            }
+        }
     }
 }
 

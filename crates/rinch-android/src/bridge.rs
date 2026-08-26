@@ -79,24 +79,8 @@ pub fn init(android_app: &AndroidApp) {
             .expect("failed to load RinchInputConnection class");
 
         let ic_jclass = jni::objects::JClass::from(ic_class);
-        env.register_native_methods(
-            ic_jclass,
-            &[
-                jni::NativeMethod {
-                    name: "nativeCommitText".into(),
-                    sig: "(Ljava/lang/String;)V".into(),
-                    fn_ptr: crate::ime::Java_com_rinch_RinchInputConnection_nativeCommitText
-                        as *mut std::ffi::c_void,
-                },
-                jni::NativeMethod {
-                    name: "nativeDeleteSurrounding".into(),
-                    sig: "(II)V".into(),
-                    fn_ptr: crate::ime::Java_com_rinch_RinchInputConnection_nativeDeleteSurrounding
-                        as *mut std::ffi::c_void,
-                },
-            ],
-        )
-        .expect("failed to register RinchInputConnection native methods");
+        env.register_native_methods(ic_jclass, &input_connection_natives())
+            .expect("failed to register RinchInputConnection native methods");
 
         log::info!("RinchInputConnection native methods registered");
 
@@ -171,28 +155,53 @@ pub fn activity_class() -> &'static GlobalRef {
     &bridge().activity_class
 }
 
+/// Every `native` method `RinchInputConnection` declares, and the Rust function
+/// behind it.
+///
+/// This list is the only thing that makes those methods callable. NativeActivity
+/// opens the app's `.so` with a plain `dlopen` inside `loadNativeCode`, and ART's
+/// automatic native-method lookup does not search that — it searches only
+/// libraries registered through `System.loadLibrary`, filtered by the declaring
+/// class's class loader. So a `native` declared in Java and exported from Rust
+/// still resolves to nothing unless it is named here, and the failure arrives as
+/// an `UnsatisfiedLinkError` on the first call, at which point the activity is
+/// force-finished. One list, used by both registration sites, so a method cannot
+/// be added to one and missed from the other.
+fn input_connection_natives() -> [jni::NativeMethod; 4] {
+    [
+        jni::NativeMethod {
+            name: "nativeCommitText".into(),
+            sig: "(Ljava/lang/String;)V".into(),
+            fn_ptr: crate::ime::Java_com_rinch_RinchInputConnection_nativeCommitText
+                as *mut std::ffi::c_void,
+        },
+        jni::NativeMethod {
+            name: "nativeSetComposingText".into(),
+            sig: "(Ljava/lang/String;I)V".into(),
+            fn_ptr: crate::ime::Java_com_rinch_RinchInputConnection_nativeSetComposingText
+                as *mut std::ffi::c_void,
+        },
+        jni::NativeMethod {
+            name: "nativeFinishComposingText".into(),
+            sig: "()V".into(),
+            fn_ptr: crate::ime::Java_com_rinch_RinchInputConnection_nativeFinishComposingText
+                as *mut std::ffi::c_void,
+        },
+        jni::NativeMethod {
+            name: "nativeDeleteSurrounding".into(),
+            sig: "(II)V".into(),
+            fn_ptr: crate::ime::Java_com_rinch_RinchInputConnection_nativeDeleteSurrounding
+                as *mut std::ffi::c_void,
+        },
+    ]
+}
+
 pub fn register_input_connection_natives(env: &mut JNIEnv) {
     let ic_class = env
         .find_class("com/rinch/RinchInputConnection")
         .expect("RinchInputConnection class not found");
-    env.register_native_methods(
-        ic_class,
-        &[
-            jni::NativeMethod {
-                name: "nativeCommitText".into(),
-                sig: "(Ljava/lang/String;)V".into(),
-                fn_ptr: crate::ime::Java_com_rinch_RinchInputConnection_nativeCommitText
-                    as *mut std::ffi::c_void,
-            },
-            jni::NativeMethod {
-                name: "nativeDeleteSurrounding".into(),
-                sig: "(II)V".into(),
-                fn_ptr: crate::ime::Java_com_rinch_RinchInputConnection_nativeDeleteSurrounding
-                    as *mut std::ffi::c_void,
-            },
-        ],
-    )
-    .expect("failed to register RinchInputConnection native methods");
+    env.register_native_methods(ic_class, &input_connection_natives())
+        .expect("failed to register RinchInputConnection native methods");
 }
 
 #[unsafe(no_mangle)]
