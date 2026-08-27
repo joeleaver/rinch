@@ -360,7 +360,9 @@ impl RinchApp {
                 DebugResult::Json { data: json!(null) }
             }
             DebugCommandKind::WaitFrame => {
-                let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+                // Layout is resolved at the logical viewport, not the physical
+                // surface size (see `RinchApp::layout_viewport`).
+                let (w, h) = Self::layout_viewport(window_size, scale_factor);
                 self.resolve_and_repaint(w, h);
                 DebugResult::Json { data: json!(null) }
             }

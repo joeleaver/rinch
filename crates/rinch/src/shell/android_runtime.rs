@@ -141,10 +141,9 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         }
 
                         if !mounted {
-                            let lw = (w as f64 / scale_factor).round() as f32;
-                            let lh = (h as f64 / scale_factor).round() as f32;
+                            let (lw, lh) = rinch_platform::to_logical((w, h), scale_factor);
                             app.set_text_scale(scale_factor as f32);
-                            app.mount_component(lw, lh);
+                            app.mount_component(lw as f32, lh as f32);
                             mounted = true;
                         }
 
@@ -164,15 +163,19 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         let h = native_window.height() as u32;
                         physical_size = (w, h);
 
-                        let lw = (w as f64 / scale_factor).round() as u32;
-                        let lh = (h as f64 / scale_factor).round() as u32;
+                        let (lw, lh) = rinch_platform::to_logical((w, h), scale_factor);
 
+                        // The `Resized` payload is the *logical* viewport layout
+                        // is resolved at; `handle_event`'s `window_size` is the
+                        // *physical* surface size it derives that viewport from
+                        // (see `RinchApp::layout_viewport`). Passing the logical
+                        // size for both divided by the scale factor twice.
                         let actions = app.handle_event(
                             PlatformEvent::Resized {
                                 width: lw,
                                 height: lh,
                             },
-                            (lw, lh),
+                            physical_size,
                             scale_factor,
                         );
                         process_actions(&actions, &mut running);
@@ -213,10 +216,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         }
 
         // Process touch / key input — must drain after poll_events returns
-        let logical_size = (
-            (physical_size.0 as f64 / scale_factor).round() as u32,
-            (physical_size.1 as f64 / scale_factor).round() as u32,
-        );
+        let logical_size = rinch_platform::to_logical(physical_size, scale_factor);
         let input_events = collect_input_events(
             &android_app,
             &mut gesture,
@@ -224,7 +224,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
             &mut combining_accent,
         );
         for event in &input_events {
-            let actions = app.handle_event(event.clone(), logical_size, scale_factor);
+            let actions = app.handle_event(event.clone(), physical_size, scale_factor);
             process_actions(&actions, &mut running);
         }
 
@@ -256,7 +256,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         text: Some(ch.to_string()),
                         modifiers: Modifiers::default(),
                     },
-                    logical_size,
+                    physical_size,
                     scale_factor,
                 );
                 process_actions(&actions, &mut running);
@@ -273,7 +273,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         text: None,
                         modifiers: Modifiers::default(),
                     },
-                    logical_size,
+                    physical_size,
                     scale_factor,
                 );
                 process_actions(&actions, &mut running);
@@ -286,7 +286,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         text: None,
                         modifiers: Modifiers::default(),
                     },
-                    logical_size,
+                    physical_size,
                     scale_factor,
                 );
                 process_actions(&actions, &mut running);
@@ -315,10 +315,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
 
         if needs_paint && mounted {
             if pending {
-                app.resolve_and_repaint(
-                    (physical_size.0 as f64 / scale_factor).round() as f32,
-                    (physical_size.1 as f64 / scale_factor).round() as f32,
-                );
+                app.resolve_and_repaint(logical_size.0 as f32, logical_size.1 as f32);
             }
 
             #[cfg(feature = "android-gpu")]

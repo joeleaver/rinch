@@ -12,7 +12,9 @@ pub enum PlatformEvent {
     Resumed,
     /// The window close button was pressed.
     CloseRequested,
-    /// The window was resized.
+    /// The window was resized. `width`/`height` are the new **logical**
+    /// (CSS-pixel) viewport — the size the document is laid out at — not the
+    /// physical surface size. See [`crate::to_logical`].
     Resized { width: u32, height: u32 },
     /// A redraw was requested.
     RedrawRequested,
