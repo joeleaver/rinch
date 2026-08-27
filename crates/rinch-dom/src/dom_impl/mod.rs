@@ -450,6 +450,18 @@ impl RinchDocument {
                     }
                 }
 
+                // Collapsed block (virtualized contenteditable): keep the
+                // estimated height apply_stylo_styles_to_taffy would have set.
+                if let Some(est_h) = node.estimated_height {
+                    taffy_style.size.height = taffy::Dimension::length(est_h);
+                }
+
+                // This rebuilds the Taffy style from the computed values, so it
+                // drops the childless-block line floor exactly the way
+                // apply_stylo_styles_to_taffy used to — re-apply it here or a
+                // transition frame collapses a blockified `<input>` to nothing.
+                crate::ifc::apply_empty_block_line_floor(node, &mut taffy_style);
+
                 // Only call set_style if the Taffy style actually changed.
                 // set_style() internally calls mark_dirty() which propagates up
                 // the entire ancestor chain — unconditional calls here were causing
@@ -502,7 +514,28 @@ impl RinchDocument {
             }
             if let Some(taffy_id) = node.taffy_id {
                 let dd = self.default_display_for_node(node_id);
-                let taffy_style = node.computed_style.to_taffy_style(dd);
+                let mut taffy_style = node.computed_style.to_taffy_style(dd);
+
+                // Body node needs the same overrides as apply_stylo_styles_to_taffy
+                if node_id == self.tree.body_id {
+                    if taffy_style.flex_grow == 0.0 {
+                        taffy_style.flex_grow = 1.0;
+                    }
+                    if taffy_style.size.width == taffy::Dimension::auto() {
+                        taffy_style.size.width = taffy::Dimension::percent(1.0);
+                    }
+                }
+
+                // Collapsed block (virtualized contenteditable): keep the
+                // estimated height apply_stylo_styles_to_taffy would have set.
+                if let Some(est_h) = node.estimated_height {
+                    taffy_style.size.height = taffy::Dimension::length(est_h);
+                }
+
+                // Same rebuild-from-computed-values hazard as tick_transitions:
+                // without this an animation frame drops the childless-block line
+                // floor and the element collapses to zero height.
+                crate::ifc::apply_empty_block_line_floor(node, &mut taffy_style);
 
                 if let Ok(old_taffy_style) = self.tree.taffy.style(taffy_id) {
                     if old_taffy_style != &taffy_style {

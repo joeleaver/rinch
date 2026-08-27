@@ -8,6 +8,71 @@ use crate::RinchDocument;
 use crate::layout;
 use crate::node::{DisplayMode, InlineLayout, LayoutResult, Node, NodeContext, NodeKind};
 
+/// Write the one-line height floor an empty block container is owed onto its
+/// Taffy style.
+///
+/// A deliberate rinch divergence from CSS, **not** a spec rule: CSS 2.1 §10.6.3
+/// gives a block container with no in-flow children `height: 0` (an empty
+/// `<div></div>` is 0px in every browser). Rinch floors it at one line box
+/// instead because `<input>` and `<textarea>` keep their value in an *attribute*
+/// rather than in a text child — they are childless however much text they hold,
+/// there is no `NodeContext` measure function for them, and this floor is the
+/// only thing that gives a blockified one a height at all. The right fix is an
+/// intrinsic size for form controls (as `<textarea rows>` already gets); until
+/// then the floor must be applied consistently or the control vanishes.
+///
+/// **Called from both passes that write a node's Taffy style, because either
+/// runs without the other.** [`RinchDocument::setup_inline_formatting_contexts`]
+/// only runs on a structural change (`ifc_dirty`), while
+/// `apply_stylo_styles_to_taffy` runs on every style recompute and rebuilds the
+/// style from the computed values. Applied in the IFC pass alone, the floor was
+/// silently discarded by the next restyle of that node — a `:focus` write when
+/// a text field is clicked was enough — collapsing the element to zero height,
+/// which `paint_node` skips outright: no background, no value, no caret, and
+/// nothing to restore it short of a new structural change.
+///
+/// No-ops unless the node is a childless element that would establish an IFC
+/// and left its height `auto`; an explicit height (a `height: 1px` separator)
+/// is never inflated.
+pub(crate) fn apply_empty_block_line_floor(node: &Node, style: &mut taffy::Style) {
+    use crate::computed_style::values::DisplayValue;
+
+    if !node.is_element() || !node.children.is_empty() {
+        return;
+    }
+    // Only block containers establish an IFC; a `display: contents` node
+    // generates no box at all.
+    if matches!(
+        node.display_mode,
+        DisplayMode::Inline | DisplayMode::InlineBlock | DisplayMode::Flex
+    ) || node.computed_style.display == DisplayValue::Contents
+    {
+        return;
+    }
+    if !style.size.height.is_auto() {
+        return;
+    }
+
+    let line_h = node.computed_style.line_height_px();
+
+    // The floor must not stomp an author `min-height` — it is a *floor*, not an
+    // override. A childless block (a `<textarea>`, an empty spacer div)
+    // otherwise collapses to one line no matter what the author asked for.
+    if let Some(author_min) = style.min_size.height.into_option() {
+        // An explicit length: the floor is the larger of the two.
+        style.min_size.height = taffy::Dimension::length(line_h.max(author_min));
+    } else if style.min_size.height.is_auto() {
+        style.min_size.height = taffy::Dimension::length(line_h);
+    }
+    // A percentage/calc min-height is left untouched so Taffy can resolve it
+    // against the containing block (it could not before the 0.12 upgrade, which
+    // is why this used to flatten it to `line_h`). Note the consequence: if the
+    // containing block's height is indefinite the percentage resolves to zero
+    // per CSS, so such a block collapses rather than keeping the one-line floor.
+    // That matches browsers, and an empty block with no min-height at all still
+    // gets the floor.
+}
+
 impl RinchDocument {
     /// Build inline layouts for all IFC roots after Taffy layout.
     ///
@@ -756,53 +821,14 @@ impl RinchDocument {
             {
                 ifc_roots.push(id);
             } else if node.children.is_empty() {
-                // CSS spec: an empty block container that would establish an IFC
-                // has height equal to its line-height. Without this, empty <p></p>
-                // elements collapse to zero height.
-                // Skip elements that already have an explicit height — e.g. separators
-                // with `height: 1px` should not be inflated to line-height.
-                if let Some(taffy_id) = node.taffy_id {
-                    let line_h = match node.computed_style.line_height {
-                        crate::computed_style::LineHeightValue::Normal => {
-                            node.computed_style.font_size * 1.2
-                        }
-                        crate::computed_style::LineHeightValue::Relative(r) => {
-                            node.computed_style.font_size * r
-                        }
-                        crate::computed_style::LineHeightValue::Absolute(px) => px,
-                    };
-                    if let Ok(style) = self.tree.taffy.style(taffy_id) {
-                        let mut style = style.clone();
-                        // Only inflate to line-height for auto-height elements.
-                        // Elements with explicit height (e.g. separators with
-                        // height: 1px) keep their size. Always call set_style
-                        // for consistent Taffy invalidation.
-                        // The line-height floor must not stomp an author
-                        // `min-height` — it is a *floor*, not an override. A
-                        // childless block (a `<textarea>`, an empty spacer div)
-                        // otherwise collapses to one line no matter what the
-                        // author asked for.
-                        if style.size.height.is_auto() {
-                            if let Some(author_min) = style.min_size.height.into_option() {
-                                // An explicit length: the floor is the larger of
-                                // the two.
-                                style.min_size.height =
-                                    taffy::Dimension::length(line_h.max(author_min));
-                            } else if style.min_size.height.is_auto() {
-                                style.min_size.height = taffy::Dimension::length(line_h);
-                            }
-                            // A percentage/calc min-height is left untouched so
-                            // Taffy can resolve it against the containing block
-                            // (it could not before the 0.12 upgrade, which is why
-                            // this used to flatten it to `line_h`). Note the
-                            // consequence: if the containing block's height is
-                            // indefinite the percentage resolves to zero per CSS,
-                            // so such a block collapses rather than keeping the
-                            // one-line floor. That matches browsers, and an empty
-                            // block with no min-height at all still gets the floor.
-                        }
-                        let _ = self.tree.taffy.set_style(taffy_id, style);
-                    }
+                // Always call set_style for consistent Taffy invalidation, even
+                // when the floor does not apply.
+                if let Some(taffy_id) = node.taffy_id
+                    && let Ok(style) = self.tree.taffy.style(taffy_id)
+                {
+                    let mut style = style.clone();
+                    apply_empty_block_line_floor(node, &mut style);
+                    let _ = self.tree.taffy.set_style(taffy_id, style);
                 }
             }
         }

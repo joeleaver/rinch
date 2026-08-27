@@ -548,11 +548,7 @@ impl RinchDocument {
                     .and_then(|r| r.trim().parse::<f32>().ok())
                     .filter(|r| *r >= 1.0)
                     .unwrap_or(2.0);
-                let line_h = match new_style.line_height {
-                    crate::computed_style::LineHeightValue::Normal => new_style.font_size * 1.2,
-                    crate::computed_style::LineHeightValue::Relative(r) => new_style.font_size * r,
-                    crate::computed_style::LineHeightValue::Absolute(px) => px,
-                };
+                let line_h = new_style.line_height_px();
                 // min-height is a border-box value (rinch sets a global
                 // `box-sizing: border-box`, and Taffy defaults to it), so the
                 // padding and border have to be added on top of the line boxes.
@@ -811,6 +807,14 @@ impl RinchDocument {
             if let Some(est_h) = self.tree.nodes[node_id].estimated_height {
                 taffy_style.size.height = taffy::Dimension::length(est_h);
             }
+
+            // A childless block container is one line box tall. The IFC pass
+            // writes that floor straight onto the Taffy style, and this function
+            // rebuilds the style from the computed values — so the floor has to
+            // be re-applied here or the next restyle of the node drops it — it
+            // would come back only on a structural change, the one thing that
+            // re-runs the IFC pass. See `apply_empty_block_line_floor`.
+            crate::ifc::apply_empty_block_line_floor(&self.tree.nodes[node_id], &mut taffy_style);
 
             // Only call set_style if the Taffy style actually changed.
             // This avoids marking the Taffy tree dirty for paint-only changes
