@@ -323,7 +323,7 @@ impl RinchApp {
             // change commit is deferred until this input's state is installed —
             // the handler is user code and may rewrite the very input being
             // focused (#244 review).
-            let (focus_changed, commit) = self.set_focus_target_deferred(FocusTarget::Input(nid));
+            let (focus_changed, work) = self.set_focus_target_deferred(FocusTarget::Input(nid));
             // A re-click inside the already-focused input absorbs the DOM value
             // into the buffer below without moving the baseline, so a write that
             // landed since the last frame would look like a user edit and commit
@@ -352,8 +352,7 @@ impl RinchApp {
             // any rewrite its handler made to THIS input (the Enter path's
             // pattern — a no-op when the DOM value already matches, so the
             // click-placed caret survives the common case).
-            let commit_fired = commit.is_some();
-            Self::fire_input_commit(commit);
+            let commit_fired = Self::fire_focus_work(work);
             if commit_fired {
                 self.adopt_focused_input_value_from_dom();
                 self.focused_input_baseline = self.focused_input_value.clone();

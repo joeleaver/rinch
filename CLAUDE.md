@@ -889,6 +889,58 @@ File drops from the OS use `data-onfiledragenter`, `data-onfiledragleave` attrib
 - `Alt + T` - Print Taffy layout tree (to console)
 - `F12` - Toggle DevTools window
 
+## Keyboard Focus
+
+Exactly one widget owns the keyboard at a time — the **focus arbiter**
+(`FocusTarget` in `crates/rinch/src/app/mod.rs`, design A10): an `<input>`, an
+open `<select>`, the rich-text editor, a render surface, or a generic focusable
+DOM node (`FocusTarget::Node`). Every transition goes through
+`RinchApp::set_focus_target`, which tears the previous owner down first.
+
+Focusability on desktop comes from an explicit `tabindex` (or `data-oninput`).
+`tabindex="-1"` is focusable by click and programmatically but not tabbable;
+`data-disabled` is a **boolean attribute** (present = disabled unless the value
+is `"false"`) and removes only the node from the Tab order, not its subtree. A
+`<button>`/`<a>` is not a desktop Tab stop — issue #252. A **mouse press claims
+the nearest focusable ancestor** of the hit node, browser-style, so a clicked
+`tabindex` div owns Enter/Space immediately.
+
+A custom component that takes keyboard input registers for the lifecycle
+(issue #147, `crates/rinch/src/focus_registry.rs`, in the prelude):
+
+```rust
+register_focus_target(
+    &node,
+    FocusEntry::new()
+        .on_focus_gained(move || focused.set(true))
+        .on_focus_lost(move || focused.set(false))
+        .on_key(move |k| k.key == "ArrowDown"), // true = consumed
+);
+```
+
+- Keyed `(doc_key, node_id)` like the editor registry (#134); **deregistered by
+  the ambient scope's `on_cleanup`**, so unmounting is **silent** —
+  `on_focus_lost` never fires after disposal (that would read freed signals and
+  panic, #141 PR4). The registry is the arbiter's liveness authority for
+  registered nodes, which closes the recycled-slot window (#304) for them.
+- Both focus callbacks run **after** the transition completes (deferred through
+  the same `PendingFocusWork` mechanism as a blurred input's `data-onchange`),
+  so they may re-enter the runtime freely.
+- `on_key` is offered before the runtime's own handling; `true` consumes.
+  `set_keyboard_interceptor` is unrelated — a document-level capture-phase hook
+  dispatched *before* the arbiter.
+- **Window blur notifies but retains**: `PlatformEvent::WindowFocus(false)`
+  fires `on_focus_lost` and keeps the claim (releasing would fire
+  `data-onchange` on every alt-tab, #226); refocus re-fires `on_focus_gained`.
+  `ime_state()` reports disabled while blurred.
+- Not yet: IME for a registered target (`FocusEntry::caret_rect` is an unread
+  seam, #176) and backdrop modality (Tab still reaches controls behind a
+  Modal/Drawer backdrop).
+- **Web has no arbiter** — `register_focus_target` is desktop/Android/embed
+  only; use a real `tabindex` and the DOM's own `focus`/`blur` there.
+
+Guide: `docs/src/guide/focus.md`.
+
 ## Features
 
 ### Rendering Backends

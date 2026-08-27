@@ -185,6 +185,12 @@ clickable; it is the `onsubmit` gesture described above (or, in a
 live handler in its ancestry is a quiet no-op — the key falls through to the
 browser, so Tab and scrolling keep their usual meaning.
 
+A **mouse press focuses the nearest focusable ancestor** of what it hits, like a
+browser — so a clicked `tabindex` element owns Enter/Space straight away,
+without having to be reached by Tab first. A component that wants the keys for
+itself (a code editor, a keyboard-driven grid) registers for them; see
+[Keyboard Focus](./focus.md).
+
 ### Enter in a `<textarea>`
 
 Enter has two meanings in a multi-line field, and which one it takes is the

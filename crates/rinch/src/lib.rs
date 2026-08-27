@@ -50,6 +50,10 @@ pub mod app;
 pub mod editor;
 #[cfg(any(feature = "gpu", feature = "embed"))]
 pub mod embed;
+/// Focus-target registration for custom keyboard-owning components (issue #147).
+/// Gated with [`app`], whose focus arbiter it serves.
+#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+pub mod focus_registry;
 #[cfg(feature = "desktop")]
 pub mod menu;
 pub mod render_surface;
@@ -164,6 +168,11 @@ pub mod prelude {
     pub use crate::embed::{
         GameViewport, LayoutRect, RinchContext, RinchContextConfig, RinchOverlayRenderer,
     };
+
+    // Focus lifecycle for custom keyboard-owning components (issue #147): a
+    // `tabindex` node registers here to hear focus / blur / keys.
+    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+    pub use crate::focus_registry::{FocusEntry, register_focus_target};
 
     // Render surface API for embedding external renderers
     pub use crate::render_surface::{

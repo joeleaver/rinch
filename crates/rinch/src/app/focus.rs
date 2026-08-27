@@ -23,17 +23,28 @@ pub(crate) struct ImeState {
     pub cursor_area: Option<(f32, f32, f32, f32)>,
 }
 
-/// A `data-onchange` commit collected while tearing down a focused input
-/// (issue #226), to be dispatched via [`RinchApp::fire_input_commit`] once the
-/// caller has finished installing the new focus owner's state. The commit
-/// handler is user code: dispatching it while the caller still holds
-/// pre-transition captures (the new input's value, a hit-test node id) lets a
-/// handler that mutates the DOM invalidate them — the empirically confirmed
-/// stale-install / recycled-slot bugs from the #244 review.
+/// User code owed to the widget that just lost focus, collected during teardown
+/// and dispatched by [`RinchApp::fire_focus_work`] once the caller has finished
+/// installing the new focus owner's state.
+///
+/// **User code must never run mid-teardown.** Dispatching it while the caller
+/// still holds pre-transition captures (the new input's value, a hit-test node
+/// id) lets a handler that mutates the DOM invalidate them — the empirically
+/// confirmed stale-install / recycled-slot bugs from the #244 review — and the
+/// arbiter's own state is inconsistent while a transition is half-done, so a
+/// re-entrant focus change would compound it.
+///
+/// The two payloads are mutually exclusive in practice (there is one previous
+/// owner, and it is either an `<input>` or a registered node), but the struct
+/// carries both so the mechanism stays one thing rather than two parallel ones.
 #[must_use]
-pub(crate) struct PendingInputCommit {
-    handler_id: usize,
-    value: String,
+pub(crate) struct PendingFocusWork {
+    /// A blurred `<input>`'s `data-onchange` commit as `(handler id, value)`
+    /// (issue #226).
+    input_commit: Option<(usize, String)>,
+    /// A blurred registered focus target's `on_focus_lost`, as its
+    /// `(doc_key, node id)` (issue #147).
+    focus_lost: Option<(u64, usize)>,
 }
 
 impl RinchApp {
@@ -41,22 +52,48 @@ impl RinchApp {
     /// before. Returns `true` if the focus target actually changed.
     ///
     /// Tearing down an `Input` whose value changed since focus dispatches its
-    /// `data-onchange` commit (issue #226) **before returning**. Callers that
-    /// install new-input state after the transition must use
-    /// [`Self::set_focus_target_deferred`] instead, and fire the returned
-    /// commit only once their installation is complete.
+    /// `data-onchange` commit (issue #226), and tearing down a registered focus
+    /// target fires its `on_focus_lost` (issue #147) — both **before
+    /// returning**. Callers that install new-owner state after the transition
+    /// must use [`Self::set_focus_target_deferred`] instead, and fire the
+    /// returned work only once their installation is complete.
     pub(crate) fn set_focus_target(&mut self, target: FocusTarget) -> bool {
-        let (changed, commit) = self.set_focus_target_deferred(target);
-        Self::fire_input_commit(commit);
+        let (changed, work) = self.set_focus_target_deferred(target);
+        Self::fire_focus_work(work);
         changed
     }
 
-    /// Dispatch a commit collected by [`Self::set_focus_target_deferred`], if
-    /// any. Must be called with no outstanding borrow of `self.doc` — the
-    /// handler is user code and may mutate the DOM.
-    pub(crate) fn fire_input_commit(commit: Option<PendingInputCommit>) {
-        if let Some(c) = commit {
-            events::dispatch_input_event(events::EventHandlerId(c.handler_id), c.value);
+    /// Dispatch the work collected by [`Self::set_focus_target_deferred`], if
+    /// any. Returns whether an input's `data-onchange` commit actually fired —
+    /// the input paths re-adopt the DOM value afterwards, because the handler
+    /// may have rewritten the very field being focused.
+    ///
+    /// Must be called with no outstanding borrow of `self.doc`: everything here
+    /// is user code and may mutate the DOM.
+    pub(crate) fn fire_focus_work(work: Option<PendingFocusWork>) -> bool {
+        let Some(work) = work else { return false };
+        let committed = work.input_commit.is_some();
+        if let Some((handler_id, value)) = work.input_commit {
+            events::dispatch_input_event(events::EventHandlerId(handler_id), value);
+        }
+        if let Some((doc_key, node_id)) = work.focus_lost {
+            crate::focus_registry::notify_focus_lost(doc_key, node_id);
+        }
+        committed
+    }
+
+    /// Announce `on_focus_gained` to the registered target now holding the
+    /// keyboard, once the caller has finished installing it.
+    ///
+    /// A no-op unless `node_id` is *currently* the arbiter's `Node` target — so
+    /// a path that bailed part-way (a vanished node, a malformed handler, an
+    /// `on_focus_lost` that moved focus again) never announces a gain that did
+    /// not happen — and a no-op for an unregistered node: every generic
+    /// `tabindex` node takes `FocusTarget::Node`, only some registered for the
+    /// news.
+    pub(crate) fn notify_node_focus_gained(&self, node_id: usize) {
+        if self.focus_target == FocusTarget::Node(node_id) {
+            crate::focus_registry::notify_focus_gained(self.doc_key(), node_id);
         }
     }
 
@@ -80,12 +117,13 @@ impl RinchApp {
         None
     }
 
-    /// [`Self::set_focus_target`], except a blurred input's `data-onchange`
-    /// commit is **returned instead of dispatched**, for callers that finish
+    /// [`Self::set_focus_target`], except the blurred owner's user code (an
+    /// input's `data-onchange` commit, a registered target's `on_focus_lost`)
+    /// is **returned instead of dispatched**, for callers that finish
     /// installing the new owner's state after the transition (the input click
-    /// path, programmatic input focus): fire it via
-    /// [`Self::fire_input_commit`] once installation is complete, then adopt
-    /// any rewrite the handler made (`adopt_focused_input_value_from_dom`).
+    /// path, programmatic focus, the mousedown claim): fire it via
+    /// [`Self::fire_focus_work`] once installation is complete, then adopt any
+    /// rewrite the handler made (`adopt_focused_input_value_from_dom`).
     ///
     /// This only handles **teardown** of the previous owner; the caller installs
     /// the new owner's state (the rich per-engine state — `EditableState`, the CE
@@ -98,15 +136,17 @@ impl RinchApp {
     pub(crate) fn set_focus_target_deferred(
         &mut self,
         target: FocusTarget,
-    ) -> (bool, Option<PendingInputCommit>) {
+    ) -> (bool, Option<PendingFocusWork>) {
         if self.focus_target == target {
             return (false, None);
         }
-        // The `data-onchange` commit for a blurred input (issue #226): collected
-        // in the Input arm, dispatched only after the transition completes —
-        // user code must never run mid-teardown, where the arbiter state is
-        // inconsistent and a re-entrant focus change would compound it.
-        let mut pending_change: Option<PendingInputCommit> = None;
+        // Everything the blurred owner is owed, collected in its arm and
+        // dispatched only after the transition completes — see
+        // [`PendingFocusWork`] for why it cannot run here.
+        let mut pending = PendingFocusWork {
+            input_commit: None,
+            focus_lost: None,
+        };
         match self.focus_target {
             FocusTarget::None => {}
             FocusTarget::Surface(_) => {
@@ -158,15 +198,12 @@ impl RinchApp {
                             .get(prev)
                             .and_then(|n| n.attributes.get("value").cloned())
                             .unwrap_or_else(|| self.focused_input_value.clone());
-                        pending_change =
+                        pending.input_commit =
                             Self::input_attr_handler_up(&d.tree, prev, "data-onchange")
                                 .filter(|&hid| {
                                     events::has_input_handler(events::EventHandlerId(hid))
                                 })
-                                .map(|hid| PendingInputCommit {
-                                    handler_id: hid,
-                                    value: payload,
-                                });
+                                .map(|hid| (hid, payload));
                     }
                 }
                 self.clear_input_focus_attrs();
@@ -209,6 +246,18 @@ impl RinchApp {
                         d.update_focus(None);
                     }
                 }
+                // Tell a registered custom widget it lost the keyboard (issue
+                // #147) — deferred, like the input commit above.
+                //
+                // An *unmounted* target is silently absent here: its scope
+                // disposal already deregistered it, so this finds nothing and
+                // nothing is announced. That is deliberate (decision 5) —
+                // calling back after disposal reads freed signals and panics
+                // (issue #141 PR4).
+                let doc_key = self.doc_key();
+                if crate::focus_registry::is_registered(doc_key, prev) {
+                    pending.focus_lost = Some((doc_key, prev));
+                }
             }
             #[cfg(feature = "desktop")]
             FocusTarget::Editor(prev) => {
@@ -224,7 +273,8 @@ impl RinchApp {
         }
         self.focus_target = target;
         self.scene_dirty = true;
-        (true, pending_change)
+        let has_work = pending.input_commit.is_some() || pending.focus_lost.is_some();
+        (true, has_work.then_some(pending))
     }
 
     /// The IME state the focused target wants — enable + caret rect for a text
@@ -232,6 +282,16 @@ impl RinchApp {
     /// the single bridge from focus → the platform IME surface (see
     /// [`ImeState`]).
     pub(crate) fn ime_state(&self) -> ImeState {
+        // A blurred window drives no IME, whatever holds the in-document claim
+        // (issue #147): the claim is deliberately *kept* across a window blur,
+        // so without this gate the OS candidate window would keep following a
+        // caret in a window that no longer has the keyboard.
+        if !self.window_focused {
+            return ImeState {
+                enabled: false,
+                cursor_area: None,
+            };
+        }
         match self.focus_target {
             #[cfg(feature = "desktop")]
             FocusTarget::Editor(container) => {
