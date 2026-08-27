@@ -91,7 +91,7 @@ impl RinchApp {
     pub fn handle_event(
         &mut self,
         event: PlatformEvent,
-        window_size: (u32, u32),
+        window_size: (u32, u32), // physical pixels, not logical
         scale_factor: f64,
     ) -> Vec<AppAction> {
         match event {
@@ -108,6 +108,14 @@ impl RinchApp {
     }
 }
 ```
+
+`window_size` is always the **physical** surface size, and pointer coordinates
+carried by the mouse events are in the same physical units. Every shell
+converts it to the logical (CSS-pixel) layout viewport with the shared
+`rinch_platform::to_logical` — never by dividing inline — so that mount,
+resize and every other relayout agree on the same viewport. Inside `RinchApp`
+this conversion happens once per `handle_event` call via
+`RinchApp::layout_viewport`.
 
 **Platform backends** implement traits from `rinch-platform`:
 - `PlatformWindow` - Window creation, properties, frame buffer access

@@ -2483,6 +2483,65 @@ mod viewport_relayout_tests {
 }
 
 #[cfg(test)]
+mod oncontextmenu_viewport_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// #300: `dispatch_oncontextmenu`'s caller used to divide `window_size` by
+    /// `scale_factor` inline — unrounded and unguarded — instead of reusing
+    /// [`RinchApp::layout_viewport`], so a right-click's `ClickContext`
+    /// viewport could disagree with every other event's. Drive a real
+    /// right-click through `handle_event` at a scale that does not divide
+    /// evenly and check the `ClickContext` left behind agrees exactly with
+    /// `layout_viewport`.
+    #[test]
+    fn oncontextmenu_click_context_viewport_matches_layout_viewport() {
+        // 500 physical / 3.0 = 166.667 — a scale that does not divide evenly,
+        // so the old unrounded `vw`/`vh` would visibly disagree with the
+        // rounded, guarded `layout_viewport`.
+        let physical = (500u32, 500u32);
+        let scale = 3.0_f64;
+        let (expected_w, expected_h) = RinchApp::layout_viewport(physical, scale);
+
+        let handler_ran = Rc::new(Cell::new(false));
+        let handler_ran_in = handler_ran.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "width: 100%; height: 100%");
+            let handler_id = events::register_handler(Rc::new(move || {
+                handler_ran_in.set(true);
+            }));
+            root.set_attribute("data-oncontextmenu", &handler_id.0.to_string());
+            root
+        });
+        let (lw, lh) = rinch_platform::to_logical(physical, scale);
+        app.mount_component(lw as f32, lh as f32);
+
+        app.handle_event(
+            PlatformEvent::MouseDown {
+                x: 10.0,
+                y: 10.0,
+                button: MouseButton::Right,
+            },
+            physical,
+            scale,
+        );
+
+        assert!(
+            handler_ran.get(),
+            "oncontextmenu handler must fire on right-click"
+        );
+        let ctx = events::get_click_context();
+        assert_eq!(
+            (ctx.viewport_width, ctx.viewport_height),
+            (expected_w, expected_h),
+            "ClickContext viewport must match RinchApp::layout_viewport, not an \
+             inline, unrounded window_size/scale_factor division"
+        );
+    }
+}
+
+#[cfg(test)]
 mod layout_notification_tests {
     use super::*;
     use std::cell::Cell;

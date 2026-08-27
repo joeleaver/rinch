@@ -637,9 +637,7 @@ impl RinchApp {
                             hit_test(&d.tree, x, y)
                         };
                         if let Some(hit_id) = hit_id {
-                            let vw = window_size.0 as f32 / scale_factor as f32;
-                            let vh = window_size.1 as f32 / scale_factor as f32;
-                            if Self::dispatch_oncontextmenu(doc, hit_id, x, y, vw, vh, mods) {
+                            if Self::dispatch_oncontextmenu(doc, hit_id, x, y, vp_w, vp_h, mods) {
                                 actions.push(AppAction::RequestRedraw);
                                 handled = true;
                             }
