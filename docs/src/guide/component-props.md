@@ -446,6 +446,23 @@ Text input with inline color preview and dropdown ColorPicker.
 | `close_on_click_outside` | `bool` | `false` | Close dropdown on outside click |
 | `disallow_input` | `bool` | `false` | Disallow typing (picker only) |
 
+**The dropdown picker is bound to the input's current colour** (#237). Typed
+text previews in it live (a parseable keystroke moves its panel and thumbs),
+an external `value_fn` change moves it, and a slider nudge derives from the
+colour the input currently holds — never from the colour it mounted with. An
+external arrival is silent all the way through: the picker applies it without
+reporting, and the input's `onchange` fires nothing the caller did not author.
+
+**The field shows the colour in the `format` output spelling.** A `value` or
+`value_fn` written in another notation (`red`, `hsl(200, 3%, 49%)`) is
+displayed re-spelled (`#ff0000`, `#797e81` under `hex`); the field is
+rewritten only when the colour moves away from its text, so the author's
+mid-typing text is left alone as before. Under an alpha-dropping `format`
+(`hex`, `rgb`, `hsl`) an alpha typed into the field is dropped before it
+reaches the input's colour, and an alpha arriving through `value_fn` is
+invisible — the field cannot spell it and the next reported change drops it.
+Bind `hexa`/`rgba`/`hsla` when alpha must be externally drivable.
+
 ---
 
 ## Typography
