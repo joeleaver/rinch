@@ -1021,16 +1021,19 @@ fn test_blockified_input_keeps_its_height_when_focused() {
     );
 }
 
-#[test]
-fn test_empty_block_line_floor_survives_a_transition_tick() {
-    // `apply_stylo_styles_to_taffy` is not the only pass that rebuilds a node's
-    // Taffy style from the computed values: `tick_transitions` and
-    // `tick_animations` do the same for every node with an active
-    // transition/animation or sitting in `dirty_nodes`, and they run on the
-    // event loop's idle tick *before* the next layout. They must re-apply the
-    // floor too — a `<input class="rinch-number-input">` carries
-    // `transition: border-color 150ms`, so focusing one puts it on exactly this
-    // path.
+/// A childless block whose only height is the one-line floor, laid out once so
+/// the floor is already on its Taffy style.
+///
+/// `apply_stylo_styles_to_taffy` is not the only pass that rebuilds a node's
+/// Taffy style from the computed values: `tick_transitions` and
+/// `tick_animations` do the same for every node with an active
+/// transition/animation or sitting in `dirty_nodes`, and they run on the event
+/// loop's idle tick *before* the next layout. Each must re-apply the floor.
+///
+/// The two ticks get a test apiece rather than one test that calls both: both
+/// rebuild the *whole* style, so whichever runs last decides the outcome, and a
+/// combined test passes with the earlier tick's call deleted.
+fn empty_block_floored_at_one_line() -> (RinchDocument, usize) {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let div = doc.create_element("div");
@@ -1044,21 +1047,42 @@ fn test_empty_block_line_floor_survives_a_transition_tick() {
     doc.resolve_layout(800.0, 600.0);
     assert_eq!(doc.tree.get(div.0).unwrap().layout.height, 20.0);
 
-    // A transition/animation frame, with no style recompute behind it.
-    doc.tree.dirty_nodes.insert(div.0);
-    doc.tick_transitions();
-    doc.tree.dirty_nodes.insert(div.0);
-    doc.tick_animations();
+    (doc, div.0)
+}
 
-    // The next layout (any unrelated change) must not find a floorless style.
+/// The next layout after a tick must not find a floorless style.
+fn assert_floor_survived_relayout(doc: &mut RinchDocument, div: usize, what: &str) {
     doc.tree.layout_dirty = true;
     doc.resolve_layout(800.0, 600.0);
 
     assert_eq!(
-        doc.tree.get(div.0).unwrap().layout.height,
+        doc.tree.get(div).unwrap().layout.height,
         20.0,
-        "a transition/animation tick must not discard the line-height floor"
+        "{what} must not discard the line-height floor"
     );
+}
+
+#[test]
+fn test_empty_block_line_floor_survives_a_transition_tick() {
+    // A `<input class="rinch-number-input">` carries
+    // `transition: border-color 150ms`, so focusing one puts it on exactly this
+    // path — with no animation tick behind it to rebuild the style again.
+    let (mut doc, div) = empty_block_floored_at_one_line();
+
+    doc.tree.dirty_nodes.insert(div);
+    doc.tick_transitions();
+
+    assert_floor_survived_relayout(&mut doc, div, "a transition tick");
+}
+
+#[test]
+fn test_empty_block_line_floor_survives_an_animation_tick() {
+    let (mut doc, div) = empty_block_floored_at_one_line();
+
+    doc.tree.dirty_nodes.insert(div);
+    doc.tick_animations();
+
+    assert_floor_survived_relayout(&mut doc, div, "an animation tick");
 }
 
 #[test]
