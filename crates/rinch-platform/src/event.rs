@@ -12,7 +12,9 @@ pub enum PlatformEvent {
     Resumed,
     /// The window close button was pressed.
     CloseRequested,
-    /// The window was resized.
+    /// The window was resized. `width`/`height` are the new **logical**
+    /// (CSS-pixel) viewport — the size the document is laid out at — not the
+    /// physical surface size. See [`crate::to_logical`].
     Resized { width: u32, height: u32 },
     /// A redraw was requested.
     RedrawRequested,
@@ -114,6 +116,11 @@ pub enum ImeEvent {
     /// some IMEs use to recompose). Units are characters in rinch's char-based
     /// model; the platform boundary converts as needed. Only delivered once a
     /// backend advertises surrounding-text support.
+    ///
+    /// **Android does not convert yet**: `deleteSurroundingText` counts UTF-16
+    /// code units and the shell passes them through, so an astral character in
+    /// the deleted run costs one deletion too many. The conversion needs the
+    /// field's text, which the `InputConnection` does not report.
     DeleteSurrounding { before: usize, after: usize },
     /// Composition ended for the focused target; any pending preedit is cleared.
     Disabled,

@@ -10,8 +10,8 @@ use euclid::Scale;
 use style::context::QuirksMode;
 use style::font_metrics::FontMetrics;
 use style::media_queries::{Device, MediaType};
-use style::properties::ComputedValues;
 use style::properties::style_structs::Font as StyloFont;
+use style::properties::{ComputedValues, PropertyDeclarationBlock};
 use style::queries::values::PrefersColorScheme;
 use style::stylist::Stylist;
 use style::values::computed::font::GenericFontFamily;
@@ -303,6 +303,13 @@ impl RinchDocument {
         }
     }
 
+    /// Cache a parsed inline `style` block on the node for Stylo's next
+    /// cascade of it. Pair with [`parse_inline_style`].
+    pub(crate) fn cache_inline_style(&mut self, node_id: usize, pdb: PropertyDeclarationBlock) {
+        self.tree.nodes[node_id].style_attribute_cache =
+            Some(ServoArc::new(self.tree.guard.wrap(pdb)));
+    }
+
     /// Mark a node and its entire subtree as paint-dirty for removal.
     ///
     /// Used before removing nodes so the dirty region includes the old layout
@@ -443,6 +450,18 @@ impl RinchDocument {
                     }
                 }
 
+                // Collapsed block (virtualized contenteditable): keep the
+                // estimated height apply_stylo_styles_to_taffy would have set.
+                if let Some(est_h) = node.estimated_height {
+                    taffy_style.size.height = taffy::Dimension::length(est_h);
+                }
+
+                // This rebuilds the Taffy style from the computed values, so it
+                // drops the childless-block line floor exactly the way
+                // apply_stylo_styles_to_taffy used to — re-apply it here or a
+                // transition frame collapses a blockified `<input>` to nothing.
+                crate::ifc::apply_empty_block_line_floor(node, &mut taffy_style);
+
                 // Only call set_style if the Taffy style actually changed.
                 // set_style() internally calls mark_dirty() which propagates up
                 // the entire ancestor chain — unconditional calls here were causing
@@ -495,7 +514,28 @@ impl RinchDocument {
             }
             if let Some(taffy_id) = node.taffy_id {
                 let dd = self.default_display_for_node(node_id);
-                let taffy_style = node.computed_style.to_taffy_style(dd);
+                let mut taffy_style = node.computed_style.to_taffy_style(dd);
+
+                // Body node needs the same overrides as apply_stylo_styles_to_taffy
+                if node_id == self.tree.body_id {
+                    if taffy_style.flex_grow == 0.0 {
+                        taffy_style.flex_grow = 1.0;
+                    }
+                    if taffy_style.size.width == taffy::Dimension::auto() {
+                        taffy_style.size.width = taffy::Dimension::percent(1.0);
+                    }
+                }
+
+                // Collapsed block (virtualized contenteditable): keep the
+                // estimated height apply_stylo_styles_to_taffy would have set.
+                if let Some(est_h) = node.estimated_height {
+                    taffy_style.size.height = taffy::Dimension::length(est_h);
+                }
+
+                // Same rebuild-from-computed-values hazard as tick_transitions:
+                // without this an animation frame drops the childless-block line
+                // floor and the element collapses to zero height.
+                crate::ifc::apply_empty_block_line_floor(node, &mut taffy_style);
 
                 if let Ok(old_taffy_style) = self.tree.taffy.style(taffy_id) {
                     if old_taffy_style != &taffy_style {
@@ -801,4 +841,18 @@ pub(super) fn parse_style_string(style: &str) -> HashMap<String, String> {
         }
     }
     result
+}
+
+/// Parse an inline `style` attribute value into Stylo's declaration block the
+/// way author content wants it: `about:blank`, no quirks, no error reporting.
+/// One place, so `set_attribute("style")`, `set_styles` and the inset fast
+/// path can't drift.
+pub(super) fn parse_inline_style(css: &str) -> PropertyDeclarationBlock {
+    style::properties::parse_style_attribute(
+        css,
+        &crate::layout::BLANK_URL_DATA,
+        None,
+        QuirksMode::NoQuirks,
+        style::stylesheets::CssRuleType::Style,
+    )
 }

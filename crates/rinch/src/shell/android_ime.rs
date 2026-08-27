@@ -82,7 +82,14 @@ impl ImeComposition {
         text: String,
         new_cursor_position: i32,
     ) -> Vec<ImeAction> {
-        let cursor = composing_cursor(&text, new_cursor_position);
+        // An empty region is the *end* of a composition, not a composition with
+        // its caret at zero — so it clears with `cursor: None`, exactly like
+        // the clear a commit or a finish emits. One representation, one state.
+        let cursor = if text.is_empty() {
+            None
+        } else {
+            composing_cursor(&text, new_cursor_position)
+        };
         self.composing = text.clone();
         vec![ImeAction::Preedit { text, cursor }]
     }
@@ -132,6 +139,14 @@ impl ImeComposition {
     /// the region is deliberately left alone: an IME shortening a word sends a
     /// shorter `setComposingText`, and only reaches for this to edit what is
     /// already committed either side of it.
+    ///
+    /// **The lengths are UTF-16 code units, and are passed on as if they were
+    /// characters.** `ImeEvent::DeleteSurrounding` counts characters (rinch's
+    /// model is char-based) and says the platform boundary converts — which
+    /// this cannot do, because the connection never sees the field's text. The
+    /// two agree for the BMP and disagree by one deletion per astral character:
+    /// a word containing an emoji deletes one character too many. Closing it
+    /// needs the surrounding-text queries the connection does not yet answer.
     pub(crate) fn delete_surrounding_text(&mut self, before: i32, after: i32) -> Vec<ImeAction> {
         let before = before.max(0) as usize;
         let after = after.max(0) as usize;
@@ -234,13 +249,7 @@ mod tests {
     fn an_empty_composing_call_clears_the_preedit_and_ends_the_composition() {
         let mut c = ImeComposition::new();
         c.set_composing_text("h".to_string(), 1);
-        assert_eq!(
-            c.set_composing_text(String::new(), 1),
-            vec![ImeAction::Preedit {
-                text: String::new(),
-                cursor: Some((0, 0))
-            }]
-        );
+        assert_eq!(c.set_composing_text(String::new(), 1), vec![clear()]);
         assert!(
             c.finish_composing_text().is_empty(),
             "nothing is left composing to finish"

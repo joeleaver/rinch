@@ -37,7 +37,10 @@ pub enum ImeUpdate {
     /// `commitText(text, _)` — real text at the caret, replacing any composing
     /// region. Empty is meaningful: it discards the region.
     CommitText(String),
-    /// `deleteSurroundingText(before, after)`, in characters.
+    /// `deleteSurroundingText(before, after)`, in UTF-16 code units (Android's
+    /// unit for this call — `deleteSurroundingTextInCodePoints` is the other
+    /// one). Carried raw; converting needs the field's text, which this
+    /// connection does not have.
     DeleteSurroundingText { before: i32, after: i32 },
 }
 
@@ -91,8 +94,17 @@ pub extern "C" fn Java_com_rinch_RinchInputConnection_nativeCommitText(
     _class: jni::objects::JClass,
     text: jni::objects::JString,
 ) {
-    if let Ok(s) = env.get_string(&text) {
-        push(ImeUpdate::CommitText(s.into()));
+    // A read that fails still has to leave a mark: this queue's ordering is
+    // load-bearing, and dropping the commit that ended a composition would
+    // leave the preedit drawn over text that has already replaced it. The empty
+    // commit is the IME's own "throw the region away", which is the closest
+    // truthful thing to say when the string cannot be read.
+    match env.get_string(&text) {
+        Ok(s) => push(ImeUpdate::CommitText(s.into())),
+        Err(e) => {
+            log::warn!("commitText: could not read the committed string ({e}); clearing instead");
+            push(ImeUpdate::CommitText(String::new()));
+        }
     }
 }
 
@@ -103,11 +115,18 @@ pub extern "C" fn Java_com_rinch_RinchInputConnection_nativeSetComposingText(
     text: jni::objects::JString,
     new_cursor_position: jni::sys::jint,
 ) {
-    if let Ok(s) = env.get_string(&text) {
-        push(ImeUpdate::SetComposingText {
+    match env.get_string(&text) {
+        Ok(s) => push(ImeUpdate::SetComposingText {
             text: s.into(),
             new_cursor_position,
-        });
+        }),
+        Err(e) => {
+            log::warn!("setComposingText: could not read the composing string ({e}); clearing");
+            push(ImeUpdate::SetComposingText {
+                text: String::new(),
+                new_cursor_position,
+            });
+        }
     }
 }
 

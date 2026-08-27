@@ -35,7 +35,7 @@ use rinch_core::events;
 use rinch_platform::PlatformRenderer;
 use rinch_platform::{
     AppAction, ImeEvent, KeyCode, Modifiers, MouseButton as PlatformMouseButton, PlatformEvent,
-    PlatformWindow, UserEvent,
+    PlatformWindow, UserEvent, to_logical,
 };
 
 use crate::app::RinchApp;
@@ -369,6 +369,7 @@ impl RinchRuntime {
             .expect("Failed to create DevTools window");
 
         let size = window.surface_size();
+        let dt_scale = window.scale_factor();
 
         #[cfg(feature = "gpu")]
         {
@@ -382,15 +383,16 @@ impl RinchRuntime {
         // Create a separate RinchApp for DevTools with the panel component
         let mut dt_app = RinchApp::new(super::devtools_panel::devtools_root);
 
-        // Mount the DevTools component
-        dt_app.mount_component(size.width as f32, size.height as f32);
+        // Mount the DevTools component at its logical viewport size.
+        let dt_logical = to_logical((size.width, size.height), dt_scale);
+        dt_app.mount_component(dt_logical.0 as f32, dt_logical.1 as f32);
 
         // Inject DevTools CSS into the document
         if let Some(doc) = &dt_app.doc {
             let mut d = doc.borrow_mut();
             d.load_css(super::devtools_css::DEVTOOLS_CSS);
             d.recompute_all_styles_full();
-            d.resolve_layout(size.width as f32, size.height as f32);
+            d.resolve_layout(dt_logical.0 as f32, dt_logical.1 as f32);
         }
 
         self.devtools_app = Some(dt_app);
@@ -481,6 +483,24 @@ impl RinchRuntime {
         self.devtools_window.as_ref().map(|w| w.window.id())
     }
 
+    /// The DevTools window's surface size, in physical pixels — what
+    /// `RinchApp::handle_event` expects (it derives the logical viewport
+    /// itself). Falls back to the size DevTools is created at.
+    fn devtools_size(&self) -> (u32, u32) {
+        self.devtools_window
+            .as_ref()
+            .map(|w| w.inner_size())
+            .unwrap_or((480, 600))
+    }
+
+    /// The DevTools window's scale factor.
+    fn devtools_scale_factor(&self) -> f64 {
+        self.devtools_window
+            .as_ref()
+            .map(|w| w.scale_factor())
+            .unwrap_or(1.0)
+    }
+
     /// Paint the DevTools window.
     fn paint_devtools(&mut self) -> Result<(), String> {
         #[cfg(feature = "gpu")]
@@ -503,7 +523,7 @@ impl RinchRuntime {
         };
 
         let scale = window.scale_factor();
-        let size = window.inner_size();
+        let size = window.logical_size();
         let (_base, w, h) = dt_app.build_pixels(scale, size, false);
 
         let pixels = dt_app
@@ -542,7 +562,7 @@ impl RinchRuntime {
         };
 
         let scale = window.scale_factor();
-        let size = window.inner_size();
+        let size = window.logical_size();
         let scene = dt_app.build_scene(scale, size);
         renderer.paint(scene, false)?;
         Ok(())
@@ -556,7 +576,7 @@ impl RinchRuntime {
         let Some(window) = &self.devtools_window else {
             return;
         };
-        let size = window.inner_size();
+        let size = window.logical_size();
         let changed = dt_app.resolve_and_repaint(size.0 as f32, size.1 as f32);
         if changed {
             window.request_redraw();
@@ -619,6 +639,7 @@ impl RinchRuntime {
             .expect("Failed to create window");
 
         let size = window.surface_size();
+        let scale = window.scale_factor();
 
         // Create renderer
         #[cfg(feature = "gpu")]
@@ -643,9 +664,10 @@ impl RinchRuntime {
             window_arc.request_redraw();
         }));
 
-        // Mount the component
-        self.app
-            .mount_component(size.width as f32, size.height as f32);
+        // Mount the component at the *logical* viewport size — `size` above is
+        // the physical surface size (see `to_logical`).
+        let logical = to_logical((size.width, size.height), scale);
+        self.app.mount_component(logical.0 as f32, logical.1 as f32);
 
         // Request initial draw
         self.window.as_ref().unwrap().request_redraw();
@@ -791,13 +813,14 @@ impl RinchRuntime {
         // is resolved before painting (same as paint_gpu).
         drain_main_queue();
         rinch_core::reactive::drain_polls();
+        let scale = window.scale_factor();
+        // Layout and paint work in logical (CSS) pixels; `inner_size` is
+        // physical (see `to_logical`).
+        let size = window.logical_size();
         if self.app.has_pending_layout() {
-            let sz = window.inner_size();
-            self.app.resolve_and_repaint(sz.0 as f32, sz.1 as f32);
+            self.app.resolve_and_repaint(size.0 as f32, size.1 as f32);
         }
 
-        let scale = window.scale_factor();
-        let size = window.inner_size();
         let transparent = self.app.is_transparent();
         let s = scale as f32;
 
@@ -945,13 +968,14 @@ impl RinchRuntime {
         // been processed yet.
         drain_main_queue();
         rinch_core::reactive::drain_polls();
+        let scale = window.scale_factor();
+        // Layout and paint work in logical (CSS) pixels; `inner_size` is
+        // physical (see `to_logical`).
+        let size = window.logical_size();
         if self.app.has_pending_layout() {
-            let sz = window.inner_size();
-            self.app.resolve_and_repaint(sz.0 as f32, sz.1 as f32);
+            self.app.resolve_and_repaint(size.0 as f32, size.1 as f32);
         }
 
-        let scale = window.scale_factor();
-        let size = window.inner_size();
         let transparent = self.app.is_transparent();
         let s = scale as f32;
 
@@ -1129,12 +1153,35 @@ impl RinchRuntime {
         Ok(())
     }
 
-    /// Get the current window size.
+    /// Get the current window size, in physical pixels.
+    ///
+    /// This is what the OS surface and the renderer are sized in, and what
+    /// pointer coordinates arrive in — `RinchApp::handle_event` divides it by
+    /// the scale factor itself. Layout and paint want [`Self::logical_size`].
+    ///
+    /// Before the window exists there is no surface, so the fallback is the
+    /// requested size, which `create_window` passes as a `LogicalSize`; the
+    /// scale factor is 1x until then, so the two agree.
     fn window_size(&self) -> (u32, u32) {
         self.window
             .as_ref()
             .map(|w| w.inner_size())
             .unwrap_or((self.width, self.height))
+    }
+
+    /// Get the current window size in logical (CSS) pixels.
+    ///
+    /// Only the software debug-screenshot path needs this; the paint paths
+    /// derive it from the `window` they already hold.
+    #[cfg(all(feature = "debug", not(feature = "gpu")))]
+    fn logical_size(&self) -> (u32, u32) {
+        // `self.width`/`self.height` are already the requested *logical* size
+        // (`create_window` hands them to winit as a `LogicalSize`), so the
+        // no-window fallback must not divide them again.
+        self.window
+            .as_ref()
+            .map(|w| w.logical_size())
+            .unwrap_or((self.width.max(1), self.height.max(1)))
     }
 
     /// Get the current scale factor.
@@ -1357,7 +1404,7 @@ impl RinchRuntime {
         #[cfg(not(feature = "gpu"))]
         {
             let scale = self.scale_factor();
-            let size = self.window_size();
+            let size = self.logical_size();
             // Screenshot: pass empty layers (captures UI only, not live surfaces)
             let (pixels, w, h) = self.app.build_pixels(scale, size, false);
             let png_bytes = screenshot::encode_png(pixels, w, h);
@@ -1527,14 +1574,17 @@ impl ApplicationHandler for RinchRuntime {
         let platform_event = match event {
             WindowEvent::CloseRequested => PlatformEvent::CloseRequested,
             WindowEvent::SurfaceResized(size) => {
-                // Also resize the renderer
+                // Also resize the renderer — it works in physical pixels.
                 #[cfg(feature = "gpu")]
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(size.width.max(1), size.height.max(1));
                 }
+                // `Resized` re-lays out the document, so it carries the
+                // logical size (see `to_logical`).
+                let logical = to_logical((size.width, size.height), self.scale_factor());
                 PlatformEvent::Resized {
-                    width: size.width,
-                    height: size.height,
+                    width: logical.0,
+                    height: logical.1,
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -2052,8 +2102,10 @@ impl RinchRuntime {
                 if let Some(renderer) = &mut self.devtools_renderer {
                     renderer.resize(size.width.max(1), size.height.max(1));
                 }
+                let dt_scale = self.devtools_scale_factor();
                 if let Some(dt_app) = &mut self.devtools_app {
-                    dt_app.resize_layout(size.width, size.height);
+                    let logical = to_logical((size.width, size.height), dt_scale);
+                    dt_app.resize_layout(logical.0, logical.1);
                 }
                 if let Some(w) = &self.devtools_window {
                     w.request_redraw();
@@ -2065,17 +2117,9 @@ impl RinchRuntime {
                 }
             }
             WindowEvent::PointerMoved { position, .. } => {
+                let size = self.devtools_size();
+                let scale = self.devtools_scale_factor();
                 if let Some(dt_app) = &mut self.devtools_app {
-                    let size = self
-                        .devtools_window
-                        .as_ref()
-                        .map(|w| w.inner_size())
-                        .unwrap_or((480, 600));
-                    let scale = self
-                        .devtools_window
-                        .as_ref()
-                        .map(|w| w.scale_factor())
-                        .unwrap_or(1.0);
                     let actions = dt_app.handle_event(
                         PlatformEvent::MouseMove {
                             x: position.x as f32,
@@ -2109,18 +2153,10 @@ impl RinchRuntime {
                     }
                     _ => return,
                 };
+                let size = self.devtools_size();
+                let scale = self.devtools_scale_factor();
                 if let Some(dt_app) = &mut self.devtools_app {
                     let (x, y) = dt_app.cursor_pos.unwrap_or((0.0, 0.0));
-                    let size = self
-                        .devtools_window
-                        .as_ref()
-                        .map(|w| w.inner_size())
-                        .unwrap_or((480, 600));
-                    let scale = self
-                        .devtools_window
-                        .as_ref()
-                        .map(|w| w.scale_factor())
-                        .unwrap_or(1.0);
                     let actions = dt_app.handle_event(
                         PlatformEvent::MouseDown {
                             x,
@@ -2155,18 +2191,10 @@ impl RinchRuntime {
                     }
                     _ => return,
                 };
+                let size = self.devtools_size();
+                let scale = self.devtools_scale_factor();
                 if let Some(dt_app) = &mut self.devtools_app {
                     let (x, y) = dt_app.cursor_pos.unwrap_or((0.0, 0.0));
-                    let size = self
-                        .devtools_window
-                        .as_ref()
-                        .map(|w| w.inner_size())
-                        .unwrap_or((480, 600));
-                    let scale = self
-                        .devtools_window
-                        .as_ref()
-                        .map(|w| w.scale_factor())
-                        .unwrap_or(1.0);
                     let actions = dt_app.handle_event(
                         PlatformEvent::MouseUp {
                             x,
@@ -2192,18 +2220,10 @@ impl RinchRuntime {
                     }
                     winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x, pos.y),
                 };
+                let size = self.devtools_size();
+                let scale = self.devtools_scale_factor();
                 if let Some(dt_app) = &mut self.devtools_app {
                     let (cx, cy) = dt_app.cursor_pos.unwrap_or((0.0, 0.0));
-                    let size = self
-                        .devtools_window
-                        .as_ref()
-                        .map(|w| w.inner_size())
-                        .unwrap_or((480, 600));
-                    let scale = self
-                        .devtools_window
-                        .as_ref()
-                        .map(|w| w.scale_factor())
-                        .unwrap_or(1.0);
                     let actions = dt_app.handle_event(
                         PlatformEvent::MouseWheel {
                             x: cx,
@@ -2724,4 +2744,148 @@ fn resize_png_icon(
         writer.write_image_data(&dst)?;
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod viewport_tests {
+    use super::*;
+
+    /// A window that reports a physical surface size and a scale factor.
+    struct FakeWindow {
+        surface: (u32, u32),
+        scale: f64,
+    }
+
+    impl PlatformWindow for FakeWindow {
+        fn inner_size(&self) -> (u32, u32) {
+            self.surface
+        }
+        fn scale_factor(&self) -> f64 {
+            self.scale
+        }
+        fn request_redraw(&self) {}
+        fn set_minimized(&self, _minimized: bool) {}
+        fn set_maximized(&self, _maximized: bool) {}
+        fn set_visible(&self, _visible: bool) {}
+        fn is_maximized(&self) -> bool {
+            false
+        }
+        fn drag_window(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_title(&self, _title: &str) {}
+    }
+
+    /// The desktop shell used to hand the document `PlatformWindow::inner_size`
+    /// — the *physical* surface size — as its layout viewport, while paint
+    /// multiplies every layout coordinate by the same window's scale factor.
+    /// On a 1.25x display that laid the page out 1.25x too wide and then drew
+    /// it 1.25x larger again, so the rightmost fifth fell outside the surface:
+    /// a `flex: 1` child's trailing siblings (a row's confidence dots, the box
+    /// after a growing one) were laid out correctly and simply never appeared.
+    ///
+    /// `run("probe", 460, 300, ..)` on a 1.25x display gets a 575x975 surface;
+    /// the viewport is 460 CSS pixels wide, not 575.
+    #[test]
+    fn layout_viewport_is_logical_not_physical() {
+        let window = FakeWindow {
+            surface: (575, 975),
+            scale: 1.25,
+        };
+        assert_eq!(
+            window.logical_size(),
+            (460, 780),
+            "layout must get the logical viewport, not the 575x975 surface size"
+        );
+    }
+
+    /// The page must fit the surface once paint has scaled it — the invariant
+    /// the physical-size viewport broke.
+    #[test]
+    fn scaled_layout_viewport_fits_the_surface() {
+        for &(surface, scale) in &[
+            ((575u32, 975u32), 1.25f64),
+            ((786, 1704), 2.0),
+            ((491, 1065), 1.25),
+        ] {
+            let window = FakeWindow { surface, scale };
+            let (vw, vh) = window.logical_size();
+            let painted = (vw as f64 * scale, vh as f64 * scale);
+            assert!(
+                (painted.0 - surface.0 as f64).abs() <= 1.0
+                    && (painted.1 - surface.1 as f64).abs() <= 1.0,
+                "viewport {vw}x{vh} painted at {scale}x is {painted:?}, \
+                 which does not fill the {surface:?} surface"
+            );
+        }
+    }
+
+    /// A 1x display is unaffected, and a nonsensical scale factor must not
+    /// collapse the viewport to zero.
+    #[test]
+    fn layout_viewport_degenerate_scales() {
+        assert_eq!(
+            FakeWindow {
+                surface: (800, 600),
+                scale: 1.0
+            }
+            .logical_size(),
+            (800, 600)
+        );
+        assert_eq!(
+            FakeWindow {
+                surface: (800, 600),
+                scale: 0.0
+            }
+            .logical_size(),
+            (800, 600),
+            "a zero scale factor must fall back to 1x, not divide by zero"
+        );
+        assert_eq!(
+            FakeWindow {
+                surface: (1, 1),
+                scale: 4.0
+            }
+            .logical_size(),
+            (1, 1),
+            "the viewport must never round down to zero"
+        );
+        for bad in [f64::NAN, f64::INFINITY, -2.0] {
+            assert_eq!(
+                FakeWindow {
+                    surface: (800, 600),
+                    scale: bad
+                }
+                .logical_size(),
+                (800, 600),
+                "a {bad} scale factor must fall back to 1x"
+            );
+        }
+    }
+
+    /// The viewport the shell lays out at and the one `RinchApp::handle_event`
+    /// re-lays out at on every `ReRender` / `AboutToWait` must be the *same*
+    /// number. They are derived on opposite sides of the shell boundary — the
+    /// shell from the window, the app from the physical size it was handed — so
+    /// a divergence here silently reintroduces the oversized layout one frame
+    /// after mount.
+    #[test]
+    fn app_and_shell_agree_on_the_layout_viewport() {
+        for &(surface, scale) in &[
+            ((575u32, 975u32), 1.25f64),
+            ((577, 977), 1.25),
+            ((786, 1704), 2.0),
+            ((800, 600), 1.0),
+        ] {
+            let window = FakeWindow { surface, scale };
+            let (sw, sh) = window.logical_size();
+            let (aw, ah) = RinchApp::layout_viewport(surface, scale);
+            assert_eq!(
+                (sw as f32, sh as f32),
+                (aw, ah),
+                "shell laid out {surface:?}@{scale}x at {sw}x{sh} but the app \
+                 re-lays it out at {aw}x{ah}"
+            );
+        }
+    }
 }
