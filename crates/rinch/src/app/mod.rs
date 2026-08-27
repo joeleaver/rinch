@@ -3874,3 +3874,195 @@ mod wheel_scroll_dispatch_tests {
         );
     }
 }
+
+/// Caret placement from a click inside a multi-line text field.
+///
+/// A `<textarea>` between two blocks is laid out by an inline formatting
+/// context, and the anonymous block the IFC wraps it in carries the field's own
+/// padding. Paint and hit testing both add that content-box offset; the caret
+/// arithmetic summed the parent chain and did not, so it measured the click
+/// against a box one padding higher than the one on screen and put the caret a
+/// line below the finger. Invisible in an `<input>` — there is only one line to
+/// land on — which is why it survived every single-line text-input test.
+#[cfg(test)]
+mod input_caret_hit_tests {
+    use super::*;
+    use rinch_core::events::{InputCallback, register_input_handler};
+    use std::cell::Cell;
+    use std::ops::Range;
+
+    const VIEWPORT: (f32, f32) = (393.0, 852.0);
+
+    /// Six numbered lines. Distinct, and each one its own line in the layout.
+    const VALUE: &str = "line zero\nline one\nline two\nline three\nline four\nline five";
+
+    /// The app screen this was found on: a padded scrolling column with a note,
+    /// the field, and room under it. The padding is what the field's painted
+    /// origin picks up and a plain parent-chain sum does not.
+    fn mount_field() -> (RinchApp, usize) {
+        let oninput_id = register_input_handler(InputCallback::new(|_| {}));
+        let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id_in = id.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let column = scope.create_element("div");
+            column.set_attribute("style", "padding: 14px 22px 0; overflow-y: auto;");
+            let note = scope.create_element("div");
+            note.set_attribute("style", "font-size: 12px;");
+            note.append_child(&scope.create_text("Chords over the words."));
+            let field = scope.create_element("textarea");
+            field.set_attribute(
+                "style",
+                "width: 100%; padding: 14px 15px; border: 1px solid #ccc; \
+                 font-family: monospace; font-size: 13.5px; line-height: 1.5;",
+            );
+            field.set_attribute("rows", "12");
+            field.set_attribute("value", VALUE);
+            field.set_attribute("data-oninput", &oninput_id.0.to_string());
+            let room = scope.create_element("div");
+            room.set_attribute("style", "height: 320px;");
+            column.append_child(&note);
+            column.append_child(&field);
+            column.append_child(&room);
+            root.append_child(&column);
+            id_in.set(Some(field.node_id().0));
+            root
+        });
+        app.mount_component(VIEWPORT.0, VIEWPORT.1);
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+        (
+            app,
+            id.get().expect("the field's node id, captured at mount"),
+        )
+    }
+
+    fn click(app: &mut RinchApp, x: f32, y: f32) {
+        let window = (VIEWPORT.0 as u32, VIEWPORT.1 as u32);
+        app.handle_event(
+            PlatformEvent::MouseDown {
+                x,
+                y,
+                button: MouseButton::Left,
+            },
+            window,
+            1.0,
+        );
+        app.handle_event(
+            PlatformEvent::MouseUp {
+                x,
+                y,
+                button: MouseButton::Left,
+            },
+            window,
+            1.0,
+        );
+    }
+
+    /// Where the painter puts the field's text: the origin of its first line box
+    /// and, per visual line, `(top, height, byte range)` relative to that origin.
+    ///
+    /// Built the way `paint_input_value` builds it, against the *document's* font
+    /// context, so this is the geometry actually on screen on whatever machine
+    /// runs the test rather than a second guess at it.
+    #[allow(clippy::type_complexity)]
+    fn painted_lines(app: &mut RinchApp, id: usize) -> ((f32, f32), Vec<(f32, f32, Range<usize>)>) {
+        let doc = app.doc.clone().expect("mounted");
+        let mut d = doc.borrow_mut();
+        let (style, width) = {
+            let node = d.tree.get(id).expect("the field");
+            (node.computed_style.clone(), node.layout.width)
+        };
+        let (sum_x, sum_y) = RinchApp::compute_absolute_position(&d.tree, id);
+        let (ifc_dx, ifc_dy) = {
+            let node = d.tree.get(id).expect("the field");
+            rinch_dom::paint::ifc_content_box_offset(&d.tree, node)
+        };
+        let pad_l = style.padding_left.to_px();
+        let pad_t = style.padding_top.to_px();
+
+        let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
+        let mut builder = layout_cx.ranged_builder(&mut d.font_cx, VALUE, 1.0, true);
+        builder.push_default(parley::style::StyleProperty::FontSize(style.font_size));
+        builder.push_default(parley::style::StyleProperty::FontStack(
+            parley::style::FontStack::Source(std::borrow::Cow::Owned(style.font_family.clone())),
+        ));
+        let mut layout = builder.build(VALUE);
+        layout.break_all_lines(Some(width - pad_l * 2.0));
+
+        let lines = layout
+            .lines()
+            .map(|line| {
+                let m = line.metrics();
+                (m.baseline - m.ascent, m.line_height, line.text_range())
+            })
+            .collect();
+        ((sum_x + ifc_dx + pad_l, sum_y + ifc_dy + pad_t), lines)
+    }
+
+    /// The fault: a click on the middle of a painted line must put the caret on
+    /// *that* line. Before the fix every one of them landed a line low.
+    #[test]
+    fn a_click_lands_on_the_line_it_was_aimed_at() {
+        let (mut app, field) = mount_field();
+        let ((text_x, text_y), lines) = painted_lines(&mut app, field);
+        assert_eq!(lines.len(), 6, "one visual line per source line");
+
+        for (n, (top, height, range)) in lines.iter().enumerate() {
+            click(&mut app, text_x + 2.0, text_y + top + height / 2.0);
+            let caret = app
+                .focused_input_state
+                .as_ref()
+                .expect("the click focused the field")
+                .selection
+                .head
+                .0;
+            assert!(
+                range.contains(&caret) || (n + 1 == lines.len() && caret == range.end),
+                "a click on line {n} ({range:?}) put the caret at {caret}, on line {:?}",
+                lines.iter().position(|(_, _, r)| r.contains(&caret)),
+            );
+        }
+    }
+
+    /// The same field with nothing beside it is laid out as a block, picks up no
+    /// IFC offset, and must keep landing where it always did.
+    #[test]
+    fn a_field_outside_a_text_flow_still_lands_on_its_line() {
+        let oninput_id = register_input_handler(InputCallback::new(|_| {}));
+        let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id_in = id.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let field = scope.create_element("textarea");
+            field.set_attribute(
+                "style",
+                "width: 340px; padding: 14px 15px; font-family: monospace; font-size: 13.5px;",
+            );
+            field.set_attribute("rows", "12");
+            field.set_attribute("value", VALUE);
+            field.set_attribute("data-oninput", &oninput_id.0.to_string());
+            root.append_child(&field);
+            id_in.set(Some(field.node_id().0));
+            root
+        });
+        app.mount_component(VIEWPORT.0, VIEWPORT.1);
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+        let field = id.get().expect("the field's node id");
+
+        let ((text_x, text_y), lines) = painted_lines(&mut app, field);
+        for (n, (top, height, range)) in lines.iter().enumerate() {
+            click(&mut app, text_x + 2.0, text_y + top + height / 2.0);
+            let caret = app
+                .focused_input_state
+                .as_ref()
+                .expect("the click focused the field")
+                .selection
+                .head
+                .0;
+            assert!(
+                range.contains(&caret) || (n + 1 == lines.len() && caret == range.end),
+                "a click on line {n} ({range:?}) put the caret at {caret}"
+            );
+        }
+    }
+}

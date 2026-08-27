@@ -252,7 +252,13 @@ impl RinchApp {
 
         // Compute click-to-cursor byte offset if we're focusing an input
         let input_cursor_offset = if let Some((nid, _, _)) = found_input_focus {
-            Some(Self::compute_input_cursor_from_click(&d.tree, nid, x, y))
+            Some(Self::compute_input_cursor_from_click(
+                &d.tree,
+                &mut self.hit_test_font_cx,
+                nid,
+                x,
+                y,
+            ))
         } else {
             None
         };
@@ -526,10 +532,15 @@ impl RinchApp {
 
     /// Compute the byte offset for a click position within a text input node.
     ///
-    /// Builds a temporary Parley layout from the node's value and font properties,
-    /// then uses `byte_offset_from_position` to find the character at click coords.
+    /// Rebuilds the Parley layout `paint_input_value` drew the field's text with
+    /// — same font stack, same font context, same wrap width — and asks it which
+    /// character the click landed on. The two layouts have to agree glyph for
+    /// glyph, and so do the coordinate spaces: the click arrives in layout
+    /// pixels, and the box's painted origin is where paint and hit testing say
+    /// it is, IFC content-box offset included.
     fn compute_input_cursor_from_click(
         tree: &rinch_dom::NodeTree,
+        font_cx: &mut parley::FontContext,
         node_id: usize,
         click_x: f32,
         click_y: f32,
@@ -547,21 +558,15 @@ impl RinchApp {
             return 0;
         }
 
-        // Compute node's absolute position
-        let mut abs_x = node.layout.x;
-        let mut abs_y = node.layout.y;
-        let mut parent_id = node.parent;
-        while let Some(pid) = parent_id {
-            if let Some(pn) = tree.get(pid) {
-                abs_x += pn.layout.x;
-                abs_y += pn.layout.y;
-                abs_x -= pn.scroll_offset.0 as f32;
-                abs_y -= pn.scroll_offset.1 as f32;
-                parent_id = pn.parent;
-            } else {
-                break;
-            }
-        }
+        // Where the field's border box is *painted*. The parent-chain sum is the
+        // one every other caller uses; the IFC offset on top of it is what makes
+        // the answer agree with paint for a field a text flow positions — which
+        // a `<textarea>` between two blocks is, because the anonymous block that
+        // wraps it carries the field's own padding.
+        let (abs_x, abs_y) = Self::compute_absolute_position(tree, node_id);
+        let (ifc_dx, ifc_dy) = rinch_dom::paint::ifc_content_box_offset(tree, node);
+        let abs_x = abs_x + ifc_dx;
+        let abs_y = abs_y + ifc_dy;
 
         let padding_left = node.computed_style.padding_left.to_px();
         let padding_top = node.computed_style.padding_top.to_px();
@@ -591,13 +596,13 @@ impl RinchApp {
             value
         };
 
-        // Use the tree's font context to build the layout
-        // We can't borrow font_cx mutably here since we only have &NodeTree.
-        // Instead, create a temporary font context for hit testing.
-        let mut font_cx = parley::FontContext::new();
+        // The app's shared hit-test context, never a fresh one: a
+        // `FontContext::new()` here would re-scan the system on every click and
+        // would not have the app's own registered typefaces in it at all, so it
+        // would measure the text against a face the painter never used.
         let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
 
-        let mut builder = layout_cx.ranged_builder(&mut font_cx, display_text, 1.0, true);
+        let mut builder = layout_cx.ranged_builder(font_cx, display_text, 1.0, true);
         builder.push_default(parley::style::StyleProperty::FontSize(font_size));
         builder.push_default(parley::style::StyleProperty::FontStack(
             parley::style::FontStack::Source(std::borrow::Cow::Owned(font_family)),
