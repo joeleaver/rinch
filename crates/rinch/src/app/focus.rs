@@ -267,7 +267,23 @@ impl RinchApp {
 
     /// Whether a text input element is currently focused.
     pub fn has_focused_input(&self) -> bool {
-        matches!(self.focus_target, FocusTarget::Input(_))
+        self.focused_input_node().is_some()
+    }
+
+    /// The focused `<input>`'s node id, if one holds focus.
+    ///
+    /// The Android shell watches this rather than [`Self::has_focused_input`]:
+    /// a soft keyboard's composing region belongs to the field it was started
+    /// in, and moving between two fields is invisible to Android (one
+    /// `RinchInputView` holds focus throughout), so the shell has to notice the
+    /// move itself and restart the IME. Crate-internal, like the
+    /// `focused_editor_id` below it — the shell is in this crate, and
+    /// embedders are served by `has_focused_input`.
+    pub(crate) fn focused_input_node(&self) -> Option<usize> {
+        match self.focus_target {
+            FocusTarget::Input(id) => Some(id),
+            _ => None,
+        }
     }
 
     /// Whether a generic focusable node (`tabindex`, `FocusTarget::Node`,
