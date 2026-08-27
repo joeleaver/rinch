@@ -1,11 +1,13 @@
 // ── Free functions (platform-agnostic hit testing) ───────────────────────────
 
+use rinch_dom::stacking::{paints_at_stacking_root, stacking_paint_order};
+
 /// Simple hit testing: find the deepest node whose layout rect contains (x, y).
 /// Respects CSS stacking contexts so that elements with higher z-index
 /// are tested before visually-behind siblings, and CSS transforms so that a
 /// transformed subtree is hit where it is *painted* (#199).
 pub(crate) fn hit_test(tree: &rinch_dom::NodeTree, x: f32, y: f32) -> Option<usize> {
-    hit_test_node(tree, tree.body_id, 0.0, 0.0, x, y, x, y, true)
+    hit_test_node(tree, tree.body_id, 0.0, 0.0, x, y, x, y)
 }
 
 /// Map `(px, py)` — a point in the coordinate space the node's layout box lives
@@ -55,69 +57,6 @@ fn local_point(node: &rinch_dom::Node, nx: f32, ny: f32, px: f32, py: f32) -> Op
     Some((p.x as f32, p.y as f32))
 }
 
-/// A stacking context entry for hit testing, with accumulated offset.
-struct HitTestScEntry {
-    z_index: i32,
-    node_id: usize,
-    offset_x: f32,
-    offset_y: f32,
-    dom_order: usize,
-}
-
-/// Collect descendant stacking contexts for hit testing, mirroring the paint
-/// pipeline's `collect_stacking_contexts`. Walks children, stops at SC boundaries,
-/// accumulates offsets through intermediate non-SC nodes.
-///
-/// No transform handling is needed here, for the same reason paint's version
-/// needs none: a transformed node always creates a stacking context
-/// (`Node::creates_stacking_context`), so the walk stops at it and the offsets
-/// accumulated through the intermediate nodes never cross a transform. Every
-/// entry therefore lands in the collecting SC's own space — exactly the space
-/// the probe point is in when the entry is descended into.
-fn collect_sc_for_hit_test(
-    tree: &rinch_dom::NodeTree,
-    children: &[usize],
-    offset_x: f32,
-    offset_y: f32,
-    result: &mut Vec<HitTestScEntry>,
-    order_counter: &mut usize,
-) {
-    for &child_id in children {
-        let Some(child) = tree.get(child_id) else {
-            continue;
-        };
-
-        if child.creates_stacking_context() {
-            // position: fixed elements are viewport-relative — zero the offset
-            let is_fixed =
-                child.computed_style.position == rinch_dom::computed_style::PositionValue::Fixed;
-            let z = child.computed_style.z_index.unwrap_or(0);
-            result.push(HitTestScEntry {
-                z_index: z,
-                node_id: child_id,
-                offset_x: if is_fixed { 0.0 } else { offset_x },
-                offset_y: if is_fixed { 0.0 } else { offset_y },
-                dom_order: *order_counter,
-            });
-            *order_counter += 1;
-        } else {
-            let child_x = offset_x + child.layout.x;
-            let child_y = offset_y + child.layout.y;
-            let sx = child.scroll_offset.0 as f32;
-            let sy = child.scroll_offset.1 as f32;
-            *order_counter += 1;
-            collect_sc_for_hit_test(
-                tree,
-                &child.children,
-                child_x - sx,
-                child_y - sy,
-                result,
-                order_counter,
-            );
-        }
-    }
-}
-
 /// Hit-test a subtree.
 ///
 /// `x`/`y` is the probe point in the coordinate space `offset_x`/`offset_y` live
@@ -135,7 +74,6 @@ fn hit_test_node(
     y: f32,
     vx: f32,
     vy: f32,
-    is_sc_root: bool,
 ) -> Option<usize> {
     let node = tree.get(node_id)?;
 
@@ -220,139 +158,62 @@ fn hit_test_node(
     let sy = node.scroll_offset.1 as f32;
 
     if check_children {
-        let is_sc = is_sc_root || node.creates_stacking_context();
+        // An IFC text node's layout is stretched to the whole container
+        // (write_inline_positions, for scroll-height) — those artificial bounds
+        // would shadow inline-block siblings laid out in the same text flow,
+        // swallowing clicks meant for e.g. a button. Skip it: the IFC root
+        // itself is returned for plain-text hits and text selection resolves by
+        // walking up to it.
+        let is_stretched_ifc_text =
+            |child: &rinch_dom::Node| child.is_text() && child.ifc_root.is_some();
 
-        if is_sc {
-            // Stacking context root: test children in reverse paint order.
-            // Phase 3 (topmost): positive z-index SCs, highest first
-            // Phase 2: non-SC children in reverse DOM order
-            // Phase 1: negative z-index SCs, closest to 0 first
-            let children: Vec<_> = node.children.clone();
-            let mut entries = Vec::new();
-            let mut order_counter = 0usize;
-            collect_sc_for_hit_test(
+        let is_body = node_id == tree.body_id;
+        if is_body || node.creates_stacking_context() {
+            // A stacking-context root probes exactly the sequence paint draws,
+            // read backwards — the last box painted is the first one tapped.
+            // Same function, same offsets, opposite direction: the two cannot
+            // drift apart the way two hand-written phase walks did.
+            for entry in stacking_paint_order(
                 tree,
-                &children,
-                nx - sx,
-                ny - sy,
-                &mut entries,
-                &mut order_counter,
-            );
-
-            // Phase 3 reversed: positive z-index SCs (highest z first, later DOM order first)
-            let mut positive: Vec<&HitTestScEntry> =
-                entries.iter().filter(|e| e.z_index > 0).collect();
-            positive.sort_by(|a, b| {
-                b.z_index
-                    .cmp(&a.z_index)
-                    .then(b.dom_order.cmp(&a.dom_order))
-            });
-            for entry in &positive {
-                if let Some(hit) = hit_test_node(
-                    tree,
-                    entry.node_id,
-                    entry.offset_x,
-                    entry.offset_y,
-                    x,
-                    y,
-                    vx,
-                    vy,
-                    true,
-                ) {
-                    return Some(hit);
-                }
-            }
-
-            // z-index 0 SCs (reverse DOM order)
-            let mut zero: Vec<&HitTestScEntry> =
-                entries.iter().filter(|e| e.z_index == 0).collect();
-            zero.sort_by_key(|e| std::cmp::Reverse(e.dom_order));
-            for entry in &zero {
-                if let Some(hit) = hit_test_node(
-                    tree,
-                    entry.node_id,
-                    entry.offset_x,
-                    entry.offset_y,
-                    x,
-                    y,
-                    vx,
-                    vy,
-                    true,
-                ) {
-                    return Some(hit);
-                }
-            }
-
-            // Phase 2 reversed: non-SC children in reverse DOM order
-            for &child_id in children.iter().rev() {
-                let Some(child) = tree.get(child_id) else {
+                node_id,
+                is_body,
+                1.0,
+                (nx - sx) as f64,
+                (ny - sy) as f64,
+            )
+            .iter()
+            .rev()
+            {
+                let Some(child) = tree.get(entry.node_id) else {
                     continue;
                 };
-                if child.creates_stacking_context() {
+                if is_stretched_ifc_text(child) {
                     continue;
                 }
-                // An IFC text node's layout is stretched to the whole container
-                // (write_inline_positions, for scroll-height) — those artificial
-                // bounds would shadow inline-block siblings laid out in the same
-                // text flow, swallowing clicks meant for e.g. a button. Skip it:
-                // the IFC root itself is returned for plain-text hits and text
-                // selection resolves by walking up to it.
-                if child.is_text() && child.ifc_root.is_some() {
-                    continue;
-                }
-                if let Some(hit) =
-                    hit_test_node(tree, child_id, nx - sx, ny - sy, x, y, vx, vy, false)
-                {
-                    return Some(hit);
-                }
-            }
-
-            // Phase 1 reversed: negative z-index SCs (closest to 0 first)
-            let mut negative: Vec<&HitTestScEntry> =
-                entries.iter().filter(|e| e.z_index < 0).collect();
-            negative.sort_by(|a, b| {
-                b.z_index
-                    .cmp(&a.z_index)
-                    .then(b.dom_order.cmp(&a.dom_order))
-            });
-            for entry in &negative {
                 if let Some(hit) = hit_test_node(
                     tree,
                     entry.node_id,
-                    entry.offset_x,
-                    entry.offset_y,
+                    entry.offset_x as f32,
+                    entry.offset_y as f32,
                     x,
                     y,
                     vx,
                     vy,
-                    true,
                 ) {
                     return Some(hit);
                 }
             }
         } else {
-            // Not a stacking context — only test non-SC children.
-            // SC children are skipped; they'll be tested at the ancestor SC level.
-            let children: Vec<_> = node.children.clone();
-            for &child_id in children.iter().rev() {
+            // Not a stacking-context root — test only the children that were
+            // not hoisted to an ancestor's sequence, in reverse tree order.
+            for &child_id in node.children.iter().rev() {
                 let Some(child) = tree.get(child_id) else {
                     continue;
                 };
-                if child.creates_stacking_context() {
+                if paints_at_stacking_root(child) || is_stretched_ifc_text(child) {
                     continue;
                 }
-                // An IFC text node's layout is stretched to the whole container
-                // (write_inline_positions, for scroll-height) — those artificial
-                // bounds would shadow inline-block siblings laid out in the same
-                // text flow, swallowing clicks meant for e.g. a button. Skip it:
-                // the IFC root itself is returned for plain-text hits and text
-                // selection resolves by walking up to it.
-                if child.is_text() && child.ifc_root.is_some() {
-                    continue;
-                }
-                if let Some(hit) =
-                    hit_test_node(tree, child_id, nx - sx, ny - sy, x, y, vx, vy, false)
-                {
+                if let Some(hit) = hit_test_node(tree, child_id, nx - sx, ny - sy, x, y, vx, vy) {
                     return Some(hit);
                 }
             }
@@ -1331,6 +1192,123 @@ mod tests {
             hit_test(&doc.tree, 80.0, 55.0),
             Some(container.0),
             "where that transform would have put the child must miss"
+        );
+    }
+    // ── CSS 2.1 Appendix E step 8: positioned descendants with `z-index: auto`
+    //
+    // These drive the real `hit_test`, which reads
+    // `rinch_dom::stacking::stacking_paint_order` backwards. The ordering itself
+    // is pinned in `rinch-dom/tests/stacking_tests.rs`, together with the pixels
+    // the same sequence produces read forwards; what is pinned here is that the
+    // taps land where those pixels are.
+
+    /// The bug: a floating action button over a scrolling list was untappable.
+    /// The scroller is a stacking context (Rinch makes one for `overflow`) and
+    /// the FAB is `position: absolute` with no `z-index`, so hit testing walked
+    /// the z == 0 stacking contexts — the scroller — before the plain children,
+    /// and every tap fell through to the row underneath.
+    #[test]
+    fn a_tap_on_a_positioned_z_auto_box_over_a_scroller_hits_the_box() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "position: relative");
+
+        let scroller = doc.create_element("div");
+        doc.set_attribute(
+            scroller,
+            "style",
+            "overflow: auto; width: 200px; height: 200px",
+        );
+        doc.append_child(body, scroller);
+        let row = child_of(&mut doc, scroller, "width: 200px; height: 400px");
+
+        let fab = doc.create_element("div");
+        doc.set_attribute(
+            fab,
+            "style",
+            "position: absolute; left: 150px; top: 150px; width: 56px; height: 56px",
+        );
+        doc.append_child(body, fab);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        assert_eq!(
+            hit_test(&doc.tree, 170.0, 170.0),
+            Some(fab.0),
+            "the FAB paints over the scroller there, so the tap is the FAB's"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 40.0, 40.0),
+            Some(row.0),
+            "and clear of the FAB the list still takes its own taps"
+        );
+    }
+
+    /// The same rule against in-flow content rather than a stacking context: a
+    /// positioned box is step 8, an in-flow block is step 4, so the box takes
+    /// the tap even where the block is written after it.
+    #[test]
+    fn a_tap_on_a_positioned_z_auto_box_over_later_in_flow_content_hits_the_box() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "position: relative");
+
+        let fab = doc.create_element("div");
+        doc.set_attribute(
+            fab,
+            "style",
+            "position: absolute; left: 20px; top: 20px; width: 40px; height: 40px",
+        );
+        doc.append_child(body, fab);
+        let block = child_of(&mut doc, body, "width: 200px; height: 100px");
+
+        doc.resolve_layout(800.0, 600.0);
+
+        assert_eq!(hit_test(&doc.tree, 30.0, 30.0), Some(fab.0));
+        assert_eq!(hit_test(&doc.tree, 120.0, 50.0), Some(block.0));
+    }
+
+    /// A stacking context nested under a positioned `z-index: auto` box is the
+    /// *ancestor's*, so its `z-index` still outranks a later sibling of the box
+    /// it is written in — and is tapped accordingly.
+    #[test]
+    fn a_z_indexed_box_under_a_positioned_z_auto_box_is_still_ordered_by_its_z() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "position: relative");
+
+        let panel = doc.create_element("div");
+        doc.set_attribute(
+            panel,
+            "style",
+            "position: absolute; left: 0; top: 0; width: 100px; height: 100px",
+        );
+        doc.append_child(body, panel);
+        let badge = child_of(
+            &mut doc,
+            panel,
+            "position: absolute; z-index: 3; left: 0; top: 0; width: 40px; height: 40px",
+        );
+
+        let cover = doc.create_element("div");
+        doc.set_attribute(
+            cover,
+            "style",
+            "position: absolute; left: 0; top: 0; width: 100px; height: 100px",
+        );
+        doc.append_child(body, cover);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        assert_eq!(
+            hit_test(&doc.tree, 20.0, 20.0),
+            Some(badge.0),
+            "z-index: 3 beats a z == 0 sibling written later, wherever it is nested"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 80.0, 80.0),
+            Some(cover.0),
+            "outside the badge, the later z == 0 box wins on tree order"
         );
     }
 }
