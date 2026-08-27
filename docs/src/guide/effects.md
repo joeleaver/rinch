@@ -97,6 +97,8 @@ Effect::new(move || {
 
 ## Disposing Effects
 
+An effect stops when it is disposed — explicitly, or by the scope that owns it:
+
 ```rust
 let effect = Effect::new(move || {
     println!("Count: {}", count.get());
@@ -105,6 +107,28 @@ let effect = Effect::new(move || {
 effect.dispose(); // Effect stops running
 count.set(1);     // Nothing happens
 ```
+
+**Dropping the handle does not dispose the effect.** This is deliberate and it is
+what every example on this page relies on: `Effect::new(move || …);` with no
+`let` drops the returned handle immediately, and the effect keeps running anyway.
+The closure lives in a registry keyed by id, not in the handle, because an effect
+is queued and run by id long after the caller has forgotten it.
+
+So an effect has exactly two ends:
+
+- **Explicit** — `effect.dispose()`.
+- **Owned** — an effect created during a render belongs to that render, and is
+  disposed when the component unmounts, the `if` branch flips, or the `for` row
+  is reconciled away. This is the usual case, and it is why RSX closures never
+  need cleaning up by hand.
+
+An effect created with no ambient owner and no retained handle — from `main()`,
+from startup code, from a detached callback — runs for the life of the thread.
+That is the right default for app-wide wiring and a leak everywhere else, so
+prefer creating effects during a render, where something owns them.
+
+Disposal is what reclaims the registry entry, not merely what silences it:
+everything the closure captured is dropped with it.
 
 ## Pitfalls
 
