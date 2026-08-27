@@ -1586,6 +1586,8 @@ Some components support reactive value binding via `_fn` props. The `rsx!` macro
 
 **Controlled Input Pattern:** For controlled inputs, use `value_fn` + `oninput` together. `value_fn` keeps the DOM in sync with your signal; `oninput` updates the signal from user input. Without `value_fn`, programmatic `signal.set("")` won't clear the input visually.
 
+A `value_fn` write (any `set_attribute("value")`) to the **focused** field is adopted by the field on both backends (issue #238): it becomes the text the next keystroke edits, the caret keeps its logical position (kept prefix/suffix keeps it, a same-length rewrite leaves it in place, a resized rewrite puts it after the new text), a selection survives, the write is deferred during an IME composition, and it never commits `onchange` by itself. A normalizing or rejecting `oninput` (uppercase, digits-only, max-length) that writes back on every keystroke therefore just works — on desktop, where it used to snap back to the pre-rewrite text on the next key, as well as on the web, where it used to throw the caret to the end.
+
 **`onsubmit`:** TextInput supports `onsubmit` which fires when the user presses Enter.
 
 Example - controlled TextInput with submit:

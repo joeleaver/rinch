@@ -36,6 +36,8 @@ Button { variant: {|| if active.get() { "filled" } else { "outline" }}, "Toggle"
 
 For more efficient surgical updates (no full re-render), use `_fn` suffix props where available (e.g., `value_fn`, `checked_fn`, `opened_fn`).
 
+A `value_fn` write to the text field that currently holds focus is adopted by the field (issue #238): the next keystroke edits the written text, the caret and selection keep their logical position through the rewrite, the write is deferred during an IME composition, and it never commits `onchange` by itself. See [Controlled Input Pattern](components.md#controlled-input-pattern).
+
 ---
 
 ## Layout
