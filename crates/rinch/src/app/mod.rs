@@ -14,6 +14,8 @@ mod focus;
 pub(crate) mod hit_testing;
 #[cfg(test)]
 mod input_commit_tests;
+#[cfg(test)]
+mod input_ime_tests;
 mod select_widget;
 mod text_selection;
 #[cfg(test)]
@@ -244,6 +246,11 @@ pub struct RinchApp {
     /// Rendered inline at the input caret as an underlined overlay (via the
     /// `data-preedit` attribute) and never part of the input's committed value.
     pub(crate) focused_input_preedit: Option<(String, Option<(usize, usize)>)>,
+    /// A programmatic `value` write to the focused `<input>` that arrived while
+    /// an IME composition was in flight (issue #238). Adopting it then would
+    /// move the caret under the composition, so it is held here and applied
+    /// when the composition commits or is cancelled; a later write replaces it.
+    pub(crate) focused_input_deferred_value: Option<String>,
     /// The single authority for which widget owns keyboard/IME input (design
     /// A10). Kept in lockstep with the per-engine focus state below
     /// (`focused_input_*`, the surface/editor registries) via
@@ -329,6 +336,7 @@ impl RinchApp {
             focused_input_state: None,
             focused_input_node_id: None,
             focused_input_preedit: None,
+            focused_input_deferred_value: None,
             focus_target: FocusTarget::None,
             node_activation_held: None,
             open_select: None,
@@ -599,6 +607,11 @@ impl RinchApp {
             return false;
         };
         let doc = &doc;
+
+        // A `value` write to the focused input from outside any keystroke — a
+        // click handler, a menu, a timer — is adopted here (issue #238); a
+        // string compare when nothing was written.
+        self.adopt_focused_input_value_from_dom();
 
         // Check if theme CSS has changed (e.g. primary color or dark mode toggled)
         #[allow(unused_assignments, unused_mut)]
@@ -1352,6 +1365,9 @@ impl RinchApp {
         let Some(handler_id) = self.live_focused_input_handler() else {
             return;
         };
+        // The edit applies to what the field displays: adopt any `value` write
+        // that landed since the last sync (issue #238).
+        self.adopt_focused_input_value_from_dom();
         let Some(state) = self.focused_input_state.as_mut() else {
             return;
         };
@@ -1376,6 +1392,13 @@ impl RinchApp {
         // Fire oninput if text changed
         if new_text != old_text {
             events::dispatch_input_event(events::EventHandlerId(handler_id), new_text);
+            // Effects flush synchronously inside the dispatch: a controlled
+            // input's `value_fn` (or a normalizing handler) may just have
+            // rewritten the value. Adopt it now, so the rewrite is what the
+            // next keystroke edits and what the caret is placed in — not the
+            // stale text that would otherwise be painted back over it on the
+            // next sync (issue #238).
+            self.adopt_focused_input_value_from_dom();
         }
     }
 
@@ -1433,6 +1456,11 @@ impl RinchApp {
         if self.live_focused_input_handler().is_none() {
             return;
         }
+        // Enter is a commit boundary but not an edit command, so neither of
+        // `handle_input_edit_command`'s adopts has run: pull in any pending
+        // `value` write first, so the change gate below compares — and the
+        // payload carries — the text the field actually displays (issue #238).
+        self.adopt_focused_input_value_from_dom();
         // Resolve the focused input's node: the stored id, else a linear scan
         // for the node carrying the focused oninput handler.
         let node_id = self.focused_input_node_id.or_else(|| {
@@ -1485,9 +1513,8 @@ impl RinchApp {
             events::dispatch_input_event(events::EventHandlerId(hid), payload);
             // A controlled change handler may have rewritten the value (e.g. a
             // normalize-on-commit); pull the rewrite into the editable state
-            // (resync no-ops when nothing was rewritten, so the caret stays
-            // put).
-            self.resync_input_state_from_dom();
+            // (a no-op when nothing was rewritten, so the caret stays put).
+            self.adopt_focused_input_value_from_dom();
         }
         // Post-change submit resolution — see the comment above.
         let submit_handler_id = node_id.and_then(|nid| {
@@ -1528,8 +1555,8 @@ impl RinchApp {
             events::dispatch_event(events::EventHandlerId(handler_id));
 
             // After onsubmit, the handler may have changed the signal (e.g., cleared it).
-            // Re-read value and rebuild EditableState to stay in sync.
-            self.resync_input_state_from_dom();
+            // Re-read the value and adopt it into the editable state.
+            self.adopt_focused_input_value_from_dom();
         }
         if !is_textarea {
             // Enter committed: the gesture measures from here on, so the
@@ -1946,6 +1973,9 @@ impl RinchApp {
             doc.borrow_mut().update_focus(Some(node_id));
         }
 
+        // Same as the click path: re-focusing the already-focused input must not
+        // let a pending programmatic write pass for a user edit (issue #238).
+        self.adopt_focused_input_value_from_dom();
         self.focused_input_handler_id = Some(handler_id);
         self.focused_input_value = value.clone();
         self.focused_input_node_id = Some(node_id);
@@ -1963,39 +1993,100 @@ impl RinchApp {
         self.scene_dirty = true;
 
         // Installation complete: fire the blurred input's commit, then adopt
-        // any rewrite its handler made to this input (resync no-ops when the
-        // DOM value already matches).
+        // any rewrite its handler made to this input (a no-op when the DOM
+        // value already matches).
         let commit_fired = commit.is_some();
         Self::fire_input_commit(commit);
         if commit_fired {
-            self.resync_input_state_from_dom();
+            self.adopt_focused_input_value_from_dom();
             self.focused_input_baseline = self.focused_input_value.clone();
         }
     }
 
-    /// Re-read the DOM value and rebuild EditableState after a change/submit
-    /// handler may have rewritten it (e.g., cleared or normalized the input).
-    /// A no-op when the DOM value already matches the buffer, so an untouched
-    /// value keeps its caret position.
-    fn resync_input_state_from_dom(&mut self) {
-        let Some(node_id) = self.focused_input_node_id else {
+    /// Adopt a programmatic `value` write to the focused `<input>` into the
+    /// editable state (issue #238).
+    ///
+    /// Every write that is not the runtime's own — a `value_fn` effect, a
+    /// normalizing `oninput`, a swatch pick, a timer — goes through the
+    /// `DomDocument` trait and lands only on the attribute paint reads. The
+    /// keystrokes edit `focused_input_state`, so without this the next key
+    /// edits stale text and `sync_input_cursor_to_dom` paints it back over
+    /// the write. Called after every edit command's dispatch, at the IME
+    /// commit/cancel, at the commit boundaries that used to rebuild the
+    /// state, and once per frame resolve; a string compare when nothing
+    /// changed.
+    ///
+    /// The text is spliced in place (`EditableState::adopt_text`) — never
+    /// rebuilt — so the undo stack survives, and the selection is mapped
+    /// through the rewrite so the caret keeps its logical place. While an IME
+    /// composition is in flight the write is deferred (moving the caret under
+    /// the composition would corrupt it) and applied when it ends.
+    ///
+    /// The `data-onchange` baseline (issue #226) follows the browser's dirty
+    /// flag: a write that lands before any user edit in this gesture moves the
+    /// baseline with the value, so a purely programmatic change never commits;
+    /// a write after a user edit leaves the baseline, so the gesture still
+    /// commits — with the rewritten text.
+    pub(crate) fn adopt_focused_input_value_from_dom(&mut self) {
+        let FocusTarget::Input(node_id) = self.focus_target else {
             return;
         };
-        if let Some(doc) = &self.doc {
+        let Some(doc) = &self.doc else { return };
+        // Compare before cloning: this runs once per frame for as long as any
+        // field holds focus, and the common case is "nothing was written".
+        let dom_value = {
             let d = doc.borrow();
-            if let Some(node) = d.tree.nodes.get(node_id) {
-                let value = node.attributes.get("value").cloned().unwrap_or_default();
-                if value == self.focused_input_value {
-                    return;
-                }
-                self.focused_input_value = value.clone();
-                let mut state = EditableState::new(StringDocument::with_text(&value));
-                // Place cursor at end after resync
-                state.selection = Selection::cursor(value.len());
-                self.focused_input_state = Some(state);
+            let Some(node) = d.tree.get(node_id) else {
+                return;
+            };
+            let dom = node
+                .attributes
+                .get("value")
+                .map(String::as_str)
+                .unwrap_or("");
+            if dom == self.focused_input_value && self.focused_input_deferred_value.is_none() {
+                return;
             }
+            dom.to_string()
+        };
+        if self.focused_input_preedit.is_some() {
+            // Composition in flight: hold the write; the latest one wins.
+            if dom_value != self.focused_input_value {
+                self.focused_input_deferred_value = Some(dom_value);
+                // Hold the write back from the DOM as well, not just from the
+                // engine. The painter splices the preedit into the `value`
+                // attribute at the `data-cursor-pos` offset, and those caret
+                // attributes still index the *engine* text — a `value` the
+                // offsets don't index draws the composition in the wrong place
+                // and, when the offset lands inside a multi-byte char, panics
+                // the slice. Restoring the engine text keeps the node coherent
+                // until the composition ends; this also matches the web
+                // backend, where a deferred write never reaches `.value`.
+                self.sync_input_cursor_to_dom();
+            }
+            // NOTE: an app write that happens to equal the engine text cannot be
+            // told apart from the restore above, so it does not cancel an
+            // outstanding deferral. Every write that actually differs does
+            // replace it, so "the latest write wins" holds for all of them.
+            return;
         }
+        let value = self
+            .focused_input_deferred_value
+            .take()
+            .unwrap_or(dom_value);
+        if value == self.focused_input_value {
+            return;
+        }
+        let Some(state) = self.focused_input_state.as_mut() else {
+            return;
+        };
+        state.adopt_text(&value);
+        if self.focused_input_value == self.focused_input_baseline {
+            self.focused_input_baseline = value.clone();
+        }
+        self.focused_input_value = value;
         self.sync_input_cursor_to_dom();
+        self.scene_dirty = true;
     }
 
     /// Set the text rendering scale factor (for HiDPI / mobile).
@@ -2303,6 +2394,125 @@ impl RinchApp {
                 d.tree.dirty_nodes.insert(node_id);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod viewport_relayout_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// A 1.25x display: winit reports a 575x780 physical surface, which is a
+    /// 460x624 CSS-pixel viewport.
+    const PHYSICAL: (u32, u32) = (575, 780);
+    const SCALE: f64 = 1.25;
+    const LOGICAL: (f32, f32) = (460.0, 624.0);
+
+    /// Mount a full-viewport element and hand back the app plus its node id.
+    /// A `width/height: 100%` box resolves against the viewport, so its layout
+    /// box *is* the viewport the document currently believes in.
+    fn mount_at_logical() -> (RinchApp, usize) {
+        let captured: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let captured_in = captured.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "width: 100%; height: 100%");
+            captured_in.set(Some(root.node_id().0));
+            root
+        });
+        // What the shell does at startup after #246: mount at the *logical* size.
+        app.mount_component(LOGICAL.0, LOGICAL.1);
+        let id = captured.get().expect("node id captured at mount");
+        (app, id)
+    }
+
+    fn viewport_of(app: &RinchApp, id: usize) -> (f32, f32) {
+        let doc = app.doc.as_ref().expect("document");
+        let d = doc.borrow();
+        let l = d.tree.get(id).expect("root node").layout;
+        (l.width, l.height)
+    }
+
+    /// Mark the tree dirty the way an Effect writing to the DOM does, so the
+    /// relayout branches below are actually reached (they all short-circuit on
+    /// a clean tree).
+    fn dirty(app: &RinchApp) {
+        let doc = app.doc.as_ref().expect("document");
+        let mut d = doc.borrow_mut();
+        let body = d.tree.body_id;
+        d.tree.dirty_nodes.insert(body);
+    }
+
+    /// #246 review finding: the shell mounted at the logical viewport, but every
+    /// relayout driven from `handle_event` was handed the **physical** surface
+    /// size instead — and `window_size` is physical by contract, because
+    /// `handle_event` divides it itself for `ClickContext`.
+    ///
+    /// So the page was laid out correctly exactly once. The first `AboutToWait`
+    /// (which the runtime fires on *every* event-loop iteration) or `ReRender`
+    /// after any DOM change re-resolved it at 575 CSS px, and the paint preamble
+    /// then skipped its own re-resolve because that relayout had already drained
+    /// the dirty set — so the frame painted the oversized layout. The three
+    /// `to_logical` unit tests could not see this: they test the conversion, not
+    /// which viewport reaches `resolve_layout`.
+    ///
+    /// Every event here is driven with the physical size, exactly as the shell
+    /// passes it.
+    #[test]
+    fn a_relayout_after_mount_keeps_the_logical_viewport() {
+        let (mut app, id) = mount_at_logical();
+        assert_eq!(
+            viewport_of(&app, id),
+            LOGICAL,
+            "mount must lay out at the logical viewport"
+        );
+
+        for event in [
+            PlatformEvent::AboutToWait,
+            PlatformEvent::UserEvent(UserEvent::ReRender),
+        ] {
+            dirty(&app);
+            app.handle_event(event.clone(), PHYSICAL, SCALE);
+            assert_eq!(
+                viewport_of(&app, id),
+                LOGICAL,
+                "{event:?} re-laid the document out at the physical surface size \
+                 instead of the logical viewport"
+            );
+        }
+    }
+
+    /// The same guarantee for the resize path: `PlatformEvent::Resized` carries
+    /// the logical viewport, while `window_size` alongside it stays physical.
+    #[test]
+    fn a_resize_event_lays_out_at_the_logical_viewport() {
+        let (mut app, id) = mount_at_logical();
+        // The window grew to a 720x900 physical surface at the same 1.25x.
+        let grown_physical = (720u32, 900u32);
+        let (lw, lh) = rinch_platform::to_logical(grown_physical, SCALE);
+        app.handle_event(
+            PlatformEvent::Resized {
+                width: lw,
+                height: lh,
+            },
+            grown_physical,
+            SCALE,
+        );
+        assert_eq!(
+            viewport_of(&app, id),
+            (lw as f32, lh as f32),
+            "a resize must land on the logical viewport, not the 720x900 surface"
+        );
+
+        // And it must still be logical after the next relayout — the regression
+        // above, but from a resized starting point.
+        dirty(&app);
+        app.handle_event(PlatformEvent::AboutToWait, grown_physical, SCALE);
+        assert_eq!(
+            viewport_of(&app, id),
+            (lw as f32, lh as f32),
+            "the relayout after a resize reverted to the physical surface size"
+        );
     }
 }
 

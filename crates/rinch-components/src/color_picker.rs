@@ -7,6 +7,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rinch_core::dom::{NodeHandle, RenderScope};
+use rinch_core::reactive::untracked;
 use rinch_core::{Component, Drag, InputCallback, Signal, batch, get_click_context};
 
 use crate::color_swatch::ColorSwatch;
@@ -595,11 +596,28 @@ impl Component for ColorPicker {
                         return;
                     }
                 }
-                onchange.invoke(format_color(hsv, color_format));
+                // Untracked: the handler runs inside this effect's frame,
+                // and a controlled handler routinely reads the store it
+                // writes (`if value != store.get() { store.set(value) }`).
+                // Tracked, that read would subscribe this effect to the
+                // store, and a peer's later write would re-run it — ahead of
+                // the consumer's own `value_fn` effect — re-emitting the
+                // stale colour for the handler to write back over the peer's.
+                untracked(|| onchange.invoke(format_color(hsv, color_format)));
             });
         }
 
         // === value_fn binding: external value → internal signals ===
+        //
+        // Registered AFTER the coordinating effect above, and that order is
+        // load-bearing: this effect also reads the four colour signals, so on
+        // an author's act both are pending on the same write, and effects run
+        // in registration order (#154). The coordinating effect emits first;
+        // a consumer that writes the emission back into the bound value (as
+        // `ColorInput` does) has done so by the time this effect reads it, so
+        // the gate below sees the echo and folds it. Reversed, this effect
+        // would read the stale bound value and re-apply it over every local
+        // act — pinned by `tests/color_input_dropdown_sync.rs`.
         if let Some(ref value_fn) = self.value_fn {
             let value_fn = value_fn.clone();
             let last_applied = last_external_apply.clone();

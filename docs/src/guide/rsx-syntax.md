@@ -781,6 +781,7 @@ This works because `Signal` implements `Copy`, so closures capturing signals can
 The `rsx!` macro supports CSS shorthand props on both HTML elements and components. Shorthands expand to `set_style()` calls that merge with existing styles.
 
 Spacing scale values (`xs`, `sm`, `md`, `lg`, `xl`) auto-resolve to `var(--rinch-spacing-{value})`.
+On a positioned element the `top`/`right`/`bottom`/`left` shorthands accept any CSS length — `px`, `%`, `em`, `var()`, `calc()` — not just the spacing scale. (A `calc()` that mixes `%` with a length is not resolved yet on desktop; keep a `calc()` to one unit.)
 
 ### Available Shorthands
 

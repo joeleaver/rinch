@@ -25,11 +25,27 @@ pub struct KeyEventData {
 pub type KeyboardInterceptor = Rc<dyn Fn(&KeyEventData) -> bool>;
 
 thread_local! {
+    /// The one interceptor slot for the whole thread.
+    ///
+    /// Deliberately **not** keyed by document, unlike the pointer-capture drag
+    /// (issue #139): unscoped and last-wins is a real hazard here — two
+    /// documents on one thread (a desktop app and its DevTools window, two
+    /// embedded `RinchContext`s) share this slot, so the second
+    /// [`set_keyboard_interceptor`] silently displaces the first and every
+    /// document's keys then reach whichever registered last. It stays a single
+    /// slot only because there is no in-tree registrant today, so it is an API
+    /// hazard rather than a live bug, and because the fix belongs with the
+    /// `(doc_key, node_id)` focus registry in issue #147 — keyboard routing is
+    /// one decision, and giving this its own parallel map would have to be
+    /// unpicked to land it.
     static KEYBOARD_INTERCEPTOR: RefCell<Option<KeyboardInterceptor>> = RefCell::new(None);
 }
 
 /// Set the global keyboard interceptor.
-/// Only one interceptor can be active at a time.
+///
+/// Only one interceptor can be active at a time, **per thread, not per
+/// document**: a second call from another document on the same thread replaces
+/// the first (issue #139; the per-document routing lands with issue #147).
 pub fn set_keyboard_interceptor<F>(cb: F)
 where
     F: Fn(&KeyEventData) -> bool + 'static,

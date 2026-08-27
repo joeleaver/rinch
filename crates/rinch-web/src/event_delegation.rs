@@ -16,7 +16,7 @@ use wasm_bindgen::prelude::*;
 use rinch_core::events;
 
 use crate::editor_input::add_capture;
-use crate::web_document::WebDocument;
+use crate::web_document::{COMPOSING_PROP, WebDocument, flush_deferred_value};
 
 thread_local! {
     /// The element currently under the pointer that carries a `data-onenter`/
@@ -249,7 +249,7 @@ fn form_control_value(target: &web_sys::EventTarget) -> Option<String> {
 /// focus (written by the document-level `focusin` listener). The Enter commit
 /// path compares against it to implement only-if-modified semantics
 /// (issue #226).
-const FOCUS_VALUE_PROP: &str = "__rinch_focus_value";
+pub(crate) const FOCUS_VALUE_PROP: &str = "__rinch_focus_value";
 
 /// JS expando property recording the last value committed to `data-onchange`
 /// during the current focus session. Lets the `change` listener skip the
@@ -260,12 +260,12 @@ const COMMITTED_VALUE_PROP: &str = "__rinch_committed";
 /// Read a string-valued JS expando property off `el` (the same
 /// `js_sys::Reflect` pattern as `__nid` in `web_document.rs`). `None` when
 /// the property is absent or not a string.
-fn get_expando_string(el: &web_sys::Element, prop: &str) -> Option<String> {
+pub(crate) fn get_expando_string(el: &web_sys::Element, prop: &str) -> Option<String> {
     js_sys::Reflect::get(el, &prop.into()).ok()?.as_string()
 }
 
 /// Write a JS expando property on `el`; `JsValue::UNDEFINED` clears it.
-fn set_expando(el: &web_sys::Element, prop: &str, value: &JsValue) {
+pub(crate) fn set_expando(el: &web_sys::Element, prop: &str, value: &JsValue) {
     let _ = js_sys::Reflect::set(el, &prop.into(), value);
 }
 
@@ -335,7 +335,7 @@ fn dispatch_mouse_attr(el: &web_sys::Element, attr: &str, event: &web_sys::Mouse
 
 /// The pure activation state machine, kept free of `web_sys` so it can be
 /// unit-tested on the host target (`cargo test --workspace`).
-mod drag_machine {
+pub(crate) mod drag_machine {
     /// Movement threshold (CSS px) before a *mouse* drag activates — matches desktop.
     pub const WEB_DRAG_THRESHOLD: f32 = 5.0;
     /// Hold duration (ms) before a *touch/pen* drag activates via long-press.
@@ -1051,7 +1051,7 @@ fn finish_active_drag(state: &WebDragState, x: f32, y: f32, do_drop: bool) {
 }
 
 /// Convert a UTF-16 code unit offset within a string to a UTF-8 byte offset.
-fn utf16_offset_to_utf8_bytes(text: &str, utf16_offset: u32) -> usize {
+pub(crate) fn utf16_offset_to_utf8_bytes(text: &str, utf16_offset: u32) -> usize {
     let mut utf16_count = 0u32;
     for (byte_idx, ch) in text.char_indices() {
         if utf16_count >= utf16_offset {
@@ -2033,6 +2033,54 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         .add_event_listener_with_callback("focusin", focusin_closure.as_ref().unchecked_ref())
         .unwrap();
     focusin_closure.forget();
+
+    // IME composition bookkeeping for programmatic value writes (issue #238).
+    // A native `<input>`/`<textarea>` has no composition state of its own
+    // (only the editor's capture textarea tracks one), so flag the control
+    // for the composition's duration: `WebDocument`'s `value` sync defers a
+    // write while the flag is set — `.value =` mid-composition would move
+    // the caret under the composition — and the flush at `compositionend`
+    // applies the last deferred write. Capture phase, ahead of any consumer
+    // that stops propagation.
+    add_capture(
+        &browser_doc,
+        "compositionstart",
+        |event: web_sys::CompositionEvent| {
+            if let Some(el) = event
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+            {
+                set_expando(&el, COMPOSING_PROP, &JsValue::TRUE);
+            }
+        },
+    );
+    add_capture(
+        &browser_doc,
+        "compositionend",
+        |event: web_sys::CompositionEvent| {
+            if let Some(el) = event
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+            {
+                set_expando(&el, COMPOSING_PROP, &JsValue::UNDEFINED);
+                flush_deferred_value(&el);
+            }
+        },
+    );
+    // Failsafe: a composition cannot outlive the control's focus, but a
+    // `compositionend` is not guaranteed to arrive (a control detached and
+    // re-inserted mid-composition by a keyed list move, some engines' blur).
+    // A stuck flag would silently swallow every later value write into the
+    // pending slot, so clear it — and apply whatever it parked — at focusout.
+    add_capture(&browser_doc, "focusout", |event: web_sys::FocusEvent| {
+        if let Some(el) = event
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        {
+            set_expando(&el, COMPOSING_PROP, &JsValue::UNDEFINED);
+            flush_deferred_value(&el);
+        }
+    });
 
     // Change delegation (issue #226): find [data-onchange] on the target or
     // ancestors. The browser fires `change` exactly at the commit boundary the

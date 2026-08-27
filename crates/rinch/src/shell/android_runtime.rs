@@ -15,9 +15,10 @@ use android_activity::{AndroidApp, MainEvent, PollEvent};
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::element::ThemeProviderProps;
 use rinch_core::events;
-use rinch_platform::{AppAction, KeyCode, Modifiers, MouseButton, PlatformEvent};
+use rinch_platform::{AppAction, ImeEvent, KeyCode, Modifiers, MouseButton, PlatformEvent};
 
 use crate::app::RinchApp;
+use crate::shell::android_ime::{ImeAction, ImeComposition};
 
 // ── Cross-thread dispatch ────────────────────────────────────────────────────
 
@@ -116,6 +117,11 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
     // the Java side was last told, so the input session is only restarted when
     // the focused field's kind actually changes — see `ime::set_multiline`.
     let mut keyboard_multiline = false;
+    // The IME's composing region, and the field it belongs to. See
+    // `shell::android_ime` for why the region is mirrored on this side at all.
+    let mut composition = ImeComposition::new();
+    let mut composing_field: Option<usize> = None;
+    let mut backgrounded = false;
 
     while running {
         android_app.poll_events(Some(Duration::from_millis(16)), |event| match event {
@@ -145,10 +151,9 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         }
 
                         if !mounted {
-                            let lw = (w as f64 / scale_factor).round() as f32;
-                            let lh = (h as f64 / scale_factor).round() as f32;
+                            let (lw, lh) = rinch_platform::to_logical((w, h), scale_factor);
                             app.set_text_scale(scale_factor as f32);
-                            app.mount_component(lw, lh);
+                            app.mount_component(lw as f32, lh as f32);
                             mounted = true;
                         }
 
@@ -168,15 +173,19 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         let h = native_window.height() as u32;
                         physical_size = (w, h);
 
-                        let lw = (w as f64 / scale_factor).round() as u32;
-                        let lh = (h as f64 / scale_factor).round() as u32;
+                        let (lw, lh) = rinch_platform::to_logical((w, h), scale_factor);
 
+                        // The `Resized` payload is the *logical* viewport layout
+                        // is resolved at; `handle_event`'s `window_size` is the
+                        // *physical* surface size it derives that viewport from
+                        // (see `RinchApp::layout_viewport`). Passing the logical
+                        // size for both divided by the scale factor twice.
                         let actions = app.handle_event(
                             PlatformEvent::Resized {
                                 width: lw,
                                 height: lh,
                             },
-                            (lw, lh),
+                            physical_size,
                             scale_factor,
                         );
                         process_actions(&actions, &mut running);
@@ -197,6 +206,9 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                 }
                 MainEvent::Pause => {
                     rinch_android::lifecycle::notify_paused();
+                    // Flushed below, where the viewport this loop dispatches
+                    // against is in scope.
+                    backgrounded = true;
                 }
                 MainEvent::Destroy => {
                     running = false;
@@ -211,16 +223,23 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
             break;
         }
 
-        // No surface — wait for InitWindow
+        // No surface — wait for InitWindow. The composition is flushed first:
+        // `MainEvent::Pause` and the `TerminateWindow` that drops the surface
+        // can arrive in one `poll_events`, and skipping the flush here would
+        // throw away the very half-typed word it exists to save — and leave
+        // `backgrounded` latched until the next frame that has a surface,
+        // which is after the resume.
         if surface.is_none() {
+            if std::mem::take(&mut backgrounded) {
+                for action in composition.finish_composing_text() {
+                    apply_ime_action(&mut app, action, physical_size, scale_factor, &mut running);
+                }
+            }
             continue;
         }
 
         // Process touch / key input — must drain after poll_events returns
-        let logical_size = (
-            (physical_size.0 as f64 / scale_factor).round() as u32,
-            (physical_size.1 as f64 / scale_factor).round() as u32,
-        );
+        let logical_size = rinch_platform::to_logical(physical_size, scale_factor);
         let input_events = collect_input_events(
             &android_app,
             &mut gesture,
@@ -228,7 +247,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
             &mut combining_accent,
         );
         for event in &input_events {
-            let actions = app.handle_event(event.clone(), logical_size, scale_factor);
+            let actions = app.handle_event(event.clone(), physical_size, scale_factor);
             process_actions(&actions, &mut running);
         }
 
@@ -255,57 +274,69 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
             }
         }
 
-        // Drain IME committed text from InputConnection.
-        //
-        // This synthesizes per-character `KeyDown`s rather than a single
-        // `PlatformEvent::Ime(Commit)`. The focused `<input>` accepts these text
-        // `KeyDown`s already (Android has no rich-text editor — that view is
-        // desktop-only). Switching to `ImeEvent::Commit` (one edit, better undo
-        // grouping) is now unblocked since the legacy CE is gone, but it changes
-        // Android text-input behavior and should be validated on a device first.
-        for text in rinch_android::ime::drain_committed_text() {
-            for ch in text.chars() {
-                let actions = app.handle_event(
-                    PlatformEvent::KeyDown {
-                        key: KeyCode::Other,
-                        logical_key: None,
-                        text: Some(ch.to_string()),
-                        modifiers: Modifiers::default(),
-                    },
-                    logical_size,
-                    scale_factor,
-                );
-                process_actions(&actions, &mut running);
+        // What the IME did since the last frame, in the order it did it. Taken
+        // *before* the focus check below, which needs to be able to throw the
+        // batch away: every call in it was made against the field that was
+        // focused when the keyboard made it.
+        let mut updates = rinch_android::ime::drain_updates();
+
+        // The focused field changed while the IME was composing into the old
+        // one. The focus arbiter has already committed that composition into
+        // the field that lost focus (`set_focus_target_deferred`'s
+        // compositionend-before-blur), so nothing is inserted here — but the
+        // keyboard still believes it is composing, and would deliver the same
+        // word again into the field that just gained focus. Restarting its
+        // input session is the only way to say so; Android cannot see the move
+        // itself, because one `RinchInputView` holds focus throughout.
+        let focused_field = app.focused_input_node();
+        if focused_field != composing_field {
+            composing_field = focused_field;
+            if composition.abandon() {
+                // Emptying the mirror is not enough on its own: the touch that
+                // moved focus was dispatched earlier in *this* iteration, so
+                // anything the keyboard queued before it is still in hand and
+                // would now be applied to the field that just gained focus — a
+                // `setComposingText` re-opening the region there, and the
+                // `finishComposingText` that `restart_input` provokes then
+                // inserting the same word a second time, into the wrong field.
+                // The whole batch belongs to the session that just ended.
+                updates.clear();
+                rinch_android::ime::restart_input();
             }
         }
 
-        // Drain IME deletions
-        for deletion in rinch_android::ime::drain_deletions() {
-            for _ in 0..deletion.before {
-                let actions = app.handle_event(
-                    PlatformEvent::KeyDown {
-                        key: KeyCode::Backspace,
-                        logical_key: None,
-                        text: None,
-                        modifiers: Modifiers::default(),
-                    },
-                    logical_size,
-                    scale_factor,
-                );
-                process_actions(&actions, &mut running);
+        // `android_ime` turns the `InputConnection` call stream into the
+        // actions below; it holds the composing region and every rule about
+        // when one ends.
+        for update in updates {
+            let actions = match update {
+                rinch_android::ime::ImeUpdate::SetComposingText {
+                    text,
+                    new_cursor_position,
+                } => composition.set_composing_text(text, new_cursor_position),
+                rinch_android::ime::ImeUpdate::FinishComposingText => {
+                    composition.finish_composing_text()
+                }
+                rinch_android::ime::ImeUpdate::CommitText(text) => composition.commit_text(text),
+                rinch_android::ime::ImeUpdate::DeleteSurroundingText { before, after } => {
+                    composition.delete_surrounding_text(before, after)
+                }
+            };
+            for action in actions {
+                apply_ime_action(&mut app, action, physical_size, scale_factor, &mut running);
             }
-            for _ in 0..deletion.after {
-                let actions = app.handle_event(
-                    PlatformEvent::KeyDown {
-                        key: KeyCode::Delete,
-                        logical_key: None,
-                        text: None,
-                        modifiers: Modifiers::default(),
-                    },
-                    logical_size,
-                    scale_factor,
-                );
-                process_actions(&actions, &mut running);
+        }
+
+        // Backgrounding ends the IME session. Android finishes the composition
+        // on the connection when it does, but this process is on its way to
+        // being frozen and may not be scheduled to see it — so the composition
+        // is committed here instead, and a half-typed word survives the way it
+        // would in an `EditText`, where the composing characters are already
+        // real text in the buffer. Emptying the mirror makes the framework's
+        // own `finishComposingText` a no-op rather than a second insertion.
+        if std::mem::take(&mut backgrounded) {
+            for action in composition.finish_composing_text() {
+                apply_ime_action(&mut app, action, physical_size, scale_factor, &mut running);
             }
         }
 
@@ -331,10 +362,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
 
         if needs_paint && mounted {
             if pending {
-                app.resolve_and_repaint(
-                    (physical_size.0 as f64 / scale_factor).round() as f32,
-                    (physical_size.1 as f64 / scale_factor).round() as f32,
-                );
+                app.resolve_and_repaint(logical_size.0 as f32, logical_size.1 as f32);
             }
 
             #[cfg(feature = "android-gpu")]
@@ -499,6 +527,92 @@ impl TouchGesture {
         self.velocity_x *= MOMENTUM_FRICTION;
         self.velocity_y *= MOMENTUM_FRICTION;
         true
+    }
+}
+
+// ── IME ──────────────────────────────────────────────────────────────────────
+
+/// Apply one [`ImeAction`] from the composition translator.
+///
+/// A commit is still applied as per-character `KeyDown`s rather than as
+/// `ImeEvent::Commit`. That path is the one that has been watched working on a
+/// device, and composition does not need it changed: what a preedit requires is
+/// that the composition be *cleared before* the text that replaces it arrives,
+/// which the action list already orders. Switching commits to one
+/// `ImeEvent::Commit` (one edit, better undo grouping) remains worth doing and
+/// remains a separate change — it alters what every keystroke on Android does,
+/// including the ones that never compose.
+///
+/// `window_size` is the **physical** surface size, the unit `handle_event`
+/// takes — it derives the logical layout viewport from it itself
+/// (`RinchApp::layout_viewport`). Handing it the logical size here would divide
+/// by the scale factor twice and lay the page out that much too narrow on every
+/// IME keystroke.
+fn apply_ime_action(
+    app: &mut RinchApp,
+    action: ImeAction,
+    window_size: (u32, u32),
+    scale_factor: f64,
+    running: &mut bool,
+) {
+    // What the focused field actually holds, as a bound on the delete loops
+    // below. Deleting past either end of the buffer is a no-op per character,
+    // and `deleteSurroundingText(Integer.MAX_VALUE, 0)` — a documented way for
+    // an IME to clear a field — would otherwise spin two billion no-op edit
+    // commands and wedge the frame.
+    let field_len = if matches!(action, ImeAction::Delete { .. }) {
+        app.focused_input_value.chars().count()
+    } else {
+        0
+    };
+    let mut dispatch = |event: PlatformEvent, running: &mut bool| {
+        let actions = app.handle_event(event, window_size, scale_factor);
+        process_actions(&actions, running);
+    };
+    match action {
+        ImeAction::Preedit { text, cursor } => {
+            dispatch(
+                PlatformEvent::Ime(ImeEvent::Preedit { text, cursor }),
+                running,
+            );
+        }
+        ImeAction::Insert(text) => {
+            for ch in text.chars() {
+                dispatch(
+                    PlatformEvent::KeyDown {
+                        key: KeyCode::Other,
+                        logical_key: None,
+                        text: Some(ch.to_string()),
+                        modifiers: Modifiers::default(),
+                    },
+                    running,
+                );
+            }
+        }
+        ImeAction::Delete { before, after } => {
+            for _ in 0..before.min(field_len) {
+                dispatch(
+                    PlatformEvent::KeyDown {
+                        key: KeyCode::Backspace,
+                        logical_key: None,
+                        text: None,
+                        modifiers: Modifiers::default(),
+                    },
+                    running,
+                );
+            }
+            for _ in 0..after.min(field_len) {
+                dispatch(
+                    PlatformEvent::KeyDown {
+                        key: KeyCode::Delete,
+                        logical_key: None,
+                        text: None,
+                        modifiers: Modifiers::default(),
+                    },
+                    running,
+                );
+            }
+        }
     }
 }
 

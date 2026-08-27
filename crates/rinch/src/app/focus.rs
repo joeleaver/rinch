@@ -85,7 +85,7 @@ impl RinchApp {
     /// installing the new owner's state after the transition (the input click
     /// path, programmatic input focus): fire it via
     /// [`Self::fire_input_commit`] once installation is complete, then adopt
-    /// any rewrite the handler made (`resync_input_state_from_dom`).
+    /// any rewrite the handler made (`adopt_focused_input_value_from_dom`).
     ///
     /// This only handles **teardown** of the previous owner; the caller installs
     /// the new owner's state (the rich per-engine state — `EditableState`, the CE
@@ -176,6 +176,7 @@ impl RinchApp {
                 self.focused_input_state = None;
                 self.focused_input_node_id = None;
                 self.focused_input_preedit = None;
+                self.focused_input_deferred_value = None;
                 // Clear the input's DOM focus and keyboard focus ring, exactly
                 // like the Node arm below — otherwise a blur that never goes
                 // through a left-mousedown (a click into the rich-text editor,
@@ -266,7 +267,23 @@ impl RinchApp {
 
     /// Whether a text input element is currently focused.
     pub fn has_focused_input(&self) -> bool {
-        matches!(self.focus_target, FocusTarget::Input(_))
+        self.focused_input_node().is_some()
+    }
+
+    /// The focused `<input>`'s node id, if one holds focus.
+    ///
+    /// The Android shell watches this rather than [`Self::has_focused_input`]:
+    /// a soft keyboard's composing region belongs to the field it was started
+    /// in, and moving between two fields is invisible to Android (one
+    /// `RinchInputView` holds focus throughout), so the shell has to notice the
+    /// move itself and restart the IME. Crate-internal, like the
+    /// `focused_editor_id` below it — the shell is in this crate, and
+    /// embedders are served by `has_focused_input`.
+    pub(crate) fn focused_input_node(&self) -> Option<usize> {
+        match self.focus_target {
+            FocusTarget::Input(id) => Some(id),
+            _ => None,
+        }
     }
 
     /// Whether the focused text control accepts a line break.

@@ -1233,11 +1233,38 @@ rsx! {
 }
 ```
 
+**Writing to the field the user is typing in.** A `value_fn` write (or any
+`set_attribute("value")`) that lands on the *focused* field is adopted by the
+field on both backends (issue #238): it becomes the text the next keystroke
+edits, the caret keeps its logical position through the rewrite (a kept
+prefix or suffix keeps the caret with it, a same-length rewrite such as a case
+change leaves it in place, a resized rewrite puts it after the new text), a
+selection survives, and the write is deferred while an IME composition is in
+flight (applied when the composition ends). A programmatic write never
+commits `onchange` by itself — only a user edit in the gesture does. So a
+normalizing or rejecting `oninput` is safe to write back on every keystroke:
+
+```rust
+let digits = Signal::new(String::new());
+
+rsx! {
+    TextInput {
+        value_fn: move || digits.get(),
+        // Digits only: the rejected character never sticks, and the caret
+        // stays put — on desktop as well as on the web.
+        oninput: move |value: String| {
+            digits.set(value.chars().filter(char::is_ascii_digit).collect())
+        },
+    }
+}
+```
+
 Text inputs (`TextInput`, `Textarea`, `PasswordInput`, `NumberInput`) also
 take an `onchange` prop — the commit boundary (issue #226): it fires once with
 the final value when the typed gesture ends (focus leaves the control after a
-modification, or Enter — blur-only for `Textarea`), and only if the value
-actually changed since focus. Keep `oninput` for the controlled-input signal
+modification, or Enter — blur-only for `Textarea`), and only if the user
+modified it during the gesture — a programmatic write to a still-untouched
+field moves the reference point with it, matching the browser's dirty flag. Keep `oninput` for the controlled-input signal
 sync; use `onchange` for validate-on-commit and autosave-on-leave.
 
 ## Customization

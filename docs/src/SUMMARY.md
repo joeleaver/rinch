@@ -7,6 +7,7 @@
 - [Getting Started](./guide/getting-started.md)
 - [RSX Syntax](./guide/rsx-syntax.md)
 - [State Management](./guide/hooks.md)
+  - [Reactivity](./guide/reactivity.md)
   - [Signals](./guide/signals.md)
   - [Effects](./guide/effects.md)
   - [Memos](./guide/memos.md)

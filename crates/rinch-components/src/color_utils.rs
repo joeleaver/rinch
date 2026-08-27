@@ -49,6 +49,18 @@ pub enum ColorFormat {
 }
 
 impl ColorFormat {
+    /// The alpha-carrying counterpart of this format: `hex` → `hexa`, `rgb`
+    /// → `rgba`, `hsl` → `hsla`; an alpha-carrying format is its own. The
+    /// spelling for a surface that must show every channel a colour holds —
+    /// a preview swatch under a display format that drops alpha.
+    pub fn with_alpha(self) -> ColorFormat {
+        match self {
+            ColorFormat::Hex | ColorFormat::Hexa => ColorFormat::Hexa,
+            ColorFormat::Rgb | ColorFormat::Rgba => ColorFormat::Rgba,
+            ColorFormat::Hsl | ColorFormat::Hsla => ColorFormat::Hsla,
+        }
+    }
+
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "hex" => Some(ColorFormat::Hex),
@@ -496,14 +508,34 @@ pub fn format_color(hsv: Hsva, format: ColorFormat) -> String {
     }
 }
 
+/// What a text field shows for `value` under the display `format`: the
+/// colour re-spelled in that format, or the text itself when it parses as no
+/// colour (an unfinished or garbage value has no other spelling).
+///
+/// This is the one rule behind `ColorInput`'s field (GH #237): the mount
+/// value, a dropdown pick, a typed commit and an external `value_fn` write
+/// all reach the field's colour in whatever notation they arrived in, and the
+/// field is a pure display-format view of it. [`denotes_same`] — the field's
+/// write-back guard — is defined through this same spelling, so what the
+/// guard judges by and what the field is written are structurally the same
+/// grid; a store speaking `hsl()` under `format: "hex"` cannot move the
+/// colour while the field keeps a stale spelling.
+pub fn display_spelling(value: &str, format: ColorFormat) -> String {
+    parse_color(value)
+        .map(|c| format_color(c, format))
+        .unwrap_or_else(|| value.to_string())
+}
+
 /// Whether two colour strings denote the same colour when expressed in
 /// `format`.
 ///
-/// Both parse → compare their `format_color` renderings, so every notation
-/// difference `format` erases compares equal: short vs long hex, digit case,
-/// an alpha pair a non-alpha format drops, an `rgb()` spelling under a hex
-/// format. Either fails to parse → compare the trimmed strings, so two copies
-/// of the same unfinished text still match and nothing else does.
+/// Equality of the two [`display_spelling`]s on the trimmed pair: both parse
+/// → their `format_color` renderings compare, so every notation difference
+/// `format` erases compares equal (short vs long hex, digit case, an alpha
+/// pair a non-alpha format drops, an `rgb()` spelling under a hex format);
+/// an unparseable side keeps its own text, which no canonical rendering can
+/// equal, so two copies of the same unfinished text still match and nothing
+/// else does.
 ///
 /// This is `ColorInput`'s write-back guard (GH #231): a field whose text
 /// already denotes the colour about to be displayed is the author's to keep,
@@ -513,16 +545,10 @@ pub fn format_color(hsv: Hsva, format: ColorFormat) -> String {
 /// drops is folded away.
 pub fn denotes_same(a: &str, b: &str, format: ColorFormat) -> bool {
     let (a, b) = (a.trim(), b.trim());
-    if a == b {
-        // Identical text trivially denotes the same colour — and this is the
-        // guard's steady state (the effect re-rendering the string it last
-        // wrote), so skip the parse/format round entirely.
-        return true;
-    }
-    match (parse_color(a), parse_color(b)) {
-        (Some(a), Some(b)) => format_color(a, format) == format_color(b, format),
-        _ => false,
-    }
+    // Identical text trivially denotes the same colour — and this is the
+    // guard's steady state (the effect re-rendering the string it last
+    // wrote), so skip the parse/format round entirely.
+    a == b || display_spelling(a, format) == display_spelling(b, format)
 }
 
 /// Whether `parsed`, read from a string written in `notation`, denotes the
@@ -1009,6 +1035,28 @@ mod tests {
         assert!(!denotes_same("#33", "#34", ColorFormat::Hex));
         // A prefix too short to parse never equals a parseable colour, even
         // the one it is on its way to.
+        assert!(!denotes_same("#33", "#333333", ColorFormat::Hex));
+    }
+
+    /// `display_spelling` is the display-format view of a colour string:
+    /// a parseable value in any notation re-spells in `format`, and text
+    /// that parses as no colour is returned unchanged (GH #237).
+    #[test]
+    fn display_spelling_respells_a_colour_and_keeps_unparseable_text() {
+        assert_eq!(display_spelling("red", ColorFormat::Hex), "#ff0000");
+        assert_eq!(
+            display_spelling("hsl(200, 3%, 49%)", ColorFormat::Hex),
+            "#797e81"
+        );
+        assert_eq!(
+            display_spelling("#336", ColorFormat::Rgb),
+            "rgb(51, 51, 102)"
+        );
+        assert_eq!(display_spelling("#0000ff80", ColorFormat::Hex), "#0000ff");
+        assert_eq!(display_spelling("#33", ColorFormat::Hex), "#33");
+        assert_eq!(display_spelling("", ColorFormat::Hex), "");
+        // `denotes_same` is equality of the two spellings on the trimmed pair.
+        assert!(denotes_same(" red ", "#ff0000", ColorFormat::Hex));
         assert!(!denotes_same("#33", "#333333", ColorFormat::Hex));
     }
 

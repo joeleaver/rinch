@@ -92,6 +92,78 @@ Effect is intentionally excluded from the prelude. If you're reaching for it, as
 
 For more details, see [Effects](./effects.md).
 
+## Lifetimes: What Owns Your State
+
+State created during a render belongs to the thing being rendered, and dies with
+it. You rarely have to think about this — it is what stops a list that churns
+10,000 rows from leaking 10,000 signals — but it becomes visible the moment a
+handle outlives its component.
+
+**The rule:** a `Signal`, `Memo`, `Effect` or event handler created while
+something is rendering is *owned* by that render. When the owner goes away — a
+`for` row is reconciled out, an `if` branch flips, a component unmounts — every
+resource it owned is freed.
+
+**No ambient owner means app lifetime.** A signal created in `main()`, in startup
+code, or in a detached callback has no owner and lives as long as the thread.
+That is why hoisted, app-wide state keeps working with no ceremony.
+
+### Reading a freed handle panics; writing to one does not
+
+`Signal<T>` is `Copy`, so nothing stops a handle from outliving what created it —
+a background thread, a timer, a global registry. Reads and writes deliberately
+behave differently:
+
+```rust
+count.get();       // panics if the signal was freed
+count.set(5);      // no-op plus a warning if the signal was freed
+```
+
+> **You may always write to a handle; you may only read a live one.**
+
+The asymmetry is not an oversight. A background thread that calls `send()` every
+50ms cannot be asked to notice that the UI moved on, so a write to a dead signal
+must be survivable. A read has nothing to return — `T` need not implement
+`Default` — so it asserts.
+
+When a handle may legitimately be gone, ask instead of assuming:
+
+```rust
+if let Some(n) = count.try_get() {       // None if freed
+    println!("still here: {n}");
+}
+let len = items.try_with(|v| v.len());   // Option<usize> — None if freed
+if count.is_alive() {                    // no subscription is created
+    schedule_more_work();
+}
+```
+
+`Memo<T>` has `try_get()` and `is_alive()` too. `is_alive()` never subscribes the
+current observer — liveness is not reactive, and tracking it would resurrect the
+dependency you are trying to drop.
+
+### Opting out
+
+Sometimes a resource is *meant* to outlive the component that created it — state
+handed to a longer-lived store, a registration something else owns:
+
+```rust
+let s = Signal::new(0).leak();       // this one signal gets app lifetime
+unowned(|| { /* nothing in here is owned by the current render */ });
+```
+
+`leak()` searches the owner stack *as it stands now*, so call it in the same
+render that created the signal; from a later callback the stack is empty and it
+does nothing. `unowned` is a free function at the crate root rather than in the
+prelude, deliberately: it is an attractive nuisance that converts a lifetime bug
+into a permanent leak. Reach for `try_get()` / `is_alive()` first.
+
+### Effects are the exception
+
+Dropping an `Effect` handle does **not** stop the effect. Disposal is explicit
+(`effect.dispose()`) or comes from the owning scope. See
+[Effects](./effects.md#disposing-effects).
+
 ## Context
 
 Share state across components without prop drilling. The ancestor creates it, any descendant reads it.
