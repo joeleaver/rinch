@@ -484,8 +484,9 @@ fn enter_in_a_textarea_does_not_commit() {
     click(&mut app, 700.0, 500.0);
     assert_eq!(
         *log.borrow(),
-        vec!["change:x".to_string()],
-        "the textarea gesture commits at blur, carrying the full text"
+        vec!["change:x\n".to_string()],
+        "the textarea gesture commits at blur, carrying the full text — \
+         including the line break Enter inserted rather than committed"
     );
 }
 

@@ -122,6 +122,32 @@ public class RinchActivity extends NativeActivity {
         });
     }
 
+    /**
+     * Tell the keyboard whether the field rinch has focused takes a line break.
+     *
+     * EditorInfo — where the Enter key's meaning is declared — is built once
+     * per input session, so a keyboard that is already up will not notice a
+     * move from a &lt;textarea&gt; to an &lt;input&gt; on its own: rinch moves
+     * focus between its own fields without Android seeing anything, because
+     * this one view holds focus throughout. Restarting the session is what
+     * makes it ask again. Only when the value actually changed, so ordinary
+     * field-to-field moves of the same kind cost nothing.
+     *
+     * Called before showKeyboard() when focus arrives, so the session the
+     * keyboard opens is already the right kind; both post to this handler
+     * queue, which keeps them in that order.
+     */
+    public void setInputMultiline(boolean multiline) {
+        runOnUiThread(() -> {
+            if (inputView == null || !inputView.setMultiline(multiline)) {
+                return;
+            }
+            if (imm != null) {
+                imm.restartInput(inputView);
+            }
+        });
+    }
+
     public void hideKeyboard() {
         runOnUiThread(() -> {
             if (imm != null && inputView != null) {

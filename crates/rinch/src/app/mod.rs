@@ -16,6 +16,8 @@ pub(crate) mod hit_testing;
 mod input_commit_tests;
 mod select_widget;
 mod text_selection;
+#[cfg(test)]
+mod textarea_newline_tests;
 
 pub(crate) use hit_testing::*;
 
@@ -1419,7 +1421,11 @@ impl RinchApp {
         };
         self.handle_input_edit_command(cmd);
     }
-    fn handle_enter(&mut self) {
+    /// Enter in a focused text control.
+    ///
+    /// `shift` is what separates a `<textarea>`'s two meanings for the key —
+    /// see the newline block below. An `<input>` ignores it.
+    fn handle_enter(&mut self, shift: bool) {
         // Check if a text input is focused and has onchange/onsubmit handlers.
         // Probe liveness first: with a freed id the block below still runs, the
         // node lookups match nothing, and Enter is swallowed rather than falling
@@ -1492,7 +1498,33 @@ impl RinchApp {
                 .and_then(|n| n.attributes.get("data-onsubmit"))
                 .and_then(|s| s.parse::<usize>().ok())
         });
-        if let Some(handler_id) = submit_handler_id {
+
+        // A `<textarea>` is the one control where Enter has a second meaning:
+        // insert a line break. Which of the two it takes follows the web
+        // backend's keydown delegation (`rinch-web`'s `event_delegation`), so
+        // one rsx! tree reads the same in a browser and on a phone:
+        //
+        //   * Shift+Enter always inserts. It is the escape hatch out of a
+        //     submit, and the idiom every chat composer has taught; the web
+        //     backend leaves it to the browser, which inserts.
+        //   * A plain Enter submits when the author put `data-onsubmit` on the
+        //     field — declaring that Enter means send — and inserts when they
+        //     did not. Without this second half a `<textarea>` with no submit
+        //     handler swallows the key and no line break can be typed at all.
+        //
+        // An `<input>` is untouched by any of it: a line break is not
+        // representable in a single-line value, so Enter there stays a commit
+        // (and Shift+Enter with it — leaving a modifier that does nothing at
+        // all would be a regression bought for nothing).
+        let insert_newline = is_textarea && (shift || submit_handler_id.is_none());
+
+        if insert_newline {
+            // Through the ordinary edit path, so the break is one undo step,
+            // carries the caret and fires `oninput` exactly as a typed
+            // character does — on the web a line break *is* an input event
+            // (`inputType: insertLineBreak`), not a separate kind of edit.
+            self.handle_input_edit_command(EditCommand::InsertNewline);
+        } else if let Some(handler_id) = submit_handler_id {
             events::dispatch_event(events::EventHandlerId(handler_id));
 
             // After onsubmit, the handler may have changed the signal (e.g., cleared it).

@@ -269,6 +269,28 @@ impl RinchApp {
         matches!(self.focus_target, FocusTarget::Input(_))
     }
 
+    /// Whether the focused text control accepts a line break.
+    ///
+    /// True for a focused `<textarea>` and nothing else: an `<input>` holds a
+    /// single-line value, and a rich-text editor is not a `FocusTarget::Input`.
+    ///
+    /// A soft keyboard has to be told this per field, because it draws a
+    /// different Enter key for each — an action (Go, Send, ✓) that *ends* the
+    /// input session, or a newline that stays in it. Android learns of it
+    /// through `EditorInfo`, which is built once per input session, so the
+    /// shell watches this value and restarts the session when it changes.
+    /// Rinch moves focus between its own fields without Android seeing
+    /// anything (one `RinchInputView` holds focus throughout), so nothing else
+    /// would tell the keyboard.
+    pub fn focused_input_is_multiline(&self) -> bool {
+        let FocusTarget::Input(node_id) = self.focus_target else {
+            return false;
+        };
+        let Some(doc) = &self.doc else { return false };
+        let d = doc.borrow();
+        d.tree.get(node_id).and_then(|n| n.tag()) == Some("textarea")
+    }
+
     /// Whether a generic focusable node (`tabindex`, `FocusTarget::Node`,
     /// issue #228) holds focus. It consumes Enter/Space (and anchors Tab), so
     /// embed hosts must route keyboard input to rinch while one is focused

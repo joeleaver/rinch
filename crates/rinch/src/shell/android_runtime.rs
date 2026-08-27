@@ -112,6 +112,10 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
     let mut gesture = TouchGesture::new();
     let mut combining_accent: Option<char> = None;
     let mut keyboard_visible = false;
+    // The kind of Enter key the keyboard is currently showing. Mirrors what
+    // the Java side was last told, so the input session is only restarted when
+    // the focused field's kind actually changes — see `ime::set_multiline`.
+    let mut keyboard_multiline = false;
 
     while running {
         android_app.poll_events(Some(Duration::from_millis(16)), |event| match event {
@@ -226,6 +230,18 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         for event in &input_events {
             let actions = app.handle_event(event.clone(), logical_size, scale_factor);
             process_actions(&actions, &mut running);
+        }
+
+        // What Enter means in the focused field, pushed before the keyboard is
+        // raised so the session it opens already draws the right key. A
+        // `<textarea>` wants a newline key; everything else wants what it had.
+        // Android only reads this when a session starts, and rinch's own
+        // field-to-field moves are invisible to it, so the change has to be
+        // announced here or not at all.
+        let needs_multiline = app.focused_input_is_multiline();
+        if needs_multiline != keyboard_multiline {
+            keyboard_multiline = needs_multiline;
+            rinch_android::ime::set_multiline(needs_multiline);
         }
 
         // Show/hide soft keyboard based on input focus
