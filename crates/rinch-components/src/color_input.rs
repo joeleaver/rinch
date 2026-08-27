@@ -10,27 +10,13 @@ use rinch_core::{Component, InputCallback, Signal};
 
 use crate::color_picker::ColorPicker;
 use crate::color_swatch::ColorSwatch;
-use crate::color_utils::{ColorFormat, denotes_same, format_color, parse_color};
+use crate::color_utils::{
+    ColorFormat, denotes_same, display_spelling, format_color, parse_color,
+    parse_color_with_notation,
+};
 
 /// Reactive callback type for string state.
 pub type ReactiveString = Rc<dyn Fn() -> String>;
-
-/// What the text field shows for `value`: the colour re-spelled in the
-/// output `format`, or the text itself when it parses as no colour (an
-/// unfinished or garbage value has no other spelling).
-///
-/// The field is a display-format view (GH #237): the mount value, a
-/// dropdown pick, a typed commit and an external `value_fn` write all land
-/// in `current_value` in whatever notation they arrived in, and the field's
-/// write-back guard judges agreement at the display format's grid
-/// (`denotes_same`) — so what it *writes* has to be at that grid too, or a
-/// store speaking hsl under `format: "hex"` could move the colour without the
-/// field ever leaving its stale spelling.
-fn display_spelling(value: &str, format: ColorFormat) -> String {
-    parse_color(value)
-        .map(|c| format_color(c, format))
-        .unwrap_or_else(|| value.to_string())
-}
 
 /// A text input with color preview swatch and dropdown ColorPicker.
 #[derive(Default)]
@@ -54,14 +40,20 @@ pub struct ColorInput {
     /// Reactive value binding. An external value moves the swatch and the
     /// dropdown picker silently, and the field displays it in the `format`
     /// spelling. Under an alpha-dropping `format` (`hex`/`rgb`/`hsl`) an
-    /// alpha arriving here is invisible: the field cannot spell it and the
-    /// next reported change drops it — bind `hexa`/`rgba`/`hsla` when alpha
-    /// must be externally drivable.
+    /// alpha arriving here is only half-honoured: the picker adopts it (the
+    /// alpha thumb moves when `alpha` is on) and the swatch renders it, but
+    /// the field cannot spell it and every change this input reports drops
+    /// it — and a later external value restating the colour opaque is
+    /// indistinguishable from the input's own echo and does not apply, so the
+    /// picker keeps that alpha until a value carrying a different, non-opaque
+    /// one arrives (the corner `ColorPicker` concedes under such a format).
+    /// Bind `hexa`/`rgba`/`hsla` when alpha must be externally drivable.
     pub value_fn: Option<ReactiveString>,
-    /// Fires the formatted color string when a color change commits: a pick in
-    /// the dropdown picker, or a typed edit at its commit boundary (focus
+    /// Fires the formatted color string for every change the author makes in
+    /// the dropdown picker — a swatch pick, and each frame of a panel or
+    /// slider drag — and for a typed edit once, at its commit boundary (focus
     /// leaves the field, or Enter — issue #226). Typing previews live in the
-    /// swatch but reports here only on commit.
+    /// swatch and the picker but reports here only on commit.
     pub onchange: Option<InputCallback>,
     /// Output format: hex, hexa, rgb, rgba, hsl, hsla.
     pub format: String,
@@ -94,13 +86,18 @@ impl Component for ColorInput {
         let show_alpha = self.alpha;
         let disallow_input = self.disallow_input;
 
-        // Internal state
+        // Internal state. The seed is resolved once and shared by everything
+        // that starts from it — `current_value`, `last_committed`, the swatch
+        // and the dropdown picker's `value` — so they cannot drift: the
+        // picker's first `value_fn` run folds only because it reads the very
+        // string it was seeded with.
         let opened = Signal::new(false);
-        let current_value = Signal::new(if self.value.is_empty() {
+        let initial_color: String = if self.value.is_empty() {
             "#000000".to_string()
         } else {
             self.value.clone()
-        });
+        };
+        let current_value = Signal::new(initial_color.clone());
 
         // Root container
         let mut root_class = String::from("rinch-color-input");
@@ -135,13 +132,8 @@ impl Component for ColorInput {
         }
 
         // Preview swatch
-        let initial_color = if self.value.is_empty() {
-            "#000000"
-        } else {
-            &self.value
-        };
         let preview = ColorSwatch {
-            color: initial_color.to_string(),
+            color: initial_color.clone(),
             size: "22px".into(),
             radius: "sm".into(),
             ..Default::default()
@@ -153,9 +145,10 @@ impl Component for ColorInput {
         );
         input_group.append_child(&preview_node);
 
-        // Text input
+        // Text input. Its text is not written here: the display effect
+        // below populates it on its registration run, in the `format`
+        // spelling, exactly as it does for every later colour.
         let text_input = rinch_macros::rsx! { input { class: "rinch-color-input__input" } };
-        text_input.set_attribute("value", &display_spelling(initial_color, color_format));
         if !self.placeholder.is_empty() {
             text_input.set_attribute("placeholder", &self.placeholder);
         }
@@ -177,7 +170,7 @@ impl Component for ColorInput {
         // `value_fn` write. `current_value` cannot play this role: parseable
         // keystrokes preview through it without reporting, so it can hold a
         // color the app has never heard of.
-        let last_committed: Rc<RefCell<String>> = Rc::new(RefCell::new(initial_color.to_string()));
+        let last_committed: Rc<RefCell<String>> = Rc::new(RefCell::new(initial_color.clone()));
 
         // Handle text input changes. Per-keystroke this is internal only —
         // record the live text, parse, and preview through `current_value`
@@ -187,10 +180,24 @@ impl Component for ColorInput {
         if !disallow_input {
             let typed_in = typed.clone();
             let handler_id = __scope.register_input_handler(move |value: String| {
-                let parsed = parse_color(&value);
+                let parsed = parse_color_with_notation(&value);
                 *typed_in.borrow_mut() = Some(value);
-                if let Some(parsed) = parsed {
-                    current_value.set(format_color(parsed, color_format));
+                if let Some((parsed, notation)) = parsed {
+                    // Previewed at the typed notation's own alpha-carrying
+                    // grid, not the display format's: the dropdown picker
+                    // judges and merges an inbound value at the inbound
+                    // notation's grid (GH #242), so a typed `hsl(205, 3%,
+                    // 49%)` previewed as its 8-bit `rgb(121, 126, 129)` would
+                    // land the hue thumb at 202.5°, a typed `hsl(240, 0%,
+                    // 50%)` as `#808080` would lose its stated hue, and under
+                    // `hex` + `alpha` a typed `#228be680` as `#228be6` would
+                    // drop the alpha before the alpha thumb ever saw it — the
+                    // same fold the external `value_fn` path below writes raw
+                    // to avoid. Serialized rather than raw so the swatch's
+                    // `background-color` stays valid CSS for a bare "336".
+                    // The commit boundary still writes the display-format
+                    // spelling.
+                    current_value.set(format_color(parsed, notation.with_alpha()));
                 }
             });
             text_input.set_attribute("data-oninput", &handler_id.to_string());
@@ -240,10 +247,15 @@ impl Component for ColorInput {
                         }
                     }
                     None => {
+                        // The last committed colour may be a raw mount value
+                        // or a raw `value_fn` string in any notation; the
+                        // field shows it in the display format, like every
+                        // other rewrite (GH #237).
                         let committed = last_committed_commit.borrow().clone();
                         *typed_commit.borrow_mut() = None;
-                        current_value.set_if_changed(committed.clone());
-                        text_input_commit.set_attribute("value", &committed);
+                        text_input_commit
+                            .set_attribute("value", &display_spelling(&committed, color_format));
+                        current_value.set_if_changed(committed);
                     }
                 });
             text_input.set_attribute("data-onchange", &handler_id.to_string());
@@ -259,30 +271,21 @@ impl Component for ColorInput {
         // same string the signal was seeded with — never the raw `value` prop,
         // which is empty at the unseeded call site and would leave the picker
         // on its internal red while the wrapper shows black — and follows
-        // every later write through `value_fn`: the normalized preview of a
-        // parseable keystroke, a typed commit, an external `value_fn` write.
-        // Each of those applies atomically and silently (GH #229), so a
-        // slider nudge is built on the colour the input currently holds, not
-        // on whatever it mounted with.
+        // every later write through `value_fn`: a parseable keystroke's
+        // preview, a typed commit, an external `value_fn` write. Each applies
+        // atomically and silently (GH #229), so a slider nudge is built on the
+        // colour the input currently holds, not on whatever it mounted with.
         //
-        // The binding closes a loop, and the picker's registration order is
-        // what keeps it from turning: on an author's act inside the picker
-        // its coordinating effect (which reports through `onchange` below)
-        // is registered BEFORE its `value_fn` effect, so the emission is
-        // written into `current_value` first and the `value_fn` effect then
-        // reads the fresh value and folds it as the picker's own echo
-        // (`denotes_emitted`, GH #227/#242). The fold holds in every display
-        // format because `onchange` writes the emission verbatim, so the
-        // inbound notation is always the format's own family: the alpha
-        // formats fold at their own grid, and the alpha-dropping ones fold
-        // through the gate's second term (the emission restated) exactly
-        // when the held alpha is what the format dropped. Reversing that
-        // order would have the gate see the stale `current_value` first and
-        // re-apply it over every local act — pinned by
-        // `tests/color_input_dropdown_sync.rs`.
+        // The binding closes a loop; what keeps it from turning is the
+        // picker's own apply gate folding its echo, which depends on the
+        // picker registering its coordinating effect before its `value_fn`
+        // effect — stated at that effect in `color_picker.rs`, pinned by
+        // `tests/color_input_dropdown_sync.rs`. The wrapper's part of the
+        // contract is that `onchange` below writes the emission verbatim, so
+        // the echo comes back in the picker's own notation.
         let picker = ColorPicker {
             format: self.format.clone(),
-            value: initial_color.to_string(),
+            value: initial_color.clone(),
             value_fn: Some(Rc::new(move || current_value.get())),
             alpha: show_alpha,
             swatches: self.swatches.clone(),
@@ -365,16 +368,20 @@ impl Component for ColorInput {
                 // grid the guard judges by (GH #237): `val` itself may be a
                 // raw external string in any notation, and writing that would
                 // leave the field's text and its own guard disagreeing about
-                // what "the same colour" means.
+                // what "the same colour" means. The guard is `denotes_same`
+                // unrolled, so the spelling it judges by is the one written.
+                let spelled = display_spelling(&val, color_format);
                 let field_text = typed
                     .borrow()
                     .clone()
                     .or_else(|| text_input.get_attribute("value"));
-                let field_agrees =
-                    field_text.is_some_and(|text| denotes_same(&text, &val, color_format));
+                let field_agrees = field_text.is_some_and(|text| {
+                    let text = text.trim();
+                    text == val.trim() || display_spelling(text, color_format) == spelled
+                });
                 if !field_agrees {
                     *typed.borrow_mut() = None;
-                    text_input.set_attribute("value", &display_spelling(&val, color_format));
+                    text_input.set_attribute("value", &spelled);
                 }
             });
         }

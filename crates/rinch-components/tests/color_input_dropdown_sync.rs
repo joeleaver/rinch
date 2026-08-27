@@ -85,13 +85,34 @@ impl Input {
         Self::mount(value, "", None, Echo::Never)
     }
 
-    /// A ColorInput seeded with `seed` and bound to a fresh store holding
-    /// `stored`, displaying in `format`.
-    fn bound(seed: &str, stored: &str, format: &str, echo: Echo) -> Self {
-        Self::mount(seed, format, Some(Signal::new(stored.to_string())), echo)
+    /// [`Input::unbound`] with the alpha slider shown (`alpha: true`): the
+    /// ui-zoo call site's shape — default `hex` display plus an alpha thumb.
+    fn unbound_with_alpha(value: &str) -> Self {
+        Self::mount_with(value, "", None, Echo::Never, true)
+    }
+
+    /// [`Input::unbound`] displaying in `format`.
+    fn unbound_in(value: &str, format: &str) -> Self {
+        Self::mount(value, format, None, Echo::Never)
+    }
+
+    /// A ColorInput seeded with `colour` and bound to a fresh store holding
+    /// the same `colour`, displaying in `format`.
+    fn bound(colour: &str, format: &str, echo: Echo) -> Self {
+        Self::mount(colour, format, Some(Signal::new(colour.to_string())), echo)
     }
 
     fn mount(seed: &str, format: &str, store: Option<Signal<String>>, echo: Echo) -> Self {
+        Self::mount_with(seed, format, store, echo, false)
+    }
+
+    fn mount_with(
+        seed: &str,
+        format: &str,
+        store: Option<Signal<String>>,
+        echo: Echo,
+        alpha: bool,
+    ) -> Self {
         // The recorder is registered before the component's effects, so it
         // sees every write to the store in order.
         let (published, recorder) = match store {
@@ -121,6 +142,7 @@ impl Input {
                 }
             })),
             swatches: vec!["#22aa55".into()],
+            alpha,
             ..Default::default()
         };
         let root = input.render(&mut scope, &[]);
@@ -206,6 +228,15 @@ impl Input {
     /// The hue thumb's position, in percent of the slider (h / 360 · 100).
     fn hue_thumb(&self) -> f64 {
         percent_of(&self.thumb_style("rinch-color-picker__hue-thumb"), "left: ")
+    }
+
+    /// The alpha thumb's position, in percent of the slider (a · 100). Only
+    /// mounted with `alpha: true`.
+    fn alpha_thumb(&self) -> f64 {
+        percent_of(
+            &self.thumb_style("rinch-color-picker__alpha-thumb"),
+            "left: ",
+        )
     }
 
     /// The saturation-panel thumb's (left, top) in percent: (s · 100, (1 − v) · 100).
@@ -311,7 +342,7 @@ fn a_typed_colour_reaches_the_dropdown_picker() {
 /// An external `value_fn` change moves the dropdown picker too.
 #[test]
 fn an_external_value_change_reaches_the_dropdown_picker() {
-    let input = Input::bound(START, START, "", Echo::Never);
+    let input = Input::bound(START, "", Echo::Never);
 
     input.store().set(BLUE.to_string());
 
@@ -366,7 +397,7 @@ fn a_slider_nudge_after_typing_derives_from_the_typed_colour() {
 /// authored.
 #[test]
 fn an_external_colour_arrives_through_the_wrapper_silently() {
-    let input = Input::bound(START, START, "", Echo::Back);
+    let input = Input::bound(START, "", Echo::Back);
 
     input.store().set(REMOTE.to_string());
 
@@ -393,7 +424,7 @@ fn an_external_colour_arrives_through_the_wrapper_silently() {
 /// and snap every local act back.
 #[test]
 fn a_saturation_drag_is_not_reverted_by_its_own_echo() {
-    let input = Input::bound(REMOTE, REMOTE, "", Echo::Back);
+    let input = Input::bound(REMOTE, "", Echo::Back);
 
     input.press_saturation(0.8, 0.1); // s = 0.8, v = 0.9
     update_drag(120.0, 40.0); // s = 0.6, v = 0.8
@@ -442,7 +473,7 @@ fn a_saturation_drag_is_not_reverted_by_its_own_echo() {
 /// `hsl(200, …)` spelling while the store held `hsl(205, …)`.
 #[test]
 fn the_field_and_the_thumbs_follow_an_hsl_store_under_a_hex_display() {
-    let input = Input::bound(LOW_CHROMA, LOW_CHROMA, "hex", Echo::Never);
+    let input = Input::bound(LOW_CHROMA, "hex", Echo::Never);
     assert_eq!(
         input.field_text(),
         LOW_CHROMA_HEX,
@@ -477,7 +508,7 @@ fn the_field_and_the_thumbs_follow_an_hsl_store_under_a_hex_display() {
 /// verbatim: a store handing `"red"` to a `hex` input shows `#ff0000`.
 #[test]
 fn an_external_value_is_shown_in_the_output_format() {
-    let input = Input::bound(BLUE, BLUE, "hex", Echo::Never);
+    let input = Input::bound(BLUE, "hex", Echo::Never);
 
     input.store().set("red".to_string());
 
@@ -521,5 +552,118 @@ fn an_unseeded_input_and_its_picker_agree_on_black() {
 
     assert_eq!(input.field_text(), "#000000");
     input.assert_picker_at("#000000", "the picker mounts on the wrapper's fallback");
+    assert_eq!(input.emissions(), Vec::<String>::new());
+}
+
+/// A typed alpha reaches the dropdown picker's alpha thumb.
+///
+/// The per-keystroke preview used to be written at the *display* format's
+/// grid: under the default `hex` display with `alpha: true` (the ui-zoo call
+/// site) a typed `#228be680` previewed as `#228be6`, so the picker — which
+/// judges an inbound value at the inbound notation's grid (#242) — saw an
+/// opaque colour and left the alpha thumb at 100%.
+#[test]
+fn a_typed_alpha_reaches_the_dropdown_pickers_alpha_thumb() {
+    let input = Input::unbound_with_alpha("#228be6");
+    let alpha = input.alpha_thumb();
+    assert!(
+        (alpha - 100.0).abs() < 0.01,
+        "mount: opaque, alpha thumb at {alpha}%"
+    );
+
+    input.type_text("#228be680");
+
+    let alpha = input.alpha_thumb();
+    let expected = 0x80 as f64 / 255.0 * 100.0;
+    assert!(
+        (alpha - expected).abs() < 0.01,
+        "the typed alpha must reach the alpha thumb: at {alpha}%, expected {expected}%"
+    );
+    assert_eq!(
+        input.field_text(),
+        "#228be680",
+        "the field is still the author's (#231)"
+    );
+    assert_eq!(
+        input.emissions(),
+        Vec::<String>::new(),
+        "typing previews; nothing reports before the commit boundary (#226)"
+    );
+}
+
+/// A typed hsl colour reaches the dropdown picker at the hsl grid whatever
+/// the display format: `hsl(205, 3%, 49%)` typed under `rgb` puts the hue
+/// thumb at 205°, not at the 202.5° its 8-bit rendering `rgb(121, 126, 129)`
+/// re-parses to — the grid the store path already gets
+/// (`the_field_and_the_thumbs_follow_an_hsl_store_under_a_hex_display`).
+#[test]
+fn a_typed_hsl_colour_reaches_the_dropdown_picker_at_the_hsl_grid() {
+    let input = Input::unbound_in(START, "rgb");
+
+    input.type_text(LOW_CHROMA_MOVED);
+
+    let hue = input.hue_thumb();
+    assert!(
+        (hue - 205.0 / 3.6).abs() < 0.01,
+        "the stated 205° must reach the hue thumb: {hue}%"
+    );
+    assert_eq!(input.field_text(), LOW_CHROMA_MOVED);
+    assert_eq!(input.emissions(), Vec::<String>::new());
+}
+
+/// A typed hsl grey states its hue, and the picker adopts a stated hue for a
+/// grey written in the hsl notation (`merge_unrepresentable`): `hsl(240, 0%,
+/// 50%)` typed under `hex` moves the hue thumb to 240°. Previewed as its
+/// rendering `#808080` the picker saw a hex grey and kept the mount hue.
+#[test]
+fn a_typed_hsl_grey_carries_its_stated_hue_to_the_dropdown_picker() {
+    let input = Input::unbound(START);
+
+    input.type_text("hsl(240, 0%, 50%)");
+
+    let hue = input.hue_thumb();
+    assert!(
+        (hue - 240.0 / 3.6).abs() < 0.01,
+        "the stated 240° must reach the hue thumb: {hue}%"
+    );
+    assert_eq!(input.emissions(), Vec::<String>::new());
+}
+
+/// An unparseable commit reverts the field to the last committed colour in
+/// the output format's spelling, not in the notation it was received in.
+///
+/// The revert used to write the raw `last_committed` string: a store handing
+/// `red` to a `hex` input showed `#ff0000` until the author typed garbage and
+/// blurred, then durably showed `red`.
+#[test]
+fn an_unparseable_commit_reverts_to_the_output_format_spelling() {
+    let input = Input::bound(BLUE, "hex", Echo::Never);
+    input.store().set("red".to_string());
+    assert_eq!(input.field_text(), "#ff0000");
+
+    input.type_text("zz");
+    input.commit("zz");
+
+    assert_eq!(
+        input.field_text(),
+        "#ff0000",
+        "the revert shows the committed colour in the display format"
+    );
+    input.assert_picker_at("#ff0000", "the picker still holds the committed colour");
+    assert_eq!(
+        input.emissions(),
+        Vec::<String>::new(),
+        "reverting to what the app already holds reports nothing"
+    );
+
+    // With a preview leaked first: the display effect and the revert must
+    // land on the same spelling.
+    input.type_text("#00f");
+    input.assert_picker_at(BLUE, "the prefix previews");
+    input.type_text("#00fz");
+    input.commit("#00fz");
+
+    assert_eq!(input.field_text(), "#ff0000");
+    input.assert_picker_at("#ff0000", "the revert reaches the picker too");
     assert_eq!(input.emissions(), Vec::<String>::new());
 }
