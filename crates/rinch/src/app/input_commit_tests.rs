@@ -918,3 +918,127 @@ fn a_non_ascii_rewrite_maps_the_caret_by_bytes() {
     assert_eq!(engine(&app).0, "h€zllo");
     assert_eq!(engine(&app).2, 1 + 3 + 1);
 }
+
+/// A write that lands mid-composition must not reach the DOM either: the
+/// painter splices the preedit into the `value` attribute at the
+/// `data-cursor-pos` offset, so a value those offsets don't index draws the
+/// composition in the wrong place — and, on a multi-byte boundary, panics the
+/// slice. The node stays coherent until the composition ends (#238 review).
+#[test]
+fn a_write_during_a_composition_leaves_the_dom_coherent() {
+    let (mut app, a_id, _b_id, _div_id, _log) = mount_fixture();
+
+    click_center(&mut app, a_id);
+    type_str(&mut app, "ab");
+    key(&mut app, KeyCode::Home, None);
+    key(&mut app, KeyCode::ArrowRight, None);
+    app.handle_event(
+        PlatformEvent::Ime(ImeEvent::Preedit {
+            text: "ni".to_string(),
+            cursor: None,
+        }),
+        (800, 600),
+        1.0,
+    );
+    // A multi-byte rewrite: byte 1 is inside "€", so an incoherent DOM would
+    // panic the painter's `&value[..cursor]`.
+    write_value(&app, a_id, "€1");
+    app.resolve_and_repaint(800.0, 600.0);
+
+    let value = attr(&app, a_id, "value").unwrap_or_default();
+    let cursor: usize = attr(&app, a_id, "data-cursor-pos")
+        .unwrap_or_default()
+        .parse()
+        .unwrap();
+    assert_eq!(value, "ab", "the DOM still shows the engine text");
+    assert!(
+        value.is_char_boundary(cursor) && cursor <= value.len(),
+        "the caret offset indexes the value it is painted against: {cursor} in {value:?}"
+    );
+
+    // The write is still adopted when the composition commits.
+    app.handle_event(
+        PlatformEvent::Ime(ImeEvent::Commit("你".to_string())),
+        (800, 600),
+        1.0,
+    );
+    assert_eq!(engine(&app).0, "€1你");
+}
+
+/// An empty preedit IS the end of a composition on the winit backends (an IME
+/// cancel delivers only that — no Commit, no Disabled), so it must drain a
+/// deferred write instead of leaving it parked to win over a later one.
+#[test]
+fn an_empty_preedit_drains_a_deferred_write() {
+    let (mut app, a_id, _b_id, _div_id, _log) = mount_fixture();
+
+    click_center(&mut app, a_id);
+    type_str(&mut app, "hi");
+    app.handle_event(
+        PlatformEvent::Ime(ImeEvent::Preedit {
+            text: "ni".to_string(),
+            cursor: None,
+        }),
+        (800, 600),
+        1.0,
+    );
+    write_value(&app, a_id, "HI!");
+    app.resolve_and_repaint(800.0, 600.0);
+    assert_eq!(engine(&app).0, "hi", "held while composing");
+
+    // The IME cancels with an empty preedit and nothing else.
+    app.handle_event(
+        PlatformEvent::Ime(ImeEvent::Preedit {
+            text: String::new(),
+            cursor: None,
+        }),
+        (800, 600),
+        1.0,
+    );
+    assert_eq!(engine(&app).0, "HI!", "the deferred write applied");
+
+    // ...and it does not resurrect over a later write.
+    write_value(&app, a_id, "later");
+    app.resolve_and_repaint(800.0, 600.0);
+    assert_eq!(engine(&app).0, "later");
+}
+
+/// A re-click inside the focused input absorbs the DOM value into the commit
+/// buffer; without adopting first (which moves the baseline for an untouched
+/// field) a purely programmatic write would look like a user edit and commit.
+#[test]
+fn a_reclick_after_a_programmatic_write_still_never_commits() {
+    let (mut app, a_id, b_id, _div_id, log) = mount_fixture();
+
+    click_center(&mut app, a_id);
+    write_value(&app, a_id, "X");
+    // No resolve: the click is the first thing to see the write.
+    click_center(&mut app, a_id);
+    click_center(&mut app, b_id);
+
+    assert!(
+        changes(&log).is_empty(),
+        "a programmatic write plus a caret click is not a user change: {:?}",
+        log.borrow()
+    );
+}
+
+/// Enter is a commit boundary but not an edit command, so it must adopt before
+/// gating: a write that restored the baseline text means there is nothing to
+/// commit, and the payload must agree with the gate.
+#[test]
+fn enter_after_a_write_back_to_the_baseline_commits_nothing() {
+    let (mut app, a_id, _b_id, _div_id, log) = mount_fixture();
+
+    click_center(&mut app, a_id);
+    type_str(&mut app, "a");
+    // The handler reverts the field to its gesture-start text.
+    write_value(&app, a_id, "");
+    key(&mut app, KeyCode::Enter, None);
+
+    assert!(
+        changes(&log).is_empty(),
+        "the field displays the baseline text, so nothing changed: {:?}",
+        log.borrow()
+    );
+}

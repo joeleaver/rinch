@@ -297,3 +297,89 @@ fn only_the_latest_deferred_write_applies() {
     assert_eq!(input.value(), "second");
     f.teardown();
 }
+
+#[wasm_bindgen_test]
+fn a_deferred_write_does_not_clobber_what_the_composition_committed() {
+    // The stash is taken from the pre-commit text (the composition's own
+    // `input` events drive `data-oninput`), so applying it verbatim at
+    // `compositionend` would paste it over the composed characters.
+    let f = Fixture::mount("input", &[("type", "text"), ("value", "abc")]);
+    let input = f.input();
+    input.focus().unwrap();
+
+    composition(&input, "compositionstart");
+    // A write that is NOT derived from the commit — a timer, an unrelated
+    // signal — lands mid-composition and is held.
+    f.write("HI!");
+    assert_eq!(input.value(), "abc", "held while composing");
+    // The IME commits: the control's own text moves under the parked write.
+    input.set_value("abc\u{4f60}");
+    composition(&input, "compositionend");
+
+    assert_eq!(
+        input.value(),
+        "abc\u{4f60}",
+        "the composed text wins over a write computed before it"
+    );
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+fn an_echo_write_during_a_composition_is_not_stashed() {
+    // A controlled field re-writes its own text on every `input` event of the
+    // composition. Stashing that echo would hand `compositionend` a stale
+    // snapshot; it must simply be dropped.
+    let f = Fixture::mount("input", &[("type", "text"), ("value", "abc")]);
+    let input = f.input();
+    input.focus().unwrap();
+
+    composition(&input, "compositionstart");
+    f.write("abc"); // echo of the live value
+    input.set_value("abc\u{4f60}");
+    composition(&input, "compositionend");
+
+    assert_eq!(
+        input.value(),
+        "abc\u{4f60}",
+        "the echo left no stash behind"
+    );
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+fn removing_the_value_attribute_is_deferred_during_a_composition() {
+    // `remove_attribute("value")` is a write of "" and obeys the same rule:
+    // clearing the field under a live composition would move the caret.
+    let f = Fixture::mount("input", &[("type", "text"), ("value", "abc")]);
+    let input = f.input();
+    input.focus().unwrap();
+
+    composition(&input, "compositionstart");
+    f.handle.remove_attribute("value");
+    assert_eq!(input.value(), "abc", "the clear is held while composing");
+
+    composition(&input, "compositionend");
+    assert_eq!(input.value(), "", "and applied when the composition ends");
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+fn focusout_clears_a_stuck_composing_flag() {
+    // A composition that ends without a `compositionend` on the element (a
+    // detach/re-insert, some engines' blur) must not leave the control
+    // swallowing every later write into the pending slot.
+    let f = Fixture::mount("input", &[("type", "text"), ("value", "abc")]);
+    let input = f.input();
+    input.focus().unwrap();
+
+    composition(&input, "compositionstart");
+    input.blur().unwrap(); // focusout, no compositionend
+
+    f.write("later");
+    assert_eq!(
+        input.value(),
+        "later",
+        "writes land again once focus has left"
+    );
+    f.teardown();
+}

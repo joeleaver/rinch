@@ -1262,8 +1262,9 @@ rsx! {
 Text inputs (`TextInput`, `Textarea`, `PasswordInput`, `NumberInput`) also
 take an `onchange` prop — the commit boundary (issue #226): it fires once with
 the final value when the typed gesture ends (focus leaves the control after a
-modification, or Enter — blur-only for `Textarea`), and only if the value
-actually changed since focus. Keep `oninput` for the controlled-input signal
+modification, or Enter — blur-only for `Textarea`), and only if the user
+modified it during the gesture — a programmatic write to a still-untouched
+field moves the reference point with it, matching the browser's dirty flag. Keep `oninput` for the controlled-input signal
 sync; use `onchange` for validate-on-commit and autosave-on-leave.
 
 ## Customization

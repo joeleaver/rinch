@@ -1448,6 +1448,11 @@ impl RinchApp {
         if self.live_focused_input_handler().is_none() {
             return;
         }
+        // Enter is a commit boundary but not an edit command, so neither of
+        // `handle_input_edit_command`'s adopts has run: pull in any pending
+        // `value` write first, so the change gate below compares — and the
+        // payload carries — the text the field actually displays (issue #238).
+        self.adopt_focused_input_value_from_dom();
         // Resolve the focused input's node: the stored id, else a linear scan
         // for the node carrying the focused oninput handler.
         let node_id = self.focused_input_node_id.or_else(|| {
@@ -1934,6 +1939,9 @@ impl RinchApp {
             doc.borrow_mut().update_focus(Some(node_id));
         }
 
+        // Same as the click path: re-focusing the already-focused input must not
+        // let a pending programmatic write pass for a user edit (issue #238).
+        self.adopt_focused_input_value_from_dom();
         self.focused_input_handler_id = Some(handler_id);
         self.focused_input_value = value.clone();
         self.focused_input_node_id = Some(node_id);
@@ -1990,18 +1998,42 @@ impl RinchApp {
             return;
         };
         let Some(doc) = &self.doc else { return };
+        // Compare before cloning: this runs once per frame for as long as any
+        // field holds focus, and the common case is "nothing was written".
         let dom_value = {
             let d = doc.borrow();
             let Some(node) = d.tree.get(node_id) else {
                 return;
             };
-            node.attributes.get("value").cloned().unwrap_or_default()
+            let dom = node
+                .attributes
+                .get("value")
+                .map(String::as_str)
+                .unwrap_or("");
+            if dom == self.focused_input_value && self.focused_input_deferred_value.is_none() {
+                return;
+            }
+            dom.to_string()
         };
         if self.focused_input_preedit.is_some() {
             // Composition in flight: hold the write; the latest one wins.
             if dom_value != self.focused_input_value {
                 self.focused_input_deferred_value = Some(dom_value);
+                // Hold the write back from the DOM as well, not just from the
+                // engine. The painter splices the preedit into the `value`
+                // attribute at the `data-cursor-pos` offset, and those caret
+                // attributes still index the *engine* text — a `value` the
+                // offsets don't index draws the composition in the wrong place
+                // and, when the offset lands inside a multi-byte char, panics
+                // the slice. Restoring the engine text keeps the node coherent
+                // until the composition ends; this also matches the web
+                // backend, where a deferred write never reaches `.value`.
+                self.sync_input_cursor_to_dom();
             }
+            // NOTE: an app write that happens to equal the engine text cannot be
+            // told apart from the restore above, so it does not cancel an
+            // outstanding deferral. Every write that actually differs does
+            // replace it, so "the latest write wins" holds for all of them.
             return;
         }
         let value = self

@@ -27,6 +27,12 @@ rinch-editor-core = { workspace = true }
 # features only (collaboration is opt-in and links a CRDT engine; off here).
 rinch-editor-view = { workspace = true }
 
+# The desktop editing engine's whole-text rewrite diff (`RewriteDiff`), so the
+# caret rule under a controlled-value write is ONE implementation on both
+# backends (issue #238) instead of two copies drifting apart. Zero dependencies,
+# pure `std` — nothing extra enters the wasm build.
+rinch-editable = { workspace = true }
+
 # WASM bindings
 wasm-bindgen = "0.2"
 js-sys = "0.3"
@@ -42,7 +48,7 @@ web-sys = { version = "0.3", features = [
     # Event constructors, so the browser-driven tests (tests/) can synthesise
     # the pointerdown/click/keydown sequences the delegation gates on (#240).
     "MouseEventInit", "KeyboardEventInit", "PointerEventInit",
-    "EventTarget", "FocusOptions",
+    "EventTarget", "FocusOptions", "FocusEvent",
     "Range",
     # Clipboard + IME on the editor's hidden capture textarea: clipboard read/write
     # (paste prefers text/html, falls back to an image file then text/plain) and the

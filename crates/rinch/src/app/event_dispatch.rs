@@ -2236,12 +2236,18 @@ impl RinchApp {
         match ime {
             ImeEvent::Enabled => {}
             ImeEvent::Preedit { text, cursor } => {
-                self.focused_input_preedit = if text.is_empty() {
-                    None
-                } else {
-                    Some((text, cursor))
-                };
+                let ended = text.is_empty();
+                self.focused_input_preedit = if ended { None } else { Some((text, cursor)) };
                 self.sync_input_preedit_to_dom(node_id);
+                if ended {
+                    // An empty preedit *is* the end of the composition on the
+                    // winit backends (an IME cancel delivers only this — no
+                    // Commit, no Disabled). Drain a write the composition
+                    // deferred, exactly like the Commit/Disabled arms below;
+                    // otherwise it stays parked and later wins over whatever
+                    // was written in the meantime (issue #238).
+                    self.adopt_focused_input_value_from_dom();
+                }
             }
             ImeEvent::Commit(text) => {
                 self.focused_input_preedit = None;

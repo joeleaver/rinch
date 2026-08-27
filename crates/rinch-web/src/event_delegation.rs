@@ -1051,7 +1051,7 @@ fn finish_active_drag(state: &WebDragState, x: f32, y: f32, do_drop: bool) {
 }
 
 /// Convert a UTF-16 code unit offset within a string to a UTF-8 byte offset.
-fn utf16_offset_to_utf8_bytes(text: &str, utf16_offset: u32) -> usize {
+pub(crate) fn utf16_offset_to_utf8_bytes(text: &str, utf16_offset: u32) -> usize {
     let mut utf16_count = 0u32;
     for (byte_idx, ch) in text.char_indices() {
         if utf16_count >= utf16_offset {
@@ -2067,6 +2067,20 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             }
         },
     );
+    // Failsafe: a composition cannot outlive the control's focus, but a
+    // `compositionend` is not guaranteed to arrive (a control detached and
+    // re-inserted mid-composition by a keyed list move, some engines' blur).
+    // A stuck flag would silently swallow every later value write into the
+    // pending slot, so clear it — and apply whatever it parked — at focusout.
+    add_capture(&browser_doc, "focusout", |event: web_sys::FocusEvent| {
+        if let Some(el) = event
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        {
+            set_expando(&el, COMPOSING_PROP, &JsValue::UNDEFINED);
+            flush_deferred_value(&el);
+        }
+    });
 
     // Change delegation (issue #226): find [data-onchange] on the target or
     // ancestors. The browser fires `change` exactly at the commit boundary the

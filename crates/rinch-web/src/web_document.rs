@@ -8,8 +8,11 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::event_delegation::{FOCUS_VALUE_PROP, get_expando_string, set_expando};
+use crate::event_delegation::{
+    FOCUS_VALUE_PROP, get_expando_string, set_expando, utf16_offset_to_utf8_bytes,
+};
 use rinch_core::dom::{DomDocument, GlyphBounds, NodeId};
+use rinch_editable::RewriteDiff;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
@@ -209,6 +212,12 @@ pub(crate) const COMPOSING_PROP: &str = "__rinch_composing";
 /// [`flush_deferred_value`] at `compositionend`. The latest write wins.
 pub(crate) const PENDING_VALUE_PROP: &str = "__rinch_pending_value";
 
+/// JS expando holding the control's live `.value` at the moment a write was
+/// deferred. If the value has moved on by `compositionend` the composition
+/// committed text under the parked write, which is then dropped rather than
+/// pasted over it (issue #238).
+pub(crate) const PENDING_BASE_PROP: &str = "__rinch_pending_base";
+
 /// The two text controls with a selection API, for [`write_live_text`].
 enum TextControl<'a> {
     Input(&'a web_sys::HtmlInputElement),
@@ -288,14 +297,56 @@ impl TextControl<'_> {
 /// wins) and applied by [`flush_deferred_value`] at `compositionend`; writing
 /// even the content attribute mid-composition would mirror into a pristine
 /// control's `.value` and move the caret under the composition.
+///
+/// A write that merely echoes what the control already holds is *not* stashed:
+/// the composition's own `input` events drive `data-oninput`, so a controlled
+/// field re-writes its own text on every keystroke of the composition, and
+/// stashing that would hand `compositionend` a pre-commit snapshot to paste
+/// over the text the composition just committed. The live value at stash time
+/// is recorded next to the pending write for the same reason — see
+/// [`flush_deferred_value`].
 pub(crate) fn write_value_attribute(el: &web_sys::Element, value: &str) {
+    write_value(el, Some(value));
+}
+
+/// Remove the `value` content attribute — a write of `""` to the live property,
+/// then the removal, and deferred during a composition exactly like a write
+/// (issue #238): on a pristine control the *absence* of the attribute mirrors
+/// into `.value` just as its presence does, so removing it mid-composition
+/// moves the caret under the composition too.
+pub(crate) fn remove_value_attribute(el: &web_sys::Element) {
+    write_value(el, None);
+}
+
+/// The shared body: `Some(v)` sets the attribute, `None` removes it.
+fn write_value(el: &web_sys::Element, value: Option<&str>) {
     if is_composing(el) {
-        set_expando(el, PENDING_VALUE_PROP, &JsValue::from_str(value));
+        // An echo changes nothing and must not displace the user's composition.
+        let live = live_text_value(el);
+        if live.as_deref() != Some(value.unwrap_or("")) {
+            set_expando(
+                el,
+                PENDING_VALUE_PROP,
+                &value.map_or(JsValue::NULL, JsValue::from_str),
+            );
+            set_expando(
+                el,
+                PENDING_BASE_PROP,
+                &live.map_or(JsValue::UNDEFINED, |v| JsValue::from_str(&v)),
+            );
+        }
         return;
     }
     let node: &web_sys::Node = el;
-    sync_reflected_property(node, "value", value);
-    el.set_attribute("value", value).ok();
+    sync_reflected_property(node, "value", value.unwrap_or(""));
+    match value {
+        Some(v) => {
+            el.set_attribute("value", v).ok();
+        }
+        None => {
+            el.remove_attribute("value").ok();
+        }
+    }
 }
 
 /// Write `value` into a text control's live `.value` (issue #238).
@@ -303,7 +354,8 @@ pub(crate) fn write_value_attribute(el: &web_sys::Element, value: &str) {
 /// When the control holds focus this is the user's text being rewritten under
 /// them — a normalizing `oninput`, a `value_fn` echoing a filtered signal — so
 /// the selection is read first and restored afterwards, mapped through the
-/// rewrite (see [`map_offset_through_rewrite`]) instead of collapsing to the
+/// rewrite (see [`RewriteDiff`], the desktop engine's own rule) instead of
+/// collapsing to the
 /// end as a bare `set_value` does. The `data-onchange` Enter-commit baseline
 /// follows the write while the field is untouched, so a purely programmatic
 /// change never commits by itself (issue #226).
@@ -316,14 +368,36 @@ fn write_live_text(control: &TextControl<'_>, value: &str) {
     } else {
         None
     };
-    if focused && get_expando_string(el, FOCUS_VALUE_PROP).as_deref() == Some(old.as_str()) {
-        set_expando(el, FOCUS_VALUE_PROP, &JsValue::from_str(value));
-    }
+    let baseline_follows =
+        focused && get_expando_string(el, FOCUS_VALUE_PROP).as_deref() == Some(old.as_str());
     control.set_value(value);
+    if !baseline_follows && selection.is_none() {
+        return;
+    }
+    // Map against what the control actually STORES, not what was requested: the
+    // browser sanitizes on the way in (every text-ish `<input>` strips newlines,
+    // `url` also trims surrounding whitespace, `<textarea>` normalizes CRLF), so
+    // offsets computed against the requested string can overshoot the stored one
+    // — and a baseline recorded from it could never match the sanitized value
+    // the commit path compares against, committing a purely programmatic change
+    // (issue #226). Identical to `value` whenever nothing was sanitized.
+    let stored = control.value();
+    if baseline_follows {
+        set_expando(el, FOCUS_VALUE_PROP, &JsValue::from_str(&stored));
+    }
     if let Some((start, end, direction)) = selection {
+        // The caret rule is the desktop engine's, so a controlled rewrite moves
+        // the selection identically on both backends. `map` can land inside a
+        // multi-byte char in a same-length rewrite, so snap down to a boundary —
+        // exactly what `EditableState::adopt_text` does after mapping.
+        let diff = RewriteDiff::between(&old, &stored);
         let map = |offset16: u32| {
-            let byte = utf16_to_byte_offset(&old, offset16);
-            byte_to_utf16_offset(value, map_offset_through_rewrite(&old, value, byte))
+            let byte = utf16_offset_to_utf8_bytes(&old, offset16);
+            let mut mapped = diff.map(byte);
+            while !stored.is_char_boundary(mapped) {
+                mapped -= 1;
+            }
+            utf8_byte_to_utf16_offset(&stored, mapped) as u32
         };
         control.set_selection(map(start), map(end), &direction);
     }
@@ -331,10 +405,41 @@ fn write_live_text(control: &TextControl<'_>, value: &str) {
 
 /// Apply the value write a composition deferred on `el`, if any (called at
 /// `compositionend`, after the composing flag is cleared).
+///
+/// The stash is dropped rather than applied when the control's own text moved
+/// while it was parked (issue #238): the pending write was computed against the
+/// pre-commit text, so pasting it over the text the composition just committed
+/// would silently delete the composed characters. A controlled field re-writes
+/// itself from the `input` event that accompanies the commit, so the correct
+/// value lands anyway.
 pub(crate) fn flush_deferred_value(el: &web_sys::Element) {
-    if let Some(value) = get_expando_string(el, PENDING_VALUE_PROP) {
-        set_expando(el, PENDING_VALUE_PROP, &JsValue::UNDEFINED);
-        write_value_attribute(el, &value);
+    // Absent = nothing parked; a string = a parked write; NULL = a parked
+    // removal (`as_string()` is `None` for both absent and NULL, so the two are
+    // told apart by the raw JsValue).
+    let pending = js_sys::Reflect::get(el, &PENDING_VALUE_PROP.into()).ok();
+    let Some(pending) = pending.filter(|v| !v.is_undefined()) else {
+        return;
+    };
+    let base = get_expando_string(el, PENDING_BASE_PROP);
+    set_expando(el, PENDING_VALUE_PROP, &JsValue::UNDEFINED);
+    set_expando(el, PENDING_BASE_PROP, &JsValue::UNDEFINED);
+    if base.is_some() && base != live_text_value(el) {
+        // The composition changed the text under the parked write; it wins.
+        return;
+    }
+    match pending.as_string() {
+        Some(value) => write_value_attribute(el, &value),
+        None => remove_value_attribute(el),
+    }
+}
+
+/// The live `.value` of a text control, or `None` for anything else.
+fn live_text_value(el: &web_sys::Element) -> Option<String> {
+    if let Some(input) = el.dyn_ref::<web_sys::HtmlInputElement>() {
+        Some(input.value())
+    } else {
+        el.dyn_ref::<web_sys::HtmlTextAreaElement>()
+            .map(|t| t.value())
     }
 }
 
@@ -347,64 +452,6 @@ fn is_active_element(el: &web_sys::Element) -> bool {
         .and_then(|w| w.document())
         .and_then(|d| d.active_element())
         .is_some_and(|active| active.is_same_node(Some(el)))
-}
-
-/// Map a UTF-8 byte offset in `old` to its logical position in `new` — the
-/// caret rule shared with the desktop engine (`rinch_editable::RewriteDiff`,
-/// re-stated here so the web crate stays free of the editing engine): with
-/// `p` the common prefix and `s` the common suffix (both on char boundaries,
-/// `p + s` never exceeding the shorter string), an offset inside the suffix
-/// keeps its distance from the end (tried first, so a pure insertion at the
-/// caret leaves the caret after it, as the browser would), one inside the
-/// prefix stays, and one inside the rewritten middle stays in place for a
-/// same-length rewrite (a case change) and otherwise lands right after the
-/// rewrite. Snapped down to a char boundary of `new`.
-fn map_offset_through_rewrite(old: &str, new: &str, offset: usize) -> usize {
-    let mut prefix = old
-        .bytes()
-        .zip(new.bytes())
-        .take_while(|(a, b)| a == b)
-        .count();
-    while !old.is_char_boundary(prefix) {
-        prefix -= 1;
-    }
-    let mut suffix = old[prefix..]
-        .bytes()
-        .rev()
-        .zip(new[prefix..].bytes().rev())
-        .take_while(|(a, b)| a == b)
-        .count();
-    while !old.is_char_boundary(old.len() - suffix) {
-        suffix -= 1;
-    }
-    let mut mapped = if offset >= old.len() - suffix {
-        new.len() - (old.len() - offset)
-    } else if offset <= prefix || old.len() == new.len() {
-        offset
-    } else {
-        new.len() - suffix
-    };
-    while !new.is_char_boundary(mapped) {
-        mapped -= 1;
-    }
-    mapped
-}
-
-/// The byte offset in `s` of the char at UTF-16 index `idx` (the end for an
-/// index past the text; a surrogate-pair interior snaps to the next char).
-fn utf16_to_byte_offset(s: &str, idx: u32) -> usize {
-    let mut units = 0u32;
-    for (byte, ch) in s.char_indices() {
-        if units >= idx {
-            return byte;
-        }
-        units += ch.len_utf16() as u32;
-    }
-    s.len()
-}
-
-fn byte_to_utf16_offset(s: &str, byte: usize) -> u32 {
-    s[..byte.min(s.len())].encode_utf16().count() as u32
 }
 
 /// Truthiness for HTML boolean-ish attributes as rinch emits them.
@@ -797,12 +844,15 @@ impl DomDocument for WebDocument {
 
     fn remove_attribute(&mut self, node: NodeId, name: &str) {
         if let Some(n) = self.nodes.get(&node.0) {
-            // Removing `value` is a write of `""`: property first, for the same
-            // pristine-control mirroring reason as in `set_attribute`.
-            if name == "value" {
-                sync_reflected_property(n, "value", "");
-            }
             if let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
+                // Removing `value` is a write of `""`: property first (for the
+                // same pristine-control mirroring reason as in `set_attribute`)
+                // and deferred during an IME composition, so both spellings of
+                // "clear this field" obey one policy (issue #238).
+                if name == "value" {
+                    remove_value_attribute(&el);
+                    return;
+                }
                 el.remove_attribute(name).ok();
             }
             // Keep the reflected property in sync when the attribute is removed,
