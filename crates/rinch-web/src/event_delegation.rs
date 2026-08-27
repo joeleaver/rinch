@@ -335,7 +335,7 @@ fn dispatch_mouse_attr(el: &web_sys::Element, attr: &str, event: &web_sys::Mouse
 
 /// The pure activation state machine, kept free of `web_sys` so it can be
 /// unit-tested on the host target (`cargo test --workspace`).
-mod drag_machine {
+pub(crate) mod drag_machine {
     /// Movement threshold (CSS px) before a *mouse* drag activates — matches desktop.
     pub const WEB_DRAG_THRESHOLD: f32 = 5.0;
     /// Hold duration (ms) before a *touch/pen* drag activates via long-press.
