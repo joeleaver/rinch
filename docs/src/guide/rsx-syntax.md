@@ -125,7 +125,9 @@ control was focused. Use `oninput` for live previews and controlled inputs,
 `onchange` for validate-on-commit, autosave-on-leave, and undo bracketing.
 On Enter, `onchange` fires before `onsubmit`, and the eventual blur does not
 re-fire an already-committed value. Enter commits **single-line inputs
-only** — in a `<textarea>` (as in HTML) the gesture runs until blur. Like the
+only** — in a `<textarea>` (as in HTML) the gesture runs until blur, where
+Enter inserts a line break instead (see [Enter in a
+`<textarea>`](#enter-in-a-textarea)). Like the
 browser's `change`, the event bubbles: `data-onchange` on an ancestor of the
 control receives the commit too.
 
@@ -178,9 +180,32 @@ key event of their own on Firefox/WebKit), `element.click()` — are honoured
 once, and a click a handler raises itself (`hidden_input.click()`) does not
 re-enter that handler. Enter inside an `<input>`/`<textarea>`, an editable
 region or the rich-text editor is never an activation of a surrounding
-clickable; it is the `onsubmit` gesture described above. An element with no
+clickable; it is the `onsubmit` gesture described above (or, in a
+`<textarea>` with no `onsubmit`, a line break). An element with no
 live handler in its ancestry is a quiet no-op — the key falls through to the
 browser, so Tab and scrolling keep their usual meaning.
+
+### Enter in a `<textarea>`
+
+Enter has two meanings in a multi-line field, and which one it takes is the
+author's declaration:
+
+| Field | Key | What happens |
+|---|---|---|
+| `<textarea>` | Enter, no `onsubmit` | inserts a line break |
+| `<textarea>` | Enter, with `onsubmit` | runs `onsubmit` — nothing is inserted |
+| `<textarea>` | **Shift+Enter** | always inserts a line break |
+| `<input>` | Enter / Shift+Enter | commits (`onchange`, then `onsubmit`); never inserts |
+
+So a notes field takes line breaks with no ceremony, a chat composer sends on
+Enter and takes a break on Shift+Enter, and a single-line `<input>` is
+unchanged — a line break is not representable in its value.
+
+The break is an ordinary edit: it moves the caret, fires `oninput` with the new
+value (`\n` included) and is one Backspace away from gone. On Android the soft
+keyboard is told per focused field which kind it is serving, so a `<textarea>`
+gets a keyboard whose Enter types a newline instead of an action key that ends
+the input session.
 
 ### Sizing a `<textarea>`
 
