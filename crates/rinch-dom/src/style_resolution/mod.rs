@@ -147,14 +147,9 @@ impl RinchDocument {
     /// Parse a CSS string into an author-origin Stylo stylesheet.
     fn parse_author_stylesheet(&self, css: &str) -> style::stylesheets::DocumentStyleSheet {
         use style::media_queries::MediaList;
-        use style::stylesheets::{
-            AllowImportRules, DocumentStyleSheet, Origin, Stylesheet, UrlExtraData,
-        };
+        use style::stylesheets::{AllowImportRules, DocumentStyleSheet, Origin, Stylesheet};
 
-        // Create a dummy URL for the stylesheet
-        let url_data = UrlExtraData::from(
-            ::url::Url::parse("about:blank").expect("about:blank is a valid URL"),
-        );
+        let url_data = crate::layout::BLANK_URL_DATA.clone();
 
         let media = ServoArc::new(self.tree.guard.wrap(MediaList::empty()));
         let stylesheet = Stylesheet::from_str(

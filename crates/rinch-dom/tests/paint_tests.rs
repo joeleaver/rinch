@@ -674,7 +674,7 @@ mod transform_paint {
         false
     }
 
-    fn is_opaque_red(p: [u8; 4]) -> bool {
+    pub(super) fn is_opaque_red(p: [u8; 4]) -> bool {
         p[0] > 200 && p[1] < 50 && p[2] < 50 && p[3] > 200
     }
 
@@ -922,6 +922,62 @@ mod transform_paint {
     }
 }
 
+// ── #236: a set_style inset move must paint where layout puts it ─────────────
+
+/// The set_style inset fast path skips Stylo; the pixel it paints must still
+/// be the one a full resolve of the same declaration would paint. Before the
+/// fix the fast path wrote `layout.x = left_px` (no parent border) and never
+/// marked layout dirty, so the child painted short of its true position.
+#[cfg(feature = "software-renderer")]
+mod inset_fast_path_paint {
+    use super::transform_paint::{is_opaque_red, paint_skia, pixel_at};
+    use super::*;
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+
+    #[test]
+    fn set_style_left_paints_at_layout_position() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        // A 30px border is wider than the child, so the box the old fast path
+        // painted ([40, 60)) and the true box ([70, 90)) do not overlap.
+        let parent = doc.create_element("div");
+        doc.set_attribute(
+            parent,
+            "style",
+            "position: relative; width: 300px; height: 200px; \
+             border-left: 30px solid black; border-top: 0 solid black",
+        );
+        doc.append_child(body, parent);
+        let child = doc.create_element("div");
+        doc.set_attribute(
+            child,
+            "style",
+            "position: absolute; left: 0; top: 0; width: 20px; height: 20px; \
+             background-color: red",
+        );
+        doc.append_child(parent, child);
+        doc.resolve_layout(800.0, 600.0);
+
+        doc.set_style(child, "left", "40px");
+        doc.resolve_layout(800.0, 600.0);
+
+        let mut painter = TinySkiaPainter::new(200, 100);
+        paint_skia(&mut doc, &mut painter);
+
+        let layout = doc.tree.get(child.0).unwrap().layout;
+        assert!(
+            is_opaque_red(pixel_at(&painter, 80, 10)),
+            "the child must paint at its laid-out centre (80, 10) — border (30) + \
+             left (40) + half its width; layout.x = {}",
+            layout.x
+        );
+        assert!(
+            !is_opaque_red(pixel_at(&painter, 50, 10)),
+            "nothing at the padding-box-relative position the old fast path wrote"
+        );
+    }
+}
+
 // ── #202: DPI-scale covariance of transform composition ──────────────────────
 
 /// The mechanical correctness criterion for `compose_node_transform`: it must be
@@ -1158,4 +1214,284 @@ mod svg_paint {
             [4, 5, 6, 255]
         );
     }
+}
+
+/// Regression for the paint half of issue #61 (see `ifc.rs`,
+/// `mark_inline_descendants`).
+///
+/// rsx emits a comment marker for every `if`/`for`/`match`/component, and a
+/// `display:contents` wrapper for `Vec<NodeHandle>` children. Comments count as
+/// inline children, so a block container holding a marker becomes an inline
+/// formatting context root. The IFC machinery then marked *every*
+/// `display:contents` child of that root with `ifc_root`, which tells the paint
+/// tree-walk "the IFC draws this, skip it" — so a wrapper full of **block**
+/// content, and its entire subtree, silently vanished from the scene while
+/// keeping perfectly correct layout boxes.
+#[test]
+fn test_block_content_behind_display_contents_still_paints() {
+    /// Builds `<div width:400px><!--for--> [wrapper] <div 100x40 red></div>`,
+    /// with the red block either behind a `display:contents` wrapper or a
+    /// direct child, and returns (draw op count, wrapper's `ifc_root`).
+    fn build(wrapped: bool) -> (usize, Option<usize>) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        // A block container that becomes an IFC root purely because of an rsx
+        // control-flow marker comment.
+        let container = doc.create_element("div");
+        doc.set_attribute(container, "style", "width: 400px");
+        doc.append_child(body, container);
+        let marker = doc.create_comment("for");
+        doc.append_child(container, marker);
+
+        let parent = if wrapped {
+            let wrapper = doc.create_element("div");
+            doc.set_attribute(wrapper, "style", "display: contents");
+            doc.append_child(container, wrapper);
+            wrapper
+        } else {
+            container
+        };
+
+        let painted = doc.create_element("div");
+        doc.set_attribute(
+            painted,
+            "style",
+            "width: 100px; height: 40px; background-color: red",
+        );
+        doc.append_child(parent, painted);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        // Layout is unaffected either way — the box is there, it just never drew.
+        let l = doc.tree.get(painted.0).unwrap().layout;
+        assert_eq!((l.width, l.height), (100.0, 40.0), "block box laid out");
+
+        let mut painter = VelloPainter::new();
+        paint(&mut doc, &mut painter);
+        let draws = painter.scene().encoding().draw_tags.len();
+        let ifc_root = if wrapped {
+            doc.tree.get(parent.0).unwrap().ifc_root
+        } else {
+            None
+        };
+        (draws, ifc_root)
+    }
+
+    let (control_draws, _) = build(false);
+    let (wrapped_draws, wrapper_ifc_root) = build(true);
+
+    assert_eq!(
+        wrapped_draws, control_draws,
+        "a block box behind a display:contents wrapper must produce the same \
+         draw operations as the same box without the wrapper \
+         (wrapped={wrapped_draws}, control={control_draws})"
+    );
+
+    // The mechanism: the wrapper wraps a block, so it is not IFC content.
+    assert_eq!(
+        wrapper_ifc_root, None,
+        "a display:contents wrapper holding block content must not be marked \
+         as IFC content — paint skips every node whose ifc_root is set"
+    );
+}
+
+/// The same guarantee as `test_block_content_behind_display_contents_still_paints`,
+/// but for content that becomes block-level *after* the first layout pass.
+///
+/// `ifc_root` is derived state that the marking pass only ever sets, so a
+/// wrapper that legitimately joined the IFC while it was empty (an `if` branch
+/// that starts hidden, a `for` list that starts empty, a reactive component that
+/// first renders nothing) kept that mark forever once real content arrived —
+/// and paint skips every node whose `ifc_root` is set.
+#[test]
+fn test_block_appended_into_a_marked_contents_wrapper_still_paints() {
+    /// `<div width:400px><!--show--><div display:contents/></div>`, laid out
+    /// once while the wrapper is empty, then given a 100x40 block child.
+    /// Returns (draw op count after the second pass, wrapper's `ifc_root`).
+    fn build(wrapped: bool) -> (usize, Option<usize>) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let container = doc.create_element("div");
+        doc.set_attribute(container, "style", "width: 400px");
+        doc.append_child(body, container);
+        let marker = doc.create_comment("show");
+        doc.append_child(container, marker);
+
+        let parent = if wrapped {
+            let wrapper = doc.create_element("div");
+            doc.set_attribute(wrapper, "style", "display: contents");
+            doc.append_child(container, wrapper);
+            wrapper
+        } else {
+            container
+        };
+
+        // First pass: the wrapper holds nothing at all.
+        doc.resolve_layout(800.0, 600.0);
+
+        // Second pass: the branch turns on and renders a block.
+        let painted = doc.create_element("div");
+        doc.set_attribute(
+            painted,
+            "style",
+            "width: 100px; height: 40px; background-color: red",
+        );
+        doc.append_child(parent, painted);
+        doc.resolve_layout(800.0, 600.0);
+
+        let l = doc.tree.get(painted.0).unwrap().layout;
+        assert_eq!((l.width, l.height), (100.0, 40.0), "block box laid out");
+
+        let mut painter = VelloPainter::new();
+        paint(&mut doc, &mut painter);
+        let draws = painter.scene().encoding().draw_tags.len();
+        let ifc_root = if wrapped {
+            doc.tree.get(parent.0).unwrap().ifc_root
+        } else {
+            None
+        };
+        (draws, ifc_root)
+    }
+
+    let (control_draws, _) = build(false);
+    let (wrapped_draws, wrapper_ifc_root) = build(true);
+
+    assert_eq!(
+        wrapper_ifc_root, None,
+        "a wrapper that was IFC content while empty must lose that mark once it \
+         holds a block — paint skips every node whose ifc_root is set"
+    );
+    assert_eq!(
+        wrapped_draws, control_draws,
+        "a block box appended into a display:contents wrapper after the first \
+         layout must paint like the same box with no wrapper \
+         (wrapped={wrapped_draws}, control={control_draws})"
+    );
+}
+
+/// Inline content that follows a block-holding `display:contents` wrapper must
+/// not be marked as this IFC's content: `walk_inline_children` stops building
+/// the line at that wrapper, so anything marked after it would be skipped by
+/// paint *and* never drawn by the IFC — invisible in both directions.
+#[test]
+fn test_inline_after_a_block_wrapper_is_not_orphaned() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    let container = doc.create_element("div");
+    doc.set_attribute(container, "style", "width: 400px");
+    doc.append_child(body, container);
+    let marker = doc.create_comment("for");
+    doc.append_child(container, marker);
+
+    // A contents wrapper holding a block box.
+    let block_wrapper = doc.create_element("div");
+    doc.set_attribute(block_wrapper, "style", "display: contents");
+    doc.append_child(container, block_wrapper);
+    let block = doc.create_element("div");
+    doc.set_attribute(block, "style", "width: 100px; height: 40px");
+    doc.append_child(block_wrapper, block);
+
+    // A contents wrapper holding inline text, *after* it.
+    let text_wrapper = doc.create_element("span");
+    doc.set_attribute(text_wrapper, "style", "display: contents");
+    doc.append_child(container, text_wrapper);
+    let text = doc.create_text("TRAILING");
+    doc.append_child(text_wrapper, text);
+
+    doc.resolve_layout(800.0, 600.0);
+
+    let ifc_text = doc
+        .tree
+        .get(container.0)
+        .unwrap()
+        .text_layout
+        .as_ref()
+        .map(|l| l.text_content.clone())
+        .unwrap_or_default();
+
+    // Either the IFC draws the text, or the text keeps its own box — but it
+    // must never be both skipped by paint and absent from the inline layout.
+    if !ifc_text.contains("TRAILING") {
+        assert_eq!(
+            doc.tree.get(text.0).unwrap().ifc_root,
+            None,
+            "text the IFC does not lay out must not be marked as IFC content — \
+             paint would skip it and nothing would ever draw it"
+        );
+        assert_eq!(
+            doc.tree.get(text_wrapper.0).unwrap().ifc_root,
+            None,
+            "the wrapper around that text must not be marked either"
+        );
+    }
+}
+
+/// A `display:none` child generates no box, so it must not change how the
+/// surrounding `display:contents` wrapper is classified.
+///
+/// `display:none` resolves to `DisplayMode::Block`, so the scan that decides
+/// whether a wrapper is transparent to the enclosing inline formatting context
+/// counted a hidden child as a block-level box — and a wrapper whose only
+/// "block" is hidden was pushed out of the IFC. Adding a hidden sibling next to
+/// inline text is a no-op in CSS; it must be a no-op here too.
+#[test]
+fn test_a_display_none_child_does_not_push_a_contents_wrapper_out_of_the_ifc() {
+    /// `<div width:400px><!--show--><span display:contents>VISIBLE[hidden?]</span></div>`.
+    /// Returns (the wrapper's `ifc_root`, the container IFC's laid-out text).
+    fn build(with_hidden_child: bool) -> (Option<usize>, String) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let container = doc.create_element("div");
+        doc.set_attribute(container, "style", "width: 400px");
+        doc.append_child(body, container);
+        let marker = doc.create_comment("show");
+        doc.append_child(container, marker);
+
+        let wrapper = doc.create_element("span");
+        doc.set_attribute(wrapper, "style", "display: contents");
+        doc.append_child(container, wrapper);
+        let text = doc.create_text("VISIBLE");
+        doc.append_child(wrapper, text);
+
+        if with_hidden_child {
+            let hidden = doc.create_element("div");
+            doc.set_attribute(hidden, "style", "display: none");
+            doc.append_child(wrapper, hidden);
+        }
+
+        doc.resolve_layout(800.0, 600.0);
+
+        let ifc_text = doc
+            .tree
+            .get(container.0)
+            .unwrap()
+            .text_layout
+            .as_ref()
+            .map(|l| l.text_content.clone())
+            .unwrap_or_default();
+        (doc.tree.get(wrapper.0).unwrap().ifc_root, ifc_text)
+    }
+
+    let (control_root, control_text) = build(false);
+    let (hidden_root, hidden_text) = build(true);
+
+    assert!(
+        control_text.contains("VISIBLE"),
+        "precondition: the inline text is laid out by the container's IFC \
+         (got {control_text:?})"
+    );
+    assert_eq!(
+        hidden_root, control_root,
+        "a display:contents wrapper's IFC classification must not change when a \
+         display:none child — which generates no box at all — is added"
+    );
+    assert_eq!(
+        hidden_text, control_text,
+        "the inline text beside a hidden sibling must still be laid out by the \
+         same inline formatting context"
+    );
 }
