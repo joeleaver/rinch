@@ -2364,6 +2364,125 @@ impl RinchApp {
 }
 
 #[cfg(test)]
+mod viewport_relayout_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// A 1.25x display: winit reports a 575x780 physical surface, which is a
+    /// 460x624 CSS-pixel viewport.
+    const PHYSICAL: (u32, u32) = (575, 780);
+    const SCALE: f64 = 1.25;
+    const LOGICAL: (f32, f32) = (460.0, 624.0);
+
+    /// Mount a full-viewport element and hand back the app plus its node id.
+    /// A `width/height: 100%` box resolves against the viewport, so its layout
+    /// box *is* the viewport the document currently believes in.
+    fn mount_at_logical() -> (RinchApp, usize) {
+        let captured: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let captured_in = captured.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "width: 100%; height: 100%");
+            captured_in.set(Some(root.node_id().0));
+            root
+        });
+        // What the shell does at startup after #246: mount at the *logical* size.
+        app.mount_component(LOGICAL.0, LOGICAL.1);
+        let id = captured.get().expect("node id captured at mount");
+        (app, id)
+    }
+
+    fn viewport_of(app: &RinchApp, id: usize) -> (f32, f32) {
+        let doc = app.doc.as_ref().expect("document");
+        let d = doc.borrow();
+        let l = d.tree.get(id).expect("root node").layout;
+        (l.width, l.height)
+    }
+
+    /// Mark the tree dirty the way an Effect writing to the DOM does, so the
+    /// relayout branches below are actually reached (they all short-circuit on
+    /// a clean tree).
+    fn dirty(app: &RinchApp) {
+        let doc = app.doc.as_ref().expect("document");
+        let mut d = doc.borrow_mut();
+        let body = d.tree.body_id;
+        d.tree.dirty_nodes.insert(body);
+    }
+
+    /// #246 review finding: the shell mounted at the logical viewport, but every
+    /// relayout driven from `handle_event` was handed the **physical** surface
+    /// size instead — and `window_size` is physical by contract, because
+    /// `handle_event` divides it itself for `ClickContext`.
+    ///
+    /// So the page was laid out correctly exactly once. The first `AboutToWait`
+    /// (which the runtime fires on *every* event-loop iteration) or `ReRender`
+    /// after any DOM change re-resolved it at 575 CSS px, and the paint preamble
+    /// then skipped its own re-resolve because that relayout had already drained
+    /// the dirty set — so the frame painted the oversized layout. The three
+    /// `to_logical` unit tests could not see this: they test the conversion, not
+    /// which viewport reaches `resolve_layout`.
+    ///
+    /// Every event here is driven with the physical size, exactly as the shell
+    /// passes it.
+    #[test]
+    fn a_relayout_after_mount_keeps_the_logical_viewport() {
+        let (mut app, id) = mount_at_logical();
+        assert_eq!(
+            viewport_of(&app, id),
+            LOGICAL,
+            "mount must lay out at the logical viewport"
+        );
+
+        for event in [
+            PlatformEvent::AboutToWait,
+            PlatformEvent::UserEvent(UserEvent::ReRender),
+        ] {
+            dirty(&app);
+            app.handle_event(event.clone(), PHYSICAL, SCALE);
+            assert_eq!(
+                viewport_of(&app, id),
+                LOGICAL,
+                "{event:?} re-laid the document out at the physical surface size \
+                 instead of the logical viewport"
+            );
+        }
+    }
+
+    /// The same guarantee for the resize path: `PlatformEvent::Resized` carries
+    /// the logical viewport, while `window_size` alongside it stays physical.
+    #[test]
+    fn a_resize_event_lays_out_at_the_logical_viewport() {
+        let (mut app, id) = mount_at_logical();
+        // The window grew to a 720x900 physical surface at the same 1.25x.
+        let grown_physical = (720u32, 900u32);
+        let (lw, lh) = rinch_platform::to_logical(grown_physical, SCALE);
+        app.handle_event(
+            PlatformEvent::Resized {
+                width: lw,
+                height: lh,
+            },
+            grown_physical,
+            SCALE,
+        );
+        assert_eq!(
+            viewport_of(&app, id),
+            (lw as f32, lh as f32),
+            "a resize must land on the logical viewport, not the 720x900 surface"
+        );
+
+        // And it must still be logical after the next relayout — the regression
+        // above, but from a resized starting point.
+        dirty(&app);
+        app.handle_event(PlatformEvent::AboutToWait, grown_physical, SCALE);
+        assert_eq!(
+            viewport_of(&app, id),
+            (lw as f32, lh as f32),
+            "the relayout after a resize reverted to the physical surface size"
+        );
+    }
+}
+
+#[cfg(test)]
 mod layout_notification_tests {
     use super::*;
     use std::cell::Cell;

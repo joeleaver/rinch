@@ -3,7 +3,30 @@
 use super::*;
 
 impl RinchApp {
+    /// The logical (CSS-pixel) viewport `window_size` presents.
+    ///
+    /// `window_size` is the **physical** surface size, and pointer coordinates
+    /// arrive in the same physical units. The document, however, is laid out in
+    /// CSS pixels and paint multiplies every layout coordinate by the scale
+    /// factor, so anything that resolves layout — every `resolve_and_repaint`
+    /// below, and `ClickContext`'s viewport — must be handed *this*, never the
+    /// raw surface size. Handing layout the physical size lays the page out
+    /// `scale_factor` times too wide and paint then scales it up again.
+    ///
+    /// Shares `rinch_platform::to_logical` with the shells rather than dividing
+    /// again here: mount and resize lay out at the *rounded* logical size, so a
+    /// separately-rounded viewport would relayout the document to a fractionally
+    /// different width on the next `ReRender`.
+    pub(crate) fn layout_viewport(window_size: (u32, u32), scale_factor: f64) -> (f32, f32) {
+        let (w, h) = rinch_platform::to_logical(window_size, scale_factor);
+        (w as f32, h as f32)
+    }
+
     /// Process a platform event and return a list of actions for the shell.
+    ///
+    /// `window_size` is in **physical** pixels (so are the pointer coordinates
+    /// carried by the mouse events); the logical layout viewport is derived from
+    /// it by [`Self::layout_viewport`].
     #[allow(clippy::too_many_lines)]
     pub fn handle_event(
         &mut self,
@@ -21,9 +44,9 @@ impl RinchApp {
         let _dispatching = rinch_core::push_dispatching_doc(self.doc_key());
 
         let mut actions = Vec::new();
-        // Logical viewport dimensions for ClickContext
-        let vp_w = window_size.0 as f32 / scale_factor as f32;
-        let vp_h = window_size.1 as f32 / scale_factor as f32;
+        // Logical (CSS-pixel) viewport — for ClickContext *and* for every
+        // `resolve_and_repaint` below.
+        let (vp_w, vp_h) = Self::layout_viewport(window_size, scale_factor);
 
         match event {
             PlatformEvent::Resumed => {
@@ -233,8 +256,7 @@ impl RinchApp {
                 // Handle component drag (sliders, floating panels, etc.)
                 let (drag_active, drag_forward_surface) = rinch_core::update_drag(x, y);
                 if drag_active && !drag_forward_surface {
-                    let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                    self.resolve_and_repaint(w, h);
+                    self.resolve_and_repaint(vp_w, vp_h);
                     actions.push(AppAction::RequestRedraw);
                     return actions;
                 }
@@ -929,8 +951,7 @@ impl RinchApp {
                             // its block if it reparented), re-layout, then the
                             // post-layout caret pass finalizes it with fresh geometry.
                             self.refresh_editor_overlays();
-                            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                            self.resolve_and_repaint(w, h);
+                            self.resolve_and_repaint(vp_w, vp_h);
                             actions.push(AppAction::RequestRedraw);
                         } else {
                             // The focused editor was unmounted out from under us:
@@ -1087,8 +1108,7 @@ impl RinchApp {
                         {
                             self.dispatch_editor_ime(&handle, ime);
                             self.refresh_editor_overlays();
-                            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                            self.resolve_and_repaint(w, h);
+                            self.resolve_and_repaint(vp_w, vp_h);
                             actions.push(AppAction::RequestRedraw);
                         } else {
                             // Focused editor unmounted out from under us.
@@ -1108,8 +1128,7 @@ impl RinchApp {
                 actions.push(AppAction::RequestRedraw);
             }
             PlatformEvent::UserEvent(UserEvent::ReRender) => {
-                let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                if self.resolve_and_repaint(w, h) {
+                if self.resolve_and_repaint(vp_w, vp_h) {
                     actions.push(AppAction::RequestRedraw);
                 }
                 // Process any pending input focus request (e.g., from an Effect
@@ -1221,8 +1240,7 @@ impl RinchApp {
                 }
 
                 if self.has_dirty_nodes() {
-                    let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                    if self.resolve_and_repaint(w, h) {
+                    if self.resolve_and_repaint(vp_w, vp_h) {
                         actions.push(AppAction::RequestRedraw);
                     }
                 }
@@ -1253,8 +1271,7 @@ impl RinchApp {
 
                 // Video polling may have dirtied nodes (signal updates) — check again
                 if any_video && self.has_dirty_nodes() {
-                    let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                    if self.resolve_and_repaint(w, h) {
+                    if self.resolve_and_repaint(vp_w, vp_h) {
                         actions.push(AppAction::RequestRedraw);
                     }
                 }
@@ -2878,7 +2895,7 @@ impl RinchApp {
         {
             crate::editor::end_drag(self.input_doc());
             self.refresh_editor_overlays();
-            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+            let (w, h) = Self::layout_viewport(window_size, scale);
             self.resolve_and_repaint(w, h);
             return true;
         }
@@ -2918,7 +2935,7 @@ impl RinchApp {
         // Position the caret first, then re-layout so the post-layout caret pass
         // finalizes it against fresh geometry.
         self.refresh_editor_overlays();
-        let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+        let (w, h) = Self::layout_viewport(window_size, scale);
         self.resolve_and_repaint(w, h);
         true
     }
@@ -2962,7 +2979,7 @@ impl RinchApp {
             };
             handle.set_selection(sel);
             self.refresh_editor_overlays();
-            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
+            let (w, h) = Self::layout_viewport(window_size, scale);
             self.resolve_and_repaint(w, h);
         }
         true
