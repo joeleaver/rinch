@@ -1586,6 +1586,8 @@ Some components support reactive value binding via `_fn` props. The `rsx!` macro
 
 **Controlled Input Pattern:** For controlled inputs, use `value_fn` + `oninput` together. `value_fn` keeps the DOM in sync with your signal; `oninput` updates the signal from user input. Without `value_fn`, programmatic `signal.set("")` won't clear the input visually.
 
+A `value_fn` write (any `set_attribute("value")`) to the **focused** field is adopted by the field on both backends (issue #238): it becomes the text the next keystroke edits, the caret keeps its logical position (kept prefix/suffix keeps it, a same-length rewrite leaves it in place, a resized rewrite puts it after the new text), a selection survives, the write is deferred during an IME composition, and it never commits `onchange` by itself. A normalizing or rejecting `oninput` (uppercase, digits-only, max-length) that writes back on every keystroke therefore just works — on desktop, where it used to snap back to the pre-rewrite text on the next key, as well as on the web, where it used to throw the caret to the end.
+
 **`onsubmit`:** TextInput supports `onsubmit` which fires when the user presses Enter.
 
 Example - controlled TextInput with submit:
@@ -1660,10 +1662,11 @@ Button { variant: "filled" }
 
 **Component Props vs HTML Attributes:**
 
-- **HTML elements** (`div`, `span`, `p`, etc.) accept any attribute as a string: `style:`, `class:`, `id:`, custom `data-*`, etc. They also support reactive closures `{|| expr}` on any attribute. **`oninput` and `onchange` on `<input>`/`<textarea>` elements** receive the input value as a `String` — use `Fn(String)` closures, not `Fn()`:
+- **HTML elements** (`div`, `span`, `p`, etc.) accept any attribute as a string: `style:`, `class:`, `id:`, custom `data-*`, etc. They also support reactive closures `{|| expr}` on any attribute. **`oninput` and `onchange` on `<input>`/`<textarea>` elements** receive the input value as a `String` — use `Fn(String)` closures, not `Fn()`. They are **not aliases** (issue #226): `oninput` fires per keystroke with the live value; `onchange` fires once at the commit boundary — focus leaves the control after a modification, Enter (single-line inputs only; a `<textarea>` commits at blur), or a `<select>` pick — and only if the value actually changed since focus. On Enter, `onchange` fires before `onsubmit`:
   ```rust
   input {
       oninput: move |value: String| name_signal.set(value),
+      onchange: move |value: String| autosave(value),
       placeholder: "Type here...",
   }
   ```
@@ -1843,6 +1846,7 @@ close_app()                         # Done
 |-------|-------|--------------|
 | Borders appearing unexpectedly | `border_*_width` should be 0 for `border: none` | `computed_style.rs` - check `border-style` |
 | SVG icons 0x0 | Missing inline width/height styles | Add `style="width: Xpx; height: Xpx"` |
+| SVG `fill`/`stroke` attribute not painting | Must be a CSS `<color>` (stylo parses it via `layout::parse_color`); `none`/`currentcolor` are case-insensitive; an absent `fill` is black | `paint/svg.rs` `resolve_svg_color` |
 | currentColor not resolving | Check `is_currentcolor()` handling | `computed_style.rs` |
 | Reactive state not updating | Need `{|| expr}` closure syntax | Component render method |
 | Menu active state stale | Missing reactive effect | Add `create_effect()` for class updates |

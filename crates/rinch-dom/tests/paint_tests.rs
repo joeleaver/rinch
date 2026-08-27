@@ -206,30 +206,95 @@ fn test_paint_rgba_color() {
     assert!(!painter.scene().encoding().is_empty());
 }
 
+/// `parse_color` as `(r, g, b, a)`, for exact assertions.
+fn rgba(value: &str) -> Option<(u8, u8, u8, u8)> {
+    rinch_dom::layout::parse_color(value).map(|c| {
+        let c = c.to_rgba8();
+        (c.r, c.g, c.b, c.a)
+    })
+}
+
 #[test]
 fn test_parse_color_named() {
-    use rinch_dom::layout::parse_color;
-    assert!(parse_color("red").is_some());
-    assert!(parse_color("blue").is_some());
-    assert!(parse_color("transparent").is_some());
-    assert!(parse_color("unknown_color").is_none());
+    assert_eq!(rgba("red"), Some((255, 0, 0, 255)));
+    assert_eq!(rgba("blue"), Some((0, 0, 255, 255)));
+    assert_eq!(rgba("transparent"), Some((0, 0, 0, 0)));
+    assert_eq!(rgba("unknown_color"), None);
+}
+
+/// #250: the whole CSS named-colour table, matched case-insensitively — not a
+/// private dozen. `rebeccapurple` is the last name the spec added.
+#[test]
+fn test_parse_color_full_named_table_case_insensitive() {
+    assert_eq!(rgba("rebeccapurple"), Some((102, 51, 153, 255)));
+    assert_eq!(rgba("aqua"), Some((0, 255, 255, 255)));
+    assert_eq!(rgba("Aqua"), Some((0, 255, 255, 255)));
+    assert_eq!(rgba("AQUA"), Some((0, 255, 255, 255)));
+    assert_eq!(rgba("  RebeccaPurple  "), Some((102, 51, 153, 255)));
 }
 
 #[test]
 fn test_parse_color_hex() {
-    use rinch_dom::layout::parse_color;
-    assert!(parse_color("#f00").is_some());
-    assert!(parse_color("#ff0000").is_some());
-    assert!(parse_color("#ff000080").is_some());
-    assert!(parse_color("#xyz").is_none());
+    assert_eq!(rgba("#f00"), Some((255, 0, 0, 255)));
+    assert_eq!(rgba("#ff0000"), Some((255, 0, 0, 255)));
+    assert_eq!(rgba("#ff000080"), Some((255, 0, 0, 128)));
+    // #250: 4-digit hex is CSS Color 4 (#rgba).
+    assert_eq!(rgba("#1234"), Some((0x11, 0x22, 0x33, 0x44)));
+    assert_eq!(rgba("#xyz"), None);
+    assert_eq!(rgba("#12"), None);
 }
 
 #[test]
 fn test_parse_color_rgb_rgba() {
-    use rinch_dom::layout::parse_color;
-    assert!(parse_color("rgb(255, 0, 0)").is_some());
-    assert!(parse_color("rgba(255, 0, 0, 0.5)").is_some());
-    assert!(parse_color("rgb(255, 0)").is_none());
+    assert_eq!(rgba("rgb(255, 0, 0)"), Some((255, 0, 0, 255)));
+    assert_eq!(rgba("rgba(255, 0, 0, 0.5)"), Some((255, 0, 0, 128)));
+    // #250: modern space-separated syntax, with and without a `/ alpha`.
+    assert_eq!(rgba("rgb(0 128 255)"), Some((0, 128, 255, 255)));
+    assert_eq!(rgba("rgb(0 128 255 / 50%)"), Some((0, 128, 255, 128)));
+    // #250: CSS clamps out-of-range components; it does not reject them.
+    assert_eq!(rgba("rgb(300, 0, 0)"), Some((255, 0, 0, 255)));
+    assert_eq!(rgba("rgb(255, 0)"), None);
+    assert_eq!(rgba("rgb(0, 0)"), None);
+}
+
+/// #250: `hsl()`/`hsla()` were not parsed at all.
+#[test]
+fn test_parse_color_hsl() {
+    assert_eq!(rgba("hsl(270 50% 40%)"), Some((102, 51, 153, 255)));
+    assert_eq!(rgba("hsla(270, 50%, 40%, 0.5)"), Some((102, 51, 153, 128)));
+}
+
+/// The rest of the CSS Color 4 grammar `parse_color`'s doc promises, one
+/// vector per family; `in srgb` keeps the mix exact.
+#[test]
+fn test_parse_color_css_color_4_functions() {
+    assert_eq!(rgba("hwb(270 20% 40%)"), Some((102, 51, 153, 255)));
+    assert_eq!(rgba("color(srgb 0.4 0.2 0.6)"), Some((102, 51, 153, 255)));
+    assert_eq!(rgba("oklch(0 0 0)"), Some((0, 0, 0, 255)));
+    assert_eq!(
+        rgba("color-mix(in srgb, red 25%, blue)"),
+        Some((64, 0, 191, 255))
+    );
+    // A mix over `currentcolor` is not absolute on its own.
+    assert_eq!(rgba("color-mix(in srgb, currentcolor, blue)"), None);
+}
+
+#[test]
+fn test_parse_color_rejects_junk() {
+    assert_eq!(rgba(""), None);
+    assert_eq!(rgba("   "), None);
+    assert_eq!(rgba("red junk"), None);
+    assert_eq!(rgba("red; background: blue"), None);
+    assert_eq!(rgba("red !important"), None);
+}
+
+/// `currentcolor` is not an absolute colour: the caller owns its resolution
+/// (`resolve_svg_color` walks the tree for it), so `parse_color` must say no
+/// rather than invent a value.
+#[test]
+fn test_parse_color_currentcolor_is_not_absolute() {
+    assert_eq!(rgba("currentcolor"), None);
+    assert_eq!(rgba("currentColor"), None);
 }
 
 #[test]
@@ -565,7 +630,7 @@ mod transform_paint {
 
     /// Paint the document with the tiny-skia software painter for pixel
     /// assertions.
-    fn paint_skia(doc: &mut RinchDocument, painter: &mut TinySkiaPainter) {
+    pub(super) fn paint_skia(doc: &mut RinchDocument, painter: &mut TinySkiaPainter) {
         paint_skia_at(doc, painter, 1.0);
     }
 
@@ -584,7 +649,7 @@ mod transform_paint {
     }
 
     /// Premultiplied RGBA pixel at (x, y).
-    fn pixel_at(painter: &TinySkiaPainter, x: u32, y: u32) -> [u8; 4] {
+    pub(super) fn pixel_at(painter: &TinySkiaPainter, x: u32, y: u32) -> [u8; 4] {
         let idx = ((y * painter.width() + x) * 4) as usize;
         let d = painter.pixels();
         [d[idx], d[idx + 1], d[idx + 2], d[idx + 3]]
@@ -609,7 +674,7 @@ mod transform_paint {
         false
     }
 
-    fn is_opaque_red(p: [u8; 4]) -> bool {
+    pub(super) fn is_opaque_red(p: [u8; 4]) -> bool {
         p[0] > 200 && p[1] < 50 && p[2] < 50 && p[3] > 200
     }
 
@@ -857,6 +922,62 @@ mod transform_paint {
     }
 }
 
+// ── #236: a set_style inset move must paint where layout puts it ─────────────
+
+/// The set_style inset fast path skips Stylo; the pixel it paints must still
+/// be the one a full resolve of the same declaration would paint. Before the
+/// fix the fast path wrote `layout.x = left_px` (no parent border) and never
+/// marked layout dirty, so the child painted short of its true position.
+#[cfg(feature = "software-renderer")]
+mod inset_fast_path_paint {
+    use super::transform_paint::{is_opaque_red, paint_skia, pixel_at};
+    use super::*;
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+
+    #[test]
+    fn set_style_left_paints_at_layout_position() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        // A 30px border is wider than the child, so the box the old fast path
+        // painted ([40, 60)) and the true box ([70, 90)) do not overlap.
+        let parent = doc.create_element("div");
+        doc.set_attribute(
+            parent,
+            "style",
+            "position: relative; width: 300px; height: 200px; \
+             border-left: 30px solid black; border-top: 0 solid black",
+        );
+        doc.append_child(body, parent);
+        let child = doc.create_element("div");
+        doc.set_attribute(
+            child,
+            "style",
+            "position: absolute; left: 0; top: 0; width: 20px; height: 20px; \
+             background-color: red",
+        );
+        doc.append_child(parent, child);
+        doc.resolve_layout(800.0, 600.0);
+
+        doc.set_style(child, "left", "40px");
+        doc.resolve_layout(800.0, 600.0);
+
+        let mut painter = TinySkiaPainter::new(200, 100);
+        paint_skia(&mut doc, &mut painter);
+
+        let layout = doc.tree.get(child.0).unwrap().layout;
+        assert!(
+            is_opaque_red(pixel_at(&painter, 80, 10)),
+            "the child must paint at its laid-out centre (80, 10) — border (30) + \
+             left (40) + half its width; layout.x = {}",
+            layout.x
+        );
+        assert!(
+            !is_opaque_red(pixel_at(&painter, 50, 10)),
+            "nothing at the padding-box-relative position the old fast path wrote"
+        );
+    }
+}
+
 // ── #202: DPI-scale covariance of transform composition ──────────────────────
 
 /// The mechanical correctness criterion for `compose_node_transform`: it must be
@@ -958,6 +1079,141 @@ mod transform_dpi_covariance {
         );
     }
 }
+
+// ── SVG presentation attributes (#250): `fill`/`stroke` are parsed with the
+// same CSS colour parser as stylesheets, and `currentcolor` is matched the
+// way the spec spells it. Pixel assertions use the software renderer.
+
+#[cfg(feature = "software-renderer")]
+mod svg_paint {
+    use super::transform_paint::{paint_skia, pixel_at};
+    use super::*;
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+
+    /// Paint a 20×20 `<svg viewBox="0 0 10 10">` holding one full-viewBox
+    /// `<rect>` at the top-left of the page and return the pixel at its
+    /// centre. `svg_fill`/`rect_fill` are the `fill` attributes (`None` for
+    /// absent); `svg_style`/`rect_style` the inline styles (for `color`).
+    fn svg_rect_centre_pixel(
+        svg_fill: Option<&str>,
+        svg_style: &str,
+        rect_fill: Option<&str>,
+        rect_style: &str,
+    ) -> [u8; 4] {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let svg = doc.create_element("svg");
+        doc.set_attribute(svg, "viewBox", "0 0 10 10");
+        if let Some(fill) = svg_fill {
+            doc.set_attribute(svg, "fill", fill);
+        }
+        doc.set_attribute(
+            svg,
+            "style",
+            &format!("display: block; width: 20px; height: 20px; {svg_style}"),
+        );
+        doc.append_child(body, svg);
+        let rect = doc.create_element("rect");
+        doc.set_attribute(rect, "width", "10");
+        doc.set_attribute(rect, "height", "10");
+        if let Some(fill) = rect_fill {
+            doc.set_attribute(rect, "fill", fill);
+        }
+        if !rect_style.is_empty() {
+            doc.set_attribute(rect, "style", rect_style);
+        }
+        doc.append_child(svg, rect);
+        doc.resolve_layout(800.0, 600.0);
+
+        let layout = doc.tree.get(svg.0).unwrap().layout;
+        assert_eq!(
+            (layout.x, layout.y, layout.width, layout.height),
+            (0.0, 0.0, 20.0, 20.0),
+            "the svg should sit at the page origin at its styled size"
+        );
+
+        let mut painter = TinySkiaPainter::new(40, 40);
+        paint_skia(&mut doc, &mut painter);
+        pixel_at(&painter, 10, 10)
+    }
+
+    /// `svg_rect_centre_pixel` for a rect with its own `fill`.
+    fn rect_centre_pixel(fill: &str, svg_style: &str) -> [u8; 4] {
+        svg_rect_centre_pixel(None, svg_style, Some(fill), "")
+    }
+
+    #[test]
+    fn svg_fill_named_colour_outside_legacy_table_paints() {
+        assert_eq!(rect_centre_pixel("rebeccapurple", ""), [102, 51, 153, 255]);
+    }
+
+    #[test]
+    fn svg_fill_hsl_paints() {
+        assert_eq!(
+            rect_centre_pixel("hsl(270 50% 40%)", ""),
+            [102, 51, 153, 255]
+        );
+    }
+
+    #[test]
+    fn svg_fill_currentcolor_lowercase_resolves_to_css_color() {
+        assert_eq!(
+            rect_centre_pixel("currentcolor", "color: rgb(1, 2, 3)"),
+            [1, 2, 3, 255]
+        );
+    }
+
+    #[test]
+    fn svg_fill_currentcolor_camelcase_resolves_to_css_color() {
+        assert_eq!(
+            rect_centre_pixel("currentColor", "color: rgb(1, 2, 3)"),
+            [1, 2, 3, 255]
+        );
+    }
+
+    #[test]
+    fn svg_fill_none_paints_nothing() {
+        assert_eq!(rect_centre_pixel("none", ""), [0, 0, 0, 0]);
+    }
+
+    /// SVG's initial `fill` is black: a shape with no `fill` anywhere paints.
+    #[test]
+    fn svg_fill_absent_paints_black() {
+        assert_eq!(svg_rect_centre_pixel(None, "", None, ""), [0, 0, 0, 255]);
+    }
+
+    /// A child with no `fill` inherits the `<svg>`'s.
+    #[test]
+    fn svg_fill_inherits_svg_level_fill() {
+        assert_eq!(
+            svg_rect_centre_pixel(Some("rebeccapurple"), "", None, ""),
+            [102, 51, 153, 255]
+        );
+    }
+
+    /// `currentcolor` resolves against the child's own `color`, not the
+    /// `<svg>`'s — whether the child says it or inherits it.
+    #[test]
+    fn svg_fill_currentcolor_uses_child_colour() {
+        assert_eq!(
+            svg_rect_centre_pixel(
+                None,
+                "color: rgb(1, 2, 3)",
+                Some("currentcolor"),
+                "color: rgb(4, 5, 6)"
+            ),
+            [4, 5, 6, 255]
+        );
+        assert_eq!(
+            svg_rect_centre_pixel(
+                Some("currentColor"),
+                "color: rgb(1, 2, 3)",
+                None,
+                "color: rgb(4, 5, 6)"
+            ),
+            [4, 5, 6, 255]
+        );
+    }
 
 /// Regression for the paint half of issue #61 (see `ifc.rs`,
 /// `mark_inline_descendants`).

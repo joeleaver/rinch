@@ -12,6 +12,8 @@ mod debug_commands;
 mod event_dispatch;
 mod focus;
 pub(crate) mod hit_testing;
+#[cfg(test)]
+mod input_commit_tests;
 mod select_widget;
 mod text_selection;
 
@@ -222,6 +224,15 @@ pub struct RinchApp {
     pub(crate) focused_input_handler_id: Option<usize>,
     /// Current accumulated text value for the focused text input.
     pub(crate) focused_input_value: String,
+    /// The focused input's value at the last commit point — focus-take, or an
+    /// Enter commit — for the `data-onchange` commit boundary (issue #226).
+    /// `focused_input_value` is the live per-keystroke buffer, so "did the
+    /// gesture change anything" needs this separate snapshot: re-reading the
+    /// `value` attribute at teardown would be circular for controlled inputs
+    /// (the attribute tracks the live buffer). Seeded only when
+    /// [`Self::set_focus_target`] reports an actual focus change — a re-click
+    /// inside the already-focused input moves the caret, not the baseline.
+    pub(crate) focused_input_baseline: String,
     /// Editable state for the focused text input (cursor, selection, undo).
     pub(crate) focused_input_state: Option<EditableState<StringDocument>>,
     /// DOM node ID of the currently focused text input.
@@ -231,6 +242,11 @@ pub struct RinchApp {
     /// Rendered inline at the input caret as an underlined overlay (via the
     /// `data-preedit` attribute) and never part of the input's committed value.
     pub(crate) focused_input_preedit: Option<(String, Option<(usize, usize)>)>,
+    /// A programmatic `value` write to the focused `<input>` that arrived while
+    /// an IME composition was in flight (issue #238). Adopting it then would
+    /// move the caret under the composition, so it is held here and applied
+    /// when the composition commits or is cancelled; a later write replaces it.
+    pub(crate) focused_input_deferred_value: Option<String>,
     /// The single authority for which widget owns keyboard/IME input (design
     /// A10). Kept in lockstep with the per-engine focus state below
     /// (`focused_input_*`, the surface/editor registries) via
@@ -312,9 +328,11 @@ impl RinchApp {
             has_previous_frame: false,
             focused_input_handler_id: None,
             focused_input_value: String::new(),
+            focused_input_baseline: String::new(),
             focused_input_state: None,
             focused_input_node_id: None,
             focused_input_preedit: None,
+            focused_input_deferred_value: None,
             focus_target: FocusTarget::None,
             node_activation_held: None,
             open_select: None,
@@ -585,6 +603,11 @@ impl RinchApp {
             return false;
         };
         let doc = &doc;
+
+        // A `value` write to the focused input from outside any keystroke — a
+        // click handler, a menu, a timer — is adopted here (issue #238); a
+        // string compare when nothing was written.
+        self.adopt_focused_input_value_from_dom();
 
         // Check if theme CSS has changed (e.g. primary color or dark mode toggled)
         #[allow(unused_assignments, unused_mut)]
@@ -1338,6 +1361,9 @@ impl RinchApp {
         let Some(handler_id) = self.live_focused_input_handler() else {
             return;
         };
+        // The edit applies to what the field displays: adopt any `value` write
+        // that landed since the last sync (issue #238).
+        self.adopt_focused_input_value_from_dom();
         let Some(state) = self.focused_input_state.as_mut() else {
             return;
         };
@@ -1362,6 +1388,13 @@ impl RinchApp {
         // Fire oninput if text changed
         if new_text != old_text {
             events::dispatch_input_event(events::EventHandlerId(handler_id), new_text);
+            // Effects flush synchronously inside the dispatch: a controlled
+            // input's `value_fn` (or a normalizing handler) may just have
+            // rewritten the value. Adopt it now, so the rewrite is what the
+            // next keystroke edits and what the caret is placed in — not the
+            // stale text that would otherwise be painted back over it on the
+            // next sync (issue #238).
+            self.adopt_focused_input_value_from_dom();
         }
     }
 
@@ -1408,46 +1441,94 @@ impl RinchApp {
         self.handle_input_edit_command(cmd);
     }
     fn handle_enter(&mut self) {
-        // Check if a text input is focused and has an onsubmit handler.
+        // Check if a text input is focused and has onchange/onsubmit handlers.
         // Probe liveness first: with a freed id the block below still runs, the
         // node lookups match nothing, and Enter is swallowed rather than falling
         // through to the global handlers (issue #141).
-        if self.live_focused_input_handler().is_some() {
-            // Use stored node_id if available, else linear scan
-            let submit_handler_id = if let Some(node_id) = self.focused_input_node_id {
-                if let Some(doc) = &self.doc {
-                    let d = doc.borrow();
-                    d.tree.nodes.get(node_id).and_then(|node| {
-                        node.attributes
-                            .get("data-onsubmit")
-                            .and_then(|s| s.parse::<usize>().ok())
-                    })
-                } else {
-                    None
-                }
-            } else if let Some(doc) = &self.doc {
+        if self.live_focused_input_handler().is_none() {
+            return;
+        }
+        // Enter is a commit boundary but not an edit command, so neither of
+        // `handle_input_edit_command`'s adopts has run: pull in any pending
+        // `value` write first, so the change gate below compares — and the
+        // payload carries — the text the field actually displays (issue #238).
+        self.adopt_focused_input_value_from_dom();
+        // Resolve the focused input's node: the stored id, else a linear scan
+        // for the node carrying the focused oninput handler.
+        let node_id = self.focused_input_node_id.or_else(|| {
+            let doc = self.doc.as_ref()?;
+            let d = doc.borrow();
+            d.tree.nodes.iter().find_map(|(id, node)| {
+                node.attributes
+                    .get("data-oninput")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .filter(|&h| Some(h) == self.focused_input_handler_id)
+                    .map(|_| id)
+            })
+        });
+        // Resolve the change handler (walking up: `change` bubbles on the web,
+        // so a delegating ancestor's handler counts — the desktop matches),
+        // the commit payload, and the control's tag. `data-onsubmit` is
+        // deliberately resolved AFTER the change dispatch below: a change
+        // handler may re-render the input, freeing and re-registering the
+        // submit handler, and dispatching the stale id would silently eat
+        // Enter (#244 review).
+        let (change_handler_id, change_payload, is_textarea) = match (node_id, &self.doc) {
+            (Some(nid), Some(doc)) => {
                 let d = doc.borrow();
-                d.tree.nodes.iter().find_map(|(_, node)| {
-                    node.attributes
-                        .get("data-oninput")
-                        .and_then(|s| s.parse::<usize>().ok())
-                        .filter(|&h| Some(h) == self.focused_input_handler_id)
-                        .and_then(|_| {
-                            node.attributes
-                                .get("data-onsubmit")
-                                .and_then(|s| s.parse::<usize>().ok())
-                        })
-                })
-            } else {
-                None
-            };
-            if let Some(handler_id) = submit_handler_id {
-                events::dispatch_event(events::EventHandlerId(handler_id));
-
-                // After onsubmit, the handler may have changed the signal (e.g., cleared it).
-                // Re-read value and rebuild EditableState to stay in sync.
-                self.resync_input_state_from_dom();
+                (
+                    Self::input_attr_handler_up(&d.tree, nid, "data-onchange"),
+                    d.tree
+                        .get(nid)
+                        .and_then(|n| n.attributes.get("value").cloned()),
+                    d.tree.get(nid).and_then(|n| n.tag()) == Some("textarea"),
+                )
             }
+            _ => (None, None, false),
+        };
+
+        // Enter is an explicit commit (issue #226) for single-line inputs: fire
+        // `data-onchange` before `data-onsubmit` — HTML orders change before
+        // submit — and only if the value changed since the gesture began. A
+        // `<textarea>` is exempt: browsers never fire change on Enter there,
+        // so its gesture (and baseline) runs until blur.
+        if !is_textarea
+            && self.focused_input_value != self.focused_input_baseline
+            && let Some(hid) = change_handler_id
+            && events::has_input_handler(events::EventHandlerId(hid))
+        {
+            // Payload: the live `value` attribute — what the field displays and
+            // what the web backend delivers — falling back to the keystroke
+            // buffer. The buffer-vs-baseline gate above stays authoritative for
+            // "did the user change anything".
+            let payload = change_payload.unwrap_or_else(|| self.focused_input_value.clone());
+            events::dispatch_input_event(events::EventHandlerId(hid), payload);
+            // A controlled change handler may have rewritten the value (e.g. a
+            // normalize-on-commit); pull the rewrite into the editable state
+            // (a no-op when nothing was rewritten, so the caret stays put).
+            self.adopt_focused_input_value_from_dom();
+        }
+        // Post-change submit resolution — see the comment above.
+        let submit_handler_id = node_id.and_then(|nid| {
+            let doc = self.doc.as_ref()?;
+            let d = doc.borrow();
+            d.tree
+                .get(nid)
+                .and_then(|n| n.attributes.get("data-onsubmit"))
+                .and_then(|s| s.parse::<usize>().ok())
+        });
+        if let Some(handler_id) = submit_handler_id {
+            events::dispatch_event(events::EventHandlerId(handler_id));
+
+            // After onsubmit, the handler may have changed the signal (e.g., cleared it).
+            // Re-read the value and adopt it into the editable state.
+            self.adopt_focused_input_value_from_dom();
+        }
+        if !is_textarea {
+            // Enter committed: the gesture measures from here on, so the
+            // eventual real blur doesn't re-fire an already-committed change.
+            // (A textarea never committed — its gesture continues.)
+            self.focused_input_baseline = self.focused_input_value.clone();
         }
     }
     fn handle_arrow_up(&mut self, _shift: bool) {}
@@ -1844,8 +1925,11 @@ impl RinchApp {
         drop(d);
 
         // Take input focus through the arbiter (tears down a prior surface / CE /
-        // editor / different input; re-focusing the same input is a no-op).
-        self.set_focus_target(FocusTarget::Input(node_id));
+        // editor / different input; re-focusing the same input is a no-op). The
+        // blurred input's change commit is deferred until this input's state is
+        // installed below — the handler is user code and may rewrite the very
+        // input being focused (#244 review).
+        let (focus_changed, commit) = self.set_focus_target_deferred(FocusTarget::Input(node_id));
 
         // Move DOM `:focus` too, like the generic-node branch above — the
         // programmatic path has no mousedown to do it, and the Node teardown
@@ -1855,9 +1939,17 @@ impl RinchApp {
             doc.borrow_mut().update_focus(Some(node_id));
         }
 
+        // Same as the click path: re-focusing the already-focused input must not
+        // let a pending programmatic write pass for a user edit (issue #238).
+        self.adopt_focused_input_value_from_dom();
         self.focused_input_handler_id = Some(handler_id);
         self.focused_input_value = value.clone();
         self.focused_input_node_id = Some(node_id);
+        if focus_changed {
+            // A fresh gesture: snapshot the commit baseline (issue #226) —
+            // re-focusing the already-focused input continues its gesture.
+            self.focused_input_baseline = value.clone();
+        }
 
         // Create EditableState with cursor at end
         let mut state = EditableState::new(StringDocument::with_text(&value));
@@ -1865,26 +1957,102 @@ impl RinchApp {
         self.focused_input_state = Some(state);
         self.sync_input_cursor_to_dom();
         self.scene_dirty = true;
+
+        // Installation complete: fire the blurred input's commit, then adopt
+        // any rewrite its handler made to this input (a no-op when the DOM
+        // value already matches).
+        let commit_fired = commit.is_some();
+        Self::fire_input_commit(commit);
+        if commit_fired {
+            self.adopt_focused_input_value_from_dom();
+            self.focused_input_baseline = self.focused_input_value.clone();
+        }
     }
 
-    /// Re-read the DOM value and rebuild EditableState after an onsubmit handler
-    /// may have changed the signal (e.g., cleared the input).
-    fn resync_input_state_from_dom(&mut self) {
-        let Some(node_id) = self.focused_input_node_id else {
+    /// Adopt a programmatic `value` write to the focused `<input>` into the
+    /// editable state (issue #238).
+    ///
+    /// Every write that is not the runtime's own — a `value_fn` effect, a
+    /// normalizing `oninput`, a swatch pick, a timer — goes through the
+    /// `DomDocument` trait and lands only on the attribute paint reads. The
+    /// keystrokes edit `focused_input_state`, so without this the next key
+    /// edits stale text and `sync_input_cursor_to_dom` paints it back over
+    /// the write. Called after every edit command's dispatch, at the IME
+    /// commit/cancel, at the commit boundaries that used to rebuild the
+    /// state, and once per frame resolve; a string compare when nothing
+    /// changed.
+    ///
+    /// The text is spliced in place (`EditableState::adopt_text`) — never
+    /// rebuilt — so the undo stack survives, and the selection is mapped
+    /// through the rewrite so the caret keeps its logical place. While an IME
+    /// composition is in flight the write is deferred (moving the caret under
+    /// the composition would corrupt it) and applied when it ends.
+    ///
+    /// The `data-onchange` baseline (issue #226) follows the browser's dirty
+    /// flag: a write that lands before any user edit in this gesture moves the
+    /// baseline with the value, so a purely programmatic change never commits;
+    /// a write after a user edit leaves the baseline, so the gesture still
+    /// commits — with the rewritten text.
+    pub(crate) fn adopt_focused_input_value_from_dom(&mut self) {
+        let FocusTarget::Input(node_id) = self.focus_target else {
             return;
         };
-        if let Some(doc) = &self.doc {
+        let Some(doc) = &self.doc else { return };
+        // Compare before cloning: this runs once per frame for as long as any
+        // field holds focus, and the common case is "nothing was written".
+        let dom_value = {
             let d = doc.borrow();
-            if let Some(node) = d.tree.nodes.get(node_id) {
-                let value = node.attributes.get("value").cloned().unwrap_or_default();
-                self.focused_input_value = value.clone();
-                let mut state = EditableState::new(StringDocument::with_text(&value));
-                // Place cursor at end after resync
-                state.selection = Selection::cursor(value.len());
-                self.focused_input_state = Some(state);
+            let Some(node) = d.tree.get(node_id) else {
+                return;
+            };
+            let dom = node
+                .attributes
+                .get("value")
+                .map(String::as_str)
+                .unwrap_or("");
+            if dom == self.focused_input_value && self.focused_input_deferred_value.is_none() {
+                return;
             }
+            dom.to_string()
+        };
+        if self.focused_input_preedit.is_some() {
+            // Composition in flight: hold the write; the latest one wins.
+            if dom_value != self.focused_input_value {
+                self.focused_input_deferred_value = Some(dom_value);
+                // Hold the write back from the DOM as well, not just from the
+                // engine. The painter splices the preedit into the `value`
+                // attribute at the `data-cursor-pos` offset, and those caret
+                // attributes still index the *engine* text — a `value` the
+                // offsets don't index draws the composition in the wrong place
+                // and, when the offset lands inside a multi-byte char, panics
+                // the slice. Restoring the engine text keeps the node coherent
+                // until the composition ends; this also matches the web
+                // backend, where a deferred write never reaches `.value`.
+                self.sync_input_cursor_to_dom();
+            }
+            // NOTE: an app write that happens to equal the engine text cannot be
+            // told apart from the restore above, so it does not cancel an
+            // outstanding deferral. Every write that actually differs does
+            // replace it, so "the latest write wins" holds for all of them.
+            return;
         }
+        let value = self
+            .focused_input_deferred_value
+            .take()
+            .unwrap_or(dom_value);
+        if value == self.focused_input_value {
+            return;
+        }
+        let Some(state) = self.focused_input_state.as_mut() else {
+            return;
+        };
+        state.adopt_text(&value);
+        if self.focused_input_value == self.focused_input_baseline {
+            self.focused_input_baseline = value.clone();
+        }
+        self.focused_input_value = value;
         self.sync_input_cursor_to_dom();
+        self.scene_dirty = true;
     }
 
     /// Set the text rendering scale factor (for HiDPI / mobile).

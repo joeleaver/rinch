@@ -940,3 +940,46 @@ fn bare_focus_visible_rule_paints_on_first_focus() {
     doc.resolve_layout(800.0, 600.0);
     assert_eq!(outline(&doc), 0.0, "blur drops the bare ring");
 }
+
+// ===== #250: inline-style colours go through stylo (regression guard) =====
+
+/// #250 was reported as "a named colour outside rinch-dom's legacy dozen (or an
+/// `hsl()`) paints blank from an inline style". It does not: `style=""` is
+/// compiled by stylo's full CSS Color 4 parser, not by `layout::parse_color`.
+/// This pins that so the legacy parser's gaps can never leak back in here.
+#[test]
+fn inline_style_named_and_hsl_colours_resolve_via_stylo() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    let named = doc.create_element("div");
+    doc.set_attribute(
+        named,
+        "style",
+        "background-color: rebeccapurple; width: 10px; height: 10px",
+    );
+    doc.append_child(body, named);
+
+    let hsl = doc.create_element("div");
+    doc.set_attribute(
+        hsl,
+        "style",
+        "background-color: hsl(270 50% 40%); width: 10px; height: 10px",
+    );
+    doc.append_child(body, hsl);
+
+    doc.resolve_layout(800.0, 600.0);
+
+    for (id, authored) in [(named, "rebeccapurple"), (hsl, "hsl(270 50% 40%)")] {
+        let node = doc.tree.get(id.0).unwrap();
+        let BackgroundValue::Color(color) = node.computed_style.background else {
+            panic!("`background-color: {authored}` should resolve to a solid colour");
+        };
+        let rgba = color.to_rgba8();
+        assert_eq!(
+            (rgba.r, rgba.g, rgba.b, rgba.a),
+            (102, 51, 153, 255),
+            "`background-color: {authored}` should compute to #663399"
+        );
+    }
+}

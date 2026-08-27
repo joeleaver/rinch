@@ -2228,20 +2228,33 @@ impl RinchApp {
     /// Apply an [`ImeEvent`] to the focused `<input>`: preedit is rendered inline
     /// at the caret via the `data-preedit` attribute, commit clears it and inserts
     /// the text, delete-surrounding maps to backward/forward deletes.
-    fn dispatch_input_ime(&mut self, node_id: usize, ime: ImeEvent) {
+    ///
+    /// `pub(super)` so the focus arbiter can flush a pending composition as an
+    /// implicit commit when the input blurs (issue #226) — the browser's
+    /// compositionend-before-blur.
+    pub(super) fn dispatch_input_ime(&mut self, node_id: usize, ime: ImeEvent) {
         match ime {
             ImeEvent::Enabled => {}
             ImeEvent::Preedit { text, cursor } => {
-                self.focused_input_preedit = if text.is_empty() {
-                    None
-                } else {
-                    Some((text, cursor))
-                };
+                let ended = text.is_empty();
+                self.focused_input_preedit = if ended { None } else { Some((text, cursor)) };
                 self.sync_input_preedit_to_dom(node_id);
+                if ended {
+                    // An empty preedit *is* the end of the composition on the
+                    // winit backends (an IME cancel delivers only this — no
+                    // Commit, no Disabled). Drain a write the composition
+                    // deferred, exactly like the Commit/Disabled arms below;
+                    // otherwise it stays parked and later wins over whatever
+                    // was written in the meantime (issue #238).
+                    self.adopt_focused_input_value_from_dom();
+                }
             }
             ImeEvent::Commit(text) => {
                 self.focused_input_preedit = None;
                 self.sync_input_preedit_to_dom(node_id);
+                // A value write deferred by the composition applies first, so
+                // the committed text is inserted into it (issue #238).
+                self.adopt_focused_input_value_from_dom();
                 if !text.is_empty() {
                     self.handle_input_edit_command(EditCommand::InsertText(text));
                 }
@@ -2257,6 +2270,8 @@ impl RinchApp {
             ImeEvent::Disabled => {
                 self.focused_input_preedit = None;
                 self.sync_input_preedit_to_dom(node_id);
+                // The composition is over either way: apply a deferred write.
+                self.adopt_focused_input_value_from_dom();
             }
         }
     }

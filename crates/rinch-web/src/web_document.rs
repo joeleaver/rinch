@@ -8,7 +8,11 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::event_delegation::{
+    FOCUS_VALUE_PROP, get_expando_string, set_expando, utf16_offset_to_utf8_bytes,
+};
 use rinch_core::dom::{DomDocument, GlyphBounds, NodeId};
+use rinch_editable::RewriteDiff;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
@@ -137,6 +141,12 @@ fn is_svg_tag(tag: &str) -> bool {
 /// value. For `value` that avoids resetting the caret to the end on the common
 /// echo path (user types → `oninput` → signal → effect re-writes the same
 /// string); for the boolean properties it just skips redundant DOM writes.
+///
+/// A `value` write to the control that holds focus is the user's live text
+/// being rewritten under them (issue #238): the selection is mapped through
+/// the rewrite and restored (see [`write_live_text`]) rather than left where
+/// `set_value` puts it — at the end — and a write during an IME composition is
+/// deferred to `compositionend`.
 fn sync_reflected_property(node: &web_sys::Node, name: &str, value: &str) {
     match name {
         "value" => {
@@ -151,12 +161,12 @@ fn sync_reflected_property(node: &web_sys::Node, name: &str, value: &str) {
                 // skip any other value on a file input.
                 let settable = input.type_() != "file" || value.is_empty();
                 if settable && input.value() != value {
-                    input.set_value(value);
+                    write_live_text(&TextControl::Input(input), value);
                 }
             } else if let Some(textarea) = node.dyn_ref::<web_sys::HtmlTextAreaElement>()
                 && textarea.value() != value
             {
-                textarea.set_value(value);
+                write_live_text(&TextControl::TextArea(textarea), value);
             } else if let Some(select) = node.dyn_ref::<web_sys::HtmlSelectElement>()
                 && select.value() != value
             {
@@ -189,6 +199,259 @@ fn sync_reflected_property(node: &web_sys::Node, name: &str, value: &str) {
         }
         _ => {}
     }
+}
+
+/// JS expando flag a form control carries for the duration of an IME
+/// composition — set at `compositionstart`, cleared at `compositionend` by the
+/// document-level listeners in `event_delegation` (issue #238). A programmatic
+/// value write while it is set is deferred: setting `.value` mid-composition
+/// would move the caret under the composition and corrupt it.
+pub(crate) const COMPOSING_PROP: &str = "__rinch_composing";
+
+/// JS expando holding the value write a composition deferred, applied by
+/// [`flush_deferred_value`] at `compositionend`. The latest write wins.
+pub(crate) const PENDING_VALUE_PROP: &str = "__rinch_pending_value";
+
+/// JS expando holding the control's live `.value` at the moment a write was
+/// deferred. If the value has moved on by `compositionend` the composition
+/// committed text under the parked write, which is then dropped rather than
+/// pasted over it (issue #238).
+pub(crate) const PENDING_BASE_PROP: &str = "__rinch_pending_base";
+
+/// The two text controls with a selection API, for [`write_live_text`].
+enum TextControl<'a> {
+    Input(&'a web_sys::HtmlInputElement),
+    TextArea(&'a web_sys::HtmlTextAreaElement),
+}
+
+impl TextControl<'_> {
+    fn element(&self) -> &web_sys::Element {
+        match self {
+            Self::Input(i) => i,
+            Self::TextArea(t) => t,
+        }
+    }
+
+    fn value(&self) -> String {
+        match self {
+            Self::Input(i) => i.value(),
+            Self::TextArea(t) => t.value(),
+        }
+    }
+
+    fn set_value(&self, value: &str) {
+        match self {
+            Self::Input(i) => i.set_value(value),
+            Self::TextArea(t) => t.set_value(value),
+        }
+    }
+
+    /// Whether `selectionStart`/`setSelectionRange` apply: every textarea, and
+    /// the text-like input types. On the others (`number`, `email`, `color`,
+    /// `date`, ...) `selectionStart` is `null` and `setSelectionRange` throws
+    /// `InvalidStateError` — the same guard shape as the `file` check above.
+    fn has_selection_api(&self) -> bool {
+        match self {
+            Self::Input(i) => matches!(
+                i.type_().as_str(),
+                "text" | "search" | "url" | "tel" | "password"
+            ),
+            Self::TextArea(_) => true,
+        }
+    }
+
+    /// `(selectionStart, selectionEnd, selectionDirection)` in UTF-16 units.
+    fn selection(&self) -> Option<(u32, u32, String)> {
+        let (start, end, direction) = match self {
+            Self::Input(i) => (
+                i.selection_start(),
+                i.selection_end(),
+                i.selection_direction(),
+            ),
+            Self::TextArea(t) => (
+                t.selection_start(),
+                t.selection_end(),
+                t.selection_direction(),
+            ),
+        };
+        let direction = direction
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "none".to_string());
+        Some((start.ok()??, end.ok()??, direction))
+    }
+
+    fn set_selection(&self, start: u32, end: u32, direction: &str) {
+        let _ = match self {
+            Self::Input(i) => i.set_selection_range_with_direction(start, end, direction),
+            Self::TextArea(t) => t.set_selection_range_with_direction(start, end, direction),
+        };
+    }
+}
+
+/// The `value` attribute write (issue #238): the live property first — via
+/// [`sync_reflected_property`], which carries a focused control's selection
+/// through the rewrite — then the content attribute, which is inert once the
+/// property write has dirtied the control. While the control is in an IME
+/// composition the whole write is held in `__rinch_pending_value` (the latest
+/// wins) and applied by [`flush_deferred_value`] at `compositionend`; writing
+/// even the content attribute mid-composition would mirror into a pristine
+/// control's `.value` and move the caret under the composition.
+///
+/// A write that merely echoes what the control already holds is *not* stashed:
+/// the composition's own `input` events drive `data-oninput`, so a controlled
+/// field re-writes its own text on every keystroke of the composition, and
+/// stashing that would hand `compositionend` a pre-commit snapshot to paste
+/// over the text the composition just committed. The live value at stash time
+/// is recorded next to the pending write for the same reason — see
+/// [`flush_deferred_value`].
+pub(crate) fn write_value_attribute(el: &web_sys::Element, value: &str) {
+    write_value(el, Some(value));
+}
+
+/// Remove the `value` content attribute — a write of `""` to the live property,
+/// then the removal, and deferred during a composition exactly like a write
+/// (issue #238): on a pristine control the *absence* of the attribute mirrors
+/// into `.value` just as its presence does, so removing it mid-composition
+/// moves the caret under the composition too.
+pub(crate) fn remove_value_attribute(el: &web_sys::Element) {
+    write_value(el, None);
+}
+
+/// The shared body: `Some(v)` sets the attribute, `None` removes it.
+fn write_value(el: &web_sys::Element, value: Option<&str>) {
+    if is_composing(el) {
+        // An echo changes nothing and must not displace the user's composition.
+        let live = live_text_value(el);
+        if live.as_deref() != Some(value.unwrap_or("")) {
+            set_expando(
+                el,
+                PENDING_VALUE_PROP,
+                &value.map_or(JsValue::NULL, JsValue::from_str),
+            );
+            set_expando(
+                el,
+                PENDING_BASE_PROP,
+                &live.map_or(JsValue::UNDEFINED, |v| JsValue::from_str(&v)),
+            );
+        }
+        return;
+    }
+    let node: &web_sys::Node = el;
+    sync_reflected_property(node, "value", value.unwrap_or(""));
+    match value {
+        Some(v) => {
+            el.set_attribute("value", v).ok();
+        }
+        None => {
+            el.remove_attribute("value").ok();
+        }
+    }
+}
+
+/// Write `value` into a text control's live `.value` (issue #238).
+///
+/// When the control holds focus this is the user's text being rewritten under
+/// them — a normalizing `oninput`, a `value_fn` echoing a filtered signal — so
+/// the selection is read first and restored afterwards, mapped through the
+/// rewrite (see [`RewriteDiff`], the desktop engine's own rule) instead of
+/// collapsing to the
+/// end as a bare `set_value` does. The `data-onchange` Enter-commit baseline
+/// follows the write while the field is untouched, so a purely programmatic
+/// change never commits by itself (issue #226).
+fn write_live_text(control: &TextControl<'_>, value: &str) {
+    let el = control.element();
+    let focused = is_active_element(el);
+    let old = control.value();
+    let selection = if focused && control.has_selection_api() {
+        control.selection()
+    } else {
+        None
+    };
+    let baseline_follows =
+        focused && get_expando_string(el, FOCUS_VALUE_PROP).as_deref() == Some(old.as_str());
+    control.set_value(value);
+    if !baseline_follows && selection.is_none() {
+        return;
+    }
+    // Map against what the control actually STORES, not what was requested: the
+    // browser sanitizes on the way in (every text-ish `<input>` strips newlines,
+    // `url` also trims surrounding whitespace, `<textarea>` normalizes CRLF), so
+    // offsets computed against the requested string can overshoot the stored one
+    // — and a baseline recorded from it could never match the sanitized value
+    // the commit path compares against, committing a purely programmatic change
+    // (issue #226). Identical to `value` whenever nothing was sanitized.
+    let stored = control.value();
+    if baseline_follows {
+        set_expando(el, FOCUS_VALUE_PROP, &JsValue::from_str(&stored));
+    }
+    if let Some((start, end, direction)) = selection {
+        // The caret rule is the desktop engine's, so a controlled rewrite moves
+        // the selection identically on both backends. `map` can land inside a
+        // multi-byte char in a same-length rewrite, so snap down to a boundary —
+        // exactly what `EditableState::adopt_text` does after mapping.
+        let diff = RewriteDiff::between(&old, &stored);
+        let map = |offset16: u32| {
+            let byte = utf16_offset_to_utf8_bytes(&old, offset16);
+            let mut mapped = diff.map(byte);
+            while !stored.is_char_boundary(mapped) {
+                mapped -= 1;
+            }
+            utf8_byte_to_utf16_offset(&stored, mapped) as u32
+        };
+        control.set_selection(map(start), map(end), &direction);
+    }
+}
+
+/// Apply the value write a composition deferred on `el`, if any (called at
+/// `compositionend`, after the composing flag is cleared).
+///
+/// The stash is dropped rather than applied when the control's own text moved
+/// while it was parked (issue #238): the pending write was computed against the
+/// pre-commit text, so pasting it over the text the composition just committed
+/// would silently delete the composed characters. A controlled field re-writes
+/// itself from the `input` event that accompanies the commit, so the correct
+/// value lands anyway.
+pub(crate) fn flush_deferred_value(el: &web_sys::Element) {
+    // Absent = nothing parked; a string = a parked write; NULL = a parked
+    // removal (`as_string()` is `None` for both absent and NULL, so the two are
+    // told apart by the raw JsValue).
+    let pending = js_sys::Reflect::get(el, &PENDING_VALUE_PROP.into()).ok();
+    let Some(pending) = pending.filter(|v| !v.is_undefined()) else {
+        return;
+    };
+    let base = get_expando_string(el, PENDING_BASE_PROP);
+    set_expando(el, PENDING_VALUE_PROP, &JsValue::UNDEFINED);
+    set_expando(el, PENDING_BASE_PROP, &JsValue::UNDEFINED);
+    if base.is_some() && base != live_text_value(el) {
+        // The composition changed the text under the parked write; it wins.
+        return;
+    }
+    match pending.as_string() {
+        Some(value) => write_value_attribute(el, &value),
+        None => remove_value_attribute(el),
+    }
+}
+
+/// The live `.value` of a text control, or `None` for anything else.
+fn live_text_value(el: &web_sys::Element) -> Option<String> {
+    if let Some(input) = el.dyn_ref::<web_sys::HtmlInputElement>() {
+        Some(input.value())
+    } else {
+        el.dyn_ref::<web_sys::HtmlTextAreaElement>()
+            .map(|t| t.value())
+    }
+}
+
+fn is_composing(el: &web_sys::Element) -> bool {
+    js_sys::Reflect::get(el, &COMPOSING_PROP.into()).is_ok_and(|v| v.is_truthy())
+}
+
+fn is_active_element(el: &web_sys::Element) -> bool {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.active_element())
+        .is_some_and(|active| active.is_same_node(Some(el)))
 }
 
 /// Truthiness for HTML boolean-ish attributes as rinch emits them.
@@ -549,6 +812,18 @@ impl DomDocument for WebDocument {
                     // attribute; don't materialize a bogus one (the property is
                     // synced below).
                     "indeterminate" => {}
+                    // `value` goes through `write_value_attribute`: the live
+                    // property is written FIRST (with the focused control's
+                    // selection carried through, issue #238), then the content
+                    // attribute. On a pristine control the attribute still
+                    // mirrors into `.value` — and that mirror resets the caret
+                    // — so writing it first would both move the caret and make
+                    // the property write below a no-op. During an IME
+                    // composition the whole write is deferred.
+                    "value" => {
+                        write_value_attribute(&el, value);
+                        return;
+                    }
                     _ => {
                         el.set_attribute(name, value).ok();
                     }
@@ -570,12 +845,19 @@ impl DomDocument for WebDocument {
     fn remove_attribute(&mut self, node: NodeId, name: &str) {
         if let Some(n) = self.nodes.get(&node.0) {
             if let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
+                // Removing `value` is a write of `""`: property first (for the
+                // same pristine-control mirroring reason as in `set_attribute`)
+                // and deferred during an IME composition, so both spellings of
+                // "clear this field" obey one policy (issue #238).
+                if name == "value" {
+                    remove_value_attribute(&el);
+                    return;
+                }
                 el.remove_attribute(name).ok();
             }
             // Keep the reflected property in sync when the attribute is removed,
             // otherwise a dirtied control keeps showing the stale property (#100).
             match name {
-                "value" => sync_reflected_property(n, "value", ""),
                 "checked" | "selected" | "indeterminate" => {
                     sync_reflected_property(n, name, "false")
                 }

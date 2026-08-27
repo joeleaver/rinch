@@ -1,7 +1,7 @@
 //! ColorPicker/ColorInput: the field is the author's while they type (#231).
 //!
-//! `parse_color` accepts hex of length 3, 6, or 8, so a valid *prefix* of the
-//! colour being typed — `#336` on the way to `#3366cc` — parses on `oninput`,
+//! `parse_color` accepts hex of length 3, 4, 6, or 8, so a valid *prefix* of
+//! the colour being typed — `#336` on the way to `#3366cc` — parses on `oninput`,
 //! and the display effect used to write the normalized expansion (`#333366`)
 //! back into the focused field: every remaining keystroke then landed on the
 //! rewritten string, committing a colour nobody chose. The fix: the effect
@@ -110,11 +110,28 @@ impl Mounted {
         )
     }
 
+    fn field_change_handler(&self) -> EventHandlerId {
+        EventHandlerId(
+            self.field()
+                .get_attribute("data-onchange")
+                .expect("the field has a change handler")
+                .parse()
+                .expect("handler id is numeric"),
+        )
+    }
+
     /// One keystroke, desktop-shaped: the runtime mirrors the field's text
     /// into the `value` attribute, then dispatches `oninput` with it.
     fn type_text(&self, text: &str) {
         self.field().set_attribute("value", text);
         dispatch_input_event(self.field_handler(), text.to_string());
+    }
+
+    /// The commit boundary (#226): the runtime/browser fires `data-onchange`
+    /// with the final text when the gesture ends (blur after modification,
+    /// Enter).
+    fn commit(&self, text: &str) {
+        dispatch_input_event(self.field_change_handler(), text.to_string());
     }
 
     /// Click the first preset swatch (the picker's own, or the one inside a
@@ -171,9 +188,16 @@ fn a_parseable_prefix_is_not_expanded_under_the_authors_caret() {
 
     assert_eq!(
         picker.emissions(),
-        vec!["#333366".to_string(), "#3366cc".to_string()],
-        "each parseable state reports the colour it denotes — the prefix as a \
-         live preview, then the finished colour — and nothing else"
+        vec![
+            "#333366".to_string(),
+            "#333366".to_string(),
+            "#3366cc".to_string(),
+        ],
+        "each parseable state reports the colour it denotes and nothing else: \
+         the three-digit prefix, then \"#3366\" — a 4-digit #rgba since #243, \
+         a real alpha transition (0x66) whose hex rendering happens to repeat \
+         the previous report, exactly as an alpha drag under a hex format \
+         does — then the finished colour"
     );
 }
 
@@ -276,6 +300,12 @@ fn a_whole_value_arrives_exactly() {
 /// ColorInput has the same handler→normalize→write-back loop around its own
 /// text field, and pre-fix the same hijack: `#336` became `#333366` under the
 /// author's caret.
+///
+/// Since #226 its `onchange` is a real commit boundary: typing previews live
+/// (the swatch follows) but reports nothing; the commit reports once with the
+/// final color. (Pre-#226 this emitted per parseable keystroke —
+/// `["#333366", "#3366cc"]` here — which is what the prop name never
+/// promised.)
 #[test]
 fn color_input_typing_is_not_hijacked_either() {
     let input = Mounted::color_input("#ff0000");
@@ -291,7 +321,15 @@ fn color_input_typing_is_not_hijacked_either() {
 
     assert_eq!(
         input.emissions(),
-        vec!["#333366".to_string(), "#3366cc".to_string()]
+        Vec::<String>::new(),
+        "onchange is a commit boundary: nothing reports mid-gesture"
+    );
+
+    input.commit("#3366cc");
+    assert_eq!(
+        input.emissions(),
+        vec!["#3366cc".to_string()],
+        "one commit, one report, the final color"
     );
 }
 
@@ -314,20 +352,24 @@ fn color_input_prefix_with_lagging_attribute_is_left_alone() {
 }
 
 /// And the same non-freeze control: a pick from the dropdown picker rewrites
-/// the ColorInput's field.
+/// the ColorInput's field. On the real desktop runtime a swatch click blurs
+/// the field before the click handler runs, and the blur dispatches the
+/// commit boundary — so the typed "#336" commits first (reporting its
+/// normalized "#333366"), and then the pick commits "#22aa55".
 #[test]
 fn color_input_field_follows_the_dropdown_picker() {
     let input = Mounted::color_input("#ff0000");
     input.type_text("#336");
     assert_eq!(input.field_text(), "#336");
 
+    input.commit("#336"); // the click's blur commits the typed prefix first
     input.click_swatch();
 
     assert_eq!(input.field_text(), "#22aa55");
     assert_eq!(
         input.emissions(),
         vec!["#333366".to_string(), "#22aa55".to_string()],
-        "the prefix previewed, then the picked colour committed"
+        "two commits: the blurred typed prefix, then the pick"
     );
 }
 
@@ -465,6 +507,190 @@ fn an_emptied_field_is_repopulated_by_the_next_pick() {
         "#22aa55",
         "the field was empty; an explicit pick must repopulate it even though \
          the colour value did not change"
+    );
+}
+
+/// The #231 residual (#226): the mid-typing guard leaves a committed
+/// shorthand in the field forever — an attribute-reading consumer then sees
+/// "336" where the picker holds #333366. The commit boundary ends the
+/// author's claim: the field normalizes to the canonical form. The picker's
+/// own `onchange` already reported the color when the typed transition landed
+/// — the commit adds no second report.
+#[test]
+fn a_committed_shorthand_is_normalized_in_the_picker_field() {
+    let picker = Mounted::picker("#ff0000", "hex");
+
+    picker.type_text("336");
+    assert_eq!(
+        picker.field_text(),
+        "336",
+        "mid-gesture the field is still the author's (#231)"
+    );
+    assert_eq!(picker.emissions(), vec!["#333366".to_string()]);
+
+    picker.commit("336");
+
+    assert_eq!(
+        picker.field_text(),
+        "#333366",
+        "the commit ended the gesture; the field denotes the colour canonically"
+    );
+    assert_eq!(
+        picker.emissions(),
+        vec!["#333366".to_string()],
+        "the commit normalizes the field, it does not re-report the colour"
+    );
+}
+
+/// An unparseable commit reverts the field to the color the picker still
+/// holds — committed garbage must not outlive the gesture that typed it.
+#[test]
+fn an_unparseable_commit_reverts_the_picker_field() {
+    let picker = Mounted::picker("#ff0000", "hex");
+
+    picker.type_text("#33");
+    assert_eq!(picker.field_text(), "#33");
+
+    picker.commit("#33");
+
+    assert_eq!(
+        picker.field_text(),
+        "#ff0000",
+        "no colour was committed; the field returns to the one the picker holds"
+    );
+    assert_eq!(picker.emissions(), Vec::<String>::new());
+}
+
+/// ColorInput: the same normalize-on-commit, and the store gets exactly one
+/// commit ("336" typed → blur → field "#333366").
+#[test]
+fn color_input_normalizes_a_committed_shorthand() {
+    let input = Mounted::color_input("#ff0000");
+
+    input.type_text("336");
+    assert_eq!(input.field_text(), "336");
+    assert_eq!(
+        input.emissions(),
+        Vec::<String>::new(),
+        "typing previews; nothing commits mid-gesture"
+    );
+
+    input.commit("336");
+
+    assert_eq!(input.field_text(), "#333366");
+    assert_eq!(
+        input.emissions(),
+        vec!["#333366".to_string()],
+        "the store gets one commit, in canonical form"
+    );
+}
+
+/// ColorInput: an unparseable commit reverts the field to the held color and
+/// reports nothing — the color never changed.
+#[test]
+fn color_input_reverts_an_unparseable_commit() {
+    let input = Mounted::color_input("#ff0000");
+
+    input.type_text("#zz");
+    assert_eq!(input.field_text(), "#zz");
+
+    input.commit("#zz");
+
+    assert_eq!(input.field_text(), "#ff0000");
+    assert_eq!(input.emissions(), Vec::<String>::new());
+}
+
+/// A preview is not a commit: a parseable keystroke moves the internal colour
+/// (the swatch follows) without reporting, so an unparseable commit must
+/// revert to the last colour the app actually holds — never to that leaked
+/// preview. Pre-fix the revert target was `current_value`, so typing "336",
+/// spoiling it to "336x", and blurring left the field (and swatch) durably
+/// showing #333366 while the app still believed #ff0000.
+#[test]
+fn a_preview_never_committed_is_reverted_on_unparseable_commit() {
+    let input = Mounted::color_input("#ff0000");
+    let swatch_style = || {
+        find_by_class(&input.root, "rinch-color-input__swatch-preview")
+            .expect("preview swatch")
+            .children()
+            .first()
+            .expect("swatch overlay")
+            .get_attribute("style")
+            .expect("overlay styled")
+    };
+
+    input.type_text("336"); // parseable: previews internally, reports nothing
+    assert_eq!(input.field_text(), "336");
+    assert!(
+        swatch_style().contains("#333366"),
+        "the preview reached the swatch: {}",
+        swatch_style()
+    );
+    input.type_text("336x"); // unparseable: the preview stays behind internally
+
+    input.commit("336x");
+
+    assert_eq!(
+        input.field_text(),
+        "#ff0000",
+        "the revert target is the last committed colour, not the leaked preview"
+    );
+    assert_eq!(
+        input.emissions(),
+        Vec::<String>::new(),
+        "nothing was ever committed, so nothing reports"
+    );
+    assert!(
+        swatch_style().contains("#ff0000"),
+        "the swatch returned with the field: {}",
+        swatch_style()
+    );
+}
+
+/// Re-spelling the held colour in another notation is not a colour change:
+/// committing "rgb(255, 0, 0)" over #ff0000 still normalizes the field, but
+/// reports nothing — the prop promises a report when a colour CHANGE commits,
+/// and a phantom report would echo the app's own value back at it.
+#[test]
+fn a_notation_only_commit_reports_nothing() {
+    let input = Mounted::color_input("#ff0000");
+
+    input.type_text("rgb(255, 0, 0)");
+    input.commit("rgb(255, 0, 0)");
+
+    assert_eq!(
+        input.field_text(),
+        "#ff0000",
+        "the commit still normalizes the field to the canonical form"
+    );
+    assert_eq!(
+        input.emissions(),
+        Vec::<String>::new(),
+        "the colour did not change; nothing reports"
+    );
+}
+
+/// The same principle when the app-held string is in another notation
+/// entirely (GH #243 made these parseable): `last_committed` holds the raw
+/// mount value — "red" — and a commit of "#f00" re-spells exactly that
+/// colour. A raw-text gate saw "red" != "#ff0000" and fired a phantom
+/// report; the gate must judge by denotation.
+#[test]
+fn a_notation_only_commit_over_a_named_mount_value_reports_nothing() {
+    let input = Mounted::color_input("red");
+
+    input.type_text("#f00");
+    input.commit("#f00");
+
+    assert_eq!(
+        input.field_text(),
+        "#ff0000",
+        "the commit still normalizes the field to the canonical form"
+    );
+    assert_eq!(
+        input.emissions(),
+        Vec::<String>::new(),
+        "#f00 re-spells the red the app already holds; nothing reports"
     );
 }
 

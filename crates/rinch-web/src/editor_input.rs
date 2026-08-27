@@ -782,7 +782,7 @@ fn pointerdown_targets_editor(event: &web_sys::PointerEvent) -> bool {
 }
 
 /// Add a capture-phase `document` listener leaked for the page lifetime.
-fn add_capture<E: JsCast + 'static>(
+pub(crate) fn add_capture<E: JsCast + 'static>(
     doc: &web_sys::Document,
     name: &str,
     handler: impl Fn(E) + 'static,
