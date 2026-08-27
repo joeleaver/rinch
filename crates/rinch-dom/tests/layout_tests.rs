@@ -1022,6 +1022,46 @@ fn test_blockified_input_keeps_its_height_when_focused() {
 }
 
 #[test]
+fn test_empty_block_line_floor_survives_a_transition_tick() {
+    // `apply_stylo_styles_to_taffy` is not the only pass that rebuilds a node's
+    // Taffy style from the computed values: `tick_transitions` and
+    // `tick_animations` do the same for every node with an active
+    // transition/animation or sitting in `dirty_nodes`, and they run on the
+    // event loop's idle tick *before* the next layout. They must re-apply the
+    // floor too — a `<input class="rinch-number-input">` carries
+    // `transition: border-color 150ms`, so focusing one puts it on exactly this
+    // path.
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "width: 100px; font-size: 10px; line-height: 20px",
+    );
+    doc.append_child(body, div);
+
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(doc.tree.get(div.0).unwrap().layout.height, 20.0);
+
+    // A transition/animation frame, with no style recompute behind it.
+    doc.tree.dirty_nodes.insert(div.0);
+    doc.tick_transitions();
+    doc.tree.dirty_nodes.insert(div.0);
+    doc.tick_animations();
+
+    // The next layout (any unrelated change) must not find a floorless style.
+    doc.tree.layout_dirty = true;
+    doc.resolve_layout(800.0, 600.0);
+
+    assert_eq!(
+        doc.tree.get(div.0).unwrap().layout.height,
+        20.0,
+        "a transition/animation tick must not discard the line-height floor"
+    );
+}
+
+#[test]
 fn test_empty_block_author_min_height_survives_a_restyle() {
     // The floor is a floor on both passes: re-applying it on restyle must not
     // start stomping an author `min-height` that is larger.

@@ -548,11 +548,7 @@ impl RinchDocument {
                     .and_then(|r| r.trim().parse::<f32>().ok())
                     .filter(|r| *r >= 1.0)
                     .unwrap_or(2.0);
-                let line_h = match new_style.line_height {
-                    crate::computed_style::LineHeightValue::Normal => new_style.font_size * 1.2,
-                    crate::computed_style::LineHeightValue::Relative(r) => new_style.font_size * r,
-                    crate::computed_style::LineHeightValue::Absolute(px) => px,
-                };
+                let line_h = new_style.line_height_px();
                 // min-height is a border-box value (rinch sets a global
                 // `box-sizing: border-box`, and Taffy defaults to it), so the
                 // padding and border have to be added on top of the line boxes.

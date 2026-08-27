@@ -11,12 +11,15 @@ use crate::node::{DisplayMode, InlineLayout, LayoutResult, Node, NodeContext, No
 /// Write the one-line height floor an empty block container is owed onto its
 /// Taffy style.
 ///
-/// CSS spec: a block container with no in-flow content still has the height of
-/// one line box, so an empty `<p></p>` does not collapse to nothing. It matters
-/// far beyond empty paragraphs, because `<input>` and `<textarea>` keep their
-/// value in an *attribute* rather than in a text child — they are childless
-/// however much text they hold, and this floor is the only thing that gives a
-/// blockified one a height at all.
+/// A deliberate rinch divergence from CSS, **not** a spec rule: CSS 2.1 §10.6.3
+/// gives a block container with no in-flow children `height: 0` (an empty
+/// `<div></div>` is 0px in every browser). Rinch floors it at one line box
+/// instead because `<input>` and `<textarea>` keep their value in an *attribute*
+/// rather than in a text child — they are childless however much text they hold,
+/// there is no `NodeContext` measure function for them, and this floor is the
+/// only thing that gives a blockified one a height at all. The right fix is an
+/// intrinsic size for form controls (as `<textarea rows>` already gets); until
+/// then the floor must be applied consistently or the control vanishes.
 ///
 /// **Called from both passes that write a node's Taffy style, because either
 /// runs without the other.** [`RinchDocument::setup_inline_formatting_contexts`]
@@ -50,11 +53,7 @@ pub(crate) fn apply_empty_block_line_floor(node: &Node, style: &mut taffy::Style
         return;
     }
 
-    let line_h = match node.computed_style.line_height {
-        crate::computed_style::LineHeightValue::Normal => node.computed_style.font_size * 1.2,
-        crate::computed_style::LineHeightValue::Relative(r) => node.computed_style.font_size * r,
-        crate::computed_style::LineHeightValue::Absolute(px) => px,
-    };
+    let line_h = node.computed_style.line_height_px();
 
     // The floor must not stomp an author `min-height` — it is a *floor*, not an
     // override. A childless block (a `<textarea>`, an empty spacer div)
