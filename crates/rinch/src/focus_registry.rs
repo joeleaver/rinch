@@ -84,10 +84,13 @@ impl std::fmt::Debug for FocusEntry {
 }
 
 impl FocusEntry {
-    /// An entry with no callbacks. Registering one still makes the node a
-    /// first-class focus target (mousedown claims it, Tab reaches it, the
-    /// arbiter's liveness check trusts the registration) — it just says nothing
-    /// back.
+    /// An entry with no callbacks — a registration that says nothing back.
+    ///
+    /// Registering does **not** make a node focusable: a mousedown claims, and
+    /// Tab reaches, only a node carrying its own `tabindex`. What the
+    /// registration buys is the lifecycle (the callbacks below) plus the
+    /// arbiter's liveness check trusting it over an attribute probe. Register a
+    /// node with no `tabindex` and nothing will ever focus it.
     pub fn new() -> Self {
         Self::default()
     }

@@ -112,6 +112,13 @@ rinch names — `"ArrowLeft"`, `"Enter"`, `"Escape"`, `"Tab"`, `"Space"`, and th
 inserted text for a character key — falling back to the physical key code for
 keys with no name (`"F5"`). `k.code` is always the physical key.
 
+> Two gaps to know about. A modifier suppresses the inserted text, and only the
+> letters rinch itself binds (`a c e h i u v x y z`, `b`, `d`) are named back, so
+> `Ctrl+C` arrives as `k.key == "c"` but `Ctrl+S` arrives as `k.key == "KeyS"` —
+> match on `k.code` for combos outside that set. And a key bound to a **native
+> menu accelerator** is consumed by the menu before the document sees it, so
+> `on_key` never runs for it.
+
 Both focus callbacks run **after** the transition is complete: the arbiter and
 the DOM `:focus` state are already installed, so a callback may re-enter the
 runtime freely — move focus again, mutate the DOM, save a document.

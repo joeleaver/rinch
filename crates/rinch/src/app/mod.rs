@@ -1751,14 +1751,35 @@ impl RinchApp {
     /// `data-disabled` is a **boolean attribute**, spelled the way HTML spells
     /// one: present means disabled, whatever the value, and only the explicit
     /// `"false"` opts out. The probe this replaces demanded the literal value
-    /// `"true"`, which nothing in the tree ever writes — the one in-tree writer
-    /// (`select_widget.rs`, for a disabled `<option>`) writes `""`, and callers
-    /// following the HTML idiom write `""` too — so it matched nothing but its
-    /// own test and every disabled control stayed tabbable.
+    /// `"true"`, which no in-tree writer of `data-disabled` produces — the one
+    /// that exists (`select_widget.rs`, for a disabled `<option>`) writes `""`,
+    /// and callers following the HTML idiom write `""` too — so it matched
+    /// nothing but its own test and every `data-disabled` control stayed
+    /// tabbable.
+    ///
+    /// **Only `data-disabled`.** The plain HTML `disabled` attribute that the
+    /// component library writes (`Button`, `ActionIcon`, `Checkbox`, `Radio`,
+    /// `TextInput`, `Textarea`, …) is *not* consulted, so a disabled
+    /// `<input>`/`<textarea>` is still a Tab stop and still typable. Teaching
+    /// this probe that spelling is only half the fix — the pointer path
+    /// (`found_input_focus` in `click_handling.rs`) and the editable engine
+    /// would have to honour it too — so it is deliberately left alone here.
     pub(crate) fn node_is_disabled(node: &rinch_dom::Node) -> bool {
         node.attributes
             .get("data-disabled")
             .is_some_and(|v| !v.eq_ignore_ascii_case("false"))
+    }
+
+    /// A node's `tabindex` as an integer, if it carries a parseable one.
+    ///
+    /// The single spelling of "does this node opt into focus", shared by the
+    /// Tab collector, the mousedown claim, the programmatic-focus path and the
+    /// arbiter's liveness probe — they must agree, and four hand-rolled copies
+    /// of `get("tabindex").and_then(parse)` could not be relied on to.
+    pub(crate) fn node_tabindex(node: &rinch_dom::Node) -> Option<i32> {
+        node.attributes
+            .get("tabindex")
+            .and_then(|v| v.parse::<i32>().ok())
     }
 
     /// Collect all focusable node IDs in DOM pre-order (natural tab order).
@@ -1783,11 +1804,7 @@ impl RinchApp {
             // test parses like the focusable test below so `-2`, `-01`, … are
             // negative too, not just the literal string "-1".
             let skip_self = Self::node_is_disabled(node)
-                || node
-                    .attributes
-                    .get("tabindex")
-                    .and_then(|v| v.parse::<i32>().ok())
-                    .is_some_and(|v| v < 0)
+                || Self::node_tabindex(node).is_some_and(|v| v < 0)
                 || node.layout.width <= 0.0
                 || node.layout.height <= 0.0
                 || matches!(
@@ -1799,11 +1816,7 @@ impl RinchApp {
             if !skip_self {
                 // Check if focusable
                 let has_oninput = node.attributes.contains_key("data-oninput");
-                let has_tabindex = node
-                    .attributes
-                    .get("tabindex")
-                    .and_then(|v| v.parse::<i32>().ok())
-                    .is_some_and(|v| v >= 0);
+                let has_tabindex = Self::node_tabindex(node).is_some_and(|v| v >= 0);
 
                 if has_oninput || has_tabindex {
                     result.push(nid);
@@ -1837,6 +1850,12 @@ impl RinchApp {
         // state is installed below — the handler may mutate the DOM, and the
         // install must not race it (issue #147, the #244 review's rule).
         let mut pending_work = None;
+        // Whether the arbiter actually *moved* onto this node. A re-focus of
+        // the node that already holds the claim (Tab in a document with a
+        // single focusable, a `request_focus` re-run) is not a new gain, and
+        // announcing one would give a registered target a second
+        // `on_focus_gained` with no `on_focus_lost` between them.
+        let mut target_changed = false;
         if has_oninput {
             // `try_focus_input` takes focus through the arbiter (tears down any
             // prior surface / editor / input).
@@ -1845,7 +1864,8 @@ impl RinchApp {
             // A generic focusable node: take focus through the arbiter too, so
             // the previous owner (an input's keys and IME included) is torn
             // down instead of lingering alongside a focus that went nowhere.
-            let (_, work) = self.set_focus_target_deferred(FocusTarget::Node(node_id));
+            let (changed, work) = self.set_focus_target_deferred(FocusTarget::Node(node_id));
+            target_changed = changed;
             pending_work = work;
         }
 
@@ -1874,7 +1894,7 @@ impl RinchApp {
         // owner's. `notify_node_focus_gained` re-checks the arbiter, so an
         // `on_focus_lost` that moved focus again cannot produce a phantom gain.
         Self::fire_focus_work(pending_work);
-        if claimed {
+        if claimed && target_changed {
             self.notify_node_focus_gained(node_id);
         }
     }
@@ -1940,24 +1960,26 @@ impl RinchApp {
     /// that outlived its node must be dropped before it swallows Enter/Space,
     /// anchors Tab, or activates whatever unrelated node reused the slot.
     ///
-    /// A **registered** focus target (issue #147) is decided by the registry
-    /// alone: its unmount deregisters through the scope cleanup, which is a push
-    /// notification rather than a probe, so the recycled-slot window closes
-    /// entirely for it. For an *unregistered* `tabindex` claim the attribute +
-    /// attachment probe below is still all there is, and a recycled slot that
-    /// happens to hold another focusable node is still accepted (issue #304).
+    /// A **registered** focus target (issue #147) is excused only the
+    /// *attribute* half of the probe: its unmount deregisters through the scope
+    /// cleanup, which is a push notification rather than a guess, so a live
+    /// registration stands in for the `tabindex` that a mid-flight re-render may
+    /// momentarily not have written yet. It is **not** excused the attachment
+    /// check below — a registration whose node was detached (registered outside
+    /// a render scope, or removed with `remove_child` while its scope lives on)
+    /// would otherwise own the keyboard forever and let Enter activate a
+    /// `data-rid` in a subtree that is no longer in the document.
+    ///
+    /// Neither path closes the recycled-slot window (issue #304): a slot reused
+    /// by another focusable node — or re-registered by a *different* widget —
+    /// still passes, and that widget starts receiving `on_key` without ever
+    /// having been announced an `on_focus_gained`. Closing it needs a
+    /// registration identity (a generation counter), not a sharper probe.
     fn node_target_is_live(&self, node_id: usize) -> bool {
-        if crate::focus_registry::is_registered(self.doc_key(), node_id) {
-            return true;
-        }
+        let registered = crate::focus_registry::is_registered(self.doc_key(), node_id);
         let Some(doc) = &self.doc else { return false };
         let d = doc.borrow();
-        let focusable = d.tree.get(node_id).is_some_and(|n| {
-            n.attributes
-                .get("tabindex")
-                .and_then(|v| v.parse::<i32>().ok())
-                .is_some()
-        });
+        let focusable = registered || d.tree.get(node_id).and_then(Self::node_tabindex).is_some();
         if !focusable {
             return false;
         }
@@ -1999,24 +2021,28 @@ impl RinchApp {
             // Any parseable tabindex makes a node programmatically focusable —
             // including negative ones: `tabindex="-1"` is the standard
             // focusable-but-not-tabbable idiom (`element.focus()` into a
-            // just-opened dialog), and only the Tab collector excludes it.
-            let focusable = node
-                .attributes
-                .get("tabindex")
-                .and_then(|v| v.parse::<i32>().ok())
-                .is_some();
+            // just-opened dialog), and only the Tab collector excludes it. A
+            // disabled node takes no focus at all, programmatic included —
+            // the rule `collect_focusable_nodes` and the mousedown claim
+            // already apply, and what `docs/src/guide/focus.md` promises.
+            let focusable = !Self::node_is_disabled(node) && Self::node_tabindex(node).is_some();
             drop(d);
             if focusable {
                 // Deferred for the same reason the input path below defers its
                 // commit: the blurred owner's callback is user code and must
                 // not run before this node's DOM focus is installed.
-                let (_, work) = self.set_focus_target_deferred(FocusTarget::Node(node_id));
+                let (changed, work) = self.set_focus_target_deferred(FocusTarget::Node(node_id));
                 if let Some(doc) = &self.doc {
                     doc.borrow_mut().update_focus(Some(node_id));
                 }
                 self.scene_dirty = true;
                 Self::fire_focus_work(work);
-                self.notify_node_focus_gained(node_id);
+                // Only a real transition is a gain: re-focusing the node that
+                // already holds the claim must not announce a second
+                // `on_focus_gained` with no `on_focus_lost` between them.
+                if changed {
+                    self.notify_node_focus_gained(node_id);
+                }
             }
             return;
         };

@@ -531,3 +531,33 @@ fn programmatic_focus_announces_the_gain() {
     assert_eq!(count(&log, "a:lost"), 1, "{log:?}");
     assert_eq!(count(&log, "b:gained"), 1, "{log:?}");
 }
+
+/// Re-focusing the target that already holds the claim is **not** a new gain.
+///
+/// `set_focus_target_deferred` reports "no change" for a re-focus, but the
+/// announce used to run unconditionally afterwards — so `request_focus` on the
+/// focused node, `Tab` in a document with a single focusable, or a
+/// `NodeHandle::focus()` inside a re-running effect handed the widget a second
+/// `on_focus_gained` with no `on_focus_lost` between them. A component that
+/// pairs the two (start/stop a blink timer, push/pop a keymap) leaks one per
+/// repeat.
+#[test]
+fn refocusing_the_same_target_does_not_re_announce_the_gain() {
+    let mut f = mount_fixture();
+
+    // Programmatic (`request_focus` / `NodeHandle::focus()`).
+    f.app.try_focus_input(f.a_id);
+    assert_eq!(count(&log_of(&f), "a:gained"), 1);
+    f.app.try_focus_input(f.a_id);
+
+    // Keyboard (`focus_element`, the Tab landing).
+    f.app.focus_element(f.a_id);
+
+    // Pointer (the mousedown claim).
+    click_node(&mut f.app, f.a_id);
+
+    let log = log_of(&f);
+    assert_eq!(count(&log, "a:gained"), 1, "exactly one gain: {log:?}");
+    assert_eq!(count(&log, "a:lost"), 0, "and no phantom loss: {log:?}");
+    assert_eq!(f.app.focus_target, FocusTarget::Node(f.a_id));
+}

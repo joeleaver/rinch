@@ -487,10 +487,10 @@ impl RinchApp {
                 // Don't request redraw here — AboutToWait will pick up the
                 // dirty styles and batch them into a single repaint.
                 if let Some(doc) = self.doc.clone() {
-                    let hit = {
-                        let d = doc.borrow();
-                        hit_test(&d.tree, x, y)
-                    };
+                    // The hit and the focus target it resolves to, in one
+                    // borrow: the walk starts where the hit test lands, so
+                    // re-borrowing between them buys nothing.
+                    //
                     // The nearest focusable ancestor-or-self of the hit, as a
                     // browser resolves a mousedown's focus target (issue #147,
                     // decision 2): any parseable `tabindex` — including `-1`,
@@ -505,8 +505,9 @@ impl RinchApp {
                     // claims it below — taking Node focus first would announce a
                     // gain-then-loss on the wrapper for a click that was never
                     // the wrapper's.
-                    let click_focus_node = {
+                    let (hit, click_focus_node) = {
                         let d = doc.borrow();
+                        let hit = hit_test(&d.tree, x, y);
                         let mut cur = hit;
                         let mut found = None;
                         while let Some(nid) = cur {
@@ -514,19 +515,14 @@ impl RinchApp {
                             if node.attributes.contains_key("data-oninput") {
                                 break;
                             }
-                            if !Self::node_is_disabled(node)
-                                && node
-                                    .attributes
-                                    .get("tabindex")
-                                    .and_then(|v| v.parse::<i32>().ok())
-                                    .is_some()
+                            if !Self::node_is_disabled(node) && Self::node_tabindex(node).is_some()
                             {
                                 found = Some(nid);
                                 break;
                             }
                             cur = node.parent;
                         }
-                        found
+                        (hit, found)
                     };
                     // An arbiter-held generic node (issue #228), and whether
                     // this press lands back on it — i.e. resolves to the same
@@ -923,6 +919,14 @@ impl RinchApp {
                 // its blink timer. `ime_state()` reports disabled meanwhile.
                 if self.window_focused != focused {
                     self.window_focused = focused;
+                    if !focused {
+                        // The matching `KeyUp` of anything held across the blur
+                        // goes to the window that took the keyboard, so the
+                        // Enter/Space activation latch (issue #228) would stay
+                        // armed and swallow the first press after we come back.
+                        // A window that lost focus holds no key down.
+                        self.node_activation_held = None;
+                    }
                     if let FocusTarget::Node(id) = self.focus_target {
                         let doc_key = self.doc_key();
                         if focused {
