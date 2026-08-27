@@ -11,6 +11,8 @@
 
 use std::sync::Mutex;
 
+use jni::objects::JValue;
+
 use crate::bridge;
 
 /// One call the IME made on `RinchInputConnection`, queued in call order.
@@ -52,6 +54,40 @@ pub fn show_keyboard() {
             log::warn!("showKeyboard failed: {e}");
         }
     });
+}
+
+/// Tell the keyboard whether the focused field takes a line break.
+///
+/// Android builds the keyboard's `EditorInfo` — which is where the Enter key's
+/// meaning is declared — once per input session, so this is not a property the
+/// keyboard re-reads. The Java side restarts the session when the value
+/// actually changes; a field of the same kind as the last one costs nothing.
+///
+/// Call this *before* [`show_keyboard`] when focus arrives, so the session the
+/// keyboard opens is already the right kind. Both hop to the UI thread through
+/// the same handler queue, so they stay in that order.
+///
+/// Returns whether the push actually reached Java. The caller mirrors what it
+/// last pushed (to avoid restarting the input session for a field of the same
+/// kind), and a mirror advanced past a call that never landed would claim the
+/// keyboard had been told something it had not — with nothing left to push it
+/// again. So a failed call must not advance it.
+#[must_use = "a push that did not land must not advance the caller's mirror"]
+pub fn set_multiline(multiline: bool) -> bool {
+    bridge::with_activity(|env, activity| {
+        match env.call_method(
+            activity,
+            "setInputMultiline",
+            "(Z)V",
+            &[JValue::Bool(multiline as jni::sys::jboolean)],
+        ) {
+            Ok(_) => true,
+            Err(e) => {
+                log::warn!("setInputMultiline failed: {e}");
+                false
+            }
+        }
+    })
 }
 
 pub fn hide_keyboard() {

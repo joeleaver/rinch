@@ -18,6 +18,8 @@ mod input_commit_tests;
 mod input_ime_tests;
 mod select_widget;
 mod text_selection;
+#[cfg(test)]
+mod textarea_newline_tests;
 
 pub(crate) use hit_testing::*;
 
@@ -1442,7 +1444,11 @@ impl RinchApp {
         };
         self.handle_input_edit_command(cmd);
     }
-    fn handle_enter(&mut self) {
+    /// Enter in a focused text control.
+    ///
+    /// `shift` is what separates a `<textarea>`'s two meanings for the key —
+    /// see the newline block below. An `<input>` ignores it.
+    fn handle_enter(&mut self, shift: bool) {
         // Check if a text input is focused and has onchange/onsubmit handlers.
         // Probe liveness first: with a freed id the block below still runs, the
         // node lookups match nothing, and Enter is swallowed rather than falling
@@ -1483,7 +1489,7 @@ impl RinchApp {
                     d.tree
                         .get(nid)
                         .and_then(|n| n.attributes.get("value").cloned()),
-                    d.tree.get(nid).and_then(|n| n.tag()) == Some("textarea"),
+                    Self::node_is_textarea(&d.tree, nid),
                 )
             }
             _ => (None, None, false),
@@ -1510,16 +1516,57 @@ impl RinchApp {
             // (a no-op when nothing was rewritten, so the caret stays put).
             self.adopt_focused_input_value_from_dom();
         }
-        // Post-change submit resolution — see the comment above.
-        let submit_handler_id = node_id.and_then(|nid| {
-            let doc = self.doc.as_ref()?;
-            let d = doc.borrow();
-            d.tree
-                .get(nid)
-                .and_then(|n| n.attributes.get("data-onsubmit"))
-                .and_then(|s| s.parse::<usize>().ok())
-        });
-        if let Some(handler_id) = submit_handler_id {
+        // Post-change submit resolution — see the comment above. Resolved by
+        // walking **up**, like `data-onchange`: the web backend's keydown
+        // delegation fires the nearest ancestor's `data-onsubmit`, so a field
+        // wrapped in a submitting container has to mean the same thing here —
+        // all the more now that the fallback is an insert rather than a
+        // no-op. A freed id is no handler at all (issue #141): dispatching it
+        // would swallow Enter, and in a `<textarea>` that means no line break
+        // can be typed until the field re-renders.
+        let submit_handler_id = node_id
+            .and_then(|nid| {
+                let doc = self.doc.as_ref()?;
+                let d = doc.borrow();
+                Self::input_attr_handler_up(&d.tree, nid, "data-onsubmit")
+            })
+            .filter(|&hid| events::has_click_handler(events::EventHandlerId(hid)));
+
+        // A `<textarea>` is the one control where Enter has a second meaning:
+        // insert a line break. Which of the two it takes follows the web
+        // backend's keydown delegation (`rinch-web`'s `event_delegation`), so
+        // one rsx! tree reads the same in a browser and on a phone:
+        //
+        //   * Shift+Enter always inserts. It is the escape hatch out of a
+        //     submit, and the idiom every chat composer has taught; the web
+        //     backend leaves it to the browser, which inserts.
+        //   * A plain Enter submits when the author put `data-onsubmit` on the
+        //     field — declaring that Enter means send — and inserts when they
+        //     did not. Without this second half a `<textarea>` with no submit
+        //     handler swallows the key and no line break can be typed at all.
+        //
+        // An `<input>` is untouched by any of it: a line break is not
+        // representable in a single-line value, so Enter there stays a commit
+        // (and Shift+Enter with it — leaving a modifier that does nothing at
+        // all would be a regression bought for nothing).
+        //
+        // A composition in flight is nobody's line break: the preedit is not in
+        // the document yet, and the painter splices it into `value` at
+        // `data-cursor-pos`, so inserting here would move the caret out from
+        // under the composition and drop the `\n` in the middle of it. The web
+        // backend skips its Enter path on `isComposing` for the same reason —
+        // that Enter belongs to the IME, confirming the candidate.
+        let insert_newline = is_textarea
+            && self.focused_input_preedit.is_none()
+            && (shift || submit_handler_id.is_none());
+
+        if insert_newline {
+            // Through the ordinary edit path, so the break is one undo step,
+            // carries the caret and fires `oninput` exactly as a typed
+            // character does — on the web a line break *is* an input event
+            // (`inputType: insertLineBreak`), not a separate kind of edit.
+            self.handle_input_edit_command(EditCommand::InsertNewline);
+        } else if let Some(handler_id) = submit_handler_id {
             events::dispatch_event(events::EventHandlerId(handler_id));
 
             // After onsubmit, the handler may have changed the signal (e.g., cleared it).

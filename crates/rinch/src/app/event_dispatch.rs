@@ -1054,7 +1054,7 @@ impl RinchApp {
                                     }
                                 }
                             }
-                            KeyCode::Enter if !ctrl => self.handle_enter(),
+                            KeyCode::Enter if !ctrl => self.handle_enter(shift),
                             // Space with no Node target falls through to the `_`
                             // arm below — the one text-input path (pre-#228), so
                             // a future change to that gate can't miss Space.
