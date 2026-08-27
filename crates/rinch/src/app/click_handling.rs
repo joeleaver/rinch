@@ -344,12 +344,12 @@ impl RinchApp {
 
             // Installation complete: fire the blurred input's commit, then adopt
             // any rewrite its handler made to THIS input (the Enter path's
-            // pattern — resync no-ops when the DOM value already matches, so
-            // the click-placed caret survives the common case).
+            // pattern — a no-op when the DOM value already matches, so the
+            // click-placed caret survives the common case).
             let commit_fired = commit.is_some();
             Self::fire_input_commit(commit);
             if commit_fired {
-                self.resync_input_state_from_dom();
+                self.adopt_focused_input_value_from_dom();
                 self.focused_input_baseline = self.focused_input_value.clone();
             }
         } else if !hit_inside_focused_node

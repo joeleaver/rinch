@@ -48,6 +48,8 @@ web-sys = { version = "0.3", features = [
     # (paste prefers text/html, falls back to an image file then text/plain) and the
     # composition events that drive the IME preedit overlay.
     "ClipboardEvent", "CompositionEvent",
+    # Composition-event constructor for the focused-value-write tests (#238).
+    "CompositionEventInit",
     "DataTransfer", "DataTransferItem", "DataTransferItemList",
     "Blob", "File", "FileReader",
 ] }

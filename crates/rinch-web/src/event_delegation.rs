@@ -16,7 +16,7 @@ use wasm_bindgen::prelude::*;
 use rinch_core::events;
 
 use crate::editor_input::add_capture;
-use crate::web_document::WebDocument;
+use crate::web_document::{COMPOSING_PROP, WebDocument, flush_deferred_value};
 
 thread_local! {
     /// The element currently under the pointer that carries a `data-onenter`/
@@ -249,7 +249,7 @@ fn form_control_value(target: &web_sys::EventTarget) -> Option<String> {
 /// focus (written by the document-level `focusin` listener). The Enter commit
 /// path compares against it to implement only-if-modified semantics
 /// (issue #226).
-const FOCUS_VALUE_PROP: &str = "__rinch_focus_value";
+pub(crate) const FOCUS_VALUE_PROP: &str = "__rinch_focus_value";
 
 /// JS expando property recording the last value committed to `data-onchange`
 /// during the current focus session. Lets the `change` listener skip the
@@ -260,12 +260,12 @@ const COMMITTED_VALUE_PROP: &str = "__rinch_committed";
 /// Read a string-valued JS expando property off `el` (the same
 /// `js_sys::Reflect` pattern as `__nid` in `web_document.rs`). `None` when
 /// the property is absent or not a string.
-fn get_expando_string(el: &web_sys::Element, prop: &str) -> Option<String> {
+pub(crate) fn get_expando_string(el: &web_sys::Element, prop: &str) -> Option<String> {
     js_sys::Reflect::get(el, &prop.into()).ok()?.as_string()
 }
 
 /// Write a JS expando property on `el`; `JsValue::UNDEFINED` clears it.
-fn set_expando(el: &web_sys::Element, prop: &str, value: &JsValue) {
+pub(crate) fn set_expando(el: &web_sys::Element, prop: &str, value: &JsValue) {
     let _ = js_sys::Reflect::set(el, &prop.into(), value);
 }
 
@@ -2033,6 +2033,40 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         .add_event_listener_with_callback("focusin", focusin_closure.as_ref().unchecked_ref())
         .unwrap();
     focusin_closure.forget();
+
+    // IME composition bookkeeping for programmatic value writes (issue #238).
+    // A native `<input>`/`<textarea>` has no composition state of its own
+    // (only the editor's capture textarea tracks one), so flag the control
+    // for the composition's duration: `WebDocument`'s `value` sync defers a
+    // write while the flag is set — `.value =` mid-composition would move
+    // the caret under the composition — and the flush at `compositionend`
+    // applies the last deferred write. Capture phase, ahead of any consumer
+    // that stops propagation.
+    add_capture(
+        &browser_doc,
+        "compositionstart",
+        |event: web_sys::CompositionEvent| {
+            if let Some(el) = event
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+            {
+                set_expando(&el, COMPOSING_PROP, &JsValue::TRUE);
+            }
+        },
+    );
+    add_capture(
+        &browser_doc,
+        "compositionend",
+        |event: web_sys::CompositionEvent| {
+            if let Some(el) = event
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+            {
+                set_expando(&el, COMPOSING_PROP, &JsValue::UNDEFINED);
+                flush_deferred_value(&el);
+            }
+        },
+    );
 
     // Change delegation (issue #226): find [data-onchange] on the target or
     // ancestors. The browser fires `change` exactly at the commit boundary the
