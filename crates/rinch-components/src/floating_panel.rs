@@ -103,10 +103,12 @@ impl Component for FloatingPanel {
 
         // Root container — position: absolute
         let root = rinch_macros::rsx! { div { class: "rinch-floating-panel" } };
-        root.set_style("left", &format!("{}px", init_x));
-        root.set_style("top", &format!("{}px", init_y));
-        root.set_style("width", &format!("{}px", init_w));
-        root.set_style("height", &format!("{}px", init_h));
+        root.set_styles(&[
+            ("left", &format!("{}px", init_x)),
+            ("top", &format!("{}px", init_y)),
+            ("width", &format!("{}px", init_w)),
+            ("height", &format!("{}px", init_h)),
+        ]);
 
         // === Header (drag handle) ===
         let header = rinch_macros::rsx! { div { class: "rinch-floating-panel__header" } };
@@ -189,8 +191,11 @@ impl Component for FloatingPanel {
         __scope.create_effect({
             let root = root.clone();
             move || {
-                root.set_style("left", &format!("{}px", x_sig.get()));
-                root.set_style("top", &format!("{}px", y_sig.get()));
+                // One batch per frame: one style parse, one Taffy write.
+                root.set_styles(&[
+                    ("left", &format!("{}px", x_sig.get())),
+                    ("top", &format!("{}px", y_sig.get())),
+                ]);
             }
         });
 
@@ -198,8 +203,10 @@ impl Component for FloatingPanel {
         __scope.create_effect({
             let root = root.clone();
             move || {
-                root.set_style("width", &format!("{}px", w_sig.get()));
-                root.set_style("height", &format!("{}px", h_sig.get()));
+                root.set_styles(&[
+                    ("width", &format!("{}px", w_sig.get())),
+                    ("height", &format!("{}px", h_sig.get())),
+                ]);
             }
         });
 
