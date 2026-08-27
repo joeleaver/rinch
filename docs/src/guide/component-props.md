@@ -438,13 +438,42 @@ Text input with inline color preview and dropdown ColorPicker.
 | `disabled` | `bool` | `false` | Disable the input |
 | `value` | `String` | `""` | Current color value |
 | `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding |
-| `onchange` | `Option<InputCallback>` | `None` | Fires the formatted color string when a change *commits*: a pick in the dropdown picker, or a typed edit at its commit boundary — blur or Enter (#226). Typing previews live in the swatch but reports only on commit |
+| `onchange` | `Option<InputCallback>` | `None` | Fires the formatted color string for every change made in the dropdown picker — a swatch pick, and each frame of a panel or slider drag — and for a typed edit once, at its commit boundary: blur or Enter (#226). Typing previews live in the swatch and the picker but reports only on commit |
 | `format` | `String` | `"hex"` | Output format |
 | `alpha` | `bool` | `false` | Show alpha slider in picker |
 | `swatches` | `Vec<String>` | `[]` | Preset swatch colors |
 | `swatches_per_row` | `Option<usize>` | `7` | Swatches per row |
 | `close_on_click_outside` | `bool` | `false` | Close dropdown on outside click |
 | `disallow_input` | `bool` | `false` | Disallow typing (picker only) |
+
+**The dropdown picker is bound to the input's current colour** (#237). Typed
+text previews in it live (a parseable keystroke moves its panel and thumbs,
+at the typed notation's own grid — a typed `hsl(205, 3%, 49%)` lands the hue
+thumb on 205° whatever the display `format`, and a typed `#228be680` moves
+the alpha thumb), an external `value_fn` change moves it, and a slider nudge
+derives from the colour the input currently holds — never from the colour it
+mounted with. An external arrival is silent all the way through: the picker
+applies it without reporting, and the input's `onchange` fires nothing the
+caller did not author.
+
+**The field shows the colour in the `format` output spelling.** A `value` or
+`value_fn` written in another notation (`red`, `hsl(200, 3%, 49%)`) is
+displayed re-spelled (`#ff0000`, `#797e81` under `hex`); the field is
+rewritten only when the colour moves away from its text, so the author's
+mid-typing text is left alone as before, and an unparseable commit reverts
+it to the last committed colour in that same spelling. Under an
+alpha-dropping `format` (`hex`, `rgb`, `hsl`) an alpha typed into the field
+previews in the picker but is dropped at the commit boundary, and an alpha
+arriving through `value_fn` is only half-honoured: the dropdown picker adopts
+it (its alpha thumb moves when `alpha` is on) and the swatch renders it
+translucent, but the field cannot spell it and every change the input
+reports drops it. The corner ColorPicker concedes above applies here too: a
+later `value_fn` value restating the colour opaque (`#ff0000`,
+`rgba(255, 0, 0, 1)`) is indistinguishable from the input's own echo and does
+not apply, so the picker keeps the alpha — and the swatch snaps opaque on the
+next reported change while the picker's alpha thumb does not — until a value
+carrying a different, non-opaque alpha arrives. Bind `hexa`/`rgba`/`hsla`
+when alpha must be externally drivable.
 
 ---
 
