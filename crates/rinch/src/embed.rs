@@ -163,10 +163,11 @@ impl RinchContext {
         let height = config.height.max(1);
         let scale_factor = config.scale_factor;
 
-        // Mount the component (builds DOM, runs initial layout)
-        let logical_w = width as f32 / scale_factor as f32;
-        let logical_h = height as f32 / scale_factor as f32;
-        app.mount_component(logical_w, logical_h);
+        // Mount the component (builds DOM, runs initial layout) at the
+        // *logical* viewport — `width`/`height` are physical (see
+        // `rinch_platform::to_logical`).
+        let (logical_w, logical_h) = rinch_platform::to_logical((width, height), scale_factor);
+        app.mount_component(logical_w as f32, logical_h as f32);
 
         // Register main thread for cross-thread signal dispatch
         rinch_core::register_main_thread();
@@ -250,7 +251,12 @@ impl RinchContext {
         let width = width.max(1);
         let height = height.max(1);
         self.size = (width, height);
-        self.app.resize_layout(width, height);
+        // Layout is resolved in logical (CSS) pixels — `update` already uses
+        // `logical_size()` for exactly this, and paint scales the result back up
+        // by `scale_factor`. Re-laying out at the physical size here made the
+        // document `scale_factor` times too wide until the next signal change.
+        let (lw, lh) = rinch_platform::to_logical((width, height), self.scale_factor);
+        self.app.resize_layout(lw, lh);
     }
 
     /// Update the display scale factor (DPI).
@@ -374,10 +380,8 @@ impl RinchContext {
     }
 
     fn logical_size(&self) -> (f32, f32) {
-        (
-            self.size.0 as f32 / self.scale_factor as f32,
-            self.size.1 as f32 / self.scale_factor as f32,
-        )
+        let (w, h) = rinch_platform::to_logical(self.size, self.scale_factor);
+        (w as f32, h as f32)
     }
 }
 

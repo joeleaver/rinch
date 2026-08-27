@@ -861,6 +861,21 @@ Drag::cancel();
 Drag::is_active();
 ```
 
+**A drag belongs to the document that armed it (issue #139).** `Drag` state is a
+single thread-local, but a thread can pump several documents' pointer streams
+through it — a desktop window and its DevTools panel are two `RinchApp`s on one
+thread, and so are two embedded `RinchContext`s. Only the document whose events
+armed the drag drives it: another document's `MouseMove` does not reach
+`on_move`, its `MouseUp` does not fire `on_end`, and `Drag::is_active()` answers
+`false` there (so a drag in one window never freezes hover in the other). A drag
+armed **outside** any event dispatch — from a timer, a menu callback, or on
+rinch-web, which has one page-wide pointer stream — belongs to no document in
+particular and stays drivable by anybody. Nothing changes for a single-window
+app. (Two desktop *windows* do not cross-feed a plain mouse drag on their own —
+the pointer is grabbed to the pressing window while a button is held — so this
+matters for an embed host pumping several contexts from one event stream, and
+for a drag left live past a missed `MouseUp`.)
+
 ### File Drop (OS → App)
 
 File drops from the OS use `data-onfiledragenter`, `data-onfiledragleave` attributes, and `register_file_drop_handler` for the actual drop. See the File Drop section of UI Zoo for an example.
@@ -1586,6 +1601,8 @@ Some components support reactive value binding via `_fn` props. The `rsx!` macro
 
 **Controlled Input Pattern:** For controlled inputs, use `value_fn` + `oninput` together. `value_fn` keeps the DOM in sync with your signal; `oninput` updates the signal from user input. Without `value_fn`, programmatic `signal.set("")` won't clear the input visually.
 
+A `value_fn` write (any `set_attribute("value")`) to the **focused** field is adopted by the field on both backends (issue #238): it becomes the text the next keystroke edits, the caret keeps its logical position (kept prefix/suffix keeps it, a same-length rewrite leaves it in place, a resized rewrite puts it after the new text), a selection survives, the write is deferred during an IME composition, and it never commits `onchange` by itself. A normalizing or rejecting `oninput` (uppercase, digits-only, max-length) that writes back on every keystroke therefore just works — on desktop, where it used to snap back to the pre-rewrite text on the next key, as well as on the web, where it used to throw the caret to the end.
+
 **`onsubmit`:** TextInput supports `onsubmit` which fires when the user presses Enter.
 
 Example - controlled TextInput with submit:
@@ -1844,6 +1861,7 @@ close_app()                         # Done
 |-------|-------|--------------|
 | Borders appearing unexpectedly | `border_*_width` should be 0 for `border: none` | `computed_style.rs` - check `border-style` |
 | SVG icons 0x0 | Missing inline width/height styles | Add `style="width: Xpx; height: Xpx"` |
+| SVG `fill`/`stroke` attribute not painting | Must be a CSS `<color>` (stylo parses it via `layout::parse_color`); `none`/`currentcolor` are case-insensitive; an absent `fill` is black | `paint/svg.rs` `resolve_svg_color` |
 | currentColor not resolving | Check `is_currentcolor()` handling | `computed_style.rs` |
 | Reactive state not updating | Need `{|| expr}` closure syntax | Component render method |
 | Menu active state stale | Missing reactive effect | Add `create_effect()` for class updates |

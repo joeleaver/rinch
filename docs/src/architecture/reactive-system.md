@@ -154,15 +154,25 @@ fn my_component(__scope: &mut RenderScope) -> NodeHandle {
 // When __scope is disposed, all its effects are cleaned up
 ```
 
-> **Note:** `RenderScope` is what application code sees — it tracks effects and child scopes for automatic cleanup. Underneath, each `RenderScope` owns a reactive `Scope`, and `Scope::run(f)` makes that scope the **ambient owner** for `f`: signals, memos, effects and event handlers created inside are attributed to it. Attribution is currently recorded but not acted on — see [issue #141](https://github.com/joeleaver/rinch/issues/141), which turns these records into actual reclamation.
+> **Note:** `RenderScope` is what application code sees — it tracks effects and child scopes for automatic cleanup. Underneath, each `RenderScope` owns a reactive `Scope`, and `Scope::run(f)` makes that scope the **ambient owner** for `f`: signals, memos, effects and event handlers created inside are attributed to it. **Disposing the scope frees everything it owns** — attribution is acted on, not merely recorded ([issue #141](https://github.com/joeleaver/rinch/issues/141)). Disposal is a priority fixpoint rather than a linear pass: handlers, then effects, then cleanups, then memos, then signals, then the values themselves — restarting from the top whenever a step enqueues more work, because dropping a value can own the only handle to a child scope.
 >
 > Two independent stacks are in play, and they are easy to confuse: `untracked` suspends the *observer* stack (who subscribes to a read), while `unowned` suspends the *owner* stack (who owns an allocation). **With no ambient owner, a resource has app lifetime** — which is why signals created in `main()` or in startup code keep working untouched.
 
 ### Ownership
 
-- Signals are reference-counted (`Rc<RefCell<T>>`)
-- Effects hold strong references to their closures
-- Disposing a scope drops all its primitives
+- **`Signal<T>` and `Memo<T>` are `Copy` handles, not smart pointers.** Each is a
+  `(index, generation)` pair into a thread-local slab; the value itself lives in
+  the slab as a type-erased `Box<dyn Any>`. Freeing a slot bumps nothing but the
+  free list — the *generation* is what makes a stale handle detectable, since a
+  recycled index carries a generation no old handle holds.
+- **Effects live in a registry keyed by `ObserverId`**, not in the `Effect`
+  handle. An effect is queued and run by id, so its closure has to outlive the
+  handle; disposal is what removes the entry, and it removes it rather than
+  emptying a slot that would stay in the container forever.
+- **Disposing a scope frees every primitive it owns**, and the `Rc`s are always
+  dropped *after* the registry borrow is released — an effect closure commonly
+  captures the only handle to a child scope, so dropping it in place would
+  re-enter the registry that is still mutably borrowed.
 
 ## Integration with UI
 
@@ -195,7 +205,8 @@ fn counter() -> NodeHandle {
 
 ## Thread Safety
 
-The current implementation uses `Rc<RefCell<T>>` for single-threaded use:
+The implementation is deliberately single-threaded, and stores state in
+thread-local slabs rather than in shared smart pointers:
 
 - Thread-local runtime by default
 - All reactive primitives (`Signal`, `Effect`, `Memo`) are `!Send` and `!Sync`

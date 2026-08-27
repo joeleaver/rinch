@@ -36,6 +36,8 @@ Button { variant: {|| if active.get() { "filled" } else { "outline" }}, "Toggle"
 
 For more efficient surgical updates (no full re-render), use `_fn` suffix props where available (e.g., `value_fn`, `checked_fn`, `opened_fn`).
 
+A `value_fn` write to the text field that currently holds focus is adopted by the field (issue #238): the next keystroke edits the written text, the caret and selection keep their logical position through the rewrite, the write is deferred during an IME composition, and it never commits `onchange` by itself. See [Controlled Input Pattern](components.md#controlled-input-pattern).
+
 ---
 
 ## Layout
@@ -365,27 +367,49 @@ other.
 
 **The picker's state survives its own round trip.** An echoing binding — a store
 that `value_fn` reads and `onchange` writes back into — no longer degrades the
-picker's hue, saturation, or alpha. Emitted colour strings quantize to 8-bit
-RGB, so the echo of the picker's own emission routinely parses to a slightly
-different hue/saturation than the internal state it was formatted from (and to
-*no* hue at grey, or no alpha under an alpha-less format like `hex`); the picker
+picker's hue, saturation, or alpha. Emitted colour strings quantize — to 8-bit
+RGB under the hex and rgb formats, to whole degrees and percents under hsl — so
+the echo of the picker's own emission routinely parses to a slightly different
+hue/saturation than the internal state it was formatted from (and to *no* hue
+at grey, or no alpha under an alpha-less format like `hex`); the picker
 recognises such an echo as its own state and leaves the internal signals
 untouched, so dragging saturation down to grey and back resumes the original
 hue, and the alpha slider works under the default `hex` format. A genuinely
 foreign value (one that denotes a different colour, alpha included) still
 applies — and even then, channels the value cannot carry are kept rather than
-fabricated: a grey keeps the current hue (unless it *states* one, as
-`hsl(240, 0%, 50%)` does — a stated hue is adopted), a black keeps hue and
-saturation, judged by what the value renders at 8-bit rather than by exact
-parse floats. One corner is deliberately conceded: under an alpha-dropping
-display format, an inbound value that restates the picker's current RGB with
-an explicitly opaque alpha (`rgba(r, g, b, 1)`) is indistinguishable from a
-normalizing store's echo of the emission and does not apply — bind an
-alpha-carrying format (`hexa`, `rgba`, `hsla`) when external writes need to
-drive alpha. More generally, the echo test judges identity at 8-bit RGB: an
-inbound change too small to move the rendered colour by a full 8-bit step —
-such as a small stated-hue move at very low chroma on an `hsl`-format wire —
-reads as an echo and does not apply.
+fabricated: a grey keeps the current hue (unless it *states* one, as any
+`hsl()` value does — `hsl(240, 0%, 50%)`, the sub-percent
+`hsl(205, 0.3%, 49%)`, and `hsl(0, 0%, 50%)` alike — a stated hue is adopted;
+note that a store which re-spells an RGB grey as `hsl()` writes hue 0, and the
+picker adopts it), a black keeps hue and saturation, judged by what the value
+renders at 8-bit rather than by exact parse floats. One corner is deliberately
+conceded: under an alpha-dropping display format, an inbound value that
+restates the picker's current RGB with an explicitly opaque alpha
+(`rgba(r, g, b, 1)`) is indistinguishable from a normalizing store's echo of
+the emission and does not apply — bind an alpha-carrying format (`hexa`,
+`rgba`, `hsla`) when external writes need to drive alpha. More generally, the
+echo test judges identity at the resolution of the picker's own emission in
+the notation the inbound value is written in — 8-bit channels for a hex, named
+or `rgb()` value, whole degrees and whole percents for an `hsl()` value, alpha
+at two decimals under `rgb()`/`hsl()` — never finer than that notation's
+serializer writes, whatever finer channels the parser accepts. A difference the
+emission could not have spelled folds as an echo, in both directions: on an
+`hsl`-format wire a stated-hue move of a whole degree applies even at very low
+chroma, where it does not move the rendered colour by an 8-bit step, while an
+inbound `hsl()` value that shares a spelling with the picker's current colour
+folds even where 8-bit could tell them apart (a normalizing store re-spelling
+the picker's own hex emission as `hsl()` is indistinguishable from it). The
+text field's write-back guard judges at the same resolution, so field, thumbs
+and store stay in step.
+
+**Accepted colour notations** (everywhere a colour string is read — `value`,
+`value_fn`, typed text, swatches): hex in 3, 4, 6, or 8 digits (`#rgb`,
+`#rgba`, `#rrggbb`, `#rrggbbaa`, with or without the `#`), `rgb()`/`rgba()`
+and `hsl()`/`hsla()` in both the legacy comma syntax and the modern
+space-separated syntax (`rgb(51 51 102 / 0.5)`; alpha as a number or a
+percentage), and the CSS named colours (`red`, `rebeccapurple`,
+`transparent`). Named colours and function names are case-insensitive, as
+in CSS. Out-of-range channels clamp to their CSS ranges; hue wraps (#243).
 
 **The text field is the author's while they type.** The hex field parses on
 every keystroke, and a valid *prefix* of the colour being typed (`#336` on the
@@ -416,13 +440,42 @@ Text input with inline color preview and dropdown ColorPicker.
 | `disabled` | `bool` | `false` | Disable the input |
 | `value` | `String` | `""` | Current color value |
 | `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding |
-| `onchange` | `Option<InputCallback>` | `None` | Fires the formatted color string when a change *commits*: a pick in the dropdown picker, or a typed edit at its commit boundary — blur or Enter (#226). Typing previews live in the swatch but reports only on commit |
+| `onchange` | `Option<InputCallback>` | `None` | Fires the formatted color string for every change made in the dropdown picker — a swatch pick, and each frame of a panel or slider drag — and for a typed edit once, at its commit boundary: blur or Enter (#226). Typing previews live in the swatch and the picker but reports only on commit |
 | `format` | `String` | `"hex"` | Output format |
 | `alpha` | `bool` | `false` | Show alpha slider in picker |
 | `swatches` | `Vec<String>` | `[]` | Preset swatch colors |
 | `swatches_per_row` | `Option<usize>` | `7` | Swatches per row |
 | `close_on_click_outside` | `bool` | `false` | Close dropdown on outside click |
 | `disallow_input` | `bool` | `false` | Disallow typing (picker only) |
+
+**The dropdown picker is bound to the input's current colour** (#237). Typed
+text previews in it live (a parseable keystroke moves its panel and thumbs,
+at the typed notation's own grid — a typed `hsl(205, 3%, 49%)` lands the hue
+thumb on 205° whatever the display `format`, and a typed `#228be680` moves
+the alpha thumb), an external `value_fn` change moves it, and a slider nudge
+derives from the colour the input currently holds — never from the colour it
+mounted with. An external arrival is silent all the way through: the picker
+applies it without reporting, and the input's `onchange` fires nothing the
+caller did not author.
+
+**The field shows the colour in the `format` output spelling.** A `value` or
+`value_fn` written in another notation (`red`, `hsl(200, 3%, 49%)`) is
+displayed re-spelled (`#ff0000`, `#797e81` under `hex`); the field is
+rewritten only when the colour moves away from its text, so the author's
+mid-typing text is left alone as before, and an unparseable commit reverts
+it to the last committed colour in that same spelling. Under an
+alpha-dropping `format` (`hex`, `rgb`, `hsl`) an alpha typed into the field
+previews in the picker but is dropped at the commit boundary, and an alpha
+arriving through `value_fn` is only half-honoured: the dropdown picker adopts
+it (its alpha thumb moves when `alpha` is on) and the swatch renders it
+translucent, but the field cannot spell it and every change the input
+reports drops it. The corner ColorPicker concedes above applies here too: a
+later `value_fn` value restating the colour opaque (`#ff0000`,
+`rgba(255, 0, 0, 1)`) is indistinguishable from the input's own echo and does
+not apply, so the picker keeps the alpha — and the swatch snaps opaque on the
+next reported change while the picker's alpha thumb does not — until a value
+carrying a different, non-opaque alpha arrives. Bind `hexa`/`rgba`/`hsla`
+when alpha must be externally drivable.
 
 ---
 

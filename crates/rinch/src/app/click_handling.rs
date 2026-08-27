@@ -324,6 +324,12 @@ impl RinchApp {
             // the handler is user code and may rewrite the very input being
             // focused (#244 review).
             let (focus_changed, commit) = self.set_focus_target_deferred(FocusTarget::Input(nid));
+            // A re-click inside the already-focused input absorbs the DOM value
+            // into the buffer below without moving the baseline, so a write that
+            // landed since the last frame would look like a user edit and commit
+            // `onchange` by itself. Adopt it first, under the baseline rule (a
+            // no-op on a fresh focus: the teardown cleared the state).
+            self.adopt_focused_input_value_from_dom();
             self.focused_input_handler_id = Some(handler_id);
             self.focused_input_value = value.clone();
             self.focused_input_node_id = Some(nid);
@@ -344,12 +350,12 @@ impl RinchApp {
 
             // Installation complete: fire the blurred input's commit, then adopt
             // any rewrite its handler made to THIS input (the Enter path's
-            // pattern — resync no-ops when the DOM value already matches, so
-            // the click-placed caret survives the common case).
+            // pattern — a no-op when the DOM value already matches, so the
+            // click-placed caret survives the common case).
             let commit_fired = commit.is_some();
             Self::fire_input_commit(commit);
             if commit_fired {
-                self.resync_input_state_from_dom();
+                self.adopt_focused_input_value_from_dom();
                 self.focused_input_baseline = self.focused_input_value.clone();
             }
         } else if !hit_inside_focused_node

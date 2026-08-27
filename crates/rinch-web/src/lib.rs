@@ -50,6 +50,8 @@ use rinch_core::element::ThemeProviderProps;
 use rinch_core::events;
 
 pub use event_delegation::setup_event_delegation;
+#[doc(hidden)]
+pub use event_delegation::{__force_trusted_clicks, __reset_activation_state};
 pub use web_document::WebDocument;
 
 // The renderer-agnostic rich-text editor, re-exported so a web app uses the *same*

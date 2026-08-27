@@ -85,7 +85,7 @@ impl RinchApp {
     /// installing the new owner's state after the transition (the input click
     /// path, programmatic input focus): fire it via
     /// [`Self::fire_input_commit`] once installation is complete, then adopt
-    /// any rewrite the handler made (`resync_input_state_from_dom`).
+    /// any rewrite the handler made (`adopt_focused_input_value_from_dom`).
     ///
     /// This only handles **teardown** of the previous owner; the caller installs
     /// the new owner's state (the rich per-engine state — `EditableState`, the CE
@@ -176,6 +176,7 @@ impl RinchApp {
                 self.focused_input_state = None;
                 self.focused_input_node_id = None;
                 self.focused_input_preedit = None;
+                self.focused_input_deferred_value = None;
                 // Clear the input's DOM focus and keyboard focus ring, exactly
                 // like the Node arm below — otherwise a blur that never goes
                 // through a left-mousedown (a click into the rich-text editor,

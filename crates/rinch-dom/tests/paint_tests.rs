@@ -206,30 +206,95 @@ fn test_paint_rgba_color() {
     assert!(!painter.scene().encoding().is_empty());
 }
 
+/// `parse_color` as `(r, g, b, a)`, for exact assertions.
+fn rgba(value: &str) -> Option<(u8, u8, u8, u8)> {
+    rinch_dom::layout::parse_color(value).map(|c| {
+        let c = c.to_rgba8();
+        (c.r, c.g, c.b, c.a)
+    })
+}
+
 #[test]
 fn test_parse_color_named() {
-    use rinch_dom::layout::parse_color;
-    assert!(parse_color("red").is_some());
-    assert!(parse_color("blue").is_some());
-    assert!(parse_color("transparent").is_some());
-    assert!(parse_color("unknown_color").is_none());
+    assert_eq!(rgba("red"), Some((255, 0, 0, 255)));
+    assert_eq!(rgba("blue"), Some((0, 0, 255, 255)));
+    assert_eq!(rgba("transparent"), Some((0, 0, 0, 0)));
+    assert_eq!(rgba("unknown_color"), None);
+}
+
+/// #250: the whole CSS named-colour table, matched case-insensitively — not a
+/// private dozen. `rebeccapurple` is the last name the spec added.
+#[test]
+fn test_parse_color_full_named_table_case_insensitive() {
+    assert_eq!(rgba("rebeccapurple"), Some((102, 51, 153, 255)));
+    assert_eq!(rgba("aqua"), Some((0, 255, 255, 255)));
+    assert_eq!(rgba("Aqua"), Some((0, 255, 255, 255)));
+    assert_eq!(rgba("AQUA"), Some((0, 255, 255, 255)));
+    assert_eq!(rgba("  RebeccaPurple  "), Some((102, 51, 153, 255)));
 }
 
 #[test]
 fn test_parse_color_hex() {
-    use rinch_dom::layout::parse_color;
-    assert!(parse_color("#f00").is_some());
-    assert!(parse_color("#ff0000").is_some());
-    assert!(parse_color("#ff000080").is_some());
-    assert!(parse_color("#xyz").is_none());
+    assert_eq!(rgba("#f00"), Some((255, 0, 0, 255)));
+    assert_eq!(rgba("#ff0000"), Some((255, 0, 0, 255)));
+    assert_eq!(rgba("#ff000080"), Some((255, 0, 0, 128)));
+    // #250: 4-digit hex is CSS Color 4 (#rgba).
+    assert_eq!(rgba("#1234"), Some((0x11, 0x22, 0x33, 0x44)));
+    assert_eq!(rgba("#xyz"), None);
+    assert_eq!(rgba("#12"), None);
 }
 
 #[test]
 fn test_parse_color_rgb_rgba() {
-    use rinch_dom::layout::parse_color;
-    assert!(parse_color("rgb(255, 0, 0)").is_some());
-    assert!(parse_color("rgba(255, 0, 0, 0.5)").is_some());
-    assert!(parse_color("rgb(255, 0)").is_none());
+    assert_eq!(rgba("rgb(255, 0, 0)"), Some((255, 0, 0, 255)));
+    assert_eq!(rgba("rgba(255, 0, 0, 0.5)"), Some((255, 0, 0, 128)));
+    // #250: modern space-separated syntax, with and without a `/ alpha`.
+    assert_eq!(rgba("rgb(0 128 255)"), Some((0, 128, 255, 255)));
+    assert_eq!(rgba("rgb(0 128 255 / 50%)"), Some((0, 128, 255, 128)));
+    // #250: CSS clamps out-of-range components; it does not reject them.
+    assert_eq!(rgba("rgb(300, 0, 0)"), Some((255, 0, 0, 255)));
+    assert_eq!(rgba("rgb(255, 0)"), None);
+    assert_eq!(rgba("rgb(0, 0)"), None);
+}
+
+/// #250: `hsl()`/`hsla()` were not parsed at all.
+#[test]
+fn test_parse_color_hsl() {
+    assert_eq!(rgba("hsl(270 50% 40%)"), Some((102, 51, 153, 255)));
+    assert_eq!(rgba("hsla(270, 50%, 40%, 0.5)"), Some((102, 51, 153, 128)));
+}
+
+/// The rest of the CSS Color 4 grammar `parse_color`'s doc promises, one
+/// vector per family; `in srgb` keeps the mix exact.
+#[test]
+fn test_parse_color_css_color_4_functions() {
+    assert_eq!(rgba("hwb(270 20% 40%)"), Some((102, 51, 153, 255)));
+    assert_eq!(rgba("color(srgb 0.4 0.2 0.6)"), Some((102, 51, 153, 255)));
+    assert_eq!(rgba("oklch(0 0 0)"), Some((0, 0, 0, 255)));
+    assert_eq!(
+        rgba("color-mix(in srgb, red 25%, blue)"),
+        Some((64, 0, 191, 255))
+    );
+    // A mix over `currentcolor` is not absolute on its own.
+    assert_eq!(rgba("color-mix(in srgb, currentcolor, blue)"), None);
+}
+
+#[test]
+fn test_parse_color_rejects_junk() {
+    assert_eq!(rgba(""), None);
+    assert_eq!(rgba("   "), None);
+    assert_eq!(rgba("red junk"), None);
+    assert_eq!(rgba("red; background: blue"), None);
+    assert_eq!(rgba("red !important"), None);
+}
+
+/// `currentcolor` is not an absolute colour: the caller owns its resolution
+/// (`resolve_svg_color` walks the tree for it), so `parse_color` must say no
+/// rather than invent a value.
+#[test]
+fn test_parse_color_currentcolor_is_not_absolute() {
+    assert_eq!(rgba("currentcolor"), None);
+    assert_eq!(rgba("currentColor"), None);
 }
 
 #[test]
@@ -565,7 +630,7 @@ mod transform_paint {
 
     /// Paint the document with the tiny-skia software painter for pixel
     /// assertions.
-    fn paint_skia(doc: &mut RinchDocument, painter: &mut TinySkiaPainter) {
+    pub(super) fn paint_skia(doc: &mut RinchDocument, painter: &mut TinySkiaPainter) {
         paint_skia_at(doc, painter, 1.0);
     }
 
@@ -584,7 +649,7 @@ mod transform_paint {
     }
 
     /// Premultiplied RGBA pixel at (x, y).
-    fn pixel_at(painter: &TinySkiaPainter, x: u32, y: u32) -> [u8; 4] {
+    pub(super) fn pixel_at(painter: &TinySkiaPainter, x: u32, y: u32) -> [u8; 4] {
         let idx = ((y * painter.width() + x) * 4) as usize;
         let d = painter.pixels();
         [d[idx], d[idx + 1], d[idx + 2], d[idx + 3]]
@@ -609,7 +674,7 @@ mod transform_paint {
         false
     }
 
-    fn is_opaque_red(p: [u8; 4]) -> bool {
+    pub(super) fn is_opaque_red(p: [u8; 4]) -> bool {
         p[0] > 200 && p[1] < 50 && p[2] < 50 && p[3] > 200
     }
 
@@ -857,6 +922,62 @@ mod transform_paint {
     }
 }
 
+// ── #236: a set_style inset move must paint where layout puts it ─────────────
+
+/// The set_style inset fast path skips Stylo; the pixel it paints must still
+/// be the one a full resolve of the same declaration would paint. Before the
+/// fix the fast path wrote `layout.x = left_px` (no parent border) and never
+/// marked layout dirty, so the child painted short of its true position.
+#[cfg(feature = "software-renderer")]
+mod inset_fast_path_paint {
+    use super::transform_paint::{is_opaque_red, paint_skia, pixel_at};
+    use super::*;
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+
+    #[test]
+    fn set_style_left_paints_at_layout_position() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        // A 30px border is wider than the child, so the box the old fast path
+        // painted ([40, 60)) and the true box ([70, 90)) do not overlap.
+        let parent = doc.create_element("div");
+        doc.set_attribute(
+            parent,
+            "style",
+            "position: relative; width: 300px; height: 200px; \
+             border-left: 30px solid black; border-top: 0 solid black",
+        );
+        doc.append_child(body, parent);
+        let child = doc.create_element("div");
+        doc.set_attribute(
+            child,
+            "style",
+            "position: absolute; left: 0; top: 0; width: 20px; height: 20px; \
+             background-color: red",
+        );
+        doc.append_child(parent, child);
+        doc.resolve_layout(800.0, 600.0);
+
+        doc.set_style(child, "left", "40px");
+        doc.resolve_layout(800.0, 600.0);
+
+        let mut painter = TinySkiaPainter::new(200, 100);
+        paint_skia(&mut doc, &mut painter);
+
+        let layout = doc.tree.get(child.0).unwrap().layout;
+        assert!(
+            is_opaque_red(pixel_at(&painter, 80, 10)),
+            "the child must paint at its laid-out centre (80, 10) — border (30) + \
+             left (40) + half its width; layout.x = {}",
+            layout.x
+        );
+        assert!(
+            !is_opaque_red(pixel_at(&painter, 50, 10)),
+            "nothing at the padding-box-relative position the old fast path wrote"
+        );
+    }
+}
+
 // ── #202: DPI-scale covariance of transform composition ──────────────────────
 
 /// The mechanical correctness criterion for `compose_node_transform`: it must be
@@ -957,4 +1078,420 @@ mod transform_dpi_covariance {
             failures.join("\n")
         );
     }
+}
+
+// ── SVG presentation attributes (#250): `fill`/`stroke` are parsed with the
+// same CSS colour parser as stylesheets, and `currentcolor` is matched the
+// way the spec spells it. Pixel assertions use the software renderer.
+
+#[cfg(feature = "software-renderer")]
+mod svg_paint {
+    use super::transform_paint::{paint_skia, pixel_at};
+    use super::*;
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+
+    /// Paint a 20×20 `<svg viewBox="0 0 10 10">` holding one full-viewBox
+    /// `<rect>` at the top-left of the page and return the pixel at its
+    /// centre. `svg_fill`/`rect_fill` are the `fill` attributes (`None` for
+    /// absent); `svg_style`/`rect_style` the inline styles (for `color`).
+    fn svg_rect_centre_pixel(
+        svg_fill: Option<&str>,
+        svg_style: &str,
+        rect_fill: Option<&str>,
+        rect_style: &str,
+    ) -> [u8; 4] {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let svg = doc.create_element("svg");
+        doc.set_attribute(svg, "viewBox", "0 0 10 10");
+        if let Some(fill) = svg_fill {
+            doc.set_attribute(svg, "fill", fill);
+        }
+        doc.set_attribute(
+            svg,
+            "style",
+            &format!("display: block; width: 20px; height: 20px; {svg_style}"),
+        );
+        doc.append_child(body, svg);
+        let rect = doc.create_element("rect");
+        doc.set_attribute(rect, "width", "10");
+        doc.set_attribute(rect, "height", "10");
+        if let Some(fill) = rect_fill {
+            doc.set_attribute(rect, "fill", fill);
+        }
+        if !rect_style.is_empty() {
+            doc.set_attribute(rect, "style", rect_style);
+        }
+        doc.append_child(svg, rect);
+        doc.resolve_layout(800.0, 600.0);
+
+        let layout = doc.tree.get(svg.0).unwrap().layout;
+        assert_eq!(
+            (layout.x, layout.y, layout.width, layout.height),
+            (0.0, 0.0, 20.0, 20.0),
+            "the svg should sit at the page origin at its styled size"
+        );
+
+        let mut painter = TinySkiaPainter::new(40, 40);
+        paint_skia(&mut doc, &mut painter);
+        pixel_at(&painter, 10, 10)
+    }
+
+    /// `svg_rect_centre_pixel` for a rect with its own `fill`.
+    fn rect_centre_pixel(fill: &str, svg_style: &str) -> [u8; 4] {
+        svg_rect_centre_pixel(None, svg_style, Some(fill), "")
+    }
+
+    #[test]
+    fn svg_fill_named_colour_outside_legacy_table_paints() {
+        assert_eq!(rect_centre_pixel("rebeccapurple", ""), [102, 51, 153, 255]);
+    }
+
+    #[test]
+    fn svg_fill_hsl_paints() {
+        assert_eq!(
+            rect_centre_pixel("hsl(270 50% 40%)", ""),
+            [102, 51, 153, 255]
+        );
+    }
+
+    #[test]
+    fn svg_fill_currentcolor_lowercase_resolves_to_css_color() {
+        assert_eq!(
+            rect_centre_pixel("currentcolor", "color: rgb(1, 2, 3)"),
+            [1, 2, 3, 255]
+        );
+    }
+
+    #[test]
+    fn svg_fill_currentcolor_camelcase_resolves_to_css_color() {
+        assert_eq!(
+            rect_centre_pixel("currentColor", "color: rgb(1, 2, 3)"),
+            [1, 2, 3, 255]
+        );
+    }
+
+    #[test]
+    fn svg_fill_none_paints_nothing() {
+        assert_eq!(rect_centre_pixel("none", ""), [0, 0, 0, 0]);
+    }
+
+    /// SVG's initial `fill` is black: a shape with no `fill` anywhere paints.
+    #[test]
+    fn svg_fill_absent_paints_black() {
+        assert_eq!(svg_rect_centre_pixel(None, "", None, ""), [0, 0, 0, 255]);
+    }
+
+    /// A child with no `fill` inherits the `<svg>`'s.
+    #[test]
+    fn svg_fill_inherits_svg_level_fill() {
+        assert_eq!(
+            svg_rect_centre_pixel(Some("rebeccapurple"), "", None, ""),
+            [102, 51, 153, 255]
+        );
+    }
+
+    /// `currentcolor` resolves against the child's own `color`, not the
+    /// `<svg>`'s — whether the child says it or inherits it.
+    #[test]
+    fn svg_fill_currentcolor_uses_child_colour() {
+        assert_eq!(
+            svg_rect_centre_pixel(
+                None,
+                "color: rgb(1, 2, 3)",
+                Some("currentcolor"),
+                "color: rgb(4, 5, 6)"
+            ),
+            [4, 5, 6, 255]
+        );
+        assert_eq!(
+            svg_rect_centre_pixel(
+                Some("currentColor"),
+                "color: rgb(1, 2, 3)",
+                None,
+                "color: rgb(4, 5, 6)"
+            ),
+            [4, 5, 6, 255]
+        );
+    }
+}
+
+/// Regression for the paint half of issue #61 (see `ifc.rs`,
+/// `mark_inline_descendants`).
+///
+/// rsx emits a comment marker for every `if`/`for`/`match`/component, and a
+/// `display:contents` wrapper for `Vec<NodeHandle>` children. Comments count as
+/// inline children, so a block container holding a marker becomes an inline
+/// formatting context root. The IFC machinery then marked *every*
+/// `display:contents` child of that root with `ifc_root`, which tells the paint
+/// tree-walk "the IFC draws this, skip it" — so a wrapper full of **block**
+/// content, and its entire subtree, silently vanished from the scene while
+/// keeping perfectly correct layout boxes.
+#[test]
+fn test_block_content_behind_display_contents_still_paints() {
+    /// Builds `<div width:400px><!--for--> [wrapper] <div 100x40 red></div>`,
+    /// with the red block either behind a `display:contents` wrapper or a
+    /// direct child, and returns (draw op count, wrapper's `ifc_root`).
+    fn build(wrapped: bool) -> (usize, Option<usize>) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        // A block container that becomes an IFC root purely because of an rsx
+        // control-flow marker comment.
+        let container = doc.create_element("div");
+        doc.set_attribute(container, "style", "width: 400px");
+        doc.append_child(body, container);
+        let marker = doc.create_comment("for");
+        doc.append_child(container, marker);
+
+        let parent = if wrapped {
+            let wrapper = doc.create_element("div");
+            doc.set_attribute(wrapper, "style", "display: contents");
+            doc.append_child(container, wrapper);
+            wrapper
+        } else {
+            container
+        };
+
+        let painted = doc.create_element("div");
+        doc.set_attribute(
+            painted,
+            "style",
+            "width: 100px; height: 40px; background-color: red",
+        );
+        doc.append_child(parent, painted);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        // Layout is unaffected either way — the box is there, it just never drew.
+        let l = doc.tree.get(painted.0).unwrap().layout;
+        assert_eq!((l.width, l.height), (100.0, 40.0), "block box laid out");
+
+        let mut painter = VelloPainter::new();
+        paint(&mut doc, &mut painter);
+        let draws = painter.scene().encoding().draw_tags.len();
+        let ifc_root = if wrapped {
+            doc.tree.get(parent.0).unwrap().ifc_root
+        } else {
+            None
+        };
+        (draws, ifc_root)
+    }
+
+    let (control_draws, _) = build(false);
+    let (wrapped_draws, wrapper_ifc_root) = build(true);
+
+    assert_eq!(
+        wrapped_draws, control_draws,
+        "a block box behind a display:contents wrapper must produce the same \
+         draw operations as the same box without the wrapper \
+         (wrapped={wrapped_draws}, control={control_draws})"
+    );
+
+    // The mechanism: the wrapper wraps a block, so it is not IFC content.
+    assert_eq!(
+        wrapper_ifc_root, None,
+        "a display:contents wrapper holding block content must not be marked \
+         as IFC content — paint skips every node whose ifc_root is set"
+    );
+}
+
+/// The same guarantee as `test_block_content_behind_display_contents_still_paints`,
+/// but for content that becomes block-level *after* the first layout pass.
+///
+/// `ifc_root` is derived state that the marking pass only ever sets, so a
+/// wrapper that legitimately joined the IFC while it was empty (an `if` branch
+/// that starts hidden, a `for` list that starts empty, a reactive component that
+/// first renders nothing) kept that mark forever once real content arrived —
+/// and paint skips every node whose `ifc_root` is set.
+#[test]
+fn test_block_appended_into_a_marked_contents_wrapper_still_paints() {
+    /// `<div width:400px><!--show--><div display:contents/></div>`, laid out
+    /// once while the wrapper is empty, then given a 100x40 block child.
+    /// Returns (draw op count after the second pass, wrapper's `ifc_root`).
+    fn build(wrapped: bool) -> (usize, Option<usize>) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let container = doc.create_element("div");
+        doc.set_attribute(container, "style", "width: 400px");
+        doc.append_child(body, container);
+        let marker = doc.create_comment("show");
+        doc.append_child(container, marker);
+
+        let parent = if wrapped {
+            let wrapper = doc.create_element("div");
+            doc.set_attribute(wrapper, "style", "display: contents");
+            doc.append_child(container, wrapper);
+            wrapper
+        } else {
+            container
+        };
+
+        // First pass: the wrapper holds nothing at all.
+        doc.resolve_layout(800.0, 600.0);
+
+        // Second pass: the branch turns on and renders a block.
+        let painted = doc.create_element("div");
+        doc.set_attribute(
+            painted,
+            "style",
+            "width: 100px; height: 40px; background-color: red",
+        );
+        doc.append_child(parent, painted);
+        doc.resolve_layout(800.0, 600.0);
+
+        let l = doc.tree.get(painted.0).unwrap().layout;
+        assert_eq!((l.width, l.height), (100.0, 40.0), "block box laid out");
+
+        let mut painter = VelloPainter::new();
+        paint(&mut doc, &mut painter);
+        let draws = painter.scene().encoding().draw_tags.len();
+        let ifc_root = if wrapped {
+            doc.tree.get(parent.0).unwrap().ifc_root
+        } else {
+            None
+        };
+        (draws, ifc_root)
+    }
+
+    let (control_draws, _) = build(false);
+    let (wrapped_draws, wrapper_ifc_root) = build(true);
+
+    assert_eq!(
+        wrapper_ifc_root, None,
+        "a wrapper that was IFC content while empty must lose that mark once it \
+         holds a block — paint skips every node whose ifc_root is set"
+    );
+    assert_eq!(
+        wrapped_draws, control_draws,
+        "a block box appended into a display:contents wrapper after the first \
+         layout must paint like the same box with no wrapper \
+         (wrapped={wrapped_draws}, control={control_draws})"
+    );
+}
+
+/// Inline content that follows a block-holding `display:contents` wrapper must
+/// not be marked as this IFC's content: `walk_inline_children` stops building
+/// the line at that wrapper, so anything marked after it would be skipped by
+/// paint *and* never drawn by the IFC — invisible in both directions.
+#[test]
+fn test_inline_after_a_block_wrapper_is_not_orphaned() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    let container = doc.create_element("div");
+    doc.set_attribute(container, "style", "width: 400px");
+    doc.append_child(body, container);
+    let marker = doc.create_comment("for");
+    doc.append_child(container, marker);
+
+    // A contents wrapper holding a block box.
+    let block_wrapper = doc.create_element("div");
+    doc.set_attribute(block_wrapper, "style", "display: contents");
+    doc.append_child(container, block_wrapper);
+    let block = doc.create_element("div");
+    doc.set_attribute(block, "style", "width: 100px; height: 40px");
+    doc.append_child(block_wrapper, block);
+
+    // A contents wrapper holding inline text, *after* it.
+    let text_wrapper = doc.create_element("span");
+    doc.set_attribute(text_wrapper, "style", "display: contents");
+    doc.append_child(container, text_wrapper);
+    let text = doc.create_text("TRAILING");
+    doc.append_child(text_wrapper, text);
+
+    doc.resolve_layout(800.0, 600.0);
+
+    let ifc_text = doc
+        .tree
+        .get(container.0)
+        .unwrap()
+        .text_layout
+        .as_ref()
+        .map(|l| l.text_content.clone())
+        .unwrap_or_default();
+
+    // Either the IFC draws the text, or the text keeps its own box — but it
+    // must never be both skipped by paint and absent from the inline layout.
+    if !ifc_text.contains("TRAILING") {
+        assert_eq!(
+            doc.tree.get(text.0).unwrap().ifc_root,
+            None,
+            "text the IFC does not lay out must not be marked as IFC content — \
+             paint would skip it and nothing would ever draw it"
+        );
+        assert_eq!(
+            doc.tree.get(text_wrapper.0).unwrap().ifc_root,
+            None,
+            "the wrapper around that text must not be marked either"
+        );
+    }
+}
+
+/// A `display:none` child generates no box, so it must not change how the
+/// surrounding `display:contents` wrapper is classified.
+///
+/// `display:none` resolves to `DisplayMode::Block`, so the scan that decides
+/// whether a wrapper is transparent to the enclosing inline formatting context
+/// counted a hidden child as a block-level box — and a wrapper whose only
+/// "block" is hidden was pushed out of the IFC. Adding a hidden sibling next to
+/// inline text is a no-op in CSS; it must be a no-op here too.
+#[test]
+fn test_a_display_none_child_does_not_push_a_contents_wrapper_out_of_the_ifc() {
+    /// `<div width:400px><!--show--><span display:contents>VISIBLE[hidden?]</span></div>`.
+    /// Returns (the wrapper's `ifc_root`, the container IFC's laid-out text).
+    fn build(with_hidden_child: bool) -> (Option<usize>, String) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let container = doc.create_element("div");
+        doc.set_attribute(container, "style", "width: 400px");
+        doc.append_child(body, container);
+        let marker = doc.create_comment("show");
+        doc.append_child(container, marker);
+
+        let wrapper = doc.create_element("span");
+        doc.set_attribute(wrapper, "style", "display: contents");
+        doc.append_child(container, wrapper);
+        let text = doc.create_text("VISIBLE");
+        doc.append_child(wrapper, text);
+
+        if with_hidden_child {
+            let hidden = doc.create_element("div");
+            doc.set_attribute(hidden, "style", "display: none");
+            doc.append_child(wrapper, hidden);
+        }
+
+        doc.resolve_layout(800.0, 600.0);
+
+        let ifc_text = doc
+            .tree
+            .get(container.0)
+            .unwrap()
+            .text_layout
+            .as_ref()
+            .map(|l| l.text_content.clone())
+            .unwrap_or_default();
+        (doc.tree.get(wrapper.0).unwrap().ifc_root, ifc_text)
+    }
+
+    let (control_root, control_text) = build(false);
+    let (hidden_root, hidden_text) = build(true);
+
+    assert!(
+        control_text.contains("VISIBLE"),
+        "precondition: the inline text is laid out by the container's IFC \
+         (got {control_text:?})"
+    );
+    assert_eq!(
+        hidden_root, control_root,
+        "a display:contents wrapper's IFC classification must not change when a \
+         display:none child — which generates no box at all — is added"
+    );
+    assert_eq!(
+        hidden_text, control_text,
+        "the inline text beside a hidden sibling must still be laid out by the \
+         same inline formatting context"
+    );
 }

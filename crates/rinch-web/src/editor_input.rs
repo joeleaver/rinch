@@ -34,11 +34,12 @@
 //! `compositionstart` events, so we keep one shared, focused, off-screen `<textarea>`
 //! ([`ensure_capture_target`]) as the browser's idea of the focused editable: focusing
 //! it on editor-focus makes those native events fire (they target it), and makes focus
-//! browser-native so keys can't route to the wrong control. It is never shown and never
-//! holds document text — typed characters are consumed (and `preventDefault`ed) by the
-//! keydown handler before the textarea sees them; only IME composition flows through it,
-//! and its value is cleared on commit. This mirrors the CodeMirror / ProseMirror
-//! hidden-input technique.
+//! browser-native so keys can't route to the wrong control. It is never shown, and it
+//! holds exactly one textblock — the caret's — mirrored there so a soft keyboard has
+//! real text to replace (see [`sync_mirror`]); the document itself never lives in it.
+//! Typed characters from a *physical* keyboard are consumed (and `preventDefault`ed) by
+//! the keydown handler before the textarea sees them. This mirrors the CodeMirror /
+//! ProseMirror hidden-input technique.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -49,7 +50,9 @@ use wasm_bindgen::prelude::*;
 use rinch_editor_core::{CursorMotion, Pos, Selection};
 use rinch_editor_view::{EditorHandle, registry};
 
-use crate::event_delegation::compute_byte_offset_in_block;
+use crate::event_delegation::{
+    compute_byte_offset_in_block, drag_machine, utf16_offset_to_utf8_bytes,
+};
 use crate::web_document::{find_text_node_at_byte_offset, get_nid, node_by_nid};
 
 thread_local! {
@@ -80,11 +83,6 @@ thread_local! {
     /// than a scroll, and focuses the capture target (see `handle_touch_tap`).
     static TOUCH_TAP: Cell<Option<(i32, f32, f32)>> = const { Cell::new(None) };
 }
-
-/// How far (CSS px) a touch/pen contact may drift between `pointerdown` and `pointerup`
-/// and still count as a tap. Past this it was a scroll, and raising the on-screen
-/// keyboard for a scroll would be maddening.
-const TAP_SLOP: f32 = 10.0;
 
 fn focused_editor() -> Option<usize> {
     FOCUSED_EDITOR.with(|c| c.get())
@@ -211,26 +209,19 @@ fn byte_of_char(text: &str, i: usize) -> usize {
     text.char_indices().nth(i).map_or(text.len(), |(b, _)| b)
 }
 
-/// Length of `text` in UTF-16 code units — the unit `selectionStart`/`selectionEnd` use.
-fn utf16_len(text: &str) -> u32 {
-    text.chars().map(|c| c.len_utf16() as u32).sum()
-}
-
-/// The byte offset in `text` of UTF-16 code-unit offset `units` — the inverse of
-/// [`utf16_len`], for reading `selectionStart`/`selectionEnd` back off the textarea.
-/// An offset inside a surrogate pair rounds down to that character's start.
-fn byte_of_utf16(text: &str, units: u32) -> usize {
-    let mut seen = 0u32;
-    for (byte, ch) in text.char_indices() {
-        // `units` lands on this character's start, or part-way into it (an offset
-        // between a surrogate pair's halves). Either way this character's start is the
-        // nearest real boundary.
-        if seen + (ch.len_utf16() as u32) > units {
-            return byte;
-        }
-        seen += ch.len_utf16() as u32;
-    }
-    text.len()
+/// The number of UTF-16 code units — the unit `selectionStart`/`selectionEnd` count in
+/// — in `text` up to UTF-8 byte offset `byte`.
+///
+/// Deliberately walks rather than slicing `&text[..byte]`: `byte` comes from the *model*
+/// (`EditorHandle::caret_address`) while `text` comes from the *DOM*, and the two are
+/// only equal as long as nothing renders extra text inside a textblock. A slice at a
+/// non-boundary offset panics, which in wasm takes the whole page down; counting whole
+/// characters instead degrades to a caret at the nearest boundary.
+fn utf16_len_upto(text: &str, byte: usize) -> u32 {
+    text.char_indices()
+        .take_while(|(b, _)| *b < byte)
+        .map(|(_, c)| c.len_utf16() as u32)
+        .sum()
 }
 
 /// The minimal replacement turning `base` into `now`: `(from, to, inserted)` where
@@ -261,6 +252,19 @@ fn text_diff(base: &str, now: &str) -> Option<(usize, usize, String)> {
     Some((prefix, b.len() - suffix, inserted))
 }
 
+/// Empty the capture textarea and drop the mirror **together**.
+///
+/// The two must never disagree. A field emptied behind a live mirror is read by the next
+/// [`reconcile_mirror`] as "the user deleted the whole block", and that reconcile is
+/// applied to the document — so every path that clears the field clears the mirror with
+/// it, and vice versa.
+fn clear_mirror(ta: &web_sys::HtmlTextAreaElement) {
+    MIRROR.with(|m| *m.borrow_mut() = None);
+    if !ta.value().is_empty() {
+        ta.set_value("");
+    }
+}
+
 /// Rewrite the capture textarea to mirror the caret's textblock, and remember what we
 /// wrote. A no-op mid-composition — the IME owns the field until it commits.
 fn sync_mirror(handle: &EditorHandle) {
@@ -273,21 +277,22 @@ fn sync_mirror(handle: &EditorHandle) {
     let selection = handle.selection();
     let Some((textblock_nid, head_byte)) = handle.caret_address(selection.head()) else {
         // No text caret (a node selection, or an unmounted editor): nothing to mirror.
-        MIRROR.with(|m| *m.borrow_mut() = None);
-        if !ta.value().is_empty() {
-            ta.set_value("");
-        }
+        clear_mirror(&ta);
         return;
     };
     let Some(block) = node_by_nid(textblock_nid) else {
+        // The caret's block isn't in the host node map (mid-unmount). Leaving the old
+        // mirror standing would let the next `input` diff live text against a field
+        // that no longer holds it, so drop both rather than half of the pair.
+        clear_mirror(&ta);
         return;
     };
     let text = block.text_content().unwrap_or_default();
-    let head = utf16_len(&text[..head_byte.min(text.len())]);
+    let head = utf16_len_upto(&text, head_byte);
     // Mirror the selection too, but only when it lies in this same block — a
     // cross-block selection has no honest representation in one block's text.
     let anchor = match handle.caret_address(selection.anchor()) {
-        Some((nid, byte)) if nid == textblock_nid => utf16_len(&text[..byte.min(text.len())]),
+        Some((nid, byte)) if nid == textblock_nid => utf16_len_upto(&text, byte),
         _ => head,
     };
     let sel = (anchor.min(head), anchor.max(head));
@@ -324,6 +329,19 @@ fn reconcile_mirror(handle: &EditorHandle) -> bool {
     let Some(mirror) = MIRROR.with(|m| m.borrow().clone()) else {
         return false;
     };
+    // The mirror is only refreshed from `refresh_caret`, so a document change that
+    // arrives by another route — `load_html`, a collab delta, a toolbar command with no
+    // pointer event behind it — leaves it describing text the block no longer holds.
+    // Splicing a diff at those offsets would corrupt the document, so fail closed and
+    // rebuild the mirror from the live block instead.
+    if node_by_nid(mirror.textblock_nid)
+        .and_then(|n| n.text_content())
+        .as_deref()
+        != Some(mirror.text.as_str())
+    {
+        sync_mirror(handle);
+        return false;
+    }
     let Some((from_char, to_char, inserted)) = text_diff(&mirror.text, &ta.value()) else {
         return false;
     };
@@ -335,6 +353,10 @@ fn reconcile_mirror(handle: &EditorHandle) -> bool {
     ) else {
         return false;
     };
+    // Remember where the user actually was: moving the selection is how the edit is
+    // targeted, but an edit that then declines to apply must not leave the caret parked
+    // on the diff range it never touched.
+    let before = handle.selection();
     handle.set_selection(Selection::text(from, to));
     let applied = if inserted.is_empty() {
         handle.command("deleteSelection")
@@ -345,6 +367,8 @@ fn reconcile_mirror(handle: &EditorHandle) -> bool {
     };
     if applied {
         adopt_field_caret(handle, &ta, mirror.textblock_nid);
+    } else {
+        handle.set_selection(before);
     }
     applied
 }
@@ -365,8 +389,8 @@ fn adopt_field_caret(
     let start = ta.selection_start().ok().flatten().unwrap_or(0);
     let end = ta.selection_end().ok().flatten().unwrap_or(start);
     let (Some(from), Some(to)) = (
-        handle.pos_at(textblock_nid, byte_of_utf16(&text, start)),
-        handle.pos_at(textblock_nid, byte_of_utf16(&text, end)),
+        handle.pos_at(textblock_nid, utf16_offset_to_utf8_bytes(&text, start)),
+        handle.pos_at(textblock_nid, utf16_offset_to_utf8_bytes(&text, end)),
     ) else {
         return;
     };
@@ -417,7 +441,10 @@ fn focus_capture_target(doc: &web_sys::Document) {
         let opts = web_sys::FocusOptions::new();
         opts.set_prevent_scroll(true);
         let _ = ta.focus_with_options(&opts);
-        ta.set_value("");
+        // Start from an empty field; the `refresh_caret` that ends every focusing
+        // `handle_mousedown` fills it from the caret's block. Clear the mirror with it —
+        // an emptied field behind a live mirror reads as "the block was deleted".
+        clear_mirror(&ta);
     }
 }
 
@@ -690,6 +717,17 @@ fn delete_to(handle: &EditorHandle, motion: CursorMotion) -> bool {
     if handle.selection().is_empty() {
         handle.move_cursor(motion, true);
     }
+    if handle.selection().is_empty() {
+        // The motion had nowhere to go: word and model-line motions are *within* a
+        // textblock, so at a block edge they resolve to the caret's own position and
+        // leave the selection collapsed. A word/line delete there means what Backspace
+        // and Delete mean — join with the adjacent block. Without this the gesture is
+        // swallowed silently, because the `beforeinput` was already `preventDefault`ed.
+        return handle.command(match motion {
+            CursorMotion::WordLeft | CursorMotion::LineStart => "deleteCharBackward",
+            _ => "deleteCharForward",
+        });
+    }
     handle.command("deleteSelection")
 }
 
@@ -706,26 +744,30 @@ fn on_before_input(event: &web_sys::InputEvent) {
     let Some((_, handle)) = focused_handle() else {
         return;
     };
-    let intent = edit_intent(&event.input_type());
-    if intent == EditIntent::Reconcile {
+    let handled = match edit_intent(&event.input_type()) {
         // Let it land in the textarea; `on_input` diffs the mirror and applies it.
-        return;
-    }
-    if intent == EditIntent::Ignore {
+        EditIntent::Reconcile => return,
         // Cancel it anyway: an edit we are not applying must not desync the mirror
         // from the document either.
-        event.prevent_default();
-        return;
-    }
-    event.prevent_default();
-    let handled = match intent {
-        EditIntent::InsertText => match event.data() {
-            Some(text) if !text.is_empty() => handle.insert_text(&text),
-            _ => false,
-        },
-        EditIntent::Command(name) => handle.command(name),
-        EditIntent::DeleteTo(motion) => delete_to(&handle, motion),
-        EditIntent::Reconcile | EditIntent::Ignore => false,
+        EditIntent::Ignore => {
+            event.prevent_default();
+            return;
+        }
+        EditIntent::InsertText => {
+            event.prevent_default();
+            match event.data() {
+                Some(text) if !text.is_empty() => handle.insert_text(&text),
+                _ => false,
+            }
+        }
+        EditIntent::Command(name) => {
+            event.prevent_default();
+            handle.command(name)
+        }
+        EditIntent::DeleteTo(motion) => {
+            event.prevent_default();
+            delete_to(&handle, motion)
+        }
     };
     // Typing is a caret move as much as an edit: drop any vertical-motion goal column
     // so a following Up/Down starts from where the text actually landed.
@@ -747,11 +789,10 @@ fn on_input() {
         return;
     }
     let Some((_, handle)) = focused_handle() else {
-        // Nothing to apply it to; just don't leave text for a later `copy` to pick up.
-        if let Some(ta) = capture_target()
-            && !ta.value().is_empty()
-        {
-            ta.set_value("");
+        // Nothing to apply it to; just don't leave text for a later `copy` to pick up
+        // (and drop the mirror with it, so nothing later diffs against a cleared field).
+        if let Some(ta) = capture_target() {
+            clear_mirror(&ta);
         }
         return;
     };
@@ -806,7 +847,7 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
         && let Some(sel) = handle.node_selection_at_host(leaf_nid)
     {
         handle.set_selection(sel);
-        registry::end_drag();
+        registry::end_drag(None);
         refresh_caret();
         return true;
     }
@@ -826,7 +867,7 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
         && let Some(clicked) = handle.pos_at(hit.textblock_nid, hit.byte)
         && handle.toggle_task_checked_at(clicked.0)
     {
-        registry::end_drag();
+        registry::end_drag(None);
         refresh_caret();
         return true;
     }
@@ -838,20 +879,20 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
         match event.detail() {
             2 => {
                 handle.select_word_at(clicked);
-                registry::end_drag();
+                registry::end_drag(None);
             }
             n if n >= 3 => {
                 handle.select_block_at(clicked);
-                registry::end_drag();
+                registry::end_drag(None);
             }
             _ if event.shift_key() => {
                 let anchor = handle.selection().anchor();
                 handle.set_selection(Selection::text(anchor, clicked));
-                registry::begin_drag(container_nid, anchor.0);
+                registry::begin_drag(None, container_nid, anchor.0);
             }
             _ => {
                 handle.set_selection(Selection::cursor(clicked));
-                registry::begin_drag(container_nid, clicked.0);
+                registry::begin_drag(None, container_nid, clicked.0);
             }
         }
     }
@@ -861,13 +902,13 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
 
 /// Handle a `mousemove` while a drag-select is active. Returns whether a drag was live.
 fn handle_mousemove(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> bool {
-    let Some((container_nid, anchor)) = registry::drag_anchor() else {
+    let Some((container_nid, anchor)) = registry::drag_anchor(None) else {
         return false;
     };
     // If the primary button is no longer held (a mouseup was missed — e.g. released
     // outside the window), the drag is stale: end it instead of following the cursor.
     if event.buttons() & 1 == 0 {
-        registry::end_drag();
+        registry::end_drag(None);
         return false;
     }
     let Some(handle) = registry::editor_for(container_nid) else {
@@ -1165,9 +1206,15 @@ fn pointer_targets_editor(event: &web_sys::PointerEvent) -> bool {
 }
 
 /// Whether a contact that went down at `start` and came up at `end` was a tap rather
-/// than a scroll — both axes within [`TAP_SLOP`].
+/// than a scroll.
+///
+/// Defers to the same classifier the generic pointer delegation uses for its deferred
+/// touch clicks (`drag_machine::pending_click_is_scroll`, radial within
+/// `TOUCH_MOVE_SLOP`), so a gesture cannot be a tap for the editor and a scroll for the
+/// rest of the page — which is what a separate per-axis threshold here would produce for
+/// a diagonal drift.
 fn is_tap(start: (f32, f32), end: (f32, f32)) -> bool {
-    (end.0 - start.0).abs() <= TAP_SLOP && (end.1 - start.1).abs() <= TAP_SLOP
+    !drag_machine::pending_click_is_scroll(end.0 - start.0, end.1 - start.1)
 }
 
 /// Record a touch/pen contact that went down inside an editor, so its release can be
@@ -1195,8 +1242,8 @@ fn note_touch_down(event: &web_sys::PointerEvent) {
 /// the same handler here, from the real touch event, makes the tap self-sufficient; the
 /// compatibility `mousedown` that may follow is idempotent (same point, same caret).
 ///
-/// A contact that drifted past [`TAP_SLOP`] was a scroll, not a tap, and is dropped —
-/// panning a manuscript must not pop the keyboard.
+/// A contact that drifted past the shared touch slop was a scroll, not a tap, and is
+/// dropped — panning a manuscript must not pop the keyboard.
 fn handle_touch_tap(event: &web_sys::PointerEvent, doc: &web_sys::Document) {
     // Read before clearing, and clear only for the contact we recorded: a second
     // finger's release must not discard the tap the first one is still making.
@@ -1219,11 +1266,11 @@ fn handle_touch_tap(event: &web_sys::PointerEvent, doc: &web_sys::Document) {
     handle_mousedown(event.as_ref(), doc);
     // Drag-select follows `mousemove` with a button held — unreachable from touch — so
     // never leave a touch tap's anchor armed behind it.
-    registry::end_drag();
+    registry::end_drag(None);
 }
 
 /// Add a capture-phase `document` listener leaked for the page lifetime.
-fn add_capture<E: JsCast + 'static>(
+pub(crate) fn add_capture<E: JsCast + 'static>(
     doc: &web_sys::Document,
     name: &str,
     handler: impl Fn(E) + 'static,
@@ -1341,8 +1388,15 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
     add_capture(
         browser_doc,
         "pointercancel",
-        move |_e: web_sys::PointerEvent| {
-            TOUCH_TAP.with(|c| c.set(None));
+        move |e: web_sys::PointerEvent| {
+            // Only the recorded contact's own cancellation ends its tap — matching the
+            // pointer-id check in `handle_touch_tap`. A second finger's cancel (or any
+            // unrelated pointercancel on the page) must not discard a live tap.
+            TOUCH_TAP.with(|c| {
+                if c.get().is_some_and(|(id, _, _)| id == e.pointer_id()) {
+                    c.set(None);
+                }
+            });
         },
     );
     let doc = browser_doc.clone();
@@ -1352,7 +1406,7 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
         }
     });
     add_capture(browser_doc, "mouseup", move |_e: web_sys::MouseEvent| {
-        registry::end_drag();
+        registry::end_drag(None);
     });
 
     // Bubble-phase refresh: after an *outside* click that wasn't consumed in capture
@@ -1534,6 +1588,20 @@ mod tests {
     }
 
     #[test]
+    fn an_emptied_field_behind_a_live_mirror_reads_as_deleting_the_block() {
+        // Why `clear_mirror` empties the field and drops the mirror *together*, and why
+        // `reconcile_mirror` re-syncs when the block no longer holds `mirror.text`:
+        // a field cleared behind a standing mirror is indistinguishable, at this layer,
+        // from the user selecting the paragraph and hitting Backspace. The diff is
+        // honest — there is no guard to add here — so the pairing has to hold upstream,
+        // in the only two places that write the field.
+        assert_eq!(
+            diff("a whole paragraph of prose", ""),
+            Some((0, 26, String::new()))
+        );
+    }
+
+    #[test]
     fn the_prefix_and_suffix_scans_never_overlap() {
         // A repeated run is where a naive two-ended scan double-counts and reports a
         // negative-width range. "aaa" → "aa" must be one deletion, not two.
@@ -1566,33 +1634,51 @@ mod tests {
 
     #[test]
     fn utf16_lengths_are_what_the_textarea_counts_in() {
-        assert_eq!(utf16_len("abc"), 3);
-        assert_eq!(utf16_len("café"), 4);
+        assert_eq!(utf16_len_upto("abc", 3), 3);
+        assert_eq!(utf16_len_upto("café", "café".len()), 4);
         // Astral characters are surrogate pairs — two units, one char.
-        assert_eq!(utf16_len("👋"), 2);
+        assert_eq!(utf16_len_upto("👋", 4), 2);
+        // Partial counts: `é` starts at byte 3 and is two bytes wide.
+        assert_eq!(utf16_len_upto("café!", 3), 3);
+        assert_eq!(utf16_len_upto("café!", 5), 4);
+    }
+
+    #[test]
+    fn a_byte_offset_off_a_char_boundary_never_panics() {
+        // The model supplies the byte offset and the DOM supplies the text; if they
+        // ever disagree, counting must degrade, not blow the page up on a bad slice.
+        // Byte 4 is inside the emoji: it counts as the whole character, not a panic.
+        assert_eq!(utf16_len_upto("hi 👋!", 4), 5);
+        assert_eq!(utf16_len_upto("hi 👋!", 99), 6); // past the end
+        assert_eq!(utf16_len_upto("hi 👋!", 0), 0);
     }
 
     #[test]
     fn a_textarea_caret_offset_converts_back_to_a_byte_offset() {
-        assert_eq!(byte_of_utf16("abc", 0), 0);
-        assert_eq!(byte_of_utf16("abc", 3), 3);
+        // The shared converter from `event_delegation` — the same one the pointer
+        // hit-test uses to read a browser selection offset.
+        assert_eq!(utf16_offset_to_utf8_bytes("abc", 0), 0);
+        assert_eq!(utf16_offset_to_utf8_bytes("abc", 3), 3);
         // `é` is one UTF-16 unit but two bytes.
-        assert_eq!(byte_of_utf16("café!", 4), 5);
-        // `👋` is two UTF-16 units and four bytes: offset 3 is past it.
-        assert_eq!(byte_of_utf16("hi 👋!", 3), 3);
-        assert_eq!(byte_of_utf16("hi 👋!", 5), 7);
-        // Inside a surrogate pair rounds down to the character's start, and past the
-        // end clamps — a selection read after the field moved on must not panic.
-        assert_eq!(byte_of_utf16("hi 👋!", 4), 3);
-        assert_eq!(byte_of_utf16("hi 👋!", 99), "hi 👋!".len());
+        assert_eq!(utf16_offset_to_utf8_bytes("café!", 4), 5);
+        // `👋` is two UTF-16 units and four bytes: offset 3 is before it.
+        assert_eq!(utf16_offset_to_utf8_bytes("hi 👋!", 3), 3);
+        assert_eq!(utf16_offset_to_utf8_bytes("hi 👋!", 5), 7);
+        // Past the end clamps — a selection read after the field moved on must not
+        // panic.
+        assert_eq!(utf16_offset_to_utf8_bytes("hi 👋!", 99), "hi 👋!".len());
     }
 
     #[test]
     fn utf16_offsets_round_trip_through_bytes() {
         for text in ["", "plain", "café", "hi 👋 there", "aaa"] {
-            let units = utf16_len(text);
-            assert_eq!(byte_of_utf16(text, units), text.len(), "{text:?}");
-            assert_eq!(byte_of_utf16(text, 0), 0, "{text:?}");
+            let units = utf16_len_upto(text, text.len());
+            assert_eq!(
+                utf16_offset_to_utf8_bytes(text, units),
+                text.len(),
+                "{text:?}"
+            );
+            assert_eq!(utf16_offset_to_utf8_bytes(text, 0), 0, "{text:?}");
         }
     }
 
@@ -1603,7 +1689,10 @@ mod tests {
         assert!(is_tap((100.0, 200.0), (100.0, 200.0)));
         // Fingers wobble; a few px is still a tap.
         assert!(is_tap((100.0, 200.0), (104.0, 197.0)));
-        assert!(is_tap((100.0, 200.0), (100.0 + TAP_SLOP, 200.0 - TAP_SLOP)));
+        // Right up to the slop on one axis is still a tap.
+        let slop = drag_machine::TOUCH_MOVE_SLOP;
+        assert!(is_tap((100.0, 200.0), (100.0 + slop, 200.0)));
+        assert!(is_tap((100.0, 200.0), (100.0, 200.0 - slop)));
         // A scroll must not raise the keyboard, in either direction or axis.
         assert!(!is_tap((100.0, 200.0), (100.0, 260.0)));
         assert!(!is_tap((100.0, 200.0), (100.0, 140.0)));

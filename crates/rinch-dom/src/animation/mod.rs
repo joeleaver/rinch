@@ -84,7 +84,14 @@ pub fn start_animations(
             let keyframes_anim = stylist.lookup_keyframes(&atom, element);
 
             if let Some(kf_anim) = keyframes_anim {
-                let stops = keyframes::extract_keyframe_stops(kf_anim, base_style, guard);
+                // A `color: currentcolor` stop inherits the parent's colour.
+                let parent_color = tree
+                    .get(node_id)
+                    .and_then(|n| n.parent)
+                    .and_then(|parent| tree.get(parent))
+                    .and_then(|parent| parent.computed_style.color);
+                let stops =
+                    keyframes::extract_keyframe_stops(kf_anim, base_style, parent_color, guard);
 
                 if !stops.is_empty() {
                     new_active.push(ActiveAnimation {
