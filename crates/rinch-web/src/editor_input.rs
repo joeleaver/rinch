@@ -424,7 +424,7 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
         && let Some(sel) = handle.node_selection_at_host(leaf_nid)
     {
         handle.set_selection(sel);
-        registry::end_drag();
+        registry::end_drag(None);
         refresh_caret();
         return true;
     }
@@ -444,7 +444,7 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
         && let Some(clicked) = handle.pos_at(hit.textblock_nid, hit.byte)
         && handle.toggle_task_checked_at(clicked.0)
     {
-        registry::end_drag();
+        registry::end_drag(None);
         refresh_caret();
         return true;
     }
@@ -456,20 +456,20 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
         match event.detail() {
             2 => {
                 handle.select_word_at(clicked);
-                registry::end_drag();
+                registry::end_drag(None);
             }
             n if n >= 3 => {
                 handle.select_block_at(clicked);
-                registry::end_drag();
+                registry::end_drag(None);
             }
             _ if event.shift_key() => {
                 let anchor = handle.selection().anchor();
                 handle.set_selection(Selection::text(anchor, clicked));
-                registry::begin_drag(container_nid, anchor.0);
+                registry::begin_drag(None, container_nid, anchor.0);
             }
             _ => {
                 handle.set_selection(Selection::cursor(clicked));
-                registry::begin_drag(container_nid, clicked.0);
+                registry::begin_drag(None, container_nid, clicked.0);
             }
         }
     }
@@ -479,13 +479,13 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
 
 /// Handle a `mousemove` while a drag-select is active. Returns whether a drag was live.
 fn handle_mousemove(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> bool {
-    let Some((container_nid, anchor)) = registry::drag_anchor() else {
+    let Some((container_nid, anchor)) = registry::drag_anchor(None) else {
         return false;
     };
     // If the primary button is no longer held (a mouseup was missed — e.g. released
     // outside the window), the drag is stale: end it instead of following the cursor.
     if event.buttons() & 1 == 0 {
-        registry::end_drag();
+        registry::end_drag(None);
         return false;
     }
     let Some(handle) = registry::editor_for(container_nid) else {
@@ -897,7 +897,7 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
         }
     });
     add_capture(browser_doc, "mouseup", move |_e: web_sys::MouseEvent| {
-        registry::end_drag();
+        registry::end_drag(None);
     });
 
     // Bubble-phase refresh: after an *outside* click that wasn't consumed in capture

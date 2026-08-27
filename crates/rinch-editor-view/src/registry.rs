@@ -22,24 +22,55 @@ thread_local! {
     /// documents on one thread (two embedded `RinchContext`s, or two desktop
     /// windows) can both hold an editor at the same container id (issue #134).
     static EDITORS: RefCell<Vec<(u64, usize, EditorHandle)>> = const { RefCell::new(Vec::new()) };
-    /// An in-progress pointer drag-select: `(container id, anchor position)`.
-    static DRAG: RefCell<Option<(usize, usize)>> = const { RefCell::new(None) };
+    /// An in-progress pointer drag-select: `(doc, container id, anchor
+    /// position)`. Keyed by document for the same reason [`EDITORS`] is —
+    /// container ids are per-document slab indices, and a thread can pump two
+    /// documents' pointer streams through this one slot (issue #139).
+    static DRAG: RefCell<Option<(Option<u64>, usize, usize)>> = const { RefCell::new(None) };
 }
 
-/// Begin a pointer drag-select at `anchor` (a `Pos.0`) in editor `container`.
-pub fn begin_drag(container: usize, anchor: usize) {
-    DRAG.with(|d| *d.borrow_mut() = Some((container, anchor)));
+/// Whether a drag-select owned by `owner` may be read or ended while `caller`'s
+/// events are being dispatched (issue #139).
+///
+/// Permissive, mirroring `ActiveDrag::is_foreign` in rinch-core: `None` on
+/// either side means "no document in particular", and only two `Some` keys that
+/// differ are refused. rinch-web passes `None` throughout — one page, one
+/// pointer stream, one mouseup listener that must be able to end whatever is in
+/// flight.
+fn same_doc(owner: Option<u64>, caller: Option<u64>) -> bool {
+    !matches!((owner, caller), (Some(a), Some(b)) if a != b)
 }
 
-/// The active drag-select `(container id, anchor position)`, if a drag is in
-/// progress.
-pub fn drag_anchor() -> Option<(usize, usize)> {
-    DRAG.with(|d| *d.borrow())
+/// Begin a pointer drag-select at `anchor` (a `Pos.0`) in editor `container` of
+/// the document `doc` (`None` for a runtime with a single page-wide pointer
+/// stream — see [`drag_anchor`]).
+pub fn begin_drag(doc: Option<u64>, container: usize, anchor: usize) {
+    DRAG.with(|d| *d.borrow_mut() = Some((doc, container, anchor)));
 }
 
-/// End any in-progress pointer drag-select.
-pub fn end_drag() {
-    DRAG.with(|d| *d.borrow_mut() = None);
+/// The active drag-select `(container id, anchor position)` for the document
+/// `doc`, if one is in progress there.
+///
+/// Answers `None` for a drag-select armed by a *different* document, so a second
+/// `RinchApp` on the same thread (a DevTools window, a second embedded context)
+/// neither extends nor reads the first one's selection.
+pub fn drag_anchor(doc: Option<u64>) -> Option<(usize, usize)> {
+    DRAG.with(|d| {
+        d.borrow()
+            .filter(|(owner, _, _)| same_doc(*owner, doc))
+            .map(|(_, container, anchor)| (container, anchor))
+    })
+}
+
+/// End any in-progress pointer drag-select **owned by `doc`**. Another
+/// document's drag-select is left alone: its mouseup has not happened yet.
+pub fn end_drag(doc: Option<u64>) {
+    DRAG.with(|d| {
+        let mut slot = d.borrow_mut();
+        if slot.is_some_and(|(owner, _, _)| same_doc(owner, doc)) {
+            *slot = None;
+        }
+    });
 }
 
 /// Register `handle` under its document's `doc_key` and `container_id`
@@ -144,5 +175,65 @@ pub fn collab_receive_for(container_id: usize, delta: &[u8]) -> bool {
     match editor_for(container_id) {
         Some(handle) => handle.collab_receive(delta),
         None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The drag-select anchor is per-document (issue #139).
+    ///
+    /// Container ids are per-document slab indices, so two documents on one
+    /// thread — a desktop window and its DevTools panel, two embedded
+    /// `RinchContext`s — routinely hold editors at the *same* container id.
+    /// Unkeyed, B applies A's anchor to B's own document, and any mouseup in B
+    /// silently ends the drag-select the user is still making in A.
+    #[test]
+    fn a_drag_select_belongs_to_the_document_that_began_it() {
+        let (dk_a, dk_b) = (11, 22);
+        end_drag(None); // defensive: the slot is thread-local, but reset it anyway
+
+        begin_drag(Some(dk_a), 7, 3);
+        assert_eq!(
+            drag_anchor(Some(dk_b)),
+            None,
+            "another document must not see A's drag-select"
+        );
+        assert_eq!(
+            drag_anchor(Some(dk_a)),
+            Some((7, 3)),
+            "…while A itself still does"
+        );
+
+        end_drag(Some(dk_b));
+        assert_eq!(
+            drag_anchor(Some(dk_a)),
+            Some((7, 3)),
+            "and B's mouseup must not end A's drag-select"
+        );
+
+        end_drag(Some(dk_a));
+        assert_eq!(drag_anchor(Some(dk_a)), None, "A's own mouseup ends it");
+    }
+
+    /// A runtime with one page-wide pointer stream (rinch-web) passes `None`
+    /// throughout and keeps the old unscoped behaviour: its single document-level
+    /// mouseup listener has no container in hand and must still end whatever is
+    /// in flight.
+    #[test]
+    fn an_unkeyed_drag_select_stays_drivable_by_anyone() {
+        end_drag(None);
+
+        begin_drag(None, 4, 9);
+        assert_eq!(drag_anchor(None), Some((4, 9)));
+        assert_eq!(
+            drag_anchor(Some(11)),
+            Some((4, 9)),
+            "an unowned drag-select is readable by any document"
+        );
+
+        end_drag(None);
+        assert_eq!(drag_anchor(None), None);
     }
 }
