@@ -124,8 +124,14 @@ pub(crate) struct Runtime {
     /// flush. See the module-level "Execution order" docs.
     pub(crate) pending_effects: VecDeque<ObserverId>,
 
-    /// Set for O(1) duplicate check when enqueuing pending effects
-    pub(crate) pending_effects_set: HashSet<ObserverId>,
+    /// Set for O(1) duplicate check when enqueuing pending effects.
+    ///
+    /// Same fast integer hasher as the effect registry
+    /// ([`ObserverIdBuildHasher`](effect::ObserverIdBuildHasher)): this set is
+    /// probed once per enqueue (every observer of every signal write) and once
+    /// per dequeue, which is at least as hot as the registry lookup that hasher
+    /// was written for.
+    pub(crate) pending_effects_set: HashSet<ObserverId, effect::ObserverIdBuildHasher>,
 
     /// Whether we're currently in a batch
     pub(crate) batching: bool,
@@ -163,7 +169,7 @@ impl Runtime {
         Self {
             observer_stack: Vec::new(),
             pending_effects: VecDeque::new(),
-            pending_effects_set: HashSet::new(),
+            pending_effects_set: HashSet::default(),
             batching: false,
             next_id: 0,
             owner_stack: Vec::new(),
@@ -508,8 +514,8 @@ struct MemoSlot {
     inner: Rc<dyn Any>, // Type-erased Rc<MemoInner<T>>
     /// The memo's dirty-marker effect, which holds the *second* strong
     /// reference to the same `MemoInner`. Recorded here because the slot is
-    /// type-erased: freeing a memo has to clear `EFFECTS[observer]` too, and a
-    /// type-erased caller cannot downcast to reach `MemoInner::id`.
+    /// type-erased: freeing a memo has to remove the marker's `EFFECTS` entry
+    /// too, and a type-erased caller cannot downcast to reach `MemoInner::id`.
     observer: ObserverId,
     generation: u32,
 }
@@ -566,7 +572,7 @@ impl MemoStore {
     /// user data whose `Drop` may touch the reactive stores.
     ///
     /// Freeing the slot alone does **not** release the memo. Use
-    /// [`free_memo`], which also clears the marker effect.
+    /// [`free_memo`], which also removes the marker effect's registry entry.
     pub(crate) fn free(&mut self, id: u32, generation: u32) -> Option<(Rc<dyn Any>, ObserverId)> {
         let slot = self.slots.get_mut(id as usize)?;
         if !slot.as_ref().is_some_and(|s| s.generation == generation) {
@@ -595,10 +601,13 @@ pub(crate) fn free_memo(id: u32, generation: u32) {
     else {
         return;
     };
-    let marker = effect::EFFECTS.with(|effects| {
-        let mut effects = effects.borrow_mut();
-        effects.get_mut(observer.0).and_then(|slot| slot.take())
-    });
+    let marker = effect::EFFECTS.with(|effects| effects.borrow_mut().remove(&observer));
+    if let Some(marker) = &marker {
+        // Same reason `dispose_effect` sets it: removal alone only stops *future*
+        // lookups, and an `Rc` handed out by an earlier one can still be in
+        // flight. This is the flag that tells such a run it has been retired.
+        marker.disposed.set(true);
+    }
     drop(marker);
     drop(inner);
 }

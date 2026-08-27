@@ -10,7 +10,10 @@ let name = Signal::new(String::from("Alice"));
 let items = Signal::new(vec![1, 2, 3]);
 ```
 
-Signals can hold any `'static` type. They're cheap — just an index into a global slot map.
+Signals can hold any `'static` type. They're cheap — a `Signal<T>` is an index and a
+generation counter into a thread-local slot map, not a smart pointer. The generation is
+what lets a handle outlive its value safely: a recycled slot carries a generation no
+stale handle holds, so a freed signal is *detected*, never silently confused with a new one.
 
 ## Signal is Copy
 
@@ -65,6 +68,36 @@ count.set(5); // Notifies all subscribers
 count.update(|n| *n += 1);
 items.update(|v| v.push(4));
 ```
+
+## Liveness
+
+A signal created during a render is owned by that render and is freed when it
+goes away (see [Lifetimes](./hooks.md#lifetimes-what-owns-your-state)). Because
+`Signal<T>` is `Copy`, a handle can easily outlive the value:
+
+| Call | On a freed signal |
+|------|-------------------|
+| `get()` / `with()` | **panics** |
+| `set()` / `update()` / `set_if_changed()` | no-op, plus a warning |
+| `try_get()` / `try_with()` | `None` |
+| `is_alive()` | `false` |
+
+Reads assert and writes forgive, because a write can come from somewhere that
+cannot be asked to check — a background thread mid-`send()`, a timer that has not
+fired its last tick yet — while a read has nothing to return.
+
+```rust
+// From a long-lived callback or a worker holding a Copy handle:
+if let Some(n) = count.try_get() {
+    println!("still here: {n}");
+}
+```
+
+`is_alive()` does **not** subscribe the current observer. Liveness is not
+reactive, and tracking it would resurrect the dependency you are trying to drop.
+
+If a signal is deliberately meant to outlive its component, say so explicitly
+with `Signal::new(0).leak()` rather than relying on it accidentally surviving.
 
 ## Automatic Dependency Tracking
 

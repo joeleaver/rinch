@@ -10,6 +10,7 @@ mod taffy_conversion;
 mod text_layout;
 pub mod values;
 
+pub(crate) use from_stylo::color::{color_from_specified, color_from_stylo};
 pub use values::*;
 
 use serde::Serialize;
@@ -312,6 +313,18 @@ impl ComputedStyle {
     /// Get the effective border color for a side (for backwards compat).
     pub fn border_color(&self) -> Option<peniko::Color> {
         self.border_top_color
+    }
+
+    /// Resolve `line-height` to pixels against this style's `font-size`.
+    ///
+    /// `normal` is the 1.2 factor rinch uses everywhere a line box has to be
+    /// sized without Parley metrics (the empty-block floor, `<textarea rows>`).
+    pub fn line_height_px(&self) -> f32 {
+        match self.line_height {
+            LineHeightValue::Normal => self.font_size * 1.2,
+            LineHeightValue::Relative(r) => self.font_size * r,
+            LineHeightValue::Absolute(px) => px,
+        }
     }
 }
 

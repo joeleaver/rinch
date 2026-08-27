@@ -11,6 +11,15 @@ impl RinchApp {
         window_size: (u32, u32),
         scale_factor: f64,
     ) -> Vec<AppAction> {
+        // Mark this document as the one dispatching, for the whole of the call
+        // (issue #139). Several `RinchApp`s share one thread — an app and its
+        // DevTools panel, or two embedded `RinchContext`s — and process-lifetime
+        // input state (the pointer-capture drag) must be able to tell whose
+        // event stream it is being fed. RAII, not a set/clear pair: handlers,
+        // effect flushes and layout all run under this and any of them may
+        // unwind.
+        let _dispatching = rinch_core::push_dispatching_doc(self.doc_key());
+
         let mut actions = Vec::new();
         // Logical viewport dimensions for ClickContext
         let vp_w = window_size.0 as f32 / scale_factor as f32;
@@ -40,11 +49,12 @@ impl RinchApp {
             PlatformEvent::MouseMove { x, y } => {
                 self.cursor_pos = Some((x, y));
 
-                // New editor (M5): extend an in-progress drag-select.
+                // New editor (M5): extend an in-progress drag-select. The
+                // `drag_anchor` lookup lives inside `extend_editor_drag`, which
+                // answers `false` when this document has no drag-select — no
+                // need to run it twice on every single pointer move.
                 #[cfg(feature = "desktop")]
-                if crate::editor::drag_anchor().is_some()
-                    && self.extend_editor_drag(x, y, scale_factor, window_size)
-                {
+                if self.extend_editor_drag(x, y, scale_factor, window_size) {
                     actions.push(AppAction::RequestRedraw);
                     return actions;
                 }
@@ -634,7 +644,7 @@ impl RinchApp {
 
                 // New editor (M5): end any drag-select.
                 #[cfg(feature = "desktop")]
-                crate::editor::end_drag();
+                crate::editor::end_drag(self.input_doc());
 
                 // ── Drag-and-drop: complete or cancel ─────────────────────
                 if let Some(pending) = self.pending_drag.take() {
@@ -2228,20 +2238,33 @@ impl RinchApp {
     /// Apply an [`ImeEvent`] to the focused `<input>`: preedit is rendered inline
     /// at the caret via the `data-preedit` attribute, commit clears it and inserts
     /// the text, delete-surrounding maps to backward/forward deletes.
-    fn dispatch_input_ime(&mut self, node_id: usize, ime: ImeEvent) {
+    ///
+    /// `pub(super)` so the focus arbiter can flush a pending composition as an
+    /// implicit commit when the input blurs (issue #226) — the browser's
+    /// compositionend-before-blur.
+    pub(super) fn dispatch_input_ime(&mut self, node_id: usize, ime: ImeEvent) {
         match ime {
             ImeEvent::Enabled => {}
             ImeEvent::Preedit { text, cursor } => {
-                self.focused_input_preedit = if text.is_empty() {
-                    None
-                } else {
-                    Some((text, cursor))
-                };
+                let ended = text.is_empty();
+                self.focused_input_preedit = if ended { None } else { Some((text, cursor)) };
                 self.sync_input_preedit_to_dom(node_id);
+                if ended {
+                    // An empty preedit *is* the end of the composition on the
+                    // winit backends (an IME cancel delivers only this — no
+                    // Commit, no Disabled). Drain a write the composition
+                    // deferred, exactly like the Commit/Disabled arms below;
+                    // otherwise it stays parked and later wins over whatever
+                    // was written in the meantime (issue #238).
+                    self.adopt_focused_input_value_from_dom();
+                }
             }
             ImeEvent::Commit(text) => {
                 self.focused_input_preedit = None;
                 self.sync_input_preedit_to_dom(node_id);
+                // A value write deferred by the composition applies first, so
+                // the committed text is inserted into it (issue #238).
+                self.adopt_focused_input_value_from_dom();
                 if !text.is_empty() {
                     self.handle_input_edit_command(EditCommand::InsertText(text));
                 }
@@ -2257,6 +2280,8 @@ impl RinchApp {
             ImeEvent::Disabled => {
                 self.focused_input_preedit = None;
                 self.sync_input_preedit_to_dom(node_id);
+                // The composition is over either way: apply a deferred write.
+                self.adopt_focused_input_value_from_dom();
             }
         }
     }
@@ -2296,6 +2321,18 @@ impl RinchApp {
 
 #[cfg(feature = "desktop")]
 impl RinchApp {
+    /// This app's document identity for scoping shared input state, or `None`
+    /// before mount (issue #139).
+    ///
+    /// `doc_key()` answers `0` until `self.doc` is assigned while `next_doc_key`
+    /// starts at `1`, so `Some(0)` would read as a real — and *shared* —
+    /// document identity. Two pre-mount apps would then look like the same one.
+    /// The sentinel rule is [`rinch_core::doc_identity`]'s, not a second copy of
+    /// it: `push_dispatching_doc` applies the very same one to the very same key.
+    fn input_doc(&self) -> Option<u64> {
+        rinch_core::doc_identity(self.doc_key())
+    }
+
     /// Copy the focused editor's selection to the clipboard as both `text/html`
     /// (rich) and `text/plain` (the fall-back alternative). A no-op for an empty
     /// selection.
@@ -2839,7 +2876,7 @@ impl RinchApp {
             && let Some(pos) = handle.pos_at(tb, ifc)
             && handle.toggle_task_checked_at(pos.0)
         {
-            crate::editor::end_drag();
+            crate::editor::end_drag(self.input_doc());
             self.refresh_editor_overlays();
             let (w, h) = (window_size.0 as f32, window_size.1 as f32);
             self.resolve_and_repaint(w, h);
@@ -2852,7 +2889,7 @@ impl RinchApp {
             && let Some(selection) = handle.node_selection_at_host(leaf)
         {
             handle.set_selection(selection);
-            crate::editor::end_drag();
+            crate::editor::end_drag(self.input_doc());
         } else if let Some((c, textblock, ifc_byte)) =
             self.editor_point_address_physical(x, y, scale)
             && c == container
@@ -2875,7 +2912,7 @@ impl RinchApp {
             };
             handle.set_selection(selection);
             if let Some(anchor) = drag_anchor {
-                crate::editor::begin_drag(container, anchor.0);
+                crate::editor::begin_drag(self.input_doc(), container, anchor.0);
             }
         }
         // Position the caret first, then re-layout so the post-layout caret pass
@@ -2896,7 +2933,7 @@ impl RinchApp {
         scale: f64,
         window_size: (u32, u32),
     ) -> bool {
-        let Some((container, anchor)) = crate::editor::drag_anchor() else {
+        let Some((container, anchor)) = crate::editor::drag_anchor(self.input_doc()) else {
             return false;
         };
         let Some((c, tb, ifc)) = self.editor_point_address_physical(x, y, scale) else {

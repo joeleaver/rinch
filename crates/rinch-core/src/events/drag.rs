@@ -82,6 +82,32 @@ struct ActiveDrag {
     /// could not say *whose* drag was abandoned. `Owner` is a `Weak`, so this
     /// does not keep the scope — or anything it will free — alive.
     owner: Option<crate::reactive::Owner>,
+    /// The document whose event stream armed this drag, if any (issue #139).
+    ///
+    /// `ACTIVE_DRAG` is one thread-local slot, but a thread can pump several
+    /// documents' pointer streams through it: two embedded `RinchContext`s
+    /// driven from one host event loop, or a desktop app and its DevTools panel
+    /// (two `RinchApp`s on one thread). Unscoped, the *other* document's
+    /// `MouseMove` drives this drag with its own window's coordinates and its
+    /// `MouseUp` **commits** it.
+    ///
+    /// Two desktop *windows* do not cross-feed a plain mouse drag — the pointer
+    /// is grabbed to the pressing window while a button is held — but an embed
+    /// host feeding several contexts does, and so does any drag left live past a
+    /// missed `MouseUp`.
+    ///
+    /// Same `Option` semantics as [`ActiveDrag::owner`], for the same reason —
+    /// but answering a different question. `owner` asks "is the arming component
+    /// still alive"; this asks "is this event stream the one that armed me".
+    /// Both documents in the bug have live owners.
+    ///
+    /// `None` means the drag was armed outside any dispatch — a timer, a menu
+    /// callback, a backend with one page-wide event stream (rinch-web) — and is
+    /// drivable by anybody. A drag is refused **only** when both keys are `Some`
+    /// and differ; anything stricter would wedge hover, surface events and text
+    /// selection in the drag's *own* document, since all three gate on
+    /// [`Drag::is_active`].
+    doc: Option<u64>,
 }
 
 impl ActiveDrag {
@@ -89,6 +115,20 @@ impl ActiveDrag {
     fn is_abandoned(&self) -> bool {
         self.owner.as_ref().is_some_and(|o| !o.is_alive())
     }
+
+    /// Whether this drag belongs to a *different* document than the one
+    /// currently dispatching (issue #139). Permissive by construction: only two
+    /// known-and-different keys count as foreign.
+    fn is_foreign(&self) -> bool {
+        !crate::context::doc_matches(self.doc, crate::context::current_dispatching_doc())
+    }
+}
+
+/// Whether the active drag (if any) belongs to another document's event stream.
+///
+/// `false` when no drag is active — "there is nothing of anybody else's here".
+fn active_drag_is_foreign() -> bool {
+    ACTIVE_DRAG.with(|drag| drag.borrow().as_ref().is_some_and(ActiveDrag::is_foreign))
 }
 
 /// Drop the active drag if the scope that armed it is gone.
@@ -228,6 +268,11 @@ impl Drag {
         // (`register_handler` re-enters it on dispatch). By the time `on_move`
         // fires, the owner stack is unrelated.
         let owner = crate::reactive::current_owner();
+        // Captured here for the same reason as `owner`, and from the same
+        // vantage point: `start()` runs inside the dispatch that armed it, so
+        // the dispatching document is ambient right now and gone by the time
+        // `on_move` fires (issue #139).
+        let doc = crate::context::current_dispatching_doc();
         let previous = ACTIVE_DRAG.with(|drag| {
             drag.borrow_mut().replace(ActiveDrag {
                 mode: self.mode,
@@ -238,6 +283,7 @@ impl Drag {
                 last_pos: None,
                 forward_surface_events: self.forward_surface_events,
                 owner,
+                doc,
             })
         });
         // Dropped outside the borrow: a superseded drag's callbacks are
@@ -251,6 +297,13 @@ impl Drag {
     /// `on_cancel` receives the last coordinates delivered to `on_move`, or
     /// the start position mapped into the drag's coordinate space if the
     /// pointer never moved. A no-op when no drag is active.
+    ///
+    /// Unlike [`update_drag`]/[`finish_drag`]/[`Drag::is_active`], this is
+    /// **not** scoped to the dispatching document (issue #139): its only
+    /// in-tree caller is the web backend's `pointercancel`, on a backend that
+    /// marks no dispatching document at all, and "abandon the gesture" is the
+    /// one operation another surface might legitimately want to perform on a
+    /// drag it does not own. Revisit if a desktop path ever calls it.
     pub fn cancel() {
         // Take the state and release the borrow before invoking the callback
         // (mirrors `finish_drag`) so an `on_cancel` that queries or starts a
@@ -273,9 +326,19 @@ impl Drag {
     /// A drag whose owning scope has been disposed is discarded here rather
     /// than reported as active — the runtime gates hover, surface events and
     /// text selection on this, and a stale `true` would wedge all three.
+    ///
+    /// Answers `false` while *another* document's events are being dispatched
+    /// (issue #139): a drag held in one document must not freeze hover, surface
+    /// events or text selection in a second document sharing the thread. The
+    /// drag itself is left intact — this is a question about the caller's event
+    /// stream, not about the drag's validity.
     pub fn is_active() -> bool {
         discard_if_abandoned();
-        ACTIVE_DRAG.with(|drag| drag.borrow().is_some())
+        ACTIVE_DRAG.with(|drag| {
+            drag.borrow()
+                .as_ref()
+                .is_some_and(|state| !state.is_foreign())
+        })
     }
 
     /// Get the [`ClickContext`] captured when the active drag started.
@@ -283,6 +346,12 @@ impl Drag {
     /// Returns `None` if no drag is active. The context contains the element
     /// bounds and mouse position at the moment `start()` was called, which is
     /// useful for computing offsets in `Drag::absolute()` mode.
+    ///
+    /// Also `None` while *another* document's events are being dispatched, for
+    /// the same reason [`Drag::is_active`] answers `false` there (issue #139):
+    /// every field of this context — `element_x/y`, `mouse_x/y` — is in the
+    /// arming window's coordinate space, so handing it to a second window is
+    /// not a near-miss but a number from a surface it has never seen.
     ///
     /// ```ignore
     /// // In an on_move callback or elsewhere while drag is active:
@@ -292,7 +361,12 @@ impl Drag {
     /// }
     /// ```
     pub fn start_context() -> Option<ClickContext> {
-        ACTIVE_DRAG.with(|drag| drag.borrow().as_ref().map(|d| d.start_context))
+        ACTIVE_DRAG.with(|drag| {
+            drag.borrow()
+                .as_ref()
+                .filter(|state| !state.is_foreign())
+                .map(|d| d.start_context)
+        })
     }
 }
 
@@ -305,6 +379,13 @@ pub fn update_drag(mouse_x: f32, mouse_y: f32) -> (bool, bool) {
     // driven: its callbacks close over signals the dispose fixpoint has freed
     // (issue #141), so `on_move` would panic on the first read.
     discard_if_abandoned();
+
+    // Another document's pointer stream must not drive this drag: its
+    // coordinates are in a different window's space (issue #139). Reported as
+    // unhandled so the dispatching document goes on to do its own hover work.
+    if active_drag_is_foreign() {
+        return (false, false);
+    }
 
     // Map coords + record last_pos under a short borrow, then release it
     // before invoking `on_move` (which may itself query or cancel the drag).
@@ -329,6 +410,12 @@ pub fn update_drag(mouse_x: f32, mouse_y: f32) -> (bool, bool) {
 /// is the *commit* callback, and there is nothing left to commit to.
 pub fn finish_drag(mouse_x: f32, mouse_y: f32) {
     if discard_if_abandoned() {
+        return;
+    }
+    // Nor may another document's mouseup end it. This half is worse than the
+    // move half: `on_end` is the *commit*, so a release over a second window
+    // commits the drag at that window's coordinates (issue #139).
+    if active_drag_is_foreign() {
         return;
     }
     let on_end = ACTIVE_DRAG.with(|drag| drag.borrow_mut().take().and_then(|s| s.on_end));
@@ -510,6 +597,96 @@ mod tests {
         assert!(Drag::is_active(), "an ownerless drag survives");
         update_drag(5.0, 5.0);
         assert_eq!(moves.get(), 1, "and is still driven");
+        Drag::cancel();
+    }
+
+    // ── per-document routing (issue #139) ────────────────────────────────────
+
+    /// A drag armed while document A was dispatching is neither driven nor
+    /// committed by document B's events.
+    ///
+    /// Both documents are live — this is not the #141 lifetime question. The
+    /// coordinates B delivers are in B's own window space, and `on_end` is the
+    /// *commit*, so an unscoped release over the second window writes a value
+    /// taken from a surface the user never touched.
+    #[test]
+    fn a_drag_is_not_driven_or_committed_by_another_document() {
+        use crate::context::push_dispatching_doc;
+
+        let moves: Rc<RefCell<Vec<(f32, f32)>>> = Rc::new(RefCell::new(Vec::new()));
+        let end: Rc<Cell<Option<(f32, f32)>>> = Rc::new(Cell::new(None));
+
+        {
+            let _a = push_dispatching_doc(1);
+            let m = moves.clone();
+            let e = end.clone();
+            Drag::absolute()
+                .on_move(move |x, y| m.borrow_mut().push((x, y)))
+                .on_end(move |x, y| e.set(Some((x, y))))
+                .start();
+        }
+
+        {
+            let _b = push_dispatching_doc(2);
+            assert!(
+                !Drag::is_active(),
+                "document B must not see another document's drag — is_active \
+                 gates hover, surface events and text selection in B"
+            );
+            assert!(
+                Drag::start_context().is_none(),
+                "nor may B read A's start context — every field of it (element \
+                 bounds, mouse position) is in A's window's coordinate space"
+            );
+            assert_eq!(update_drag(999.0, 999.0), (false, false));
+            finish_drag(999.0, 999.0);
+        }
+
+        assert!(
+            moves.borrow().is_empty(),
+            "B's motion never reached on_move"
+        );
+        assert_eq!(end.get(), None, "and B's release never committed");
+
+        // The counterfactual: A still owns it, still drives it, still commits it.
+        {
+            let _a = push_dispatching_doc(1);
+            assert!(Drag::is_active(), "the drag is still A's, and still live");
+            assert!(
+                Drag::start_context().is_some(),
+                "and A still reads its own start context"
+            );
+            assert_eq!(update_drag(10.0, 20.0), (true, false));
+            finish_drag(30.0, 40.0);
+        }
+        assert_eq!(*moves.borrow(), vec![(10.0, 20.0)]);
+        assert_eq!(end.get(), Some((30.0, 40.0)));
+        assert!(!Drag::is_active());
+    }
+
+    /// A drag armed outside any dispatch — a timer, a menu callback, or a
+    /// backend with a single page-wide pointer stream (rinch-web, which pushes
+    /// no marker at all) — belongs to nobody and stays drivable by everybody.
+    ///
+    /// This is what keeps the fix free of rinch-web changes.
+    #[test]
+    fn a_drag_armed_outside_any_dispatch_is_drivable_by_any_document() {
+        use crate::context::push_dispatching_doc;
+
+        let moves = Rc::new(Cell::new(0));
+        let m = moves.clone();
+        Drag::absolute()
+            .on_move(move |_, _| m.set(m.get() + 1))
+            .start();
+
+        {
+            let _some_doc = push_dispatching_doc(3);
+            assert!(Drag::is_active());
+            update_drag(1.0, 1.0);
+        }
+        update_drag(2.0, 2.0);
+
+        assert_eq!(moves.get(), 2);
         Drag::cancel();
     }
 }
