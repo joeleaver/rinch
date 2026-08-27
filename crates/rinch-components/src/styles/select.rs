@@ -137,13 +137,18 @@ pub fn styles() -> String {
     font-weight: 500;
 }
 
-/* Backdrop — invisible full-screen overlay to catch outside clicks */
+/* Backdrop — the invisible overlay that catches outside clicks. Absolute, not
+   fixed, and below the panel's z-index: 300 — see the long note on
+   `.rinch-dropdown-menu__backdrop`, which had the same fault. A fixed box is
+   viewport-level in Rinch and outranks every non-fixed box regardless of
+   z-index, so a fixed backdrop here covered the option list and ate every
+   click on it. */
 .rinch-select__backdrop {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
+    position: absolute;
+    top: -100vh;
+    right: -100vw;
+    bottom: -100vh;
+    left: -100vw;
     z-index: 299;
     display: none;
 }

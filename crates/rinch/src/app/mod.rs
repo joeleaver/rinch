@@ -2838,3 +2838,253 @@ mod tab_focus_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod popup_backdrop_hit_tests {
+    //! A dropdown menu's items answer the tap that lands on them.
+    //!
+    //! `DropdownMenu` is two boxes over the page: the panel, and an invisible
+    //! backdrop that catches the clicks that miss it. Which of the two a tap
+    //! resolves to is decided by [`rinch_dom::stacking`], and the panel is only
+    //! above the backdrop while the two are in the *same* stacking context —
+    //! a `position: fixed` backdrop is not. Rinch hoists a fixed box to the
+    //! body so it escapes every ancestor clip, and because an overflow clip
+    //! *is* a stacking context here, it escapes every ancestor stacking
+    //! context with it: it then outranks every non-fixed box on the page
+    //! whatever the z-indexes say, panel included.
+    //!
+    //! So these tests mount the real component under its real stylesheet,
+    //! behind an `overflow: hidden` root — the shape of every app that has a
+    //! scroll container or a fixed-height shell — and tap an item.
+
+    use super::*;
+    use std::cell::Cell;
+
+    use rinch_components::{
+        DropdownMenu, DropdownMenuDropdown, DropdownMenuItem, DropdownMenuTarget,
+    };
+    use rinch_core::{Callback, Component};
+
+    const VIEWPORT: (f32, f32) = (800.0, 600.0);
+
+    struct Menu {
+        app: RinchApp,
+        /// The first item's node id, so a tap can be aimed at where it is.
+        item: usize,
+        /// How many times the item's own `onclick` ran.
+        item_clicks: Rc<Cell<usize>>,
+        /// How many times the menu asked to be closed — by the backdrop, or by
+        /// the item through `close_on_item_click`.
+        closes: Rc<Cell<usize>>,
+    }
+
+    /// Mount an open `DropdownMenu` inside an `overflow: hidden` root.
+    ///
+    /// The construction order is the one `rsx!` uses and the one the component
+    /// documents: the props are built first (their `Default` publishes the
+    /// close signal on a thread-local), then the item children render and pick
+    /// it up, then the menu itself renders. Building it by hand rather than
+    /// through `rsx!` is what lets the test hold the item's node id.
+    ///
+    /// `backdrop_override` is an inline `style` written onto the backdrop after
+    /// the component has built it, so one test can put the old
+    /// `position: fixed` spelling back and show what it did.
+    fn mount(backdrop_override: Option<&'static str>) -> Menu {
+        let item_clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let closes: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let item_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+
+        let clicks_in = item_clicks.clone();
+        let closes_in = closes.clone();
+        let item_id_in = item_id.clone();
+
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            // The app shell: a stacking context between the menu and the body,
+            // which is what every scroll container and most app roots are.
+            let shell = scope.create_element("div");
+            shell.set_attribute(
+                "style",
+                "position: relative; overflow: hidden; width: 800px; height: 600px",
+            );
+
+            let closes_cb = closes_in.clone();
+            let props = DropdownMenu {
+                opened: true,
+                on_close: Some(Callback::new(move || closes_cb.set(closes_cb.get() + 1))),
+                ..Default::default()
+            };
+
+            let trigger = scope.create_element("div");
+            trigger.set_attribute("style", "width: 120px; height: 32px");
+            let target = DropdownMenuTarget.render(scope, &[trigger]);
+
+            let clicks_cb = clicks_in.clone();
+            let label = scope.create_text("Edit lyrics / chords…");
+            let item = DropdownMenuItem {
+                onclick: Some(Callback::new(move || clicks_cb.set(clicks_cb.get() + 1))),
+                ..Default::default()
+            }
+            .render(scope, &[label]);
+            item_id_in.set(Some(item.node_id().0));
+
+            let dropdown = DropdownMenuDropdown.render(scope, &[item]);
+            let menu = props.render(scope, &[target, dropdown]);
+
+            shell.append_child(&menu);
+            shell
+        });
+
+        app.mount_component(VIEWPORT.0, VIEWPORT.1);
+
+        // The component's own stylesheet, not a copy of it: this is what makes
+        // the test bite when the backdrop's `position` changes.
+        {
+            let doc = app.doc.as_ref().unwrap();
+            let mut d = doc.borrow_mut();
+            d.load_css(&rinch_components::generate_component_css());
+            d.recompute_all_styles_full();
+        }
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+
+        if let Some(style) = backdrop_override {
+            let backdrop = find_backdrop(&app);
+            {
+                let doc = app.doc.as_ref().unwrap();
+                let mut d = doc.borrow_mut();
+                d.set_attribute(rinch_core::dom::NodeId(backdrop), "style", style);
+                d.recompute_all_styles_full();
+            }
+            app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+        }
+
+        Menu {
+            item: item_id
+                .get()
+                .expect("the item's node id, captured at mount"),
+            app,
+            item_clicks,
+            closes,
+        }
+    }
+
+    /// The one node carrying the backdrop's class. The component appends it
+    /// last, but finding it by class says what is meant rather than relying on
+    /// that.
+    fn find_backdrop(app: &RinchApp) -> usize {
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        (0..d.tree.nodes.len())
+            .find(|&id| {
+                d.tree
+                    .get(id)
+                    .and_then(|n| n.attributes.get("class"))
+                    .is_some_and(|c| c.contains("rinch-dropdown-menu__backdrop"))
+            })
+            .expect("the menu renders a backdrop when close_on_click_outside is on")
+    }
+
+    fn centre(app: &RinchApp, node_id: usize) -> (f32, f32) {
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        let n = d.tree.get(node_id).expect("node still in the tree");
+        let (x, y) = RinchApp::compute_absolute_position(&d.tree, node_id);
+        assert!(
+            n.layout.width > 0.0 && n.layout.height > 0.0,
+            "node {node_id} has no box to aim at: {:?}",
+            n.layout
+        );
+        (x + n.layout.width / 2.0, y + n.layout.height / 2.0)
+    }
+
+    /// One tap, spelled the way Android spells it: `TouchGesture` resolves a
+    /// still finger's lift into a `MouseDown` and a `MouseUp` pushed into the
+    /// *same* event batch, with nothing in between. On the desktop the two are
+    /// separated by however long the button was held; here they are not, and a
+    /// dismissal armed on one of them would beat an activation armed on the
+    /// other.
+    fn tap(app: &mut RinchApp, x: f32, y: f32) {
+        app.handle_event(
+            PlatformEvent::MouseDown {
+                x,
+                y,
+                button: MouseButton::Left,
+            },
+            (800, 600),
+            1.0,
+        );
+        app.handle_event(
+            PlatformEvent::MouseUp {
+                x,
+                y,
+                button: MouseButton::Left,
+            },
+            (800, 600),
+            1.0,
+        );
+    }
+
+    /// The fault this module exists for: a tap on a menu item runs the item.
+    ///
+    /// It used to close the menu and do nothing else, on Android and on the
+    /// desktop alike — the backdrop was above the panel, so the tap never
+    /// reached the item at all and what fired was the dismissal.
+    #[test]
+    fn a_tap_on_a_menu_item_runs_the_item_and_not_the_dismissal() {
+        let mut menu = mount(None);
+        let (x, y) = centre(&menu.app, menu.item);
+
+        tap(&mut menu.app, x, y);
+
+        assert_eq!(
+            menu.item_clicks.get(),
+            1,
+            "the tap landed inside the item's box and must have run its handler"
+        );
+        assert_eq!(
+            menu.closes.get(),
+            1,
+            "and closed the menu once, through close_on_item_click — not twice, \
+             and not by the backdrop instead"
+        );
+    }
+
+    /// The other half of the backdrop's job, which the fix must not cost: a tap
+    /// that misses the panel still dismisses.
+    #[test]
+    fn a_tap_outside_the_panel_still_dismisses_and_runs_no_item() {
+        let mut menu = mount(None);
+        let (ix, iy) = centre(&menu.app, menu.item);
+
+        // Well below the panel, still inside the shell.
+        tap(&mut menu.app, ix, iy + 400.0);
+
+        assert_eq!(menu.item_clicks.get(), 0, "nothing was aimed at");
+        assert_eq!(menu.closes.get(), 1, "the backdrop caught it");
+    }
+
+    /// Why the backdrop is `position: absolute`, kept as an executable
+    /// statement rather than a comment: put the fixed spelling back and the
+    /// menu is dead again.
+    ///
+    /// A fixed box is viewport-level content in Rinch — hoisted to the body out
+    /// of every ancestor clip, and out of every ancestor stacking context with
+    /// it. Its `z-index: 99` is then being compared against the *shell's*
+    /// place at the body, never against the panel's `100`, and it wins over
+    /// every non-fixed box on the page.
+    #[test]
+    fn a_fixed_backdrop_swallows_the_item_it_was_meant_to_sit_under() {
+        let mut menu = mount(Some(
+            "display: block; position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 99",
+        ));
+        let (x, y) = centre(&menu.app, menu.item);
+
+        tap(&mut menu.app, x, y);
+
+        assert_eq!(
+            menu.item_clicks.get(),
+            0,
+            "a fixed backdrop is above the panel, so the tap never reaches the item"
+        );
+        assert_eq!(menu.closes.get(), 1, "what it reaches is the dismissal");
+    }
+}
