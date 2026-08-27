@@ -14,6 +14,7 @@
   - [Stores](./guide/stores.md)
   - [Sharing State](./guide/sharing-state.md)
 - [Writing Components](./guide/writing-components.md)
+- [Keyboard Focus](./guide/focus.md)
 - [Components Library](./guide/components.md)
   - [Component Props Reference](./guide/component-props.md)
 - [Theming](./guide/theming.md)

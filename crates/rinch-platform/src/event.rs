@@ -50,6 +50,21 @@ pub enum PlatformEvent {
     KeyUp { key: KeyCode, modifiers: Modifiers },
     /// Modifier keys changed.
     ModifiersChanged(Modifiers),
+    /// The window gained (`true`) or lost (`false`) **OS** focus.
+    ///
+    /// Distinct from the in-document focus arbiter: the focused widget **keeps**
+    /// its claim across a window blur (browser semantics — alt-tabbing away and
+    /// back must not fire `data-onchange` on every field, issue #226). It is
+    /// only *notified*, and re-notified when the window comes back. While the
+    /// window is blurred the runtime reports IME disabled, so the OS candidate
+    /// window follows the window that actually has the keyboard.
+    ///
+    /// Backends: winit's `WindowEvent::Focused` on desktop, android-activity's
+    /// `MainEvent::GainedFocus`/`LostFocus` on Android. The browser backend
+    /// (`rinch-web`) has no `PlatformEvent` pump at all — the browser is the
+    /// arbiter there and fires its own `focus`/`blur` — so nothing translates
+    /// into this variant on web.
+    WindowFocus(bool),
     /// Display scale factor changed.
     ScaleFactorChanged(f64),
     /// A user-defined event from the application.

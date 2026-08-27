@@ -1714,13 +1714,18 @@ impl ApplicationHandler for RinchRuntime {
                     delta_y: dy,
                 }
             }
-            WindowEvent::Focused(_focused) => {
-                // Tell the AT whether this window has OS focus (a11y only).
+            WindowEvent::Focused(focused) => {
+                // Tell the AT whether this window has OS focus.
                 #[cfg(feature = "a11y")]
                 if let Some(bridge) = self.a11y.as_mut() {
-                    bridge.set_window_focused(_focused);
+                    bridge.set_window_focused(focused);
                 }
-                return;
+                // …and the app, which notifies the focused widget without
+                // releasing its claim (issue #147, decision 1). This used to
+                // `return` here, so window blur was invisible to the document:
+                // a custom widget's caret kept blinking in an unfocused window
+                // and the OS IME stayed armed on a window without the keyboard.
+                PlatformEvent::WindowFocus(focused)
             }
             WindowEvent::ModifiersChanged(new_modifiers) => {
                 self.modifiers = new_modifiers.state();

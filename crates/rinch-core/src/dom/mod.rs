@@ -226,6 +226,21 @@ impl NodeHandle {
         self.doc.upgrade().is_some()
     }
 
+    /// This node's document identity (see [`DomDocument::doc_key`]), or `0` if
+    /// the document is already gone.
+    ///
+    /// Node ids are per-document slab indices, so anything that keys a registry
+    /// by node id has to pair it with this or two documents on one thread will
+    /// collide (issue #134). Two such registries live outside this crate — the
+    /// mounted-editor registry and the focus-target registry (issue #147) — and
+    /// both are handed a `NodeHandle`, which is why this is public.
+    pub fn doc_key(&self) -> u64 {
+        self.doc
+            .upgrade()
+            .map(|doc| doc.borrow().doc_key())
+            .unwrap_or(0)
+    }
+
     /// Set the text content of this node.
     ///
     /// For text nodes, this updates the text directly.
@@ -650,12 +665,7 @@ impl NodeHandle {
         // across documents (issue #134). A handle whose document is already
         // gone registers under key 0 (matches no live document), yielding a
         // signal that simply keeps its zero rect.
-        let doc_key = self
-            .doc
-            .upgrade()
-            .map(|doc| doc.borrow().doc_key())
-            .unwrap_or(0);
-        crate::reactive::register_bounds_signal(doc_key, self.node_id.0 as u64)
+        crate::reactive::register_bounds_signal(self.doc_key(), self.node_id.0 as u64)
     }
 
     /// Get the tag name of this node (if it's an element).

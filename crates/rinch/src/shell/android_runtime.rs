@@ -122,6 +122,11 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
     let mut composition = ImeComposition::new();
     let mut composing_field: Option<usize> = None;
     let mut backgrounded = false;
+    // A window-focus change seen inside `poll_events`, dispatched after it
+    // returns (`app` is not reachable from the callback). `None` = no change
+    // this turn; the app starts focused, so nothing to send until Android says
+    // otherwise (issue #147).
+    let mut window_focus_change: Option<bool> = None;
 
     while running {
         android_app.poll_events(Some(Duration::from_millis(16)), |event| match event {
@@ -210,6 +215,18 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                     // against is in scope.
                     backgrounded = true;
                 }
+                // Android's answer to `PlatformEvent::WindowFocus` (issue
+                // #147): the activity keeps its in-document focus claim across
+                // a focus loss — a notification shade, a permission dialog —
+                // and the focused widget is told, then told again when focus
+                // returns. Distinct from `Resume`/`Pause`, which are lifecycle:
+                // an activity can be resumed but unfocused.
+                MainEvent::GainedFocus => {
+                    window_focus_change = Some(true);
+                }
+                MainEvent::LostFocus => {
+                    window_focus_change = Some(false);
+                }
                 MainEvent::Destroy => {
                     running = false;
                 }
@@ -221,6 +238,24 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
 
         if !running {
             break;
+        }
+
+        // Window focus, before input: a key that arrives in the same turn as
+        // the regain belongs to the refocused window. Dispatched *above* the
+        // no-surface bail below for the same reason the composition flush is:
+        // `MainEvent::LostFocus` and the `TerminateWindow` that drops the
+        // surface arrive together when the activity goes to the background, so
+        // deferring the loss to the next frame that has a surface would defer
+        // it past the regain — and this slot holds only the latest value, so
+        // the `GainedFocus` would overwrite it and the focused widget would
+        // never hear `on_focus_lost` at all. `handle_event` needs no surface.
+        if let Some(focused) = window_focus_change.take() {
+            let actions = app.handle_event(
+                PlatformEvent::WindowFocus(focused),
+                physical_size,
+                scale_factor,
+            );
+            process_actions(&actions, &mut running);
         }
 
         // No surface — wait for InitWindow. The composition is flushed first:

@@ -487,29 +487,53 @@ impl RinchApp {
                 // Don't request redraw here — AboutToWait will pick up the
                 // dirty styles and batch them into a single repaint.
                 if let Some(doc) = self.doc.clone() {
-                    let hit = {
+                    // The hit and the focus target it resolves to, in one
+                    // borrow: the walk starts where the hit test lands, so
+                    // re-borrowing between them buys nothing.
+                    //
+                    // The nearest focusable ancestor-or-self of the hit, as a
+                    // browser resolves a mousedown's focus target (issue #147,
+                    // decision 2): any parseable `tabindex` — including `-1`,
+                    // which is click-focusable but not tabbable — claims
+                    // `FocusTarget::Node`, so a click-focused custom control has
+                    // live Enter/Space and `on_key` immediately instead of only
+                    // after being reached by Tab.
+                    //
+                    // The walk stops at the first node that is focusable *or*
+                    // carries `data-oninput`: an `<input>` inside a focusable
+                    // wrapper belongs to the text engine, and `handle_click`
+                    // claims it below — taking Node focus first would announce a
+                    // gain-then-loss on the wrapper for a click that was never
+                    // the wrapper's.
+                    let (hit, click_focus_node) = {
                         let d = doc.borrow();
-                        hit_test(&d.tree, x, y)
-                    };
-                    // An arbiter-held generic node (issue #228): a press inside
-                    // its subtree keeps both the claim and the node's own DOM
-                    // `:focus` (web-style — clicking a child of a focusable
-                    // focuses the focusable, not the child); a press anywhere
-                    // else releases the claim right here, so paths that return
-                    // before `handle_click` (pending drag, scrollbar, no hit)
-                    // can't strand an invisible, still-Enter-activatable claim.
-                    let node_claim = if let FocusTarget::Node(fid) = self.focus_target {
-                        let d = doc.borrow();
+                        let hit = hit_test(&d.tree, x, y);
                         let mut cur = hit;
-                        let mut inside = false;
+                        let mut found = None;
                         while let Some(nid) = cur {
-                            if nid == fid {
-                                inside = true;
+                            let Some(node) = d.tree.get(nid) else { break };
+                            if node.attributes.contains_key("data-oninput") {
                                 break;
                             }
-                            cur = d.tree.get(nid).and_then(|n| n.parent);
+                            if !Self::node_is_disabled(node) && Self::node_tabindex(node).is_some()
+                            {
+                                found = Some(nid);
+                                break;
+                            }
+                            cur = node.parent;
                         }
-                        Some((fid, inside))
+                        (hit, found)
+                    };
+                    // An arbiter-held generic node (issue #228), and whether
+                    // this press lands back on it — i.e. resolves to the same
+                    // focusable, so a press on a plain child of the focused node
+                    // is still "inside" it. A press that resolves anywhere else
+                    // moves or releases the claim right here, so paths that
+                    // return before `handle_click` (pending drag, scrollbar, no
+                    // hit) can't strand an invisible, still-Enter-activatable
+                    // claim.
+                    let node_claim = if let FocusTarget::Node(fid) = self.focus_target {
+                        Some((fid, click_focus_node == Some(fid)))
                     } else {
                         None
                     };
@@ -526,18 +550,26 @@ impl RinchApp {
                         // :active applies while mouse is pressed
                         d.update_active(hit);
                         // :focus applies to the clicked element (persists after
-                        // release); anchored on the focused node itself for a
-                        // press inside it.
-                        let focus_to = match node_claim {
-                            Some((fid, true)) => Some(fid),
-                            _ => hit,
-                        };
-                        d.update_focus(focus_to);
+                        // release); anchored on the focusable ancestor for a
+                        // press inside one.
+                        d.update_focus(click_focus_node.or(hit));
                     }
-                    if let Some((_, false)) = node_claim {
-                        // No outstanding doc borrow here (set_focus_target's
-                        // teardown re-borrows).
-                        self.set_focus_target(FocusTarget::None);
+                    // No outstanding doc borrow from here on: the arbiter's
+                    // teardown re-borrows, and the callbacks it defers are user
+                    // code that may mutate the DOM.
+                    match (click_focus_node, node_claim) {
+                        // Re-press inside the already-focused node: nothing to
+                        // do, the claim and its state stay put.
+                        (_, Some((_, true))) => {}
+                        (Some(nid), _) => {
+                            let (_, work) = self.set_focus_target_deferred(FocusTarget::Node(nid));
+                            Self::fire_focus_work(work);
+                            self.notify_node_focus_gained(nid);
+                        }
+                        (None, Some((_, false))) => {
+                            self.set_focus_target(FocusTarget::None);
+                        }
+                        (None, None) => {}
                     }
                 }
 
@@ -878,6 +910,35 @@ impl RinchApp {
             PlatformEvent::ModifiersChanged(mods) => {
                 self.modifiers = mods;
             }
+            PlatformEvent::WindowFocus(focused) => {
+                // Notify-and-retain (issue #147, decision 1): the in-document
+                // claim survives an alt-tab — releasing it would fire
+                // `data-onchange` on every window switch, a straight #226
+                // regression — but a registered target is told, and told again
+                // when the window comes back, so it can hide its caret and idle
+                // its blink timer. `ime_state()` reports disabled meanwhile.
+                if self.window_focused != focused {
+                    self.window_focused = focused;
+                    if !focused {
+                        // The matching `KeyUp` of anything held across the blur
+                        // goes to the window that took the keyboard, so the
+                        // Enter/Space activation latch (issue #228) would stay
+                        // armed and swallow the first press after we come back.
+                        // A window that lost focus holds no key down.
+                        self.node_activation_held = None;
+                    }
+                    if let FocusTarget::Node(id) = self.focus_target {
+                        let doc_key = self.doc_key();
+                        if focused {
+                            crate::focus_registry::notify_focus_gained(doc_key, id);
+                        } else {
+                            crate::focus_registry::notify_focus_lost(doc_key, id);
+                        }
+                    }
+                    self.scene_dirty = true;
+                    actions.push(AppAction::RequestRedraw);
+                }
+            }
             PlatformEvent::KeyDown {
                 key,
                 logical_key,
@@ -1014,6 +1075,35 @@ impl RinchApp {
                         {
                             self.set_focus_target(FocusTarget::None);
                         }
+
+                        // A registered custom widget (issue #147) gets first
+                        // refusal on its own keys, ahead of every global
+                        // handler below — that is what "owns the keyboard"
+                        // means. `true` consumes; `false` falls through to
+                        // DevTools / inspect / Tab / Enter-Space activation
+                        // exactly as before, so registering costs an
+                        // unregistered node nothing.
+                        //
+                        // The `key` string matches the document-level
+                        // interceptor's spelling (`hook_key_str`), falling back
+                        // to the physical code for keys it has no name for
+                        // (function keys), so a widget always sees a non-empty
+                        // key.
+                        if let FocusTarget::Node(id) = self.focus_target {
+                            let key_data = events::KeyEventData {
+                                key: key_str.clone().unwrap_or_else(|| format!("{:?}", key)),
+                                code: format!("{:?}", key),
+                                ctrl,
+                                shift,
+                                alt,
+                                meta: modifiers.meta,
+                            };
+                            if crate::focus_registry::offer_key(self.doc_key(), id, &key_data) {
+                                actions.push(AppAction::RequestRedraw);
+                                return actions;
+                            }
+                        }
+
                         #[cfg(feature = "desktop")]
                         if key == KeyCode::F12 {
                             actions.push(AppAction::ToggleDevTools);
