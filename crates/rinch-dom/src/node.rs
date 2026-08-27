@@ -126,7 +126,9 @@ pub struct TextMeasure {
 /// an absolutely-positioned child with `left: 0` inside a parent with a `5px`
 /// left border has `x == 5`. The one exception is `position: fixed`, which
 /// `read_layout_results` rewrites to be **viewport**-relative with no border
-/// or margin applied. Every consumer — paint, hit testing,
+/// or margin applied (CSS puts a fixed box's *margin* edge at its inset, so
+/// ignoring the margin is a known deviation of that override, not of Taffy).
+/// Every consumer — paint, hit testing,
 /// `compute_absolute_position` — accumulates this field up the parent chain,
 /// so only Taffy (or that fixed override) may write it (#236).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]

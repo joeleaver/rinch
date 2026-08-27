@@ -674,7 +674,7 @@ mod transform_paint {
         false
     }
 
-    fn is_opaque_red(p: [u8; 4]) -> bool {
+    pub(super) fn is_opaque_red(p: [u8; 4]) -> bool {
         p[0] > 200 && p[1] < 50 && p[2] < 50 && p[3] > 200
     }
 
@@ -930,13 +930,9 @@ mod transform_paint {
 /// marked layout dirty, so the child painted short of its true position.
 #[cfg(feature = "software-renderer")]
 mod inset_fast_path_paint {
-    use super::transform_paint::{paint_skia, pixel_at};
+    use super::transform_paint::{is_opaque_red, paint_skia, pixel_at};
     use super::*;
     use rinch_dom::paint::skia_painter::TinySkiaPainter;
-
-    fn is_opaque_red(p: [u8; 4]) -> bool {
-        p[0] > 200 && p[1] < 50 && p[2] < 50 && p[3] > 200
-    }
 
     #[test]
     fn set_style_left_paints_at_layout_position() {

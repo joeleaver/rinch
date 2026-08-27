@@ -677,6 +677,17 @@ pub fn parse_font_size(style_str: &str) -> Option<f32> {
     }
 }
 
+/// The `about:blank` URL data every ad-hoc Stylo parse in this crate uses —
+/// inline `style` attributes, author stylesheets, SVG colours. Building
+/// `UrlExtraData` parses a URL; do that once, not once per `set_style` call or
+/// per SVG child per paint (#259). Callers only borrow it.
+pub(crate) static BLANK_URL_DATA: std::sync::LazyLock<style::stylesheets::UrlExtraData> =
+    std::sync::LazyLock::new(|| {
+        style::stylesheets::UrlExtraData::from(
+            url::Url::parse("about:blank").expect("about:blank is a URL"),
+        )
+    });
+
 /// Parse a CSS `<color>` to a peniko Color.
 ///
 /// Delegates to stylo — the same CSS Color 4 parser the stylesheet and
@@ -693,18 +704,11 @@ pub fn parse_font_size(style_str: &str) -> Option<f32> {
 /// it (see `paint::svg::resolve_svg_color`).
 pub fn parse_color(value: &str) -> Option<peniko::Color> {
     use cssparser::{Parser, ParserInput};
-    use std::sync::LazyLock;
     use style::context::QuirksMode;
     use style::parser::ParserContext;
-    use style::stylesheets::{CssRuleType, Origin, UrlExtraData};
+    use style::stylesheets::{CssRuleType, Origin};
     use style::values::specified::Color;
     use style_traits::ParsingMode;
-
-    // Building `UrlExtraData` parses a URL; do that once, not once per SVG
-    // child per paint. The context only borrows it.
-    static BLANK_URL_DATA: LazyLock<UrlExtraData> = LazyLock::new(|| {
-        UrlExtraData::from(url::Url::parse("about:blank").expect("about:blank is a URL"))
-    });
 
     // A bare-value context built the way stylo's own `parse_style_attribute`
     // builds it: author origin, `about:blank`, no quirks, no error reporting.

@@ -10,8 +10,8 @@ use euclid::Scale;
 use style::context::QuirksMode;
 use style::font_metrics::FontMetrics;
 use style::media_queries::{Device, MediaType};
-use style::properties::ComputedValues;
 use style::properties::style_structs::Font as StyloFont;
+use style::properties::{ComputedValues, PropertyDeclarationBlock};
 use style::queries::values::PrefersColorScheme;
 use style::stylist::Stylist;
 use style::values::computed::font::GenericFontFamily;
@@ -301,6 +301,13 @@ impl RinchDocument {
                 self.mark_dirty_up(node_id, DirtyFlags::LAYOUT);
             }
         }
+    }
+
+    /// Cache a parsed inline `style` block on the node for Stylo's next
+    /// cascade of it. Pair with [`parse_inline_style`].
+    pub(crate) fn cache_inline_style(&mut self, node_id: usize, pdb: PropertyDeclarationBlock) {
+        self.tree.nodes[node_id].style_attribute_cache =
+            Some(ServoArc::new(self.tree.guard.wrap(pdb)));
     }
 
     /// Mark a node and its entire subtree as paint-dirty for removal.
@@ -801,4 +808,18 @@ pub(super) fn parse_style_string(style: &str) -> HashMap<String, String> {
         }
     }
     result
+}
+
+/// Parse an inline `style` attribute value into Stylo's declaration block the
+/// way author content wants it: `about:blank`, no quirks, no error reporting.
+/// One place, so `set_attribute("style")`, `set_styles` and the inset fast
+/// path can't drift.
+pub(super) fn parse_inline_style(css: &str) -> PropertyDeclarationBlock {
+    style::properties::parse_style_attribute(
+        css,
+        &crate::layout::BLANK_URL_DATA,
+        None,
+        QuirksMode::NoQuirks,
+        style::stylesheets::CssRuleType::Style,
+    )
 }
