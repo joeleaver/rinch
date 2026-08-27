@@ -49,6 +49,18 @@ pub enum ColorFormat {
 }
 
 impl ColorFormat {
+    /// The alpha-carrying counterpart of this format: `hex` → `hexa`, `rgb`
+    /// → `rgba`, `hsl` → `hsla`; an alpha-carrying format is its own. The
+    /// spelling for a surface that must show every channel a colour holds —
+    /// a preview swatch under a display format that drops alpha.
+    pub fn with_alpha(self) -> ColorFormat {
+        match self {
+            ColorFormat::Hex | ColorFormat::Hexa => ColorFormat::Hexa,
+            ColorFormat::Rgb | ColorFormat::Rgba => ColorFormat::Rgba,
+            ColorFormat::Hsl | ColorFormat::Hsla => ColorFormat::Hsla,
+        }
+    }
+
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "hex" => Some(ColorFormat::Hex),

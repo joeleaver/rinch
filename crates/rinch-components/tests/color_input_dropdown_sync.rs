@@ -62,6 +62,9 @@ const LOW_CHROMA_HEX: &str = "#797e81";
 #[derive(Clone, Copy, PartialEq)]
 enum Echo {
     Back,
+    /// The controlled idiom that *reads* the store inside the handler:
+    /// `if value != store.get() { store.set(value) }`.
+    IfChanged,
     Never,
 }
 
@@ -135,10 +138,10 @@ impl Input {
             value_fn: store.map(|store| -> Rc<dyn Fn() -> String> { Rc::new(move || store.get()) }),
             onchange: Some(InputCallback::new(move |value: String| {
                 seen.borrow_mut().push(value.clone());
-                if echo == Echo::Back
-                    && let Some(store) = store
-                {
-                    store.set(value);
+                match (echo, store) {
+                    (Echo::Back, Some(store)) => store.set(value),
+                    (Echo::IfChanged, Some(store)) if value != store.get() => store.set(value),
+                    _ => {}
                 }
             })),
             swatches: vec!["#22aa55".into()],
@@ -172,6 +175,17 @@ impl Input {
 
     fn field(&self) -> NodeHandle {
         find_by_class(&self.root, "rinch-color-input__input").expect("the text field exists")
+    }
+
+    /// The style the preview swatch's overlay is painted with.
+    fn swatch_style(&self) -> String {
+        find_by_class(&self.root, "rinch-color-input__swatch-preview")
+            .expect("the preview swatch exists")
+            .children()
+            .first()
+            .expect("the swatch has its overlay")
+            .get_attribute("style")
+            .expect("the overlay is painted")
     }
 
     fn field_text(&self) -> String {
@@ -666,4 +680,92 @@ fn an_unparseable_commit_reverts_to_the_output_format_spelling() {
     assert_eq!(input.field_text(), "#ff0000");
     input.assert_picker_at("#ff0000", "the revert reaches the picker too");
     assert_eq!(input.emissions(), Vec::<String>::new());
+}
+
+/// A handler that reads the store — `if value != store.get() { store.set(value) }`,
+/// the everyday controlled idiom — is invoked synchronously inside the
+/// picker's coordinating effect. That invocation must not subscribe the
+/// effect to the store: if it did, a peer's later write would re-run the
+/// effect ahead of the wrapper's own `value_fn` effect, re-emit the stale
+/// colour, and the handler would write it back over the peer's — the
+/// external arrival clobbered and a change reported that nobody authored.
+#[test]
+fn a_handler_that_reads_the_store_does_not_subscribe_the_picker_to_it() {
+    let input = Input::bound(START, "", Echo::IfChanged);
+
+    input.press_saturation(0.8, 0.1);
+    let nudged = input
+        .emissions()
+        .last()
+        .cloned()
+        .expect("the press reports");
+    assert_eq!(
+        input.store().get(),
+        nudged,
+        "the handler wrote the nudge back"
+    );
+
+    input.store().set(BLUE.to_string()); // a peer
+
+    assert_eq!(
+        input.emissions(),
+        vec![nudged.clone()],
+        "a peer's write is not an author's act; nothing more is reported"
+    );
+    assert_eq!(
+        input.store().get(),
+        BLUE,
+        "the peer's colour must not be clobbered by a stale re-emission"
+    );
+    input.assert_picker_at(BLUE, "the picker follows the peer");
+    assert_eq!(input.field_text(), BLUE);
+    assert_eq!(
+        input.published(),
+        vec![START.to_string(), nudged, BLUE.to_string()],
+        "the store saw the seed, the nudge and the peer's colour — nothing else"
+    );
+}
+
+/// The swatch is painted in valid CSS whatever notation the colour arrived
+/// in. `parse_color` accepts spellings CSS does not — bare hex without the
+/// `#`, legacy `hsl()` with bare-number saturation and lightness — so a raw
+/// `background-color` would be dropped by the CSS engine while the field and
+/// the picker both show the colour. An alpha the display format cannot spell
+/// is kept: the swatch renders what the colour actually holds.
+#[test]
+fn the_swatch_is_painted_in_valid_css_whatever_notation_arrived() {
+    let input = Input::unbound("ff0000");
+    assert_eq!(input.field_text(), "#ff0000");
+    assert!(
+        input
+            .swatch_style()
+            .starts_with("background-color: #ff0000;"),
+        "a bare-hex seed paints as CSS: {}",
+        input.swatch_style()
+    );
+
+    let input = Input::bound(START, "hex", Echo::Never);
+    input.store().set("hsl(200, 3, 49)".to_string());
+    assert_eq!(input.field_text(), LOW_CHROMA_HEX);
+    assert!(
+        input
+            .swatch_style()
+            .starts_with("background-color: #797e81;"),
+        "a legacy hsl store value paints as CSS: {}",
+        input.swatch_style()
+    );
+
+    input.store().set("#ff000080".to_string());
+    assert_eq!(
+        input.field_text(),
+        "#ff0000",
+        "the field cannot spell the alpha"
+    );
+    assert!(
+        input
+            .swatch_style()
+            .starts_with("background-color: #ff000080;"),
+        "the swatch keeps the alpha the field drops: {}",
+        input.swatch_style()
+    );
 }

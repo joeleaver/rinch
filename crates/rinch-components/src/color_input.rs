@@ -131,9 +131,14 @@ impl Component for ColorInput {
             input_group.set_attribute("data-rid", &handler_id.to_string());
         }
 
-        // Preview swatch
+        // Preview swatch. Painted in the alpha-carrying spelling of the
+        // display format (`swatch_spelling`): `parse_color` accepts notations
+        // CSS does not — a bare `ff0000`, a legacy `hsl(200, 3, 49)` — which
+        // a raw `background-color` would silently drop, and the swatch keeps
+        // an alpha the field's display format cannot spell.
+        let swatch_spelling = move |value: &str| display_spelling(value, color_format.with_alpha());
         let preview = ColorSwatch {
-            color: initial_color.clone(),
+            color: swatch_spelling(&initial_color),
             size: "22px".into(),
             radius: "sm".into(),
             ..Default::default()
@@ -349,7 +354,7 @@ impl Component for ColorInput {
                         "style",
                         &format!(
                             "background-color: {}; border-radius: var(--rinch-radius-sm)",
-                            val
+                            swatch_spelling(&val)
                         ),
                     );
                 }
