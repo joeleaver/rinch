@@ -201,6 +201,12 @@ So a notes field takes line breaks with no ceremony, a chat composer sends on
 Enter and takes a break on Shift+Enter, and a single-line `<input>` is
 unchanged — a line break is not representable in its value.
 
+`onsubmit` is read the way `onchange` is: from the control, then up its
+ancestors, so an `onsubmit` on the wrapper around a field submits that field.
+One backend difference to know about: on web, **Shift+Enter in an `<input>`
+does nothing** (the browser's own Enter path is what desktop's commit stands
+in for), while on desktop it commits like a plain Enter.
+
 The break is an ordinary edit: it moves the caret, fires `oninput` with the new
 value (`\n` included) and is one Backspace away from gone. On Android the soft
 keyboard is told per focused field which kind it is serving, so a `<textarea>`

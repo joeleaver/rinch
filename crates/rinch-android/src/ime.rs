@@ -66,17 +66,28 @@ pub fn show_keyboard() {
 /// Call this *before* [`show_keyboard`] when focus arrives, so the session the
 /// keyboard opens is already the right kind. Both hop to the UI thread through
 /// the same handler queue, so they stay in that order.
-pub fn set_multiline(multiline: bool) {
+///
+/// Returns whether the push actually reached Java. The caller mirrors what it
+/// last pushed (to avoid restarting the input session for a field of the same
+/// kind), and a mirror advanced past a call that never landed would claim the
+/// keyboard had been told something it had not — with nothing left to push it
+/// again. So a failed call must not advance it.
+#[must_use = "a push that did not land must not advance the caller's mirror"]
+pub fn set_multiline(multiline: bool) -> bool {
     bridge::with_activity(|env, activity| {
-        if let Err(e) = env.call_method(
+        match env.call_method(
             activity,
             "setInputMultiline",
             "(Z)V",
             &[JValue::Bool(multiline as jni::sys::jboolean)],
         ) {
-            log::warn!("setInputMultiline failed: {e}");
+            Ok(_) => true,
+            Err(e) => {
+                log::warn!("setInputMultiline failed: {e}");
+                false
+            }
         }
-    });
+    })
 }
 
 pub fn hide_keyboard() {

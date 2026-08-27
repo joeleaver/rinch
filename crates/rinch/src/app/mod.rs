@@ -1489,7 +1489,7 @@ impl RinchApp {
                     d.tree
                         .get(nid)
                         .and_then(|n| n.attributes.get("value").cloned()),
-                    d.tree.get(nid).and_then(|n| n.tag()) == Some("textarea"),
+                    Self::node_is_textarea(&d.tree, nid),
                 )
             }
             _ => (None, None, false),
@@ -1516,15 +1516,21 @@ impl RinchApp {
             // (a no-op when nothing was rewritten, so the caret stays put).
             self.adopt_focused_input_value_from_dom();
         }
-        // Post-change submit resolution — see the comment above.
-        let submit_handler_id = node_id.and_then(|nid| {
-            let doc = self.doc.as_ref()?;
-            let d = doc.borrow();
-            d.tree
-                .get(nid)
-                .and_then(|n| n.attributes.get("data-onsubmit"))
-                .and_then(|s| s.parse::<usize>().ok())
-        });
+        // Post-change submit resolution — see the comment above. Resolved by
+        // walking **up**, like `data-onchange`: the web backend's keydown
+        // delegation fires the nearest ancestor's `data-onsubmit`, so a field
+        // wrapped in a submitting container has to mean the same thing here —
+        // all the more now that the fallback is an insert rather than a
+        // no-op. A freed id is no handler at all (issue #141): dispatching it
+        // would swallow Enter, and in a `<textarea>` that means no line break
+        // can be typed until the field re-renders.
+        let submit_handler_id = node_id
+            .and_then(|nid| {
+                let doc = self.doc.as_ref()?;
+                let d = doc.borrow();
+                Self::input_attr_handler_up(&d.tree, nid, "data-onsubmit")
+            })
+            .filter(|&hid| events::has_click_handler(events::EventHandlerId(hid)));
 
         // A `<textarea>` is the one control where Enter has a second meaning:
         // insert a line break. Which of the two it takes follows the web
@@ -1543,7 +1549,16 @@ impl RinchApp {
         // representable in a single-line value, so Enter there stays a commit
         // (and Shift+Enter with it — leaving a modifier that does nothing at
         // all would be a regression bought for nothing).
-        let insert_newline = is_textarea && (shift || submit_handler_id.is_none());
+        //
+        // A composition in flight is nobody's line break: the preedit is not in
+        // the document yet, and the painter splices it into `value` at
+        // `data-cursor-pos`, so inserting here would move the caret out from
+        // under the composition and drop the `\n` in the middle of it. The web
+        // backend skips its Enter path on `isComposing` for the same reason —
+        // that Enter belongs to the IME, confirming the candidate.
+        let insert_newline = is_textarea
+            && self.focused_input_preedit.is_none()
+            && (shift || submit_handler_id.is_none());
 
         if insert_newline {
             // Through the ordinary edit path, so the break is one undo step,

@@ -314,3 +314,99 @@ fn only_a_focused_textarea_is_multiline() {
         "a single-line <input> keeps the action key it always had"
     );
 }
+
+/// `data-onsubmit` on an **ancestor** counts, exactly as it does on the web:
+/// `rinch-web`'s keydown delegation walks up to the nearest one, and desktop
+/// already walks up for `data-onchange` (#244). Resolving only the field's own
+/// attribute would make a wrapped composer insert where the browser sends —
+/// and the insert is new, so the divergence would be new too.
+#[test]
+fn an_ancestor_submit_handler_wins_over_the_break() {
+    let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let input_id = register_input_handler(InputCallback::new(|_| {}));
+    let submit_id = rinch_core::register_handler(std::rc::Rc::new({
+        let log = log.clone();
+        move || log.borrow_mut().push("submit".to_string())
+    }));
+
+    let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let id_in = id.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        // The submitting wrapper — a form-like container, not the control.
+        root.set_attribute("data-onsubmit", &submit_id.0.to_string());
+        let field = scope.create_element("textarea");
+        field.set_attribute("style", "width: 200px; height: 60px");
+        field.set_attribute("data-oninput", &input_id.0.to_string());
+        root.append_child(&field);
+        id_in.set(Some(field.node_id().0));
+        root
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    let field_id = id.get().expect("node id captured at mount");
+
+    focus(&mut app, field_id);
+    type_str(&mut app, "a");
+    key(&mut app, KeyCode::Enter, None, false);
+
+    assert_eq!(value(&app, field_id), "a", "the wrapper's submit won");
+    assert_eq!(*log.borrow(), vec!["submit".to_string()]);
+}
+
+/// A `data-onsubmit` whose handler was freed with its scope (issue #141) is no
+/// handler at all. Dispatching the dead id would eat the key and leave a
+/// `<textarea>` with no way to take a line break at all — the same trap the
+/// change path guards with `has_input_handler`.
+#[test]
+fn a_freed_submit_handler_takes_the_break_instead() {
+    let (mut app, id, log) = mount("textarea", true);
+
+    focus(&mut app, id);
+    let submit_id = {
+        let d = app.doc.as_ref().unwrap().borrow();
+        d.tree
+            .get(id)
+            .and_then(|n| n.attributes.get("data-onsubmit"))
+            .and_then(|s| s.parse::<usize>().ok())
+            .expect("the mount wired data-onsubmit")
+    };
+    rinch_core::events::unregister_handler(rinch_core::events::EventHandlerId(submit_id));
+
+    key(&mut app, KeyCode::Enter, None, false);
+
+    assert_eq!(value(&app, id), "\n", "the break, not a swallowed key");
+    assert!(
+        !log.borrow().contains(&"submit".to_string()),
+        "a freed handler cannot have run: {:?}",
+        log.borrow()
+    );
+}
+
+/// Enter during an IME composition belongs to the IME — it confirms the
+/// candidate (the web backend skips its Enter path on `isComposing` for this
+/// reason). The preedit is not in the document, and the painter splices it into
+/// `value` at `data-cursor-pos`, so a break inserted here would land inside the
+/// composition and drag the caret out from under it.
+#[test]
+fn enter_during_a_composition_inserts_nothing() {
+    let (mut app, id, _log) = mount("textarea", false);
+
+    focus(&mut app, id);
+    type_str(&mut app, "a");
+    app.handle_event(
+        PlatformEvent::Ime(ImeEvent::Preedit {
+            text: "ni".to_string(),
+            cursor: None,
+        }),
+        (800, 600),
+        1.0,
+    );
+    key(&mut app, KeyCode::Enter, None, false);
+
+    assert_eq!(
+        value(&app, id),
+        "a",
+        "the composition's Enter is the IME's, not a line break"
+    );
+}

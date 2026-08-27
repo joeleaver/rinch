@@ -305,7 +305,15 @@ impl RinchApp {
         };
         let Some(doc) = &self.doc else { return false };
         let d = doc.borrow();
-        d.tree.get(node_id).and_then(|n| n.tag()) == Some("textarea")
+        Self::node_is_textarea(&d.tree, node_id)
+    }
+
+    /// Whether `node_id` is a `<textarea>` — the one control tag whose value
+    /// can hold a line break. One predicate for both readers of it (the Enter
+    /// key path's insert-or-submit decision and the soft-keyboard flag above),
+    /// so they cannot drift apart.
+    pub(crate) fn node_is_textarea(tree: &rinch_dom::NodeTree, node_id: usize) -> bool {
+        tree.get(node_id).and_then(|n| n.tag()) == Some("textarea")
     }
 
     /// Whether a generic focusable node (`tabindex`, `FocusTarget::Node`,

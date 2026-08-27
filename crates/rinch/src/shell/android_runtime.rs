@@ -258,9 +258,14 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         // field-to-field moves are invisible to it, so the change has to be
         // announced here or not at all.
         let needs_multiline = app.focused_input_is_multiline();
-        if needs_multiline != keyboard_multiline {
+        if needs_multiline != keyboard_multiline
+            && rinch_android::ime::set_multiline(needs_multiline)
+        {
+            // Advance the mirror only for a push that landed: a dropped one
+            // would leave it claiming a kind the keyboard was never told
+            // about, and nothing else ever pushes this. A failure retries on
+            // the next turn of the loop.
             keyboard_multiline = needs_multiline;
-            rinch_android::ime::set_multiline(needs_multiline);
         }
 
         // Show/hide soft keyboard based on input focus
