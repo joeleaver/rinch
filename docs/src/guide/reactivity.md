@@ -151,18 +151,32 @@ Effect::new(move || {
 
 ## Memory Management with Scopes
 
-Effects continue running until disposed. Use `Scope` to manage their lifetime:
+Reactive resources continue to exist until something disposes them. Usually that
+something is implicit: a `Scope::run(f)` makes that scope the **ambient owner**
+for `f`, so every `Signal`, `Memo`, `Effect` and event handler created inside is
+attributed to it and freed when it is disposed. Rendering runs under a scope, so
+component state is cleaned up without you asking.
 
 ```rust
 let scope = Scope::new();
 
-// Register effects with the scope
-let effect = Effect::new(|| { /* ... */ });
-scope.add_effect(effect);
+scope.run(|| {
+    let count = Signal::new(0);          // owned by `scope`
+    Effect::new(move || { count.get(); }); // owned by `scope`
+});
 
-// When scope is dropped, all effects are disposed
-drop(scope);
+scope.dispose(); // both are freed
 ```
+
+`scope.add_effect(effect)` is the manual path, for an effect built outside the
+scope that should still die with it.
+
+**With no ambient owner, a resource has app lifetime** — which is why signals
+created in `main()` or in startup code keep working untouched. Because handles
+are `Copy` and can outlive their values, reads of a freed handle panic while
+writes are warn-once no-ops; use `try_get()` / `is_alive()` when a handle may
+legitimately be gone. See
+[Lifetimes](./hooks.md#lifetimes-what-owns-your-state) for the full story.
 
 ## Next Steps
 

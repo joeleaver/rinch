@@ -508,8 +508,8 @@ struct MemoSlot {
     inner: Rc<dyn Any>, // Type-erased Rc<MemoInner<T>>
     /// The memo's dirty-marker effect, which holds the *second* strong
     /// reference to the same `MemoInner`. Recorded here because the slot is
-    /// type-erased: freeing a memo has to clear `EFFECTS[observer]` too, and a
-    /// type-erased caller cannot downcast to reach `MemoInner::id`.
+    /// type-erased: freeing a memo has to remove the marker's `EFFECTS` entry
+    /// too, and a type-erased caller cannot downcast to reach `MemoInner::id`.
     observer: ObserverId,
     generation: u32,
 }
@@ -595,10 +595,7 @@ pub(crate) fn free_memo(id: u32, generation: u32) {
     else {
         return;
     };
-    let marker = effect::EFFECTS.with(|effects| {
-        let mut effects = effects.borrow_mut();
-        effects.get_mut(observer.0).and_then(|slot| slot.take())
-    });
+    let marker = effect::EFFECTS.with(|effects| effects.borrow_mut().remove(&observer));
     drop(marker);
     drop(inner);
 }
