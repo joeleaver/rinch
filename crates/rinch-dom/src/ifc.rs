@@ -690,6 +690,22 @@ impl RinchDocument {
         self.cleanup_anonymous_block_boxes();
         self.create_anonymous_block_boxes();
 
+        // `ifc_root` is *derived* state — "this node's boxes are drawn by that
+        // IFC, so the paint tree-walk must skip it" — and the marking pass below
+        // only ever *sets* it. Nothing clears it when a node stops being inline
+        // content: `clear_ifc_root_recursive` only fires on the subtree being
+        // moved, so a `display:contents` wrapper that was IFC content in an
+        // earlier pass keeps its mark forever once content is appended *into* it
+        // (an `if` branch that starts hidden, a reactive component whose root
+        // turns block-level, a `for` list that starts empty). Paint then skips
+        // that wrapper and everything under it, which is exactly the bug this
+        // module's contents handling exists to avoid. This pass recomputes every
+        // mark, so reset them all first rather than trying to invalidate at each
+        // mutation site.
+        for (_id, node) in self.tree.nodes.iter_mut() {
+            node.ifc_root = None;
+        }
+
         let mut ifc_roots: Vec<usize> = Vec::new();
         for (id, node) in &self.tree.nodes {
             if !node.is_element() {
@@ -829,11 +845,8 @@ impl RinchDocument {
     /// rather than regressed.
     fn contents_wraps_only_inline(nodes: &slab::Slab<Node>, root_id: usize) -> bool {
         let mut found_contents_inline = false;
-        if Self::scan_contents_children(nodes, root_id, &mut found_contents_inline) {
-            found_contents_inline
-        } else {
-            false
-        }
+        Self::scan_contents_children(nodes, root_id, &mut found_contents_inline)
+            && found_contents_inline
     }
 
     /// Whether a `display:contents` node is *transparent to the surrounding
@@ -845,16 +858,16 @@ impl RinchDocument {
     /// content. A wrapper like that is NOT part of the ancestor's IFC: its
     /// blocks are ordinary in-flow boxes that the paint tree-walk must descend
     /// into. Marking it with `ifc_root` (which tells paint "the IFC draws this,
-    /// skip it") would silently drop the whole subtree from the scene (#61
-    /// regression: rows kept their layout boxes but were never drawn).
+    /// skip it") would silently drop the whole subtree from the scene (the
+    /// regression `a433811` introduced: rows kept their layout boxes but were
+    /// never drawn).
     ///
     /// Unlike [`Self::contents_wraps_only_inline`] this does not require that
     /// inline content actually be found: an empty or comment-only wrapper has
     /// nothing to paint either way, and treating it as transparent keeps
     /// document order intact for the inline content around it.
     fn contents_is_inline_transparent(nodes: &slab::Slab<Node>, node_id: usize) -> bool {
-        let mut found_inline = false;
-        Self::scan_contents_children(nodes, node_id, &mut found_inline)
+        Self::scan_contents_children(nodes, node_id, &mut false)
     }
 
     /// Recursively classify `node_id`'s children, descending only through
@@ -873,6 +886,11 @@ impl RinchDocument {
                 None => continue,
             };
             if child.is_comment() {
+                continue;
+            }
+            // `display:none` generates no box at all, so it is neither inline
+            // content nor a block-level box that could break the inline flow.
+            if child.computed_style.display == DisplayValue::None {
                 continue;
             }
             if child.computed_style.display == DisplayValue::Contents {
@@ -894,11 +912,14 @@ impl RinchDocument {
     ///
     /// Direct inline children behave exactly as before (removed from the root's
     /// Taffy node so Parley lays them out, `ifc_root` set). A `display:contents`
-    /// wrapper generates no box, so it is transparent: it is marked with this
-    /// root's id (so IFC discovery finds this container and paint skips the
-    /// wrapper in the normal tree walk) and recursed into, so its inline
-    /// grandchildren — which `sync_display_contents` reparented into `root_taffy`
-    /// — are detached and joined to this IFC too (issue #61).
+    /// wrapper generates no box, so it is transparent *when it wraps no
+    /// block-level box*: it is then marked with this root's id (so IFC discovery
+    /// finds this container and paint skips the wrapper in the normal tree walk)
+    /// and recursed into, so its inline grandchildren — which
+    /// `sync_display_contents` reparented into `root_taffy` — are detached and
+    /// joined to this IFC too (issue #61). A wrapper that *does* hold a block box
+    /// is left unmarked and ends the marking pass, mirroring
+    /// [`Self::walk_inline_children`], which stops building the line there.
     fn mark_inline_descendants(
         &mut self,
         root_id: usize,
@@ -922,8 +943,16 @@ impl RinchDocument {
                 // child, a component's subtree) keeps `ifc_root == None` so the
                 // paint tree-walk still descends into it — marking it would
                 // make paint skip the wrapper and every box beneath it.
+                //
+                // `break`, not `continue`: `walk_inline_children` treats such a
+                // wrapper exactly like the block it wraps and *stops* building
+                // the line at it, so anything after it never reaches Parley.
+                // Marking a later sibling would make paint skip a box that the
+                // IFC then never draws — the same silent disappearance, one
+                // sibling along. Stopping here leaves those boxes in Taffy, so
+                // they still lay out and paint (as a block would after a block).
                 if !Self::contents_is_inline_transparent(&self.tree.nodes, child_id) {
-                    continue;
+                    break;
                 }
                 if let Some(c) = self.tree.nodes.get_mut(child_id) {
                     c.ifc_root = Some(root_id);
