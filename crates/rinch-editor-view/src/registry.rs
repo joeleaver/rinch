@@ -13,6 +13,15 @@
 
 use std::cell::RefCell;
 
+// Whether a drag-select owned by `owner` may be read or ended while `caller`'s
+// events are being dispatched (issue #139). The rule lives in rinch-core so the
+// pointer-capture drag (`ActiveDrag::is_foreign`) and this anchor cannot drift
+// apart: `None` on either side means "no document in particular", and only two
+// `Some` keys that differ are refused. rinch-web passes `None` throughout — one
+// page, one pointer stream, one mouseup listener that must be able to end
+// whatever is in flight.
+use rinch_core::doc_matches as same_doc;
+
 use crate::handle::EditorHandle;
 
 thread_local! {
@@ -22,30 +31,33 @@ thread_local! {
     /// documents on one thread (two embedded `RinchContext`s, or two desktop
     /// windows) can both hold an editor at the same container id (issue #134).
     static EDITORS: RefCell<Vec<(u64, usize, EditorHandle)>> = const { RefCell::new(Vec::new()) };
-    /// An in-progress pointer drag-select: `(doc, container id, anchor
-    /// position)`. Keyed by document for the same reason [`EDITORS`] is —
-    /// container ids are per-document slab indices, and a thread can pump two
-    /// documents' pointer streams through this one slot (issue #139).
-    static DRAG: RefCell<Option<(Option<u64>, usize, usize)>> = const { RefCell::new(None) };
-}
-
-/// Whether a drag-select owned by `owner` may be read or ended while `caller`'s
-/// events are being dispatched (issue #139).
-///
-/// Permissive, mirroring `ActiveDrag::is_foreign` in rinch-core: `None` on
-/// either side means "no document in particular", and only two `Some` keys that
-/// differ are refused. rinch-web passes `None` throughout — one page, one
-/// pointer stream, one mouseup listener that must be able to end whatever is in
-/// flight.
-fn same_doc(owner: Option<u64>, caller: Option<u64>) -> bool {
-    !matches!((owner, caller), (Some(a), Some(b)) if a != b)
+    /// In-progress pointer drag-selects as `(doc, container id, anchor
+    /// position)` — **at most one per document**, exactly as [`EDITORS`] holds
+    /// at most one handle per `(doc, container)`.
+    ///
+    /// Keyed by document for the same reason [`EDITORS`] is: container ids are
+    /// per-document slab indices, and a thread can pump two documents' pointer
+    /// streams through this registry (issue #139). A *list*, not one slot, for
+    /// the second half of that reason — with a single slot the two documents
+    /// still contend for it, so B's mousedown would wipe the anchor A is still
+    /// dragging from, and A's mouseup could then no longer clear the entry it no
+    /// longer owns.
+    static DRAG: RefCell<Vec<(Option<u64>, usize, usize)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Begin a pointer drag-select at `anchor` (a `Pos.0`) in editor `container` of
 /// the document `doc` (`None` for a runtime with a single page-wide pointer
 /// stream — see [`drag_anchor`]).
+///
+/// Replaces `doc`'s own in-progress drag-select, and only that one: a second
+/// document's anchor is left in place, because the gesture it belongs to is
+/// still being made.
 pub fn begin_drag(doc: Option<u64>, container: usize, anchor: usize) {
-    DRAG.with(|d| *d.borrow_mut() = Some((doc, container, anchor)));
+    DRAG.with(|d| {
+        let mut drags = d.borrow_mut();
+        drags.retain(|(owner, _, _)| !same_doc(*owner, doc));
+        drags.push((doc, container, anchor));
+    });
 }
 
 /// The active drag-select `(container id, anchor position)` for the document
@@ -57,8 +69,9 @@ pub fn begin_drag(doc: Option<u64>, container: usize, anchor: usize) {
 pub fn drag_anchor(doc: Option<u64>) -> Option<(usize, usize)> {
     DRAG.with(|d| {
         d.borrow()
-            .filter(|(owner, _, _)| same_doc(*owner, doc))
-            .map(|(_, container, anchor)| (container, anchor))
+            .iter()
+            .find(|(owner, _, _)| same_doc(*owner, doc))
+            .map(|(_, container, anchor)| (*container, *anchor))
     })
 }
 
@@ -66,10 +79,8 @@ pub fn drag_anchor(doc: Option<u64>) -> Option<(usize, usize)> {
 /// document's drag-select is left alone: its mouseup has not happened yet.
 pub fn end_drag(doc: Option<u64>) {
     DRAG.with(|d| {
-        let mut slot = d.borrow_mut();
-        if slot.is_some_and(|(owner, _, _)| same_doc(owner, doc)) {
-            *slot = None;
-        }
+        d.borrow_mut()
+            .retain(|(owner, _, _)| !same_doc(*owner, doc))
     });
 }
 
@@ -215,6 +226,40 @@ mod tests {
 
         end_drag(Some(dk_a));
         assert_eq!(drag_anchor(Some(dk_a)), None, "A's own mouseup ends it");
+    }
+
+    /// Two documents may drag-select **at once**, and neither one's mousedown
+    /// disturbs the other's anchor (issue #139).
+    ///
+    /// Scoping only the *reads* would be half a fix: with a single shared slot
+    /// B's mousedown still overwrites the anchor A is dragging from, and A's
+    /// mouseup can then no longer clear the entry — because A no longer owns it
+    /// — so B's stale anchor outlives its own gesture and A's is simply gone.
+    #[test]
+    fn two_documents_drag_select_without_disturbing_each_other() {
+        let (dk_a, dk_b) = (33, 44);
+        end_drag(None);
+
+        begin_drag(Some(dk_a), 7, 3);
+        begin_drag(Some(dk_b), 7, 90); // same container id — per-document slab indices collide
+
+        assert_eq!(
+            drag_anchor(Some(dk_a)),
+            Some((7, 3)),
+            "B's mousedown must not overwrite the anchor A is still dragging from"
+        );
+        assert_eq!(drag_anchor(Some(dk_b)), Some((7, 90)), "…nor B's own");
+
+        end_drag(Some(dk_a));
+        assert_eq!(drag_anchor(Some(dk_a)), None, "A's mouseup ends A's");
+        assert_eq!(
+            drag_anchor(Some(dk_b)),
+            Some((7, 90)),
+            "and leaves B's, whose mouseup has not happened yet"
+        );
+
+        end_drag(Some(dk_b));
+        assert_eq!(drag_anchor(Some(dk_b)), None);
     }
 
     /// A runtime with one page-wide pointer stream (rinch-web) passes `None`

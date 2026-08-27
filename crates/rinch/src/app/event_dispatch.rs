@@ -49,11 +49,12 @@ impl RinchApp {
             PlatformEvent::MouseMove { x, y } => {
                 self.cursor_pos = Some((x, y));
 
-                // New editor (M5): extend an in-progress drag-select.
+                // New editor (M5): extend an in-progress drag-select. The
+                // `drag_anchor` lookup lives inside `extend_editor_drag`, which
+                // answers `false` when this document has no drag-select — no
+                // need to run it twice on every single pointer move.
                 #[cfg(feature = "desktop")]
-                if crate::editor::drag_anchor(self.input_doc()).is_some()
-                    && self.extend_editor_drag(x, y, scale_factor, window_size)
-                {
+                if self.extend_editor_drag(x, y, scale_factor, window_size) {
                     actions.push(AppAction::RequestRedraw);
                     return actions;
                 }
@@ -2326,9 +2327,10 @@ impl RinchApp {
     /// `doc_key()` answers `0` until `self.doc` is assigned while `next_doc_key`
     /// starts at `1`, so `Some(0)` would read as a real — and *shared* —
     /// document identity. Two pre-mount apps would then look like the same one.
+    /// The sentinel rule is [`rinch_core::doc_identity`]'s, not a second copy of
+    /// it: `push_dispatching_doc` applies the very same one to the very same key.
     fn input_doc(&self) -> Option<u64> {
-        let key = self.doc_key();
-        (key != 0).then_some(key)
+        rinch_core::doc_identity(self.doc_key())
     }
 
     /// Copy the focused editor's selection to the clipboard as both `text/html`

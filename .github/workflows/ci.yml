@@ -83,9 +83,6 @@ jobs:
           cargo test -p rinch-editor-core --features serde,markdown
           cargo test -p rinch-editor-view --features collaboration
           cargo test -p rinch --features embed,theme,clipboard
-          # Named explicitly so a future change to the feature set above cannot
-          # silently retire the #139 pins (same features, so no extra rebuild).
-          cargo test -p rinch --features embed,theme,clipboard --test input_routing
 
   clippy:
     runs-on: ubuntu-latest

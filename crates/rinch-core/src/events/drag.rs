@@ -85,10 +85,16 @@ struct ActiveDrag {
     /// The document whose event stream armed this drag, if any (issue #139).
     ///
     /// `ACTIVE_DRAG` is one thread-local slot, but a thread can pump several
-    /// documents' pointer streams through it: a desktop app and its DevTools
-    /// panel are two `RinchApp`s on one thread, and so are two embedded
-    /// `RinchContext`s. Unscoped, the *other* document's `MouseMove` drives this
-    /// drag with its own window's coordinates and its `MouseUp` **commits** it.
+    /// documents' pointer streams through it: two embedded `RinchContext`s
+    /// driven from one host event loop, or a desktop app and its DevTools panel
+    /// (two `RinchApp`s on one thread). Unscoped, the *other* document's
+    /// `MouseMove` drives this drag with its own window's coordinates and its
+    /// `MouseUp` **commits** it.
+    ///
+    /// Two desktop *windows* do not cross-feed a plain mouse drag — the pointer
+    /// is grabbed to the pressing window while a button is held — but an embed
+    /// host feeding several contexts does, and so does any drag left live past a
+    /// missed `MouseUp`.
     ///
     /// Same `Option` semantics as [`ActiveDrag::owner`], for the same reason —
     /// but answering a different question. `owner` asks "is the arming component
@@ -114,10 +120,7 @@ impl ActiveDrag {
     /// currently dispatching (issue #139). Permissive by construction: only two
     /// known-and-different keys count as foreign.
     fn is_foreign(&self) -> bool {
-        matches!(
-            (self.doc, crate::context::current_dispatching_doc()),
-            (Some(armed), Some(dispatching)) if armed != dispatching
-        )
+        !crate::context::doc_matches(self.doc, crate::context::current_dispatching_doc())
     }
 }
 
@@ -325,9 +328,10 @@ impl Drag {
     /// text selection on this, and a stale `true` would wedge all three.
     ///
     /// Answers `false` while *another* document's events are being dispatched
-    /// (issue #139): a drag in the main window must not freeze hover in the
-    /// DevTools window. The drag itself is left intact — this is a question
-    /// about the caller's event stream, not about the drag's validity.
+    /// (issue #139): a drag held in one document must not freeze hover, surface
+    /// events or text selection in a second document sharing the thread. The
+    /// drag itself is left intact — this is a question about the caller's event
+    /// stream, not about the drag's validity.
     pub fn is_active() -> bool {
         discard_if_abandoned();
         ACTIVE_DRAG.with(|drag| {
@@ -343,6 +347,12 @@ impl Drag {
     /// bounds and mouse position at the moment `start()` was called, which is
     /// useful for computing offsets in `Drag::absolute()` mode.
     ///
+    /// Also `None` while *another* document's events are being dispatched, for
+    /// the same reason [`Drag::is_active`] answers `false` there (issue #139):
+    /// every field of this context — `element_x/y`, `mouse_x/y` — is in the
+    /// arming window's coordinate space, so handing it to a second window is
+    /// not a near-miss but a number from a surface it has never seen.
+    ///
     /// ```ignore
     /// // In an on_move callback or elsewhere while drag is active:
     /// if let Some(ctx) = Drag::start_context() {
@@ -351,7 +361,12 @@ impl Drag {
     /// }
     /// ```
     pub fn start_context() -> Option<ClickContext> {
-        ACTIVE_DRAG.with(|drag| drag.borrow().as_ref().map(|d| d.start_context))
+        ACTIVE_DRAG.with(|drag| {
+            drag.borrow()
+                .as_ref()
+                .filter(|state| !state.is_foreign())
+                .map(|d| d.start_context)
+        })
     }
 }
 
@@ -618,6 +633,11 @@ mod tests {
                 "document B must not see another document's drag — is_active \
                  gates hover, surface events and text selection in B"
             );
+            assert!(
+                Drag::start_context().is_none(),
+                "nor may B read A's start context — every field of it (element \
+                 bounds, mouse position) is in A's window's coordinate space"
+            );
             assert_eq!(update_drag(999.0, 999.0), (false, false));
             finish_drag(999.0, 999.0);
         }
@@ -632,6 +652,10 @@ mod tests {
         {
             let _a = push_dispatching_doc(1);
             assert!(Drag::is_active(), "the drag is still A's, and still live");
+            assert!(
+                Drag::start_context().is_some(),
+                "and A still reads its own start context"
+            );
             assert_eq!(update_drag(10.0, 20.0), (true, false));
             finish_drag(30.0, 40.0);
         }

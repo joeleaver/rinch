@@ -2,15 +2,24 @@
 //! document that armed it.
 //!
 //! `ACTIVE_DRAG` (`rinch-core/src/events/drag.rs`) is one thread-local slot, but
-//! a thread routinely pumps *two* documents' pointer streams through it — and
-//! not only under the `embed` feature. A plain desktop build opens a second
-//! `RinchApp` for the DevTools panel (`shell/rinch_runtime.rs`) and feeds it
-//! pointer events directly, so with no scoping:
+//! a thread can pump *two* documents' pointer streams through it. With no
+//! scoping:
 //!
-//! * a drag armed in the main window is driven by pointer moves over DevTools,
-//!   with DevTools-relative coordinates — the slider jumps; and
-//! * releasing over DevTools **commits** it (`on_end` is the commit callback),
+//! * a drag armed in document A is driven by pointer moves fed to document B,
+//!   with B-relative coordinates — the slider jumps; and
+//! * a release fed to B **commits** it (`on_end` is the commit callback),
 //!   which is the worse half and is invisible to a move-only test.
+//!
+//! The reachable shape is **one host pumping several documents from a single
+//! event stream**: two embedded `RinchContext`s (what these tests build), or a
+//! drag left live past a missed `MouseUp`. It is *not* reachable by simply
+//! dragging a mouse from one desktop window into another: while a button is
+//! held the pointer is grabbed to the pressing window on every platform rinch
+//! targets (X11/Wayland implicit grab, AppKit's mouseDown routing, and winit's
+//! `SetCapture` on Win32), `handle_click` — where a `Drag` is armed — runs from
+//! the `MouseDown` arm (`app/event_dispatch.rs`), and `finish_drag` is
+//! unconditional in the `MouseUp` arm. So a plain mouse drag both begins and
+//! ends inside one window's event stream.
 //!
 //! Each test therefore pins one direction, and the third pins the
 //! counterfactual: "scope by document" is trivially satisfiable by never firing

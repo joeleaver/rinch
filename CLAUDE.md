@@ -871,7 +871,10 @@ armed the drag drives it: another document's `MouseMove` does not reach
 armed **outside** any event dispatch — from a timer, a menu callback, or on
 rinch-web, which has one page-wide pointer stream — belongs to no document in
 particular and stays drivable by anybody. Nothing changes for a single-window
-app.
+app. (Two desktop *windows* do not cross-feed a plain mouse drag on their own —
+the pointer is grabbed to the pressing window while a button is held — so this
+matters for an embed host pumping several contexts from one event stream, and
+for a drag left live past a missed `MouseUp`.)
 
 ### File Drop (OS → App)
 

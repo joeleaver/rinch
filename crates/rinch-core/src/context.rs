@@ -162,8 +162,49 @@ pub fn current_dispatching_doc() -> Option<u64> {
     DISPATCHING_DOC.with(|d| d.get())
 }
 
+/// Read a raw `doc_key` as a document *identity*, or `None` when there is no
+/// document yet (issue #139).
+///
+/// `0` is the "no document yet" sentinel — `RinchApp::doc_key` answers `0` before
+/// its document is assigned, while
+/// [`next_doc_key`](crate::dom::next_doc_key) starts at `1` — so it must never
+/// become `Some(0)`: two pre-mount runtimes would then look like *one shared*
+/// document, which is the mistake that made #134's first caret pass a silent
+/// no-op.
+///
+/// The single home for that rule. Everything that scopes shared input state by
+/// document ([`push_dispatching_doc`], and each runtime's own "what is my key"
+/// helper) reads it through here, so the sentinel cannot be re-derived in one
+/// place and drift in another.
+#[must_use]
+pub fn doc_identity(doc_key: u64) -> Option<u64> {
+    (doc_key != 0).then_some(doc_key)
+}
+
+/// Whether shared input state owned by the document `owner` may be driven, read
+/// or ended by the document `caller` (issue #139).
+///
+/// Permissive by construction: `None` on either side means "no document in
+/// particular" — state armed or queried outside any dispatch (a timer, a menu
+/// callback, a backend with one page-wide event stream like rinch-web) belongs
+/// to nobody and stays usable by anybody. **Only two `Some` keys that differ**
+/// are refused; anything stricter would wedge the state in its *own* document.
+///
+/// The single home for that rule, shared by the pointer-capture drag
+/// (`ActiveDrag::is_foreign`) and the editor's drag-select anchor
+/// (`rinch_editor_view::registry`).
+#[must_use]
+pub fn doc_matches(owner: Option<u64>, caller: Option<u64>) -> bool {
+    !matches!((owner, caller), (Some(a), Some(b)) if a != b)
+}
+
 /// RAII guard returned by [`push_dispatching_doc`]; restores the previous
 /// dispatching document when dropped.
+///
+/// `#[must_use]`: dropping it immediately (`push_dispatching_doc(k);` with no
+/// binding) would silently mark nothing at all, and the resulting
+/// mis-attribution is invisible until two documents share a thread.
+#[must_use = "the marker is only live while the guard is held — bind it, e.g. `let _d = …`"]
 pub struct DispatchDocGuard {
     prev: Option<u64>,
 }
@@ -182,13 +223,9 @@ impl Drop for DispatchDocGuard {
 /// effect flushes, layout — any of which can panic or return early, and a
 /// leaked marker would mis-attribute every later event on the thread.
 ///
-/// A `doc_key` of `0` pushes `None`, not `Some(0)`: `0` is the "no document yet"
-/// sentinel (`RinchApp::doc_key` answers `0` before its document is assigned,
-/// while `next_doc_key` starts at `1`), and treating it as an identity would
-/// make every pre-mount dispatch look like one shared document.
+/// A `doc_key` of `0` pushes `None`, not `Some(0)` — see [`doc_identity`].
 pub fn push_dispatching_doc(doc_key: u64) -> DispatchDocGuard {
-    let next = (doc_key != 0).then_some(doc_key);
-    let prev = DISPATCHING_DOC.with(|d| d.replace(next));
+    let prev = DISPATCHING_DOC.with(|d| d.replace(doc_identity(doc_key)));
     DispatchDocGuard { prev }
 }
 
@@ -786,9 +823,41 @@ mod tests {
     /// cannot tell two windows apart.
     #[test]
     fn the_dispatching_marker_is_independent_of_the_context_root() {
-        let _root = push_context_root(0);
+        // The desktop shape the fix turns on: every window reports root 0 while
+        // the documents differ, so the root cannot stand in for the marker.
+        {
+            let _root = push_context_root(0);
+            let _doc = push_dispatching_doc(42);
+            assert_eq!(current_context_root(), 0);
+            assert_eq!(current_dispatching_doc(), Some(42));
+        }
+        // And the converse, so the test cannot pass by the two simply agreeing:
+        // a non-zero root does not become the marker, and pushing one does not
+        // disturb it.
+        let _root = push_context_root(7);
+        assert_eq!(current_dispatching_doc(), None, "a root is not a document");
         let _doc = push_dispatching_doc(42);
-        assert_eq!(current_context_root(), 0);
+        assert_eq!(current_context_root(), 7, "…and a document is not a root");
         assert_eq!(current_dispatching_doc(), Some(42));
+    }
+
+    /// `doc_identity` and `doc_matches` are the one home for the two rules the
+    /// drag, the drag-select anchor and `RinchApp::input_doc` all apply.
+    #[test]
+    fn the_document_scoping_rules_are_permissive_and_reject_the_zero_sentinel() {
+        assert_eq!(doc_identity(0), None, "0 is 'no document yet', not a key");
+        assert_eq!(doc_identity(1), Some(1));
+
+        assert!(doc_matches(None, None), "nobody's, driven by nobody");
+        assert!(
+            doc_matches(Some(1), None),
+            "a timer/menu caller is permitted"
+        );
+        assert!(doc_matches(None, Some(1)), "unowned state is drivable");
+        assert!(doc_matches(Some(1), Some(1)), "its own document drives it");
+        assert!(
+            !doc_matches(Some(1), Some(2)),
+            "only two known-and-different keys are refused"
+        );
     }
 }
