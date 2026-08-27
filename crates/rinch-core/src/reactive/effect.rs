@@ -11,7 +11,8 @@ thread_local! {
     /// Storage for all effects, needed because effects reference themselves: an
     /// effect is queued and run by *id*, so its closure has to live somewhere
     /// other than the [`Effect`] handle, which the caller is free to drop.
-    pub(super) static EFFECTS: RefCell<EffectRegistry> = RefCell::new(EffectRegistry::default());
+    pub(super) static EFFECTS: RefCell<EffectRegistry> =
+        const { RefCell::new(HashMap::with_hasher(BuildHasherDefault::new())) };
 }
 
 /// The effect registry: [`ObserverId`] → effect.
@@ -32,8 +33,12 @@ thread_local! {
 ///
 /// Nothing iterates this map — every access site is a point lookup by id — so
 /// its unordered iteration cannot leak into that ordering contract.
-pub(super) type EffectRegistry =
-    HashMap<ObserverId, Rc<EffectInner>, BuildHasherDefault<ObserverIdHasher>>;
+pub(super) type EffectRegistry = HashMap<ObserverId, Rc<EffectInner>, ObserverIdBuildHasher>;
+
+/// The `BuildHasher` for every [`ObserverId`]-keyed container on the reactive
+/// hot path — the [`EffectRegistry`] here and `Runtime::pending_effects_set`,
+/// which is probed once per enqueue and once per dequeue.
+pub(crate) type ObserverIdBuildHasher = BuildHasherDefault<ObserverIdHasher>;
 
 /// Hasher for [`ObserverId`] keys: one multiply, no SipHash.
 ///
@@ -49,8 +54,22 @@ pub(super) type EffectRegistry =
 /// identity hash is pathological here, because hashbrown derives its control
 /// byte from the *top* 7 bits and monotonically allocated ids would all land in
 /// one control group. Multiplying distributes the low bits upward.
+///
+/// Every `write_*` **folds** into the running state rather than replacing it, so
+/// the hasher stays correct if a key type ever writes more than once — a
+/// two-field key whose last field matched would otherwise collide outright. The
+/// fold is free for the single-field case: the state starts at `0`, and
+/// `(0 ^ n) * K == n * K`.
 #[derive(Default)]
-pub(super) struct ObserverIdHasher(u64);
+pub(crate) struct ObserverIdHasher(u64);
+
+impl ObserverIdHasher {
+    /// Fold one word into the state. See the type's docs for why it folds.
+    #[inline]
+    fn fold(&mut self, n: u64) {
+        self.0 = (self.0 ^ n).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
 
 impl Hasher for ObserverIdHasher {
     fn finish(&self) -> u64 {
@@ -58,16 +77,15 @@ impl Hasher for ObserverIdHasher {
     }
 
     fn write(&mut self, bytes: &[u8]) {
-        // Never called: `ObserverId`'s derived `Hash` forwards to `write_usize`.
-        // Folding rather than ignoring keeps the hasher correct-by-construction
-        // if the key type ever grows a second field.
+        // Never called for `ObserverId`, whose derived `Hash` forwards to
+        // `write_usize`. Implemented anyway so the hasher is total.
         for &b in bytes {
-            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            self.fold(u64::from(b));
         }
     }
 
     fn write_usize(&mut self, n: usize) {
-        self.0 = (n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.fold(n as u64);
     }
 }
 
@@ -355,11 +373,9 @@ pub(super) fn flush_effects() {
         let effect_id = RUNTIME.with(|rt| {
             let mut rt = rt.borrow_mut();
             let id = rt.pending_effects.pop_front();
-            if id.is_some() {
-                // Remove from set when dequeuing
-                if let Some(ref observer) = id {
-                    rt.pending_effects_set.remove(observer);
-                }
+            // Remove from set when dequeuing.
+            if let Some(ref observer) = id {
+                rt.pending_effects_set.remove(observer);
             }
             id
         });
@@ -368,6 +384,62 @@ pub(super) fn flush_effects() {
             Some(id) => run_effect(id),
             None => break,
         }
+    }
+}
+
+#[cfg(test)]
+mod hasher_tests {
+    use super::*;
+
+    /// Every write folds, so a key that hashes more than one word is not
+    /// reduced to its last word.
+    ///
+    /// `ObserverId` writes exactly one `usize` today, so this is a guard on the
+    /// hasher's stated contract rather than on current behaviour: an assigning
+    /// `write_usize` collides `(1, 2)` with `(9, 2)` outright, silently, the day
+    /// the key type grows a field.
+    #[test]
+    fn writes_fold_rather_than_overwrite() {
+        fn hash_words(words: &[usize]) -> u64 {
+            let mut h = ObserverIdHasher::default();
+            for &w in words {
+                h.write_usize(w);
+            }
+            h.finish()
+        }
+
+        assert_ne!(hash_words(&[1, 2]), hash_words(&[9, 2]));
+        assert_ne!(hash_words(&[1, 2]), hash_words(&[2, 1]));
+        // The single-word case is unchanged by folding: the state starts at 0.
+        assert_eq!(hash_words(&[7]), 7u64.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    }
+
+    /// Consecutive ids — the only keys this map ever sees — land in distinct
+    /// buckets *and* distinct control bytes.
+    ///
+    /// The multiply is what buys the second half: an identity hash leaves the
+    /// top 7 bits (hashbrown's control byte) constant across every id a real
+    /// program allocates.
+    #[test]
+    fn consecutive_ids_spread_across_buckets_and_control_bytes() {
+        use std::collections::HashSet;
+
+        let hashes: Vec<u64> = (0..256usize)
+            .map(|n| {
+                let mut h = ObserverIdHasher::default();
+                h.write_usize(n);
+                h.finish()
+            })
+            .collect();
+
+        let low: HashSet<u64> = hashes.iter().map(|h| h & 0xFF).collect();
+        assert_eq!(low.len(), 256, "bucket index must be a permutation");
+        let control: HashSet<u64> = hashes.iter().map(|h| h >> 57).collect();
+        assert!(
+            control.len() > 64,
+            "control bytes must vary, got {}",
+            control.len()
+        );
     }
 }
 

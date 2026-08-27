@@ -174,9 +174,11 @@ impl Scope {
     /// Make this scope the ambient owner for the duration of `f`.
     ///
     /// Signals, memos, effects and event handlers created inside `f` are
-    /// **attributed** to this scope. Effects are attributed but *not adopted* —
-    /// [`dispose`](Scope::dispose) only disposes effects handed to
-    /// [`add_effect`](Scope::add_effect).
+    /// **attributed** to this scope, and [`dispose`](Scope::dispose) frees every
+    /// one of them (issue #141) — including a fire-and-forget effect whose
+    /// handle was dropped on the spot. [`add_effect`](Scope::add_effect) is the
+    /// separate, manual path, for an effect built *outside* the scope that
+    /// should still die with it.
     ///
     /// This takes `&self`, so it cannot be used where the surrounding code also
     /// needs `&mut` access to a value the closure borrows. The DOM render sites
@@ -459,8 +461,9 @@ fn take_batch<T>(f: impl FnOnce(&mut DisposeCtx) -> &mut Vec<T>) -> Vec<T> {
 /// # Termination
 ///
 /// Every level either does nothing or permanently consumes at least one item:
-/// handler ids are removed from the registries and never re-added, effect slots
-/// are emptied, cleanups are `FnOnce`, memo and signal slots are generation
+/// handler ids are removed from the registries and never re-added, effect
+/// entries are removed from the registry, cleanups are `FnOnce`, memo and
+/// signal slots are generation
 /// guarded so a second free is a no-op, and values are dropped. New work only
 /// arrives by marking a not-yet-disposed scope disposed, and `disposed` is
 /// one-way. The loop is therefore bounded by the number of live scopes, plus
@@ -471,8 +474,8 @@ fn take_batch<T>(f: impl FnOnce(&mut DisposeCtx) -> &mut Vec<T>) -> Vec<T> {
 ///
 /// One case defers to a *later* fixpoint rather than joining this one: a scope
 /// disposed from inside a **running effect**. `run_effect` holds a strong
-/// `Rc<EffectInner>` across the whole body, so `dispose_effect` can only empty
-/// the registry slot — the closure, and any child `RenderScope` it captures, is
+/// `Rc<EffectInner>` across the whole body, so `dispose_effect` can only remove
+/// the registry entry — the closure, and any child `RenderScope` it captures, is
 /// not dropped until that body returns, by which point this fixpoint has exited
 /// and the drop starts a fresh one.
 ///

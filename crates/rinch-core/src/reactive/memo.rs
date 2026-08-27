@@ -119,7 +119,7 @@ impl<T: Clone + 'static> Memo<T> {
         register(id, marker);
 
         // Store in MEMO_STORE and return Copy handle. The marker's ObserverId
-        // rides along so freeing the slot can also clear EFFECTS — the marker
+        // rides along so freeing the slot can also remove the EFFECTS entry — the marker
         // holds the second strong Rc to this same MemoInner.
         let (store_id, generation) =
             MEMO_STORE.with(|store| store.borrow_mut().alloc(inner as Rc<dyn Any>, id));
