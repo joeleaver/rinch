@@ -861,6 +861,21 @@ Drag::cancel();
 Drag::is_active();
 ```
 
+**A drag belongs to the document that armed it (issue #139).** `Drag` state is a
+single thread-local, but a thread can pump several documents' pointer streams
+through it — a desktop window and its DevTools panel are two `RinchApp`s on one
+thread, and so are two embedded `RinchContext`s. Only the document whose events
+armed the drag drives it: another document's `MouseMove` does not reach
+`on_move`, its `MouseUp` does not fire `on_end`, and `Drag::is_active()` answers
+`false` there (so a drag in one window never freezes hover in the other). A drag
+armed **outside** any event dispatch — from a timer, a menu callback, or on
+rinch-web, which has one page-wide pointer stream — belongs to no document in
+particular and stays drivable by anybody. Nothing changes for a single-window
+app. (Two desktop *windows* do not cross-feed a plain mouse drag on their own —
+the pointer is grabbed to the pressing window while a button is held — so this
+matters for an embed host pumping several contexts from one event stream, and
+for a drag left live past a missed `MouseUp`.)
+
 ### File Drop (OS → App)
 
 File drops from the OS use `data-onfiledragenter`, `data-onfiledragleave` attributes, and `register_file_drop_handler` for the actual drop. See the File Drop section of UI Zoo for an example.
