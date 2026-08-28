@@ -233,6 +233,16 @@ pub struct RinchApp {
     /// Whether we have a previous frame's pixels for dirty region caching.
     #[cfg(software_shell)]
     pub(crate) has_previous_frame: bool,
+    /// The framebuffer rect the drag ghost occupied in the frame currently on
+    /// screen, in device pixels — `None` when the last frame drew no ghost.
+    ///
+    /// The ghost is blitted straight into the framebuffer after the document
+    /// paint, so no DOM node owns those pixels and `compute_dirty_region` is
+    /// blind to them. Without carrying the rect forward, the frame that stops
+    /// drawing the ghost never clears where it used to be and it stays on
+    /// screen until something else happens to dirty that area (#173).
+    #[cfg(software_shell)]
+    pub(crate) last_ghost_rect: Option<peniko::kurbo::Rect>,
     /// The data-oninput handler ID for the currently focused text input.
     pub(crate) focused_input_handler_id: Option<usize>,
     /// Current accumulated text value for the focused text input.
@@ -352,6 +362,8 @@ impl RinchApp {
             text_scale: 1.0,
             #[cfg(software_shell)]
             has_previous_frame: false,
+            #[cfg(software_shell)]
+            last_ghost_rect: None,
             focused_input_handler_id: None,
             focused_input_value: String::new(),
             focused_input_baseline: String::new(),
@@ -1086,10 +1098,14 @@ impl RinchApp {
 
             // Compute dirty region before clearing paint_dirty_nodes
             let dirty_region = if self.has_previous_frame && !resized {
-                self.doc.as_ref().and_then(|doc| {
+                let from_nodes = self.doc.as_ref().and_then(|doc| {
                     let d = doc.borrow();
                     rinch_dom::paint::compute_dirty_region(&d.tree, scale, w as f64, h as f64)
-                })
+                });
+                // Where the ghost sat in the frame on screen belongs to no DOM
+                // node, so it has to be added by hand or the frame that stops
+                // drawing it leaves it painted there (#173).
+                Self::union_ghost_rect(from_nodes, self.last_ghost_rect)
             } else {
                 None // Full repaint: first frame or resize
             };
@@ -1182,6 +1198,7 @@ impl RinchApp {
             }
 
             // Paint drag-and-drop snapshot overlay (if not suppressed by drop target)
+            let mut ghost_rect = None;
             if let Some(ref drag) = self.active_dnd {
                 if rinch_core::events::is_drag_ghost_visible() {
                     let dx = (drag.cursor.0 - drag.anchor.0) as i32;
@@ -1196,8 +1213,19 @@ impl RinchApp {
                         dx,
                         dy,
                     );
+                    ghost_rect = Self::ghost_overlay_rect(
+                        dx,
+                        dy,
+                        drag.snapshot_width,
+                        drag.snapshot_height,
+                        w,
+                        h,
+                    );
                 }
             }
+            // Carried into the next frame's dirty region so those pixels get
+            // cleared when the ghost moves on or disappears (#173).
+            self.last_ghost_rect = ghost_rect;
 
             // Paint inspect mode highlight overlay (after all document painting)
             if let Some((x, y, w_r, h_r)) = self.inspect_highlight {
@@ -1230,6 +1258,55 @@ impl RinchApp {
         }
 
         (self.skia_painter.as_ref().unwrap().pixels(), w, h)
+    }
+
+    /// The framebuffer rect `blit_drag_overlay` touches for the same arguments,
+    /// clipped to the surface. `None` when the ghost lands entirely off-screen.
+    ///
+    /// Device (physical) pixels: `dx`/`dy` are the blit's destination offsets
+    /// and `src_w`/`src_h` the snapshot pixmap's size, so this is literally the
+    /// span of framebuffer the blit writes — the same space `compute_dirty_region`
+    /// returns and `clear_rect_*` takes. Deliberately derived from the blit
+    /// arguments rather than re-projected from the cursor: the ghost's position
+    /// then cannot drift from where it was actually drawn, whatever space the
+    /// shell's pointer coordinates turn out to be in (#299).
+    #[cfg(software_shell)]
+    fn ghost_overlay_rect(
+        dx: i32,
+        dy: i32,
+        src_w: u32,
+        src_h: u32,
+        dst_w: u32,
+        dst_h: u32,
+    ) -> Option<peniko::kurbo::Rect> {
+        let x0 = dx.max(0).min(dst_w as i32);
+        let y0 = dy.max(0).min(dst_h as i32);
+        let x1 = (dx + src_w as i32).clamp(0, dst_w as i32);
+        let y1 = (dy + src_h as i32).clamp(0, dst_h as i32);
+        if x0 >= x1 || y0 >= y1 {
+            return None;
+        }
+        Some(peniko::kurbo::Rect::new(
+            x0 as f64, y0 as f64, x1 as f64, y1 as f64,
+        ))
+    }
+
+    /// Fold the previous frame's ghost rect into the dirty region.
+    ///
+    /// `None` in stays `None` out even with a ghost pending: no dirty node
+    /// means the caller takes the full-repaint path, which clears the whole
+    /// framebuffer and so erases the ghost anyway. Answering the ghost's rect
+    /// there would shrink an existing full repaint down to it — a different,
+    /// unrelated change.
+    #[cfg(software_shell)]
+    fn union_ghost_rect(
+        from_nodes: Option<peniko::kurbo::Rect>,
+        ghost: Option<peniko::kurbo::Rect>,
+    ) -> Option<peniko::kurbo::Rect> {
+        match (from_nodes, ghost) {
+            (Some(a), Some(b)) => Some(a.union(b)),
+            (a, _) => a,
+        }
     }
 
     /// Blit premultiplied RGBA source pixels onto a destination buffer with
@@ -2495,6 +2572,98 @@ impl RinchApp {
                 d.tree.dirty_nodes.insert(node_id);
             }
         }
+    }
+}
+
+/// The drag ghost's contribution to the software renderer's dirty region (#173).
+///
+/// The ghost is blitted into the framebuffer after the document paint, so no
+/// DOM node owns its pixels and `compute_dirty_region` cannot see them. The
+/// frame that stops drawing the ghost therefore has to be told, by hand, to
+/// clear where it used to be.
+///
+/// Gated on `software_shell`, so these run under CI's `cargo test -p rinch
+/// --features embed,theme,clipboard` step — NOT under `cargo test --workspace`,
+/// which unifies `rinch/gpu` on from the GPU examples and turns the cfg off.
+#[cfg(all(test, software_shell))]
+mod drag_ghost_dirty_region_tests {
+    use super::*;
+    use peniko::kurbo::Rect;
+
+    /// Every number here is a device (physical) pixel: the arguments are the
+    /// blit's own destination offsets and pixmap size, so the rect is the span
+    /// of framebuffer that was written, not a re-projection of the cursor.
+    #[test]
+    fn the_rect_is_the_span_the_blit_wrote() {
+        let r = RinchApp::ghost_overlay_rect(297, 501, 239, 40, 900, 700).unwrap();
+        assert_eq!(r, Rect::new(297.0, 501.0, 536.0, 541.0));
+    }
+
+    #[test]
+    fn a_ghost_hanging_off_the_top_left_is_clipped_to_the_surface() {
+        let r = RinchApp::ghost_overlay_rect(-30, -12, 239, 40, 900, 700).unwrap();
+        assert_eq!(r, Rect::new(0.0, 0.0, 209.0, 28.0));
+    }
+
+    #[test]
+    fn a_ghost_hanging_off_the_bottom_right_is_clipped_to_the_surface() {
+        let r = RinchApp::ghost_overlay_rect(800, 680, 239, 40, 900, 700).unwrap();
+        assert_eq!(r, Rect::new(800.0, 680.0, 900.0, 700.0));
+    }
+
+    #[test]
+    fn a_ghost_entirely_off_screen_contributes_nothing() {
+        assert!(RinchApp::ghost_overlay_rect(-400, 10, 239, 40, 900, 700).is_none());
+        assert!(RinchApp::ghost_overlay_rect(10, 900, 239, 40, 900, 700).is_none());
+        assert!(RinchApp::ghost_overlay_rect(10, 10, 0, 40, 900, 700).is_none());
+    }
+
+    /// At scale 2 the snapshot pixmap and the blit offsets are already doubled,
+    /// and the framebuffer is 1800x1400 — so a ghost past the 900px logical
+    /// width is nowhere near the edge and must not be clipped. Reading the rect
+    /// in logical pixels would truncate it here and leave half the ghost behind.
+    #[test]
+    fn the_rect_is_device_pixels_not_logical() {
+        let r = RinchApp::ghost_overlay_rect(1000, 800, 478, 80, 1800, 1400).unwrap();
+        assert_eq!(r, Rect::new(1000.0, 800.0, 1478.0, 880.0));
+    }
+
+    /// The bug: releasing outside a drop target still dirties something small
+    /// (the placeholder clearing, the source card losing its dragging style),
+    /// so the frame takes the dirty-region path — with a region that misses the
+    /// ghost entirely and leaves it painted.
+    #[test]
+    fn the_end_of_drag_region_covers_where_the_ghost_was() {
+        let from_nodes = Rect::new(47.0, 295.0, 290.0, 345.0); // the To Do column
+        let ghost = RinchApp::ghost_overlay_rect(297, 501, 239, 40, 900, 700).unwrap();
+        assert!(
+            from_nodes.intersect(ghost).is_zero_area(),
+            "the fixture must reproduce the bug: a dirty region disjoint from the ghost"
+        );
+
+        let region = RinchApp::union_ghost_rect(Some(from_nodes), Some(ghost)).unwrap();
+        assert!(region.contains((ghost.x0 + 0.5, ghost.y0 + 0.5)));
+        assert!(region.contains((ghost.x1 - 0.5, ghost.y1 - 0.5)));
+        assert!(region.contains((from_nodes.x0 + 0.5, from_nodes.y0 + 0.5)));
+    }
+
+    /// An `ondragend` that changes nothing leaves no dirty node at all, and
+    /// `None` is the caller's signal to repaint everything — which clears the
+    /// ghost by itself. The ghost must not turn that into a partial repaint.
+    #[test]
+    fn no_dirty_node_still_means_a_full_repaint() {
+        let ghost = Rect::new(297.0, 501.0, 536.0, 541.0);
+        assert_eq!(RinchApp::union_ghost_rect(None, Some(ghost)), None);
+    }
+
+    #[test]
+    fn a_frame_with_no_ghost_leaves_the_region_alone() {
+        let from_nodes = Rect::new(47.0, 295.0, 290.0, 345.0);
+        assert_eq!(
+            RinchApp::union_ghost_rect(Some(from_nodes), None),
+            Some(from_nodes)
+        );
+        assert_eq!(RinchApp::union_ghost_rect(None, None), None);
     }
 }
 

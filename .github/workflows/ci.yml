@@ -67,6 +67,10 @@ jobs:
       #     examples/gpu-device-config enable `rinch/gpu`.
       #   * event_dispatch.rs::paste_image_tests (cfg(all(test, desktop, clipboard)))
       #     runs only because four examples enable `rinch/clipboard`.
+      # And one runs ONLY in the explicit step below, never in `--workspace`:
+      #   * app/mod.rs::drag_ghost_dirty_region_tests (cfg(all(test, software_shell)) —
+      #     the #173 pin) needs `desktop` WITHOUT `gpu`, and `--workspace` unifies
+      #     `rinch/gpu` on. Adding `gpu` to the `-p rinch` line below would kill it.
       # Retarget or drop those examples and the pins go dead silently, so name the
       # combinations here rather than inheriting them by luck.
       #
