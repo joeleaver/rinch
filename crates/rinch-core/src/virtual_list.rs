@@ -114,8 +114,9 @@ where
 
     // Register scroll handler on the container
     let scroll_signal = scroll_top;
-    let handler_id = scope.register_scroll_handler(move |st| {
-        scroll_signal.set(st);
+    let handler_id = scope.register_scroll_handler(move |ev: crate::events::ScrollEvent| {
+        // Vertical windowing only: the row range is a function of `scroll_top`.
+        scroll_signal.set(ev.scroll_top);
     });
     container.set_attribute("data-onscroll", &handler_id.0.to_string());
 

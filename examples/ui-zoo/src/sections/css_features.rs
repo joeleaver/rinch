@@ -227,7 +227,61 @@ pub fn css_features_section() -> NodeHandle {
                 }
             }
 
-            // Group 8: Text Overflow
+            // Group 8: Scroll containers (issue #178 — the scrollbars)
+            Space { h: "xl" }
+            Title { order: 3, "Scroll Containers" }
+            Text { size: "sm", color: "dimmed",
+                "overflow: auto paints a draggable thumb on each overflowing \
+                 axis. Where both are up, the bottom-right corner belongs to \
+                 neither bar."
+            }
+            Space { h: "md" }
+            Group { gap: "md", align: "flex-start",
+                Stack { gap: "xs",
+                    Text { size: "xs", weight: "bold", "overflow-x: auto" }
+                    div {
+                        id: "zoo-hscroll",
+                        style: "width: 220px; height: 90px; overflow-x: auto; \
+                                border: 1px solid var(--rinch-color-gray-5); \
+                                border-radius: 4px; background: var(--rinch-color-body);",
+                        div { style: "width: 900px; height: 60px; \
+                                      background: linear-gradient(to right, \
+                                      var(--rinch-color-blue-3), var(--rinch-color-grape-5));",
+                            Text { size: "xs", style: "padding: 8px", "900px of content" }
+                        }
+                    }
+                }
+                Stack { gap: "xs",
+                    Text { size: "xs", weight: "bold", "overflow-y: auto" }
+                    div {
+                        id: "zoo-vscroll",
+                        style: "width: 220px; height: 90px; overflow-y: auto; \
+                                border: 1px solid var(--rinch-color-gray-5); \
+                                border-radius: 4px; background: var(--rinch-color-body);",
+                        div { style: "width: 100px; height: 400px; \
+                                      background: linear-gradient(to bottom, \
+                                      var(--rinch-color-teal-3), var(--rinch-color-orange-5));",
+                            Text { size: "xs", style: "padding: 8px", "400px tall" }
+                        }
+                    }
+                }
+                Stack { gap: "xs",
+                    Text { size: "xs", weight: "bold", "overflow: auto (both)" }
+                    div {
+                        id: "zoo-bothscroll",
+                        style: "width: 220px; height: 90px; overflow: auto; \
+                                border: 1px solid var(--rinch-color-gray-5); \
+                                border-radius: 4px; background: var(--rinch-color-body);",
+                        div { style: "width: 900px; height: 400px; \
+                                      background: linear-gradient(135deg, \
+                                      var(--rinch-color-lime-3), var(--rinch-color-pink-5));",
+                            Text { size: "xs", style: "padding: 8px", "900 x 400" }
+                        }
+                    }
+                }
+            }
+
+            // Group 9: Text Overflow
             Space { h: "xl" }
             Title { order: 3, "Text Overflow" }
             Text { size: "sm", color: "dimmed", "text-overflow: ellipsis with overflow: hidden and white-space: nowrap" }

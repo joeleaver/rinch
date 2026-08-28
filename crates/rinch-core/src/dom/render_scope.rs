@@ -295,18 +295,19 @@ impl RenderScope {
 
     /// Register a scroll event handler and return its ID.
     ///
-    /// The handler receives the current scroll offset (scroll_top) as `f64`.
+    /// The handler receives a [`ScrollEvent`](crate::events::ScrollEvent)
+    /// carrying the container's offset on both axes.
     ///
     /// # Example
     ///
     /// ```ignore
-    /// let handler_id = scope.register_scroll_handler(|scroll_top| {
-    ///     println!("Scrolled to: {}", scroll_top);
+    /// let handler_id = scope.register_scroll_handler(|ev| {
+    ///     println!("Scrolled to: {}, {}", ev.scroll_top, ev.scroll_left);
     /// });
     /// element.set_attribute("data-onscroll", &handler_id.to_string());
     /// ```
     #[doc(hidden)]
-    pub fn register_scroll_handler<F: Fn(f64) + 'static>(
+    pub fn register_scroll_handler<F: Fn(crate::events::ScrollEvent) + 'static>(
         &mut self,
         callback: F,
     ) -> crate::events::EventHandlerId {

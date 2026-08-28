@@ -1495,3 +1495,150 @@ fn test_a_display_none_child_does_not_push_a_contents_wrapper_out_of_the_ifc() {
          same inline formatting context"
     );
 }
+
+// ── Scrollbar overlays (#178) ────────────────────────────────────────────────
+//
+// The horizontal bar is new; the vertical one is the reference it mirrors.
+// Pixel assertions, because "is the thumb actually drawn where a user can
+// grab it" is not something the scene graph answers.
+
+#[cfg(feature = "software-renderer")]
+mod scrollbar_paint {
+    use super::transform_paint::pixel_at;
+    use super::*;
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+
+    /// The thumb is 40% black over the container's white background, so a
+    /// mid-grey opaque pixel is a thumb pixel and a white one is bare track.
+    fn is_thumb(p: [u8; 4]) -> bool {
+        p[3] > 200 && p[0] < 200 && p[0] > 100 && p[1] == p[0] && p[2] == p[0]
+    }
+
+    fn any_thumb(painter: &TinySkiaPainter, x0: u32, y0: u32, x1: u32, y1: u32) -> bool {
+        for y in y0..y1.min(painter.height()) {
+            for x in x0..x1.min(painter.width()) {
+                if is_thumb(pixel_at(painter, x, y)) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// A 200×100 white scroll container at the document origin, with one child
+    /// sized by the caller, painted at scale 1.
+    fn paint_scroller(
+        container_style: &str,
+        content_style: &str,
+        scroll: (f64, f64),
+    ) -> TinySkiaPainter {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            &format!("width: 200px; height: 100px; background-color: white; {container_style}"),
+        );
+        doc.append_child(body, container);
+        let content = doc.create_element("div");
+        doc.set_attribute(content, "style", content_style);
+        doc.append_child(container, content);
+        doc.resolve_layout(800.0, 600.0);
+        doc.tree.nodes[container.0].scroll_offset = scroll;
+
+        let mut painter = TinySkiaPainter::new(800, 600);
+        let mut paint_layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut painter,
+            1.0,
+            (800.0, 600.0),
+            &mut doc.font_cx,
+            &mut paint_layout_cx,
+        );
+        painter
+    }
+
+    /// The container is 200×100 at the origin; the bar is 6px thick with a 2px
+    /// margin, so the horizontal thumb occupies y ∈ [92, 98).
+    #[test]
+    fn a_horizontal_scroller_paints_a_thumb_along_its_bottom_edge() {
+        let p = paint_scroller("overflow-x: auto", "width: 800px; height: 40px", (0.0, 0.0));
+        assert!(
+            any_thumb(&p, 0, 92, 60, 98),
+            "a thumb sits at the left end of the bottom track"
+        );
+        assert!(
+            !any_thumb(&p, 190, 0, 200, 90),
+            "and nothing down the right-hand edge — this container does not \
+             scroll vertically"
+        );
+    }
+
+    /// The reference bar, unchanged.
+    #[test]
+    fn a_vertical_scroller_still_paints_a_thumb_down_its_right_edge() {
+        let p = paint_scroller("overflow-y: auto", "width: 40px; height: 800px", (0.0, 0.0));
+        assert!(
+            any_thumb(&p, 192, 0, 198, 40),
+            "a thumb sits at the top of the right-hand track"
+        );
+        assert!(
+            !any_thumb(&p, 0, 90, 190, 100),
+            "and nothing along the bottom edge"
+        );
+    }
+
+    /// The thumb tracks the offset: scrolled to the end, it is at the far end
+    /// of the track rather than still at the start.
+    #[test]
+    fn the_horizontal_thumb_moves_with_scroll_left() {
+        let at_start = paint_scroller("overflow-x: auto", "width: 800px; height: 40px", (0.0, 0.0));
+        let at_end = paint_scroller(
+            "overflow-x: auto",
+            "width: 800px; height: 40px",
+            (600.0, 0.0),
+        );
+
+        assert!(any_thumb(&at_start, 0, 92, 40, 98));
+        assert!(
+            !any_thumb(&at_start, 160, 92, 198, 98),
+            "precondition: nothing at the right end before scrolling"
+        );
+        assert!(
+            any_thumb(&at_end, 160, 92, 198, 98),
+            "scrolled to the end, the thumb is at the end of the track"
+        );
+        assert!(
+            !any_thumb(&at_end, 0, 92, 40, 98),
+            "and no longer at the start"
+        );
+    }
+
+    /// The corner, on the paint side: with both bars up each track gives up the
+    /// other bar's footprint, so the bottom-right square stays empty — the same
+    /// square hit-testing gives to neither bar.
+    #[test]
+    fn neither_thumb_paints_into_the_corner() {
+        // Both scrolled hard to the end, which is when the two thumbs would
+        // otherwise pile into the same square.
+        let p = paint_scroller(
+            "overflow: auto",
+            "width: 800px; height: 800px",
+            (600.0, 700.0),
+        );
+        assert!(
+            any_thumb(&p, 150, 92, 190, 98),
+            "the horizontal thumb reaches the end of its shortened track"
+        );
+        assert!(
+            any_thumb(&p, 192, 50, 198, 90),
+            "the vertical thumb reaches the end of its shortened track"
+        );
+        assert!(
+            !any_thumb(&p, 192, 92, 200, 100),
+            "and the corner square is bare"
+        );
+    }
+}

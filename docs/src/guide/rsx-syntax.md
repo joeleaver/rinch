@@ -112,9 +112,28 @@ Supported HTML-element event attributes:
 | `oncontextmenu` | Right-click, or a 500ms long press on Android (suppresses the native menu when handled) | `Fn()` |
 | `oninput` | `<input>`/`<textarea>` value change, per keystroke | `Fn(String)` |
 | `onchange` | Commit boundary: the gesture ends (blur after a modification, Enter, a `<select>` pick) — fires with the final value | `Fn(String)` |
-| `onscroll` | Scroll container scrolls, on either axis | `Fn(f64)` (scrollTop — read `scroll_left()` on the node for the horizontal offset) |
+| `onscroll` | Scroll container scrolls, on either axis | `Fn(ScrollEvent)` — `ev.scroll_top` and `ev.scroll_left` |
 | `ondragstart` … `ondrop`, `ondragend` | Element drag-and-drop | `Fn()` |
 | `onfiledrop`, `onfiledragenter`/`onfiledragleave` | OS → app file drop | `Fn(Vec<PathBuf>)` / `Fn()` |
+
+`onscroll` fires once per container that moved, whichever axis moved it, and
+its [`ScrollEvent`] payload carries **both** offsets — so a horizontal-only
+scroller reports its position rather than an unchanging `scroll_top`
+(issue #177). `ScrollEvent` is `#[non_exhaustive]`: read its fields by name,
+and construct one (in a test, say) with `ScrollEvent::new(top, left)` rather
+than a struct literal.
+
+```rust
+div {
+    style: "overflow: auto; width: 200px; height: 100px",
+    onscroll: move |ev: ScrollEvent| {
+        column.set((ev.scroll_left / char_width) as usize);
+    },
+    // …wide content…
+}
+```
+
+[`ScrollEvent`]: https://docs.rs/rinch/latest/rinch/prelude/struct.ScrollEvent.html
 
 `oninput` and `onchange` follow HTML semantics and are **not** aliases (they
 were before issue #226): `oninput` fires on every keystroke with the live

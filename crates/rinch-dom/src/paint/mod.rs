@@ -913,6 +913,7 @@ fn paint_node(
             // Handle overflow clipping — detect early so we can cut holes
             // in the background for viewport descendants.
             let overflow_y = node.computed_style.overflow_y;
+            let overflow_x = node.computed_style.overflow_x;
             let clips = matches!(
                 overflow_y,
                 OverflowValue::Hidden | OverflowValue::Scroll | OverflowValue::Auto
@@ -1204,16 +1205,33 @@ fn paint_node(
                 painter.pop_layer();
             }
 
-            // Paint scrollbar overlay for scroll containers
-            if matches!(overflow_y, OverflowValue::Scroll | OverflowValue::Auto) {
+            // Paint scrollbar overlays for scroll containers.
+            //
+            // Both axes, from one set of metrics (#178): thickness 6, margin 2,
+            // minimum thumb 20, 40% black, fully rounded — the numbers the
+            // vertical bar has always used, so the two read as one feature. The
+            // horizontal bar appears on exactly the condition the vertical one
+            // does, read on `overflow-x`: scrollable (`scroll` or `auto` — rinch
+            // draws a thumb and no track, so there is nothing for `scroll` to
+            // show when the content fits) and overflowing.
+            //
+            // Gated up front so a node that scrolls on neither axis — almost
+            // every node — pays two enum checks and does not walk its children
+            // measuring extents nothing will read.
+            if matches!(overflow_y, OverflowValue::Scroll | OverflowValue::Auto)
+                || matches!(overflow_x, OverflowValue::Scroll | OverflowValue::Auto)
+            {
                 let node = tree.get(node_id).unwrap(); // re-borrow after children done
                 let cs = &node.computed_style;
-                // Taffy child.layout.y is relative to the parent's border box,
-                // so content_height includes the top padding+border offset.
-                // Subtract it to get content-relative height.
+                // Taffy child.layout.{x,y} are relative to the parent's border
+                // box, so the content extents include the leading padding+border
+                // offset. Subtract it to get content-relative extents.
                 let content_top =
                     (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64 * scale;
+                let content_left =
+                    (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64 * scale;
                 let mut content_height: f64 = 0.0;
+                let mut content_width: f64 = 0.0;
                 for &child_id in &node.children {
                     if let Some(child) = tree.get(child_id) {
                         let bottom =
@@ -1221,19 +1239,51 @@ fn paint_node(
                         if bottom > content_height {
                             content_height = bottom;
                         }
+                        let right =
+                            (child.layout.x + child.layout.width) as f64 * scale - content_left;
+                        if right > content_width {
+                            content_width = right;
+                        }
                     }
                 }
-                // Visible content area = layout height minus padding and border
+                // Visible content area = layout extent minus padding and border
                 let pad_v = (cs.padding_top.to_px() + cs.padding_bottom.to_px()) as f64 * scale;
                 let border_v =
                     (cs.border_top_width.to_px() + cs.border_bottom_width.to_px()) as f64 * scale;
                 let visible_h = (h - pad_v - border_v).max(0.0);
-                if content_height > visible_h {
-                    let scrollbar_width = 6.0 * scale;
-                    let scrollbar_margin = 2.0 * scale;
-                    let scrollbar_x = x + w - scrollbar_width - scrollbar_margin;
+                let pad_h = (cs.padding_left.to_px() + cs.padding_right.to_px()) as f64 * scale;
+                let border_h =
+                    (cs.border_left_width.to_px() + cs.border_right_width.to_px()) as f64 * scale;
+                let visible_w = (w - pad_h - border_h).max(0.0);
 
-                    // Thumb sizing
+                let show_vertical =
+                    matches!(overflow_y, OverflowValue::Scroll | OverflowValue::Auto)
+                        && content_height > visible_h;
+                let show_horizontal =
+                    matches!(overflow_x, OverflowValue::Scroll | OverflowValue::Auto)
+                        && content_width > visible_w;
+
+                let thickness = 6.0 * scale;
+                let margin = 2.0 * scale;
+                let min_thumb = 20.0 * scale;
+                let thumb_color = AlphaColor::<Srgb>::new([0.0, 0.0, 0.0, 0.4_f32]);
+                // The corner. With both bars up, each track gives up the other
+                // bar's footprint at its far end so the two thumbs cannot pile
+                // into the same square. Nothing is painted there — hit-testing
+                // agrees, giving the corner to neither bar.
+                let v_corner = if show_horizontal {
+                    thickness + margin
+                } else {
+                    0.0
+                };
+                let h_corner = if show_vertical {
+                    thickness + margin
+                } else {
+                    0.0
+                };
+
+                if show_vertical {
+                    let scrollbar_x = x + w - thickness - margin;
                     let visible_ratio = visible_h / content_height;
                     let max_scroll = content_height - visible_h;
                     let scroll_ratio = if max_scroll > 0.0 {
@@ -1242,21 +1292,52 @@ fn paint_node(
                         0.0
                     };
 
-                    let track_height = h - scrollbar_margin * 2.0;
-                    let thumb_height = (track_height * visible_ratio).max(20.0 * scale);
-                    let thumb_travel = track_height - thumb_height;
-                    let thumb_y = y + scrollbar_margin + thumb_travel * scroll_ratio;
+                    let track_height = (h - margin * 2.0 - v_corner).max(0.0);
+                    let thumb_height = (track_height * visible_ratio).max(min_thumb);
+                    let thumb_travel = (track_height - thumb_height).max(0.0);
+                    let thumb_y = y + margin + thumb_travel * scroll_ratio;
 
                     let thumb_rect = RoundedRect::from_rect(
                         Rect::new(
                             scrollbar_x,
                             thumb_y,
-                            scrollbar_x + scrollbar_width,
+                            scrollbar_x + thickness,
                             thumb_y + thumb_height,
                         ),
-                        scrollbar_width * 0.5,
+                        thickness * 0.5,
                     );
-                    let thumb_color = AlphaColor::<Srgb>::new([0.0, 0.0, 0.0, 0.4_f32]);
+                    painter.fill(
+                        Fill::NonZero,
+                        node_transform,
+                        &Brush::Solid(thumb_color),
+                        &thumb_rect.into(),
+                    );
+                }
+
+                if show_horizontal {
+                    let scrollbar_y = y + h - thickness - margin;
+                    let visible_ratio = visible_w / content_width;
+                    let max_scroll = content_width - visible_w;
+                    let scroll_ratio = if max_scroll > 0.0 {
+                        (node.scroll_offset.0 * scale / max_scroll).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+
+                    let track_width = (w - margin * 2.0 - h_corner).max(0.0);
+                    let thumb_width = (track_width * visible_ratio).max(min_thumb);
+                    let thumb_travel = (track_width - thumb_width).max(0.0);
+                    let thumb_x = x + margin + thumb_travel * scroll_ratio;
+
+                    let thumb_rect = RoundedRect::from_rect(
+                        Rect::new(
+                            thumb_x,
+                            scrollbar_y,
+                            thumb_x + thumb_width,
+                            scrollbar_y + thickness,
+                        ),
+                        thickness * 0.5,
+                    );
                     painter.fill(
                         Fill::NonZero,
                         node_transform,

@@ -124,7 +124,7 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                     }
                 }
             } else if event_name == "onscroll" {
-                // Scroll events use register_scroll_handler with Fn(f64)
+                // Scroll events use register_scroll_handler with Fn(ScrollEvent)
                 quote! {
                     {
                         let __handler_id = __scope.register_scroll_handler(#handler);

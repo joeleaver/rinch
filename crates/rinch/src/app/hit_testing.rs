@@ -1,5 +1,6 @@
 // ── Free functions (platform-agnostic hit testing) ───────────────────────────
 
+use super::ScrollAxis;
 use rinch_dom::stacking::{paints_at_stacking_root, stacking_paint_order};
 
 /// Simple hit testing: find the deepest node whose layout rect contains (x, y).
@@ -549,10 +550,19 @@ pub(crate) fn compute_content_width(tree: &rinch_dom::NodeTree, node_id: usize) 
         Some(n) => n,
         None => return 0.0,
     };
+    // Taffy child.layout.x is relative to the parent's border box, so it
+    // includes padding-left + border-left. Subtract that offset to get the
+    // content-relative width, the same way `compute_content_height` does and
+    // the same way `DomDocument::scroll_width` already did — without this the
+    // horizontal scrollbar would decide a padded container overflows when it
+    // does not, and size its thumb against a width the paint pass disagrees
+    // with.
+    let content_left = (node.computed_style.padding_left.to_px()
+        + node.computed_style.border_left_width.to_px()) as f64;
     let mut max_right: f64 = 0.0;
     for &child_id in &node.children {
         if let Some(child) = tree.get(child_id) {
-            let right = (child.layout.x + child.layout.width) as f64;
+            let right = (child.layout.x + child.layout.width) as f64 - content_left;
             if right > max_right {
                 max_right = right;
             }
@@ -561,12 +571,61 @@ pub(crate) fn compute_content_width(tree: &rinch_dom::NodeTree, node_id: usize) 
     max_right
 }
 
+/// The visible content area width: layout.width minus padding and border.
+///
+/// The horizontal twin of [`compute_visible_content_area_height`].
+pub(crate) fn compute_visible_content_area_width(
+    tree: &rinch_dom::NodeTree,
+    node_id: usize,
+) -> f64 {
+    let node = match tree.get(node_id) {
+        Some(n) => n,
+        None => return 0.0,
+    };
+    let cs = &node.computed_style;
+    let pad_left = cs.padding_left.to_px() as f64;
+    let pad_right = cs.padding_right.to_px() as f64;
+    let border_left = cs.border_left_width.to_px() as f64;
+    let border_right = cs.border_right_width.to_px() as f64;
+    (node.layout.width as f64 - pad_left - pad_right - border_left - border_right).max(0.0)
+}
+
+/// The width of the invisible strip along a container's edge that counts as
+/// its scrollbar for hit-testing — deliberately wider than the 6px thumb the
+/// paint pass draws, so the bar is easy to grab. Both axes use it, so the
+/// corner the two strips would share is a square of this side.
+pub(crate) const SCROLLBAR_HIT_THICKNESS: f32 = 16.0;
+
+/// A scrollbar the pointer is over.
+///
+/// # Coordinate space
+///
+/// The `x`/`y` fed to [`find_scrollbar_hit`] are the pointer coordinates the
+/// shell hands `PlatformEvent`, compared here against **logical** layout rects
+/// straight out of Taffy — no scale factor is applied anywhere in this
+/// function. That is the same space the vertical bar has always been tested
+/// in, and it is exactly the mismatch #299 describes (the desktop shell passes
+/// winit's *physical* coordinates), so at a scale factor other than 1 both
+/// bars are displaced by the same amount and #299 fixes both at once. The
+/// paint pass is unaffected: it multiplies by `scale` and works in device
+/// pixels.
+pub(crate) struct ScrollbarHit {
+    /// The scroll container whose bar was hit.
+    pub node_id: usize,
+    /// Which of its two bars.
+    pub axis: ScrollAxis,
+    /// Content extent along `axis`.
+    pub content_size: f64,
+    /// Visible content-area extent along `axis`.
+    pub container_size: f64,
+}
+
 /// Check if a point (x, y) hits a scrollbar.
 pub(crate) fn find_scrollbar_hit(
     tree: &rinch_dom::NodeTree,
     x: f32,
     y: f32,
-) -> Option<(usize, f64, f64)> {
+) -> Option<ScrollbarHit> {
     find_scrollbar_hit_node(tree, tree.body_id, 0.0, 0.0, x, y)
 }
 
@@ -577,7 +636,7 @@ fn find_scrollbar_hit_node(
     offset_y: f32,
     x: f32,
     y: f32,
-) -> Option<(usize, f64, f64)> {
+) -> Option<ScrollbarHit> {
     let node = tree.get(node_id)?;
 
     // Skip hidden subtrees
@@ -619,47 +678,74 @@ fn find_scrollbar_hit_node(
     }
 
     use rinch_dom::computed_style::OverflowValue;
-    let overflow_y = &node.computed_style.overflow_y;
+    let cs = &node.computed_style;
 
-    if matches!(overflow_y, OverflowValue::Scroll | OverflowValue::Auto) {
-        let content_height = compute_content_height(tree, node_id);
-        let visible_height = compute_visible_content_area_height(tree, node_id);
+    // A bar exists on an axis when that axis is scrollable AND overflowing.
+    // `scroll` and `auto` behave identically here, matching what the vertical
+    // bar has always done: rinch paints a thumb and no track, so there is
+    // nothing for `scroll` to show when the content fits.
+    // The extents are only measured for an axis that is scrollable at all, so
+    // an ordinary node in the recursion pays nothing beyond the enum check.
+    let vertical = matches!(cs.overflow_y, OverflowValue::Scroll | OverflowValue::Auto)
+        .then(|| {
+            (
+                compute_content_height(tree, node_id),
+                compute_visible_content_area_height(tree, node_id),
+            )
+        })
+        .filter(|(content, visible)| content > visible);
+    let horizontal = matches!(cs.overflow_x, OverflowValue::Scroll | OverflowValue::Auto)
+        .then(|| {
+            (
+                compute_content_width(tree, node_id),
+                compute_visible_content_area_width(tree, node_id),
+            )
+        })
+        .filter(|(content, visible)| content > visible);
 
-        if content_height > visible_height {
-            let scrollbar_hit_width: f32 = 16.0;
-            let scrollbar_left = nx + nw - scrollbar_hit_width;
+    // The corner. Where both bars are present their strips would overlap in a
+    // square at the far end, and one of them would silently win the click.
+    // Neither claims it: each strip stops short by the other's thickness, so
+    // the corner falls through to ordinary click handling on the container.
+    // The paint pass shortens both tracks the same way, so no thumb is ever
+    // drawn in a square that cannot be grabbed.
+    let t = SCROLLBAR_HIT_THICKNESS;
+    let v_end = if horizontal.is_some() {
+        ny + nh - t
+    } else {
+        ny + nh
+    };
+    let h_end = if vertical.is_some() {
+        nx + nw - t
+    } else {
+        nx + nw
+    };
 
-            if x >= scrollbar_left && x <= nx + nw && y >= ny && y <= ny + nh {
-                return Some((node_id, content_height, visible_height));
-            }
+    if let Some((content_size, container_size)) = vertical {
+        let scrollbar_left = nx + nw - t;
+        if x >= scrollbar_left && x <= nx + nw && y >= ny && y <= v_end {
+            return Some(ScrollbarHit {
+                node_id,
+                axis: ScrollAxis::Vertical,
+                content_size,
+                container_size,
+            });
+        }
+    }
+
+    if let Some((content_size, container_size)) = horizontal {
+        let scrollbar_top = ny + nh - t;
+        if y >= scrollbar_top && y <= ny + nh && x >= nx && x <= h_end {
+            return Some(ScrollbarHit {
+                node_id,
+                axis: ScrollAxis::Horizontal,
+                content_size,
+                container_size,
+            });
         }
     }
 
     None
-}
-
-/// Compute the absolute Y position of a node by walking up its parent chain.
-pub(crate) fn compute_absolute_y(tree: &rinch_dom::NodeTree, node_id: usize) -> f32 {
-    let mut y = 0.0_f32;
-    let mut current = Some(node_id);
-    while let Some(id) = current {
-        if let Some(node) = tree.get(id) {
-            y += node.layout.y;
-            // position: fixed — viewport-relative, stop accumulating parent offsets
-            if node.computed_style.position == rinch_dom::computed_style::PositionValue::Fixed {
-                break;
-            }
-            if let Some(parent_id) = node.parent
-                && let Some(parent) = tree.get(parent_id)
-            {
-                y -= parent.scroll_offset.1 as f32;
-            }
-            current = node.parent;
-        } else {
-            break;
-        }
-    }
-    y
 }
 
 #[cfg(test)]

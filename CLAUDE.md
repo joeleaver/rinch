@@ -997,6 +997,8 @@ Both use the same `Painter` trait (`crates/rinch-dom/src/paint/painter.rs`):
 
 The software renderer includes **dirty region caching**: when only a few nodes change, only the affected rectangular area is cleared and repainted. Subtrees outside the dirty region are skipped during paint traversal.
 
+**Scrollbars.** A scroll container paints an overlay thumb on each axis that is scrollable (`overflow-{x,y}: scroll | auto`) *and* overflowing — 6px thick, 2px margin, 20px minimum thumb, 40% black, fully rounded. Both bars are hit-tested over a wider 16px strip along their edge and can be dragged (issue #178). Where both are present each track gives up the other bar's footprint at its far end, so the bottom-right **corner belongs to neither**: nothing paints there and clicking it falls through to the container. Desktop only — on the web the browser draws its own.
+
 **Key files:**
 - `crates/rinch-dom/src/paint/painter.rs` — Abstract `Painter` trait
 - `crates/rinch-dom/src/paint/vello_painter.rs` — GPU backend
@@ -1820,6 +1822,12 @@ Button { variant: "filled" }
       placeholder: "Type here...",
   }
   ```
+  **`onscroll`** takes `Fn(ScrollEvent)` (issue #177). The payload is a
+  `#[non_exhaustive]` struct carrying **both** axes — `ev.scroll_top` and
+  `ev.scroll_left` — so a horizontal-only scroller reports where it is instead
+  of an unchanging zero. It fires once per container that moved, whichever axis
+  moved it. Construct one with `ScrollEvent::new(top, left)`; a struct literal
+  will not compile downstream. `ScrollEvent` is in the prelude.
 - **Components** (`Button`, `TextInput`, `Stack`, etc.) accept their declared struct fields as props. Additionally, all components support these universal props:
   - `style:` — Applied to the component's root DOM element after rendering. Supports static strings and reactive closures.
   - `class:` — Merged with the component's own CSS classes (additive, not replacing). Supports static strings and reactive closures.
