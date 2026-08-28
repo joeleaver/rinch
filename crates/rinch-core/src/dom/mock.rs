@@ -71,6 +71,24 @@ impl MockDomDocument {
             self.mark_dirty(old_parent);
         }
     }
+
+    /// Drop `node` and its whole subtree from the node table — what
+    /// [`DomDocument::remove_node`] means by *retiring* a node.
+    ///
+    /// Ids are never recycled here (`next_id` only counts up), so a retired id
+    /// can never name a different node later; a stale handle just resolves to
+    /// nothing, and every accessor on this mock is `get`-guarded.
+    fn forget_subtree(&mut self, node: NodeId) {
+        let children = self
+            .nodes
+            .get(&node)
+            .map(|n| n.children.clone())
+            .unwrap_or_default();
+        for child in children {
+            self.forget_subtree(child);
+        }
+        self.nodes.remove(&node);
+    }
 }
 
 impl DomDocument for MockDomDocument {
@@ -129,6 +147,15 @@ impl DomDocument for MockDomDocument {
         // old parent's `children`, so sibling-order assertions in tests read a
         // reordered node as a second mount.
         self.detach(child);
+        // Both ends must exist, like the web backend's
+        // `if let (Some(p), Some(c)) = …`. Appending a **retired** child (one a
+        // previous `remove_node` dropped) is a silent no-op there, so it has to
+        // be one here too — otherwise the parent lists an id that resolves to
+        // nothing and the caller's bug hides behind a plausible child count
+        // (issue #184).
+        if !self.nodes.contains_key(&child) {
+            return;
+        }
         if let Some(node) = self.nodes.get_mut(&parent) {
             node.children.push(child);
         }
@@ -181,6 +208,12 @@ impl DomDocument for MockDomDocument {
         if let Some(parent_id) = parent {
             self.remove_child(parent_id, node);
         }
+        // Retire the node and its subtree, per the trait contract: a removed
+        // handle must not be re-attached. The browser backend has to enforce
+        // this to release the DOM node it was pinning (issue #184), so the mock
+        // enforces it too — otherwise a caller that re-appends a removed node
+        // passes every test here and breaks only on the web.
+        self.forget_subtree(node);
     }
 
     fn set_text_content(&mut self, node: NodeId, text: &str) {
