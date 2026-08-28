@@ -560,6 +560,37 @@ for item in items.get() {
 
 If no `key:` prop is provided, items are keyed by their `Debug` representation (fallback).
 
+**Keys must be unique within one list.** The whole reconcile rests on one key
+naming one item and one DOM node, so a repeat used to leave a row that rendered,
+swallowed clicks and never updated again (issue #185). What a repeat *means*
+depends on who chose the key:
+
+| | Rule |
+|---|---|
+| **You wrote `key:`** | A repeat is a mistake in your key. The repeat is **not rendered** and a warning is logged — the first occurrence wins, the same rule React applies to duplicate `key` props. |
+| **No `key:`** | The framework fabricated the key from `format!("{:?}", item)`, so a repeated *value* is not your mistake. Rinch makes the fabricated key unique by its occurrence ordinal instead: **every row renders**. |
+
+So `for tag in ["rust", "rust", "gui"]` renders three rows, and
+`for n in vec![1, 1, 2]` renders three rows. Reordering such a list still moves
+rows rather than rebuilding them, because the ordinal follows the *value*, not
+the position.
+
+The one thing the fallback cannot give you is stable identity across an *edit*:
+if the first `"rust"` is deleted, the second one inherits its key and its DOM
+node. Where rows carry per-row state, give them a real `key:`:
+
+```rust
+for (i, n) in numbers.get().into_iter().enumerate() {
+    div { key: i, {n.to_string()} }
+}
+```
+
+Prefer a stable per-row id where the data has one. An index key makes identity
+follow *position*, so inserting or removing anywhere but the end re-renders every
+row after the change — correct, but it gives up the reconciliation the keys are
+there for. Reach for the index only when the rows genuinely have nothing else to
+distinguish them.
+
 #### How `for` works internally
 
 The `for` loop desugars to `for_each_dom_typed()`, which:

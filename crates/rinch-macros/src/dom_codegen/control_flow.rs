@@ -614,7 +614,7 @@ pub fn generate_for_loop(
     let iter_expr = &for_loop.iter_expr;
 
     // Try to extract key from first child element's `key:` prop
-    let key_fn = extract_key_expr(for_loop);
+    let (key_fn, key_source) = extract_key_expr(for_loop);
 
     // Leading `let`s the key expression depends on, so `key:` can reference a
     // let-bound value. Deliberately filtered — see `key_relevant_leading_stmts`.
@@ -649,7 +649,7 @@ pub fn generate_for_loop(
     quote! {
         {
             #(#capture_clones)*
-            rinch::core::for_each_dom_typed(
+            rinch::core::for_each_dom_typed_with_key_source(
                 __scope,
                 &#parent_var,
                 #collection,
@@ -657,7 +657,8 @@ pub fn generate_for_loop(
                 move |#pattern, __child_scope: &mut rinch::core::dom::RenderScope| -> rinch::core::dom::NodeHandle {
                     let __scope = __child_scope;
                     #body
-                }
+                },
+                #key_source
             );
         }
     }
@@ -665,13 +666,18 @@ pub fn generate_for_loop(
 
 /// Extract a `key:` expression from the first child element of a for loop.
 ///
-/// Returns the key expression token stream. If no `key:` prop is found,
-/// falls back to Debug formatting the item.
+/// Returns the key expression token stream **and** a `rinch::core::KeySource`
+/// expression saying who chose it. If no `key:` prop is found the key falls back
+/// to Debug formatting the item, and the `KeySource::Fallback` marker tells
+/// `for_each_dom` that a repeat of such a key is not a user error: `for tag in
+/// ["rust", "rust", "gui"]` is an ordinary list, so the fabricated key is
+/// uniquified by occurrence ordinal rather than the row being dropped (issue
+/// #185).
 ///
 /// Note: The `key:` prop is left on the element. HTML codegen treats `key`
 /// as a special attribute and skips it (it would just become a harmless
 /// `set_attribute("key", ...)` otherwise).
-fn extract_key_expr(for_loop: &RsxForLoop) -> TokenStream2 {
+fn extract_key_expr(for_loop: &RsxForLoop) -> (TokenStream2, TokenStream2) {
     // Look for key: prop on the first child element (skip leading let statements)
     let first_element = for_loop
         .children
@@ -682,12 +688,18 @@ fn extract_key_expr(for_loop: &RsxForLoop) -> TokenStream2 {
         && let Some(key_prop) = el.props.iter().find(|p| p.name == "key")
     {
         let key_expr = &key_prop.value;
-        return quote! { #key_expr };
+        return (
+            quote! { #key_expr },
+            quote! { rinch::core::KeySource::Explicit },
+        );
     }
 
     // No key prop found — use debug format of the item as key (fallback)
     let pattern = &for_loop.pattern;
-    quote! { format!("{:?}", #pattern) }
+    (
+        quote! { format!("{:?}", #pattern) },
+        quote! { rinch::core::KeySource::Fallback },
+    )
 }
 
 /// Generate DOM code for a native `match` block in RSX.
