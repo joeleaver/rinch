@@ -4075,3 +4075,348 @@ mod input_caret_hit_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod android_frame_clock_tests {
+    //! A bottom sheet opens on Android.
+    //!
+    //! The sheet idiom is three always-mounted boxes: a full-screen root whose
+    //! `pointer-events` flips, a scrim whose opacity fades in, and a panel
+    //! parked below the fold that slides up. Opening one is a style change and
+    //! nothing else — which means two of the three properties are transitioned,
+    //! and a transitioned property moves only when something turns the frame
+    //! clock.
+    //!
+    //! [`PlatformEvent::AboutToWait`] is that clock, and the Android shell did
+    //! not send it. So the tap flipped `pointer-events` — not animatable, so it
+    //! applied at once — while the scrim stayed at opacity 0 and the panel
+    //! stayed 700px below the window, for ever. The sheet was open, invisible,
+    //! and covering the screen: the tap that opened it did nothing visible, and
+    //! the next tap anywhere landed on its scrim and closed it again.
+    //!
+    //! The tap is spelled the way Android spells it — a `MouseDown` and a
+    //! `MouseUp` in one batch with nothing in between — because that is the
+    //! shape the fault was found in, on a phone, tapping a sort chip.
+
+    // `rsx!` writes absolute `rinch::` paths, and this *is* the rinch crate.
+    use super::*;
+    use crate as rinch;
+    use crate::shell::android_frame;
+    use rinch_core::Signal;
+    use rinch_macros::rsx;
+    use std::time::{Duration, Instant};
+
+    /// A portrait phone at 1x, so physical and layout pixels agree and the
+    /// numbers below are the ones a reader can check against the styles.
+    const PHYSICAL: (u32, u32) = (393, 852);
+    const SCALE: f64 = 1.0;
+    const VIEWPORT: (f32, f32) = (393.0, 852.0);
+
+    /// Far enough below the window that the tallest sheet is clear of it. In
+    /// pixels, not `100%`: the transition engine drops percentage translations
+    /// when it interpolates a transform, and a percentage slide snaps.
+    const PARKED_PX: f64 = 700.0;
+    const EASE: &str = "220ms cubic-bezier(0, 0, 0.2, 1)";
+    /// Long enough for the 220ms slide to finish, with room for a slow runner.
+    const SETTLE: Duration = Duration::from_millis(1500);
+
+    fn root_style(open: bool) -> String {
+        let taps = if open { "auto" } else { "none" };
+        format!(
+            "position: absolute; left: 0; top: 0; right: 0; bottom: 0; \
+             z-index: 40; pointer-events: {taps};"
+        )
+    }
+
+    fn scrim_style(open: bool) -> String {
+        let opacity = if open { "1" } else { "0" };
+        format!(
+            "position: absolute; left: 0; top: 0; right: 0; bottom: 0; \
+             background: rgba(28, 25, 23, 0.38); opacity: {opacity}; \
+             transition: opacity {EASE};"
+        )
+    }
+
+    fn panel_style(open: bool) -> String {
+        let y = if open { 0.0 } else { PARKED_PX };
+        format!(
+            "position: absolute; left: 0; right: 0; bottom: 0; height: 68%; \
+             transform: translateY({y}px); transition: transform {EASE};"
+        )
+    }
+
+    struct Sheet {
+        app: RinchApp,
+        trigger: usize,
+        scrim: usize,
+        panel: usize,
+    }
+
+    /// Mount the chip and the sheet it opens, inside the `overflow: hidden`
+    /// root a fixed-height app shell is built from.
+    fn mount() -> Sheet {
+        let open = Signal::new(false);
+        let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
+            rsx! {
+                div {
+                    style: "position: relative; overflow: hidden; \
+                            width: 393px; height: 852px;",
+
+                    div {
+                        class: "trigger",
+                        onclick: move || open.set(true),
+                        style: "width: 120px; height: 32px;",
+                    }
+
+                    div {
+                        style: {move || root_style(open.get())},
+                        div {
+                            class: "scrim",
+                            style: {move || scrim_style(open.get())},
+                        }
+                        div {
+                            class: "panel",
+                            style: {move || panel_style(open.get())},
+                        }
+                    }
+                }
+            }
+        });
+        app.mount_component(VIEWPORT.0, VIEWPORT.1);
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+
+        let trigger = by_class(&app, "trigger");
+        let scrim = by_class(&app, "scrim");
+        let panel = by_class(&app, "panel");
+        Sheet {
+            app,
+            trigger,
+            scrim,
+            panel,
+        }
+    }
+
+    fn by_class(app: &RinchApp, class: &str) -> usize {
+        let doc = app.doc.as_ref().expect("document");
+        let d = doc.borrow();
+        (0..d.tree.nodes.len())
+            .find(|&id| {
+                d.tree
+                    .get(id)
+                    .and_then(|n| n.attributes.get("class"))
+                    .is_some_and(|c| c.split_whitespace().any(|c| c == class))
+            })
+            .unwrap_or_else(|| panic!("no node with class {class:?}"))
+    }
+
+    /// The panel's translateY, in pixels: `matrix[5]` is the `f` of the
+    /// `[a, b, c, d, e, f]` affine, which is the vertical translation.
+    fn panel_y(app: &RinchApp, panel: usize) -> f64 {
+        let doc = app.doc.as_ref().expect("document");
+        let d = doc.borrow();
+        d.tree
+            .get(panel)
+            .expect("panel")
+            .computed_style
+            .transform
+            .matrix[5]
+    }
+
+    fn scrim_opacity(app: &RinchApp, scrim: usize) -> f32 {
+        let doc = app.doc.as_ref().expect("document");
+        let d = doc.borrow();
+        d.tree.get(scrim).expect("scrim").computed_style.opacity
+    }
+
+    fn centre(app: &RinchApp, node_id: usize) -> (f32, f32) {
+        let doc = app.doc.as_ref().expect("document");
+        let d = doc.borrow();
+        let n = d.tree.get(node_id).expect("node still in the tree");
+        let (x, y) = RinchApp::compute_absolute_position(&d.tree, node_id);
+        assert!(
+            n.layout.width > 0.0 && n.layout.height > 0.0,
+            "node {node_id} has no box to aim at: {:?}",
+            n.layout
+        );
+        (x + n.layout.width / 2.0, y + n.layout.height / 2.0)
+    }
+
+    /// One tap, spelled the way `TouchGesture` spells a still finger's lift:
+    /// a `MouseDown` and a `MouseUp` pushed into the *same* event batch.
+    fn tap(app: &mut RinchApp, x: f32, y: f32) {
+        for event in [
+            PlatformEvent::MouseDown {
+                x,
+                y,
+                button: MouseButton::Left,
+            },
+            PlatformEvent::MouseUp {
+                x,
+                y,
+                button: MouseButton::Left,
+            },
+        ] {
+            app.handle_event(event, PHYSICAL, SCALE);
+        }
+    }
+
+    /// What the Android loop does between polls, run until `done` or `SETTLE`
+    /// elapses. `resolve_and_repaint` is the half the loop always had; the
+    /// frame pump is the half it was missing.
+    ///
+    /// Returns how many frames the shell would have presented. Presenting is
+    /// what clears `scene_dirty`, so the count is only meaningful if the test
+    /// clears it exactly where a present would — which is what the
+    /// `scene_dirty = false` below stands in for.
+    fn run_frames(app: &mut RinchApp, pump: bool, done: impl Fn(&RinchApp) -> bool) -> usize {
+        let deadline = Instant::now() + SETTLE;
+        let mut presented = 0;
+        while Instant::now() < deadline {
+            let (pending, paint) = if pump {
+                let frame = android_frame::pump_frame(app, PHYSICAL, SCALE);
+                (frame.pending_layout, frame.needs_paint)
+            } else {
+                (app.has_pending_layout(), false)
+            };
+            if pending {
+                app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+            }
+            if pending || paint {
+                app.scene_dirty = false;
+                presented += 1;
+            }
+            if done(app) {
+                return presented;
+            }
+            std::thread::sleep(Duration::from_millis(8));
+        }
+        presented
+    }
+
+    /// The fault this module exists for: a tap on the chip opens the sheet, and
+    /// the sheet arrives on screen.
+    #[test]
+    fn a_tap_opens_the_sheet_and_the_frame_clock_slides_it_into_place() {
+        let mut sheet = mount();
+        assert_eq!(
+            panel_y(&sheet.app, sheet.panel),
+            PARKED_PX,
+            "the sheet starts parked below the fold"
+        );
+
+        let (x, y) = centre(&sheet.app, sheet.trigger);
+        tap(&mut sheet.app, x, y);
+
+        // The tap alone does not move it: the style change *starts* the
+        // transition, and a transition's first sample is its old value.
+        assert_eq!(
+            panel_y(&sheet.app, sheet.panel),
+            PARKED_PX,
+            "the tap starts the slide; it does not finish it"
+        );
+
+        let panel = sheet.panel;
+        run_frames(&mut sheet.app, true, move |app| panel_y(app, panel) == 0.0);
+
+        assert_eq!(
+            panel_y(&sheet.app, sheet.panel),
+            0.0,
+            "the sheet must reach its open position — a sheet that never leaves \
+             the fold is an invisible, pointer-active screen cover"
+        );
+        assert!(
+            (scrim_opacity(&sheet.app, sheet.scrim) - 1.0).abs() < 0.01,
+            "and the scrim must reach full opacity, got {}",
+            scrim_opacity(&sheet.app, sheet.scrim)
+        );
+    }
+
+    /// Why the loop turns the frame clock, kept as an executable statement
+    /// rather than a comment: take the pump away and the sheet never moves,
+    /// however many frames are painted and however long is waited.
+    #[test]
+    fn without_the_frame_clock_the_sheet_stays_parked_for_ever() {
+        let mut sheet = mount();
+        let (x, y) = centre(&sheet.app, sheet.trigger);
+        tap(&mut sheet.app, x, y);
+
+        run_frames(&mut sheet.app, false, |_| false);
+
+        assert_eq!(
+            panel_y(&sheet.app, sheet.panel),
+            PARKED_PX,
+            "with no clock the transition is sampled once, at its old value, \
+             and stays there"
+        );
+        assert_eq!(
+            scrim_opacity(&sheet.app, sheet.scrim),
+            0.0,
+            "and so does the scrim's opacity"
+        );
+    }
+
+    /// The tick that *finishes* the slide has to be presented too — and on a
+    /// phone it is usually the only tick there is.
+    ///
+    /// The first paint after the tap is not free: on the handset this was found
+    /// on it takes around 300ms, against a 220ms slide. So by the time the loop
+    /// comes back round, one tick completes the whole transition — and
+    /// `tick_transitions` answers "is anything *still* running", which on that
+    /// tick is no. Gate the repaint on that answer and the one frame that ever
+    /// had the sheet in it is the one frame that is dropped: the surface keeps
+    /// showing the parked sheet until something unrelated forces a present.
+    #[test]
+    fn the_tick_that_finishes_the_slide_asks_to_be_presented() {
+        let mut sheet = mount();
+        let (x, y) = centre(&sheet.app, sheet.trigger);
+        tap(&mut sheet.app, x, y);
+
+        // The frame the tap dirtied, presented — and the present is slow.
+        let frame = android_frame::pump_frame(&mut sheet.app, PHYSICAL, SCALE);
+        if frame.pending_layout {
+            sheet.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+        }
+        sheet.app.scene_dirty = false;
+        std::thread::sleep(Duration::from_millis(320));
+
+        // One tick, and it is the one that completes the slide.
+        let frame = android_frame::pump_frame(&mut sheet.app, PHYSICAL, SCALE);
+        assert_eq!(
+            panel_y(&sheet.app, sheet.panel),
+            0.0,
+            "the tick applied the transition's end value"
+        );
+        assert!(
+            frame.needs_paint,
+            "and the frame it applied it in has to reach the glass — this is \
+             the only frame the sheet was ever in"
+        );
+    }
+
+    /// The other half of turning the clock: the frames it moves the sheet in
+    /// have to reach the screen.
+    ///
+    /// A transition on a paint-only property marks its node `PAINT`-dirty and
+    /// nothing else, so the loop's three standing reasons to present — pending
+    /// layout, a requested redraw, scroll momentum — are all false while a
+    /// sheet slides. The sheet then moves in the tree and not on the glass:
+    /// the surface keeps the frame from before the tap until something
+    /// unrelated forces a present, which is the *next* tap, by which time it is
+    /// landing on a sheet that is logically already open.
+    #[test]
+    fn every_frame_the_sheet_moves_in_asks_to_be_presented() {
+        let mut sheet = mount();
+        let (x, y) = centre(&sheet.app, sheet.trigger);
+        tap(&mut sheet.app, x, y);
+
+        let panel = sheet.panel;
+        let presented = run_frames(&mut sheet.app, true, move |app| panel_y(app, panel) == 0.0);
+
+        assert_eq!(panel_y(&sheet.app, sheet.panel), 0.0, "the slide finished");
+        assert!(
+            presented > 1,
+            "a 220ms slide is many frames and every one of them has to be \
+             presented; only {presented} asked to be"
+        );
+    }
+}

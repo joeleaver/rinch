@@ -18,6 +18,7 @@ use rinch_core::events;
 use rinch_platform::{AppAction, ImeEvent, KeyCode, Modifiers, PlatformEvent};
 
 use crate::app::RinchApp;
+use crate::shell::android_frame;
 use crate::shell::android_ime::{ImeAction, ImeComposition};
 use crate::shell::touch_gesture::{TouchAction, TouchGesture};
 
@@ -395,11 +396,24 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         drain_main_queue();
         rinch_core::reactive::drain_polls();
 
+        // The frame clock. Every time-driven thing `RinchApp` owns — CSS
+        // transitions, CSS animations, the dirty state the input handlers
+        // leave for it to batch — advances here and nowhere else, and this
+        // loop polls with a 16ms timeout so the clock runs at ~60Hz. Before
+        // the surface is presented, not after: what it resolves has to be in
+        // the pixels this iteration hands to `present_pixels`, and the redraw
+        // it asks for has to be visible to the swap below.
+        let frame = android_frame::pump_frame(&mut app, physical_size, scale_factor);
+        process_actions(&frame.actions, &mut running);
+        if !running {
+            break;
+        }
+
         // Check if app has pending layout (signal changes create pending updates)
         let has_momentum = gesture.has_momentum();
         let redraw = REDRAW_PENDING.swap(false, Ordering::AcqRel);
-        let pending = app.has_pending_layout();
-        let needs_paint = redraw || pending || has_momentum;
+        let pending = frame.pending_layout;
+        let needs_paint = redraw || pending || has_momentum || frame.needs_paint;
 
         if needs_paint && mounted {
             if pending {
