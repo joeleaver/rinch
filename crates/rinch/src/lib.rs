@@ -174,9 +174,13 @@ pub mod prelude {
     };
 
     // Focus lifecycle for custom keyboard-owning components (issue #147): a
-    // `tabindex` node registers here to hear focus / blur / keys.
+    // `tabindex` node registers here to hear focus / blur / keys — and, if it
+    // registers `on_ime`, IME composition (issue #176), whose events are the
+    // portable `ImeEvent` every text target consumes.
     #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
     pub use crate::focus_registry::{FocusEntry, register_focus_target};
+    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+    pub use rinch_platform::ImeEvent;
 
     // Render surface API for embedding external renderers
     pub use crate::render_surface::{

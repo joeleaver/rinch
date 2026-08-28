@@ -6,7 +6,8 @@
 //! do is register callbacks against a focusable DOM node it already owns: the
 //! arbiter still holds the claim as `FocusTarget::Node`, and this registry is
 //! the lookup that turns that claim into `on_focus_gained` / `on_focus_lost` /
-//! `on_key` for the component behind it.
+//! `on_key` — and, for a target that says it is a text component,
+//! `on_ime` + `caret_rect` (issue #176) — for the component behind it.
 //!
 //! ```ignore
 //! use rinch::prelude::*;
@@ -34,6 +35,13 @@
 //! were just freed, which panics (issue #141 PR4). The arbiter notices the
 //! vanished target on its next key dispatch and releases the claim.
 //!
+//! **IME.** A target that registers [`FocusEntry::on_ime`] is a *text* target:
+//! while it holds the claim the runtime enables the platform IME on the window
+//! and routes every composition event to it, exactly as it does for the
+//! rich-text editor and a built-in `<input>` — IME is one shared runtime
+//! service riding the arbiter, not a per-widget path (issue #176).
+//! [`FocusEntry::caret_rect`] places the OS candidate box.
+//!
 //! **Web parity.** This is desktop/Android/embed only — the browser backend
 //! (`rinch-web`) has no arbiter, because the browser *is* one: put a real
 //! `tabindex` on the node and use the DOM's own `focus`/`blur` events there.
@@ -43,6 +51,7 @@ use std::rc::Rc;
 
 use rinch_core::dom::NodeHandle;
 use rinch_core::events::KeyEventData;
+use rinch_platform::ImeEvent;
 
 /// A registered target's key handler. `true` consumes the key — the runtime's
 /// own handling (Tab, Enter/Space activation, DevTools) does not run.
@@ -52,6 +61,9 @@ type FocusKeyHandler = Rc<dyn Fn(&KeyEventData) -> bool>;
 /// space, for IME candidate-box placement. See [`FocusEntry::caret_rect`].
 type FocusCaretRect = Rc<dyn Fn() -> Option<(f32, f32, f32, f32)>>;
 
+/// A registered target's IME consumer. See [`FocusEntry::on_ime`].
+type FocusImeHandler = Rc<dyn Fn(&ImeEvent)>;
+
 /// What a registered focus target wants to be told. Build with
 /// [`FocusEntry::new`] and hand it to [`register_focus_target`]; every callback
 /// is optional.
@@ -60,15 +72,12 @@ pub struct FocusEntry {
     on_focus_gained: Option<Rc<dyn Fn()>>,
     on_focus_lost: Option<Rc<dyn Fn()>>,
     on_key: Option<FocusKeyHandler>,
+    /// The composition consumer. Its presence is what makes this target a
+    /// *text* target: `RinchApp::ime_state` enables the platform IME while it
+    /// holds the claim (issue #176).
+    on_ime: Option<FocusImeHandler>,
     /// The caret rect this target would place an IME candidate box at, in
     /// logical window space (`x, y, w, h`).
-    ///
-    /// **Nothing reads this yet** — it is the seam for issue #176, so enabling
-    /// desktop IME for a registered target is later one branch in
-    /// `RinchApp::ime_state` rather than a re-plumb of the registry. Deciding
-    /// *when* a custom target wants IME enabled, and what its preedit contract
-    /// is, is that issue's job.
-    #[allow(dead_code)]
     caret_rect: Option<FocusCaretRect>,
 }
 
@@ -78,6 +87,7 @@ impl std::fmt::Debug for FocusEntry {
             .field("on_focus_gained", &self.on_focus_gained.is_some())
             .field("on_focus_lost", &self.on_focus_lost.is_some())
             .field("on_key", &self.on_key.is_some())
+            .field("on_ime", &self.on_ime.is_some())
             .field("caret_rect", &self.caret_rect.is_some())
             .finish()
     }
@@ -138,8 +148,55 @@ impl FocusEntry {
         self
     }
 
-    /// Where this target would put an IME candidate box (logical window space).
-    /// Accepted and stored, but **not read yet** — reserved for issue #176.
+    /// Consume IME composition while this target holds the keyboard (issue
+    /// #176). Registering this is what declares the target a **text** target:
+    /// the runtime then enables the platform IME on the window for it, places
+    /// the candidate box at [`caret_rect`](Self::caret_rect), and routes every
+    /// [`ImeEvent`] here — the same five portable variants the rich-text
+    /// editor and a built-in `<input>` consume. A target without it drives no
+    /// IME at all, so a focusable card or a toolbar button never turns the
+    /// OS input method on.
+    ///
+    /// Runs after the transition that gave this target focus, like the other
+    /// callbacks, so it may re-enter the runtime freely. An unmounted target
+    /// receives nothing: its scope disposal deregistered it.
+    ///
+    /// **The runtime never fabricates an event.** It owns no preedit on your
+    /// behalf — [`ImeEvent::Preedit`] is a transient overlay *you* render and
+    /// *you* discard. In particular a focus change is not an
+    /// [`ImeEvent::Disabled`]: when another target claims the keyboard the
+    /// window's IME may stay enabled throughout, so nothing ends your
+    /// composition but [`on_focus_lost`](Self::on_focus_lost). Drop the
+    /// preedit there.
+    ///
+    /// ```ignore
+    /// FocusEntry::new()
+    ///     .caret_rect(move || Some(caret.get()))
+    ///     .on_ime(move |e| match e {
+    ///         ImeEvent::Preedit { text, cursor } => model.set_preedit(text, *cursor),
+    ///         ImeEvent::Commit(text) => model.insert(text),
+    ///         ImeEvent::Disabled => model.clear_preedit(),
+    ///         _ => {}
+    ///     })
+    /// ```
+    pub fn on_ime(mut self, f: impl Fn(&ImeEvent) + 'static) -> Self {
+        self.on_ime = Some(Rc::new(f));
+        self
+    }
+
+    /// Where this target would put an IME candidate box: `(x, y, w, h)` in
+    /// **logical window space** — CSS pixels from the window's top-left, the
+    /// same space `NodeHandle` layout bounds are reported in, which the shell
+    /// hands winit as a `LogicalPosition`/`LogicalSize` and the platform scales
+    /// by the window's DPI factor. Do **not** pre-multiply by the scale factor.
+    ///
+    /// Polled by the runtime whenever it reconciles the window's IME state
+    /// (once per event-loop iteration), so the box follows the caret with no
+    /// notification needed — but keep it cheap, and do not mutate the DOM from
+    /// it. `None` (or no provider at all) leaves placement to the platform.
+    ///
+    /// Read only for a target that also registers [`on_ime`](Self::on_ime);
+    /// on its own it turns nothing on.
     pub fn caret_rect(mut self, f: impl Fn() -> Option<(f32, f32, f32, f32)> + 'static) -> Self {
         self.caret_rect = Some(Rc::new(f));
         self
@@ -244,4 +301,37 @@ pub(crate) fn offer_key(doc_key: u64, node_id: usize, key: &KeyEventData) -> boo
     entry_for(doc_key, node_id)
         .and_then(|entry| entry.on_key.clone())
         .is_some_and(|cb| cb(key))
+}
+
+/// Whether the target at `(doc_key, node_id)` consumes IME composition — i.e.
+/// registered [`FocusEntry::on_ime`] (issue #176).
+///
+/// This is the arbiter's enablement predicate: `false` for an unregistered
+/// node, and for a registered one that is focusable but not *text* (a card, a
+/// toolbar button), so focusing those does not switch the OS input method on.
+/// An unmounted target answers `false` for free — its registration is gone.
+pub(crate) fn wants_ime(doc_key: u64, node_id: usize) -> bool {
+    entry_for(doc_key, node_id).is_some_and(|entry| entry.on_ime.is_some())
+}
+
+/// The target's IME candidate-box rect in logical window space, freshly read
+/// from its [`FocusEntry::caret_rect`] provider. `None` when it has none, or
+/// when it has no caret right now.
+pub(crate) fn caret_rect_of(doc_key: u64, node_id: usize) -> Option<(f32, f32, f32, f32)> {
+    entry_for(doc_key, node_id)
+        .and_then(|entry| entry.caret_rect.clone())
+        .and_then(|cb| cb())
+}
+
+/// Deliver `ime` to the target focused at `(doc_key, node_id)`. Returns whether
+/// anything consumed it — `false` for an unregistered, unmounted, or non-text
+/// target, which is the same silence rule the focus callbacks obey.
+pub(crate) fn offer_ime(doc_key: u64, node_id: usize, ime: &ImeEvent) -> bool {
+    match entry_for(doc_key, node_id).and_then(|entry| entry.on_ime.clone()) {
+        Some(cb) => {
+            cb(ime);
+            true
+        }
+        None => false,
+    }
 }

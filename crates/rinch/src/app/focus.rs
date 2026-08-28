@@ -310,6 +310,26 @@ impl RinchApp {
                 enabled: true,
                 cursor_area: self.input_caret_area(node_id),
             },
+            // A registered target that consumes composition (`FocusEntry::on_ime`)
+            // is a text target and drives IME exactly like the two built-in
+            // engines — that is the whole of issue #176's enablement half, and
+            // it has to be here, because this is the only bridge to the window.
+            // A focusable node that is *not* text (a card, a toolbar button, an
+            // unregistered `tabindex`) still reports disabled: switching the OS
+            // input method on for it would swallow its keys.
+            //
+            // `caret_rect` is user code, re-read on every reconcile, so the
+            // candidate box follows the caret with no notification needed. An
+            // unmounted target is deregistered and falls out here as not-text,
+            // so it reports disabled for free.
+            FocusTarget::Node(node_id)
+                if crate::focus_registry::wants_ime(self.doc_key(), node_id) =>
+            {
+                ImeState {
+                    enabled: true,
+                    cursor_area: crate::focus_registry::caret_rect_of(self.doc_key(), node_id),
+                }
+            }
             // A generic focusable node is not a text target — explicit rather
             // than folded into `_` so a future text-capable variant can't land
             // here silently (issue #176 documents that trap for Surface).
