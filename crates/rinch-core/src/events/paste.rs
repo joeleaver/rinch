@@ -53,20 +53,50 @@ thread_local! {
 /// handler may call `rinch::clipboard::paste_text()` / `paste_html()` inside it
 /// and get the just-pasted content. Only one interceptor can be active at a time,
 /// per thread, not per document: a second call replaces the first.
+///
+/// **Released on unmount.** Registering from inside a render ties the
+/// interceptor to the ambient scope, so disposing that scope clears it — a
+/// callback that captured a `Signal` cannot outlive the signal and read freed
+/// state (issue #183; the standing rule is the one
+/// [`register_focus_target`](https://github.com/joeleaver/rinch/issues/147) follows).
+/// The cleanup only clears the slot if this interceptor is *still* the one
+/// installed, so a later `set_paste_interceptor` is never clobbered by an
+/// earlier component unmounting. Registering outside any render — from `main`,
+/// a timer, a detached callback — has no owner and so lives for the life of the
+/// app, as before.
 pub fn set_paste_interceptor<F>(cb: F)
 where
     F: Fn(&PasteEventData) -> bool + 'static,
 {
-    PASTE_INTERCEPTOR.with(|i| {
-        *i.borrow_mut() = Some(Rc::new(cb));
+    let cb: PasteInterceptor = Rc::new(cb);
+    let mine = Rc::downgrade(&cb);
+    // The displaced interceptor is dropped *after* the borrow ends: its `Drop`
+    // is user code and may re-enter this module (clearing, or registering a
+    // replacement), which inside the `borrow_mut` would panic.
+    let _previous = PASTE_INTERCEPTOR.with(|i| i.borrow_mut().replace(cb));
+    crate::reactive::on_cleanup(move || {
+        let Some(ours) = mine.upgrade() else {
+            // Already replaced by a later registration, which owns the slot now.
+            return;
+        };
+        let _displaced = PASTE_INTERCEPTOR.with(|i| {
+            let mut slot = i.borrow_mut();
+            if slot
+                .as_ref()
+                .is_some_and(|current| Rc::ptr_eq(current, &ours))
+            {
+                slot.take()
+            } else {
+                None
+            }
+        });
     });
 }
 
 /// Clear the global paste interceptor.
 pub fn clear_paste_interceptor() {
-    PASTE_INTERCEPTOR.with(|i| {
-        *i.borrow_mut() = None;
-    });
+    // Dropped outside the borrow — see `set_paste_interceptor`.
+    let _previous = PASTE_INTERCEPTOR.with(|i| i.borrow_mut().take());
 }
 
 /// Whether a paste interceptor is registered.
@@ -93,6 +123,74 @@ pub fn dispatch_paste_event(data: &PasteEventData) -> bool {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    use crate::reactive::Scope;
+
+    /// #183: a registry that outlives the component that filled it hands a
+    /// disposed scope's state to the next event. Registering inside a render
+    /// ties the interceptor to that scope.
+    #[test]
+    fn an_interceptor_registered_in_a_scope_is_released_when_the_scope_disposes() {
+        clear_paste_interceptor();
+        let scope = Scope::new();
+        scope.run(|| set_paste_interceptor(|_| true));
+        assert!(
+            has_paste_interceptor(),
+            "the interceptor is live while its scope is"
+        );
+
+        scope.dispose();
+        assert!(
+            !has_paste_interceptor(),
+            "disposing the owning scope must release the interceptor"
+        );
+        assert!(
+            !dispatch_paste_event(&PasteEventData::default()),
+            "a released interceptor must not run"
+        );
+    }
+
+    /// An earlier component unmounting must not clear a *later* component's
+    /// interceptor — the cleanup only takes the slot back if it still holds
+    /// the one it installed.
+    #[test]
+    fn an_earlier_scopes_cleanup_does_not_clobber_a_later_interceptor() {
+        clear_paste_interceptor();
+        let first = Scope::new();
+        first.run(|| set_paste_interceptor(|_| false));
+
+        let ran = Rc::new(Cell::new(false));
+        let flag = ran.clone();
+        let second = Scope::new();
+        second.run(move || {
+            set_paste_interceptor(move |_| {
+                flag.set(true);
+                true
+            })
+        });
+
+        first.dispose();
+        assert!(
+            has_paste_interceptor(),
+            "the second interceptor must survive the first scope's disposal"
+        );
+        assert!(dispatch_paste_event(&PasteEventData::default()));
+        assert!(ran.get(), "the surviving interceptor is the second one");
+
+        second.dispose();
+        assert!(!has_paste_interceptor());
+    }
+
+    /// Registering outside any render has no owner, so nothing releases it —
+    /// the pre-existing app-lifetime behaviour.
+    #[test]
+    fn an_interceptor_registered_with_no_ambient_owner_lives_on() {
+        clear_paste_interceptor();
+        set_paste_interceptor(|_| true);
+        Scope::new().dispose();
+        assert!(has_paste_interceptor());
+        clear_paste_interceptor();
+    }
 
     #[test]
     fn an_interceptor_sees_both_flavours_and_can_consume_the_paste() {
