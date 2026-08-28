@@ -380,7 +380,10 @@ fn a_text_node_is_never_hoisted_out_of_the_box_that_flows_it() {
 
     doc.resolve_layout(800.0, 600.0);
 
-    let node = doc.tree.get(raw(text)).expect("the text node is in the tree");
+    let node = doc
+        .tree
+        .get(raw(text))
+        .expect("the text node is in the tree");
     assert!(
         !paints_at_stacking_root(node),
         "a text node paints in its parent's tree-order run; hoisting it puts it \
