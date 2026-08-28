@@ -1,8 +1,12 @@
 //! VideoViewport component.
 //!
-//! On desktop, renders as a transparent div (like `GameViewport`) — the
-//! compositor draws the video frame underneath. On WASM, renders as a
-//! real `<video>` element.
+//! On desktop, renders as a placeholder div carrying `data-viewport`. What
+//! fills it depends on the backend (issue #358): the **GPU** shell composites
+//! the decoded frame as a layer underneath the UI, through a hole punched in
+//! the ancestors' backgrounds, while the **software** shell paints the frame
+//! inline during paint, at this node's own z-order, over an opaque black
+//! backdrop — and punches no hole at all. On WASM, renders as a real `<video>`
+//! element.
 
 use rinch_core::Component;
 use rinch_core::dom::{NodeHandle, RenderScope};
@@ -13,9 +17,12 @@ use crate::VideoPlayer;
 
 /// A viewport region where video frames are rendered.
 ///
-/// On desktop, this is a transparent placeholder (similar to `GameViewport`).
-/// The compositing pass reads the viewport rect and blits the decoded video
-/// frame into that region, underneath the Vello UI layer.
+/// On desktop, this is a placeholder box the frame is delivered into. On the
+/// **GPU** backend the compositing pass reads the viewport rect and blits the
+/// decoded frame into that region underneath the Vello UI layer; on the
+/// **software** backend the frame is painted inline, during paint, at this
+/// node's own z-order, so overlays above it occlude it by ordinary paint order
+/// (issue #358).
 ///
 /// On WASM, this creates a real `<video>` DOM element.
 ///
@@ -54,15 +61,15 @@ impl Component for VideoViewport {
     }
 }
 
-/// Desktop: transparent div with data-video-viewport attribute.
-/// The compositor queries this rect to position the video frame.
+/// Desktop: a div carrying `data-viewport`, which the backend fills.
 ///
-/// The hole is only transparent once there is a frame to show through it.
+/// The box is only transparent once there is a frame to show through it.
 /// Until then — before the first decode, or after a `PlaybackState::Error` —
-/// the div declares `data-viewport-ready="false"`, which stops paint cutting
-/// the hole, and paints its own black background as the placeholder. Without
-/// that, an errored video is see-through to the desktop on a transparent
-/// window (issue #186).
+/// the div declares `data-viewport-ready="false"`, which stops the GPU paint
+/// path cutting a hole, and paints its own black background as the placeholder.
+/// Without that, an errored video is see-through to the desktop on a
+/// transparent window (issue #186). The software backend cuts no hole for
+/// video at all, so an unready one there simply keeps this placeholder.
 #[cfg(not(target_arch = "wasm32"))]
 fn video_viewport_render(scope: &mut RenderScope, player: &VideoPlayer) -> NodeHandle {
     let __scope = scope;

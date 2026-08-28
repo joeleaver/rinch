@@ -186,13 +186,32 @@ pub fn set_viewport_pixels(pixels: Option<HashMap<String, SurfacePixelData>>) {
     VIEWPORT_PIXELS.with(|v| *v.borrow_mut() = pixels);
 }
 
-/// Whether an inline frame is available for the viewport named `name`.
+/// Whether a **usable** inline frame is available for the viewport named
+/// `name`.
+///
+/// The dimensions are validated here, exactly as the `data-render-surface` arm
+/// validates its own before taking the inline path. An entry whose pixels
+/// cannot be drawn — zero-sized, or a buffer shorter than `width * height * 4`
+/// (`submit_frame` only `debug_assert!`s that, so a release build can deliver
+/// one) — must leave the node on the ordinary element path and its `#000`
+/// placeholder background, rather than take the inline arm and paint a bare
+/// black box with no frame inside it.
 fn has_viewport_pixels(name: &str) -> bool {
     VIEWPORT_PIXELS.with(|v| {
         v.borrow()
             .as_ref()
-            .is_some_and(|map| map.contains_key(name))
+            .and_then(|map| map.get(name))
+            .is_some_and(|pixels| viewport_frame_bytes(pixels).is_some())
     })
+}
+
+/// The byte length a frame must have to be drawable, or `None` if it is not.
+fn viewport_frame_bytes(pixels: &SurfacePixelData) -> Option<usize> {
+    if pixels.width == 0 || pixels.height == 0 {
+        return None;
+    }
+    let needed = pixels.width as usize * pixels.height as usize * 4;
+    (pixels.data.len() >= needed).then_some(needed)
 }
 
 /// Set the dirty region for incremental painting.
@@ -909,25 +928,55 @@ fn paint_node(
                 // UI and an opaque element background would hide it. rinch-video
                 // cannot know which backend it is running on, so the backend
                 // that paints the frame is the one that owns its backdrop.
+                //
+                // Rounded like any other background: a `border-radius` on the
+                // viewport must not leave square black corners poking out of
+                // the shape the author asked for, and the frame is clipped to
+                // the same shape.
+                let (backdrop, has_radius) = {
+                    let cs = &node.computed_style;
+                    let resolve_size = node.layout.width.min(node.layout.height);
+                    let tl =
+                        cs.border_radius_top_left.resolve(resolve_size).max(0.0) as f64 * scale;
+                    let tr =
+                        cs.border_radius_top_right.resolve(resolve_size).max(0.0) as f64 * scale;
+                    let br =
+                        cs.border_radius_bottom_right.resolve(resolve_size).max(0.0) as f64 * scale;
+                    let bl =
+                        cs.border_radius_bottom_left.resolve(resolve_size).max(0.0) as f64 * scale;
+                    if tl > 0.0 || tr > 0.0 || br > 0.0 || bl > 0.0 {
+                        let radii = RoundedRectRadii::new(tl, tr, br, bl);
+                        (RoundedRect::from_rect(rect, radii).into(), true)
+                    } else {
+                        (painter::PaintShape::from(rect), false)
+                    }
+                };
                 painter.fill_color(
                     Fill::NonZero,
                     node_transform,
-                    AlphaColor::<Srgb>::new([0.0, 0.0, 0.0, 1.0]),
-                    &rect.into(),
+                    AlphaColor::<Srgb>::BLACK,
+                    &backdrop,
                 );
 
+                if has_radius {
+                    painter.push_clip(Fill::NonZero, node_transform, &backdrop);
+                }
                 VIEWPORT_PIXELS.with(|vp| {
                     let guard = vp.borrow();
-                    let Some(pixels) = guard
+                    // The guard above already proved this entry exists and is
+                    // drawable; `viewport_frame_bytes` re-derives the exact
+                    // slice length the painter needs, because a buffer longer
+                    // than `w * h * 4` would be rejected outright.
+                    let Some((pixels, bytes)) = guard
                         .as_ref()
-                        .zip(node.attributes.get("data-viewport"))
-                        .and_then(|(map, name)| map.get(name))
+                        .and_then(|map| map.get(node.attributes.get("data-viewport")?))
+                        .and_then(|pixels| Some((pixels, viewport_frame_bytes(pixels)?)))
                     else {
                         return;
                     };
                     image::paint_image_data(
                         painter,
-                        &pixels.data,
+                        &pixels.data[..bytes],
                         pixels.width,
                         pixels.height,
                         rect,
@@ -936,6 +985,9 @@ fn paint_node(
                         node_transform,
                     );
                 });
+                if has_radius {
+                    painter.pop_layer();
+                }
             }
 
             if opacity < 1.0 {
@@ -979,15 +1031,16 @@ fn paint_node(
                                         );
                                     }
 
-                                    // Paint the surface pixels inline, like an image
-                                    let decoded = crate::image_cache::DecodedImage {
-                                        data: pixels.data.clone(),
-                                        width: pixels.width,
-                                        height: pixels.height,
-                                    };
-                                    image::paint_image(
+                                    // Paint the surface pixels inline, like an
+                                    // image — over the borrowed buffer. A live
+                                    // frame source must not be cloned into a
+                                    // `DecodedImage` first: that is a whole
+                                    // frame of memcpy per frame, for nothing.
+                                    image::paint_image_data(
                                         painter,
-                                        &decoded,
+                                        &pixels.data,
+                                        pixels.width,
+                                        pixels.height,
                                         rect,
                                         scale,
                                         crate::computed_style::ObjectFitValue::Contain,

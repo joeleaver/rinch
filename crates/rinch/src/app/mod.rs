@@ -1129,26 +1129,15 @@ impl RinchApp {
         if self.scene_dirty {
             let paint_start = Instant::now();
 
-            // Mark surface DOM nodes as paint-dirty when new pixels arrive,
-            // so dirty region caching correctly includes surface rects.
-            if let Some(doc) = &self.doc {
-                let mut d = doc.borrow_mut();
-                let dirty_surface_nodes: Vec<_> = d
-                    .tree
-                    .nodes
-                    .iter()
-                    .filter_map(|(node_id, node)| {
-                        let id_str = node.attributes.get("data-render-surface")?;
-                        let sid = id_str.parse::<usize>().ok()?;
-                        if crate::render_surface::is_surface_dirty_by_id(sid) {
-                            Some(node_id)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                d.tree.paint_dirty_nodes.extend(dirty_surface_nodes);
-            }
+            // Surface and viewport nodes are marked paint-dirty by the shell,
+            // at collect time — `mark_surface_nodes_paint_dirty` /
+            // `mark_viewport_nodes_paint_dirty`. It cannot be done here: the
+            // frame collectors clear `needs_redraw` before this runs, so a
+            // `is_surface_dirty_by_id` scan from inside `build_pixels` answers
+            // "no" for every surface that just delivered a frame — and worse,
+            // on the paths that call `build_pixels` with no frame map set at
+            // all (the debug screenshot), marking the node only guarantees it
+            // repaints *without* its pixels.
 
             // Compute dirty region before clearing paint_dirty_nodes
             let dirty_region = if self.has_previous_frame && !resized {
@@ -2426,30 +2415,75 @@ impl RinchApp {
     /// region, and one always does: the video controls' own timestamp ticks
     /// once a second, dirtying a text run outside the video's box.
     ///
-    /// `build_pixels`' `data-render-surface` equivalent cannot simply be reused:
-    /// it asks `is_surface_dirty_by_id`, and the frame collectors have already
-    /// cleared `needs_redraw` by the time it runs, so it never marks anything.
-    /// Inline `RenderSurface` painting works today only because nothing else
-    /// marks anything either, so `compute_dirty_region` returns `None` and the
-    /// whole frame repaints. Video cannot rely on that accident.
+    /// The marking has to happen at *collect* time, in the shell, not inside
+    /// `build_pixels`: the frame collectors clear `needs_redraw` on their way
+    /// past, so by the time `build_pixels` runs there is nothing left to ask.
+    /// See [`Self::mark_surface_nodes_paint_dirty`], the `RenderSurface` half
+    /// of the same job.
     pub fn mark_viewport_nodes_paint_dirty(&mut self, names: &[&str]) {
         if names.is_empty() {
             return;
         }
+        self.mark_attribute_nodes_paint_dirty("data-viewport", |value| names.contains(&value));
+    }
+
+    /// The `RenderSurface` half of the same problem, by `data-render-surface`
+    /// id.
+    ///
+    /// An inline `RenderSurface` is subject to the dirty-region cache for
+    /// exactly the reason an inline video is, and `build_pixels` never covered
+    /// it: the block that asked `is_surface_dirty_by_id` ran *after* the frame
+    /// collectors had already cleared `needs_redraw`, so it marked nothing.
+    /// Surfaces only kept moving because nothing else marked anything either
+    /// and `compute_dirty_region` fell back to a full repaint — the moment any
+    /// other node dirties a small region (a blinking caret, a ticking clock)
+    /// the surface's subtree is pruned and its last frame freezes on screen.
+    /// Marking at collect time, before the flags are cleared, is what fixes it.
+    pub fn mark_surface_nodes_paint_dirty(&mut self, ids: &[usize]) {
+        if ids.is_empty() {
+            return;
+        }
+        self.mark_attribute_nodes_paint_dirty("data-render-surface", |value| {
+            value.parse::<usize>().is_ok_and(|id| ids.contains(&id))
+        });
+    }
+
+    /// Mark every **connected** node whose `attr` value satisfies `matches`.
+    ///
+    /// The connectivity walk is the same one `viewport_rect_with_radius` does
+    /// and for the same reason: a removed subtree can outlive its removal in
+    /// the node arena, and an orphan's summed layout offsets describe a rect
+    /// that is nowhere in particular. Marking one dirty would union that
+    /// phantom rect into every frame's dirty region — cheap to avoid, and
+    /// impossible to reason about once it happens.
+    fn mark_attribute_nodes_paint_dirty(&mut self, attr: &str, matches: impl Fn(&str) -> bool) {
         let Some(doc) = self.doc.as_ref() else {
             return;
         };
         let mut d = doc.borrow_mut();
-        let d = &mut *d;
-        let dirty: Vec<_> = d
-            .tree
-            .nodes
-            .iter()
-            .filter_map(|(node_id, node)| {
-                let name = node.attributes.get("data-viewport")?;
-                names.contains(&name.as_str()).then_some(node_id)
-            })
-            .collect();
+        let dirty: Vec<_> = {
+            let tree = &d.tree;
+            let root = tree.root_id;
+            tree.nodes
+                .iter()
+                .filter_map(|(node_id, node)| {
+                    if !matches(node.attributes.get(attr)?.as_str()) {
+                        return None;
+                    }
+                    let mut connected = false;
+                    let mut current = Some(node_id);
+                    while let Some(id) = current {
+                        let n = tree.get(id)?;
+                        if n.parent.is_none() {
+                            connected = id == root;
+                            break;
+                        }
+                        current = n.parent;
+                    }
+                    connected.then_some(node_id)
+                })
+                .collect()
+        };
         d.tree.paint_dirty_nodes.extend(dirty);
     }
 

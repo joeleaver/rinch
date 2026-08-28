@@ -826,6 +826,15 @@ impl RinchRuntime {
         if !surface_pixels.is_empty() {
             // Mark scene dirty so build_pixels() actually repaints
             self.app.mark_scene_dirty();
+            // ...and mark the surface nodes themselves, for the same reason the
+            // video viewports are marked below: inline painting is subject to
+            // the dirty-region cache, and a small dirty region elsewhere would
+            // otherwise prune the surface's subtree and freeze its last frame.
+            // This has to happen here, at collect time — the collector above
+            // has just cleared `needs_redraw`, so nothing downstream can still
+            // tell which surfaces delivered a frame.
+            let ids: Vec<usize> = surface_pixels.keys().copied().collect();
+            self.app.mark_surface_nodes_paint_dirty(&ids);
             rinch_dom::paint::set_surface_pixels(Some(surface_pixels));
         }
 

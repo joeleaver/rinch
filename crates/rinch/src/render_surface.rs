@@ -577,6 +577,15 @@ thread_local! {
 /// until the surface becomes visible.
 pub fn create_render_surface() -> RenderSurfaceHandle {
     let id = next_surface_id();
+    new_surface_handle(id, format!("__render_surface_{id}"), false)
+}
+
+/// The one place a [`RenderSurfaceHandle`] is built.
+///
+/// Every entry point funnels through here so a field added to the handle —
+/// `is_video` was the latest — cannot be wired up in one constructor and
+/// forgotten in the other.
+fn new_surface_handle(id: usize, viewport_name: String, is_video: bool) -> RenderSurfaceHandle {
     RenderSurfaceHandle {
         id,
         buffer: Arc::new(Mutex::new(SurfaceBuffer {
@@ -588,8 +597,8 @@ pub fn create_render_surface() -> RenderSurfaceHandle {
         texture_source: Arc::new(Mutex::new(None)),
         needs_redraw: Arc::new(AtomicBool::new(false)),
         event_handler: std::rc::Rc::new(RefCell::new(None)),
-        viewport_name: format!("__render_surface_{id}"),
-        is_video: false,
+        viewport_name,
+        is_video,
         layout_size: Arc::new(Mutex::new((0, 0))),
         layout_position: Arc::new(Mutex::new((0.0, 0.0))),
         #[cfg(target_arch = "wasm32")]
@@ -631,32 +640,7 @@ pub fn create_video_surface(viewport_name: &str) -> RenderSurfaceHandle {
 
 fn create_named_surface(viewport_name: &str, is_video: bool) -> RenderSurfaceHandle {
     let id = next_surface_id();
-    let handle = RenderSurfaceHandle {
-        id,
-        buffer: Arc::new(Mutex::new(SurfaceBuffer {
-            pixels: Vec::new(),
-            width: 0,
-            height: 0,
-        })),
-        #[cfg(feature = "gpu")]
-        texture_source: Arc::new(Mutex::new(None)),
-        needs_redraw: Arc::new(AtomicBool::new(false)),
-        event_handler: std::rc::Rc::new(RefCell::new(None)),
-        viewport_name: viewport_name.to_string(),
-        is_video,
-        layout_size: Arc::new(Mutex::new((0, 0))),
-        layout_position: Arc::new(Mutex::new((0.0, 0.0))),
-        #[cfg(target_arch = "wasm32")]
-        canvas: std::rc::Rc::new(RefCell::new(None)),
-        #[cfg(target_arch = "wasm32")]
-        canvas_ctx: std::rc::Rc::new(RefCell::new(None)),
-        render_callback: std::rc::Rc::new(RefCell::new(None)),
-        resize_callback: std::rc::Rc::new(RefCell::new(None)),
-        #[cfg(target_arch = "wasm32")]
-        web_cleanup: std::rc::Rc::new(RefCell::new(None)),
-        #[cfg(target_arch = "wasm32")]
-        raf_running: std::rc::Rc::new(Cell::new(false)),
-    };
+    let handle = new_surface_handle(id, viewport_name.to_string(), is_video);
 
     SURFACE_REGISTRY.with(|reg| {
         reg.borrow_mut().push(handle.clone());
@@ -771,7 +755,12 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
             if !surface_takes_compositor_path(
                 is_inline_surface(surface),
                 surface.is_video,
-                cfg!(feature = "gpu"),
+                // "has a GPU compositor", not "has the `gpu` feature": the
+                // Android shell picks its painter with `android-gpu`, and both
+                // are what the `software_shell` alias is the negation of. With
+                // `cfg!(feature = "gpu")` an `android-gpu` build would route
+                // video off the compositor with nothing painting it inline.
+                cfg!(not(software_shell)),
             ) {
                 continue;
             }
@@ -1757,7 +1746,7 @@ mod compositor_routing_tests {
         let blitted = collect_surface_frames();
         assert_eq!(
             blitted.iter().any(|(name, ..)| name == "test-video"),
-            cfg!(feature = "gpu"),
+            cfg!(not(software_shell)),
             "video reaches the compositor path on GPU only — on software it \
              paints inline instead (#358)"
         );
