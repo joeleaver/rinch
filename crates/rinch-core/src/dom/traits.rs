@@ -174,6 +174,13 @@ pub trait DomDocument {
     fn replace_node(&mut self, old: NodeId, new: NodeId);
 
     /// Remove a node from its parent.
+    ///
+    /// This **retires** the node and its whole subtree: a backend is free to drop
+    /// their bookkeeping, so the ids may name nothing afterwards. A `NodeHandle`
+    /// for a removed node must not be re-attached — appending it again is not
+    /// guaranteed to do anything (on the browser backend it silently no-ops, and
+    /// it is what lets that backend release the node it was pinning, issue #184).
+    /// Build a fresh node instead.
     fn remove_node(&mut self, node: NodeId);
 
     /// Set the text content of a node.

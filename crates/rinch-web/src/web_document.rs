@@ -43,9 +43,20 @@ pub struct WebDocument {
 thread_local! {
     /// Reverse map (`NodeId.0` → browser node) populated for every node `set_nid`
     /// tags. Lets non-`DomDocument` code — the editor input glue — resolve a rinch
-    /// node id back to its DOM node for caret/selection geometry. Entries are not
-    /// eagerly pruned (node *creation* is structural, so growth is bounded);
-    /// [`node_by_nid`] returns `None` for a node detached from the document.
+    /// node id back to its DOM node for caret/selection geometry.
+    ///
+    /// The value is a **strong** `web_sys::Node`, so an entry pins its browser
+    /// node against GC. Entries are therefore pruned as soon as the backend stops
+    /// owning the node: by [`forget_subtree`] from `remove_node`, `replace_node`
+    /// and `set_inner_html`, and by [`Drop for WebDocument`](WebDocument) for
+    /// whatever a dying document still holds (issue #184). Node *creation* is not
+    /// structural — a keyed `for`, a `show`, or the editor's per-keystroke
+    /// `ViewDesc` churn creates and destroys nodes forever within one mounted
+    /// root — so without pruning this map grows without bound for the life of the
+    /// page.
+    ///
+    /// [`node_by_nid`] additionally returns `None` for a node that is present but
+    /// detached, so its callers cannot tell a pruned id from a detached one.
     static NODE_REGISTRY: std::cell::RefCell<HashMap<usize, web_sys::Node>> =
         std::cell::RefCell::new(HashMap::new());
 }
@@ -62,6 +73,63 @@ pub(crate) fn node_by_nid(nid: usize) -> Option<web_sys::Node> {
 fn set_nid(node: &web_sys::Node, id: NodeId) {
     let _ = js_sys::Reflect::set(node, &"__nid".into(), &JsValue::from(id.0 as u32));
     NODE_REGISTRY.with(|m| m.borrow_mut().insert(id.0, node.clone()));
+}
+
+/// Drop `node` and every `__nid`-tagged descendant of it from both node maps —
+/// the document's own `nodes` and the page-global [`NODE_REGISTRY`] (#184).
+///
+/// Retiring an id is safe because `NEXT_NODE_ID` is a monotonic `fetch_add` with
+/// no free list: a retired id can never be re-issued to a different node, so this
+/// backend cannot hit the recycled-slot identity hazard the slab-based desktop
+/// backend has to worry about. The worst case is a stale `NodeHandle` naming an
+/// absent id, and every accessor here is `get`-guarded, so that is a silent no-op.
+///
+/// The walk goes over the **browser** DOM: `WebDocument` keeps a flat map and no
+/// parent/child bookkeeping of its own, so the browser is the only structural
+/// source of truth. This is the exact inverse of
+/// [`WebDocument::register_subtree`].
+fn forget_subtree(nodes: &mut HashMap<usize, web_sys::Node>, node: &web_sys::Node) {
+    // One borrow for the whole recursion. Nothing inside it may call `set_nid`,
+    // which borrows the registry mutably.
+    NODE_REGISTRY.with(|m| {
+        let mut reg = m.borrow_mut();
+        forget_recursive(nodes, &mut reg, node);
+    });
+}
+
+fn forget_recursive(
+    nodes: &mut HashMap<usize, web_sys::Node>,
+    reg: &mut HashMap<usize, web_sys::Node>,
+    node: &web_sys::Node,
+) {
+    let children = node.child_nodes();
+    for i in 0..children.length() {
+        if let Some(child) = children.item(i) {
+            forget_recursive(nodes, reg, &child);
+        }
+    }
+    if let Some(id) = get_nid(node) {
+        nodes.remove(&id.0);
+        reg.remove(&id.0);
+    }
+}
+
+/// **Test-only.** Live entries in the page-global node registry (#184).
+///
+/// The counter behind `NodeId` is process-global, so a test must compare this
+/// against its own baseline — never against an absolute number.
+#[doc(hidden)]
+pub fn __node_registry_len() -> usize {
+    NODE_REGISTRY.with(|m| m.borrow().len())
+}
+
+/// **Test-only.** Whether the page-global node registry still holds `nid` (#184).
+///
+/// Raw membership, unlike [`node_by_nid`], which additionally filters on
+/// `is_connected()` — a leak test has to tell "pruned" from "merely detached".
+#[doc(hidden)]
+pub fn __node_registry_contains(nid: usize) -> bool {
+    NODE_REGISTRY.with(|m| m.borrow().contains_key(&nid))
 }
 
 /// Coerces a scroll offset to whatever `Element::set_scroll_{top,left}` expects.
@@ -635,6 +703,44 @@ impl WebDocument {
             }
         }
     }
+
+    /// **Test-only.** Entries in this document's own node map (#184).
+    #[doc(hidden)]
+    pub fn __node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// **Test-only.** Whether this document still maps `nid` (#184).
+    #[doc(hidden)]
+    pub fn __contains(&self, nid: usize) -> bool {
+        self.nodes.contains_key(&nid)
+    }
+}
+
+impl Drop for WebDocument {
+    /// Release this document's remaining [`NODE_REGISTRY`] entries (#184).
+    ///
+    /// `remove_node` already prunes churned nodes; this catches whatever a live
+    /// document was still holding — most importantly its own root/body wrappers,
+    /// which no `remove_node` ever reaches. `self.nodes` *is* this document's
+    /// registry footprint: the two maps are populated in lockstep by the same
+    /// call sites, which is why the registry needs no per-document keying.
+    ///
+    /// The document's `#rinch-root` element (when built by [`WebDocument::new`])
+    /// stays attached to the real `document.body` — pre-existing behaviour, and
+    /// only reachable through `mount()`, which never unmounts.
+    fn drop(&mut self) {
+        // `try_with` / `try_borrow_mut`: a TLS-destructor ordering hazard is
+        // unreachable on wasm (thread-locals outlive the page), but a `Drop` is
+        // the wrong place to panic about it.
+        let _ = NODE_REGISTRY.try_with(|m| {
+            if let Ok(mut reg) = m.try_borrow_mut() {
+                for id in self.nodes.keys() {
+                    reg.remove(id);
+                }
+            }
+        });
+    }
 }
 
 /// Walk a DOM subtree depth-first to find the text node containing the given UTF-8 byte offset.
@@ -749,19 +855,36 @@ impl DomDocument for WebDocument {
     }
 
     fn replace_node(&mut self, old: NodeId, new: NodeId) {
-        if let (Some(old_node), Some(new_node)) = (self.nodes.get(&old.0), self.nodes.get(&new.0))
-            && let Some(parent) = old_node.parent_node()
-        {
-            parent.replace_child(new_node, old_node).ok();
+        let (Some(old_node), Some(new_node)) =
+            (self.nodes.get(&old.0).cloned(), self.nodes.get(&new.0))
+        else {
+            return;
+        };
+        let Some(parent) = old_node.parent_node() else {
+            return;
+        };
+        if parent.replace_child(new_node, &old_node).is_ok() {
+            // `old` is orphaned here and every caller drops its handle in the
+            // same breath (the editor's `ViewDesc` diff is a per-keystroke churn
+            // path), so holding its entries would leak it for the life of the
+            // page (#184). Gated on success: a rejected swap leaves `old` in the
+            // tree, and a node still in the tree must keep its entries.
+            forget_subtree(&mut self.nodes, &old_node);
         }
     }
 
     fn remove_node(&mut self, node: NodeId) {
-        if let Some(n) = self.nodes.get(&node.0)
-            && let Some(parent) = n.parent_node()
-        {
-            parent.remove_child(n).ok();
+        let Some(n) = self.nodes.get(&node.0).cloned() else {
+            return;
+        };
+        if let Some(parent) = n.parent_node() {
+            parent.remove_child(&n).ok();
         }
+        // Prune *unconditionally*, outside the `parent_node()` guard: a node that
+        // was built and never appended (or is already detached) is stranded just
+        // as hard as an attached one. Descendants stay attached to `n` when `n`
+        // leaves its parent, so the sweep works either side of the detach.
+        forget_subtree(&mut self.nodes, &n);
     }
 
     fn set_text_content(&mut self, node: NodeId, text: &str) {
@@ -1036,6 +1159,14 @@ impl DomDocument for WebDocument {
         if let Some(n) = self.nodes.get(&node.0)
             && let Ok(el) = n.clone().dyn_into::<web_sys::Element>()
         {
+            // `set_inner_html` discards every existing child, so forget them
+            // first — the desktop backend already does this (issue #184).
+            let old_children = el.child_nodes();
+            for i in 0..old_children.length() {
+                if let Some(child) = old_children.item(i) {
+                    forget_subtree(&mut self.nodes, &child);
+                }
+            }
             el.set_inner_html(html);
             // Walk all new child nodes and register them
             let children = el.child_nodes();
