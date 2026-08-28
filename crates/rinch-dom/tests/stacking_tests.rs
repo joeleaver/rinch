@@ -354,6 +354,49 @@ fn a_fixed_box_inside_a_scroller_is_hoisted_to_the_viewport_with_no_offset() {
     assert!(inner.is_empty(), "the body already has it: {inner:?}");
 }
 
+/// A text node is not a box, so it cannot be a positioned descendant, so it is
+/// never hoisted out of the parent that flows it.
+///
+/// This is the invariant card K20 turned out to be about. Style resolution runs
+/// on elements only, so a text node keeps `ComputedStyle::default()` for its
+/// whole life — and `PositionValue` used to default to `Relative`, which made
+/// `is_positioned_z_auto` answer `true` for every text node in the document.
+/// Each one was then hoisted into the nearest stacking-context ancestor's
+/// sequence, where the guard that stops an IFC root's children being painted a
+/// second time (`already_drawn_inline`, which only recognises a child of the
+/// node it is called on) cannot reach it. The result was that every run of text
+/// in an inline formatting context was painted twice — see
+/// `text_in_a_padded_ifc_root_is_painted_once` for the picture that made.
+#[test]
+fn a_text_node_is_never_hoisted_out_of_the_box_that_flows_it() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    let para = doc.create_element("div");
+    doc.set_attribute(para, "style", "font-size: 20px");
+    doc.append_child(body, para);
+    let text = doc.create_text("Solid");
+    doc.append_child(para, text);
+
+    doc.resolve_layout(800.0, 600.0);
+
+    let node = doc
+        .tree
+        .get(raw(text))
+        .expect("the text node is in the tree");
+    assert!(
+        !paints_at_stacking_root(node),
+        "a text node paints in its parent's tree-order run; hoisting it puts it \
+         somewhere `already_drawn_inline` cannot skip it and the run is painted twice"
+    );
+    assert_eq!(
+        ids(&body_order(&doc)),
+        vec![raw(para)],
+        "the body's sequence is the paragraph and nothing else — the text inside \
+         it belongs to the paragraph's inline layout, not to this list"
+    );
+}
+
 // ── The forward read: pixels ────────────────────────────────────────────────
 
 #[cfg(feature = "software-renderer")]
@@ -468,5 +511,63 @@ mod painted {
         paint(&mut doc, &mut painter);
 
         assert_eq!(pixel_at(&painter, 30, 30), [255, 0, 0, 255]);
+    }
+
+    /// One run of text, painted once — the fault behind card K20.
+    ///
+    /// An IFC root draws its text out of the Parley layout at its *content-box*
+    /// origin, inside the padding. The standalone text path in `paint_node`
+    /// draws the raw DOM string at the node's own layout position, which
+    /// `write_inline_positions` zeroes to the root's *border-box* origin. So
+    /// when a text node was wrongly hoisted (see
+    /// `a_text_node_is_never_hoisted_out_of_the_box_that_flows_it`) and both
+    /// paths ran, the second copy landed a whole padding to the left of the
+    /// first — a chip with `padding: 6px 12px` drew its label twice, a line and
+    /// a padding apart, which is how this was first seen on a phone.
+    ///
+    /// The padding strip is therefore the oracle: it is the one place on the
+    /// screen where the correct render puts no ink at all.
+    #[test]
+    fn text_in_a_padded_ifc_root_is_painted_once() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let chip = doc.create_element("div");
+        doc.set_attribute(
+            chip,
+            "style",
+            "padding-left: 40px; font-size: 20px; color: rgb(255, 0, 0)",
+        );
+        doc.append_child(body, chip);
+        let text = doc.create_text("Solid");
+        doc.append_child(chip, text);
+
+        doc.resolve_layout(800.0, 600.0);
+        let mut painter = TinySkiaPainter::new(300, 60);
+        paint(&mut doc, &mut painter);
+
+        let ink = |x0: u32, x1: u32| {
+            let mut n = 0;
+            for y in 0..painter.height() {
+                for x in x0..x1 {
+                    if pixel_at(&painter, x, y)[3] > 0 {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+
+        assert!(
+            ink(40, 300) > 0,
+            "the text itself is painted, inside the padding — if this is zero the \
+             test is measuring an empty document and proves nothing"
+        );
+        assert_eq!(
+            ink(0, 39),
+            0,
+            "nothing is painted in the padding strip; ink here is the second, \
+             un-transformed copy of the run, drawn at the border-box origin"
+        );
     }
 }
