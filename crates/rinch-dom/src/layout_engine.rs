@@ -52,7 +52,9 @@ impl RinchDocument {
         // created with, laid out as nothing and painted as nothing, however
         // many frames follow. That is the same class of miss the viewport
         // branch above records, and an image landing is the other thing that
-        // needs a recompute without any style having changed.
+        // needs a recompute without any style having changed. (The drain
+        // answers `false` for a `background-image`, which changes no box — it
+        // publishes those by marking their users paint-dirty instead.)
         if self.drain_pending_images() {
             self.tree.layout_dirty = true;
         }

@@ -670,15 +670,39 @@ impl RinchDocument {
     /// Drain completed image loads and update Taffy nodes with intrinsic dimensions.
     ///
     /// Called before layout to pick up newly decoded images.
-    /// Returns true if any images were newly decoded (needs re-layout).
+    ///
+    /// Returns true only if a decode changed an `<img>`'s intrinsic size, i.e.
+    /// if the tree needs a Taffy recompute. A `background-image` decode changes
+    /// no box, so it returns false and is published by marking its users
+    /// paint-dirty instead — a full re-layout for a paint-only change would be
+    /// wasted work, and leaving those users *out* of `paint_dirty_nodes` would
+    /// let the software renderer's dirty-region path repaint some other node's
+    /// rect and skip the freshly decoded background entirely.
     pub fn drain_pending_images(&mut self) -> bool {
         let newly_decoded = self.tree.image_cache.drain_pending(self.doc_key);
         if newly_decoded.is_empty() {
             return false;
         }
+        let mut layout_changed = false;
         // For each newly decoded image, find <img> nodes referencing it
         // and update their intrinsic dimensions
         for src in &newly_decoded {
+            // `background-image: url(src)` users: no intrinsic size feeds
+            // layout, but their pixels changed, so they must be in the dirty
+            // region the next paint clears and redraws.
+            let bg_ids: Vec<usize> = self
+                .tree
+                .nodes
+                .iter()
+                .filter_map(|(id, node)| match &node.computed_style.background {
+                    crate::computed_style::BackgroundValue::Image { url } if url == src => Some(id),
+                    _ => None,
+                })
+                .collect();
+            for node_id in bg_ids {
+                self.push_dirty_flags(node_id, DirtyFlags::PAINT);
+            }
+
             let img_dims = self.tree.image_cache.get(src).map(|i| (i.width, i.height));
             let Some((iw, ih)) = img_dims else {
                 continue;
@@ -713,10 +737,22 @@ impl RinchDocument {
                     let _ = self.tree.taffy.mark_dirty(taffy_id);
                 }
                 self.push_dirty_flags(node_id, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+
+                // `<img>` is `inline-block` in the UA sheet, so a default-styled
+                // one is *detached from the root Taffy tree* and pre-measured by
+                // `compute_inline_block_layouts` — which `resolve_layout` runs
+                // only under `ifc_dirty`. Re-contexting the detached Taffy node
+                // therefore changes nothing on its own: the 0x0 box measured
+                // while the image was still loading is what stays, however many
+                // frames the wake produces. This is the invalidation that makes
+                // the decoded size actually reach the box.
+                self.tree.ifc_dirty = true;
+
+                layout_changed = true;
             }
         }
 
-        true
+        layout_changed
     }
 }
 
