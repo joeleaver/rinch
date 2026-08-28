@@ -851,9 +851,22 @@ impl RinchRuntime {
             self.app.mark_scene_dirty();
         }
 
+        // Only a viewport with a frame this cycle gets a hole punched in its
+        // ancestors' backgrounds. The GPU path has always filtered this way;
+        // the software path never installed a filter at all, so every
+        // `data-viewport` node punched whether or not anything would fill it
+        // (issue #186). Software blits these frames over the UI further down,
+        // so a punched hole with no frame is pure background loss.
+        let active_viewports: std::collections::HashSet<String> = compositor_frames
+            .iter()
+            .map(|(viewport_name, _, _, _)| viewport_name.clone())
+            .collect();
+        rinch_dom::paint::set_active_viewports(Some(active_viewports));
+
         // Build the scene — surfaces paint inline at their layout positions
         let (_base, w, h) = self.app.build_pixels(scale, size, transparent);
 
+        rinch_dom::paint::set_active_viewports(None);
         rinch_dom::paint::set_surface_pixels(None);
 
         // Resolve viewport rects and clip rects for compositor frames before
@@ -1113,11 +1126,15 @@ impl RinchRuntime {
             }
         }
 
-        // Set active viewports so hole-punching only applies to compositor surfaces
-        // (GPU textures + video), not inline-painted CPU surfaces.
-        if !compositor_viewport_names.is_empty() {
-            rinch_dom::paint::set_active_viewports(Some(compositor_viewport_names));
-        }
+        // Set active viewports so hole-punching only applies to compositor
+        // surfaces (GPU textures + video), not inline-painted CPU surfaces.
+        //
+        // Installed unconditionally, empty set included. Skipping the call when
+        // nothing has a layer left `ACTIVE_VIEWPORTS` at `None`, which
+        // `find_viewport_rects` reads as "no filter — punch everything": the
+        // gate was inoperative in exactly the case it exists for, a viewport
+        // with no frame behind it (issue #186).
+        rinch_dom::paint::set_active_viewports(Some(compositor_viewport_names));
 
         // Build scene from document — CPU surfaces paint inline via draw_image()
         let scene = self.app.build_scene(scale, size);
