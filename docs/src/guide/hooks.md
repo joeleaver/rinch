@@ -150,6 +150,10 @@ a `Signal`, and the next event reads a handle whose storage is gone. Registering
 one **from inside a render** therefore ties it to that render:
 
 ```rust
+// `set_keyboard_interceptor` is not in the prelude — it is a document-level
+// capture-phase hook, not everyday component API. `set_paste_interceptor` is.
+use rinch::core::set_keyboard_interceptor;
+
 #[component]
 fn shortcuts() -> NodeHandle {
     let count = Signal::new(0);
@@ -172,6 +176,10 @@ consequences are worth knowing:
 - **An earlier component unmounting never clears a later one's registration.**
   These are single, last-wins slots; the release only reclaims the slot if it is
   still holding the callback that registered it.
+- **Register once per component, not once per event.** Each call from inside a
+  live component queues its own release, and those accumulate until the component
+  unmounts. Installing a hook from a render (as above) is the intended shape;
+  re-installing one on every click or on every run of a reactive closure is not.
 
 [`set_keyboard_interceptor`]: ./focus.md#where-this-does-not-apply
 [`set_paste_interceptor`]: ./platform.md#clipboard

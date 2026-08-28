@@ -39,7 +39,7 @@ thread_local! {
     /// one decision, and giving this its own parallel map would have to be
     /// unpicked to land it. Tracked as issue #340; the *lifetime* of whatever
     /// occupies the slot is issue #183 and is handled below.
-    static KEYBOARD_INTERCEPTOR: RefCell<Option<KeyboardInterceptor>> = RefCell::new(None);
+    static KEYBOARD_INTERCEPTOR: RefCell<Option<KeyboardInterceptor>> = const { RefCell::new(None) };
 }
 
 /// Set the global keyboard interceptor.
@@ -65,9 +65,7 @@ where
 
 /// Clear the global keyboard interceptor.
 pub fn clear_keyboard_interceptor() {
-    // Dropped outside the borrow: the displaced interceptor is user code and its
-    // `Drop` may re-enter this module, which inside the `borrow_mut` would panic.
-    let _previous = KEYBOARD_INTERCEPTOR.with(|i| i.borrow_mut().take());
+    crate::reactive::clear_scoped_slot(&KEYBOARD_INTERCEPTOR);
 }
 
 /// Dispatch a keyboard event to the interceptor.
@@ -76,8 +74,7 @@ pub fn clear_keyboard_interceptor() {
 /// The `Rc` is cloned out before the call so the handler may re-enter (install a
 /// different interceptor, for instance) without a double borrow.
 pub fn dispatch_keyboard_event(data: &KeyEventData) -> bool {
-    let interceptor = KEYBOARD_INTERCEPTOR.with(|i| i.borrow().clone());
-    match interceptor {
+    match crate::reactive::read_scoped_slot(&KEYBOARD_INTERCEPTOR) {
         Some(cb) => cb(data),
         None => false,
     }

@@ -44,7 +44,7 @@ thread_local! {
     /// The one interceptor slot for the whole thread — the same single-slot,
     /// last-wins caveat as [`KEYBOARD_INTERCEPTOR`](super::set_keyboard_interceptor):
     /// two documents on one thread share it.
-    static PASTE_INTERCEPTOR: RefCell<Option<PasteInterceptor>> = RefCell::new(None);
+    static PASTE_INTERCEPTOR: RefCell<Option<PasteInterceptor>> = const { RefCell::new(None) };
 }
 
 /// Set the global paste interceptor.
@@ -75,8 +75,7 @@ where
 
 /// Clear the global paste interceptor.
 pub fn clear_paste_interceptor() {
-    // Dropped outside the borrow — see `set_paste_interceptor`.
-    let _previous = PASTE_INTERCEPTOR.with(|i| i.borrow_mut().take());
+    crate::reactive::clear_scoped_slot(&PASTE_INTERCEPTOR);
 }
 
 /// Whether a paste interceptor is registered.
@@ -92,8 +91,7 @@ pub fn has_paste_interceptor() -> bool {
 /// The `Rc` is cloned out before the call so the handler may re-enter (register a
 /// different interceptor, for instance) without a double borrow.
 pub fn dispatch_paste_event(data: &PasteEventData) -> bool {
-    let interceptor = PASTE_INTERCEPTOR.with(|i| i.borrow().clone());
-    match interceptor {
+    match crate::reactive::read_scoped_slot(&PASTE_INTERCEPTOR) {
         Some(cb) => cb(data),
         None => false,
     }

@@ -30,7 +30,7 @@ pub enum SelectionAction {
 pub type SelectionCallback = Rc<dyn Fn(SelectionAction) -> Vec<(usize, usize, usize)>>;
 
 thread_local! {
-    static SELECTION_CALLBACK: RefCell<Option<SelectionCallback>> = RefCell::new(None);
+    static SELECTION_CALLBACK: RefCell<Option<SelectionCallback>> = const { RefCell::new(None) };
     static SAVED_SELECTION: RefCell<Vec<(usize, usize, usize)>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -56,9 +56,7 @@ where
 
 /// Clear the global text selection callback.
 pub fn clear_selection_callback() {
-    // Dropped outside the borrow: the displaced callback is user code and its
-    // `Drop` may re-enter this module, which inside the `borrow_mut` would panic.
-    let _previous = SELECTION_CALLBACK.with(|s| s.borrow_mut().take());
+    crate::reactive::clear_scoped_slot(&SELECTION_CALLBACK);
 }
 
 /// Dispatch a selection action to the callback.
@@ -66,8 +64,7 @@ pub fn clear_selection_callback() {
 /// The `Rc` is cloned out before the call so the callback may re-enter (install
 /// a different callback, query the selection again) without a double borrow.
 pub fn dispatch_selection(action: SelectionAction) -> Vec<(usize, usize, usize)> {
-    let callback = SELECTION_CALLBACK.with(|s| s.borrow().clone());
-    match callback {
+    match crate::reactive::read_scoped_slot(&SELECTION_CALLBACK) {
         Some(cb) => cb(action),
         None => Vec::new(),
     }
@@ -116,7 +113,7 @@ pub fn query_selection_ranges() -> Vec<(usize, usize, usize)> {
 pub type SelectionSyncCallback = Rc<dyn Fn(Vec<(usize, usize, usize)>)>;
 
 thread_local! {
-    static SELECTION_SYNC_CALLBACK: RefCell<Option<SelectionSyncCallback>> = RefCell::new(None);
+    static SELECTION_SYNC_CALLBACK: RefCell<Option<SelectionSyncCallback>> = const { RefCell::new(None) };
 }
 
 /// Set the callback invoked on mouseup to sync drag selection.
@@ -132,8 +129,7 @@ where
 
 /// Clear the selection sync callback.
 pub fn clear_selection_sync_callback() {
-    // Dropped outside the borrow — see `clear_selection_callback`.
-    let _previous = SELECTION_SYNC_CALLBACK.with(|s| s.borrow_mut().take());
+    crate::reactive::clear_scoped_slot(&SELECTION_SYNC_CALLBACK);
 }
 
 /// Fire the selection sync callback with current LIVE ranges only.
@@ -143,8 +139,7 @@ pub fn clear_selection_sync_callback() {
 /// The `Rc` is cloned out before the call so the callback may re-enter.
 pub fn fire_selection_sync() {
     let ranges = dispatch_selection(SelectionAction::QueryRanges);
-    let callback = SELECTION_SYNC_CALLBACK.with(|s| s.borrow().clone());
-    if let Some(cb) = callback {
+    if let Some(cb) = crate::reactive::read_scoped_slot(&SELECTION_SYNC_CALLBACK) {
         cb(ranges);
     }
 }

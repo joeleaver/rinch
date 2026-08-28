@@ -31,17 +31,39 @@
 //! 3. **Drop the displaced value after the borrow ends.** The value being
 //!    replaced is user code whose `Drop` may re-enter the registry; dropping it
 //!    inside the `borrow_mut` panics. Every write here binds it to a `let` that
-//!    outlives the borrow.
+//!    outlives the borrow. The read and clear halves —
+//!    [`read_scoped_slot`] and [`clear_scoped_slot`] — encode the same rule, so
+//!    a registry's `dispatch`/`clear` pair does not have to paraphrase it
+//!    either.
+//!
+//! A cleanup runs from `Scope::dispose`, which is reachable from a `Drop` at
+//! thread exit (a TLS destructor, when the slot's own thread-local may already
+//! be gone) and from a drop on the unwind path. Both cleanups therefore use
+//! `try_with`/`try_borrow_mut` and degrade to "not reclaimed" rather than
+//! panicking — the same stance as [`drain_polls`](crate::reactive::drain_polls).
 //!
 //! # When *not* to use this
 //!
 //! One cleanup is registered per call, and the scope's cleanup vec grows with
 //! it. That is right for a registry written once (or a handful of times) per
-//! component, which is every caller here. A registry written on *every
-//! keystroke* — a debounce parking a fresh callback each time — must instead
-//! carry an [`Owner`](crate::reactive::Owner) beside the callback and check
+//! component, which is how every in-tree caller uses it today.
+//!
+//! It is **not** bounded for a registry written repeatedly from inside a live
+//! component, and these are public APIs, so that is reachable: an event handler
+//! re-enters its registration-time owner on dispatch (see
+//! `crate::events::register_handler`), and an [`Effect`](crate::reactive::Effect)
+//! re-pushes its creation-time owner on every run. So an `onclick` that installs
+//! an interceptor, or an interceptor installed from a re-running effect, appends
+//! one boxed cleanup — plus a `Weak` that pins the old allocation — per
+//! invocation, for as long as the component lives. Such a registry (a debounce
+//! parking a fresh callback each keystroke is the archetype) must instead carry
+//! an [`Owner`](crate::reactive::Owner) beside the callback and check
 //! [`is_alive`](crate::reactive::Owner::is_alive) at dispatch, the way
-//! [`crate::main_thread::park_main_callback`] does.
+//! [`crate::main_thread::park_main_callback`] does. Tightening
+//! `install_scoped_slot` itself — one cleanup per (slot, owner), the later
+//! install updating a shared cell rather than queueing another release — would
+//! close it here instead, and is the obvious follow-up if a repeat-registering
+//! caller ever appears.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -80,8 +102,13 @@ where
             // slot now. Leaving it alone is the point of the check.
             return;
         };
-        let _displaced = slot.with(|s| {
-            let mut current = s.borrow_mut();
+        // `try_with`/`try_borrow_mut`: this can run from a TLS destructor at
+        // thread exit (when `slot` may already be gone) or while unwinding, and
+        // must degrade to "not reclaimed" rather than panic-in-panic.
+        let _displaced = slot.try_with(|s| {
+            let Ok(mut current) = s.try_borrow_mut() else {
+                return None;
+            };
             if current
                 .as_ref()
                 .is_some_and(|installed| Rc::ptr_eq(installed, &ours))
@@ -92,6 +119,32 @@ where
             }
         });
     })
+}
+
+/// Clone the value out of a single-slot registry so it can be **called** with no
+/// borrow held.
+///
+/// The read half of [`install_scoped_slot`]: holding the slot's `borrow()`
+/// across a user callback makes it a double-borrow panic for that callback to
+/// install its replacement (or clear the slot), which the setters here allow.
+pub fn read_scoped_slot<T>(slot: &'static LocalKey<RefCell<Option<Rc<T>>>>) -> Option<Rc<T>>
+where
+    T: ?Sized + 'static,
+{
+    slot.with(|s| s.borrow().clone())
+}
+
+/// Empty a single-slot registry, dropping the value **after** the borrow ends.
+///
+/// The clear half of [`install_scoped_slot`], and rule 3 in one place: the value
+/// being removed is user code whose `Drop` may re-enter the slot, which under
+/// the `borrow_mut` would panic. Any cleanup the registering scope holds is left
+/// in place and becomes a no-op — its `Weak` can no longer upgrade.
+pub fn clear_scoped_slot<T>(slot: &'static LocalKey<RefCell<Option<Rc<T>>>>)
+where
+    T: ?Sized + 'static,
+{
+    let _previous = slot.with(|s| s.borrow_mut().take());
 }
 
 /// Install `value` under `key` in a keyed registry, tying its removal to the
@@ -119,8 +172,11 @@ where
         let Some(ours) = mine.upgrade() else {
             return;
         };
-        let _displaced = map.with(|m| {
-            let mut entries = m.borrow_mut();
+        // `try_with`/`try_borrow_mut`, as in `install_scoped_slot`.
+        let _displaced = map.try_with(|m| {
+            let Ok(mut entries) = m.try_borrow_mut() else {
+                return None;
+            };
             if entries
                 .get(&doomed)
                 .is_some_and(|installed| Rc::ptr_eq(installed, &ours))
@@ -270,5 +326,69 @@ mod tests {
         install_scoped_slot(&SLOT, Rc::new(|| 2u32) as Probe);
         assert!(DROPPED.with(|d| d.get()), "the displaced value was dropped");
         SLOT.with(|s| s.borrow_mut().take());
+    }
+
+    /// Rule 3 for the clear half, which every registry's `clear_*` now routes
+    /// through: the removed value is user code, and its `Drop` must not run
+    /// under the slot's `borrow_mut`.
+    #[test]
+    fn clear_scoped_slot_drops_the_value_after_the_borrow_ends() {
+        thread_local! {
+            static SLOT: RefCell<Option<Probe>> = const { RefCell::new(None) };
+            static REINSTALLED: Cell<bool> = const { Cell::new(false) };
+        }
+
+        struct Reenter;
+        impl Drop for Reenter {
+            fn drop(&mut self) {
+                // A double borrow if the drop ran under `clear_scoped_slot`'s
+                // `borrow_mut` — this is the exact shape the rule protects.
+                SLOT.with(|s| *s.borrow_mut() = Some(Rc::new(|| 5u32) as Probe));
+                REINSTALLED.with(|r| r.set(true));
+            }
+        }
+
+        let guard = Reenter;
+        install_scoped_slot(
+            &SLOT,
+            Rc::new(move || {
+                let _ = &guard;
+                1u32
+            }) as Probe,
+        );
+        clear_scoped_slot(&SLOT);
+        assert!(
+            REINSTALLED.with(|r| r.get()),
+            "the cleared value's Drop ran, and outside the borrow"
+        );
+        SLOT.with(|s| s.borrow_mut().take());
+    }
+
+    /// The read half must not hold the slot's borrow across the call, so a
+    /// callback may install its own replacement (or clear the slot) from inside
+    /// its own dispatch.
+    #[test]
+    fn read_scoped_slot_does_not_hold_the_borrow_across_the_call() {
+        thread_local! {
+            static SLOT: RefCell<Option<Probe>> = const { RefCell::new(None) };
+        }
+
+        install_scoped_slot(
+            &SLOT,
+            Rc::new(|| {
+                // Re-entrant write while the value is being called.
+                install_scoped_slot(&SLOT, Rc::new(|| 2u32) as Probe);
+                1u32
+            }) as Probe,
+        );
+
+        assert_eq!(read_scoped_slot(&SLOT).map(|f| f()), Some(1));
+        assert_eq!(
+            read_scoped_slot(&SLOT).map(|f| f()),
+            Some(2),
+            "the replacement installed from inside the call is now live"
+        );
+        clear_scoped_slot(&SLOT);
+        assert!(read_scoped_slot(&SLOT).is_none());
     }
 }
