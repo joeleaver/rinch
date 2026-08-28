@@ -1346,6 +1346,20 @@ impl RinchApp {
                 }
             }
             PlatformEvent::AboutToWait => {
+                // Was there anything to tick? Not: is anything still running
+                // afterwards. A transition that *finishes* on this tick applies
+                // its end value and then reports nothing active, and that last
+                // tick is the one that puts the sheet in its open position. On
+                // a shell whose first paint after the tap is slower than the
+                // transition is long — Android's is around 300ms against a
+                // 220ms slide — it is the *only* tick the transition ever gets,
+                // so gating the repaint on "still running" drops every frame
+                // there was.
+                let had_running = self.doc.as_ref().is_some_and(|doc| {
+                    let d = doc.borrow();
+                    !d.tree.active_transitions.is_empty() || !d.tree.active_animations.is_empty()
+                });
+
                 // Tick active CSS transitions — this updates interpolated values
                 // in computed_style and marks affected nodes dirty.
                 let any_transitions = if let Some(doc) = &self.doc {
@@ -1362,7 +1376,7 @@ impl RinchApp {
 
                 // Transitions/animations modify computed_style directly — mark scene dirty
                 // so build_scene() rebuilds the Vello scene with interpolated values.
-                if any_transitions || any_animations {
+                if any_transitions || any_animations || had_running {
                     self.scene_dirty = true;
                 }
 

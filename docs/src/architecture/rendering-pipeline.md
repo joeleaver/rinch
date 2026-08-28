@@ -202,6 +202,39 @@ The pipeline above is **desktop-only**. The web backend (`ui-zoo-web`) takes a c
 
 On the web, `WebDocument` implements `DomDocument` using `web_sys` to create real browser DOM elements. The browser handles style resolution, layout, painting, and compositing natively. No Taffy, Parley, Stylo, Vello, or wgpu are needed for the web backend, resulting in a much smaller WASM binary.
 
+## The frame clock
+
+Every shell must send `PlatformEvent::AboutToWait` once per iteration of its
+event loop. It is not an optimisation and it is not optional: it is the only
+place `RinchApp` advances CSS transitions and CSS animations, marks the scene
+dirty when either moved, resolves the dirty state the input handlers
+deliberately leave for it to batch, and drains the focus requests effects
+raise. The winit shell sends it from `ActiveEventLoop::about_to_wait`; the
+Android shell sends it from `android_frame::pump_frame`, once per 16ms poll;
+`embed::RinchContext` sends it from `update`.
+
+A shell that omits it does not look broken. Every screen still paints and every
+un-animated control still works — but a transitioned property is sampled once,
+at the instant the transition starts, which is its *old* value, and stays there
+for ever, while un-transitioned properties on the same element apply
+immediately. A bottom sheet then answers a tap by becoming pointer-active
+without moving: open, invisible, and covering the screen.
+
+Turning the clock is only half of it. A transition on a paint-only property —
+`opacity`, `transform`, a colour — marks its node `PAINT`-dirty and nothing
+else, so `has_pending_layout()` stays false and no `RequestRedraw` is raised. A
+shell decides whether to present from `RinchApp::scene_dirty`, which
+`AboutToWait` sets whenever a transition or an animation moved; a shell that
+does not consult it turns the clock in private, and the surface keeps the frame
+from before the change until something unrelated forces a present.
+
+And `scene_dirty` is set for every tick that had something to tick, not only
+for ticks after which something is still running. A transition that *finishes*
+on a tick applies its end value and then reports nothing active — and on a
+shell whose first paint after the change is slower than the transition is long
+(Android's is around 300ms against a typical 220ms), that is the only tick the
+transition ever gets.
+
 ## Optimizations
 
 Current and planned improvements to the rendering pipeline:
@@ -209,7 +242,7 @@ Current and planned improvements to the rendering pipeline:
 - **Dirty region caching** (software) - Only repaint the rectangular area covering changed nodes
 - **Subtree pruning** (software) - Skip paint traversal for nodes outside the dirty region
 - **Sensitivity flags** - Hover/active/focus only trigger repaints for nodes with matching CSS selectors
-- **Batched redraws** - Multiple state changes are batched into a single repaint via `AboutToWait`
+- **Batched redraws** - Multiple state changes are batched into a single repaint via the frame clock (`AboutToWait`, above)
 - **Layer compositing** - GPU layers for transformed content (planned)
 - **Text caching** - Glyph atlas for repeated text (planned)
 - **Viewport culling** - Skip off-screen content (planned)

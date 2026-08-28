@@ -23,6 +23,13 @@ pub mod window;
 #[cfg(all(feature = "android", target_os = "android"))]
 pub mod android_runtime;
 
+// One Android frame's app-level work, host-compiled for the same reason as the
+// IME translator below: what a frame *is* — turn the clock, then decide what
+// still has to happen before the surface is presented — is where the loop's
+// ordering is decided, and it is testable without a phone.
+#[cfg(any(all(feature = "android", target_os = "android"), test))]
+pub(crate) mod android_frame;
+
 // The Android IME composition translator. `android_runtime` compiles only for
 // `target_os = "android"`, but the composing region is a state machine over
 // `InputConnection` calls — pure, and the part that has to be pinned down by
