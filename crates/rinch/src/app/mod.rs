@@ -719,9 +719,24 @@ impl RinchApp {
 
         // Short-circuit when nothing needs resolving — avoids redundant tree walks
         // when a ReRender event arrives after the drag handler already resolved.
+        //
+        // A finished image decode is the one thing that needs resolving without
+        // any node being dirty: the decoding thread cannot know which nodes
+        // carry that `src`, so it queues the result and leaves the matching to
+        // `resolve_layout`'s `drain_pending_images`. Returning early here means
+        // that drain never happens, and an `<img>` loaded into an otherwise
+        // idle screen keeps the 0x0 intrinsic size it was created with — laid
+        // out as nothing and painted as nothing. Found while showing a
+        // rasterised PDF page from local storage, where the app is completely
+        // still between the tap that starts the import and the picture that is
+        // supposed to appear.
         {
             let d = doc.borrow();
-            if d.tree.dirty_nodes.is_empty() && !d.tree.styles_dirty && !theme_changed {
+            if d.tree.dirty_nodes.is_empty()
+                && !d.tree.styles_dirty
+                && !theme_changed
+                && !rinch_dom::image_cache::has_pending(d.doc_key())
+            {
                 return false;
             }
         }
@@ -2139,6 +2154,21 @@ impl RinchApp {
     /// focus requests) to this document (issue #134).
     pub(crate) fn doc_key(&self) -> u64 {
         self.doc.as_ref().map(|d| d.borrow().doc_key()).unwrap_or(0)
+    }
+
+    /// Whether a background image decode is waiting to be taken into this
+    /// document's cache.
+    ///
+    /// A shell whose frame loop only resolves when something is dirty has to
+    /// ask this: a finished decode dirties no node — see
+    /// `rinch_dom::image_cache::has_pending` — so an `<img>` on an otherwise
+    /// idle screen is never given its pixels, and paints as nothing. The
+    /// desktop path answers this inside `resolve_and_repaint`; the Android loop
+    /// decides whether to call that at all and needs to ask before it does.
+    pub fn has_pending_images(&self) -> bool {
+        self.doc
+            .as_ref()
+            .is_some_and(|d| rinch_dom::image_cache::has_pending(d.borrow().doc_key()))
     }
 
     /// Programmatically focus an element by node ID (`request_focus` /

@@ -43,8 +43,19 @@ impl RinchDocument {
             self.tree.layout_dirty = true;
         }
 
-        // Drain completed image loads and update intrinsic dimensions
-        self.drain_pending_images();
+        // Drain completed image loads and update intrinsic dimensions.
+        //
+        // A newly decoded image changes a Taffy node's *context*, not its Taffy
+        // style, so the `mark_dirty` inside `drain_pending_images` is invisible
+        // to the `if !layout_dirty { return }` below and the whole compute is
+        // skipped — leaving the `<img>` at the 0x0 intrinsic size it was
+        // created with, laid out as nothing and painted as nothing, however
+        // many frames follow. That is the same class of miss the viewport
+        // branch above records, and an image landing is the other thing that
+        // needs a recompute without any style having changed.
+        if self.drain_pending_images() {
+            self.tree.layout_dirty = true;
+        }
 
         // Resolve Stylo styles and apply to Taffy nodes (only if dirty)
         if self.tree.styles_dirty {

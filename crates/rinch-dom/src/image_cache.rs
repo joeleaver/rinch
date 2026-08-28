@@ -186,7 +186,31 @@ pub fn request_image_load(doc_key: u64, src: String, loader: Arc<dyn ImageLoader
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(pending);
+
+        // Wake the main thread. The desktop event loop runs on
+        // `ControlFlow::Wait`, so without this the decode sits in the queue
+        // until some other input happens to arrive — an `<img src>` set while
+        // the app is otherwise idle stays 0x0 and unpainted, in practice
+        // forever. Dispatching an empty callback is the cheapest thing that
+        // goes through the platform wake path; `drain_pending` then runs on the
+        // frame that wake produces.
+        rinch_core::run_on_main_thread(|| {});
     });
+}
+
+/// Whether any decode is queued for this document.
+///
+/// A completed image load dirties no DOM node — the decoding thread has no idea
+/// which nodes reference the source, and [`ImageCache::drain_pending`] is what
+/// works that out — so a frame loop that short-circuits on "nothing is dirty"
+/// skips the drain and the image never gets its intrinsic size. Anything that
+/// gates layout on dirtiness has to ask this too.
+pub fn has_pending(doc_key: u64) -> bool {
+    PENDING_IMAGES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|item| item.doc_key == doc_key)
 }
 
 /// Remove all queued entries for a document that is being torn down.
