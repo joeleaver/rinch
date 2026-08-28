@@ -2591,10 +2591,15 @@ impl RinchApp {
     /// Copy the focused editor's selection to the clipboard as both `text/html`
     /// (rich) and `text/plain` (the fall-back alternative). A no-op for an empty
     /// selection.
+    ///
+    /// The write is queued on the clipboard worker rather than awaited: the
+    /// payload is already serialized, there is no result to act on, and waiting
+    /// would put Ctrl+C behind whatever the worker is doing — including a paste
+    /// stalled on a hung selection owner (issue #149).
     #[cfg(feature = "clipboard")]
     fn editor_copy(&self, handle: &crate::editor::EditorHandle) {
         if let Some((html, text)) = handle.selection_clipboard() {
-            let _ = crate::clipboard::copy_html(&html, Some(&text));
+            crate::clipboard::copy_html_async(&html, Some(&text));
         }
     }
 
@@ -2604,7 +2609,7 @@ impl RinchApp {
     fn editor_cut(&self, handle: &crate::editor::EditorHandle) -> bool {
         match handle.selection_clipboard() {
             Some((html, text)) => {
-                let _ = crate::clipboard::copy_html(&html, Some(&text));
+                crate::clipboard::copy_html_async(&html, Some(&text));
                 handle.command("deleteSelection")
             }
             None => false,
@@ -2612,43 +2617,78 @@ impl RinchApp {
     }
 
     /// Paste the clipboard over the selection, preferring rich `text/html`, then a
-    /// raw bitmap image (as a PNG `data:` URL), then `text/plain`. Returns whether
-    /// the document changed.
+    /// raw bitmap image (as a PNG `data:` URL), then `text/plain`.
+    ///
+    /// **Asynchronous** (issue #149). Reading the clipboard is a request to another
+    /// process; against a hung X11 selection owner arboard waits up to four seconds,
+    /// and this path used to make three such reads *in sequence* on the UI thread.
+    /// Now the key is consumed immediately, one combined probe runs on the clipboard
+    /// worker, and the insertion happens when it answers. Always returns `false`:
+    /// nothing has changed yet, and the completion drives its own repaint by dirtying
+    /// the document.
     #[cfg(feature = "clipboard")]
     fn editor_paste(&self, handle: &crate::editor::EditorHandle) -> bool {
-        // 1. Rich HTML — preserves structure, links, and images referenced by URL.
-        if let Ok(html) = crate::clipboard::paste_html()
-            && !html.trim().is_empty()
-            && handle.replace_selection_with_html(&html)
-        {
-            return true;
-        }
-        // 2. A raw bitmap (a screenshot / "copy image" with no HTML wrapper): encode
-        //    it as a PNG `data:` URL and insert an image node.
-        if crate::clipboard::has_image()
-            && let Ok(img) = crate::clipboard::paste_image()
-            && let Some(url) = image_rgba_to_png_data_url(img.width, img.height, &img.bytes)
-            && handle.insert_image(&url, "")
-        {
-            return true;
-        }
-        // 3. Plain text.
-        if let Ok(text) = crate::clipboard::paste_text()
-            && !text.is_empty()
-        {
-            return handle.replace_selection_with_text(&text);
-        }
+        Self::dispatch_editor_paste(handle, false);
         false
     }
 
     /// Paste the clipboard as **plain text**, dropping any rich formatting even when
     /// `text/html` is on the clipboard (the Ctrl+Shift+V "paste and match style"
-    /// gesture). Returns whether the document changed.
+    /// gesture). Asynchronous, like [`Self::editor_paste`].
     #[cfg(feature = "clipboard")]
     fn editor_paste_plain(&self, handle: &crate::editor::EditorHandle) -> bool {
-        match crate::clipboard::paste_text() {
-            Ok(text) if !text.is_empty() => handle.replace_selection_with_text(&text),
-            _ => false,
+        Self::dispatch_editor_paste(handle, true);
+        false
+    }
+
+    /// Read the clipboard off the UI thread and insert it into `handle` when it
+    /// answers. `plain_only` is the Ctrl+Shift+V variant.
+    ///
+    /// # Where the content lands
+    ///
+    /// The selection is **anchored** at dispatch and the insertion happens at that
+    /// anchor, mapped through everything the user did while the read was in flight
+    /// (`EditorHandle::anchor_selection`). The alternatives are worse: a raw offset
+    /// captured now is stale by the time a 4-second read returns, and the live caret
+    /// is wherever the user has since wandered — the paste would land somewhere they
+    /// never asked for. Mapping is what a transactional editor can offer, and it is
+    /// exactly what the anchor does. If the document was *replaced* meanwhile
+    /// (`load_doc`, a collaborative re-projection) the anchor reports `None` and the
+    /// paste is dropped rather than aimed at unrelated content.
+    ///
+    /// # Threads
+    ///
+    /// This is the `Send`/`!Send` boundary. The clipboard callback runs on the
+    /// worker thread and may carry only `Send` data, so the insertion — which
+    /// touches the `Rc`-based `EditorHandle` and the DOM — is *parked* on the main
+    /// thread first and only its id crosses over. The result hops back through the
+    /// runtime's cross-thread dispatcher, which also wakes the event loop, so the
+    /// paste paints promptly.
+    #[cfg(feature = "clipboard")]
+    fn dispatch_editor_paste(handle: &crate::editor::EditorHandle, plain_only: bool) {
+        use rinch_clipboard::{ClipboardResult, RichPaste};
+
+        let handle = handle.clone();
+        let anchor = handle.anchor_selection();
+        // Parked main-thread-side: this closure holds `!Send` UI state and never
+        // leaves this thread. It is dropped unrun if the editor's component
+        // unmounts first (rinch-core's parked-callback lifetime rule), which also
+        // releases the anchor.
+        let id = rinch_core::park_main_callback::<ClipboardResult<RichPaste>>(move |result| {
+            if let Ok(content) = result {
+                apply_paste_at_anchor(&handle, &anchor, content);
+            }
+        });
+        let deliver = move |result| {
+            rinch_core::run_on_main_thread(move || rinch_core::resume_main_callback(id, result));
+        };
+        if plain_only {
+            // Ctrl+Shift+V wants `text/plain` specifically — not "the text this
+            // html reduces to" — so it reads that flavour and nothing else. One
+            // read, so there is nothing for the combined probe to save here.
+            crate::clipboard::paste_text_async(move |result| deliver(result.map(RichPaste::Text)));
+        } else {
+            crate::clipboard::paste_rich_async(deliver);
         }
     }
 
@@ -3224,6 +3264,33 @@ impl RinchApp {
     }
 }
 
+/// Insert clipboard `content` into `handle` at `anchor` — the completion half of
+/// the asynchronous paste, always on the main thread.
+///
+/// The anchor, not the live selection, is the insertion point: see
+/// [`RinchApp::dispatch_editor_paste`]. An anchor that no longer resolves means the
+/// document the user aimed at was replaced while the read was in flight, and the
+/// paste is dropped rather than aimed at whatever now occupies those offsets.
+#[cfg(all(feature = "desktop", feature = "clipboard"))]
+fn apply_paste_at_anchor(
+    handle: &crate::editor::EditorHandle,
+    anchor: &crate::editor::SelectionAnchor,
+    content: rinch_clipboard::RichPaste,
+) -> bool {
+    use rinch_clipboard::RichPaste;
+
+    let Some(selection) = anchor.selection() else {
+        return false;
+    };
+    handle.set_selection(selection);
+    match content {
+        RichPaste::Html(html) => handle.replace_selection_with_html(&html),
+        RichPaste::Image(img) => image_rgba_to_png_data_url(img.width, img.height, &img.bytes)
+            .is_some_and(|url| handle.insert_image(&url, "")),
+        RichPaste::Text(text) => !text.is_empty() && handle.replace_selection_with_text(&text),
+    }
+}
+
 /// Encode `width`×`height` RGBA8 pixels (the clipboard bitmap format) as a
 /// `data:image/png;base64,…` URL for an image node `src`. Returns `None` if the
 /// buffer isn't exactly `width * height * 4` bytes or PNG encoding fails.
@@ -3246,6 +3313,145 @@ fn image_rgba_to_png_data_url(width: usize, height: usize, rgba: &[u8]) -> Optio
     }
     let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
     Some(format!("data:image/png;base64,{b64}"))
+}
+
+#[cfg(all(test, feature = "desktop", feature = "clipboard"))]
+mod async_paste_tests {
+    use super::apply_paste_at_anchor;
+    use crate::editor::create_editor;
+    use rinch_clipboard::RichPaste;
+    use rinch_editor_core::serialize::slice_to_text;
+    use rinch_editor_core::{Pos, Selection};
+
+    /// The whole document as plain text — enough to see *where* a paste landed.
+    fn text_of(handle: &crate::editor::EditorHandle) -> String {
+        let doc = handle.doc();
+        let slice = doc.slice(0, doc.content_size()).expect("whole doc slices");
+        slice_to_text(&slice)
+    }
+
+    fn editor_with(html: &str) -> crate::editor::EditorHandle {
+        // An unmounted handle: the model works before the view exists, so the
+        // paste completion is testable with no window, no layout and no clipboard.
+        let handle = create_editor();
+        assert!(handle.load_html(html));
+        handle
+    }
+
+    /// The point of the anchor (#149): typing while a slow read is in flight must
+    /// not drag the paste along with the caret. It lands where Ctrl+V was pressed.
+    #[test]
+    fn a_late_paste_lands_where_the_user_asked_not_at_the_live_caret() {
+        let handle = editor_with("<p>hello world</p>");
+        handle.set_selection(Selection::cursor(Pos(6))); // "hello| world"
+        let anchor = handle.anchor_selection();
+
+        // The user keeps typing at the end of the line while the clipboard stalls.
+        handle.set_selection(Selection::cursor(Pos(12)));
+        assert!(handle.insert_text("!"));
+
+        assert!(apply_paste_at_anchor(
+            &handle,
+            &anchor,
+            RichPaste::Text("THERE".into())
+        ));
+        assert_eq!(text_of(&handle), "helloTHERE world!");
+    }
+
+    /// Text typed *in front of* the anchor pushes it along, so the paste still
+    /// splits the content at the point the user pointed at.
+    #[test]
+    fn an_edit_in_front_of_the_paste_carries_it() {
+        let handle = editor_with("<p>hello world</p>");
+        handle.set_selection(Selection::cursor(Pos(6)));
+        let anchor = handle.anchor_selection();
+
+        handle.set_selection(Selection::cursor(Pos(1)));
+        assert!(handle.insert_text("AB"));
+
+        assert!(apply_paste_at_anchor(
+            &handle,
+            &anchor,
+            RichPaste::Text("X".into())
+        ));
+        assert_eq!(text_of(&handle), "ABhelloX world");
+    }
+
+    /// Rich HTML goes in as structure, at the anchor.
+    #[test]
+    fn rich_html_pastes_at_the_anchor() {
+        let handle = editor_with("<p>ab</p>");
+        handle.set_selection(Selection::cursor(Pos(2))); // "a|b"
+        let anchor = handle.anchor_selection();
+
+        assert!(apply_paste_at_anchor(
+            &handle,
+            &anchor,
+            RichPaste::Html("<strong>BOLD</strong>".into())
+        ));
+        assert_eq!(text_of(&handle), "aBOLDb");
+        handle.set_selection(Selection::text(Pos(3), Pos(7)));
+        assert!(
+            handle.is_mark_active("bold"),
+            "the pasted run kept its mark, i.e. it went in as html not text"
+        );
+    }
+
+    /// A document replaced mid-read drops the paste. Reusing the raw offset would
+    /// drop the content into unrelated text.
+    #[test]
+    fn a_paste_into_a_replaced_document_is_dropped() {
+        let handle = editor_with("<p>hello world</p>");
+        handle.set_selection(Selection::cursor(Pos(6)));
+        let anchor = handle.anchor_selection();
+
+        handle.load_html("<p>completely different</p>");
+
+        assert!(
+            !apply_paste_at_anchor(&handle, &anchor, RichPaste::Text("X".into())),
+            "an anchor into a replaced document must not resolve"
+        );
+        assert_eq!(text_of(&handle), "completely different");
+    }
+
+    /// An empty clipboard string is not an edit — the paste reports "nothing
+    /// happened" rather than dispatching a no-op transaction.
+    #[test]
+    fn empty_text_is_not_pasted() {
+        let handle = editor_with("<p>ab</p>");
+        handle.set_selection(Selection::cursor(Pos(2)));
+        let anchor = handle.anchor_selection();
+        assert!(!apply_paste_at_anchor(
+            &handle,
+            &anchor,
+            RichPaste::Text(String::new())
+        ));
+        assert_eq!(text_of(&handle), "ab");
+    }
+
+    /// A bitmap becomes a PNG `data:` URL image node at the anchor.
+    #[test]
+    fn a_bitmap_pastes_as_an_image_node() {
+        use rinch_clipboard::ImageData;
+        let handle = editor_with("<p>ab</p>");
+        handle.set_selection(Selection::cursor(Pos(2)));
+        let anchor = handle.anchor_selection();
+
+        // 1×1 opaque red.
+        let img = ImageData::new(1, 1, vec![255u8, 0, 0, 255]);
+        assert!(apply_paste_at_anchor(
+            &handle,
+            &anchor,
+            RichPaste::Image(img)
+        ));
+
+        let doc = handle.doc();
+        let html = rinch_editor_core::serialize::node_to_html(&doc);
+        assert!(
+            html.contains("<img") && html.contains("data:image/png;base64,"),
+            "expected an image node with a data URL, got {html}"
+        );
+    }
 }
 
 #[cfg(all(test, feature = "desktop", feature = "clipboard"))]

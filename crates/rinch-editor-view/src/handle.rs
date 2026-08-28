@@ -14,6 +14,7 @@
 //! via [`EditorHandle::update_caret`]; in a headless context it is a no-op.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt;
 use std::rc::{Rc, Weak};
 
@@ -23,6 +24,7 @@ use rinch_editor_core::model::{Fragment, Slice};
 use rinch_editor_core::serialize::{
     slice_from_html, slice_from_text, slice_to_html, slice_to_text,
 };
+use rinch_editor_core::transform::Mapping;
 use rinch_editor_core::{
     CursorMotion, EditorState, EditorView, KeyBinding, Node, Plugin, Pos, Schema, Selection,
     Transaction, apply_input_rules,
@@ -55,6 +57,10 @@ struct EditorCore {
     /// re-enters the handle (an autosave reads `doc()`), which would otherwise
     /// panic with a `RefCell` double-borrow.
     on_change: Option<Rc<dyn Fn()>>,
+    /// Selections captured by asynchronous work still in flight — see
+    /// [`SelectionAnchor`]. Empty for every editor that has none, so the
+    /// mutation path's carry step is a cheap early return.
+    anchors: Rc<RefCell<AnchorMap>>,
     /// The collaboration session + outbound delta sink, when this editor is
     /// collaborating (design M9). `None` for a non-collaborative editor — the
     /// common case — so the mutation path's collab hook is a cheap early return.
@@ -76,8 +82,16 @@ impl EditorCore {
     ///
     /// Returns whether the **document** changed (a selection-only edit leaves the
     /// same doc `Rc`), which is what drives [`EditorHandle::on_change`].
-    fn commit(&mut self, prev: EditorState, next: EditorState) -> bool {
+    ///
+    /// `mapping` is the applied transaction's position mapping, which carries any
+    /// [`SelectionAnchor`] across the edit. `None` means "there is no
+    /// correspondence between the old and new positions" — a whole-document load
+    /// — and invalidates every anchor.
+    fn commit(&mut self, prev: EditorState, next: EditorState, mapping: Option<&Mapping>) -> bool {
         let doc_changed = !prev.doc.same_ref(&next.doc);
+        if doc_changed {
+            self.carry_anchors(&next.doc, mapping);
+        }
         self.state = next.clone();
         if let Some(view) = self.view.as_mut() {
             view.update_dom(&prev, &next);
@@ -85,6 +99,28 @@ impl EditorCore {
         #[cfg(feature = "collaboration")]
         self.record_local(&prev, &next);
         doc_changed
+    }
+
+    /// Carry every live [`SelectionAnchor`] across a document change, so an
+    /// asynchronous operation still inserts where the user asked for it.
+    ///
+    /// With a `mapping`, each anchor is re-mapped and re-resolved against the new
+    /// document (`Selection::map` falls back to the nearest valid selection if its
+    /// textblock went away). Without one — a `load_doc`, or a remote
+    /// re-projection, where the new document has no positional relationship to the
+    /// old — the anchor is invalidated instead of being silently pointed at
+    /// unrelated content.
+    fn carry_anchors(&self, doc: &Node, mapping: Option<&Mapping>) {
+        let mut anchors = self.anchors.borrow_mut();
+        if anchors.live.is_empty() {
+            return;
+        }
+        for slot in anchors.live.values_mut() {
+            *slot = match (slot.take(), mapping) {
+                (Some(sel), Some(mapping)) => Some(sel.map(doc, mapping)),
+                (Some(_), None) | (None, _) => None,
+            };
+        }
     }
 
     /// Project a just-applied local change onto the CRDT and broadcast the delta to
@@ -112,6 +148,87 @@ impl EditorCore {
             // session for now.
             Err(e) => bridge.last_error = Some(e),
         }
+    }
+}
+
+/// Selections captured by in-flight asynchronous work, each carried forward
+/// through every document change until its operation completes.
+///
+/// Lives behind its **own** `RefCell`, not inside [`EditorCore`], on purpose: a
+/// [`SelectionAnchor`] releases itself when dropped, and that drop can land while
+/// the core is borrowed (a callback dropping its anchor from inside an `update`
+/// closure). Borrowing only this map keeps the release from being a double-borrow
+/// panic.
+#[derive(Default)]
+struct AnchorMap {
+    next_id: u64,
+    /// `None` marks an anchor whose document is gone — see
+    /// [`EditorCore::carry_anchors`].
+    live: HashMap<u64, Option<Selection>>,
+}
+
+/// A selection captured for an operation that finishes *later*, kept pointing at
+/// the same content as the user keeps editing.
+///
+/// The problem it solves: an asynchronous paste is dispatched when the user hits
+/// Ctrl+V but lands once the clipboard answers — and because the UI no longer
+/// freezes while that happens (issue #149), the user can type in between. A raw
+/// position captured at dispatch would be stale by then; the live caret would be
+/// wherever they wandered to. An anchor is neither: it is the captured selection
+/// **mapped through the intervening steps**, which is what a transactional editor
+/// can offer and a `contenteditable` one cannot.
+///
+/// Obtain one from [`EditorHandle::anchor_selection`]. Dropping it releases the
+/// capture, so an operation that is abandoned leaves nothing behind.
+///
+/// ```ignore
+/// let anchor = handle.anchor_selection();
+/// paste_text_async(move |text| {
+///     // ... marshalled back onto the UI thread ...
+///     if let Some(sel) = anchor.selection() {
+///         handle.set_selection(sel);
+///         handle.replace_selection_with_text(&text);
+///     }
+/// });
+/// ```
+pub struct SelectionAnchor {
+    anchors: Weak<RefCell<AnchorMap>>,
+    id: u64,
+}
+
+impl SelectionAnchor {
+    /// Where the captured selection sits **now**, after every change applied
+    /// since it was taken.
+    ///
+    /// `None` once the anchor can no longer mean anything: the editor was
+    /// dropped, or the document it pointed into was replaced wholesale
+    /// (`load_doc`/`load_html`, or a collaborative re-projection). A caller
+    /// should then abandon the operation rather than guess — the content the
+    /// user aimed at is gone.
+    pub fn selection(&self) -> Option<Selection> {
+        let anchors = self.anchors.upgrade()?;
+        let anchors = anchors.borrow();
+        anchors.live.get(&self.id).cloned().flatten()
+    }
+}
+
+impl Drop for SelectionAnchor {
+    fn drop(&mut self) {
+        if let Some(anchors) = self.anchors.upgrade() {
+            // A `Selection` drop runs no user code, so this cannot re-enter.
+            if let Ok(mut anchors) = anchors.try_borrow_mut() {
+                anchors.live.remove(&self.id);
+            }
+        }
+    }
+}
+
+impl fmt::Debug for SelectionAnchor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SelectionAnchor")
+            .field("id", &self.id)
+            .field("selection", &self.selection())
+            .finish()
     }
 }
 
@@ -159,6 +276,7 @@ impl EditorHandle {
                 schema,
                 plugins,
                 on_change: None,
+                anchors: Rc::new(RefCell::new(AnchorMap::default())),
                 #[cfg(feature = "collaboration")]
                 collab: None,
             })),
@@ -185,6 +303,7 @@ impl EditorHandle {
                 schema,
                 plugins,
                 on_change: None,
+                anchors: Rc::new(RefCell::new(AnchorMap::default())),
                 #[cfg(feature = "collaboration")]
                 collab: None,
             })),
@@ -232,8 +351,10 @@ impl EditorHandle {
             return false;
         };
         let prev = core.state.clone();
+        // The mapping has to be taken before `apply` consumes the transaction.
+        let mapping = tr.mapping().clone();
         let next = core.state.apply(tr);
-        let doc_changed = core.commit(prev, next);
+        let doc_changed = core.commit(prev, next, Some(&mapping));
         drop(core);
         if doc_changed {
             self.notify_change();
@@ -245,16 +366,44 @@ impl EditorHandle {
     /// whether it applied. The toolbar/keymap entry point.
     pub fn command(&self, name: &str) -> bool {
         let mut core = self.inner.borrow_mut();
-        let Some(next) = core.state.run(name) else {
+        let Some((next, mapping)) = core.state.run_mapped(name) else {
             return false;
         };
         let prev = core.state.clone();
-        let doc_changed = core.commit(prev, next);
+        let doc_changed = core.commit(prev, next, Some(&mapping));
         drop(core);
         if doc_changed {
             self.notify_change();
         }
         true
+    }
+
+    /// Capture the current selection for an operation that will finish later,
+    /// returning an anchor that stays pointed at the same content as the user
+    /// keeps editing.
+    ///
+    /// This is what makes an asynchronous insertion land where the user asked for
+    /// it. The built-in paste uses it: Ctrl+V anchors the selection, the clipboard
+    /// read runs off the UI thread (so the user can keep typing — issue #149), and
+    /// the content is inserted at the anchor, mapped through everything typed in
+    /// the meantime.
+    ///
+    /// The anchor releases itself when dropped, and reports `None` from
+    /// [`SelectionAnchor::selection`] once its document has been replaced.
+    pub fn anchor_selection(&self) -> SelectionAnchor {
+        let core = self.inner.borrow();
+        let anchors = core.anchors.clone();
+        let id = {
+            let mut map = anchors.borrow_mut();
+            map.next_id += 1;
+            let id = map.next_id;
+            map.live.insert(id, Some(core.state.selection.clone()));
+            id
+        };
+        SelectionAnchor {
+            anchors: Rc::downgrade(&anchors),
+            id,
+        }
     }
 
     /// Register a callback invoked after a **local edit changes the document**.
@@ -630,7 +779,11 @@ impl EditorHandle {
         // Deliberately does not fire `on_change`: loading a document is a
         // programmatic replace, not a user edit. Firing here would make an
         // autosave consumer immediately re-save freshly loaded content.
-        core.commit(prev, next);
+        //
+        // No mapping: the new document is unrelated to the old one, so every
+        // outstanding `SelectionAnchor` is invalidated rather than remapped onto
+        // whatever now happens to sit at those offsets.
+        core.commit(prev, next, None);
     }
 
     /// Parse `html` (schema-whitelisted) and load it as the document. Empty or
@@ -686,11 +839,11 @@ impl EditorHandle {
     pub fn insert_image(&self, src: &str, alt: &str) -> bool {
         let cmd = rinch_editor_core::commands::insert_image(src.to_string(), alt.to_string());
         let mut core = self.inner.borrow_mut();
-        let Some(next) = core.state.run_command(&cmd) else {
+        let Some((next, mapping)) = core.state.run_command_mapped(&cmd) else {
             return false;
         };
         let prev = core.state.clone();
-        let doc_changed = core.commit(prev, next);
+        let doc_changed = core.commit(prev, next, Some(&mapping));
         drop(core);
         if doc_changed {
             self.notify_change();
@@ -711,11 +864,11 @@ impl EditorHandle {
     pub fn toggle_link(&self, href: &str) -> bool {
         let cmd = rinch_editor_core::commands::toggle_link(href.to_string());
         let mut core = self.inner.borrow_mut();
-        let Some(next) = core.state.run_command(&cmd) else {
+        let Some((next, mapping)) = core.state.run_command_mapped(&cmd) else {
             return false;
         };
         let prev = core.state.clone();
-        let doc_changed = core.commit(prev, next);
+        let doc_changed = core.commit(prev, next, Some(&mapping));
         drop(core);
         if doc_changed {
             self.notify_change();
@@ -971,6 +1124,10 @@ impl EditorHandle {
             .integrate_incremental(&prev, delta);
         match result {
             Ok(Some(next)) => {
+                // A remote integration rebuilds the document rather than applying
+                // mapped local steps, so there is no mapping to carry an anchor
+                // across; invalidate instead of guessing (see `carry_anchors`).
+                core.carry_anchors(&next.doc, None);
                 core.state = next.clone();
                 if let Some(view) = core.view.as_mut() {
                     view.update_dom(&prev, &next);
@@ -1154,6 +1311,153 @@ mod tests {
     }
     fn text(h: &Harness, id: NodeId) -> Option<String> {
         h.doc.borrow().text_content(id)
+    }
+
+    // ── SelectionAnchor (the asynchronous-insertion point, #149) ─────────────
+
+    /// The property the whole anchor exists for: text typed **before** the
+    /// anchored position pushes it along, so a late insertion still lands where
+    /// the user asked rather than where the offset happened to point.
+    #[test]
+    fn an_anchor_is_carried_by_an_edit_in_front_of_it() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "hello world")]));
+        // Anchor at the space, i.e. "insert here" -> "hello| world".
+        h.handle.set_selection(Selection::cursor(Pos(6)));
+        let anchor = h.handle.anchor_selection();
+
+        // The user keeps typing at the *start* of the line while we wait.
+        h.handle.set_selection(Selection::cursor(Pos(1)));
+        assert!(h.handle.insert_text("XY"));
+
+        let carried = anchor.selection().expect("still valid");
+        assert_eq!(
+            carried.head(),
+            Pos(8),
+            "two characters inserted ahead of the anchor move it by two"
+        );
+
+        // Inserting there splits the original text at the same *content* point.
+        h.handle.set_selection(carried);
+        assert!(h.handle.replace_selection_with_text("!"));
+        let p = children(&h, h.container_id)[0];
+        assert_eq!(text(&h, p).as_deref(), Some("XYhello! world"));
+    }
+
+    /// An edit *after* the anchor leaves it alone — the paste does not drift
+    /// toward text the user typed somewhere else.
+    #[test]
+    fn an_anchor_ignores_an_edit_behind_it() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "hello world")]));
+        h.handle.set_selection(Selection::cursor(Pos(6)));
+        let anchor = h.handle.anchor_selection();
+
+        h.handle.set_selection(Selection::cursor(Pos(12))); // end of line
+        assert!(h.handle.insert_text("!!!"));
+
+        assert_eq!(anchor.selection().expect("still valid").head(), Pos(6));
+    }
+
+    /// An anchored *range* (paste over a selection) survives as a range, so the
+    /// late paste still replaces what the user had selected.
+    #[test]
+    fn an_anchored_range_stays_a_range() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "hello world")]));
+        h.handle.set_selection(Selection::text(Pos(7), Pos(12))); // "world"
+        let anchor = h.handle.anchor_selection();
+
+        // Plain characters, not "* " — that would fire the bullet-list input
+        // rule and restructure the block, which is the `load_doc` case, not this
+        // one.
+        h.handle.set_selection(Selection::cursor(Pos(1)));
+        assert!(h.handle.insert_text("AB"));
+
+        let carried = anchor.selection().expect("still valid");
+        assert_eq!((carried.from(), carried.to()), (Pos(9), Pos(14)));
+        h.handle.set_selection(carried);
+        assert!(h.handle.replace_selection_with_text("there"));
+        let p = children(&h, h.container_id)[0];
+        assert_eq!(text(&h, p).as_deref(), Some("ABhello there"));
+    }
+
+    /// A command's edits carry anchors too — `command` goes through
+    /// `run_mapped`, not just `update`, so a keymap-driven edit while a paste is
+    /// in flight is mapped like any other.
+    #[test]
+    fn a_command_carries_an_anchor() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "one"), para(&s, "two")]));
+        // Anchor in the *second* paragraph.
+        h.handle.set_selection(Selection::cursor(Pos(8)));
+        let anchor = h.handle.anchor_selection();
+        let before = anchor.selection().unwrap().head();
+
+        // Wrapping the first paragraph in a blockquote adds an opening token in
+        // front of the anchor, so the anchor must shift.
+        h.handle.set_selection(Selection::cursor(Pos(2)));
+        assert!(h.handle.command("wrapInBlockquote"));
+        h.handle.set_selection(Selection::cursor(Pos(2)));
+
+        let after = anchor.selection().expect("still valid").head();
+        assert!(
+            after.0 > before.0,
+            "the anchor moved with the content the command pushed along \
+             (before {before:?}, after {after:?})"
+        );
+    }
+
+    /// Loading a new document invalidates outstanding anchors: the content the
+    /// user aimed at no longer exists, and quietly reusing the offset would drop
+    /// the paste into unrelated text.
+    #[test]
+    fn a_document_load_invalidates_an_anchor() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "hello world")]));
+        h.handle.set_selection(Selection::cursor(Pos(6)));
+        let anchor = h.handle.anchor_selection();
+        assert!(anchor.selection().is_some());
+
+        h.handle
+            .load_doc(doc_node(&s, vec![para(&s, "something else")]));
+        assert!(
+            anchor.selection().is_none(),
+            "an anchor into a replaced document must not resolve"
+        );
+    }
+
+    /// A selection-only change is not a document change, so it neither moves nor
+    /// invalidates an anchor: the caret wandering is exactly the case the anchor
+    /// is meant to be immune to.
+    #[test]
+    fn moving_the_caret_does_not_disturb_an_anchor() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "hello world")]));
+        h.handle.set_selection(Selection::cursor(Pos(6)));
+        let anchor = h.handle.anchor_selection();
+
+        h.handle.set_selection(Selection::cursor(Pos(1)));
+        h.handle.set_selection(Selection::text(Pos(2), Pos(4)));
+
+        assert_eq!(anchor.selection().expect("still valid").head(), Pos(6));
+    }
+
+    /// Dropping an anchor releases it — an abandoned asynchronous operation must
+    /// not leave the editor mapping a position for the rest of its life.
+    #[test]
+    fn dropping_an_anchor_releases_it() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "hello")]));
+        let live = || h.handle.inner.borrow().anchors.borrow().live.len();
+
+        let a = h.handle.anchor_selection();
+        let b = h.handle.anchor_selection();
+        assert_eq!(live(), 2);
+        drop(a);
+        assert_eq!(live(), 1);
+        drop(b);
+        assert_eq!(live(), 0, "no anchor outlives the value that owns it");
     }
 
     #[test]

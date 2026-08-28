@@ -23,7 +23,7 @@ mod styles;
 mod view;
 
 pub use component::Editor;
-pub use handle::EditorHandle;
+pub use handle::{EditorHandle, SelectionAnchor};
 #[cfg(feature = "collaboration")]
 pub use registry::collab_receive_for;
 pub use registry::{

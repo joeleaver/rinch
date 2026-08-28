@@ -155,6 +155,7 @@ rsx! { Editor { editor: editor.clone() } }
 | `active_link_href() -> Option<String>` | The `href` of the link at the selection head, for pre-filling an "edit link" dialog. `None` when not inside a link. |
 | `replace_selection_with_html(&str)` | Replace the selection with parsed HTML (the rich-paste path). |
 | `selection_clipboard()` | The current selection serialized as `(html, plain_text)` for the clipboard. |
+| `anchor_selection() -> SelectionAnchor` | Capture the selection for a later insertion, kept pointing at the same content as the user keeps editing. See [Pasting is asynchronous](#pasting-is-asynchronous). |
 
 HTML is **schema-whitelisted** on load: known block tags become nodes and known
 inline tags become marks; unknown tags and attributes (`<script>`, inline event
@@ -205,6 +206,43 @@ platform. `Mod` = Ctrl on Windows/Linux, Cmd on macOS.
 platform clipboard, not the keymap.) Undo/redo is a single, exact history: each undo
 reverses one logical edit (typing is merged into a group), because every edit is an
 invertible step.
+
+### Pasting is asynchronous
+
+Reading the clipboard is a request to another application, and that application
+can be slow or hung — on X11 the read waits up to four seconds. Ctrl+V therefore
+does **not** block: the key is consumed immediately, the clipboard is read on a
+worker thread, and the content is inserted when it arrives (issue #149). The
+editor stays live throughout, which means the user can keep typing while a slow
+paste is in flight.
+
+Where does the content land, then? At the position the paste was **asked for**,
+carried across whatever was typed in the meantime. Ctrl+V captures a
+`SelectionAnchor`, every intervening transaction maps that anchor forward through
+its steps, and the insertion happens there. Type ahead of it and the paste still
+splits the text where you originally pointed; type after it and the paste is
+unaffected; move the caret about and nothing happens to it at all — a
+selection-only change is not a document change.
+
+If the document is *replaced* while the read is in flight (`load_doc` /
+`load_html`, or a collaborative re-projection) the anchor reports `None` and the
+paste is dropped: the content it was aimed at no longer exists, and reusing the
+raw offset would drop it into unrelated text.
+
+The same anchor is available to your own asynchronous insertions — an uploaded
+image, a completion from a model:
+
+```rust
+let anchor = editor.anchor_selection();
+let editor = editor.clone();
+fetch_something(move |content| {
+    // ... back on the UI thread ...
+    if let Some(sel) = anchor.selection() {
+        editor.set_selection(sel);
+        editor.replace_selection_with_text(&content);
+    }
+});
+```
 
 ## Markdown shortcuts
 

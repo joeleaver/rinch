@@ -1358,6 +1358,31 @@ fn in_text_control(el: &web_sys::Element) -> bool {
     false
 }
 
+/// Publish clipboard content the platform just handed us into the
+/// `rinch-clipboard` buffers, so `paste_text()`/`paste_html()` answer with it.
+///
+/// This crate is wasm-only in practice but is checked for the host target as
+/// part of the workspace, where `rinch-clipboard` resolves to its native backend
+/// (a real system clipboard, no buffers) and is not even a dependency.
+#[cfg(target_arch = "wasm32")]
+fn fill_clipboard_buffers(text: Option<String>, html: Option<String>) {
+    rinch_clipboard::fill_buffers_from_event(text, html);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn fill_clipboard_buffers(_text: Option<String>, _html: Option<String>) {}
+
+/// The page selection as plain text, or `None` when nothing is selected.
+///
+/// Deliberately not read from `clipboardData`: during a `copy`/`cut` event the
+/// data transfer is in write mode and `getData` answers empty, so the selection is
+/// the only thing that says what the user actually copied.
+fn document_selection_text() -> Option<String> {
+    let text = web_sys::window()?.get_selection().ok()??.to_string();
+    let text = String::from(text);
+    (!text.is_empty()).then_some(text)
+}
+
 /// Read the keyboard modifier state carried by a browser keyboard event.
 fn modifiers_from_key_event(event: &web_sys::KeyboardEvent) -> events::ModifierState {
     events::ModifierState {
@@ -2141,6 +2166,66 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         )
         .unwrap();
     contextmenu_closure.forget();
+
+    // ── Clipboard delegation (issue #150) ────────────────────────────────────
+    //
+    // Without this, `rinch::clipboard::paste_text()` on the web can only return
+    // content this app copied itself: the wasm backend answers from a buffer, and
+    // nothing filled that buffer from the outside world. `ClipboardEvent.
+    // clipboardData` is the one synchronous channel to another app's or tab's
+    // clipboard, so the buffers are filled here, at the document, for every paste.
+    //
+    // The buffers are filled **before** the paste notification is dispatched, so an
+    // app handler that calls `paste_text()`/`paste_html()` from inside it reads the
+    // content that just arrived. That ordering is also why the keydown delegate can
+    // keep calling `prevent_default()` on a consumed Ctrl+V (which would otherwise
+    // cancel this very event): app paste logic hangs off the paste, not off the key.
+    //
+    // A `defaultPrevented` event is skipped throughout: that is the built-in
+    // editor's hidden capture textarea having already claimed it (`editor_input.rs`),
+    // and it reads `clipboardData` itself.
+    let paste_closure = Closure::wrap(Box::new(move |event: web_sys::ClipboardEvent| {
+        if event.default_prevented() {
+            return;
+        }
+        let Some(dt) = event.clipboard_data() else {
+            return;
+        };
+        let text = dt.get_data("text/plain").ok().filter(|t| !t.is_empty());
+        let html = dt.get_data("text/html").ok().filter(|h| !h.is_empty());
+        if text.is_none() && html.is_none() {
+            return;
+        }
+        fill_clipboard_buffers(text.clone(), html.clone());
+        if events::dispatch_paste_event(&events::PasteEventData { text, html }) {
+            // The app inserted the content itself; stop the browser inserting it
+            // a second time into whatever control has focus.
+            event.prevent_default();
+        }
+    }) as Box<dyn FnMut(_)>);
+    browser_doc
+        .add_event_listener_with_callback("paste", paste_closure.as_ref().unchecked_ref())
+        .unwrap();
+    paste_closure.forget();
+
+    // copy / cut: mirror what left the app into the same buffers, so a
+    // copy-then-paste round trip inside the app behaves like `copy_text()` did.
+    // `clipboardData` is empty during a copy (the page writes to it, it does not
+    // read), so the selection is the honest source.
+    let copy_closure = Closure::wrap(Box::new(move |event: web_sys::ClipboardEvent| {
+        if event.default_prevented() {
+            return;
+        }
+        if let Some(text) = document_selection_text() {
+            fill_clipboard_buffers(Some(text), None);
+        }
+    }) as Box<dyn FnMut(_)>);
+    for name in ["copy", "cut"] {
+        browser_doc
+            .add_event_listener_with_callback(name, copy_closure.as_ref().unchecked_ref())
+            .unwrap();
+    }
+    copy_closure.forget();
 
     // Scroll delegation: the native `scroll` event fires on the scrolled element
     // and does NOT bubble, so register in the capture phase to catch all

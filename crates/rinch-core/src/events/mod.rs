@@ -8,6 +8,7 @@ mod drag_context;
 mod handlers;
 mod keyboard;
 mod modifier;
+mod paste;
 mod selection;
 
 // Re-export all public items so external code continues to work.
@@ -16,6 +17,7 @@ pub use drag_context::*;
 pub use handlers::*;
 pub use keyboard::*;
 pub use modifier::*;
+pub use paste::*;
 pub use selection::*;
 
 use std::cell::RefCell;
