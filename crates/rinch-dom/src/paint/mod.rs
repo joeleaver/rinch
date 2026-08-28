@@ -588,6 +588,34 @@ fn paint_node(
     if node.estimated_height.is_some() {
         return;
     }
+
+    // Nothing inside `opacity: 0` can be seen, so nothing inside it is drawn.
+    //
+    // This is not an approximation. `opacity < 1` makes a node a stacking
+    // context (`Node::creates_stacking_context`), so its whole subtree is
+    // composited through the one group layer this node opens, and that layer is
+    // composited back with `SourceOver` at alpha 0 — which writes no pixel,
+    // whatever was painted into it. Every draw between the `push_layer` and the
+    // `pop_layer` is therefore work with no output.
+    //
+    // Skipping the group rather than painting it is worth a great deal more
+    // than it looks, because of what the group *costs* in the software painter:
+    // `TinySkiaPainter::push_layer` allocates a second pixmap the size of the
+    // whole surface and `pop_layer` composites all of it back. The idiom this
+    // was found in is the always-mounted bottom sheet — a full-screen scrim
+    // that fades in, parked at `opacity: 0` until a chip is tapped. On the
+    // moto g stylus 5G, at 1080×2460, one such scrim cost about 48ms a frame
+    // while being invisible: a 10MB pixmap allocation, an 18ms full-screen fill
+    // into it, and a 28ms full-screen composite back out. The app carries three
+    // of those sheets on its library screen, so roughly 145ms of every 290ms
+    // frame was spent drawing three things that were not there. See card K24.
+    //
+    // The cut is on paint only. Hit-testing and layout do not come through
+    // here, and CSS keeps an `opacity: 0` element in the box tree and reachable
+    // by the pointer — which is exactly what a sheet parked at zero relies on.
+    if node.computed_style.opacity <= 0.0 {
+        return;
+    }
     let layout = &node.layout;
 
     // Skip zero-size elements (display: none produces 0x0 layout).
@@ -954,7 +982,34 @@ fn paint_node(
                 // Get background from computed style (solid color or gradient).
                 // When viewport_holes is non-empty, we paint the background with
                 // holes cut out (EvenOdd fill) so compositor layers show through.
-                if !viewport_holes.is_empty() {
+                //
+                // …unless the colour is fully transparent, which is the case for
+                // most elements on most pages. `background-color`'s initial
+                // value is `transparent`, and Stylo hands that back as a real
+                // colour rather than as an absence, so `from_stylo` turns it
+                // into `BackgroundValue::Color(rgba(0, 0, 0, 0))` — a value
+                // this code then dutifully filled. A `SourceOver` fill at alpha
+                // 0 writes no pixel, so every one of those was a rasterisation
+                // of the element's whole box for no output at all, and it cost
+                // in proportion to the box: on the moto g stylus 5G a
+                // full-screen one measured 11–12ms, and a single frame of the
+                // library screen spent about 70ms on eight of them. See card
+                // K24.
+                //
+                // The skip is here, in paint, and deliberately not in
+                // `from_stylo`: `transition/diff.rs` interpolates a
+                // `background-color` transition only when both ends are
+                // `Color`, so collapsing transparent to `None` in the computed
+                // style would silently stop `transparent → red` from animating.
+                // Paint is the layer that gets to decide something is not worth
+                // drawing; the style has to keep the colour it was given.
+                let background_is_invisible = matches!(
+                    &node.computed_style.background,
+                    BackgroundValue::Color(c) if c.components[3] <= 0.0
+                );
+                if background_is_invisible {
+                    // Nothing to fill.
+                } else if !viewport_holes.is_empty() {
                     // Build a compound path: outer shape + inner holes (wound opposite)
                     let bg_path = build_background_with_holes(rect, radii, radius, &viewport_holes);
                     match &node.computed_style.background {
