@@ -1658,6 +1658,13 @@ rsx! {
 
 The `key:` prop enables efficient keyed reconciliation. Items with matching keys are preserved (not re-rendered). If no `key:` is provided, items are keyed by `Debug` formatting.
 
+**Keys must be unique within one list**, and what a repeat means depends on who chose the key (issue #185):
+
+- **You wrote `key:`** — a repeat is a mistake in your key. The repeat is **not rendered** and a warning is logged; the first occurrence wins, as in React.
+- **No `key:`** — the framework fabricated the key from `format!("{:?}", item)`, so a repeated *value* is not your mistake. The fabricated key is made unique by its occurrence ordinal instead, and **every row renders**: `for tag in ["rust", "rust", "gui"]` renders three. Reordering still moves rows rather than rebuilding them, because the ordinal follows the value, not the position.
+
+An index key (`key: i`) is a last resort: it makes identity follow *position*, so inserting anywhere but the end re-renders every row after the insertion point and loses per-row state — the exact failure `key:` exists to prevent.
+
 **Important:** Items with matching keys are **not** re-rendered when the collection changes. Their existing DOM subtree is preserved as-is. For per-item reactivity, use Signals inside each item.
 
 **`match` with multi-branch rendering:**

@@ -28,7 +28,10 @@ pub use element::{
 };
 
 // Re-export Show and For functions (fine-grained DOM-based)
-pub use for_loop::{FineForBuilder, for_each_dom, for_each_dom_typed, to_for_items};
+pub use for_loop::{
+    FineForBuilder, KeySource, for_each_dom, for_each_dom_typed,
+    for_each_dom_typed_with_key_source, for_each_dom_with_key_source, to_for_items,
+};
 pub use match_dom::match_dom;
 pub use show::{FineShowBuilder, show_dom};
 pub use virtual_list::virtual_list;

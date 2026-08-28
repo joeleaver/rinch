@@ -70,8 +70,10 @@ pub enum ListOp<K> {
 /// built with `collect`, so a repeated key silently keeps only its *last*
 /// index, and the prefix/suffix scan and the `common_items` range filter then
 /// reason against that one index — placing a later insert against the wrong
-/// sibling. `for_each_dom` guarantees the precondition by deduplicating its
-/// item list at the source; do not relax it here (issue #185).
+/// sibling. `for_each_dom` guarantees the precondition at the source — see
+/// `for_loop::prepare_keys`, which either drops a repeated key or (for a key
+/// the framework fabricated) makes it unique — before any of these keys reach
+/// this function. Do not relax the precondition here (issue #185).
 ///
 /// # Returns
 ///

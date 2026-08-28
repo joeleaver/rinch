@@ -4952,6 +4952,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rinch",
+ "rinch-core",
  "syn 2.0.114",
 ]
 

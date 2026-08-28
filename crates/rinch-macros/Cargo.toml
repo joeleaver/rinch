@@ -19,3 +19,7 @@ syn = { version = "2", features = ["full", "parsing", "extra-traits", "visit"] }
 # tests fail to compile due to windowing/GPU deps in headless environments,
 # the parser unit tests in node.rs and element.rs are the primary test suite.
 rinch = { path = "../rinch", features = ["components", "theme"] }
+# Test-only: the headless DomDocument double, so the `for` loop's duplicate-key
+# behaviour (issue #185) can be asserted against a real rsx! expansion rather
+# than a hand-written mirror of the macro's fallback key.
+rinch-core = { workspace = true, features = ["test-util"] }

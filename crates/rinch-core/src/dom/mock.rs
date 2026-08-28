@@ -57,6 +57,20 @@ impl MockDomDocument {
         self.next_id += 1;
         id
     }
+
+    /// Unlink `child` from whatever parent currently lists it.
+    ///
+    /// `append_child`/`insert_before` call this first so a *move* does not leave
+    /// the node listed twice, matching `RinchDocument` and the web backend.
+    fn detach(&mut self, child: NodeId) {
+        let old_parent = self.nodes.get(&child).and_then(|n| n.parent);
+        if let Some(old_parent) = old_parent {
+            if let Some(node) = self.nodes.get_mut(&old_parent) {
+                node.children.retain(|&c| c != child);
+            }
+            self.mark_dirty(old_parent);
+        }
+    }
 }
 
 impl DomDocument for MockDomDocument {
@@ -110,6 +124,11 @@ impl DomDocument for MockDomDocument {
     }
 
     fn append_child(&mut self, parent: NodeId, child: NodeId) {
+        // Re-parenting detaches first, exactly as `RinchDocument` and the web
+        // backend do. Without this a *move* leaves the node listed twice in its
+        // old parent's `children`, so sibling-order assertions in tests read a
+        // reordered node as a second mount.
+        self.detach(child);
         if let Some(node) = self.nodes.get_mut(&parent) {
             node.children.push(child);
         }
@@ -130,6 +149,7 @@ impl DomDocument for MockDomDocument {
     }
 
     fn insert_before(&mut self, parent: NodeId, child: NodeId, reference: NodeId) {
+        self.detach(child);
         if let Some(node) = self.nodes.get_mut(&parent)
             && let Some(pos) = node.children.iter().position(|&c| c == reference)
         {
