@@ -46,14 +46,21 @@ thread_local! {
     /// node id back to its DOM node for caret/selection geometry.
     ///
     /// The value is a **strong** `web_sys::Node`, so an entry pins its browser
-    /// node against GC. Entries are therefore pruned as soon as the backend stops
-    /// owning the node: by [`forget_subtree`] from `remove_node`, `replace_node`
-    /// and `set_inner_html`, and by [`Drop for WebDocument`](WebDocument) for
-    /// whatever a dying document still holds (issue #184). Node *creation* is not
-    /// structural — a keyed `for`, a `show`, or the editor's per-keystroke
-    /// `ViewDesc` churn creates and destroys nodes forever within one mounted
-    /// root — so without pruning this map grows without bound for the life of the
-    /// page.
+    /// node against GC. Entries are therefore pruned at every *unbounded* point
+    /// the backend stops owning a node: by [`forget_subtree`]/[`forget_children`]
+    /// from `remove_node`, `replace_node` and `set_inner_html`, and by
+    /// [`Drop for WebDocument`](WebDocument) for whatever a dying document still
+    /// holds (issue #184). Node *creation* is not structural — a keyed `for`, a
+    /// `show`, or the editor's per-keystroke `ViewDesc` churn creates and destroys
+    /// nodes forever within one mounted root — so without pruning this map grows
+    /// without bound for the life of the page.
+    ///
+    /// One site is deliberately **not** pruned: `set_text_content` on an element
+    /// discards its children too, but the browser replaces them with an untagged
+    /// text node, so only the *first* call on a given element can strand anything
+    /// — at most one entry per element, which is bounded by the DOM rather than by
+    /// churn. Pruning there would retire nodes in the reactive-text hot path and
+    /// needs its own caller audit.
     ///
     /// [`node_by_nid`] additionally returns `None` for a node that is present but
     /// detached, so its callers cannot tell a pruned id from a detached one.
@@ -97,18 +104,41 @@ fn forget_subtree(nodes: &mut HashMap<usize, web_sys::Node>, node: &web_sys::Nod
     });
 }
 
+/// [`forget_subtree`] for every child of `parent`, under a **single** registry
+/// borrow — what `set_inner_html` needs, since it discards all of them at once.
+fn forget_children(nodes: &mut HashMap<usize, web_sys::Node>, parent: &web_sys::Node) {
+    NODE_REGISTRY.with(|m| {
+        let mut reg = m.borrow_mut();
+        let mut child = parent.first_child();
+        while let Some(c) = child {
+            let next = c.next_sibling();
+            forget_recursive(nodes, &mut reg, &c);
+            child = next;
+        }
+    });
+}
+
 fn forget_recursive(
     nodes: &mut HashMap<usize, web_sys::Node>,
     reg: &mut HashMap<usize, web_sys::Node>,
     node: &web_sys::Node,
 ) {
-    let children = node.child_nodes();
-    for i in 0..children.length() {
-        if let Some(child) = children.item(i) {
-            forget_recursive(nodes, reg, &child);
-        }
+    // `first_child`/`next_sibling`, not `child_nodes()[i]`: this now runs on the
+    // per-keystroke `replace_node` path and on every list removal, and indexing a
+    // live `NodeList` is the classic quadratic walk.
+    let mut child = node.first_child();
+    while let Some(c) = child {
+        let next = c.next_sibling();
+        forget_recursive(nodes, reg, &c);
+        child = next;
     }
     if let Some(id) = get_nid(node) {
+        // `nodes` is this document's map but the registry is page-global, so a
+        // descendant belonging to a *different* `WebDocument` (an island mounted
+        // with `new_into` inside this document's tree) loses its registry entry
+        // here while staying in that document's own map. The node is genuinely
+        // being destroyed either way, so this is safe; it just means the island's
+        // half of the leak is that document's `Drop` to reclaim, not ours.
         nodes.remove(&id.0);
         reg.remove(&id.0);
     }
@@ -725,6 +755,9 @@ impl Drop for WebDocument {
     /// which no `remove_node` ever reaches. `self.nodes` *is* this document's
     /// registry footprint: the two maps are populated in lockstep by the same
     /// call sites, which is why the registry needs no per-document keying.
+    /// Removing an id the registry no longer holds is a no-op, which is what
+    /// makes this safe even when another document's prune already swept a node
+    /// of ours out of the page-global map (see [`forget_recursive`]).
     ///
     /// The document's `#rinch-root` element (when built by [`WebDocument::new`])
     /// stays attached to the real `document.body` — pre-existing behaviour, and
@@ -855,6 +888,13 @@ impl DomDocument for WebDocument {
     }
 
     fn replace_node(&mut self, old: NodeId, new: NodeId) {
+        // `replaceChild(n, n)` succeeds — the DOM spec re-inserts `n` before its
+        // own next sibling — so without this guard the prune below would retire a
+        // node that is still in the tree, silently deadening every later write to
+        // it (issue #184).
+        if old == new {
+            return;
+        }
         let (Some(old_node), Some(new_node)) =
             (self.nodes.get(&old.0).cloned(), self.nodes.get(&new.0))
         else {
@@ -1160,13 +1200,9 @@ impl DomDocument for WebDocument {
             && let Ok(el) = n.clone().dyn_into::<web_sys::Element>()
         {
             // `set_inner_html` discards every existing child, so forget them
-            // first — the desktop backend already does this (issue #184).
-            let old_children = el.child_nodes();
-            for i in 0..old_children.length() {
-                if let Some(child) = old_children.item(i) {
-                    forget_subtree(&mut self.nodes, &child);
-                }
-            }
+            // first — the desktop backend already does this (issue #184). One
+            // registry borrow for the whole sweep, not one per child.
+            forget_children(&mut self.nodes, &el);
             el.set_inner_html(html);
             // Walk all new child nodes and register them
             let children = el.child_nodes();

@@ -227,6 +227,13 @@ let new_item = __scope.create_element("li");
 item1.replace_with(&new_item);
 ```
 
+> **Removal retires a handle.** `remove()` and `replace_with()` end the node's
+> life, along with its whole subtree: the backend is free to drop its bookkeeping
+> for those ids, so re-attaching or writing to the handle afterwards is not
+> guaranteed to do anything. On the browser backend it silently no-ops — that is
+> what lets the backend let go of the DOM node it was pinning (issue #184). Build
+> a fresh node instead of reviving a removed one.
+
 ### Focus
 
 ```rust
@@ -249,8 +256,8 @@ input.focus();  // Give focus to this element
 | `toggle_class(name: &str)` | Toggle a CSS class |
 | `append_child(child: &NodeHandle)` | Append a child node |
 | `insert_before(node: &NodeHandle, reference: &NodeHandle)` | Insert before reference |
-| `remove()` | Remove this node from its parent |
-| `replace_with(new_node: &NodeHandle)` | Replace this node with another |
+| `remove()` | Remove this node from its parent — **retires** the handle and its subtree |
+| `replace_with(new_node: &NodeHandle)` | Replace this node with another — **retires** this handle and its subtree |
 | `focus()` | Give focus to this element |
 | `children() -> Vec<NodeHandle>` | Get child nodes as NodeHandles |
 | `is_valid() -> bool` | Check if this handle still points to a valid node |

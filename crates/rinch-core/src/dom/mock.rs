@@ -88,6 +88,21 @@ impl MockDomDocument {
             self.forget_subtree(child);
         }
         self.nodes.remove(&node);
+        // A retired id must not come back out of `take_dirty_nodes`: a consumer
+        // that resolves the ids it is handed would find nothing there.
+        self.dirty.retain(|&d| d != node);
+    }
+
+    /// Whether `child` still names a node — the guard every structural mutation
+    /// applies before listing it under a parent.
+    ///
+    /// Re-attaching a **retired** child (one a previous `remove_node` dropped) is
+    /// a silent no-op on the web backend, whose `self.nodes.get(&child.0)` simply
+    /// misses. It has to be one here too, or the parent lists an id that resolves
+    /// to nothing and the caller's bug hides behind a plausible child count
+    /// (issue #184).
+    fn is_live(&self, child: NodeId) -> bool {
+        self.nodes.contains_key(&child)
     }
 }
 
@@ -148,12 +163,8 @@ impl DomDocument for MockDomDocument {
         // reordered node as a second mount.
         self.detach(child);
         // Both ends must exist, like the web backend's
-        // `if let (Some(p), Some(c)) = …`. Appending a **retired** child (one a
-        // previous `remove_node` dropped) is a silent no-op there, so it has to
-        // be one here too — otherwise the parent lists an id that resolves to
-        // nothing and the caller's bug hides behind a plausible child count
-        // (issue #184).
-        if !self.nodes.contains_key(&child) {
+        // `if let (Some(p), Some(c)) = …` (see [`MockDomDocument::is_live`]).
+        if !self.is_live(child) {
             return;
         }
         if let Some(node) = self.nodes.get_mut(&parent) {
@@ -177,6 +188,15 @@ impl DomDocument for MockDomDocument {
 
     fn insert_before(&mut self, parent: NodeId, child: NodeId, reference: NodeId) {
         self.detach(child);
+        // Same retired-child guard as `append_child` — the web backend's
+        // `if let (Some(p), Some(c), Some(r)) = …` misses on a retired `child`
+        // too. `NodeHandle::insert_after` routes here when the anchor has a next
+        // sibling and to `append_child` when it does not, so without this the
+        // mock would answer the *same* operation differently depending on where
+        // in the list it lands (issue #184).
+        if !self.is_live(child) {
+            return;
+        }
         if let Some(node) = self.nodes.get_mut(&parent)
             && let Some(pos) = node.children.iter().position(|&c| c == reference)
         {
@@ -189,6 +209,12 @@ impl DomDocument for MockDomDocument {
     }
 
     fn replace_node(&mut self, old: NodeId, new: NodeId) {
+        // Replacing a node with itself is a no-op the browser accepts (the DOM
+        // spec re-inserts `node` before its own next sibling), so it must not
+        // retire the node that is still in the tree.
+        if old == new {
+            return;
+        }
         let parent = self.nodes.get(&old).and_then(|n| n.parent);
         if let Some(parent_id) = parent {
             if let Some(parent_node) = self.nodes.get_mut(&parent_id)
@@ -200,6 +226,13 @@ impl DomDocument for MockDomDocument {
                 node.parent = Some(parent_id);
             }
             self.mark_dirty(parent_id);
+            // The swap orphans `old`, and the web backend retires it and its
+            // subtree there (issue #184) so it can release the browser node it
+            // was pinning. Retire it here too, or a caller that re-attaches a
+            // replaced handle passes every test in this workspace and breaks
+            // only on the web — the same trap the `remove_node` retirement below
+            // closes.
+            self.forget_subtree(old);
         }
     }
 
@@ -286,6 +319,10 @@ impl DomDocument for MockDomDocument {
     }
 
     fn insert_child(&mut self, parent: NodeId, child: NodeId, index: usize) {
+        // Retired children are not listed — see [`MockDomDocument::is_live`].
+        if !self.is_live(child) {
+            return;
+        }
         if let Some(parent_node) = self.nodes.get_mut(&parent) {
             let len = parent_node.children.len();
             let idx = index.min(len);
@@ -383,5 +420,109 @@ impl DomDocument for MockDomDocument {
                 Some(out)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every structural mutation refuses a retired child, not just `append_child`
+    /// (issue #184).
+    ///
+    /// `NodeHandle::insert_after` routes to `insert_before` when the anchor has a
+    /// next sibling and to `append_child` when it does not, so a mock that guarded
+    /// only one of them would answer the *same* operation differently depending on
+    /// where in the list it landed — and would list an id that resolves to nothing,
+    /// hiding the caller's bug behind a plausible child count.
+    #[test]
+    fn a_retired_child_is_refused_by_every_insertion_path() {
+        type Relist = fn(&mut MockDomDocument, NodeId, NodeId, NodeId);
+        let paths: [Relist; 3] = [
+            |doc, parent, child, _anchor| doc.append_child(parent, child),
+            |doc, parent, child, anchor| doc.insert_before(parent, child, anchor),
+            |doc, parent, child, _anchor| doc.insert_child(parent, child, 0),
+        ];
+        for relist in paths {
+            let mut doc = MockDomDocument::new();
+            let body = doc.body();
+            let anchor = doc.create_element("div");
+            doc.append_child(body, anchor);
+            let child = doc.create_element("div");
+            doc.append_child(body, child);
+
+            doc.remove_node(child);
+            relist(&mut doc, body, child, anchor);
+
+            assert!(
+                !doc.get_children(body).contains(&child),
+                "#184: a retired child must not be relisted under its parent"
+            );
+            for id in doc.get_children(body) {
+                assert!(
+                    doc.tag_name(id).is_some(),
+                    "#184: every listed child must still resolve to a node"
+                );
+            }
+        }
+    }
+
+    /// `replace_node` retires the node it orphaned, like the browser backend
+    /// (issue #184) — otherwise a caller that re-attaches a replaced handle passes
+    /// every test here and breaks only on the web.
+    #[test]
+    fn replacing_a_node_retires_it_and_its_subtree() {
+        let mut doc = MockDomDocument::new();
+        let body = doc.body();
+        let old = doc.create_element("div");
+        doc.append_child(body, old);
+        let grandchild = doc.create_element("span");
+        doc.append_child(old, grandchild);
+        let new = doc.create_element("p");
+
+        doc.replace_node(old, new);
+
+        assert_eq!(doc.get_children(body), vec![new]);
+        assert!(doc.tag_name(old).is_none(), "#184: `old` must be retired");
+        assert!(
+            doc.tag_name(grandchild).is_none(),
+            "#184: `old`'s subtree must be retired with it"
+        );
+    }
+
+    /// Replacing a node with itself is a no-op the browser accepts, so it must not
+    /// retire a node that is still in the tree (issue #184).
+    #[test]
+    fn replacing_a_node_with_itself_does_not_retire_it() {
+        let mut doc = MockDomDocument::new();
+        let body = doc.body();
+        let node = doc.create_element("div");
+        doc.append_child(body, node);
+
+        doc.replace_node(node, node);
+
+        assert_eq!(doc.get_children(body), vec![node]);
+        assert!(
+            doc.tag_name(node).is_some(),
+            "#184: a self-replace must leave the node live"
+        );
+    }
+
+    /// A retired id must not resurface from `take_dirty_nodes` — a consumer that
+    /// resolves what it is handed would find nothing there (issue #184).
+    #[test]
+    fn a_retired_node_leaves_the_dirty_list() {
+        let mut doc = MockDomDocument::new();
+        let body = doc.body();
+        let node = doc.create_element("div");
+        doc.append_child(body, node);
+        doc.set_attribute(node, "class", "x");
+
+        doc.remove_node(node);
+
+        assert!(
+            !doc.take_dirty_nodes().contains(&node),
+            "#184: a retired node must not be reported dirty"
+        );
     }
 }

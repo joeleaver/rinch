@@ -228,6 +228,17 @@ impl DomDocument for RinchDocument {
     }
 
     fn replace_node(&mut self, old: NodeId, new: NodeId) {
+        // Replacing a node with itself is a no-op the browser accepts (the DOM
+        // spec re-inserts `node` before its own next sibling), and the same must
+        // hold here. Without this guard the "detach `new` from its old parent"
+        // step below unlinks the node from the very parent the replace is about
+        // to look it up in, `position(|x| x == old.0)` then misses, and the node
+        // is left out of its parent's children *and* out of taffy while still
+        // claiming `parent = Some(..)` — a tree the rest of this file cannot
+        // reason about (issue #184).
+        if old == new {
+            return;
+        }
         self.invalidate_ifc_for_node(old.0);
         self.clear_ifc_root_recursive(old.0);
         self.invalidate_ifc_for_node(new.0);

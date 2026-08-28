@@ -171,6 +171,11 @@ pub trait DomDocument {
     fn insert_before(&mut self, parent: NodeId, child: NodeId, reference: NodeId);
 
     /// Replace a node with another node.
+    ///
+    /// The swap **retires** `old` and its whole subtree, exactly as
+    /// [`remove_node`](Self::remove_node) does: the ids may name nothing
+    /// afterwards, and an `old` handle must not be re-attached or written to.
+    /// Build a fresh node instead.
     fn replace_node(&mut self, old: NodeId, new: NodeId);
 
     /// Remove a node from its parent.
@@ -252,6 +257,10 @@ pub trait DomDocument {
     /// produced by parsing `html`. This provides an atomic update path
     /// that avoids incremental mutations which can leave the document
     /// in an inconsistent state.
+    ///
+    /// The discarded children are **retired** like a
+    /// [`remove_node`](Self::remove_node): handles held for them must not be
+    /// re-attached or written to afterwards.
     fn set_inner_html(&mut self, node: NodeId, html: &str);
 
     /// Query the screen position of a text caret at the given byte offset.

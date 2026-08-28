@@ -38,8 +38,23 @@ fn browser_document() -> web_sys::Document {
 /// A host element attached to the real `document.body`, so nodes built under it
 /// are `is_connected()` — otherwise a "still registered" precondition could be
 /// satisfied for the wrong reason.
+///
+/// A `WebDocument` adopts its host and never detaches it, so each host is torn
+/// down when the next one is built: the whole file shares one page, and leaving
+/// eight orphans under `<body>` would be visible to any later test that reads it.
 fn host() -> web_sys::Element {
+    let stale = browser_document()
+        .query_selector_all("[data-test-host]")
+        .unwrap();
+    for i in 0..stale.length() {
+        if let Some(node) = stale.item(i)
+            && let Some(parent) = node.parent_node()
+        {
+            parent.remove_child(&node).ok();
+        }
+    }
     let el = browser_document().create_element("div").unwrap();
+    el.set_attribute("data-test-host", "true").unwrap();
     browser_document()
         .body()
         .unwrap()
@@ -200,13 +215,38 @@ fn dropping_a_document_releases_its_root_wrappers() {
         );
     }
 
-    // The document's own root/body wrappers are never passed to `remove_node`,
-    // so only `Drop for WebDocument` can release them.
+    // The adopted host an island mounts into is never passed to `remove_node`,
+    // so only `Drop for WebDocument` can release it.
     assert_eq!(
         __node_registry_len(),
         registry_baseline,
         "#184: dropping a WebDocument must release its remaining registry entries"
     );
+
+    // The `mount()` shape is the one the leak actually bites: `WebDocument::new`
+    // builds *two* wrappers (`#rinch-root`, `#rinch-body`) that no `remove_node`
+    // ever reaches. `new_into` above adopts a single host, so it does not cover
+    // this on its own.
+    {
+        let _doc = WebDocument::new(browser_document());
+        assert_eq!(
+            __node_registry_len(),
+            registry_baseline + 2,
+            "precondition: WebDocument::new registers its root and body wrappers"
+        );
+    }
+    assert_eq!(
+        __node_registry_len(),
+        registry_baseline,
+        "#184: dropping a WebDocument must release its root *and* body wrappers"
+    );
+    // `Drop` deliberately leaves `#rinch-root` attached to the real body; take it
+    // out so the shared test page does not accumulate one per run.
+    if let Ok(Some(root)) = browser_document().query_selector("#rinch-root")
+        && let Some(parent) = root.parent_node()
+    {
+        parent.remove_child(&root).ok();
+    }
 }
 
 #[wasm_bindgen_test]
@@ -232,6 +272,28 @@ fn replacing_a_node_prunes_the_replaced_subtree() {
     assert!(
         __node_registry_contains(new.0) && doc.__contains(new.0),
         "the replacement must survive"
+    );
+}
+
+/// `replaceChild(n, n)` succeeds — the DOM spec re-inserts `n` before its own
+/// next sibling — so a self-replace must not retire a node that is still in the
+/// tree (issue #184).
+#[wasm_bindgen_test]
+fn replacing_a_node_with_itself_keeps_it_registered() {
+    let mut doc = doc();
+    let body = doc.body();
+
+    let node = child_div(&mut doc, body);
+    doc.replace_node(node, node);
+
+    assert!(
+        __node_registry_contains(node.0) && doc.__contains(node.0),
+        "#184: a self-replace must leave the node live in both maps"
+    );
+    assert_eq!(
+        doc.get_children(body),
+        vec![node],
+        "the node must still be its parent's child"
     );
 }
 
