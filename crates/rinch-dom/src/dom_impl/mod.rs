@@ -234,7 +234,9 @@ impl RinchDocument {
             }
 
             /* A `data-viewport` node is a compositing hole: the game/video frame
-               shows through it (find_viewport_rects punches the background) and a
+               shows through it (find_viewport_rects punches the background,
+               unless the node stamps `data-viewport-ready="false"` to say
+               nothing will fill the hole yet — issue #186) and a
                pointer landing on it belongs to whatever renders into it, not to
                the rinch UI. That routing is decided by hit-testing the hole, so
                the hole must be HITTABLE — `pointer-events: none` on it makes the

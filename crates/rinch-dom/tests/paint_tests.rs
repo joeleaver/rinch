@@ -1642,3 +1642,143 @@ mod scrollbar_paint {
         );
     }
 }
+
+// ── #186: a viewport hole is only cut for something that will fill it ────────
+//
+// The punch removes the ancestor's background (an EvenOdd compound path), so on
+// a transparent window a hole nothing fills is see-through to the desktop. A
+// video that errored, or that has not decoded its first frame yet, is exactly
+// that case. Pixel assertions, because "is there still a background here" is
+// the whole question and the scene graph does not answer it.
+
+#[cfg(feature = "software-renderer")]
+mod viewport_hole_punch {
+    use super::transform_paint::{paint_skia, pixel_at};
+    use super::*;
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+
+    /// `TinySkiaPainter::new` zeroes the pixmap, so alpha 0 at a pixel means
+    /// nothing painted there — a hole — and an opaque white pixel means the
+    /// ancestor's background survived.
+    fn is_opaque_white(p: [u8; 4]) -> bool {
+        p[3] == 255 && p[0] > 250 && p[1] > 250 && p[2] > 250
+    }
+
+    /// A 200×100 white clipping box at the document origin wrapping a full-size
+    /// `data-viewport` hole, painted at scale 1. `ready` is the value of
+    /// `data-viewport-ready`, or `None` to omit the attribute entirely — the
+    /// shape a `GameViewport` produces.
+    ///
+    /// `wrap_in_card` chooses which node is the clipping ancestor that owns the
+    /// white background: a `overflow: hidden` card inside `<body>`, or `<body>`
+    /// itself (`overflow-y: auto` in the UA sheet, which is why the hole reaches
+    /// the compositor instead of stopping at the card).
+    fn paint_viewport(ready: Option<&str>, wrap_in_card: bool) -> TinySkiaPainter {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let host = if wrap_in_card {
+            let card = doc.create_element("div");
+            doc.set_attribute(
+                card,
+                "style",
+                "width: 200px; height: 100px; background-color: white; overflow: hidden;",
+            );
+            doc.append_child(body, card);
+            card
+        } else {
+            doc.set_attribute(
+                body,
+                "style",
+                "width: 200px; height: 100px; background-color: white;",
+            );
+            body
+        };
+        let viewport = doc.create_element("div");
+        doc.set_attribute(viewport, "style", "width: 100%; height: 100%;");
+        doc.set_attribute(viewport, "data-viewport", "v");
+        if let Some(ready) = ready {
+            doc.set_attribute(viewport, "data-viewport-ready", ready);
+        }
+        doc.append_child(host, viewport);
+        doc.resolve_layout(800.0, 600.0);
+
+        let mut painter = TinySkiaPainter::new(800, 600);
+        paint_skia(&mut doc, &mut painter);
+        painter
+    }
+
+    /// The same hole inside an `overflow: hidden` card.
+    fn paint_card_with_viewport(ready: Option<&str>) -> TinySkiaPainter {
+        paint_viewport(ready, true)
+    }
+
+    /// The same hole directly under `<body>`, with no card in between.
+    fn paint_body_with_viewport(ready: Option<&str>) -> TinySkiaPainter {
+        paint_viewport(ready, false)
+    }
+
+    /// The bug: the card's background is cut away under a viewport that has
+    /// nothing to show, leaving alpha 0 — the desktop, on a transparent window.
+    #[test]
+    fn an_unready_viewport_does_not_cut_a_hole() {
+        let p = paint_card_with_viewport(Some("false"));
+        assert!(
+            is_opaque_white(pixel_at(&p, 100, 50)),
+            "the clipping ancestor keeps its background under a viewport that \
+             declares itself not ready (#186), got {:?}",
+            pixel_at(&p, 100, 50)
+        );
+    }
+
+    /// The same, one level up: `<body>` must not cut the hole either, or the
+    /// transparency reaches the compositor however opaque the card is.
+    #[test]
+    fn body_does_not_cut_a_hole_for_an_unready_viewport() {
+        let p = paint_body_with_viewport(Some("false"));
+        assert!(
+            is_opaque_white(pixel_at(&p, 100, 50)),
+            "<body> keeps its background under an unready viewport too (#186), \
+             got {:?}",
+            pixel_at(&p, 100, 50)
+        );
+    }
+
+    /// The documented fail-safe direction: a node that carries the attribute
+    /// must say exactly `"true"`, so a mis-stamped value yields an opaque
+    /// placeholder rather than a see-through window.
+    #[test]
+    fn a_mis_stamped_readiness_value_fails_safe() {
+        for value in ["True", "1", "yes", " true", ""] {
+            let p = paint_card_with_viewport(Some(value));
+            assert!(
+                is_opaque_white(pixel_at(&p, 100, 50)),
+                "data-viewport-ready={value:?} is not `true`, so it must not \
+                 punch (#186), got {:?}",
+                pixel_at(&p, 100, 50)
+            );
+        }
+    }
+
+    /// Guard: `GameViewport` stamps no readiness attribute and legitimately
+    /// wants an unconditional hole (#207/#209). Absence must mean ready.
+    #[test]
+    fn a_viewport_without_a_readiness_attribute_still_cuts_a_hole() {
+        let p = paint_card_with_viewport(None);
+        assert_eq!(
+            pixel_at(&p, 100, 50)[3],
+            0,
+            "absence of data-viewport-ready means ready — GameViewport is untouched"
+        );
+    }
+
+    /// Guard: the video path once a frame has arrived.
+    #[test]
+    fn a_ready_viewport_cuts_a_hole() {
+        let p = paint_card_with_viewport(Some("true"));
+        assert_eq!(
+            pixel_at(&p, 100, 50)[3],
+            0,
+            "a viewport that says it is ready gets its hole"
+        );
+    }
+}

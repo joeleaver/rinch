@@ -999,6 +999,20 @@ The software renderer includes **dirty region caching**: when only a few nodes c
 
 **Scrollbars.** A scroll container paints an overlay thumb on each axis that is scrollable (`overflow-{x,y}: scroll | auto`) *and* overflowing — 6px thick, 2px margin, 20px minimum thumb, 40% black, fully rounded. Both bars are hit-tested over a wider 16px strip along their edge and can be dragged (issue #178). Where both are present each track gives up the other bar's footprint at its far end, so the bottom-right **corner belongs to neither**: nothing paints there and clicking it falls through to the container. Desktop only — on the web the browser draws its own.
 
+**Viewport holes.** A `data-viewport` node is a compositing hole: `find_viewport_rects`
+(`crates/rinch-dom/src/paint/mod.rs`) cuts its rect out of every clipping ancestor's
+background fill, `<body>` included (the UA sheet makes it `overflow-y: auto`), so the
+layer underneath shows through. On a **transparent** window a hole nothing fills is
+see-through to the desktop, so a viewport whose content can be absent opts out by
+stamping **`data-viewport-ready="false"`** — paint then leaves the backgrounds alone and
+the node paints its own `background` (a placeholder, poster, or error affordance). The
+attribute is an **opt-out and absence means ready**: `GameViewport` stamps nothing and
+punches unconditionally, unchanged. `VideoViewport` opts in — it stays `"false"` until
+mpv hands a real frame to the compositor (`VideoPlayer::has_frame`, reset by
+`set_source`) and returns to `"false"` on a `PlaybackState::Error`, which is issue #186.
+A node that carries the attribute must say exactly `"true"` to punch, so a mis-stamped
+value fails safe.
+
 **Key files:**
 - `crates/rinch-dom/src/paint/painter.rs` — Abstract `Painter` trait
 - `crates/rinch-dom/src/paint/vello_painter.rs` — GPU backend
@@ -1524,7 +1538,7 @@ Your game owns the window and wgpu device. Rinch runs headless — you feed it e
 | `RinchContext` | Main handle — `new()`, `update()`, `scene()`. Multiple contexts can coexist on one thread (#134): each holds its own `subscribe_signal_change` guard, and bounds signals / editor registrations / focus requests are scoped per document via `DomDocument::doc_key()`. Stores/contexts are namespaced per context with a thread-global fallback (#136): `create_store` inside a context lands in that context's namespace (cleared on drop), its effects/handlers resolve it first, and lookups fall back to stores created outside any context. |
 | `RinchContextConfig` | Width, height, scale factor, optional theme |
 | `RinchOverlayRenderer` | Convenience Vello-to-texture renderer |
-| `GameViewport` | Component marking a transparent hole for game rendering. **Hittable by default** (#207): `wants_mouse` routes input by hit-testing the hole and walking up to `data-viewport`, so an unhittable hole makes the UI claim the mouse *everywhere*. `pointer-events: auto; background: transparent;` come from the UA stylesheet rule for `[data-viewport]` — not an inline style — so restyling the hole can't strip them, and a HUD root's inherited `pointer-events: none` can't reach it. Your own HUD controls under such a root still need `pointer-events: auto`. |
+| `GameViewport` | Component marking a transparent hole for game rendering. **Hittable by default** (#207): `wants_mouse` routes input by hit-testing the hole and walking up to `data-viewport`, so an unhittable hole makes the UI claim the mouse *everywhere*. `pointer-events: auto; background: transparent;` come from the UA stylesheet rule for `[data-viewport]` — not an inline style — so restyling the hole can't strip them, and a HUD root's inherited `pointer-events: none` can't reach it. Your own HUD controls under such a root still need `pointer-events: auto`. It also stamps **no** `data-viewport-ready`, and absence means ready, so its hole is unconditional (#186) — see the **Viewport holes** note under Rendering Backends. |
 | `LayoutRect` | `{x, y, width, height}` in logical pixels |
 
 **Typical game loop:**

@@ -851,9 +851,22 @@ impl RinchRuntime {
             self.app.mark_scene_dirty();
         }
 
+        // Only a viewport with a frame this cycle gets a hole punched in its
+        // ancestors' backgrounds. The GPU path has always filtered this way;
+        // the software path never installed a filter at all, so every
+        // `data-viewport` node punched whether or not anything would fill it
+        // (issue #186). Software blits these frames over the UI further down,
+        // so a punched hole with no frame is pure background loss.
+        let active_viewports: std::collections::HashSet<String> = compositor_frames
+            .iter()
+            .map(|(viewport_name, _, _, _)| viewport_name.clone())
+            .collect();
+        rinch_dom::paint::set_active_viewports(Some(active_viewports));
+
         // Build the scene — surfaces paint inline at their layout positions
         let (_base, w, h) = self.app.build_pixels(scale, size, transparent);
 
+        rinch_dom::paint::set_active_viewports(None);
         rinch_dom::paint::set_surface_pixels(None);
 
         // Resolve viewport rects and clip rects for compositor frames before
@@ -1098,6 +1111,11 @@ impl RinchRuntime {
         }
 
         // Set or clear composite layers on the renderer (GPU texture + video only)
+        //
+        // `retaining_layers` records the third case: nothing was collected this
+        // cycle, but a video is still loaded, so the renderer keeps compositing
+        // last cycle's layers. Those layers still need their holes.
+        let mut retaining_layers = false;
         if !all_layers.is_empty() || !gpu_layers.is_empty() {
             renderer.set_composite_layers(all_layers);
             renderer.set_gpu_layers(gpu_layers);
@@ -1110,12 +1128,29 @@ impl RinchRuntime {
             if !video_loaded {
                 renderer.set_composite_layers(vec![]);
                 renderer.set_gpu_layers(vec![]);
+            } else {
+                retaining_layers = true;
             }
         }
 
-        // Set active viewports so hole-punching only applies to compositor surfaces
-        // (GPU textures + video), not inline-painted CPU surfaces.
-        if !compositor_viewport_names.is_empty() {
+        // Set active viewports so hole-punching only applies to compositor
+        // surfaces (GPU textures + video), not inline-painted CPU surfaces.
+        //
+        // Installed unconditionally, empty set included. Skipping the call when
+        // nothing has a layer left `ACTIVE_VIEWPORTS` at `None`, which
+        // `find_viewport_rects` reads as "no filter — punch everything": the
+        // gate was inoperative in exactly the case it exists for, a viewport
+        // with no frame behind it (issue #186).
+        //
+        // The one exception is the retention branch above: the renderer WILL
+        // composite last cycle's layers under the UI, but `collect_*` returned
+        // nothing this cycle so their names are no longer in the set. Filtering
+        // on the empty set there would leave those layers hidden behind an
+        // unpunched background — the video blinking out for a frame. Fall back
+        // to the unfiltered behaviour for exactly that case.
+        if retaining_layers {
+            rinch_dom::paint::set_active_viewports(None);
+        } else {
             rinch_dom::paint::set_active_viewports(Some(compositor_viewport_names));
         }
 
