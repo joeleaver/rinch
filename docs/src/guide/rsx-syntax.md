@@ -560,6 +560,22 @@ for item in items.get() {
 
 If no `key:` prop is provided, items are keyed by their `Debug` representation (fallback).
 
+**Keys must be unique within one list.** An item whose key repeats one already
+seen in the same pass is **not rendered**, and a warning is logged — the first
+occurrence wins, the same rule React applies. The whole reconcile rests on one
+key naming one item and one DOM node, so a repeat used to leave a row that
+rendered, swallowed clicks and never updated again (issue #185).
+
+Watch out for the `Debug` fallback: with no `key:`, two equal items collide.
+`for n in vec![1, 1, 2]` renders **two** rows, not three. Give a duplicate-prone
+list an explicit key that is unique per row — the index, or a composite:
+
+```rust
+for (i, n) in numbers.get().into_iter().enumerate() {
+    div { key: i, {n.to_string()} }
+}
+```
+
 #### How `for` works internally
 
 The `for` loop desugars to `for_each_dom_typed()`, which:

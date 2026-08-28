@@ -31,6 +31,14 @@
 //! - Preserve DOM nodes and component state for unchanged items
 //! - Minimize DOM operations via LIS-based diffing
 //!
+//! **Keys must be unique within one list.** The whole reconcile rests on one
+//! key naming one `ItemState` and one mounted sibling, with `keys_order` in step
+//! with both. An item repeating a key already seen in the same pass is
+//! therefore **not rendered**, and a warning is logged — the first occurrence
+//! wins, as in React. Note the rsx fallback key when no `key:` prop is given is
+//! `format!("{:?}", item)`, so two `Debug`-equal items collide: `for n in
+//! vec![1, 1, 2]` renders two rows, not three (issue #185).
+//!
 //! # Example
 //!
 //! ```ignore
@@ -88,6 +96,46 @@ where
     .collect()
 }
 
+/// Drop every repeat of a key already seen in this batch, keeping the first.
+///
+/// One key, one item (issue #185). Rendering a repeat used to displace the
+/// first occurrence's [`ItemState`] out of `items_state`; dropping the
+/// displaced state disposed its [`RenderScope`] — handlers deregistered,
+/// signals freed — while its DOM node stayed a sibling of the marker, because
+/// [`NodeHandle`] has no `Drop` and nothing else held the node. The result was
+/// a row that renders, swallows clicks and never updates again, unreachable
+/// from every data structure and so beyond the reach of any later
+/// `ListOp::Remove`.
+///
+/// Dropping the repeat instead keeps the invariant the reconcile rests on: one
+/// key, one `ItemState`, one mounted sibling, `keys_order` in step with all
+/// three. React does the same ("only the first child will be used"). The
+/// tradeoff is that a duplicate now shows up as a missing row — an obviously
+/// wrong render that gets reported — rather than as a row that looks right and
+/// is silently dead.
+///
+/// `warned` latches the diagnostic to once per list: [`Effect::new`] runs its
+/// body immediately, so `each` is called twice before the user does anything,
+/// and every later list change would warn again.
+fn dedup_by_key(mut items: Vec<ForItem>, warned: &std::cell::Cell<bool>) -> Vec<ForItem> {
+    let mut seen: std::collections::HashSet<String> =
+        std::collections::HashSet::with_capacity(items.len());
+    items.retain(|item| {
+        if seen.insert(item.key.clone()) {
+            return true;
+        }
+        if !warned.replace(true) {
+            tracing::warn!(
+                "duplicate `for` key {:?}: this item is not rendered. \
+                 Give each item a unique `key:`.",
+                item.key
+            );
+        }
+        false
+    });
+    items
+}
+
 /// State for a rendered item in the fine-grained For loop.
 struct ItemState {
     /// The root node handle for this item.
@@ -113,6 +161,12 @@ struct ItemState {
 /// * `eq_fn` - Optional equality function to compare ForItem data.
 ///   When provided, surviving items whose data changed are re-rendered.
 ///   When None, surviving items are never re-rendered (old behavior).
+///
+/// # Duplicate keys
+///
+/// Keys must be unique. An item whose key repeats one already seen in the same
+/// batch is dropped by [`dedup_by_key`] before anything is rendered — first
+/// occurrence wins, warning logged (issue #185).
 ///
 /// # Returns
 ///
@@ -152,6 +206,22 @@ where
 
     let marker_clone = marker.clone();
 
+    // One key, one item (issue #185). Wrapping `each` here — rather than
+    // patching the two `state.insert` sites — is what makes the guarantee
+    // total: `new_keys`, `new_items_map`, the data-comparison pass and the
+    // `*keys = new_keys` assignment at the end of the reconcile all read the
+    // raw item list, so every one of them would otherwise reintroduce a
+    // duplicate that the insert sites had just rejected.
+    //
+    // This must stay at the `each()` call and never move below the
+    // `items_state`/`keys_order` borrows: dropping the skipped `ForItem`s drops
+    // their `Rc<dyn Any>` payload, which runs the user type's `Drop` — user
+    // code, under a `RefMut` this closure re-enters (issue #141).
+    let each = {
+        let warned = std::cell::Cell::new(false);
+        move || dedup_by_key(each(), &warned)
+    };
+
     // Initial render - insert items as siblings after the marker
     {
         let initial_items = each();
@@ -183,9 +253,10 @@ where
 
                 keys.push(item.key.clone());
                 initial_nodes.push(node.clone());
-                // A duplicate key displaces a live `ItemState`, and dropping it
-                // here would dispose its scope — running user code under
-                // `state`'s `RefMut` (issue #141). Park it instead.
+                // `each` is deduplicated (issue #185), so nothing can be
+                // displaced here. The parking stays as insurance: dropping a
+                // displaced `ItemState` inline would dispose its scope, running
+                // user code under `state`'s `RefMut` (issue #141).
                 let clobbered = state.insert(
                     item.key.clone(),
                     ItemState {
@@ -194,14 +265,11 @@ where
                         scope: Some(child_scope),
                     },
                 );
-                if let Some(clobbered) = clobbered {
-                    tracing::warn!(
-                        "duplicate `for` key {:?}: the earlier item's state is discarded while \
-                         its DOM node stays mounted. Give each item a unique `key:`.",
-                        keys.last()
-                    );
-                    displaced.push(clobbered);
-                }
+                debug_assert!(
+                    clobbered.is_none(),
+                    "for_each_dom: `dedup_by_key` guarantees one `ItemState` per key"
+                );
+                displaced.extend(clobbered);
             }
         }
 
@@ -313,25 +381,25 @@ where
                             }
                         }
 
-                        // Update state. A duplicate key displaces a live
-                        // `ItemState`; park it rather than letting it drop —
-                        // and so dispose — under the `state` borrow (#141).
+                        // Update state. `each` is deduplicated (issue #185), so
+                        // nothing can be displaced here; park anything that is
+                        // rather than letting it drop — and so dispose — under
+                        // the `state` borrow (#141).
                         let insert_pos = new_index.min(keys.len());
                         keys.insert(insert_pos, key.clone());
-                        if let Some(clobbered) = state.insert(
+                        let clobbered = state.insert(
                             key,
                             ItemState {
                                 node,
                                 item: item.clone(),
                                 scope: Some(child_scope),
                             },
-                        ) {
-                            tracing::warn!(
-                                "duplicate `for` key: the earlier item's state is discarded \
-                                 while its DOM node stays mounted. Give each item a unique `key:`."
-                            );
-                            doomed.extend(clobbered.scope);
-                        }
+                        );
+                        debug_assert!(
+                            clobbered.is_none(),
+                            "for_each_dom: `dedup_by_key` guarantees one `ItemState` per key"
+                        );
+                        doomed.extend(clobbered.and_then(|c| c.scope));
                     }
                 }
                 ListOp::Move { key, new_index, .. } => {
@@ -895,5 +963,423 @@ mod tests {
         items.update(|v| v.retain(|i| i.id == "b"));
 
         assert_eq!(churn.get(), 1, "exactly the removed item's cleanup ran");
+    }
+
+    // -----------------------------------------------------------------
+    // Duplicate keys (issue #185)
+    // -----------------------------------------------------------------
+
+    /// The `data-name` of every mounted row, in sibling order.
+    ///
+    /// Reads an attribute rather than the text because
+    /// `MockDomDocument::text_content` ignores an element's own `text` field and
+    /// concatenates its descendants, so `set_text` on a `<div>` reads back as
+    /// `""`. The `for` marker is a comment node (`node_type() == Some(8)`) and is
+    /// filtered out.
+    fn mounted_row_names(parent: &NodeHandle) -> Vec<String> {
+        parent
+            .children()
+            .into_iter()
+            .filter(|child| child.node_type() != Some(8))
+            .map(|child| child.get_attribute("data-name").unwrap_or_default())
+            .collect()
+    }
+
+    /// The node id of every mounted row, in sibling order.
+    fn mounted_row_ids(parent: &NodeHandle) -> Vec<usize> {
+        parent
+            .children()
+            .into_iter()
+            .filter(|child| child.node_type() != Some(8))
+            .map(|child| child.node_id().0)
+            .collect()
+    }
+
+    /// One key, one row: a repeated key is not rendered at all, and the *first*
+    /// occurrence is the one that survives (issue #185).
+    ///
+    /// Keeping the first matches React ("only the first child will be used") and
+    /// is the opposite of what displacing the earlier `ItemState` used to do —
+    /// that kept the last.
+    #[test]
+    fn duplicate_key_renders_one_row_per_key() {
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use std::cell::RefCell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let items = vec![
+            TestItem {
+                id: "a".into(),
+                name: "A1".into(),
+            },
+            TestItem {
+                id: "a".into(),
+                name: "A2".into(),
+            },
+            TestItem {
+                id: "b".into(),
+                name: "B".into(),
+            },
+        ];
+
+        let marker = super::for_each_dom_typed(
+            &mut scope,
+            &parent,
+            move || items.clone(),
+            |item: &TestItem| item.id.clone(),
+            |item: TestItem, s: &mut RenderScope| {
+                let node = s.create_element("div");
+                node.set_attribute("data-name", &item.name);
+                node
+            },
+        );
+        let _ = marker;
+
+        assert_eq!(
+            mounted_row_names(&parent),
+            ["A1", "B"],
+            "one row per key, first occurrence wins"
+        );
+    }
+
+    /// The title of issue #185: a duplicate key must never leave a mounted DOM
+    /// node whose scope has been disposed.
+    ///
+    /// Rendering the repeat used to displace the first item's `ItemState` out of
+    /// `items_state`; dropping the displaced state disposed its `RenderScope`
+    /// (handlers deregistered, signals freed) while its node stayed a sibling of
+    /// the marker — a row that renders, swallows clicks and never updates again.
+    /// `NodeHandle` has no `Drop`, so nothing unmounted it, and no later
+    /// `ListOp::Remove` could ever reach it.
+    ///
+    /// The fix skips the repeat before a scope is ever created, so this asserts
+    /// **two** view invocations. Under the rejected "render it, then unmount the
+    /// displaced node" variant it would be three, with the first owner dead and
+    /// its node gone; if that variant is ever adopted this test has to change.
+    #[test]
+    fn a_duplicate_key_never_leaves_a_dead_scope_mounted() {
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use crate::reactive::{Owner, Signal, current_owner};
+        use std::cell::RefCell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let items = vec![
+            TestItem {
+                id: "a".into(),
+                name: "A1".into(),
+            },
+            TestItem {
+                id: "a".into(),
+                name: "A2".into(),
+            },
+            TestItem {
+                id: "b".into(),
+                name: "B".into(),
+            },
+        ];
+        #[allow(clippy::type_complexity)]
+        let seen: Rc<RefCell<Vec<(String, Option<Owner>, usize)>>> =
+            Rc::new(RefCell::new(Vec::new()));
+
+        let log = seen.clone();
+        let marker = super::for_each_dom_typed(
+            &mut scope,
+            &parent,
+            move || items.clone(),
+            |item: &TestItem| item.id.clone(),
+            move |item: TestItem, s: &mut RenderScope| {
+                let node = s.create_element("div");
+                node.set_attribute("data-name", &item.name);
+                // A resource owned by the item's scope: freed if it is disposed.
+                Signal::new(0);
+                log.borrow_mut()
+                    .push((item.name.clone(), current_owner(), node.node_id().0));
+                node
+            },
+        );
+        let _ = marker;
+
+        let seen = seen.borrow();
+        let names: Vec<&str> = seen.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert_eq!(names, ["A1", "B"], "the repeated key is never rendered");
+
+        for (name, owner, _) in seen.iter() {
+            let owner = owner
+                .clone()
+                .unwrap_or_else(|| panic!("{name} ran with no owner"));
+            assert!(
+                owner.is_alive(),
+                "{name}'s scope must still be live while its node is mounted"
+            );
+        }
+
+        let mut mounted = mounted_row_ids(&parent);
+        let mut rendered: Vec<usize> = seen.iter().map(|(_, _, id)| *id).collect();
+        mounted.sort_unstable();
+        rendered.sort_unstable();
+        assert_eq!(
+            mounted, rendered,
+            "every mounted node belongs to a live view invocation"
+        );
+    }
+
+    /// A duplicate must not desynchronise `keys_order` from `items_state` and the
+    /// DOM, because both insert paths index `keys_order` *positionally* to find
+    /// the sibling to insert after (issue #185).
+    ///
+    /// This is the test that distinguishes a real fix from "unmount the displaced
+    /// node but leave `keys_order` alone": with `keys == ["a", "a", "b"]` the
+    /// later `Insert { "c", new_index: 2 }` reads `prev_key = keys[1] == "a"` and
+    /// puts `C` after `A` instead of after `B`. Nothing ever repairs that — a
+    /// later diff only emits a `Move` when the *key* order changes, and the key
+    /// order is already correct.
+    #[test]
+    fn duplicate_keys_do_not_desynchronise_keys_order() {
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use crate::reactive::Signal;
+        use std::cell::RefCell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let items = Signal::new(vec![
+            TestItem {
+                id: "a".into(),
+                name: "A".into(),
+            },
+            TestItem {
+                id: "a".into(),
+                name: "A".into(),
+            },
+            TestItem {
+                id: "b".into(),
+                name: "B".into(),
+            },
+        ]);
+
+        let marker = super::for_each_dom_typed(
+            &mut scope,
+            &parent,
+            move || items.get(),
+            |item: &TestItem| item.id.clone(),
+            |item: TestItem, s: &mut RenderScope| {
+                let node = s.create_element("div");
+                node.set_attribute("data-name", &item.name);
+                node
+            },
+        );
+        let _ = marker;
+
+        // The duplicate goes away and a fresh key arrives at the end.
+        items.set(vec![
+            TestItem {
+                id: "a".into(),
+                name: "A".into(),
+            },
+            TestItem {
+                id: "b".into(),
+                name: "B".into(),
+            },
+            TestItem {
+                id: "c".into(),
+                name: "C".into(),
+            },
+        ]);
+
+        assert_eq!(
+            mounted_row_names(&parent),
+            ["A", "B", "C"],
+            "an insert after a duplicate pass still lands in the right slot"
+        );
+    }
+
+    /// A duplicate introduced by an update must not make every later reconcile
+    /// re-render the shared slot (issue #185).
+    ///
+    /// The data-comparison pass walks the raw item list, duplicates included, and
+    /// looks each one up by key. Two same-key items with different data therefore
+    /// disagree with the stored item in turn, so the slot is re-rendered — and its
+    /// scope disposed — twice per pass, forever. No `state.insert` collision
+    /// happens on that path, so neither of the old `tracing::warn!`s ever fired
+    /// for it.
+    #[test]
+    fn a_duplicate_key_introduced_by_an_update_does_not_thrash() {
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use crate::reactive::Signal;
+        use std::cell::RefCell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let items = Signal::new(vec![
+            TestItem {
+                id: "a".into(),
+                name: "A".into(),
+            },
+            TestItem {
+                id: "b".into(),
+                name: "B".into(),
+            },
+        ]);
+        // Read by the list, so bumping it forces another reconcile pass.
+        let churn = Signal::new(0);
+        let renders = Rc::new(Cell::new(0usize));
+
+        let count = renders.clone();
+        let marker = super::for_each_dom_typed(
+            &mut scope,
+            &parent,
+            move || {
+                churn.get();
+                items.get()
+            },
+            |item: &TestItem| item.id.clone(),
+            move |item: TestItem, s: &mut RenderScope| {
+                count.set(count.get() + 1);
+                let node = s.create_element("div");
+                node.set_attribute("data-name", &item.name);
+                node
+            },
+        );
+        let _ = marker;
+
+        assert_eq!(renders.get(), 2, "one render per item on the initial build");
+
+        // Introduce a second item keyed "b" with different data.
+        items.update(|v| {
+            v.push(TestItem {
+                id: "b".into(),
+                name: "B2".into(),
+            })
+        });
+        assert_eq!(
+            renders.get(),
+            2,
+            "the repeat is dropped, so nothing is re-rendered"
+        );
+
+        // Any later pass must not re-render either.
+        churn.update(|n| *n += 1);
+        assert_eq!(renders.get(), 2, "and it stays dropped on every later pass");
+
+        assert_eq!(mounted_row_names(&parent), ["A", "B"]);
+    }
+
+    /// The `key:`-less case: two `Debug`-equal items collide (issue #185).
+    ///
+    /// With no `key:` prop the rsx macro keys items by `format!("{:?}", item)`
+    /// (`crates/rinch-macros/src/dom_codegen/control_flow.rs`), which this
+    /// mirrors directly — the macro expands to `rinch::core::…` paths and cannot
+    /// be invoked from inside `rinch-core`. So `for n in vec![1, 1, 2]` renders
+    /// two rows, not three, and neither of them is dead.
+    #[test]
+    fn an_unkeyed_for_drops_a_duplicate_debug_representation() {
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use crate::reactive::{Owner, current_owner};
+        use std::cell::RefCell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let items = vec![
+            TestItem {
+                id: "a".into(),
+                name: "A".into(),
+            },
+            TestItem {
+                id: "a".into(),
+                name: "A".into(),
+            },
+            TestItem {
+                id: "b".into(),
+                name: "B".into(),
+            },
+        ];
+        let seen: Rc<RefCell<Vec<Option<Owner>>>> = Rc::new(RefCell::new(Vec::new()));
+
+        let log = seen.clone();
+        let marker = super::for_each_dom_typed(
+            &mut scope,
+            &parent,
+            move || items.clone(),
+            // Exactly the macro's fallback key.
+            |item: &TestItem| format!("{item:?}"),
+            move |item: TestItem, s: &mut RenderScope| {
+                log.borrow_mut().push(current_owner());
+                let node = s.create_element("div");
+                node.set_attribute("data-name", &item.name);
+                node
+            },
+        );
+        let _ = marker;
+
+        assert_eq!(mounted_row_names(&parent), ["A", "B"]);
+
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 2, "the Debug-equal repeat is never rendered");
+        for (i, owner) in seen.iter().enumerate() {
+            let owner = owner
+                .clone()
+                .unwrap_or_else(|| panic!("row {i} had no owner"));
+            assert!(owner.is_alive(), "row {i}'s scope must still be live");
+        }
+    }
+
+    /// The dedup lives in `for_each_dom`, not in `for_each_dom_typed`, so the
+    /// public direct callers (`FineForBuilder::build`, and hand-built
+    /// `Vec<ForItem>` call sites) are covered too (issue #185).
+    ///
+    /// `eq_fn: None` is the `FineForBuilder` shape — no data-comparison pass at
+    /// all, so this pins the initial-render site on its own.
+    #[test]
+    fn for_each_dom_deduplicates_hand_built_for_items() {
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use std::cell::RefCell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let marker = super::for_each_dom(
+            &mut scope,
+            &parent,
+            || {
+                vec![
+                    ForItem::new("a", "A1".to_string()),
+                    ForItem::new("a", "A2".to_string()),
+                    ForItem::new("b", "B".to_string()),
+                ]
+            },
+            |item: &ForItem, s: &mut RenderScope| {
+                let node = s.create_element("div");
+                node.set_attribute("data-name", item.downcast::<String>().unwrap());
+                node
+            },
+            None,
+        );
+        let _ = marker;
+
+        assert_eq!(mounted_row_names(&parent), ["A1", "B"]);
     }
 }

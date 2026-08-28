@@ -64,6 +64,15 @@ pub enum ListOp<K> {
 /// * `old` - The original list of keys
 /// * `new` - The desired list of keys
 ///
+/// # Preconditions
+///
+/// **`old` and `new` must each be duplicate-free.** The index maps below are
+/// built with `collect`, so a repeated key silently keeps only its *last*
+/// index, and the prefix/suffix scan and the `common_items` range filter then
+/// reason against that one index — placing a later insert against the wrong
+/// sibling. `for_each_dom` guarantees the precondition by deduplicating its
+/// item list at the source; do not relax it here (issue #185).
+///
 /// # Returns
 ///
 /// A vector of operations that, when applied in order, will transform old into new.

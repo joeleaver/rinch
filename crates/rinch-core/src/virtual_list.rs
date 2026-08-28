@@ -65,7 +65,9 @@ struct RenderedItem {
 /// * `scope` - The render scope for creating DOM nodes
 /// * `item_height` - Fixed height in pixels for each item
 /// * `items` - Reactive closure returning the current list of items
-/// * `key` - Function to extract a unique key from each item
+/// * `key` - Function to extract a unique key from each item. Keys must be
+///   unique: within one visible range a repeat is dropped, keeping the first,
+///   with a warning (issue #185)
 /// * `overscan` - Number of extra items to render above/below the viewport
 /// * `view` - Function to render a single item to a `NodeHandle`
 ///
@@ -132,6 +134,9 @@ where
     let container_handle = container.clone();
     let spacer_handle = spacer.clone();
     let window_handle = window.clone();
+    // Latches the duplicate-key diagnostic to once per list — the effect re-runs
+    // on every scroll tick, and a duplicate in the data is there on all of them.
+    let warned_duplicate_key = std::cell::Cell::new(false);
 
     let effect = Effect::new(move || {
         // Read both scroll position and items — tracks both signals
@@ -159,17 +164,36 @@ where
             (start, end)
         };
 
-        // Build key list for the new visible range
-        let new_keys: Vec<String> = all_items[start..end]
-            .iter()
-            .map(|item| key(item).to_string())
-            .collect();
-
-        // Build a map of new items by key for quick lookup
-        let new_items_by_key: HashMap<String, &T> = all_items[start..end]
-            .iter()
-            .map(|item| (key(item).to_string(), item))
-            .collect();
+        // Build the key list and the by-key lookup for the new visible range.
+        //
+        // One key, one row (issue #185): a repeat of a key already in this range
+        // is dropped, keeping the first — the same rule `for_each_dom` applies.
+        // These two used to be built independently, so `new_keys` kept
+        // duplicates while `new_items_by_key` collapsed them (last wins). The
+        // "render the keys that are new" loop below only consults the *old* key
+        // set, so it rendered such a key once per occurrence; the second
+        // render's `state.insert` then displaced the first `RenderedItem` and
+        // dropped it inline, under the `rendered` borrow — disposing a live
+        // scope, and so running user cleanups, exactly where this closure parks
+        // scopes to avoid doing that. The re-append loop finished the job by
+        // appending the one surviving node once per occurrence.
+        let mut new_keys: Vec<String> = Vec::with_capacity(end.saturating_sub(start));
+        let mut new_items_by_key: HashMap<String, &T> = HashMap::new();
+        for item in &all_items[start..end] {
+            let k = key(item).to_string();
+            if new_items_by_key.contains_key(&k) {
+                if !warned_duplicate_key.replace(true) {
+                    tracing::warn!(
+                        "duplicate virtual-list key {:?}: this item is not rendered. \
+                         Give each item a unique key.",
+                        k
+                    );
+                }
+                continue;
+            }
+            new_keys.push(k.clone());
+            new_items_by_key.insert(k, item);
+        }
 
         let mut state = rendered.borrow_mut();
         let mut old_keys = keys_order.borrow_mut();
@@ -321,5 +345,67 @@ mod tests {
             0,
             "no row signal leaked into the parent scope"
         );
+    }
+
+    /// One key, one row — the virtual list must not render a repeated key twice
+    /// (issue #185).
+    ///
+    /// `new_keys` kept duplicates while `new_items_by_key` collapsed them, so the
+    /// "render the keys that are new" loop rendered the same key once per
+    /// occurrence. The second render's `state.insert` displaced the first
+    /// `RenderedItem` and dropped it **inline, under the `rendered` `RefMut`** —
+    /// disposing a live scope, and so running user cleanups, exactly where this
+    /// module parks scopes to avoid doing so. The re-append loop then appended
+    /// the one surviving node once per occurrence.
+    #[test]
+    fn a_virtual_list_renders_one_row_per_key() {
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        let items = Signal::new(vec![
+            (1u32, "A1".to_string()),
+            (1u32, "A2".to_string()),
+            (2u32, "B".to_string()),
+        ]);
+        #[allow(clippy::type_complexity)]
+        let seen: Rc<RefCell<Vec<(String, Option<Owner>)>>> = Rc::new(RefCell::new(Vec::new()));
+
+        let log = seen.clone();
+        let list = super::virtual_list(
+            &mut scope,
+            20.0,
+            move || items.get(),
+            |item: &(u32, String)| item.0,
+            1,
+            move |item: (u32, String), s: &mut RenderScope| {
+                log.borrow_mut().push((item.1.clone(), current_owner()));
+                let node = s.create_element("div");
+                node.set_attribute("data-name", &item.1);
+                node
+            },
+        );
+
+        // container -> [spacer, window]; the rows live in the window.
+        let window = list.children().remove(1);
+        let names: Vec<String> = window
+            .children()
+            .into_iter()
+            .map(|row| row.get_attribute("data-name").unwrap_or_default())
+            .collect();
+        assert_eq!(names, ["A1", "B"], "one row per key, first occurrence wins");
+
+        let seen = seen.borrow();
+        let rendered: Vec<&str> = seen.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(rendered, ["A1", "B"], "the repeated key is never rendered");
+        for (name, owner) in seen.iter() {
+            let owner = owner
+                .clone()
+                .unwrap_or_else(|| panic!("{name} ran with no owner"));
+            assert!(
+                owner.is_alive(),
+                "{name}'s scope must still be live while its row is mounted"
+            );
+        }
     }
 }

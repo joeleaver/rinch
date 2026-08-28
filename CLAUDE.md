@@ -1698,6 +1698,8 @@ for todo in todos.get() {
 
 **Item type requirements:** `Clone + PartialEq + 'static`. The `PartialEq` bound enables selective re-rendering — when the list changes, surviving items (same key) are compared by value. Only items whose data actually changed are re-rendered.
 
+**Keys must be unique** (issue #185). An item whose key repeats one already seen in the same pass is **not rendered** and a warning is logged — first occurrence wins, as in React. The reconcile rests on one key naming one item state and one mounted sibling; a repeat used to leave a row that rendered, swallowed clicks and never updated again. Note the no-`key:` fallback keys by `format!("{:?}", item)`, so two `Debug`-equal items collide: `for n in vec![1, 1, 2]` renders **two** rows, not three. `virtual_list` applies the same rule within a visible range.
+
 When the list changes, `for` uses keyed reconciliation (LIS algorithm) to compute minimal DOM operations:
 - **Insert**: New items are rendered and added at the correct position
 - **Remove**: Deleted items have their DOM nodes removed
