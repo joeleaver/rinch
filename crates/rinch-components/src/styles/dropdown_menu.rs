@@ -118,15 +118,35 @@ pub fn styles() -> String {
     margin: var(--rinch-spacing-xs) 0;
 }
 
-/* Backdrop — invisible full-viewport overlay that catches outside clicks
-   when close_on_click_outside is true. z-index sits below the dropdown
-   panel (z-index: 100) so option clicks still land on the items. */
+/* Backdrop — the invisible overlay that catches outside clicks when
+   close_on_click_outside is true. Its z-index sits below the dropdown panel's
+   (100) so that a click on an item still lands on the item.
+
+   It is `position: absolute`, and it has to be. A `position: fixed` box is
+   viewport-level content in Rinch: it is hoisted out of every ancestor clip,
+   and — because Rinch makes an overflow clip a stacking context — out of every
+   ancestor stacking context along with it. A fixed backdrop is therefore above
+   everything that is not itself fixed, whatever the z-indexes say, because the
+   99 and the 100 are then being compared across two stacking contexts, which
+   is to say not compared at all. Behind any `overflow` ancestor — every scroll
+   container, and most app roots — a fixed backdrop covered the panel and
+   swallowed every tap on the menu: the menu closed and the item never ran.
+
+   Absolute puts the backdrop back in the panel's own stacking context, where
+   the two z-indexes are comparable and the panel wins. The insets are what a
+   viewport-covering box costs once it can no longer be viewport-positioned:
+   100vw/100vh in each direction from a root that is on screen by construction
+   (the menu is open, so its target is visible) covers the viewport at any
+   scroll position. The price is that the backdrop is now clipped by whatever
+   clips the panel, so a click beyond *that* box does not dismiss — the popup
+   and its dismiss region share one clip, which is the trade a fixed backdrop
+   was never able to make in the other direction. */
 .rinch-dropdown-menu__backdrop {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
+    position: absolute;
+    top: -100vh;
+    right: -100vw;
+    bottom: -100vh;
+    left: -100vw;
     z-index: 99;
     display: none;
 }
