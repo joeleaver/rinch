@@ -611,6 +611,15 @@ std::thread::spawn(move || {
 
 **Key constraint:** Never call `Signal::set()` or `Signal::update()` from a background thread — they panic. Always use the `_send` variants for cross-thread updates.
 
+**Embed works the same way** (issue #172). A `RinchContext` arms cross-thread
+dispatch too, and drains the queued writes at the top of each `update()` —
+before that frame's events, so a queued write and an event handler land in one
+layout pass. `run_on_main_thread` and everything riding it (`set_timeout`,
+`rinch-http`, `rinch-ws`) work in embed for the same reason. The queue itself
+lives in `rinch-core` (`queue_main_callback` / `drain_main_callbacks`) so the
+desktop shell, the Android loop and embed all share one; the shell's dispatcher
+adds the "wake the event loop" side effect that embed has no use for.
+
 ## Native Menus
 
 Native menus use a unified `Menu`/`MenuItem` builder API shared between window menu bars and tray context menus. Use `run_with_menu` to add a menu bar:

@@ -121,6 +121,15 @@ pub struct RinchContext {
     _signal_change_sub: rinch_core::SignalChangeSubscription,
 }
 
+/// Cross-thread dispatcher for an embedded context: queue only, no wake.
+///
+/// An embedded host's frame loop is already turning — it calls
+/// [`RinchContext::update`] every frame, which drains the queue — so unlike the
+/// desktop shell there is nothing here to wake.
+fn queue_on_main_thread(f: Box<dyn FnOnce() + Send>) {
+    rinch_core::queue_main_callback(f);
+}
+
 impl RinchContext {
     /// Create and mount a rinch UI.
     ///
@@ -169,8 +178,20 @@ impl RinchContext {
         let (logical_w, logical_h) = rinch_platform::to_logical((width, height), scale_factor);
         app.mount_component(logical_w as f32, logical_h as f32);
 
-        // Register main thread for cross-thread signal dispatch
+        // Arm cross-thread signal dispatch. Both halves are required and they
+        // are required together: `register_main_thread` is what *arms* the
+        // check, so registering it without a dispatcher left a background-thread
+        // `Signal::send()` / `update_send()` / `run_on_main_thread()` panicking
+        // on the calling thread — strictly worse than registering neither, where
+        // `is_main_thread()` answers `true` and `send()` degrades to `set()`
+        // (issue #172).
+        //
+        // `_if_unset` so a context created inside a desktop app never displaces
+        // the shell's dispatcher, which additionally wakes the winit event loop.
+        // Both push onto the same `rinch-core` queue, so either dispatcher feeds
+        // both drain sites.
         rinch_core::register_main_thread();
+        rinch_core::set_cross_thread_dispatcher_if_unset(queue_on_main_thread);
 
         // Subscribe to signal changes so the game loop can detect dirty state.
         // A guard-based subscription (not the legacy single slot): each context
@@ -197,14 +218,20 @@ impl RinchContext {
     pub fn update(&mut self, events: &[PlatformEvent]) -> Vec<AppAction> {
         let mut all_actions = Vec::new();
 
-        // Fire due polled signals before anything reads them, mirroring what the
-        // desktop runtime does ahead of each paint. Without this an embedded
-        // context never drained the registry at all, so a `poll_signal` created
-        // inside a `RinchContext` never fired even once (issue #141).
+        // Run the per-frame housekeeping the desktop runtime does ahead of each
+        // paint, in the same order it does.
         //
-        // Draining before the events is deliberate: a poll write and an event
-        // handler can both dirty the tree, and this ordering lets the single
-        // layout pass below absorb both.
+        // Closures a background thread queued — `Signal::send()`,
+        // `update_send()`, `run_on_main_thread()`, a fired `set_timeout`, an
+        // `rinch-http`/`rinch-ws` completion — run first (issue #172). Then due
+        // polled signals fire before anything reads them; without this an
+        // embedded context never drained the registry at all, so a `poll_signal`
+        // created inside a `RinchContext` never fired even once (issue #141).
+        //
+        // Draining before the events is deliberate: a queued write, a poll write
+        // and an event handler can all dirty the tree, and this ordering lets the
+        // single layout pass below absorb all of them.
+        rinch_core::drain_main_callbacks();
         rinch_core::reactive::drain_polls();
 
         // Process each event

@@ -316,6 +316,26 @@ dropping a context clears its namespace. One caveat remains: each context
 still processes the input events *you* feed it — route each window's events
 only to its own context.
 
+**Background threads.** The documented cross-thread pattern works in embed:
+`Signal::send()` / `Signal::update_send()` from a worker, and
+`run_on_main_thread()` for anything else, marshal the write onto the thread that
+created the context and apply it at the top of the **next `update()`** — before
+the events of that frame, so a queued write and an event handler are absorbed by
+the same layout pass. Everything that rides that transport comes with it:
+`set_timeout`, `rinch-http` completions, `rinch-ws` events. `Signal::set()` and
+`Signal::update()` still panic off the main thread — only the `_send` variants
+marshal.
+
+The queue is process-global, so a `RinchContext` you drive drains work queued
+against *any* context on the thread. That is fine: the payload writes its own
+signals, signals are thread-local rather than per-document, and the document it
+touches is still repainted by its own `update()`.
+
+> Before issue #172 an embedded context registered the main thread but no
+> dispatcher, and a background-thread `send()` panicked on the calling thread.
+> If you pinned an older rinch and wrapped your worker writes to avoid it, you
+> can drop the workaround.
+
 ### Input Routing
 
 For HUD overlays, use `wants_mouse` and `wants_keyboard` to decide whether input goes to the UI or the game:

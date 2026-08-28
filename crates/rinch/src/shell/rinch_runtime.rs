@@ -71,14 +71,16 @@ pub(crate) fn send_native_event(event: RinchNativeEvent) {
     }
 }
 
-// Queue of closures to execute on the main thread during the next ReRender.
-static MAIN_QUEUE: Mutex<Vec<Box<dyn FnOnce() + Send>>> = Mutex::new(Vec::new());
-
 /// Queue a closure to run on the main (UI) thread.
 ///
 /// The closure will execute during the next event-loop wake, before the
 /// re-render pass. This is the safe way to update [`Signal`]s from a
 /// background thread (e.g. after an HTTP request completes on tokio).
+///
+/// The queue itself lives in `rinch-core` so every host shares one
+/// ([`rinch_core::queue_main_callback`], issue #172); what this shell adds is
+/// the wake — without it a closure queued while the loop is idle would sit
+/// there until something else happened to wake it.
 ///
 /// # Example
 ///
@@ -92,15 +94,9 @@ static MAIN_QUEUE: Mutex<Vec<Box<dyn FnOnce() + Send>>> = Mutex::new(Vec::new())
 /// });
 /// ```
 pub fn run_on_main_thread(f: impl FnOnce() + Send + 'static) {
-    let was_empty = {
-        let mut q = MAIN_QUEUE.lock().unwrap();
-        let empty = q.is_empty();
-        q.push(Box::new(f));
-        empty
-    };
     // Only wake the event loop if the queue was empty — subsequent calls
     // within the same batch coalesce into a single ReRender event.
-    if was_empty {
+    if rinch_core::queue_main_callback(Box::new(f)) {
         send_native_event(RinchNativeEvent::ReRender);
     }
 }
@@ -108,24 +104,11 @@ pub fn run_on_main_thread(f: impl FnOnce() + Send + 'static) {
 /// Dispatcher function for cross-thread signal updates.
 ///
 /// Registered with `rinch_core::set_cross_thread_dispatcher()` so that
-/// `Signal::send()` can automatically route updates to the main thread.
+/// `Signal::send()` can automatically route updates to the main thread. Same
+/// shared queue as [`run_on_main_thread`], same coalesced wake.
 fn dispatch_to_main_thread(f: Box<dyn FnOnce() + Send>) {
-    let was_empty = {
-        let mut q = MAIN_QUEUE.lock().unwrap();
-        let empty = q.is_empty();
-        q.push(f);
-        empty
-    };
-    if was_empty {
+    if rinch_core::queue_main_callback(f) {
         send_native_event(RinchNativeEvent::ReRender);
-    }
-}
-
-/// Drain and execute all pending main-thread callbacks.
-fn drain_main_queue() {
-    let callbacks: Vec<Box<dyn FnOnce() + Send>> = MAIN_QUEUE.lock().unwrap().drain(..).collect();
-    for cb in callbacks {
-        cb();
     }
 }
 
@@ -305,8 +288,8 @@ impl RinchRuntime {
         // 1. Clear the signal-change callback so no stale closures fire during drop.
         rinch_core::clear_on_signal_change();
 
-        // 2. Drain any pending main-thread callbacks (they may capture app state).
-        MAIN_QUEUE.lock().unwrap().clear();
+        // 2. Drop any pending main-thread callbacks (they may capture app state).
+        rinch_core::clear_main_callbacks();
 
         // 3. Drop the app first (disposes effects/scopes before GPU resources).
         //    RinchApp's own drop order handles _render_scope before doc.
@@ -811,7 +794,7 @@ impl RinchRuntime {
 
         // Ensure pending cross-thread closures are processed and layout
         // is resolved before painting (same as paint_gpu).
-        drain_main_queue();
+        rinch_core::drain_main_callbacks();
         rinch_core::reactive::drain_polls();
         let scale = window.scale_factor();
         // Layout and paint work in logical (CSS) pixels; `inner_size` is
@@ -966,7 +949,7 @@ impl RinchRuntime {
         // continuous RedrawRequested from render surfaces can paint with
         // stale layout if the ReRender event from signal changes hasn't
         // been processed yet.
-        drain_main_queue();
+        rinch_core::drain_main_callbacks();
         rinch_core::reactive::drain_polls();
         let scale = window.scale_factor();
         // Layout and paint work in logical (CSS) pixels; `inner_size` is
@@ -1534,7 +1517,7 @@ impl ApplicationHandler for RinchRuntime {
         rinch_core::clear_signals_changed();
 
         // Drain main-thread callback queue.
-        drain_main_queue();
+        rinch_core::drain_main_callbacks();
 
         // Drain queued native events.
         self.drain_native_events(event_loop);
