@@ -936,16 +936,23 @@ impl RinchDocument {
     /// Detach the inline descendants of an IFC root from Taffy and mark their
     /// `ifc_root`, flattening through `display:contents` wrappers.
     ///
-    /// Direct inline children behave exactly as before (removed from the root's
-    /// Taffy node so Parley lays them out, `ifc_root` set). A `display:contents`
-    /// wrapper generates no box, so it is transparent *when it wraps no
-    /// block-level box*: it is then marked with this root's id (so IFC discovery
-    /// finds this container and paint skips the wrapper in the normal tree walk)
-    /// and recursed into, so its inline grandchildren — which
+    /// Direct inline children are removed from the root's Taffy node (so Parley
+    /// lays them out) and get `ifc_root` set. A `display:contents` wrapper
+    /// generates no box, so it is transparent *when it wraps no block-level
+    /// box*: it is then marked with this root's id (so IFC discovery finds this
+    /// container and paint skips the wrapper in the normal tree walk) and
+    /// recursed into, so its inline grandchildren — which
     /// `sync_display_contents` reparented into `root_taffy` — are detached and
     /// joined to this IFC too (issue #61). A wrapper that *does* hold a block box
     /// is left unmarked and ends the marking pass, mirroring
     /// [`Self::walk_inline_children`], which stops building the line there.
+    ///
+    /// The set of nodes marked here must be *exactly* the set
+    /// [`Self::walk_inline_children`] flows into this IFC, so the recursion
+    /// follows the same rule it does: down through `display: inline` elements
+    /// and transparent `display:contents` wrappers, and **not** into an
+    /// `inline-block`, which is a box the IFC only measures and places — its
+    /// interior is laid out and painted by Taffy, on its own.
     fn mark_inline_descendants(
         &mut self,
         root_id: usize,
@@ -953,16 +960,22 @@ impl RinchDocument {
         root_taffy: taffy::NodeId,
     ) {
         use crate::computed_style::values::DisplayValue;
+        // Read the root's Taffy children once. Taffy hands back an owned `Vec`,
+        // so asking per child cloned the whole list on every iteration — and the
+        // recursion below multiplies that by the number of inline descendants.
+        let root_taffy_children = self.tree.taffy.children(root_taffy).unwrap_or_default();
         let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
         for child_id in children {
-            let (is_contents, is_inline, child_taffy) = match self.tree.nodes.get(child_id) {
-                Some(c) => (
-                    c.computed_style.display == DisplayValue::Contents,
-                    c.is_inline(),
-                    c.taffy_id,
-                ),
-                None => continue,
-            };
+            let (is_contents, is_inline, is_inline_element, child_taffy) =
+                match self.tree.nodes.get(child_id) {
+                    Some(c) => (
+                        c.computed_style.display == DisplayValue::Contents,
+                        c.is_inline(),
+                        c.is_element() && c.display_mode == DisplayMode::Inline,
+                        c.taffy_id,
+                    ),
+                    None => continue,
+                };
             if is_contents {
                 // Only a wrapper that holds *no block-level box* is part of
                 // this IFC. One that wraps blocks (an rsx `Vec<NodeHandle>`
@@ -986,30 +999,34 @@ impl RinchDocument {
                 self.mark_inline_descendants(root_id, child_id, root_taffy);
             } else if is_inline {
                 if let Some(child_taffy) = child_taffy
-                    && let Ok(taffy_children) = self.tree.taffy.children(root_taffy)
-                    && taffy_children.contains(&child_taffy)
+                    && root_taffy_children.contains(&child_taffy)
                 {
                     let _ = self.tree.taffy.remove_child(root_taffy, child_taffy);
                 }
                 if let Some(c) = self.tree.nodes.get_mut(child_id) {
                     c.ifc_root = Some(root_id);
                 }
-                // …and everything *inside* that inline element belongs to this
+                // Everything inside a `display: inline` element belongs to this
                 // IFC too. Marking the `<a>` and stopping was enough for text —
                 // `walk_inline_children` recurses through it either way — but it
                 // left any inline-block descendant with `ifc_root == None`, so
                 // `compute_inline_block_layouts` never measured it and the
-                // `InlineBox` pushed for it at the bottom of this file read a
-                // `layout` that was still zero.
+                // `InlineBox` pushed for it read a `layout` that was still zero:
+                // an `<img>` inside a link disappeared, right `src` and computed
+                // size, 0x0 box.
                 //
-                // The symptom is an `<img>` inside a link: it disappears, with
-                // the right `src`, a computed width and height from its own
-                // style, and a 0x0 layout box — while the same `<img>` as a
-                // direct child of the block, or beside text in a `<p>`, lays out
-                // correctly. Found rendering a saved web page in SetListArray,
-                // where every site's logo and half its chord diagrams are
-                // wrapped in an anchor.
-                self.mark_inline_descendants(root_id, child_id, root_taffy);
+                // An `inline-block` is where the recursion stops, exactly as it
+                // does in `walk_inline_children`. Its interior is Taffy's, not
+                // this IFC's: marking it would make `read_layout_results` hold a
+                // nested inline-block at its stale x/y (it keeps the IFC's
+                // position for anything carrying an `ifc_root`), make
+                // `ifc_content_box_offset` add this root's padding to its hit
+                // rect, resolve its percentage sizes against the wrong
+                // containing block, and strip `cached_text_parley` from the text
+                // inside every `<button>`.
+                if is_inline_element {
+                    self.mark_inline_descendants(root_id, child_id, root_taffy);
+                }
             }
             // Block-level children are left in place (existing behavior).
         }

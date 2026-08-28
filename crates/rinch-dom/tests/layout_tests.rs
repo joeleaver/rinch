@@ -2280,3 +2280,83 @@ fn test_inline_block_inside_an_inline_element_is_measured() {
         "and one wrapped in an <a> must be laid out the same way"
     );
 }
+
+/// The IFC flows an inline-block *box*, but not its interior.
+///
+/// `mark_inline_descendants` has to mark exactly the set
+/// `walk_inline_children` flows into the line, and that walk stops at an
+/// `inline-block` — it pushes one `InlineBox` for the box and never looks
+/// inside. Marking the interior anyway hands the outer root's `ifc_root` to
+/// boxes Taffy owns, and several passes read that field as "the IFC positions
+/// this": `read_layout_results` then keeps the box's stale x/y instead of
+/// Taffy's, `ifc_content_box_offset` adds the outer root's padding to its hit
+/// rect, `resolve_percentage_inline_blocks` resolves its percentage sizes
+/// against the wrong containing block, and `copy_cached_text_layouts` drops the
+/// cached Parley layout for the text inside every `<button>`.
+#[test]
+fn test_inline_block_inside_an_inline_block_is_not_joined_to_the_outer_ifc() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.append_child(body, container);
+    doc.set_inner_html(
+        container,
+        "<div style=\"padding: 20px\">\
+           <span id=\"host\" style=\"display: inline-block; padding: 7px\">\
+             <i id=\"inner\" style=\"display: inline-block; width: 40px; height: 12px\"></i>\
+           </span>\
+         </div>",
+    );
+
+    doc.resolve_layout(800.0, 600.0);
+
+    let host = rinch_dom::testing::query_selector(&doc.tree, "[id=host]")[0];
+    let inner = rinch_dom::testing::query_selector(&doc.tree, "[id=inner]")[0];
+
+    // The block's IFC owns the inline-block box itself…
+    assert!(
+        doc.tree.get(host).unwrap().ifc_root.is_some(),
+        "the inline-block is inline content of the block"
+    );
+    // …and stops there.
+    assert_eq!(
+        doc.tree.get(inner).unwrap().ifc_root,
+        None,
+        "the box inside an inline-block belongs to Taffy, not the outer IFC"
+    );
+
+    let l = doc.tree.get(inner).unwrap().layout;
+    assert_eq!((l.width, l.height), (40.0, 12.0));
+    assert_eq!(
+        (l.x, l.y),
+        (7.0, 7.0),
+        "Taffy places it inside its parent's padding"
+    );
+}
+
+/// The inline-block wrapped in an inline element is *placed* by the IFC too,
+/// not just measured: `write_inline_positions` writes the Parley inline box's
+/// origin onto it, so text before it pushes it along the line.
+#[test]
+fn test_inline_block_inside_an_inline_element_is_positioned_by_the_ifc() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.append_child(body, container);
+    doc.set_inner_html(
+        container,
+        "<div><a>some text before it<i id=\"boxed\" \
+         style=\"display: inline-block; width: 20px; height: 10px\"></i></a></div>",
+    );
+
+    doc.resolve_layout(800.0, 600.0);
+
+    let boxed = rinch_dom::testing::query_selector(&doc.tree, "[id=boxed]")[0];
+    let l = doc.tree.get(boxed).unwrap().layout;
+    assert_eq!((l.width, l.height), (20.0, 10.0));
+    assert!(
+        l.x > 0.0,
+        "the text before it advances the line, so the box is not at the line origin (got x = {})",
+        l.x
+    );
+}
