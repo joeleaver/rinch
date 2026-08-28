@@ -24,6 +24,15 @@ fn app() -> NodeHandle {
     let stress_mode = Signal::new(false);
     let safe = safe_padding();
 
+    // The demo draws on white, so the system's default light-on-dark bar
+    // contents would be invisible against it. Also the only place in the tree
+    // that links these two calls at all.
+    #[cfg(target_os = "android")]
+    {
+        rinch_android::display::set_light_status_bars(true);
+        rinch_android::display::set_light_navigation_bars(true);
+    }
+
     rsx! {
         div { style: {format!("height: 100%; overflow: hidden; {safe}")},
             if stress_mode.get() {

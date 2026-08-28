@@ -152,6 +152,11 @@ public class RinchActivity extends NativeActivity {
                 decorView.getWindowInsetsController();
             if (controller != null) {
                 controller.setSystemBarsAppearance(light ? appearance : 0, appearance);
+            } else {
+                // No window yet, so there is nothing to write the appearance to.
+                // Say so — otherwise the bar silently stays light-on-dark.
+                android.util.Log.w("rinch",
+                    "system bar appearance dropped: the window has no insets controller yet");
             }
         } else {
             setLegacyBarAppearance(decorView, appearance, light);
