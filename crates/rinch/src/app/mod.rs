@@ -4979,4 +4979,158 @@ mod android_frame_clock_tests {
              presented; only {presented} asked to be"
         );
     }
+
+    // ── The animation half of the same guard ─────────────────────────────────
+
+    /// A `@keyframes` animation, started by the tap the way the sheet is.
+    ///
+    /// `fill-mode` is left at its default `none` on purpose. That is what makes
+    /// the last tick a *completing* tick: `Animation::is_filling` is false, so
+    /// the animation is dropped rather than kept, and `tick_animations` reports
+    /// `any_active = false` for the very tick that ended it.
+    const RISE_CSS: &str = r#"
+        @keyframes k24-rise {
+            from { opacity: 0.1; }
+            to   { opacity: 0.9; }
+        }
+        .rising {
+            animation: k24-rise 220ms linear;
+        }
+    "#;
+
+    struct Riser {
+        app: RinchApp,
+        trigger: usize,
+    }
+
+    /// A chip that, when tapped, hands a box the class that animates it.
+    fn mount_riser() -> Riser {
+        let running = Signal::new(false);
+        let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
+            rsx! {
+                div {
+                    style: "position: relative; overflow: hidden; \
+                            width: 393px; height: 852px;",
+
+                    style { {RISE_CSS} }
+
+                    div {
+                        class: "trigger",
+                        onclick: move || running.set(true),
+                        style: "width: 120px; height: 32px;",
+                    }
+
+                    div {
+                        class: {move || if running.get() { "riser rising" } else { "riser" }},
+                        style: "width: 120px; height: 120px; background: #444;",
+                    }
+                }
+            }
+        });
+        app.mount_component(VIEWPORT.0, VIEWPORT.1);
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+
+        let trigger = by_class(&app, "trigger");
+        Riser { app, trigger }
+    }
+
+    fn running_animations(app: &RinchApp) -> usize {
+        let doc = app.doc.as_ref().expect("document");
+        let d = doc.borrow();
+        d.tree.active_animations.len()
+    }
+
+    /// The same fault as `the_tick_that_finishes_the_slide_asks_to_be_presented`,
+    /// on the other half of the clock.
+    ///
+    /// `tick_animations` answers exactly the question `tick_transitions` did —
+    /// "is anything *still* running" — and answers it `false` on the tick that
+    /// ends an animation, after that tick has already changed what the element
+    /// looks like. K23's `had_running` guard was written to cover both, because
+    /// it asks "was there anything to tick" instead, but only the transition
+    /// half had a test. This is the animation half.
+    ///
+    /// It matters more than it looks on Android, and card K24 is why: the first
+    /// paint after a tap on the moto g stylus 5G took about 320ms against this
+    /// 220ms animation, so the tick that ends it was the only tick it ever got.
+    /// Even now that the same frame is nearer 60ms, an animation shorter than
+    /// two frames still lands entirely on its completing tick, and dropping
+    /// that frame means it never appears at all.
+    #[test]
+    fn the_tick_that_finishes_an_animation_asks_to_be_presented() {
+        let mut riser = mount_riser();
+        let (x, y) = centre(&riser.app, riser.trigger);
+        tap(&mut riser.app, x, y);
+
+        // The frame the tap dirtied, presented — and the present is slow.
+        let frame = android_frame::pump_frame(&mut riser.app, PHYSICAL, SCALE);
+        if frame.pending_layout {
+            riser.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+        }
+        assert_eq!(
+            running_animations(&riser.app),
+            1,
+            "the tap has to have started the animation, or the rest of this \
+             test proves nothing about it"
+        );
+        riser.app.scene_dirty = false;
+        std::thread::sleep(Duration::from_millis(320));
+
+        // One tick, and it is the one that ends the animation.
+        let frame = android_frame::pump_frame(&mut riser.app, PHYSICAL, SCALE);
+        assert_eq!(
+            running_animations(&riser.app),
+            0,
+            "this tick has to be the one that finished it — that is the whole \
+             shape being tested"
+        );
+        assert!(
+            frame.needs_paint,
+            "and the frame that finished it has to reach the glass: the \
+             element looks different now than in the frame before, and no \
+             later tick will ever say so"
+        );
+    }
+
+    /// The animation, driven through the pump the way the loop drives it, ends
+    /// where the keyframes say — and asks to be presented more than once when
+    /// the frames are fast enough for there to be more than one.
+    #[test]
+    fn the_frame_clock_runs_an_animation_to_its_end() {
+        let mut riser = mount_riser();
+        let (x, y) = centre(&riser.app, riser.trigger);
+        tap(&mut riser.app, x, y);
+
+        let presented = run_frames(&mut riser.app, true, |app| running_animations(app) == 0);
+
+        assert_eq!(
+            running_animations(&riser.app),
+            0,
+            "the animation has to have finished inside {SETTLE:?}"
+        );
+        assert!(
+            presented > 1,
+            "a 220ms animation is many frames and every one of them has to be \
+             presented; only {presented} asked to be"
+        );
+    }
+
+    /// And the reason the loop turns the clock at all, stated for animations
+    /// the way it already is for transitions: take the pump away and the
+    /// animation never runs, however many frames are painted.
+    #[test]
+    fn without_the_frame_clock_an_animation_never_runs() {
+        let mut riser = mount_riser();
+        let (x, y) = centre(&riser.app, riser.trigger);
+        tap(&mut riser.app, x, y);
+
+        run_frames(&mut riser.app, false, |_| false);
+
+        assert_eq!(
+            running_animations(&riser.app),
+            1,
+            "with no clock the animation is registered and never advanced, so \
+             it is still sitting there after {SETTLE:?}"
+        );
+    }
 }
