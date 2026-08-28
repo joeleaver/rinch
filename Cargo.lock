@@ -5102,6 +5102,7 @@ version = "0.1.0"
 dependencies = [
  "js-sys",
  "rinch",
+ "rinch-clipboard",
  "rinch-core",
  "rinch-editable",
  "rinch-editor-core",

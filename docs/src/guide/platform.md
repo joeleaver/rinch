@@ -251,6 +251,98 @@ fn app() -> NodeHandle {
 }
 ```
 
+### Reading without freezing the UI
+
+A clipboard *read* is a request to whichever application owns the clipboard. On
+X11 that application can be hung, and the read waits up to **four seconds** for
+it; the browser cannot be read synchronously at all. So `paste_text()` called
+straight from an event handler — as in the example above — can block the UI
+thread: no repaint, no input, and on some window managers a "not responding"
+badge (issue #149).
+
+Every read therefore comes in three shapes, on every platform:
+
+| Function | Blocks the caller? | Use for |
+|---|---|---|
+| `paste_text()` | yes, indefinitely | scripts, background threads, existing code |
+| `paste_text_timeout(Duration)` | yes, bounded — `Err(TimedOut)` after that | an interactive path that can accept a bounded hiccup |
+| `paste_text_async(callback)` | no | an interactive path that must stay responsive |
+
+`paste_html` / `paste_image` have the same three. `paste_rich` resolves
+`text/html` → bitmap → `text/plain` in **one** read and answers with a
+`RichPaste`, so a rich-paste consumer never stacks three worst-case waits — it is
+what the built-in editor's Ctrl+V uses.
+
+On native, all of them are served by a single clipboard worker thread that owns
+the system clipboard. That is what makes the timeout worth having: giving up does
+not cancel the request, it only stops waiting for it, so an abandoned read
+finishes on the worker instead of wedging every later caller behind a lock.
+
+**Which thread does the callback run on?** Not necessarily the UI thread — on
+native it is the clipboard worker, which is why the callback must be `Send`.
+rinch UI state is thread-local, so hop back before touching it:
+
+```rust
+use rinch::clipboard::{paste_text_async, ClipboardResult};
+use rinch::prelude::*;
+
+let text = Signal::new(String::new());
+button {
+    onclick: move || {
+        // `Signal::send` marshals to the UI thread from anywhere.
+        paste_text_async(move |result| {
+            if let Ok(pasted) = result {
+                text.send(pasted);
+            }
+        });
+    },
+    "Paste"
+}
+```
+
+For a `!Send` continuation (an `EditorHandle`, an `Rc`), park it on the UI thread
+and send only its id across:
+
+```rust
+let id = rinch_core::park_main_callback::<ClipboardResult<String>>(move |result| {
+    // Runs on the UI thread; free to touch the DOM and any Rc-based handle.
+});
+paste_text_async(move |result| {
+    rinch_core::run_on_main_thread(move || rinch_core::resume_main_callback(id, result));
+});
+```
+
+### Web: reaching content copied outside the app
+
+The browser has no synchronous system-clipboard read, so on `wasm32`
+`paste_text()` answers from an internal buffer. rinch-web fills that buffer from
+the document's `paste` ClipboardEvent — the only synchronous channel to content
+copied in another app or tab — so a web app can paste from outside itself
+(issue #150). `paste_text_async` additionally tries
+`navigator.clipboard.readText()`, which needs a secure context and usually a user
+gesture, and falls back to the buffer.
+
+Because the browser's `paste` event arrives *after* the keydown that caused it,
+app paste logic on the web should hang off the paste rather than off Ctrl+V:
+
+```rust
+use rinch_core::{set_paste_interceptor, PasteEventData};
+
+set_paste_interceptor(|data: &PasteEventData| {
+    // The clipboard buffers are already filled when this runs, so
+    // `rinch::clipboard::paste_text()` works here too.
+    if let Some(text) = &data.text {
+        insert_into_my_editor(text);
+        return true; // handled: the browser should not also insert it
+    }
+    false
+});
+```
+
+The interceptor is a single slot per thread (like `set_keyboard_interceptor`) and
+is dispatched by rinch-web; desktop reads the clipboard directly when Ctrl+V
+arrives and has no OS paste event to hang it off.
+
 ---
 
 ## System Tray

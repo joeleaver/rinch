@@ -687,8 +687,18 @@ fn app() -> NodeHandle {
 |----------|---------|
 | **Dispatch** | `command(name) -> bool`, `update(\|state\| -> Option<Transaction>)`, `insert_text(&str)`, `replace_selection_with_html/text(&str)`, `insert_image(src, alt)`, `toggle_link(href)` |
 | **Query (read state)** | `can_run(name)`, `is_mark_active(mark)`, `active_link_href() -> Option<String>`, `current_block_type()`, `in_node_type(type)`, `doc() -> Node`, `state()`, `selection()` |
-| **Content / selection** | `load_html(&str)`, `load_doc(Node)`, `set_selection(Selection)`, `selection_clipboard()`, `set_dark_mode(bool)` |
+| **Content / selection** | `load_html(&str)`, `load_doc(Node)`, `set_selection(Selection)`, `selection_clipboard()`, `anchor_selection()`, `set_dark_mode(bool)` |
 | **Notification** | `on_change(impl Fn() + 'static)` — the autosave / dirty-marking hook |
+
+`anchor_selection() -> SelectionAnchor` captures the selection for an insertion that
+completes **later** (an async paste, an image upload, a model completion). Every
+document-changing transaction maps the anchor forward through its steps, so
+`anchor.selection()` still points at the content the user aimed at however much they
+typed meanwhile; it answers `None` once the document is *replaced* (`load_doc`/
+`load_html`, a collab re-projection), and the anchor releases itself on drop. This is
+what makes the asynchronous Ctrl+V (#149) land in the right place — desktop's
+`dispatch_editor_paste` anchors, reads the clipboard off-thread, then inserts at the
+anchor.
 
 `on_change` fires only for **local, document-changing** edits: `update` (which typing, paste and IME commit all funnel through), `command`, and `insert_image`. It deliberately does **not** fire for selection-only changes, for `load_doc`/`load_html` (a programmatic load isn't a user edit — firing would make an autosave consumer immediately re-save what it just loaded), or for `collab_receive` (already in the shared CRDT). The callback runs with no internal borrow held, so it may re-enter the handle freely — e.g. call `doc()` to serialize for the save.
 
@@ -1117,6 +1127,44 @@ if has_text() {
     let text = paste_text().unwrap();
 }
 ```
+
+**Reading is slow and may block (#149).** A read is a request to whichever app owns
+the clipboard; on X11 arboard waits up to **4s** for a hung owner, and the browser
+can't be read synchronously at all. Every read comes in three shapes on every
+platform: `paste_text()` (blocks, unbounded), `paste_text_timeout(Duration)` (blocks,
+`Err(ClipboardError::TimedOut)` after that), `paste_text_async(cb)` (never blocks).
+Same three for `paste_html`/`paste_image`. `paste_rich`/`paste_rich_async` resolve
+`text/html` → bitmap → `text/plain` in **one** read (→ `RichPaste`), so a rich paste
+never stacks three worst-case waits. `copy_text_async`/`copy_html_async` queue a write
+without waiting.
+
+On native all of them are served by **one clipboard worker thread** owning the
+`arboard::Clipboard` (`crates/rinch-clipboard/src/native.rs`). That's what makes the
+timeout useful: giving up doesn't cancel the request, so an abandoned read finishes on
+the worker rather than wedging later callers behind a held lock. The worker talks to a
+private `Backend` trait, so the queue/timeout/probe logic is unit-tested against a fake
+clipboard with no display.
+
+**Async callbacks are `Send` and do NOT run on the UI thread** (native: the worker;
+web: the browser thread). Marshal before touching UI state — `Signal::send` for a
+`Send` payload, or `park_main_callback` + `run_on_main_thread` + `resume_main_callback`
+for a `!Send` continuation (an `EditorHandle`, an `Rc`). A *blocking* call made from
+inside an async callback is reported as an error rather than deadlocking.
+
+**Web (#150):** `paste_text()` answers from a buffer that rinch-web fills from the
+document's `paste` ClipboardEvent — the only synchronous channel to content copied in
+another app or tab — so a web app can paste from outside itself.
+`paste_text_async` additionally tries `navigator.clipboard.readText()`. Because the
+browser's `paste` event arrives *after* the keydown, web paste logic should hang off
+`rinch_core::set_paste_interceptor(|data: &PasteEventData| -> bool)` (dispatched
+**after** the buffers are filled, so `paste_text()` works inside it) rather than off an
+intercepted Ctrl+V, which is still `prevent_default()`ed. One slot per thread, like
+`set_keyboard_interceptor`; desktop never dispatches it (no OS paste event).
+
+**The built-in editor's Ctrl+V is asynchronous** — see the `anchor_selection` row in the
+`EditorHandle` table. The plain `<input>`/`<textarea>` paste path
+(`RinchApp::handle_paste`) is still synchronous: its completion would need `&mut
+RinchApp`, and there is no deferred-work queue that hands one back.
 
 ### System Tray (optional)
 

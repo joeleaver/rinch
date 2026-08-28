@@ -33,6 +33,7 @@ rinch-editor-view = { workspace = true }
 # pure `std` — nothing extra enters the wasm build.
 rinch-editable = { workspace = true }
 
+
 # WASM bindings
 wasm-bindgen = "0.2"
 js-sys = "0.3"
@@ -50,6 +51,9 @@ web-sys = { version = "0.3", features = [
     "MouseEventInit", "KeyboardEventInit", "PointerEventInit",
     "EventTarget", "FocusOptions", "FocusEvent",
     "Range",
+    # `window.getSelection()`, so a copy/cut of ordinary page content mirrors
+    # into the clipboard buffers the way `copy_text()` does (issue #150).
+    "Selection",
     # Clipboard + IME on the editor's hidden capture textarea: clipboard read/write
     # (paste prefers text/html, falls back to an image file then text/plain) and the
     # composition events that drive the IME preedit overlay.
@@ -67,6 +71,15 @@ web-sys = { version = "0.3", features = [
 # `document.head`, so they only build for wasm. Run with a matching chromedriver:
 #   CHROMEDRIVER=/path/to/chromedriver \
 #     cargo test -p rinch-web --target wasm32-unknown-unknown
+# The cross-platform clipboard buffers. On the web these are the only channel
+# through which content copied *outside* the app can reach `rinch::clipboard`
+# (issue #150): a `paste` ClipboardEvent carries text/plain + text/html
+# synchronously, and the document listener feeds them in. wasm-only, so a
+# host-target check of this crate (which CI runs for the whole workspace) does
+# not pull arboard in behind it.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+rinch-clipboard = { workspace = true }
+
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
 # Awaiting a macrotask in the keyboard-activation tests (#240): the pointer-gesture

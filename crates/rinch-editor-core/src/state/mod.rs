@@ -18,6 +18,7 @@ use crate::model::{Mark, Node};
 use crate::plugin::{Plugin, PluginKey};
 use crate::schema::Schema;
 use crate::selection::Selection;
+use crate::transform::Mapping;
 use std::any::Any;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -175,10 +176,24 @@ impl EditorState {
     /// Run `cmd` against this state, returning the resulting state if it applied
     /// and dispatched, else `None`. The standard "command → apply" glue.
     pub fn run_command(&self, cmd: &Command) -> Option<EditorState> {
-        let mut result: Option<EditorState> = None;
+        self.run_command_mapped(cmd).map(|(state, _)| state)
+    }
+
+    /// [`run_command`](Self::run_command), also returning the dispatched
+    /// transaction's position [`Mapping`].
+    ///
+    /// A caller holding a document position from *before* the command — an
+    /// asynchronous insertion that captured where the user asked for it — needs
+    /// the mapping to carry that position across the edit. `run_command` drops
+    /// the transaction, and with it the only record of how positions moved, so
+    /// there is nowhere else to recover it from.
+    pub fn run_command_mapped(&self, cmd: &Command) -> Option<(EditorState, Mapping)> {
+        let mut result: Option<(EditorState, Mapping)> = None;
         let applied = {
             let mut dispatch = |tr: Transaction| {
-                result = Some(self.apply(tr));
+                // Take the mapping before `apply` consumes the transaction.
+                let mapping = tr.mapping().clone();
+                result = Some((self.apply(tr), mapping));
             };
             let dispatch: Dispatch = &mut dispatch;
             cmd(self, Some(dispatch))
@@ -190,6 +205,13 @@ impl EditorState {
     pub fn run(&self, name: &str) -> Option<EditorState> {
         let cmd = self.command(name)?;
         self.run_command(&cmd)
+    }
+
+    /// [`run`](Self::run), also returning the transaction's position
+    /// [`Mapping`] — see [`run_command_mapped`](Self::run_command_mapped).
+    pub fn run_mapped(&self, name: &str) -> Option<(EditorState, Mapping)> {
+        let cmd = self.command(name)?;
+        self.run_command_mapped(&cmd)
     }
 
     /// Whether `cmd` would apply (toolbar enablement) — no edit performed.
