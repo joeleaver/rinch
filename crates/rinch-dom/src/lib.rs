@@ -7,6 +7,7 @@
 pub mod animation;
 pub mod computed_style;
 mod dom_impl;
+pub mod fonts;
 pub mod html_parser;
 pub mod html_serializer;
 mod ifc;

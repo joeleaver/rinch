@@ -137,7 +137,7 @@ impl RinchDocument {
         let mut doc = Self {
             doc_key: rinch_core::dom::next_doc_key(),
             tree: NodeTree::new(),
-            font_cx: parley::FontContext::new(),
+            font_cx: crate::fonts::new_font_context(),
             layout_cx: parley::LayoutContext::new(),
             stylist,
             theme_stylesheet: None,
