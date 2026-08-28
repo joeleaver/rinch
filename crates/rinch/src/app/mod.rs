@@ -1129,26 +1129,15 @@ impl RinchApp {
         if self.scene_dirty {
             let paint_start = Instant::now();
 
-            // Mark surface DOM nodes as paint-dirty when new pixels arrive,
-            // so dirty region caching correctly includes surface rects.
-            if let Some(doc) = &self.doc {
-                let mut d = doc.borrow_mut();
-                let dirty_surface_nodes: Vec<_> = d
-                    .tree
-                    .nodes
-                    .iter()
-                    .filter_map(|(node_id, node)| {
-                        let id_str = node.attributes.get("data-render-surface")?;
-                        let sid = id_str.parse::<usize>().ok()?;
-                        if crate::render_surface::is_surface_dirty_by_id(sid) {
-                            Some(node_id)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                d.tree.paint_dirty_nodes.extend(dirty_surface_nodes);
-            }
+            // Surface and viewport nodes are marked paint-dirty by the shell,
+            // at collect time — `mark_surface_nodes_paint_dirty` /
+            // `mark_viewport_nodes_paint_dirty`. It cannot be done here: the
+            // frame collectors clear `needs_redraw` before this runs, so a
+            // `is_surface_dirty_by_id` scan from inside `build_pixels` answers
+            // "no" for every surface that just delivered a frame — and worse,
+            // on the paths that call `build_pixels` with no frame map set at
+            // all (the debug screenshot), marking the node only guarantees it
+            // repaints *without* its pixels.
 
             // Compute dirty region before clearing paint_dirty_nodes
             let dirty_region = if self.has_previous_frame && !resized {
@@ -2417,6 +2406,87 @@ impl RinchApp {
         None
     }
 
+    /// Mark every `data-viewport` node whose name is in `names` paint-dirty.
+    ///
+    /// The software backend paints video frames **inline** now (issue #358),
+    /// which puts them under the dirty-region cache — and a node that is not in
+    /// `paint_dirty_nodes` is skipped when a region is in force. A video would
+    /// therefore freeze on screen the moment any *other* node dirtied a small
+    /// region, and one always does: the video controls' own timestamp ticks
+    /// once a second, dirtying a text run outside the video's box.
+    ///
+    /// The marking has to happen at *collect* time, in the shell, not inside
+    /// `build_pixels`: the frame collectors clear `needs_redraw` on their way
+    /// past, so by the time `build_pixels` runs there is nothing left to ask.
+    /// See [`Self::mark_surface_nodes_paint_dirty`], the `RenderSurface` half
+    /// of the same job.
+    pub fn mark_viewport_nodes_paint_dirty(&mut self, names: &[&str]) {
+        if names.is_empty() {
+            return;
+        }
+        self.mark_attribute_nodes_paint_dirty("data-viewport", |value| names.contains(&value));
+    }
+
+    /// The `RenderSurface` half of the same problem, by `data-render-surface`
+    /// id.
+    ///
+    /// An inline `RenderSurface` is subject to the dirty-region cache for
+    /// exactly the reason an inline video is, and `build_pixels` never covered
+    /// it: the block that asked `is_surface_dirty_by_id` ran *after* the frame
+    /// collectors had already cleared `needs_redraw`, so it marked nothing.
+    /// Surfaces only kept moving because nothing else marked anything either
+    /// and `compute_dirty_region` fell back to a full repaint — the moment any
+    /// other node dirties a small region (a blinking caret, a ticking clock)
+    /// the surface's subtree is pruned and its last frame freezes on screen.
+    /// Marking at collect time, before the flags are cleared, is what fixes it.
+    pub fn mark_surface_nodes_paint_dirty(&mut self, ids: &[usize]) {
+        if ids.is_empty() {
+            return;
+        }
+        self.mark_attribute_nodes_paint_dirty("data-render-surface", |value| {
+            value.parse::<usize>().is_ok_and(|id| ids.contains(&id))
+        });
+    }
+
+    /// Mark every **connected** node whose `attr` value satisfies `matches`.
+    ///
+    /// The connectivity walk is the same one `viewport_rect_with_radius` does
+    /// and for the same reason: a removed subtree can outlive its removal in
+    /// the node arena, and an orphan's summed layout offsets describe a rect
+    /// that is nowhere in particular. Marking one dirty would union that
+    /// phantom rect into every frame's dirty region — cheap to avoid, and
+    /// impossible to reason about once it happens.
+    fn mark_attribute_nodes_paint_dirty(&mut self, attr: &str, matches: impl Fn(&str) -> bool) {
+        let Some(doc) = self.doc.as_ref() else {
+            return;
+        };
+        let mut d = doc.borrow_mut();
+        let dirty: Vec<_> = {
+            let tree = &d.tree;
+            let root = tree.root_id;
+            tree.nodes
+                .iter()
+                .filter_map(|(node_id, node)| {
+                    if !matches(node.attributes.get(attr)?.as_str()) {
+                        return None;
+                    }
+                    let mut connected = false;
+                    let mut current = Some(node_id);
+                    while let Some(id) = current {
+                        let n = tree.get(id)?;
+                        if n.parent.is_none() {
+                            connected = id == root;
+                            break;
+                        }
+                        current = n.parent;
+                    }
+                    connected.then_some(node_id)
+                })
+                .collect()
+        };
+        d.tree.paint_dirty_nodes.extend(dirty);
+    }
+
     /// Find the clip rect for a viewport by intersecting ALL overflow-clipping
     /// ancestors in the parent chain.
     ///
@@ -2718,6 +2788,210 @@ mod drag_ghost_dirty_region_tests {
             Some(from_nodes)
         );
         assert_eq!(RinchApp::union_ghost_rect(None, None), None);
+    }
+}
+
+// ── #358: an inline video is subject to the dirty-region cache ───────────────
+
+#[cfg(all(test, software_shell))]
+mod video_inline_dirty_region_tests {
+    use super::*;
+    use rinch_dom::paint::SurfacePixelData;
+    use std::cell::Cell;
+    use std::collections::{HashMap, HashSet};
+
+    const SIZE: (u32, u32) = (800, 600);
+
+    /// A 40×10 solid frame — 4:1 against the 2:1 video box, so `contain` fits
+    /// the width and the centre pixel is unambiguously frame, not letterbox.
+    fn frame(rgb: [u8; 3]) -> HashMap<String, SurfacePixelData> {
+        HashMap::from([(
+            "v".to_string(),
+            SurfacePixelData {
+                data: [rgb[0], rgb[1], rgb[2], 255].repeat(40 * 10),
+                width: 40,
+                height: 10,
+            },
+        )])
+    }
+
+    const MAGENTA: [u8; 3] = [255, 0, 255];
+    const CYAN: [u8; 3] = [0, 255, 255];
+
+    fn pixel_at(app: &RinchApp, x: u32, y: u32) -> [u8; 4] {
+        let p = app.skia_painter.as_ref().expect("a software painter");
+        let idx = ((y * p.width() + x) * 4) as usize;
+        let d = p.pixels();
+        [d[idx], d[idx + 1], d[idx + 2], d[idx + 3]]
+    }
+
+    fn is(p: [u8; 4], rgb: [u8; 3]) -> bool {
+        p[3] == 255
+            && p[0].abs_diff(rgb[0]) < 6
+            && p[1].abs_diff(rgb[1]) < 6
+            && p[2].abs_diff(rgb[2]) < 6
+    }
+
+    /// A 400×200 video card at the origin, plus a small box far below it
+    /// standing in for the video controls' ticking timestamp — the node that
+    /// produces a *small* dirty region with the video outside it.
+    ///
+    /// Returns the app and the label's node id.
+    fn mount() -> (RinchApp, usize) {
+        let label_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let captured = label_id.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "width: 800px; height: 600px;");
+
+            let card = scope.create_element("div");
+            card.set_attribute(
+                "style",
+                "width: 400px; height: 200px; overflow: hidden; background-color: white;",
+            );
+            let video = scope.create_element("div");
+            video.set_attribute(
+                "style",
+                "width: 100%; height: 100%; background: transparent;",
+            );
+            video.set_attribute("data-viewport", "v");
+            video.set_attribute("data-viewport-ready", "true");
+            card.append_child(&video);
+            root.append_child(&card);
+
+            let label = scope.create_element("div");
+            label.set_attribute(
+                "style",
+                "position: absolute; left: 0px; top: 400px; width: 60px; height: 20px; \
+                 background-color: rgb(0, 128, 0);",
+            );
+            captured.set(Some(label.node_id().0));
+            root.append_child(&label);
+
+            root
+        });
+        app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+        let id = label_id.get().expect("label id captured at mount");
+        (app, id)
+    }
+
+    /// Paint one frame with `pixels` installed, exactly the way
+    /// `paint_software` does it.
+    fn paint(app: &mut RinchApp, pixels: HashMap<String, SurfacePixelData>, mark_video: bool) {
+        rinch_dom::paint::set_active_viewports(Some(HashSet::new()));
+        app.mark_scene_dirty();
+        if mark_video {
+            app.mark_viewport_nodes_paint_dirty(&["v"]);
+        }
+        rinch_dom::paint::set_viewport_pixels(Some(pixels));
+        app.build_pixels(1.0, SIZE, false);
+        rinch_dom::paint::set_viewport_pixels(None);
+        rinch_dom::paint::set_active_viewports(None);
+    }
+
+    /// Dirty only the label, the way a one-second timestamp tick does.
+    fn dirty_the_label(app: &mut RinchApp, label: usize) {
+        let doc = app.doc.as_ref().expect("document");
+        let mut d = doc.borrow_mut();
+        d.tree.paint_dirty_nodes.push(label);
+    }
+
+    /// Baseline: the frame reaches the pixel buffer through `build_pixels` at
+    /// all — inline, with no blit anywhere in sight.
+    #[test]
+    fn the_first_frame_paints_inline_through_build_pixels() {
+        let (mut app, _) = mount();
+        paint(&mut app, frame(MAGENTA), true);
+        assert!(
+            is(pixel_at(&app, 200, 100), MAGENTA),
+            "the video frame is painted by build_pixels, got {:?}",
+            pixel_at(&app, 200, 100)
+        );
+    }
+
+    /// **The trap.** Inline painting puts the video under the dirty-region
+    /// cache, and the video controls tick a timestamp once a second — a small
+    /// dirty region with the video's box entirely outside it. Marking the
+    /// viewport node at collect time is what keeps the video moving.
+    #[test]
+    fn a_small_dirty_region_elsewhere_does_not_freeze_the_video() {
+        let (mut app, label) = mount();
+        paint(&mut app, frame(MAGENTA), true);
+        assert!(is(pixel_at(&app, 200, 100), MAGENTA), "first frame landed");
+
+        dirty_the_label(&mut app, label);
+        paint(&mut app, frame(CYAN), true);
+
+        assert!(
+            is(pixel_at(&app, 200, 100), CYAN),
+            "the next video frame is painted even though the only other dirty \
+             node is far outside the video's box (#358), got {:?}",
+            pixel_at(&app, 200, 100)
+        );
+    }
+
+    /// Why that marking is load-bearing rather than belt-and-braces: without
+    /// it the region is the label's alone, `paint_node` prunes the video's
+    /// subtree, and the previous frame stays on screen.
+    ///
+    /// This pins the *mechanism* the marking exists to defeat. If dirty-region
+    /// caching itself ever changes shape, this is the test that should be
+    /// re-read — not silently relaxed.
+    #[test]
+    fn without_the_marking_the_region_excludes_the_video() {
+        let (mut app, label) = mount();
+        paint(&mut app, frame(MAGENTA), true);
+
+        dirty_the_label(&mut app, label);
+        paint(&mut app, frame(CYAN), false);
+
+        assert!(
+            is(pixel_at(&app, 200, 100), MAGENTA),
+            "unmarked, the video's box is outside the dirty region and keeps \
+             the previous frame, got {:?}",
+            pixel_at(&app, 200, 100)
+        );
+    }
+
+    /// The marking itself: the viewport node lands in `paint_dirty_nodes`, and
+    /// a name that matches nothing marks nothing.
+    #[test]
+    fn marking_targets_the_named_viewport_node_only() {
+        let (mut app, label) = mount();
+        {
+            let doc = app.doc.as_ref().expect("document");
+            doc.borrow_mut().tree.paint_dirty_nodes.clear();
+        }
+
+        app.mark_viewport_nodes_paint_dirty(&["nobody"]);
+        assert!(
+            app.doc
+                .as_ref()
+                .unwrap()
+                .borrow()
+                .tree
+                .paint_dirty_nodes
+                .is_empty(),
+            "a name no viewport carries marks nothing"
+        );
+
+        app.mark_viewport_nodes_paint_dirty(&["v"]);
+        let d = app.doc.as_ref().unwrap().borrow();
+        assert_eq!(
+            d.tree.paint_dirty_nodes.len(),
+            1,
+            "exactly the one viewport node named"
+        );
+        assert_ne!(
+            d.tree.paint_dirty_nodes[0], label,
+            "and it is not the label"
+        );
+        let region = rinch_dom::paint::compute_dirty_region(&d.tree, 1.0, 800.0, 600.0)
+            .expect("a dirty region");
+        assert!(
+            region.x0 <= 0.0 && region.x1 >= 400.0 && region.y0 <= 0.0 && region.y1 >= 200.0,
+            "the region covers the whole video box: {region:?}"
+        );
     }
 }
 

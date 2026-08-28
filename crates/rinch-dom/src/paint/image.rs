@@ -19,16 +19,45 @@ pub fn paint_image(
     painter: &mut dyn Painter,
     decoded: &DecodedImage,
     rect: Rect,
+    scale: f64,
+    object_fit: ObjectFitValue,
+    node_transform: Affine,
+) {
+    paint_image_data(
+        painter,
+        &decoded.data,
+        decoded.width,
+        decoded.height,
+        rect,
+        scale,
+        object_fit,
+        node_transform,
+    );
+}
+
+/// The same, over borrowed RGBA8 pixels rather than a [`DecodedImage`].
+///
+/// A live frame source — a `RenderSurface`, a decoded video frame — already
+/// owns its pixels somewhere else, and at 60fps for a 1080p frame the copy into
+/// a `DecodedImage` just to hand `paint_image` a `&Vec<u8>` costs ~8MB of
+/// memcpy per frame for nothing.
+#[allow(clippy::too_many_arguments)]
+pub fn paint_image_data(
+    painter: &mut dyn Painter,
+    data: &[u8],
+    width: u32,
+    height: u32,
+    rect: Rect,
     _scale: f64,
     object_fit: ObjectFitValue,
     node_transform: Affine,
 ) {
-    if decoded.width == 0 || decoded.height == 0 {
+    if width == 0 || height == 0 {
         return;
     }
 
-    let iw = decoded.width as f64;
-    let ih = decoded.height as f64;
+    let iw = width as f64;
+    let ih = height as f64;
     let rw = rect.width();
     let rh = rect.height();
 
@@ -90,9 +119,9 @@ pub fn paint_image(
     }
 
     let paint_image = PaintImage {
-        data: &decoded.data,
-        width: decoded.width,
-        height: decoded.height,
+        data,
+        width,
+        height,
     };
     painter.draw_image(&paint_image, img_transform);
 

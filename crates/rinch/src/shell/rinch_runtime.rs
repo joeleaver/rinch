@@ -826,6 +826,15 @@ impl RinchRuntime {
         if !surface_pixels.is_empty() {
             // Mark scene dirty so build_pixels() actually repaints
             self.app.mark_scene_dirty();
+            // ...and mark the surface nodes themselves, for the same reason the
+            // video viewports are marked below: inline painting is subject to
+            // the dirty-region cache, and a small dirty region elsewhere would
+            // otherwise prune the surface's subtree and freeze its last frame.
+            // This has to happen here, at collect time — the collector above
+            // has just cleared `needs_redraw`, so nothing downstream can still
+            // tell which surfaces delivered a frame.
+            let ids: Vec<usize> = surface_pixels.keys().copied().collect();
+            self.app.mark_surface_nodes_paint_dirty(&ids);
             rinch_dom::paint::set_surface_pixels(Some(surface_pixels));
         }
 
@@ -863,11 +872,36 @@ impl RinchRuntime {
             .collect();
         rinch_dom::paint::set_active_viewports(Some(active_viewports));
 
+        // Video frames paint **inline**, during paint, at the viewport node's
+        // own z-order (issue #358) — not blitted over the finished pixels the
+        // way `compositor_frames` are below. That is what lets a drawer, a
+        // modal or a dropdown above a playing video survive: ordinary paint
+        // order does the occluding, with no occlusion tracking anywhere.
+        //
+        // The hole-punch disappears with it, for free and with no code: video
+        // is no longer in `compositor_frames`, so it is absent from
+        // `active_viewports`, and #186's filter already reads "absent ⇒ do not
+        // punch". `rinch-dom` then aspect-fits the frame with `object-fit:
+        // contain` over an opaque black fill, which is #354's letterbox bars on
+        // this backend.
+        let video_frames = crate::render_surface::collect_video_frames_by_name();
+        if !video_frames.is_empty() {
+            self.app.mark_scene_dirty();
+            // Inline painting is subject to the dirty-region cache, so the
+            // viewport nodes have to be marked explicitly or a small dirty
+            // region elsewhere (the controls' ticking timestamp) freezes the
+            // video. See `mark_viewport_nodes_paint_dirty`.
+            let names: Vec<&str> = video_frames.keys().map(String::as_str).collect();
+            self.app.mark_viewport_nodes_paint_dirty(&names);
+            rinch_dom::paint::set_viewport_pixels(Some(video_frames));
+        }
+
         // Build the scene — surfaces paint inline at their layout positions
         let (_base, w, h) = self.app.build_pixels(scale, size, transparent);
 
         rinch_dom::paint::set_active_viewports(None);
         rinch_dom::paint::set_surface_pixels(None);
+        rinch_dom::paint::set_viewport_pixels(None);
 
         // Resolve viewport rects and clip rects for compositor frames before
         // borrowing pixels mutably.
@@ -2566,7 +2600,7 @@ where
     #[cfg(feature = "video")]
     {
         rinch_video::set_frame_sink_factory(|viewport_id: &str| {
-            let handle = crate::render_surface::create_render_surface_with_name(viewport_id);
+            let handle = crate::render_surface::create_video_surface(viewport_id);
             let writer = handle.writer();
             // Keep the handle alive by leaking it — the surface lives for
             // the lifetime of the video player.
@@ -2657,7 +2691,7 @@ pub fn run_rinch_with_window_props_and_menu<F>(
     #[cfg(feature = "video")]
     {
         rinch_video::set_frame_sink_factory(|viewport_id: &str| {
-            let handle = crate::render_surface::create_render_surface_with_name(viewport_id);
+            let handle = crate::render_surface::create_video_surface(viewport_id);
             let writer = handle.writer();
             std::mem::forget(handle);
             std::sync::Arc::new(move |pixels: &[u8], w: u32, h: u32| {

@@ -1782,3 +1782,176 @@ mod viewport_hole_punch {
         );
     }
 }
+
+// ── #358 / #354: a software video frame paints inline, at its own z-order ────
+//
+// The software backend used to blit decoded video frames onto the *finished*
+// pixel buffer, after `paint_document` had drawn the whole UI. Clipped only by
+// its overflow-clipping ancestors and with no notion of occlusion, that blit
+// destroyed every overlay above a video — drawer, modal, dropdown, tooltip.
+//
+// The frame now goes through paint instead: a `data-viewport` node with an
+// entry in `set_viewport_pixels` fills opaque black over its box (the letterbox
+// bars, #354's software half) and draws the frame `object-fit: contain` inside
+// it. Everything painted later covers it, for free.
+//
+// Pixel assertions, because "what ended up on this pixel, and in what order"
+// is the entire question.
+
+#[cfg(feature = "software-renderer")]
+mod software_video_inline {
+    use super::transform_paint::{paint_skia, pixel_at};
+    use super::*;
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+    use rinch_dom::paint::{SurfacePixelData, set_active_viewports, set_viewport_pixels};
+    use std::collections::{HashMap, HashSet};
+
+    /// A 40×10 solid magenta frame — 4:1, against a 2:1 viewport box, so
+    /// `contain` fits the width and leaves a letterbox bar above and below.
+    fn magenta_frame() -> SurfacePixelData {
+        SurfacePixelData {
+            data: [255u8, 0, 255, 255].repeat(40 * 10),
+            width: 40,
+            height: 10,
+        }
+    }
+
+    fn is_magenta(p: [u8; 4]) -> bool {
+        p[3] == 255 && p[0] > 250 && p[1] < 5 && p[2] > 250
+    }
+
+    fn is_opaque_black(p: [u8; 4]) -> bool {
+        p[3] == 255 && p[0] < 5 && p[1] < 5 && p[2] < 5
+    }
+
+    fn is_opaque_blue(p: [u8; 4]) -> bool {
+        p[3] == 255 && p[0] < 5 && p[1] < 5 && p[2] > 250
+    }
+
+    /// A 200×100 white `overflow: hidden` card at the document origin holding a
+    /// full-size `data-viewport="v"` node, painted at scale 1.
+    ///
+    /// The viewport declares **no background of its own** — rinch-video flips it
+    /// to `transparent` the moment a frame arrives, because the GPU backend
+    /// composites video *under* the UI and an opaque element background would
+    /// hide it. So the black behind the frame has to come from paint.
+    ///
+    /// `overlay` adds an absolutely-positioned opaque blue box over the whole
+    /// card, painted after it — a stand-in for the nav drawer of #358.
+    fn paint_video(
+        frames: HashMap<String, SurfacePixelData>,
+        active: Option<HashSet<String>>,
+        overlay: bool,
+    ) -> TinySkiaPainter {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let card = doc.create_element("div");
+        doc.set_attribute(
+            card,
+            "style",
+            "width: 200px; height: 100px; background-color: white; overflow: hidden;",
+        );
+        doc.append_child(body, card);
+
+        let viewport = doc.create_element("div");
+        doc.set_attribute(
+            viewport,
+            "style",
+            "width: 100%; height: 100%; background: transparent;",
+        );
+        doc.set_attribute(viewport, "data-viewport", "v");
+        doc.set_attribute(viewport, "data-viewport-ready", "true");
+        doc.append_child(card, viewport);
+
+        if overlay {
+            let panel = doc.create_element("div");
+            doc.set_attribute(
+                panel,
+                "style",
+                "position: absolute; left: 0; top: 0; width: 200px; height: 100px; \
+                 background-color: rgb(0, 0, 255);",
+            );
+            doc.append_child(body, panel);
+        }
+
+        doc.resolve_layout(800.0, 600.0);
+
+        set_active_viewports(active);
+        set_viewport_pixels(Some(frames));
+        let mut painter = TinySkiaPainter::new(800, 600);
+        paint_skia(&mut doc, &mut painter);
+        set_viewport_pixels(None);
+        set_active_viewports(None);
+        painter
+    }
+
+    /// The software configuration: video is not a compositor layer, so no
+    /// viewport name is active and nothing punches a hole.
+    fn software_frames() -> (HashMap<String, SurfacePixelData>, Option<HashSet<String>>) {
+        (
+            HashMap::from([("v".to_string(), magenta_frame())]),
+            Some(HashSet::new()),
+        )
+    }
+
+    /// The frame lands on the viewport's own box, during paint.
+    #[test]
+    fn a_named_viewport_frame_paints_inline() {
+        let (frames, active) = software_frames();
+        let p = paint_video(frames, active, false);
+        assert!(
+            is_magenta(pixel_at(&p, 100, 50)),
+            "the video frame is painted at the viewport's centre, got {:?}",
+            pixel_at(&p, 100, 50)
+        );
+    }
+
+    /// #354's software half: `contain` fits a 4:1 source into a 2:1 box, and the
+    /// 25px bars above and below it are opaque black — what a browser paints for
+    /// `<video>`, and never see-through on a transparent window.
+    #[test]
+    fn the_letterbox_bars_are_opaque_black() {
+        let (frames, active) = software_frames();
+        let p = paint_video(frames, active, false);
+        for (x, y) in [(100u32, 10u32), (100, 90), (5, 5), (195, 95)] {
+            assert!(
+                is_opaque_black(pixel_at(&p, x, y)),
+                "the letterbox bar at ({x}, {y}) is opaque black (#354), got {:?}",
+                pixel_at(&p, x, y)
+            );
+        }
+    }
+
+    /// #358 itself: the frame is inside the paint order, so anything drawn after
+    /// it covers it. On `main` the blit ran after `paint_document` and this pixel
+    /// was the video.
+    #[test]
+    fn an_overlay_painted_after_the_video_covers_it() {
+        let (frames, active) = software_frames();
+        let p = paint_video(frames, active, true);
+        for (x, y) in [(100u32, 50u32), (100, 10), (20, 80)] {
+            assert!(
+                is_opaque_blue(pixel_at(&p, x, y)),
+                "the overlay above the video survives at ({x}, {y}) — frame and \
+                 letterbox bars alike (#358), got {:?}",
+                pixel_at(&p, x, y)
+            );
+        }
+    }
+
+    /// The GPU path sets no viewport pixels at all. A `data-viewport` node with
+    /// no entry must therefore behave exactly as it did before: a plain element,
+    /// with its hole punched out of the card's background for the compositor
+    /// layer to show through.
+    #[test]
+    fn a_viewport_with_no_entry_falls_through_to_normal_painting() {
+        let other = HashMap::from([("someone-else".to_string(), magenta_frame())]);
+        let p = paint_video(other, None, false);
+        assert_eq!(
+            pixel_at(&p, 100, 50)[3],
+            0,
+            "no entry for this viewport — the hole is still punched and nothing \
+             is painted into it, exactly as on the GPU backend"
+        );
+    }
+}

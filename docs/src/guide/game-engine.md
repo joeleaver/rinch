@@ -440,6 +440,10 @@ if let Some(rect) = ctx.viewport_rect("main") {
 > `PlaybackState::Error`. A node that *does* carry the attribute must say
 > exactly `"true"` to punch, so a mis-stamped value fails to the safe side — an
 > opaque placeholder, never a see-through window.
+>
+> Since [#358] this gate governs the **GPU** punch for video: software cuts no
+> hole for a video at all (see below), so an unready one there simply paints its
+> own `#000` placeholder as an ordinary element.
 
 > **A hole bigger than what fills it: black bars (GPU).** The complementary
 > case ([#354]). The GPU compositor **aspect-fits** a frame inside its viewport,
@@ -456,9 +460,39 @@ if let Some(rect) = ctx.viewport_rect("main") {
 > `GameViewport` is unaffected — its surface fills its box, so the fit is exact
 > and the backdrop is entirely overdrawn.
 >
-> The **software** backend still blits its frames after paint, so it keeps
-> `main`'s behaviour here; its half of #354 is folded into the move to inline
-> painting tracked by [#358].
+> On the **software** backend the same bars are black for a different reason —
+> see the next note.
+
+> **Software paints video inline, and there is no hole at all.** The two
+> backends now route video differently, and the split is worth knowing if you
+> are reading the compositing code ([#358]).
+>
+> | | `RenderSurface` | video | `GameViewport` |
+> |---|---|---|---|
+> | **software** | inline | **inline** | compositor blit |
+> | **GPU** | inline | compositor + black backdrop | compositor |
+>
+> Software blits its compositor frames onto the **finished** pixel buffer, after
+> the whole UI has been painted, clipped only by the viewport's
+> overflow-clipping ancestors. That write has no notion of occlusion, so every
+> overlay above a playing video — the nav drawer, `Modal`, `DropdownMenu`,
+> `Select`'s popup, tooltips, DevTools — was overwritten. GPU has no such
+> problem: its layers go down *first* and the Vello UI alpha-blends on top, so
+> an opaque drawer already covers the video there.
+>
+> So on software a decoded frame now goes through **paint** instead, on the same
+> inline path a `RenderSurface` component has always used: the `data-viewport`
+> node fills opaque black over its box and draws the frame `object-fit: contain`
+> inside it, at its own z-order. Overlays occlude it by ordinary paint order,
+> with no occlusion tracking anywhere — and the `contain` fit plus the black fill
+> *are* #354's letterbox bars on this backend. The hole-punch disappears with
+> it: video is no longer a compositor frame, so its name is absent from the
+> active-viewport set and #186's filter already reads "absent ⇒ do not punch".
+>
+> `GameViewport` is untouched and keeps the compositor blit on both backends.
+> The two are told apart by an explicit flag set at video's registration site,
+> **not** by the viewport's name — they share `create_render_surface_with_name`,
+> so a naming rule would reroute the game viewport too.
 
 [#186]: https://github.com/joeleaver/rinch/issues/186
 [#354]: https://github.com/joeleaver/rinch/issues/354

@@ -14,7 +14,7 @@ pub fn video_section() -> NodeHandle {
             Stack { gap: "xs",
                 Title { order: 1, "Video Player" }
                 Text { size: "lg", color: "dimmed",
-                    "Video playback powered by libmpv. VideoViewport renders decoded frames beneath the UI layer — composited on the GPU backend, blitted over the painted pixels on the software one. VideoControls provides play/pause, seeking, volume, and timestamp."
+                    "Video playback powered by libmpv. VideoViewport renders decoded frames as a compositor layer beneath the UI on the GPU backend, and inline during paint — at the viewport's own z-order, so overlays cover it — on the software one. VideoControls provides play/pause, seeking, volume, and timestamp."
                 }
             }
             Space { h: "xl" }
