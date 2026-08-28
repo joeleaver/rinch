@@ -63,34 +63,14 @@ thread_local! {
 /// installed, so a later `set_paste_interceptor` is never clobbered by an
 /// earlier component unmounting. Registering outside any render — from `main`,
 /// a timer, a detached callback — has no owner and so lives for the life of the
-/// app, as before.
+/// app, as before. That discipline lives in
+/// [`install_scoped_slot`](crate::reactive::install_scoped_slot), shared with
+/// the keyboard and selection registries.
 pub fn set_paste_interceptor<F>(cb: F)
 where
     F: Fn(&PasteEventData) -> bool + 'static,
 {
-    let cb: PasteInterceptor = Rc::new(cb);
-    let mine = Rc::downgrade(&cb);
-    // The displaced interceptor is dropped *after* the borrow ends: its `Drop`
-    // is user code and may re-enter this module (clearing, or registering a
-    // replacement), which inside the `borrow_mut` would panic.
-    let _previous = PASTE_INTERCEPTOR.with(|i| i.borrow_mut().replace(cb));
-    crate::reactive::on_cleanup(move || {
-        let Some(ours) = mine.upgrade() else {
-            // Already replaced by a later registration, which owns the slot now.
-            return;
-        };
-        let _displaced = PASTE_INTERCEPTOR.with(|i| {
-            let mut slot = i.borrow_mut();
-            if slot
-                .as_ref()
-                .is_some_and(|current| Rc::ptr_eq(current, &ours))
-            {
-                slot.take()
-            } else {
-                None
-            }
-        });
-    });
+    crate::reactive::install_scoped_slot(&PASTE_INTERCEPTOR, Rc::new(cb));
 }
 
 /// Clear the global paste interceptor.

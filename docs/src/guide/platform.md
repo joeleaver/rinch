@@ -343,6 +343,12 @@ The interceptor is a single slot per thread (like `set_keyboard_interceptor`) an
 is dispatched by rinch-web; desktop reads the clipboard directly when Ctrl+V
 arrives and has no OS paste event to hang it off.
 
+Registering it from inside a render ties it to that component: unmounting
+releases the slot, so an interceptor that captured a `Signal` can never outlive
+it (issue #183). Registering from `main` or startup code has no owner and keeps
+app lifetime. See
+[Lifetimes](./hooks.md#global-callback-registries-are-released-too).
+
 ---
 
 ## System Tray

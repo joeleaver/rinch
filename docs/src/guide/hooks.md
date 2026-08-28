@@ -142,6 +142,40 @@ if count.is_alive() {                    // no subscription is created
 current observer — liveness is not reactive, and tracking it would resurrect the
 dependency you are trying to drop.
 
+### Global callback registries are released too
+
+A callback handed to a process-wide registry is the classic way for a component's
+state to outlive the component — the registry keeps the closure, the closure keeps
+a `Signal`, and the next event reads a handle whose storage is gone. Registering
+one **from inside a render** therefore ties it to that render:
+
+```rust
+#[component]
+fn shortcuts() -> NodeHandle {
+    let count = Signal::new(0);
+    // Released when this component unmounts — the interceptor cannot outlive
+    // `count` and read it after it is freed.
+    set_keyboard_interceptor(move |k| {
+        if k.key == "j" { count.update(|n| *n += 1); true } else { false }
+    });
+    rsx! { div { {|| count.get().to_string()} } }
+}
+```
+
+This applies to [`set_keyboard_interceptor`], [`set_paste_interceptor`],
+`set_selection_callback` and `set_selection_sync_callback` (issue #183). Two
+consequences are worth knowing:
+
+- **Registering with no ambient owner still means app lifetime.** A hook installed
+  from `main()`, from startup code or from a detached callback has no owner, so
+  nothing removes it — unchanged, and what app-wide shortcuts rely on.
+- **An earlier component unmounting never clears a later one's registration.**
+  These are single, last-wins slots; the release only reclaims the slot if it is
+  still holding the callback that registered it.
+
+[`set_keyboard_interceptor`]: ./focus.md#where-this-does-not-apply
+[`set_paste_interceptor`]: ./platform.md#clipboard
+
 ### Opting out
 
 Sometimes a resource is *meant* to outlive the component that created it — state

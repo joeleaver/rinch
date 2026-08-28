@@ -947,7 +947,13 @@ register_focus_target(
   so they may re-enter the runtime freely.
 - `on_key` is offered before the runtime's own handling; `true` consumes.
   `set_keyboard_interceptor` is unrelated — a document-level capture-phase hook
-  dispatched *before* the arbiter.
+  dispatched *before* the arbiter. It shares the *lifetime* rule though (#183):
+  registering it during a render releases it on unmount, ownerless registration
+  keeps app lifetime, and an earlier unmount never clobbers a later
+  registration. Same for `set_paste_interceptor`, `set_selection_callback` and
+  `set_selection_sync_callback`; the discipline is
+  `rinch_core::reactive::install_scoped_slot` / `install_scoped_entry`, and any
+  new global callback registry should go through it rather than paraphrase it.
 - **Window blur notifies but retains**: `PlatformEvent::WindowFocus(false)`
   fires `on_focus_lost` and keeps the claim (releasing would fire
   `data-onchange` on every alt-tab, #226); refocus re-fires `on_focus_gained`.
