@@ -86,6 +86,15 @@ pub struct VideoPlayer {
     pub buffered: Signal<f64>,
     /// Current playback state.
     pub state: Signal<PlaybackState>,
+    /// Whether at least one decoded frame has been handed to the compositor
+    /// for the current source.
+    ///
+    /// The `VideoViewport` gates its compositing hole on this: until a real
+    /// frame exists there is nothing to show through the hole, so cutting one
+    /// would make the region see-through to the desktop on a transparent
+    /// window (issue #186). Monotonic within a source; reset by
+    /// [`VideoPlayer::set_source`].
+    pub has_frame: Signal<bool>,
 }
 
 impl VideoPlayer {
@@ -102,6 +111,7 @@ impl VideoPlayer {
             muted: Signal::new(false),
             buffered: Signal::new(0.0),
             state: Signal::new(PlaybackState::Idle),
+            has_frame: Signal::new(false),
         }
     }
 
@@ -168,6 +178,8 @@ impl VideoPlayer {
         self.state.set(PlaybackState::Loading);
         self.position.set(0.0);
         self.duration.set(0.0);
+        // Any frame we still hold belongs to the previous source.
+        self.has_frame.set(false);
         self.inner.borrow().set_source(src);
         crate::increment_video_loaded();
     }
@@ -208,5 +220,34 @@ impl std::fmt::Debug for VideoPlayer {
             .field("duration", &self.duration.get())
             .field("state", &self.state.get())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn noop_player() -> VideoPlayer {
+        VideoPlayer::new(Box::new(crate::viewport::NoopBackend))
+    }
+
+    /// A player that has never decoded anything must not claim a frame — the
+    /// `VideoViewport` gates its compositing hole on this (issue #186).
+    #[test]
+    fn a_new_player_has_no_frame() {
+        assert!(!noop_player().has_frame.get());
+    }
+
+    /// A new source makes any frame we still hold stale, so the hole closes
+    /// again until the new source decodes.
+    #[test]
+    fn loading_a_new_source_forgets_the_previous_frame() {
+        let player = noop_player();
+        player.has_frame.set(true);
+        player.set_source("second.mp4");
+        assert!(
+            !player.has_frame.get(),
+            "set_source resets has_frame — the old frame belongs to the old source"
+        );
     }
 }

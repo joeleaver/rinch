@@ -422,6 +422,27 @@ if let Some(rect) = ctx.viewport_rect("main") {
 }
 ```
 
+> **A hole with nothing behind it: `data-viewport-ready`.** Cutting the hole
+> removes the ancestors' background — `<body>`'s included, since the UA sheet
+> makes it `overflow-y: auto` — so on a transparent window a hole nothing fills
+> is see-through to the desktop, not to your app ([#186]). A viewport whose
+> content can be *absent* opts out by stamping `data-viewport-ready="false"` on
+> the hole; paint then leaves the backgrounds alone and the node paints its own
+> `background`, which is the natural seat for a poster or an error affordance.
+> Set it back to `"true"` once there is something to show.
+>
+> The attribute is an **opt-out, and absence means ready**: a `data-viewport`
+> node that never stamps it punches unconditionally, exactly as before.
+> `GameViewport` is therefore unaffected — it stamps nothing, keeps its hole
+> from the first frame, and needs no change. `VideoViewport` (rinch-video) is
+> the one built-in that opts in: it stays `"false"` until the decoder has
+> handed a real frame to the compositor, and flips back to `"false"` on a
+> `PlaybackState::Error`. A node that *does* carry the attribute must say
+> exactly `"true"` to punch, so a mis-stamped value fails to the safe side — an
+> opaque placeholder, never a see-through window.
+
+[#186]: https://github.com/joeleaver/rinch/issues/186
+
 > **Overlays need a parent with real height.** On the embed path layout runs
 > through Taffy, which treats an absolutely positioned child's **direct parent**
 > as its containing block — it does not walk up to the nearest *positioned*

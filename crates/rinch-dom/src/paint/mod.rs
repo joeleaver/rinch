@@ -374,7 +374,22 @@ fn find_viewport_rects(
                 Some(set) => set.contains(viewport_name),
             }
         });
-        if active {
+        // A hole is only worth cutting if something will fill it. A viewport
+        // that declares itself not ready — rinch-video before its first decoded
+        // frame, or after a `PlaybackState::Error` — keeps its ancestors'
+        // backgrounds intact; otherwise a video that never loads is see-through
+        // to the desktop on a transparent window (issue #186).
+        //
+        // The attribute is an opt-OUT: a node that does not carry it punches
+        // unconditionally, which is what `GameViewport` wants — the game owns
+        // its hole from the first frame and stamps nothing. A node that does
+        // carry it must say `"true"` to punch, so a mis-stamped value fails to
+        // the safe side (an opaque placeholder, never a see-through window).
+        let ready = node
+            .attributes
+            .get("data-viewport-ready")
+            .is_none_or(|v| v == "true");
+        if active && ready {
             let vw = node.layout.width as f64 * scale;
             let vh = node.layout.height as f64 * scale;
             result.push(Rect::new(nx, ny, nx + vw, ny + vh));
