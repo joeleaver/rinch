@@ -1,0 +1,20 @@
+# Incremental compilation is off for this workspace, deliberately.
+#
+# It buys very little here and costs a great deal of disk. Every commit runs the
+# pre-commit hook, which does a full-workspace `clippy --all-targets` and
+# `cargo test --workspace` — so incremental artifacts are invalidated about as
+# often as they are reused. What they are not is small: `target/debug/incremental`
+# reached **71 GB** on a development machine, out of 148 GB of `target/`, and was
+# the single largest reclaimable thing on the disk.
+#
+# CI already sets `CARGO_INCREMENTAL=0` in `.github/workflows/ci.yml`'s `env`
+# block, for the related reason recorded there — a full debug build with symbols
+# overruns a runner's free disk. This makes local builds agree with CI rather than
+# diverging from it.
+#
+# Override for a session where you are iterating on one crate and rebuilding
+# often, if you want it back:
+#
+#     CARGO_INCREMENTAL=1 cargo build -p rinch-dom
+[build]
+incremental = false
