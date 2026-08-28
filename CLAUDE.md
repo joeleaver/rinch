@@ -1095,7 +1095,7 @@ Build first with `cargo build -p rinch-mcp-server`. Using `cargo run` instead wo
 | `list_apps` | List all running rinch apps with debug enabled |
 | `connect` | Connect to a specific app by name or PID |
 | `screenshot` | Capture a PNG screenshot (returns as inline MCP image, directly viewable) |
-| `dom_tree` | Get the full DOM tree as JSON with layout bounds and computed styles |
+| `dom_tree` | Get the DOM tree as JSON with layout bounds (depth 3 by default — `max_depth` goes deeper, `root_id` scopes to a subtree, `verbose: true` adds each node's computed styles) |
 | `query_selector` | Query nodes by tag, `.class`, `[attr]`, or `[attr=value]` |
 | `get_node` | Get detailed info for a specific node by ID (includes computed styles, display mode) |
 | `get_computed_styles` | Get computed CSS styles for a specific DOM node |
@@ -1902,7 +1902,7 @@ Use MCP tools directly — screenshots render inline, DOM queries return compute
 
 ```
 screenshot()                              → inline PNG image (directly viewable)
-dom_tree()                                → full DOM tree with layout + computed styles
+dom_tree()                                → DOM tree with layout (add verbose: true for computed styles)
 query_selector(selector: ".my-class")     → find nodes by tag, .class, [attr], [attr=value]
 get_node(id: 42)                          → detailed node info with computed styles + display mode
 get_computed_styles(id: 42)               → just the CSS properties for a node

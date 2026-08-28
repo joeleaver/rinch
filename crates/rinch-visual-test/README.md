@@ -221,41 +221,74 @@ Key steps:
 ## Why this is not a merge gate yet
 
 The workflow is `workflow_dispatch` only, on purpose. It is not a gate because
-9 of the 12 scenarios are red for reasons that have nothing to do with a
-regression, and gating on a permanently-red suite teaches everyone to ignore it.
+4 of the 12 scenarios are still red for reasons that have nothing to do with a
+regression, and gating on a red suite teaches everyone to ignore it.
 
-Measured on `b906885`, viewport 1200x800:
+Measured at viewport 1200x800, before and after the CSS-export repair described
+under "What the exporter must emit" below:
 
-| Scenario | SSIM | |
-|---|---|---|
-| `00_overview` | 0.9133 | pass |
-| `01_buttons` | 0.9133 | pass — *identical to `00_overview`; its `setup_clicks` never left the overview* |
-| `02_inputs` | 0.8808 | close |
-| `03_typography` | 0.6982 | |
-| `04_layout` | 0.8506 | |
-| `05_navigation` | 0.8891 | |
-| `06_data_display` | 0.4566 | |
-| `07_feedback` | 0.8891 | *same score as 05/09 — stale coordinates* |
-| `08_overlays` | 0.4566 | *same score as 06* |
-| `09_icons` | 0.8891 | |
-| `10_tree` | 0.7597 | |
-| `11_editor` | 0.9490 | pass |
+| Scenario | before | after | |
+|---|---|---|---|
+| `00_overview` | 0.9133 | 0.9726 | pass |
+| `01_buttons` | 0.9133 | 0.9726 | pass — *identical to `00_overview`; its `setup_clicks` never left the overview* |
+| `02_inputs` | 0.8808 | 0.9651 | pass |
+| `03_typography` | 0.6982 | 0.9847 | pass |
+| `04_layout` | 0.8506 | 0.8883 | |
+| `05_navigation` | 0.8891 | 0.9369 | pass |
+| `06_data_display` | 0.4566 | 0.8949 | |
+| `07_feedback` | 0.8891 | 0.9369 | pass — *same score as 05/09; stale coordinates* |
+| `08_overlays` | 0.4566 | 0.8949 | *same score as 06* |
+| `09_icons` | 0.8891 | 0.9369 | pass |
+| `10_tree` | 0.7597 | 0.8116 | |
+| `11_editor` | 0.9490 | 0.9900 | pass |
 
-Two distinct causes, both fixable:
+Total: **3 passed / 9 failed** before, **8 passed / 4 failed** after.
+
+Most of what looked like "real rinch-vs-Chromium divergence" was the exporter
+dropping properties. What remains:
 
 1. **Stale `setup_clicks`.** Several scenarios share a score exactly, because
    their click coordinates no longer land on the nav item they name and they
    capture the same screen. `01_buttons` never leaves the overview at all.
    These need re-deriving against the current UI Zoo nav, ideally by querying
    the nav node's `absolute` box rather than hard-coding pixels.
-2. **Real rinch-vs-Chromium divergence.** The window chrome rinch paints itself
-   (the borderless titlebar and menu bar) has no counterpart in the exported
-   HTML, so the top ~36px never matches. Either crop it out of both sides or
-   export it.
+   Note also that `run_test` never resets the app between scenarios: the clicks
+   replay onto whatever state the previous scenario left behind, so a scenario
+   that opens an overlay changes what the next one sees.
+2. **Window chrome.** The borderless titlebar and menu bar rinch paints itself
+   have no counterpart in the exported HTML, so the top ~36px never matches.
+   Either crop it out of both sides or export it.
+3. **Properties still not exported** — `transform`, `box-shadow`, `text-shadow`,
+   `outline`, `text-transform`, `object-fit`, and grid placement. `10_tree` and
+   `04_layout` are the scenarios most exposed to these.
 
 **The plan to green it:** fix (1), then re-measure; crop or export the chrome for
-(2); set each scenario's threshold from its own settled score with a margin,
-rather than one global 0.90; then add `pull_request` to the trigger list.
+(2); export the remaining properties in (3); set each scenario's threshold from
+its own settled score with a margin, rather than one global 0.90; then add
+`pull_request` to the trigger list.
+
+### What the exporter must emit
+
+`css_export.rs` reads the JSON shape `rinch_dom::computed_style::ComputedStyle`
+actually serializes. Two whole classes of property used to be read from keys
+that do not exist on it, which is invisible at runtime — the lookup just misses
+and nothing is emitted:
+
+- **Background** is a `background: BackgroundValue` enum
+  (`"None"` / `{"Color": "#rrggbb"}` / gradient / image), **not** a flat
+  `background_color`. Reading the flat key meant a 202 KB export carried exactly
+  one `background-color` declaration — the body's, from the config.
+- **Border colors** are per-side (`border_top_color`, …), **not** an aggregate
+  `border_color`; and border *styles* are per-side `border_*_style` fields
+  rather than something to infer from a non-zero width.
+- **`position`'s default is `Static`**, so `static` is the value to omit and
+  `relative` the value to emit. Inverting that dropped every
+  `position: relative`, which silently re-parented every absolutely-positioned
+  descendant in the browser reference.
+
+When adding a property here, check the field name and variant spelling against
+`crates/rinch-dom/src/computed_style/`, and add a unit test using the *serialized*
+shape — a fixture with an invented key name passes while exporting nothing.
 
 ### What this suite could and could not have caught
 
@@ -271,6 +304,10 @@ and the fixed tree**:
 |---|---|---|
 | `00_overview` | 0.9133 pass | 0.9090 **pass** |
 | suite total | 3 passed, 9 failed | 3 passed, 9 failed |
+
+(Measured with the pre-repair exporter, so the absolute numbers are the "before"
+column above. The argument does not depend on them: it is about the *size* of
+the defect relative to the noise floor, and repairing the exporter lowers both.)
 
 The defect moves the score by 0.0043 and changes no verdict. It is not a
 threshold-calibration problem: the double paint alters ~0.5% of the screen's
@@ -295,7 +332,9 @@ The test system uses SSIM (Structural Similarity Index) for image comparison:
   dominated by overall brightness and total contrast, and it scored two renders
   a human reads as ~91% alike at 0.45, which made every threshold here
   meaningless. Do not "simplify" it back.
-- **Default threshold**: 0.99 in code (`tests.json` overrides to 0.90)
+- **Default threshold**: 0.99 in code (`tests.json` overrides to 0.90). The
+  summary and the HTML report print each result's *own* threshold — they used to
+  print a hardcoded 0.99 next to a verdict reached at 0.90.
 - **Per-pixel diff**: Highlights pixels that differ by >10 in any RGB channel
 - **Diff image**: Red overlay on differences, grayscale on matches
 

@@ -10,7 +10,12 @@ pub struct DiscoveryEntry {
     pub started_at: String,
 }
 
-fn discovery_dir() -> PathBuf {
+/// The directory discovery files are written to and read from.
+///
+/// Public so clients resolve it exactly the way the writer does — a client that
+/// derives the home directory by some other route (`dirs::home_dir()`, say)
+/// silently looks in the wrong place whenever `HOME` is unset or differs.
+pub fn discovery_dir() -> PathBuf {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| ".".into());

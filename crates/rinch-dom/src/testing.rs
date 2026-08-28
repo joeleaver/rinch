@@ -29,8 +29,8 @@ pub fn serialize_tree_with_options(
 ///
 /// `verbose` is what the visual-regression harness needs: rebuilding the screen
 /// as HTML/CSS for a browser to render is only meaningful if the resolved style
-/// of every node comes with it. [`serialize_tree_verbose`] emits those styles
-/// but ignores `max_depth`/`root_id`, so it cannot answer a scoped request.
+/// of every node comes with it. [`serialize_tree_verbose`] is the unscoped
+/// shorthand for `verbose = true`.
 pub fn serialize_tree_full(
     tree: &NodeTree,
     max_depth: Option<u32>,
@@ -57,8 +57,12 @@ fn subtree_offset(tree: &NodeTree, root: RawNodeId) -> (f32, f32) {
 }
 
 /// Serialize the DOM tree with full computed styles on every node.
+///
+/// Delegates to [`serialize_tree_full`] so it picks up the same `absolute`
+/// seeding: seeding the accumulator with `(0, 0)` instead (as this used to)
+/// reported `absolute` relative to `body` rather than to the screen.
 pub fn serialize_tree_verbose(tree: &NodeTree) -> Value {
-    serialize_node(tree, tree.body_id, 0.0, 0.0, true, None, 0)
+    serialize_tree_full(tree, None, None, true)
 }
 
 fn serialize_node(

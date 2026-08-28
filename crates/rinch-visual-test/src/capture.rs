@@ -1,8 +1,16 @@
 //! Rinch capture - connects to running rinch app via debug protocol.
+//!
+//! The wire types are `rinch_debug::protocol`'s own, not a local mirror. A
+//! mirror is what produced the two protocol bugs this client used to have: the
+//! `params` key omitted from an adjacently-tagged struct variant, and errors
+//! looked for under a bare `error` key when they arrive as
+//! `{"type": "error", "message": ...}`. Typed round-tripping makes both
+//! unrepresentable.
 
+use rinch_debug::protocol::{
+    DebugCommandKind, DebugResult, HandshakeRequest, Request, Response, read_frame, write_frame,
+};
 use serde::Deserialize;
-use serde_json::{json, Value};
-use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 use thiserror::Error;
@@ -26,6 +34,9 @@ pub enum CaptureError {
 }
 
 /// Discovery info for a running rinch app.
+///
+/// A subset of `rinch_debug::discovery::DiscoveryEntry` — deserialized
+/// permissively so an older or newer app's file still parses.
 #[derive(Debug, Deserialize)]
 struct AppInfo {
     port: u16,
@@ -43,7 +54,7 @@ pub struct RinchCapture {
 impl RinchCapture {
     /// Connect to a running rinch app.
     ///
-    /// Discovers apps via ~/.rinch/debug/*.json files.
+    /// Discovers apps via the same directory `rinch-debug` writes to.
     pub fn connect() -> Result<Self, CaptureError> {
         let app = discover_app()?;
         Self::connect_to_port(app.port)
@@ -59,12 +70,14 @@ impl RinchCapture {
         stream.set_write_timeout(Some(Duration::from_secs(10)))?;
 
         // Handshake
-        let handshake = json!({
-            "protocol": "rinch-debug",
-            "version": 1
-        });
-        send_message(&mut stream, &handshake)?;
-        let _response = receive_message(&mut stream)?;
+        let handshake = HandshakeRequest {
+            protocol: "rinch-debug".to_string(),
+            version: 1,
+        };
+        let bytes = serde_json::to_vec(&handshake)
+            .map_err(|e| CaptureError::ProtocolError(e.to_string()))?;
+        write_frame(&mut stream, &bytes)?;
+        let _response = read_frame(&mut stream)?;
 
         Ok(Self {
             stream,
@@ -72,109 +85,80 @@ impl RinchCapture {
         })
     }
 
+    /// Send one command and return its result, or the server's error message.
+    fn execute(&mut self, command: DebugCommandKind) -> Result<DebugResult, CaptureError> {
+        self.request_id += 1;
+        let request = Request {
+            id: self.request_id,
+            command,
+        };
+        let bytes =
+            serde_json::to_vec(&request).map_err(|e| CaptureError::ProtocolError(e.to_string()))?;
+        write_frame(&mut self.stream, &bytes)?;
+
+        let frame = read_frame(&mut self.stream)?;
+        let response: Response = serde_json::from_slice(&frame)
+            .map_err(|e| CaptureError::ProtocolError(e.to_string()))?;
+
+        match response.result {
+            DebugResult::Error { message } => Err(CaptureError::CommandFailed(message)),
+            other => Ok(other),
+        }
+    }
+
     /// Capture a screenshot as PNG bytes.
     pub fn screenshot(&mut self) -> Result<Vec<u8>, CaptureError> {
-        self.request_id += 1;
-        let cmd = json!({ "id": self.request_id, "method": "screenshot" });
-        send_message(&mut self.stream, &cmd)?;
-
-        let response = receive_message(&mut self.stream)?;
-
-        if let Some(err) = response_error(&response) {
-            return Err(CaptureError::CommandFailed(err));
-        }
-
-        // Look for bytes response: {"id": N, "type": "bytes", "data": "base64..."}
-        if let Some(Value::String(response_type)) = response.get("type") {
-            if response_type == "bytes" {
-                if let Some(Value::String(base64_data)) = response.get("data") {
-                    use base64::Engine;
-                    let bytes = base64::engine::general_purpose::STANDARD
-                        .decode(base64_data)
-                        .map_err(|e| {
-                            CaptureError::ProtocolError(format!("base64 decode: {}", e))
-                        })?;
-                    return Ok(bytes);
-                }
+        match self.execute(DebugCommandKind::Screenshot)? {
+            DebugResult::Bytes { data } => {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD
+                    .decode(&data)
+                    .map_err(|e| CaptureError::ProtocolError(format!("base64 decode: {}", e)))
             }
+            _ => Err(CaptureError::CommandFailed(
+                "Screenshot returned no data".into(),
+            )),
         }
-
-        Err(CaptureError::CommandFailed(
-            "Screenshot returned no data".into(),
-        ))
     }
 
     /// Get the DOM tree as JSON.
-    pub fn dom_tree(&mut self) -> Result<Value, CaptureError> {
-        self.request_id += 1;
-        // `DebugCommandKind` is an adjacently-tagged enum (`tag = "method"`,
-        // `content = "params"`), so a struct variant needs its `params` key
-        // present even when every field defaults.
-        // `verbose` pulls each node's computed styles, without which the
-        // exported HTML is an unstyled skeleton the browser renders blank.
-        // `max_depth` overrides the server's shallow default of 3.
-        let cmd = json!({
-            "id": self.request_id,
-            "method": "dom_tree",
-            "params": { "max_depth": 1000, "verbose": true }
-        });
-        send_message(&mut self.stream, &cmd)?;
-
-        let response = receive_message(&mut self.stream)?;
-
-        if let Some(err) = response_error(&response) {
-            return Err(CaptureError::CommandFailed(err));
+    ///
+    /// `verbose` pulls each node's computed styles, without which the exported
+    /// HTML is an unstyled skeleton the browser renders blank. `max_depth`
+    /// overrides the server's shallow default of 3.
+    pub fn dom_tree(&mut self) -> Result<serde_json::Value, CaptureError> {
+        match self.execute(DebugCommandKind::DomTree {
+            max_depth: Some(1000),
+            root_id: None,
+            verbose: true,
+        })? {
+            DebugResult::Json { data } => Ok(data),
+            _ => Err(CaptureError::CommandFailed(
+                "DomTree returned no data".into(),
+            )),
         }
-
-        // Look for json response: {"id": N, "type": "json", "data": {...}}
-        if let Some(Value::String(response_type)) = response.get("type") {
-            if response_type == "json" {
-                if let Some(data) = response.get("data") {
-                    return Ok(data.clone());
-                }
-            }
-        }
-
-        Err(CaptureError::CommandFailed(
-            "DomTree returned no data".into(),
-        ))
     }
 
     /// Click at coordinates.
     pub fn click(&mut self, x: f64, y: f64) -> Result<(), CaptureError> {
-        self.request_id += 1;
-        let cmd = json!({ "id": self.request_id, "method": "click", "params": { "x": x, "y": y } });
-        send_message(&mut self.stream, &cmd)?;
-        let response = receive_message(&mut self.stream)?;
-
-        if let Some(err) = response_error(&response) {
-            return Err(CaptureError::CommandFailed(err));
-        }
-
+        self.execute(DebugCommandKind::Click {
+            x: x as f32,
+            y: y as f32,
+            button: None,
+        })?;
         Ok(())
     }
 
     /// Wait for next render frame.
     pub fn wait_frame(&mut self) -> Result<(), CaptureError> {
-        self.request_id += 1;
-        let cmd = json!({ "id": self.request_id, "method": "wait_frame" });
-        send_message(&mut self.stream, &cmd)?;
-        let response = receive_message(&mut self.stream)?;
-
-        if let Some(err) = response_error(&response) {
-            return Err(CaptureError::CommandFailed(err));
-        }
-
+        self.execute(DebugCommandKind::WaitFrame)?;
         Ok(())
     }
 }
 
 /// Discover a running rinch app.
 fn discover_app() -> Result<AppInfo, CaptureError> {
-    let debug_dir = dirs::home_dir()
-        .ok_or(CaptureError::NoAppFound)?
-        .join(".rinch")
-        .join("debug");
+    let debug_dir = rinch_debug::discovery::discovery_dir();
 
     if !debug_dir.exists() {
         return Err(CaptureError::NoAppFound);
@@ -185,17 +169,16 @@ fn discover_app() -> Result<AppInfo, CaptureError> {
         let entry = entry.map_err(|_| CaptureError::NoAppFound)?;
         let path = entry.path();
 
-        if path.extension().map(|e| e == "json").unwrap_or(false) {
-            if let Ok(contents) = std::fs::read_to_string(&path) {
-                if let Ok(info) = serde_json::from_str::<AppInfo>(&contents) {
-                    // Verify process is still running
-                    if is_process_running(info.pid) {
-                        return Ok(info);
-                    } else {
-                        // Cleanup stale file
-                        let _ = std::fs::remove_file(&path);
-                    }
-                }
+        if path.extension().map(|e| e == "json").unwrap_or(false)
+            && let Ok(contents) = std::fs::read_to_string(&path)
+            && let Ok(info) = serde_json::from_str::<AppInfo>(&contents)
+        {
+            // Verify process is still running
+            if is_process_running(info.pid) {
+                return Ok(info);
+            } else {
+                // Cleanup stale file
+                let _ = std::fs::remove_file(&path);
             }
         }
     }
@@ -206,50 +189,4 @@ fn discover_app() -> Result<AppInfo, CaptureError> {
 /// Check if a process is running.
 fn is_process_running(pid: u32) -> bool {
     std::path::Path::new(&format!("/proc/{}", pid)).exists()
-}
-
-/// Extract the message from an error response.
-///
-/// The server answers with `{"type": "error", "message": "..."}`; older code
-/// here looked for a bare `error` key, so every failure was misreported as a
-/// missing payload instead of the reason the command failed.
-fn response_error(response: &Value) -> Option<String> {
-    if response.get("type").and_then(Value::as_str) == Some("error") {
-        return Some(
-            response
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown error")
-                .to_string(),
-        );
-    }
-    if let Some(Value::String(msg)) = response.get("error") {
-        return Some(msg.clone());
-    }
-    None
-}
-
-/// Send a length-prefixed JSON message.
-fn send_message(stream: &mut TcpStream, msg: &Value) -> Result<(), CaptureError> {
-    let json_bytes =
-        serde_json::to_vec(msg).map_err(|e| CaptureError::ProtocolError(e.to_string()))?;
-
-    let len = json_bytes.len() as u32;
-    stream.write_all(&len.to_be_bytes())?;
-    stream.write_all(&json_bytes)?;
-    stream.flush()?;
-
-    Ok(())
-}
-
-/// Receive a length-prefixed JSON message.
-fn receive_message(stream: &mut TcpStream) -> Result<Value, CaptureError> {
-    let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf)?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-
-    let mut buf = vec![0u8; len];
-    stream.read_exact(&mut buf)?;
-
-    serde_json::from_slice(&buf).map_err(|e| CaptureError::ProtocolError(e.to_string()))
 }

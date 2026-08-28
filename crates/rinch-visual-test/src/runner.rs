@@ -6,8 +6,8 @@ use thiserror::Error;
 
 use crate::browser::{BrowserCapture, BrowserError};
 use crate::capture::{CaptureError, RinchCapture};
-use crate::compare::{compare_images, CompareError};
-use crate::html_serializer::{serialize_to_html, HtmlConfig};
+use crate::compare::{CompareError, compare_images};
+use crate::html_serializer::{HtmlConfig, serialize_to_html};
 
 #[derive(Error, Debug)]
 pub enum RunnerError {
@@ -77,6 +77,8 @@ pub struct TestResult {
     pub passed: bool,
     /// SSIM score.
     pub ssim_score: f64,
+    /// The threshold this result was judged against (from the test definition).
+    pub threshold: f64,
     /// Path to actual (rinch) screenshot.
     pub actual_path: PathBuf,
     /// Path to expected (browser) screenshot.
@@ -135,6 +137,7 @@ impl TestRunner {
                 name: "setup".to_string(),
                 passed: false,
                 ssim_score: 0.0,
+                threshold: 0.0,
                 actual_path: PathBuf::new(),
                 expected_path: PathBuf::new(),
                 diff_path: None,
@@ -151,6 +154,7 @@ impl TestRunner {
                     name: "connect".to_string(),
                     passed: false,
                     ssim_score: 0.0,
+                    threshold: 0.0,
                     actual_path: PathBuf::new(),
                     expected_path: PathBuf::new(),
                     diff_path: None,
@@ -168,6 +172,7 @@ impl TestRunner {
                     name: "browser_setup".to_string(),
                     passed: false,
                     ssim_score: 0.0,
+                    threshold: 0.0,
                     actual_path: PathBuf::new(),
                     expected_path: PathBuf::new(),
                     diff_path: None,
@@ -212,6 +217,7 @@ impl TestRunner {
             name: test.name.clone(),
             passed: false,
             ssim_score: 0.0,
+            threshold: test.threshold,
             actual_path: actual_path.clone(),
             expected_path: expected_path.clone(),
             diff_path: None,
@@ -302,6 +308,7 @@ impl TestRunner {
             name: test.name.clone(),
             passed: comparison.passed,
             ssim_score: comparison.ssim_score,
+            threshold: test.threshold,
             actual_path,
             expected_path,
             diff_path: diff_path_result,

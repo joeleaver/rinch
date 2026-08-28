@@ -61,8 +61,8 @@ pub fn generate_html_report(results: &[TestResult], output_path: &Path) -> std::
         html.push_str(&format!("<div class=\"test {}\">\n", status_class));
         html.push_str(&format!("  <h2>{} {}</h2>\n", status_icon, result.name));
         html.push_str(&format!(
-            "  <p class=\"score\">SSIM Score: {:.4} (threshold: 0.99)</p>\n",
-            result.ssim_score
+            "  <p class=\"score\">SSIM Score: {:.4} (threshold: {:.4})</p>\n",
+            result.ssim_score, result.threshold
         ));
 
         if let Some(error) = &result.error {
@@ -97,16 +97,16 @@ pub fn generate_html_report(results: &[TestResult], output_path: &Path) -> std::
         }
 
         // Diff image
-        if let Some(diff_path) = &result.diff_path {
-            if diff_path.exists() {
-                html.push_str("    <div class=\"image-box\">\n");
-                html.push_str(&format!(
-                    "      <img src=\"{}\" alt=\"Diff\">\n",
-                    diff_path.file_name().unwrap().to_string_lossy()
-                ));
-                html.push_str("      <p>Difference</p>\n");
-                html.push_str("    </div>\n");
-            }
+        if let Some(diff_path) = &result.diff_path
+            && diff_path.exists()
+        {
+            html.push_str("    <div class=\"image-box\">\n");
+            html.push_str(&format!(
+                "      <img src=\"{}\" alt=\"Diff\">\n",
+                diff_path.file_name().unwrap().to_string_lossy()
+            ));
+            html.push_str("      <p>Difference</p>\n");
+            html.push_str("    </div>\n");
         }
 
         html.push_str("  </div>\n");
@@ -149,8 +149,8 @@ pub fn print_summary(results: &[TestResult]) {
             "✗ FAIL"
         };
         println!(
-            "{} {} (SSIM: {:.4})",
-            status, result.name, result.ssim_score
+            "{} {} (SSIM: {:.4}, threshold: {:.4})",
+            status, result.name, result.ssim_score, result.threshold
         );
         if let Some(error) = &result.error {
             println!("  Error: {}", error);

@@ -97,6 +97,13 @@ fn calculate_ssim(img1: &RgbaImage, img2: &RgbaImage) -> f64 {
     const C1: f64 = 6.5025;
     const C2: f64 = 58.5225;
 
+    // Windowing indexes both buffers with img1's stride, so refuse a mismatch
+    // rather than panicking on an out-of-range slice. `compare_images_decoded`
+    // already rejects this, but `calculate_ssim` must not depend on that.
+    if img1.dimensions() != img2.dimensions() {
+        return 0.0;
+    }
+
     let (width, height) = img1.dimensions();
     let luma = |img: &RgbaImage| -> Vec<f64> {
         img.pixels()
@@ -113,39 +120,66 @@ fn calculate_ssim(img1: &RgbaImage, img2: &RgbaImage) -> f64 {
         return ssim_window(&luma1, &luma2, C1, C2).clamp(0.0, 1.0);
     }
 
+    // Accumulate straight off the two luma buffers: at 1200x800 this is 15,000
+    // windows, and copying each into a fresh Vec cost 30,000 allocations per
+    // comparison for no benefit.
     let mut total = 0.0;
     for wy in 0..windows_y {
         for wx in 0..windows_x {
-            let mut a = Vec::with_capacity(WINDOW * WINDOW);
-            let mut b = Vec::with_capacity(WINDOW * WINDOW);
-            for dy in 0..WINDOW {
-                let row = (wy * WINDOW + dy) * w + wx * WINDOW;
-                a.extend_from_slice(&luma1[row..row + WINDOW]);
-                b.extend_from_slice(&luma2[row..row + WINDOW]);
-            }
-            total += ssim_window(&a, &b, C1, C2);
+            let rows = (0..WINDOW).map(|dy| {
+                let start = (wy * WINDOW + dy) * w + wx * WINDOW;
+                (&luma1[start..start + WINDOW], &luma2[start..start + WINDOW])
+            });
+            total += ssim_rows(rows, C1, C2);
         }
     }
 
     (total / (windows_x * windows_y) as f64).clamp(0.0, 1.0)
 }
 
-/// SSIM over a single window of luminance samples.
-fn ssim_window(a: &[f64], b: &[f64], c1: f64, c2: f64) -> f64 {
-    let n = a.len() as f64;
-    let mean_a: f64 = a.iter().sum::<f64>() / n;
-    let mean_b: f64 = b.iter().sum::<f64>() / n;
-    let var_a: f64 = a.iter().map(|x| (x - mean_a).powi(2)).sum::<f64>() / n;
-    let var_b: f64 = b.iter().map(|x| (x - mean_b).powi(2)).sum::<f64>() / n;
-    let covar: f64 = a
-        .iter()
-        .zip(b.iter())
-        .map(|(x, y)| (x - mean_a) * (y - mean_b))
-        .sum::<f64>()
-        / n;
+/// SSIM over a single window given as an iterator of paired row slices.
+///
+/// Both slices of a pair must be the same length — the caller cuts them from
+/// two buffers of identical dimensions.
+fn ssim_rows<'a>(
+    rows: impl Iterator<Item = (&'a [f64], &'a [f64])> + Clone,
+    c1: f64,
+    c2: f64,
+) -> f64 {
+    let mut n = 0.0f64;
+    let (mut sum_a, mut sum_b) = (0.0f64, 0.0f64);
+    for (ra, rb) in rows.clone() {
+        let len = ra.len().min(rb.len());
+        n += len as f64;
+        sum_a += ra[..len].iter().sum::<f64>();
+        sum_b += rb[..len].iter().sum::<f64>();
+    }
+    if n == 0.0 {
+        return 1.0;
+    }
+    let mean_a = sum_a / n;
+    let mean_b = sum_b / n;
+
+    let (mut var_a, mut var_b, mut covar) = (0.0f64, 0.0f64, 0.0f64);
+    for (ra, rb) in rows {
+        for (x, y) in ra.iter().zip(rb.iter()) {
+            let (da, db) = (x - mean_a, y - mean_b);
+            var_a += da * da;
+            var_b += db * db;
+            covar += da * db;
+        }
+    }
+    var_a /= n;
+    var_b /= n;
+    covar /= n;
 
     ((2.0 * mean_a * mean_b + c1) * (2.0 * covar + c2))
         / ((mean_a.powi(2) + mean_b.powi(2) + c1) * (var_a + var_b + c2))
+}
+
+/// SSIM over a single window of luminance samples.
+fn ssim_window(a: &[f64], b: &[f64], c1: f64, c2: f64) -> f64 {
+    ssim_rows(std::iter::once((a, b)), c1, c2)
 }
 
 /// Generate a diff image highlighting differences.

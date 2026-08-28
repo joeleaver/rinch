@@ -13,5 +13,5 @@ pub mod runner;
 
 pub use compare::ComparisonResult;
 pub use css_export::computed_style_to_css;
-pub use html_serializer::{serialize_to_html, HtmlConfig};
+pub use html_serializer::{HtmlConfig, serialize_to_html};
 pub use runner::{TestDefinition, TestResult, TestRunner};

@@ -27,17 +27,20 @@ pub fn computed_style_to_css(styles: &Value) -> String {
         css.push_str(&format!("display: {}; ", css_val));
     }
 
-    // Position
+    // Position. `static` is the CSS *and* rinch default (`PositionValue`'s
+    // `#[default]`), so that is the one to skip — emitting it for every node
+    // while dropping `relative` (as this used to) silently moved the containing
+    // block of every absolutely-positioned descendant in the browser render.
     if let Some(v) = obj.get("position").and_then(|v| v.as_str()) {
         let css_val = match v {
-            "Absolute" => "absolute",
-            "Fixed" => "fixed",
-            "Static" => "static",
-            // "Relative" and anything unrecognised.
-            _ => "relative",
+            "Absolute" => Some("absolute"),
+            "Fixed" => Some("fixed"),
+            "Relative" => Some("relative"),
+            "Sticky" => Some("sticky"),
+            // "Static" is the default; anything unrecognised is treated as it.
+            _ => None,
         };
-        if css_val != "relative" {
-            // Skip default
+        if let Some(css_val) = css_val {
             css.push_str(&format!("position: {}; ", css_val));
         }
     }
@@ -92,25 +95,22 @@ pub fn computed_style_to_css(styles: &Value) -> String {
     emit_length_percentage(&mut css, obj, "border_bottom_width", "border-bottom-width");
     emit_length_percentage(&mut css, obj, "border_left_width", "border-left-width");
 
-    // After border widths, add border-style if any border has width
-    let has_border = [
-        "border_top_width",
-        "border_right_width",
-        "border_bottom_width",
-        "border_left_width",
-    ]
-    .iter()
-    .any(|key| {
-        obj.get(*key)
-            .and_then(|v| v.as_object())
-            .and_then(|o| o.get("Length"))
-            .and_then(|v| v.as_f64())
-            .map(|len| len.abs() > 0.01)
-            .unwrap_or(false)
-    });
-    if has_border {
-        css.push_str("border-style: solid; ");
-    }
+    // Per-side border styles. `ComputedStyle` carries `border_*_style`, so read
+    // it rather than inferring "solid" from a non-zero width: `border-style:
+    // none` with a resolved width paints nothing in rinch, and inferring solid
+    // put a phantom border in the browser reference on every such node.
+    emit_border_style(&mut css, obj, "border_top_style", "border-top-style");
+    emit_border_style(&mut css, obj, "border_right_style", "border-right-style");
+    emit_border_style(&mut css, obj, "border_bottom_style", "border-bottom-style");
+    emit_border_style(&mut css, obj, "border_left_style", "border-left-style");
+
+    // Per-side border colors. These serialize as "#rrggbb"/"#rrggbbaa" or null;
+    // there is no aggregate `border_color` field (looking one up here always
+    // missed, so every border fell back to the browser's `currentColor`).
+    emit_color(&mut css, obj, "border_top_color", "border-top-color");
+    emit_color(&mut css, obj, "border_right_color", "border-right-color");
+    emit_color(&mut css, obj, "border_bottom_color", "border-bottom-color");
+    emit_color(&mut css, obj, "border_left_color", "border-left-color");
 
     // Border radius (now supports percentages)
     emit_length_percentage(
@@ -138,35 +138,38 @@ pub fn computed_style_to_css(styles: &Value) -> String {
         "border-bottom-left-radius",
     );
 
-    // Colors (already serialized as "#rrggbb" or "#rrggbbaa")
-    if let Some(v) = obj.get("background_color").and_then(|v| v.as_str()) {
-        css.push_str(&format!("background-color: {}; ", v));
-    }
-    if let Some(v) = obj.get("color").and_then(|v| v.as_str()) {
-        css.push_str(&format!("color: {}; ", v));
-    }
-    if let Some(v) = obj.get("border_color").and_then(|v| v.as_str()) {
-        css.push_str(&format!("border-color: {}; ", v));
-    }
+    // Background. `ComputedStyle` has no `background_color` field — it carries a
+    // `background: BackgroundValue` enum, serialized as "None",
+    // `{"Color": "#rrggbb"}` or a gradient/image variant. Reading the
+    // non-existent flat key meant the exported page had no element backgrounds
+    // at all, which is most of the ink on a real screen.
+    emit_background(&mut css, obj);
 
-    // Opacity
+    // Text color (already serialized as "#rrggbb" or "#rrggbbaa")
+    emit_color(&mut css, obj, "color", "color");
+
+    // Opacity / visibility / stacking
     emit_f32(&mut css, obj, "opacity", "opacity", 1.0);
+    emit_visibility(&mut css, obj);
+    if let Some(z) = obj.get("z_index").and_then(|v| v.as_i64()) {
+        css.push_str(&format!("z-index: {}; ", z));
+    }
 
     // Typography
-    if let Some(v) = obj.get("font_size").and_then(|v| v.as_f64()) {
-        if (v - 16.0).abs() > 0.01 {
-            css.push_str(&format!("font-size: {}px; ", v));
-        }
+    if let Some(v) = obj.get("font_size").and_then(|v| v.as_f64())
+        && (v - 16.0).abs() > 0.01
+    {
+        css.push_str(&format!("font-size: {}px; ", v));
     }
-    if let Some(v) = obj.get("font_weight").and_then(|v| v.as_f64()) {
-        if (v - 400.0).abs() > 0.01 {
-            css.push_str(&format!("font-weight: {}; ", v as i32));
-        }
+    if let Some(v) = obj.get("font_weight").and_then(|v| v.as_f64())
+        && (v - 400.0).abs() > 0.01
+    {
+        css.push_str(&format!("font-weight: {}; ", v as i32));
     }
-    if let Some(v) = obj.get("font_family").and_then(|v| v.as_str()) {
-        if !v.is_empty() {
-            css.push_str(&format!("font-family: {}; ", v));
-        }
+    if let Some(v) = obj.get("font_family").and_then(|v| v.as_str())
+        && !v.is_empty()
+    {
+        css.push_str(&format!("font-family: {}; ", v));
     }
     emit_font_style(&mut css, obj);
     emit_line_height(&mut css, obj);
@@ -180,6 +183,113 @@ pub fn computed_style_to_css(styles: &Value) -> String {
 }
 
 // Helper functions for each value type
+
+/// Emit a color field. Colors serialize as `"#rrggbb"`/`"#rrggbbaa"`, or `null`
+/// when unset — in which case nothing is emitted and the property inherits.
+fn emit_color(css: &mut String, obj: &serde_json::Map<String, Value>, key: &str, prop: &str) {
+    if let Some(v) = obj.get(key).and_then(|v| v.as_str()) {
+        css.push_str(&format!("{}: {}; ", prop, v));
+    }
+}
+
+/// Emit `background` from the `BackgroundValue` enum.
+///
+/// Serialized shapes: `"None"`, `{"Color": "#rrggbb"}`,
+/// `{"LinearGradient": {angle_degrees, stops}}`, `{"RadialGradient": {stops}}`,
+/// `{"Image": {url}}`.
+fn emit_background(css: &mut String, obj: &serde_json::Map<String, Value>) {
+    let Some(v) = obj.get("background") else {
+        return;
+    };
+    // "None" — nothing to paint.
+    if v.as_str().is_some() {
+        return;
+    }
+    let Some(o) = v.as_object() else { return };
+
+    if let Some(color) = o.get("Color").and_then(|c| c.as_str()) {
+        css.push_str(&format!("background-color: {}; ", color));
+        return;
+    }
+    if let Some(g) = o.get("LinearGradient").and_then(|g| g.as_object()) {
+        let angle = g
+            .get("angle_degrees")
+            .and_then(|a| a.as_f64())
+            .unwrap_or(180.0);
+        if let Some(stops) = gradient_stops(g.get("stops")) {
+            css.push_str(&format!(
+                "background-image: linear-gradient({}deg, {}); ",
+                angle, stops
+            ));
+        }
+        return;
+    }
+    if let Some(g) = o.get("RadialGradient").and_then(|g| g.as_object()) {
+        if let Some(stops) = gradient_stops(g.get("stops")) {
+            css.push_str(&format!("background-image: radial-gradient({}); ", stops));
+        }
+        return;
+    }
+    if let Some(img) = o.get("Image").and_then(|i| i.as_object())
+        && let Some(url) = img.get("url").and_then(|u| u.as_str())
+    {
+        // Quote the URL so a path containing ')' or whitespace stays intact.
+        css.push_str(&format!(
+            "background-image: url(\"{}\"); ",
+            url.replace('\\', "\\\\").replace('"', "\\\"")
+        ));
+    }
+}
+
+/// Render a `Vec<GradientStop>` as a CSS color-stop list, or `None` if empty /
+/// any stop is missing a color (a partial gradient would be worse than none).
+fn gradient_stops(stops: Option<&Value>) -> Option<String> {
+    let stops = stops?.as_array()?;
+    if stops.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(stops.len());
+    for stop in stops {
+        let color = stop.get("color")?.as_str()?;
+        let offset = stop.get("offset").and_then(|o| o.as_f64()).unwrap_or(0.0);
+        out.push(format!("{} {:.2}%", color, offset * 100.0));
+    }
+    Some(out.join(", "))
+}
+
+/// Emit one side's `border-style` from a `BorderStyleValue`.
+fn emit_border_style(
+    css: &mut String,
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    prop: &str,
+) {
+    if let Some(v) = obj.get(key).and_then(|v| v.as_str()) {
+        let css_val = match v {
+            "Solid" => "solid",
+            "Dashed" => "dashed",
+            "Dotted" => "dotted",
+            "Double" => "double",
+            "Hidden" => "hidden",
+            // "None" is the default; nothing to emit.
+            _ => return,
+        };
+        css.push_str(&format!("{}: {}; ", prop, css_val));
+    }
+}
+
+fn emit_visibility(css: &mut String, obj: &serde_json::Map<String, Value>) {
+    if let Some(v) = obj.get("visibility").and_then(|v| v.as_str()) {
+        let css_val = match v {
+            "Hidden" => "hidden",
+            "Collapse" => "collapse",
+            // "Visible" is the default; nothing to emit.
+            _ => return,
+        };
+        css.push_str(&format!("visibility: {}; ", css_val));
+    }
+}
+
 fn emit_overflow(css: &mut String, obj: &serde_json::Map<String, Value>, key: &str, prop: &str) {
     if let Some(v) = obj.get(key).and_then(|v| v.as_str()) {
         let css_val = match v {
@@ -196,11 +306,11 @@ fn emit_overflow(css: &mut String, obj: &serde_json::Map<String, Value>, key: &s
 
 fn emit_dimension(css: &mut String, obj: &serde_json::Map<String, Value>, key: &str, prop: &str) {
     if let Some(v) = obj.get(key) {
-        if let Some(s) = v.as_str() {
-            if s == "Auto" {
-                return;
-            } // Skip auto
-        }
+        if let Some(s) = v.as_str()
+            && s == "Auto"
+        {
+            return;
+        } // Skip auto
         if let Some(o) = v.as_object() {
             if let Some(len) = o.get("Length").and_then(|v| v.as_f64()) {
                 css.push_str(&format!("{}: {}px; ", prop, len));
@@ -218,11 +328,11 @@ fn emit_length_percentage(
     prop: &str,
 ) {
     if let Some(v) = obj.get(key) {
-        if let Some(s) = v.as_str() {
-            if s == "Zero" {
-                return;
-            } // Skip zero
-        }
+        if let Some(s) = v.as_str()
+            && s == "Zero"
+        {
+            return;
+        } // Skip zero
         if let Some(o) = v.as_object() {
             if let Some(len) = o.get("Length").and_then(|v| v.as_f64()) {
                 if len.abs() > 0.01 {
@@ -242,11 +352,11 @@ fn emit_length_percentage_auto(
     prop: &str,
 ) {
     if let Some(v) = obj.get(key) {
-        if let Some(s) = v.as_str() {
-            if s == "Auto" {
-                return;
-            } // Skip auto
-        }
+        if let Some(s) = v.as_str()
+            && s == "Auto"
+        {
+            return;
+        } // Skip auto
         if let Some(o) = v.as_object() {
             if let Some(len) = o.get("Length").and_then(|v| v.as_f64()) {
                 css.push_str(&format!("{}: {}px; ", prop, len));
@@ -264,10 +374,10 @@ fn emit_f32(
     prop: &str,
     default: f64,
 ) {
-    if let Some(v) = obj.get(key).and_then(|v| v.as_f64()) {
-        if (v - default).abs() > 0.01 {
-            css.push_str(&format!("{}: {}; ", prop, v));
-        }
+    if let Some(v) = obj.get(key).and_then(|v| v.as_f64())
+        && (v - default).abs() > 0.01
+    {
+        css.push_str(&format!("{}: {}; ", prop, v));
     }
 }
 
@@ -339,10 +449,10 @@ fn emit_font_style(css: &mut String, obj: &serde_json::Map<String, Value>) {
 
 fn emit_line_height(css: &mut String, obj: &serde_json::Map<String, Value>) {
     if let Some(v) = obj.get("line_height") {
-        if let Some(s) = v.as_str() {
-            if s == "Normal" {
-                return;
-            }
+        if let Some(s) = v.as_str()
+            && s == "Normal"
+        {
+            return;
         }
         if let Some(o) = v.as_object() {
             if let Some(n) = o.get("Relative").and_then(|v| v.as_f64()) {
@@ -355,20 +465,20 @@ fn emit_line_height(css: &mut String, obj: &serde_json::Map<String, Value>) {
 }
 
 fn emit_letter_spacing(css: &mut String, obj: &serde_json::Map<String, Value>) {
-    if let Some(v) = obj.get("letter_spacing").and_then(|v| v.as_f64()) {
-        if v.abs() > 0.001 {
-            // Only emit if non-zero
-            css.push_str(&format!("letter-spacing: {:.2}px; ", v));
-        }
+    if let Some(v) = obj.get("letter_spacing").and_then(|v| v.as_f64())
+        && v.abs() > 0.001
+    {
+        // Only emit if non-zero
+        css.push_str(&format!("letter-spacing: {:.2}px; ", v));
     }
 }
 
 fn emit_word_spacing(css: &mut String, obj: &serde_json::Map<String, Value>) {
-    if let Some(v) = obj.get("word_spacing").and_then(|v| v.as_f64()) {
-        if v.abs() > 0.001 {
-            // Only emit if non-zero
-            css.push_str(&format!("word-spacing: {:.2}px; ", v));
-        }
+    if let Some(v) = obj.get("word_spacing").and_then(|v| v.as_f64())
+        && v.abs() > 0.001
+    {
+        // Only emit if non-zero
+        css.push_str(&format!("word-spacing: {:.2}px; ", v));
     }
 }
 
@@ -386,24 +496,24 @@ fn emit_text_align(css: &mut String, obj: &serde_json::Map<String, Value>) {
 }
 
 fn emit_text_decoration(css: &mut String, obj: &serde_json::Map<String, Value>) {
-    if let Some(v) = obj.get("text_decoration") {
-        if let Some(o) = v.as_object() {
-            let underline = o
-                .get("underline")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let strikethrough = o
-                .get("strikethrough")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+    if let Some(v) = obj.get("text_decoration")
+        && let Some(o) = v.as_object()
+    {
+        let underline = o
+            .get("underline")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let strikethrough = o
+            .get("strikethrough")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
-            if underline && strikethrough {
-                css.push_str("text-decoration: underline line-through; ");
-            } else if underline {
-                css.push_str("text-decoration: underline; ");
-            } else if strikethrough {
-                css.push_str("text-decoration: line-through; ");
-            }
+        if underline && strikethrough {
+            css.push_str("text-decoration: underline line-through; ");
+        } else if underline {
+            css.push_str("text-decoration: underline; ");
+        } else if strikethrough {
+            css.push_str("text-decoration: line-through; ");
         }
     }
 }
@@ -433,7 +543,11 @@ mod tests {
             "display": "Flex",
             "flex_direction": "Column",
             "padding_top": {"Length": 16.0},
-            "background_color": "#1a1a1a"
+            // `ComputedStyle` has no flat `background_color` field; it carries a
+            // `background: BackgroundValue` enum. Fixtures here must use the
+            // shape rinch-dom actually serializes, or they pass while the
+            // exporter emits nothing for a real screen.
+            "background": {"Color": "#1a1a1a"}
         });
         let css = computed_style_to_css(&styles);
         assert!(css.contains("display: flex"));
@@ -444,12 +558,16 @@ mod tests {
 
     #[test]
     fn test_skip_defaults() {
+        // `Static` is the default `PositionValue`, so it is the one to omit.
         let styles = json!({
             "display": "Flex",
-            "position": "Relative",
+            "position": "Static",
             "overflow_x": "Visible",
             "flex_direction": "Row",
-            "flex_wrap": "NoWrap"
+            "flex_wrap": "NoWrap",
+            "background": "None",
+            "visibility": "Visible",
+            "border_top_style": "None"
         });
         let css = computed_style_to_css(&styles);
         assert!(css.contains("display: flex"));
@@ -457,6 +575,79 @@ mod tests {
         assert!(!css.contains("overflow"));
         assert!(!css.contains("flex-direction"));
         assert!(!css.contains("flex-wrap"));
+        assert!(!css.contains("background"));
+        assert!(!css.contains("visibility"));
+        assert!(!css.contains("border-top-style"));
+    }
+
+    /// `position: relative` establishes a containing block, so dropping it (as
+    /// the exporter used to, treating `relative` rather than `static` as the
+    /// default) re-parents every absolutely-positioned descendant in the
+    /// browser reference.
+    #[test]
+    fn test_relative_position_is_emitted() {
+        let css = computed_style_to_css(&json!({"position": "Relative"}));
+        assert!(css.contains("position: relative"), "{css}");
+
+        let css = computed_style_to_css(&json!({"position": "Sticky"}));
+        assert!(css.contains("position: sticky"), "{css}");
+    }
+
+    #[test]
+    fn test_border_style_and_color_come_from_their_own_fields() {
+        // A resolved non-zero width with `border-style: none` paints nothing in
+        // rinch; inferring "solid" from the width alone put a phantom border in
+        // the browser reference.
+        let css = computed_style_to_css(&json!({
+            "border_top_width": {"Length": 1.0},
+            "border_top_style": "None",
+        }));
+        assert!(!css.contains("border-top-style"), "{css}");
+
+        let css = computed_style_to_css(&json!({
+            "border_top_width": {"Length": 1.0},
+            "border_top_style": "Solid",
+            "border_top_color": "#ff0000",
+        }));
+        assert!(css.contains("border-top-width: 1px"), "{css}");
+        assert!(css.contains("border-top-style: solid"), "{css}");
+        assert!(css.contains("border-top-color: #ff0000"), "{css}");
+    }
+
+    #[test]
+    fn test_background_gradient_and_image() {
+        let css = computed_style_to_css(&json!({
+            "background": {
+                "LinearGradient": {
+                    "angle_degrees": 90.0,
+                    "stops": [
+                        {"offset": 0.0, "color": "#000000"},
+                        {"offset": 1.0, "color": "#ffffff"}
+                    ]
+                }
+            }
+        }));
+        assert!(
+            css.contains(
+                "background-image: linear-gradient(90deg, #000000 0.00%, #ffffff 100.00%)"
+            ),
+            "{css}"
+        );
+
+        let css = computed_style_to_css(&json!({
+            "background": {"Image": {"url": "/tmp/a b.png"}}
+        }));
+        assert!(
+            css.contains("background-image: url(\"/tmp/a b.png\")"),
+            "{css}"
+        );
+    }
+
+    #[test]
+    fn test_visibility_and_z_index() {
+        let css = computed_style_to_css(&json!({"visibility": "Hidden", "z_index": 5}));
+        assert!(css.contains("visibility: hidden"), "{css}");
+        assert!(css.contains("z-index: 5"), "{css}");
     }
 
     #[test]
@@ -475,14 +666,14 @@ mod tests {
     #[test]
     fn test_colors() {
         let styles = json!({
-            "background_color": "#ff5733",
+            "background": {"Color": "#ff5733"},
             "color": "#000000ff",
-            "border_color": "#00000080"
+            "border_left_color": "#00000080"
         });
         let css = computed_style_to_css(&styles);
         assert!(css.contains("background-color: #ff5733"));
         assert!(css.contains("color: #000000ff"));
-        assert!(css.contains("border-color: #00000080"));
+        assert!(css.contains("border-left-color: #00000080"));
     }
 
     #[test]

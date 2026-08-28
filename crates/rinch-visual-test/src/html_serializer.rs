@@ -112,11 +112,19 @@ fn serialize_element(html: &mut String, node: &Value, indent: usize) {
         return;
     }
 
-    // Build inline style from computed_styles
+    // Build inline style from computed_styles.
+    let computed = node
+        .get("computed_styles")
+        .map(computed_style_to_css)
+        .unwrap_or_default();
+
+    // The author's `style` attribute goes FIRST so the resolved computed values
+    // win the cascade. Appending it last (as this used to) let an unresolved
+    // author value clobber the resolved one — an author `width: 100%` would
+    // override the computed `1200px` and then re-resolve against a different
+    // containing block in the browser. The attribute is still emitted because
+    // it carries declarations `ComputedStyle` does not model.
     let mut style = String::new();
-    if let Some(computed_styles) = node.get("computed_styles") {
-        style = computed_style_to_css(computed_styles);
-    }
 
     // Get attributes
     let mut attrs = String::new();
@@ -128,10 +136,10 @@ fn serialize_element(html: &mut String, node: &Value, indent: usize) {
                 if let Some(inline_style) = value.as_str() {
                     let filtered = strip_css_variables(inline_style);
                     if !filtered.trim().is_empty() {
-                        if !style.is_empty() {
-                            style.push(' ');
+                        style.push_str(filtered.trim());
+                        if !style.ends_with(';') {
+                            style.push(';');
                         }
-                        style.push_str(&filtered);
                     }
                 }
             } else if key != "class" && key != "data-rid" {
@@ -145,6 +153,13 @@ fn serialize_element(html: &mut String, node: &Value, indent: usize) {
                 }
             }
         }
+    }
+
+    if !computed.is_empty() {
+        if !style.is_empty() {
+            style.push(' ');
+        }
+        style.push_str(&computed);
     }
 
     // Build the opening tag
@@ -173,10 +188,10 @@ fn serialize_element(html: &mut String, node: &Value, indent: usize) {
 
     if has_only_text {
         // Inline text content
-        if let Some(children) = children {
-            if let Some(text) = children[0].get("text").and_then(|v| v.as_str()) {
-                html.push_str(&html_escape(text));
-            }
+        if let Some(children) = children
+            && let Some(text) = children[0].get("text").and_then(|v| v.as_str())
+        {
+            html.push_str(&html_escape(text));
         }
     } else if has_children {
         html.push('\n');
