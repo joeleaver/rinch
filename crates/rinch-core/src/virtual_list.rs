@@ -327,7 +327,14 @@ where
         // scroll height), so it needs no filler. Spacers left over from a
         // previous pass do need unmounting: `append_child` re-parents, so an
         // unused one would otherwise stay where the last pass put it.
-        for gap in gap_nodes.borrow().iter().skip(gaps_used) {
+        //
+        // They leave the pool with the unmount. `remove_node` *retires* a node
+        // (issue #184) — the browser backend drops its bookkeeping, so a retired
+        // handle can no longer be appended or styled — and a pool that kept one
+        // would silently fail to fill the hole on a later pass. A pass that needs
+        // more spacers than the last one builds fresh ones, which is what the
+        // `gaps_used == pool.len()` arm above already does.
+        for gap in gap_nodes.borrow_mut().drain(gaps_used..) {
             gap.remove();
         }
 
@@ -555,6 +562,70 @@ mod tests {
             "three unique keys, three rows, no filler left behind"
         );
         assert_eq!(row_names(&window), ["A1", "C", "B"]);
+    }
+
+    /// A hole that comes back gets a *live* filler, not the retired one the last
+    /// hole used (issue #184).
+    ///
+    /// Fillers are pooled across passes, and an unused one is unmounted at the
+    /// end of a pass. But `remove_node` **retires** a node — the browser backend
+    /// drops its bookkeeping so it can release the DOM node it was pinning — so a
+    /// pool that kept the handle would hand back something that can no longer be
+    /// appended or styled, and the hole would silently collapse.
+    #[test]
+    fn a_filler_is_not_reused_after_it_has_been_unmounted() {
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        let dup = vec![
+            (1u32, "A1".to_string()),
+            (1u32, "A2".to_string()),
+            (2u32, "B".to_string()),
+        ];
+        let items = Signal::new(dup.clone());
+
+        let list = super::virtual_list(
+            &mut scope,
+            20.0,
+            move || items.get(),
+            |item: &(u32, String)| item.0,
+            1,
+            |item: (u32, String), s: &mut RenderScope| {
+                let node = s.create_element("div");
+                node.set_attribute("data-name", &item.1);
+                node
+            },
+        );
+        let window = list.children().remove(1);
+
+        // Pass 2: unique keys, so the filler from pass 1 is unmounted (retired).
+        items.set(vec![
+            (1u32, "A1".to_string()),
+            (3u32, "C".to_string()),
+            (2u32, "B".to_string()),
+        ]);
+
+        // Pass 3: the duplicate is back, so the hole needs a filler again.
+        items.set(dup);
+
+        let children = window.children();
+        assert_eq!(
+            children.len(),
+            3,
+            "the hole must be filled again, by a live node"
+        );
+        assert_eq!(
+            children[1].get_attribute("class").as_deref(),
+            Some("rinch-vlist__gap"),
+            "#184: slot 1 is held open by a fresh filler, not a retired handle"
+        );
+        assert_eq!(
+            children[1].get_attribute("style").as_deref(),
+            Some("height:20px"),
+            "#184: a retired handle would swallow the style write too"
+        );
+        assert_eq!(row_names(&window), ["A1", "B"]);
     }
 
     /// A duplicate-free list allocates no filler at all — the common case pays
