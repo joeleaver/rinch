@@ -1,6 +1,15 @@
 name: Visual Regression Tests
 
-# Disabled until rinch-visual-test crate is fully committed
+# Manual-dispatch only, deliberately — see `crates/rinch-visual-test/README.md`
+# ("Why this is not a merge gate yet").
+#
+# The harness works end to end and its exit code is now honoured, but 9 of 12
+# scenarios are red for reasons unrelated to any regression: stale `setup_clicks`
+# coordinates that no longer reach the section they name, and genuine
+# rinch-vs-Chromium differences (the window chrome rinch paints itself has no
+# counterpart in the exported HTML). Wiring a suite that red to `pull_request`
+# would train everyone to ignore it. Green the scenarios first, then add the
+# `pull_request` trigger.
 on:
   workflow_dispatch:
 
@@ -14,10 +23,17 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # The first line mirrors the `test` job in ci.yml — ui-zoo-desktop links
+      # the same gtk/mpv stack, and the previous short list here was missing all
+      # of it. The second line is what this job needs on top: unlike ci.yml it
+      # has to actually *run* the app under a display server.
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb libxkbcommon-dev libwayland-dev
+          sudo apt-get install -y \
+            libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev \
+            libpango1.0-dev libgdk-pixbuf2.0-dev libxdo-dev libmpv-dev \
+            xvfb x11-utils libxkbcommon-dev libwayland-dev libasound2-dev
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -28,32 +44,44 @@ jobs:
         run: |
           cd crates/rinch-visual-test/scripts
           npm install
-          npx playwright install chromium
+          npx playwright install --with-deps chromium
 
       - name: Build visual test runner
         run: cargo build -p rinch-visual-test --release
 
+      # `debug` is already on via this package's `rinch` dependency; passing
+      # `--features debug` fails, because ui-zoo-desktop declares no such feature.
       - name: Build test app (ui-zoo-desktop)
-        run: cargo build -p ui-zoo-desktop --release --features debug
+        run: cargo build -p ui-zoo-desktop --release
 
       - name: Run visual tests
         run: |
-          # Start Xvfb
-          Xvfb :99 -screen 0 1280x720x24 &
+          set -euo pipefail
+
+          Xvfb :99 -screen 0 1280x1024x24 &
+          XVFB_PID=$!
           export DISPLAY=:99
 
-          # Launch app in background
-          cargo run -p ui-zoo-desktop --release --features debug &
+          # Wait for the X server to accept connections rather than guessing.
+          for _ in $(seq 1 30); do
+            xdpyinfo -display :99 >/dev/null 2>&1 && break
+            sleep 1
+          done
+
+          ./target/release/ui-zoo-desktop &
           APP_PID=$!
 
-          # Wait for app to start
-          sleep 5
+          # Wait for the app to publish its debug discovery file; the harness
+          # needs it to find the port.
+          for _ in $(seq 1 60); do
+            ls "$HOME"/.rinch/debug/*.json >/dev/null 2>&1 && break
+            sleep 1
+          done
 
-          # Run tests
-          ./target/release/visual-test || true
-
-          # Cleanup
-          kill $APP_PID || true
+          # The runner exits non-zero when any scenario fails; that is the
+          # job's verdict. Clean up either way without masking it.
+          trap 'kill $APP_PID $XVFB_PID 2>/dev/null || true' EXIT
+          ./target/release/visual-test
 
       - name: Upload test results
         if: always()
