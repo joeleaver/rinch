@@ -4782,10 +4782,16 @@ mod android_frame_clock_tests {
             .matrix[5]
     }
 
-    fn scrim_opacity(app: &RinchApp, scrim: usize) -> f32 {
+    /// The resolved `opacity` of a node, which for a transitioned or animated
+    /// one is the value the last tick sampled.
+    fn opacity_of(app: &RinchApp, node_id: usize) -> f32 {
         let doc = app.doc.as_ref().expect("document");
         let d = doc.borrow();
-        d.tree.get(scrim).expect("scrim").computed_style.opacity
+        d.tree.get(node_id).expect("node").computed_style.opacity
+    }
+
+    fn scrim_opacity(app: &RinchApp, scrim: usize) -> f32 {
+        opacity_of(app, scrim)
     }
 
     fn centre(app: &RinchApp, node_id: usize) -> (f32, f32) {
@@ -5101,8 +5107,32 @@ mod android_frame_clock_tests {
         let (x, y) = centre(&riser.app, riser.trigger);
         tap(&mut riser.app, x, y);
 
-        let presented = run_frames(&mut riser.app, true, |app| running_animations(app) == 0);
+        // "Nothing is running" is also the state *before* the tap's style
+        // change has been resolved, so it cannot be the stop condition on its
+        // own — the loop would return on its first pass having watched
+        // nothing. Latch the start first; the transition half gets this for
+        // free because its stop value (`panel_y == 0`) is not its start value.
+        let seen = std::cell::Cell::new((false, false));
+        let presented = run_frames(&mut riser.app, true, |app| {
+            let (mut started, mut moved) = seen.get();
+            if running_animations(app) > 0 {
+                started = true;
+                // The animation runs `opacity` from 0.1 to 0.9, so any sample
+                // of it is below the 1.0 the class alone would give.
+                moved |= opacity_of(app, by_class(app, "riser")) < 1.0;
+            }
+            seen.set((started, moved));
+            started && running_animations(app) == 0
+        });
+        let (started, moved) = seen.get();
 
+        assert!(started, "the tap has to have started the animation");
+        assert!(
+            moved,
+            "and the animation has to have been sampled onto the element — an \
+             animation that registers and expires without ever changing what \
+             the element looks like is the fault this test exists for"
+        );
         assert_eq!(
             running_animations(&riser.app),
             0,

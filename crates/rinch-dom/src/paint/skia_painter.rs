@@ -434,6 +434,18 @@ impl Painter for TinySkiaPainter {
     }
 
     fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
+        // A fully transparent solid fill writes no pixel — `SourceOver` at
+        // alpha 0 leaves the destination exactly as it found it — so
+        // rasterising it is cost with no output, and the cost is proportional
+        // to the shape. The guard belongs here rather than at any one caller:
+        // `transparent` is `background-color`'s initial value, so it arrives
+        // from every element on every page, and it arrives the same way from
+        // border colours, text-decoration and the render-surface backdrop.
+        if let Brush::Solid(color) = brush
+            && color.components[3] <= 0.0
+        {
+            return;
+        }
         let Some(paint) = brush_to_paint(brush) else {
             return;
         };
@@ -658,13 +670,25 @@ impl Painter for TinySkiaPainter {
         //
         // The bounds are padded by a pixel because `fill_path` is called with
         // anti-aliasing on and its coverage can spill into the pixel outside
-        // the geometric edge.
+        // the geometric edge. The padding is done in floating point, before
+        // the cast: `as i64` saturates, so adding to the result of one can
+        // overflow.
+        //
+        // If the bounds cannot be mapped into device space the whole surface
+        // is walked. Narrowing on a guess would be the one way to get this
+        // wrong — outside the region it walks, the parent mask is never
+        // applied, and content paints straight through the enclosing clip.
         if let Some(ref prev) = previous_mask {
-            let device = bounds.transform(ts).unwrap_or(bounds);
-            let x0 = (device.left().floor() as i64 - 1).clamp(0, w as i64) as usize;
-            let x1 = (device.right().ceil() as i64 + 1).clamp(0, w as i64) as usize;
-            let y0 = (device.top().floor() as i64 - 1).clamp(0, h as i64) as usize;
-            let y1 = (device.bottom().ceil() as i64 + 1).clamp(0, h as i64) as usize;
+            let px = |v: f32, limit: u32| -> usize { (v as f64).clamp(0.0, limit as f64) as usize };
+            let (x0, x1, y0, y1) = match bounds.transform(ts) {
+                Some(device) => (
+                    px((device.left() - 1.0).floor(), w),
+                    px((device.right() + 1.0).ceil(), w),
+                    px((device.top() - 1.0).floor(), h),
+                    px((device.bottom() + 1.0).ceil(), h),
+                ),
+                None => (0, w as usize, 0, h as usize),
+            };
             let stride = w as usize;
             let mask_data = mask.data_mut();
             let prev_data = prev.data();

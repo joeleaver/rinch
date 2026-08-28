@@ -613,7 +613,13 @@ fn paint_node(
     // The cut is on paint only. Hit-testing and layout do not come through
     // here, and CSS keeps an `opacity: 0` element in the box tree and reachable
     // by the pointer — which is exactly what a sheet parked at zero relies on.
-    if node.computed_style.opacity <= 0.0 {
+    //
+    // `display: contents` is the one exception, and it is the same exception
+    // the zero-size branch below already makes: it generates no box, so there
+    // is no group for opacity to composite and no layer is pushed for it — its
+    // children paint into the grandparent at full strength, before this change
+    // and after it.
+    if node.computed_style.opacity <= 0.0 && node.computed_style.display != DisplayValue::Contents {
         return;
     }
     let layout = &node.layout;
@@ -947,10 +953,43 @@ fn paint_node(
                 OverflowValue::Hidden | OverflowValue::Scroll | OverflowValue::Auto
             );
 
+            // Whether the background below is going to write a pixel at all.
+            //
+            // Usually it is not, because the colour is fully transparent, which
+            // is the case for most elements on most pages. `background-color`'s
+            // initial value is `transparent`, and Stylo hands that back as a
+            // real colour
+            // rather than as an absence, so `from_stylo` turns it into
+            // `BackgroundValue::Color(rgba(0, 0, 0, 0))` — a value this code
+            // then dutifully filled. A `SourceOver` fill at alpha 0 writes no
+            // pixel, so every one of those was a rasterisation of the element's
+            // whole box for no output at all, and it cost in proportion to the
+            // box: on the moto g stylus 5G a full-screen one measured 11–12ms,
+            // and a single frame of the library screen spent about 70ms on
+            // eight of them. See card K24.
+            //
+            // The skip is here, in paint, and deliberately not in `from_stylo`:
+            // `transition/diff.rs` interpolates a `background-color` transition
+            // only when both ends are `Color`, so collapsing transparent to
+            // `None` in the computed style would silently stop
+            // `transparent → red` from animating. Paint is the layer that gets
+            // to decide something is not worth drawing; the style has to keep
+            // the colour it was given.
+            let paints_a_background = visible
+                && match &node.computed_style.background {
+                    BackgroundValue::None => false,
+                    BackgroundValue::Color(c) => c.components[3] > 0.0,
+                    _ => true,
+                };
+
             // Find viewport descendants — their rects will be cut out of
             // the background fill so the compositor layer shows through.
+            //
+            // Only worth walking the subtree for when there *is* a background
+            // fill to cut them out of: the holes have no other consumer, and
+            // `clips` is true of every `overflow: hidden` box on the page.
             let mut viewport_holes = Vec::new();
-            if clips {
+            if clips && paints_a_background {
                 find_viewport_rects(
                     tree,
                     node_id,
@@ -982,34 +1021,10 @@ fn paint_node(
                 // Get background from computed style (solid color or gradient).
                 // When viewport_holes is non-empty, we paint the background with
                 // holes cut out (EvenOdd fill) so compositor layers show through.
-                //
-                // …unless the colour is fully transparent, which is the case for
-                // most elements on most pages. `background-color`'s initial
-                // value is `transparent`, and Stylo hands that back as a real
-                // colour rather than as an absence, so `from_stylo` turns it
-                // into `BackgroundValue::Color(rgba(0, 0, 0, 0))` — a value
-                // this code then dutifully filled. A `SourceOver` fill at alpha
-                // 0 writes no pixel, so every one of those was a rasterisation
-                // of the element's whole box for no output at all, and it cost
-                // in proportion to the box: on the moto g stylus 5G a
-                // full-screen one measured 11–12ms, and a single frame of the
-                // library screen spent about 70ms on eight of them. See card
-                // K24.
-                //
-                // The skip is here, in paint, and deliberately not in
-                // `from_stylo`: `transition/diff.rs` interpolates a
-                // `background-color` transition only when both ends are
-                // `Color`, so collapsing transparent to `None` in the computed
-                // style would silently stop `transparent → red` from animating.
-                // Paint is the layer that gets to decide something is not worth
-                // drawing; the style has to keep the colour it was given.
-                let background_is_invisible = matches!(
-                    &node.computed_style.background,
-                    BackgroundValue::Color(c) if c.components[3] <= 0.0
-                );
-                if background_is_invisible {
-                    // Nothing to fill.
-                } else if !viewport_holes.is_empty() {
+                // `viewport_holes` is only ever collected for a background
+                // that will be painted, so testing it first also covers the
+                // "nothing to fill" case.
+                if !viewport_holes.is_empty() {
                     // Build a compound path: outer shape + inner holes (wound opposite)
                     let bg_path = build_background_with_holes(rect, radii, radius, &viewport_holes);
                     match &node.computed_style.background {
@@ -1046,7 +1061,7 @@ fn paint_node(
                         }
                         BackgroundValue::None => {}
                     }
-                } else {
+                } else if paints_a_background {
                     match &node.computed_style.background {
                         BackgroundValue::Color(bg_color) => {
                             if radius > 0.0 {

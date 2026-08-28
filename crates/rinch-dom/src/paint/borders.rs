@@ -472,6 +472,93 @@ pub(super) fn paint_box_shadow(
         path
     }
 
+    /// Whether the hole is wholly inside `outer` — the precondition the punch
+    /// needs, and not a rounding detail.
+    ///
+    /// `Fill::EvenOdd` counts crossings, so a point inside the hole and
+    /// *outside* the layer is crossed once and fills. Where the border box
+    /// escapes the layer's rect the punch therefore stops subtracting and
+    /// starts adding, painting shadow inside the element that CSS says is not
+    /// there. It escapes whenever a shadow is offset further than the layer is
+    /// expanded — the near edge of `0 4px 12px`, say, whose first layers are
+    /// expanded by less than the 4px they are pushed down — and the strip it
+    /// paints only stays hidden while the element's own background is fully
+    /// opaque. So the punch is applied only where it provably subtracts, and
+    /// the layer is filled whole (as it always was) where it does not.
+    fn hole_fits(
+        hole_rect: Rect,
+        hole_radii: RoundedRectRadii,
+        outer_rect: Rect,
+        outer_radii: RoundedRectRadii,
+    ) -> bool {
+        if hole_rect.x0 < outer_rect.x0
+            || hole_rect.y0 < outer_rect.y0
+            || hole_rect.x1 > outer_rect.x1
+            || hole_rect.y1 > outer_rect.y1
+        {
+            return false;
+        }
+        // Per corner: the hole's arc has to sit inside the layer's. Their
+        // centres are `d` apart, so the layer's radius has to beat the hole's
+        // by at least that much. A square layer corner (`or == 0`) cuts
+        // nothing off, so there the rect check above is the whole story.
+        let corner = |hc: (f64, f64), hr: f64, oc: (f64, f64), or: f64| {
+            or <= 0.0 || (hc.0 - oc.0).hypot(hc.1 - oc.1) + hr <= or + 1e-6
+        };
+        corner(
+            (
+                hole_rect.x0 + hole_radii.top_left,
+                hole_rect.y0 + hole_radii.top_left,
+            ),
+            hole_radii.top_left,
+            (
+                outer_rect.x0 + outer_radii.top_left,
+                outer_rect.y0 + outer_radii.top_left,
+            ),
+            outer_radii.top_left,
+        ) && corner(
+            (
+                hole_rect.x1 - hole_radii.top_right,
+                hole_rect.y0 + hole_radii.top_right,
+            ),
+            hole_radii.top_right,
+            (
+                outer_rect.x1 - outer_radii.top_right,
+                outer_rect.y0 + outer_radii.top_right,
+            ),
+            outer_radii.top_right,
+        ) && corner(
+            (
+                hole_rect.x1 - hole_radii.bottom_right,
+                hole_rect.y1 - hole_radii.bottom_right,
+            ),
+            hole_radii.bottom_right,
+            (
+                outer_rect.x1 - outer_radii.bottom_right,
+                outer_rect.y1 - outer_radii.bottom_right,
+            ),
+            outer_radii.bottom_right,
+        ) && corner(
+            (
+                hole_rect.x0 + hole_radii.bottom_left,
+                hole_rect.y1 - hole_radii.bottom_left,
+            ),
+            hole_radii.bottom_left,
+            (
+                outer_rect.x0 + outer_radii.bottom_left,
+                outer_rect.y1 - outer_radii.bottom_left,
+            ),
+            outer_radii.bottom_left,
+        )
+    }
+
+    const SQUARE: RoundedRectRadii = RoundedRectRadii {
+        top_left: 0.0,
+        top_right: 0.0,
+        bottom_right: 0.0,
+        bottom_left: 0.0,
+    };
+
     for shadow in shadows {
         // TODO: inset shadows not yet supported
         if shadow.inset {
@@ -519,23 +606,30 @@ pub(super) fn paint_box_shadow(
                     continue;
                 }
                 let layer_color = AlphaColor::<Srgb>::from_rgba8(sr, sg, sb, alpha_u8);
-                let outer = if has_radius {
+                let (outer_radii, outer) = if has_radius {
                     let expanded_radii = RoundedRectRadii::new(
                         radii.top_left + layer_expand,
                         radii.top_right + layer_expand,
                         radii.bottom_right + layer_expand,
                         radii.bottom_left + layer_expand,
                     );
-                    layer_rect.to_rounded_rect(expanded_radii).into_path(0.1)
+                    (
+                        expanded_radii,
+                        layer_rect.to_rounded_rect(expanded_radii).into_path(0.1),
+                    )
                 } else {
-                    layer_rect.into_path(0.1)
+                    (SQUARE, layer_rect.into_path(0.1))
                 };
-                painter.fill_color(
-                    Fill::EvenOdd,
-                    transform,
-                    layer_color,
-                    &ring(outer, &hole).into(),
-                );
+                if hole_fits(element_box, radii, layer_rect, outer_radii) {
+                    painter.fill_color(
+                        Fill::EvenOdd,
+                        transform,
+                        layer_color,
+                        &ring(outer, &hole).into(),
+                    );
+                } else {
+                    painter.fill_color(Fill::NonZero, transform, layer_color, &outer.into());
+                }
             }
         } else {
             // No blur: simple offset shadow
@@ -546,12 +640,16 @@ pub(super) fn paint_box_shadow(
                 x + w + offset_x + total_expand,
                 y + h + offset_y + total_expand,
             );
-            let outer = if has_radius {
-                shadow_rect.to_rounded_rect(radii).into_path(0.1)
+            let (outer_radii, outer) = if has_radius {
+                (radii, shadow_rect.to_rounded_rect(radii).into_path(0.1))
             } else {
-                shadow_rect.into_path(0.1)
+                (SQUARE, shadow_rect.into_path(0.1))
             };
-            painter.fill_color(Fill::EvenOdd, transform, color, &ring(outer, &hole).into());
+            if hole_fits(element_box, radii, shadow_rect, outer_radii) {
+                painter.fill_color(Fill::EvenOdd, transform, color, &ring(outer, &hole).into());
+            } else {
+                painter.fill_color(Fill::NonZero, transform, color, &outer.into());
+            }
         }
     }
 }
