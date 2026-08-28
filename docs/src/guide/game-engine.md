@@ -441,7 +441,28 @@ if let Some(rect) = ctx.viewport_rect("main") {
 > exactly `"true"` to punch, so a mis-stamped value fails to the safe side — an
 > opaque placeholder, never a see-through window.
 
+> **A hole bigger than what fills it: black bars (GPU).** The complementary
+> case ([#354]). The GPU compositor **aspect-fits** a frame inside its viewport,
+> so a source whose aspect ratio differs from the box leaves letterbox or
+> pillarbox bars — inside the punched hole, but covered by no layer. That was
+> see-through to the desktop for a video playing perfectly. The compositor now
+> pushes an opaque black layer over the **whole** viewport box under the frame's
+> own layer, so the bars come out black exactly as a browser paints them for
+> `<video>`, and the hole is always fully covered.
+>
+> The black is painted by the **compositor**, not by the viewport element. That
+> distinction is the whole design: the compositor draws *under* the Vello UI, so
+> giving the element an opaque `background` would hide the video entirely.
+> `GameViewport` is unaffected — its surface fills its box, so the fit is exact
+> and the backdrop is entirely overdrawn.
+>
+> The **software** backend still blits its frames after paint, so it keeps
+> `main`'s behaviour here; its half of #354 is folded into the move to inline
+> painting tracked by [#358].
+
 [#186]: https://github.com/joeleaver/rinch/issues/186
+[#354]: https://github.com/joeleaver/rinch/issues/354
+[#358]: https://github.com/joeleaver/rinch/issues/358
 
 > **Overlays need a parent with real height.** On the embed path layout runs
 > through Taffy, which treats an absolutely positioned child's **direct parent**

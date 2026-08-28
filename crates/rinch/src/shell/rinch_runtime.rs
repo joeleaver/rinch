@@ -1029,7 +1029,8 @@ impl RinchRuntime {
                 if let Some((viewport, radii)) = self.app.viewport_rect_with_radius(&viewport_name)
                 {
                     compositor_viewport_names.insert(viewport_name.clone());
-                    let viewport = (
+                    // The whole box — what paint punched the hole over.
+                    let box_viewport = (
                         viewport.0 * s,
                         viewport.1 * s,
                         viewport.2 * s,
@@ -1037,11 +1038,11 @@ impl RinchRuntime {
                     );
                     // Letterbox: fit source within viewport preserving aspect ratio.
                     let viewport = {
-                        let (vx, vy, vw, vh) = viewport;
+                        let (vx, vy, vw, vh) = box_viewport;
                         let src_aspect = surf_w as f32 / surf_h.max(1) as f32;
                         let vp_aspect = vw / vh.max(1.0);
                         if (src_aspect - vp_aspect).abs() < 0.001 {
-                            viewport
+                            box_viewport
                         } else if src_aspect > vp_aspect {
                             let fit_h = vw / src_aspect;
                             let offset_y = (vh - fit_h) / 2.0;
@@ -1057,6 +1058,18 @@ impl RinchRuntime {
                         .app
                         .viewport_clip_rect(&viewport_name)
                         .map(|cr| (cr.0 * s, cr.1 * s, cr.2 * s, cr.3 * s));
+                    // Black backdrop under the frame, covering the whole box, so
+                    // the letterbox bars are black rather than see-through
+                    // (issue #354). Pushed first: the compositor draws layers in
+                    // order. Its radii are corrected to the corners the box
+                    // actually shares with its clip, or a viewport that is only
+                    // the top half of a rounded card would have its *middle*
+                    // rounded away, leaving a see-through notch.
+                    all_layers.push(black_backdrop_layer(
+                        box_viewport,
+                        radii_at_shared_corners(box_viewport, clip_rect, border_radius),
+                        clip_rect,
+                    ));
                     all_layers.push(rinch_platform::CompositeLayer {
                         pixels,
                         width: surf_w,
@@ -2317,6 +2330,87 @@ fn compute_absolute_pos(tree: &rinch_dom::node::NodeTree, id: RawNodeId) -> (f32
     (x, y)
 }
 
+// ── Compositor letterbox backdrop ────────────────────────────────
+
+/// Keep only the radii of corners where the viewport's box actually meets the
+/// corner of what clips it, zeroing the rest.
+///
+/// `RinchApp::viewport_rect_with_radius` reports the **clipping ancestor's**
+/// radii, but the viewport is usually only part of that ancestor — in the UI
+/// Zoo demo, a video filling the top of a card whose lower half is the controls
+/// bar. Applying those radii to the viewport's own box then rounds an edge that
+/// runs through the middle of the card, carving a see-through notch out of a
+/// hole nothing else fills: exactly the defect this is meant to close. A corner
+/// is only a real corner where both of the viewport's edges coincide with the
+/// clip's.
+///
+/// With no clip rect there is no ancestor box to compare against, so the radii
+/// are taken as given — the viewport is then the rounded box itself.
+///
+/// All rects are `(x, y, w, h)` in physical pixels; radii are `[tl, tr, br, bl]`.
+#[cfg(any(feature = "gpu", test))]
+fn radii_at_shared_corners(
+    box_rect: (f32, f32, f32, f32),
+    clip_rect: Option<(f32, f32, f32, f32)>,
+    radii: [f32; 4],
+) -> [f32; 4] {
+    let Some((cx, cy, cw, ch)) = clip_rect else {
+        return radii;
+    };
+    // Both rects are truncated from the same layout values, so allow a pixel
+    // of slop rather than demanding bit-exact edges.
+    let near = |a: f32, b: f32| (a - b).abs() <= 1.0;
+    let (bx, by, bw, bh) = box_rect;
+    let (left, top) = (near(bx, cx), near(by, cy));
+    let (right, bottom) = (near(bx + bw, cx + cw), near(by + bh, cy + ch));
+    [
+        if left && top { radii[0] } else { 0.0 },
+        if right && top { radii[1] } else { 0.0 },
+        if right && bottom { radii[2] } else { 0.0 },
+        if left && bottom { radii[3] } else { 0.0 },
+    ]
+}
+
+/// The opaque-black layer that goes **under** a video frame's own layer,
+/// covering the viewport's whole box.
+///
+/// Paint punches its hole over the entire viewport box, but the frame is
+/// aspect-fitted inside it, so a source whose aspect ratio differs from the
+/// box's leaves letterbox/pillarbox bars that no layer covers — see-through to
+/// the desktop on a transparent window (issue #354). This layer covers them,
+/// black, which is what a browser paints for `<video>`.
+///
+/// It has to be the **compositor** that paints the black, not the viewport
+/// element: this backend draws these layers *under* the Vello UI, so an opaque
+/// element background would hide the frame outright. Pushing a backdrop layer
+/// instead needs no change to [`rinch_platform::CompositeLayer`] or the
+/// compositor shader — layers are drawn in order, and this one carries the same
+/// `border_radius` and `clip_rect` as the frame's layer, so it picks up the
+/// viewport's rounded corners and its ancestors' clipping for free.
+///
+/// The source is a single black texel stretched over `viewport`; every sample
+/// of a 1×1 texture is that texel, whatever the filter mode. `Queue::write_texture`
+/// places no row-alignment requirement on the upload.
+///
+/// Compiled under `test` as well as `gpu` so its geometry stays covered by the
+/// default `cargo test`, which builds the software backend and cannot reach
+/// `paint_gpu` at all.
+#[cfg(any(feature = "gpu", test))]
+fn black_backdrop_layer(
+    viewport: (f32, f32, f32, f32),
+    border_radius: [f32; 4],
+    clip_rect: Option<(f32, f32, f32, f32)>,
+) -> rinch_platform::CompositeLayer {
+    rinch_platform::CompositeLayer {
+        pixels: vec![0, 0, 0, 255],
+        width: 1,
+        height: 1,
+        viewport,
+        border_radius,
+        clip_rect,
+    }
+}
+
 // ── Software compositor blit helper ──────────────────────────────────────────
 
 /// Nearest-neighbor blit of an RGBA source into a destination pixel buffer.
@@ -2910,5 +3004,92 @@ mod viewport_tests {
                  re-lays it out at {aw}x{ah}"
             );
         }
+    }
+}
+
+// ── #354: the GPU compositor covers the whole punched box ────────────────
+//
+// Paint cuts the hole over a viewport's entire layout box; the compositor
+// aspect-fits the frame inside it. Whatever the compositor does not draw in
+// that box is background-removed *and* frame-free — see-through to the desktop
+// on a transparent window. The GPU backend therefore draws a black backdrop
+// layer under the frame, the way a browser paints `<video>` bars, from the
+// compositor rather than from the element (this backend draws the video *under*
+// the UI, so an opaque element background would hide the frame outright).
+
+#[cfg(test)]
+mod letterbox_backdrop {
+    use super::*;
+
+    /// The GPU compositor draws `composite_layers` in order, so the backdrop
+    /// must cover the **whole box** (not the fitted rect) and carry the frame
+    /// layer's radii and clip, or the bars are unpainted or the corners square.
+    ///
+    /// `paint_gpu` itself needs a device and a window, so this covers the one
+    /// part of it that is pure geometry. It is compiled in every configuration
+    /// (see `black_backdrop_layer`'s `cfg`), so the default `cargo test` — which
+    /// builds the software backend — still guards the GPU path's shape.
+    #[test]
+    fn gpu_backdrop_layer_covers_the_whole_box_with_black() {
+        let box_viewport = (10.0, 20.0, 200.0, 100.0);
+        let radii = [8.0, 8.0, 8.0, 8.0];
+        let clip = Some((0.0, 0.0, 400.0, 300.0));
+        let layer = black_backdrop_layer(box_viewport, radii, clip);
+
+        assert_eq!(
+            layer.viewport, box_viewport,
+            "the backdrop covers the punched box, not the fitted rect (#354)"
+        );
+        assert_eq!(layer.border_radius, radii, "and the viewport's corners");
+        assert_eq!(layer.clip_rect, clip, "and its ancestors' clipping");
+        assert_eq!(
+            (layer.width, layer.height),
+            (1, 1),
+            "one texel is enough — every sample of a 1x1 texture is that texel"
+        );
+        assert_eq!(
+            layer.pixels,
+            vec![0, 0, 0, 255],
+            "opaque black, so the bars are covered rather than see-through"
+        );
+    }
+
+    /// The radii reported for a viewport belong to its *clipping ancestor*, so
+    /// they only describe corners the two rects share. The UI Zoo shape — a
+    /// video filling the top of a card whose lower half is the controls bar —
+    /// is the one that bites: rounding the viewport's bottom edge carves a
+    /// notch out of the middle of the card that nothing then fills.
+    #[test]
+    fn only_corners_shared_with_the_clip_keep_their_radius() {
+        let card = Some((0.0, 0.0, 200.0, 300.0));
+        // The video occupies the card's top 100px: top corners are real, the
+        // bottom edge runs through the middle of the card.
+        assert_eq!(
+            radii_at_shared_corners((0.0, 0.0, 200.0, 100.0), card, [8.0; 4]),
+            [8.0, 8.0, 0.0, 0.0],
+            "the bottom corners are not corners — rounding them would cut a \
+             see-through notch mid-card (#354)"
+        );
+        // A viewport filling its clip keeps every corner.
+        assert_eq!(
+            radii_at_shared_corners((0.0, 0.0, 200.0, 300.0), card, [8.0; 4]),
+            [8.0; 4]
+        );
+        // Floating in the middle of the clip: no corner is shared.
+        assert_eq!(
+            radii_at_shared_corners((50.0, 50.0, 100.0, 100.0), card, [8.0; 4]),
+            [0.0; 4]
+        );
+        // No clip rect: nothing to compare against, so take the radii as given.
+        assert_eq!(
+            radii_at_shared_corners((0.0, 0.0, 200.0, 100.0), None, [8.0; 4]),
+            [8.0; 4]
+        );
+        // A pixel of slop, because both rects are truncated from the same
+        // layout floats.
+        assert_eq!(
+            radii_at_shared_corners((1.0, 0.0, 199.0, 300.0), card, [8.0; 4]),
+            [8.0; 4]
+        );
     }
 }
