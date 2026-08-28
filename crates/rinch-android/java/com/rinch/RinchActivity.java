@@ -104,6 +104,86 @@ public class RinchActivity extends NativeActivity {
         return new int[] { top, bottom, left, right };
     }
 
+    // ── System Bar Appearance ───────────────────────────────────────────
+
+    /**
+     * Say whether the status bar sits over a light background.
+     *
+     * The clock, the battery and the signal icons are drawn by the system, not
+     * by the app, and the system's default is light-on-dark. An app drawing
+     * edge-to-edge behind a pale background therefore gets white glyphs on
+     * cream until it says otherwise. {@code true} means "the background under
+     * this bar is light, so draw its contents dark".
+     *
+     * @param light whether the bar's background is light
+     */
+    public void setLightStatusBars(boolean light) {
+        runOnUiThread(() -> setBarAppearance(
+            android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS, light));
+    }
+
+    /**
+     * The same for the navigation bar's own contents — the three buttons, or
+     * the gesture pill.
+     *
+     * Separate from {@link #setLightStatusBars(boolean)} on purpose: an app can
+     * be pale under the status bar and dark under the navigation bar, and one
+     * combined call would force it to lie about one end.
+     *
+     * @param light whether the bar's background is light
+     */
+    public void setLightNavigationBars(boolean light) {
+        runOnUiThread(() -> setBarAppearance(
+            android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS, light));
+    }
+
+    /**
+     * On the UI thread, and only there — window appearance is not thread-safe.
+     *
+     * From API 30 the appearance is a masked field on the window's
+     * {@link android.view.WindowInsetsController}, so the mask names the one bit
+     * being written and the other bar's bit is left alone. Below that it is the
+     * decor view's system-UI visibility, in {@link #setLegacyBarAppearance}.
+     */
+    private void setBarAppearance(int appearance, boolean light) {
+        android.view.View decorView = getWindow().getDecorView();
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            android.view.WindowInsetsController controller =
+                decorView.getWindowInsetsController();
+            if (controller != null) {
+                controller.setSystemBarsAppearance(light ? appearance : 0, appearance);
+            } else {
+                // No window yet, so there is nothing to write the appearance to.
+                // Say so — otherwise the bar silently stays light-on-dark.
+                android.util.Log.w("rinch",
+                    "system bar appearance dropped: the window has no insets controller yet");
+            }
+        } else {
+            setLegacyBarAppearance(decorView, appearance, light);
+        }
+    }
+
+    /**
+     * The API 28–29 path: the same bit as a system-UI visibility flag,
+     * read-modify-written so the other bar's flag survives.
+     *
+     * Both light-bar flags exist from API 26 and this crate's floor is 28, so
+     * there is no third era to fall back to. The names are deprecated in favour
+     * of the controller above and are reachable only on the versions that have
+     * no controller, so the suppression lives here — the whole method is the
+     * deprecated path — rather than on the callers, the same way
+     * {@link #vibrate(long)} does it.
+     */
+    @SuppressWarnings("deprecation")
+    private void setLegacyBarAppearance(android.view.View decorView, int appearance, boolean light) {
+        int flag =
+            appearance == android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                ? android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+                : android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+        int flags = decorView.getSystemUiVisibility();
+        decorView.setSystemUiVisibility(light ? (flags | flag) : (flags & ~flag));
+    }
+
     // Activity lifecycle (pause/resume) is delivered to the native run loop via
     // the android-activity glue's MainEvent::Pause/Resume, so no Java override —
     // and no direct JNI call — is needed here. Calling a native method from an

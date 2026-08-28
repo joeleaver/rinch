@@ -62,3 +62,38 @@ pub fn density_dpi() -> Option<i32> {
         Some(dpi)
     })
 }
+
+/// Tell Android that the status bar is drawn over a light background, so its
+/// clock and icons should be dark.
+///
+/// The system draws the bar's contents, not the app, and its default is
+/// light-on-dark. An app that goes edge-to-edge behind a pale background gets
+/// white glyphs on cream until it says otherwise, which is unreadable rather
+/// than merely wrong. `true` means "light background, dark contents".
+///
+/// Separate from [`set_light_navigation_bars`] because the two bars are over
+/// different parts of the app: a pale page under a dark bottom bar is an
+/// ordinary design, and one combined switch would force it to lie about one
+/// end. Call both when the whole app is one shade.
+pub fn set_light_status_bars(light: bool) {
+    set_bar_appearance("setLightStatusBars", light);
+}
+
+/// The same for the navigation bar's own contents — the three buttons, or the
+/// gesture pill. See [`set_light_status_bars`].
+pub fn set_light_navigation_bars(light: bool) {
+    set_bar_appearance("setLightNavigationBars", light);
+}
+
+fn set_bar_appearance(method: &str, light: bool) {
+    bridge::with_activity(|env, activity| {
+        if let Err(e) = env.call_method(
+            activity,
+            method,
+            "(Z)V",
+            &[jni::objects::JValue::Bool(light as jni::sys::jboolean)],
+        ) {
+            log::warn!("{method} failed: {e}");
+        }
+    });
+}
