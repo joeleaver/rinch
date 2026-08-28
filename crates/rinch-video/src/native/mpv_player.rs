@@ -337,8 +337,23 @@ impl MpvPlayer {
         }
 
         // Deliver frame through the sink (RenderSurface compositing pipeline).
-        if let Some(sink) = self.frame_sink.borrow().as_ref() {
+        let delivered = if let Some(sink) = self.frame_sink.borrow().as_ref() {
             sink(&buf, w, h);
+            true
+        } else {
+            false
+        };
+
+        // Release `render_buffer` and `frame_sink` BEFORE announcing the frame.
+        // An unbatched signal write flushes effects synchronously, and an
+        // effect woken here may legitimately re-enter this player —
+        // `play()` -> `register_active_player()` -> `set_frame_sink()` takes
+        // `frame_sink.borrow_mut()`, which panics while the borrow above is
+        // still live (the same re-entrancy `poll_active_players` already
+        // documents).
+        drop(buf);
+
+        if delivered {
             // The one and only "a correctly-sized frame reached the
             // compositor" event in this crate — the `VideoViewport` waits on
             // it before letting paint cut a hole (issue #186). Runs on the
@@ -347,8 +362,8 @@ impl MpvPlayer {
             //
             // `set_if_changed`, not `set`: this runs once per decoded frame,
             // and a plain `set` notifies unconditionally — the viewport effect
-            // would rewrite its `style` attribute at frame rate, restyling the
-            // node every frame for a value that only ever goes false→true.
+            // would restyle the node at frame rate for a value that only ever
+            // goes false→true.
             self.signals.has_frame.set_if_changed(true);
         }
     }

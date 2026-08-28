@@ -1111,6 +1111,11 @@ impl RinchRuntime {
         }
 
         // Set or clear composite layers on the renderer (GPU texture + video only)
+        //
+        // `retaining_layers` records the third case: nothing was collected this
+        // cycle, but a video is still loaded, so the renderer keeps compositing
+        // last cycle's layers. Those layers still need their holes.
+        let mut retaining_layers = false;
         if !all_layers.is_empty() || !gpu_layers.is_empty() {
             renderer.set_composite_layers(all_layers);
             renderer.set_gpu_layers(gpu_layers);
@@ -1123,6 +1128,8 @@ impl RinchRuntime {
             if !video_loaded {
                 renderer.set_composite_layers(vec![]);
                 renderer.set_gpu_layers(vec![]);
+            } else {
+                retaining_layers = true;
             }
         }
 
@@ -1134,7 +1141,18 @@ impl RinchRuntime {
         // `find_viewport_rects` reads as "no filter — punch everything": the
         // gate was inoperative in exactly the case it exists for, a viewport
         // with no frame behind it (issue #186).
-        rinch_dom::paint::set_active_viewports(Some(compositor_viewport_names));
+        //
+        // The one exception is the retention branch above: the renderer WILL
+        // composite last cycle's layers under the UI, but `collect_*` returned
+        // nothing this cycle so their names are no longer in the set. Filtering
+        // on the empty set there would leave those layers hidden behind an
+        // unpunched background — the video blinking out for a frame. Fall back
+        // to the unfiltered behaviour for exactly that case.
+        if retaining_layers {
+            rinch_dom::paint::set_active_viewports(None);
+        } else {
+            rinch_dom::paint::set_active_viewports(Some(compositor_viewport_names));
+        }
 
         // Build scene from document — CPU surfaces paint inline via draw_image()
         let scene = self.app.build_scene(scale, size);

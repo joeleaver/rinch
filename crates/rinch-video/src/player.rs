@@ -179,7 +179,10 @@ impl VideoPlayer {
         self.position.set(0.0);
         self.duration.set(0.0);
         // Any frame we still hold belongs to the previous source.
-        self.has_frame.set(false);
+        // `set_if_changed` for the same reason the write side uses it: a source
+        // loaded before the first frame would otherwise flush the viewport
+        // effect a second time for a value that did not move.
+        self.has_frame.set_if_changed(false);
         self.inner.borrow().set_source(src);
         crate::increment_video_loaded();
     }

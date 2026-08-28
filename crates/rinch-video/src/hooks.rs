@@ -46,7 +46,7 @@ fn use_video_player_impl(src: &str, start_paused: bool) -> VideoPlayer {
     // Unregister the player when the component that created it is unmounted
     // (issue #141).
     //
-    // The player's seven `Signal`s are minted right here, so they belong to the
+    // The player's eight `Signal`s are minted right here, so they belong to the
     // component's scope and are freed when it is disposed — while `play()` has
     // handed a clone to the process-lifetime `ACTIVE_PLAYERS` list that the
     // event loop polls every frame. Without this the very next frame reads a

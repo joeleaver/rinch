@@ -1653,7 +1653,7 @@ mod scrollbar_paint {
 
 #[cfg(feature = "software-renderer")]
 mod viewport_hole_punch {
-    use super::transform_paint::pixel_at;
+    use super::transform_paint::{paint_skia, pixel_at};
     use super::*;
     use rinch_dom::paint::skia_painter::TinySkiaPainter;
 
@@ -1664,73 +1664,57 @@ mod viewport_hole_punch {
         p[3] == 255 && p[0] > 250 && p[1] > 250 && p[2] > 250
     }
 
-    /// A 200×100 white `overflow: hidden` card at the document origin wrapping a
-    /// full-size `data-viewport` hole, painted at scale 1. `ready` is the value
-    /// of `data-viewport-ready`, or `None` to omit the attribute entirely — the
+    /// A 200×100 white clipping box at the document origin wrapping a full-size
+    /// `data-viewport` hole, painted at scale 1. `ready` is the value of
+    /// `data-viewport-ready`, or `None` to omit the attribute entirely — the
     /// shape a `GameViewport` produces.
-    fn paint_card_with_viewport(ready: Option<&str>) -> TinySkiaPainter {
+    ///
+    /// `wrap_in_card` chooses which node is the clipping ancestor that owns the
+    /// white background: a `overflow: hidden` card inside `<body>`, or `<body>`
+    /// itself (`overflow-y: auto` in the UA sheet, which is why the hole reaches
+    /// the compositor instead of stopping at the card).
+    fn paint_viewport(ready: Option<&str>, wrap_in_card: bool) -> TinySkiaPainter {
         let mut doc = RinchDocument::new();
         let body = doc.body();
-        let card = doc.create_element("div");
-        doc.set_attribute(
-            card,
-            "style",
-            "width: 200px; height: 100px; background-color: white; overflow: hidden;",
-        );
-        doc.append_child(body, card);
+        let host = if wrap_in_card {
+            let card = doc.create_element("div");
+            doc.set_attribute(
+                card,
+                "style",
+                "width: 200px; height: 100px; background-color: white; overflow: hidden;",
+            );
+            doc.append_child(body, card);
+            card
+        } else {
+            doc.set_attribute(
+                body,
+                "style",
+                "width: 200px; height: 100px; background-color: white;",
+            );
+            body
+        };
         let viewport = doc.create_element("div");
         doc.set_attribute(viewport, "style", "width: 100%; height: 100%;");
         doc.set_attribute(viewport, "data-viewport", "v");
         if let Some(ready) = ready {
             doc.set_attribute(viewport, "data-viewport-ready", ready);
         }
-        doc.append_child(card, viewport);
+        doc.append_child(host, viewport);
         doc.resolve_layout(800.0, 600.0);
 
         let mut painter = TinySkiaPainter::new(800, 600);
-        let mut paint_layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
-        rinch_dom::paint::paint_document(
-            &doc.tree,
-            &mut painter,
-            1.0,
-            (800.0, 600.0),
-            &mut doc.font_cx,
-            &mut paint_layout_cx,
-        );
+        paint_skia(&mut doc, &mut painter);
         painter
     }
 
-    /// The same hole directly under `<body>`, with no card in between. `<body>`
-    /// is `overflow-y: auto` in the UA sheet, so it punches too — which is why
-    /// the hole reaches the compositor instead of stopping at the card.
-    fn paint_body_with_viewport(ready: Option<&str>) -> TinySkiaPainter {
-        let mut doc = RinchDocument::new();
-        let body = doc.body();
-        doc.set_attribute(
-            body,
-            "style",
-            "width: 200px; height: 100px; background-color: white;",
-        );
-        let viewport = doc.create_element("div");
-        doc.set_attribute(viewport, "style", "width: 100%; height: 100%;");
-        doc.set_attribute(viewport, "data-viewport", "v");
-        if let Some(ready) = ready {
-            doc.set_attribute(viewport, "data-viewport-ready", ready);
-        }
-        doc.append_child(body, viewport);
-        doc.resolve_layout(800.0, 600.0);
+    /// The same hole inside an `overflow: hidden` card.
+    fn paint_card_with_viewport(ready: Option<&str>) -> TinySkiaPainter {
+        paint_viewport(ready, true)
+    }
 
-        let mut painter = TinySkiaPainter::new(800, 600);
-        let mut paint_layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
-        rinch_dom::paint::paint_document(
-            &doc.tree,
-            &mut painter,
-            1.0,
-            (800.0, 600.0),
-            &mut doc.font_cx,
-            &mut paint_layout_cx,
-        );
-        painter
+    /// The same hole directly under `<body>`, with no card in between.
+    fn paint_body_with_viewport(ready: Option<&str>) -> TinySkiaPainter {
+        paint_viewport(ready, false)
     }
 
     /// The bug: the card's background is cut away under a viewport that has
@@ -1757,6 +1741,22 @@ mod viewport_hole_punch {
              got {:?}",
             pixel_at(&p, 100, 50)
         );
+    }
+
+    /// The documented fail-safe direction: a node that carries the attribute
+    /// must say exactly `"true"`, so a mis-stamped value yields an opaque
+    /// placeholder rather than a see-through window.
+    #[test]
+    fn a_mis_stamped_readiness_value_fails_safe() {
+        for value in ["True", "1", "yes", " true", ""] {
+            let p = paint_card_with_viewport(Some(value));
+            assert!(
+                is_opaque_white(pixel_at(&p, 100, 50)),
+                "data-viewport-ready={value:?} is not `true`, so it must not \
+                 punch (#186), got {:?}",
+                pixel_at(&p, 100, 50)
+            );
+        }
     }
 
     /// Guard: `GameViewport` stamps no readiness attribute and legitimately

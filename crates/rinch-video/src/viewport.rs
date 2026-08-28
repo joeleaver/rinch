@@ -69,6 +69,13 @@ fn video_viewport_render(scope: &mut RenderScope, player: &VideoPlayer) -> NodeH
     let el = rinch_macros::rsx! {
         div {
             class: "rinch-video-viewport",
+            // The static declarations are set ONCE, here, exactly as they were
+            // before the readiness gate existed. `pointer-events: none` is
+            // load-bearing: it is the author declaration that beats the UA
+            // `[data-viewport] { pointer-events: auto }` rule from #209, and
+            // rinch-video deliberately opts out of hittability. The starting
+            // background is the placeholder, because a player has no frame yet.
+            style: "pointer-events: none; background: #000; width: 100%; height: 100%;",
         }
     };
     el.set_attribute("data-viewport", &player.viewport_id());
@@ -82,19 +89,13 @@ fn video_viewport_render(scope: &mut RenderScope, player: &VideoPlayer) -> NodeH
             // hole, so we own these pixels and paint them.
             let ready = p.has_frame.get() && !matches!(p.state.get(), PlaybackState::Error(_));
             node.set_attribute("data-viewport-ready", if ready { "true" } else { "false" });
-            // `set_attribute("style", ...)` REPLACES the attribute, so every
-            // declaration is re-emitted. `pointer-events: none` is load-bearing:
-            // it is the author declaration that beats the UA
-            // `[data-viewport] { pointer-events: auto }` rule from #209, and
-            // rinch-video deliberately opts out of hittability.
-            node.set_attribute(
-                "style",
-                if ready {
-                    "pointer-events: none; background: transparent; width: 100%; height: 100%;"
-                } else {
-                    "pointer-events: none; background: #000; width: 100%; height: 100%;"
-                },
-            );
+            // `set_style`, NOT `set_attribute("style", ...)`: the latter
+            // REPLACES the whole attribute, which would wipe the `style:` prop
+            // and any style shorthands the caller applied to the component
+            // after `render()` returned (`VideoViewport { player, style:
+            // "flex: 1;" }` — the crate's own documented example) the first
+            // time readiness flipped. Only the background is ours to own.
+            node.set_style("background", if ready { "transparent" } else { "#000" });
         });
     }
 
