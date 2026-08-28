@@ -719,9 +719,24 @@ impl RinchApp {
 
         // Short-circuit when nothing needs resolving — avoids redundant tree walks
         // when a ReRender event arrives after the drag handler already resolved.
+        //
+        // A finished image decode is the one thing that needs resolving without
+        // any node being dirty: the decoding thread cannot know which nodes
+        // carry that `src`, so it queues the result and leaves the matching to
+        // `resolve_layout`'s `drain_pending_images`. Returning early here means
+        // that drain never happens, and an `<img>` loaded into an otherwise
+        // idle screen keeps the 0x0 intrinsic size it was created with — laid
+        // out as nothing and painted as nothing. Found while showing a
+        // rasterised PDF page from local storage, where the app is completely
+        // still between the tap that starts the import and the picture that is
+        // supposed to appear.
         {
             let d = doc.borrow();
-            if d.tree.dirty_nodes.is_empty() && !d.tree.styles_dirty && !theme_changed {
+            if d.tree.dirty_nodes.is_empty()
+                && !d.tree.styles_dirty
+                && !theme_changed
+                && !rinch_dom::image_cache::has_pending(d.doc_key())
+            {
                 return false;
             }
         }
@@ -1414,6 +1429,14 @@ impl RinchApp {
     }
 
     /// Check if there are dirty nodes that need repaint.
+    ///
+    /// A finished image decode counts, even though it dirties no node — see
+    /// [`Self::has_pending_images`]. Every "is there anything to do?" gate in
+    /// the workspace is one of these two predicates, so answering it here is
+    /// what makes the drain reachable from *every* host (the desktop paint
+    /// preamble and wake, the `AboutToWait` frame clock, the Android loop, an
+    /// embedded `RinchContext::update`) instead of only from the ones that
+    /// remembered to ask separately.
     pub fn has_dirty_nodes(&self) -> bool {
         self.doc
             .as_ref()
@@ -1422,11 +1445,14 @@ impl RinchApp {
                 !d.tree.dirty_nodes.is_empty() || d.tree.styles_dirty
             })
             .unwrap_or(false)
+            || self.has_pending_images()
     }
 
     /// Check if there are pending layout changes that need resolving
-    /// before the next paint. Covers DOM mutations, style changes, and
-    /// structural changes that set layout_dirty directly.
+    /// before the next paint. Covers DOM mutations, style changes,
+    /// structural changes that set layout_dirty directly, and a decoded
+    /// image waiting to be taken into the cache
+    /// ([`Self::has_pending_images`]).
     pub fn has_pending_layout(&self) -> bool {
         self.doc
             .as_ref()
@@ -1435,6 +1461,7 @@ impl RinchApp {
                 !d.tree.dirty_nodes.is_empty() || d.tree.styles_dirty || d.tree.layout_dirty
             })
             .unwrap_or(false)
+            || self.has_pending_images()
     }
 
     /// Paint a semi-transparent inspect highlight overlay on the given painter.
@@ -2128,6 +2155,24 @@ impl RinchApp {
     /// focus requests) to this document (issue #134).
     pub(crate) fn doc_key(&self) -> u64 {
         self.doc.as_ref().map(|d| d.borrow().doc_key()).unwrap_or(0)
+    }
+
+    /// Whether a background image decode is waiting to be taken into this
+    /// document's cache.
+    ///
+    /// A shell whose frame loop only resolves when something is dirty has to
+    /// ask this: a finished decode dirties no node — see
+    /// `rinch_dom::image_cache::has_pending` — so an `<img>` on an otherwise
+    /// idle screen is never given its pixels, and paints as nothing.
+    ///
+    /// Shells do not call this directly; [`Self::has_dirty_nodes`] and
+    /// [`Self::has_pending_layout`] fold it in, so every existing "is there
+    /// anything to do?" gate already covers it. It stays public because a shell
+    /// that wants the reason on its own can ask.
+    pub fn has_pending_images(&self) -> bool {
+        self.doc
+            .as_ref()
+            .is_some_and(|d| rinch_dom::image_cache::has_pending(d.borrow().doc_key()))
     }
 
     /// Programmatically focus an element by node ID (`request_focus` /
@@ -5435,6 +5480,256 @@ mod android_frame_clock_tests {
             1,
             "with no clock the animation is registered and never advanced, so \
              it is still sitting there after {SETTLE:?}"
+        );
+    }
+}
+
+/// An image that finishes decoding while the app is idle has to reach the
+/// screen it was idle on.
+///
+/// The decoding thread cannot know which nodes carry that `src` — working that
+/// out is `drain_pending_images`'s job, and it runs inside layout. So every
+/// gate of the form "nothing is dirty, skip the frame" also skips the one thing
+/// that would have discovered there was work, and the picture never arrives:
+/// not late, *never*, until something unrelated happens to redraw the screen.
+/// `RinchApp` has exactly two such gates — [`RinchApp::has_dirty_nodes`] (the
+/// `AboutToWait` frame clock, `RinchContext::update`, `needs_update`) and
+/// [`RinchApp::has_pending_layout`] (the desktop paint preamble and wake, the
+/// Android loop) — and both are checked here, along with the thing they exist
+/// to buy: the box actually growing to the decoded bitmap.
+#[cfg(test)]
+mod pending_image_tests {
+    use super::*;
+    use rinch_core::image::{ImageLoadResult, ImageLoader};
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::Duration;
+
+    /// A 3x2 opaque-red PNG, inline so the test needs neither a fixture file
+    /// nor an encoder dependency.
+    const RED_3X2_PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x02, 0x08, 0x06, 0x00, 0x00, 0x00, 0x9d,
+        0x74, 0x66, 0x1a, 0x00, 0x00, 0x00, 0x11, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8,
+        0xcf, 0xc0, 0xf0, 0x1f, 0x86, 0x19, 0x90, 0x39, 0x00, 0x9b, 0x7e, 0x0b, 0xf5, 0x0f, 0x5f,
+        0x26, 0x22, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    /// The same bitmap as a `data:` URI, which is decoded synchronously into
+    /// the cache and never goes near the pending queue.
+    const RED_3X2_DATA_URI: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAYAAACddGYaAAAAEUlEQVR42mP4z8DwH4YZkDkAm34L9Q9fJiIAAAAASUVORK5CYII=";
+
+    /// A loader that parks its decode thread until the test lets it go. The
+    /// window between "the app settled and went idle" and "the decode landed"
+    /// is then the test's to control, instead of a race with a thread spawn.
+    struct GatedLoader {
+        gate: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl ImageLoader for GatedLoader {
+        fn load(&self, _src: &str) -> ImageLoadResult {
+            let (lock, cv) = &*self.gate;
+            let mut open = lock.lock().unwrap_or_else(|e| e.into_inner());
+            while !*open {
+                open = cv.wait(open).unwrap_or_else(|e| e.into_inner());
+            }
+            ImageLoadResult::Loaded(RED_3X2_PNG.to_vec())
+        }
+    }
+
+    fn img_box(app: &RinchApp, img: &NodeHandle) -> (f32, f32) {
+        let doc = app.doc.as_ref().expect("mounted");
+        let d = doc.borrow();
+        let n = d
+            .tree
+            .nodes
+            .get(img.node_id().0)
+            .expect("img still in the tree");
+        (n.layout.width, n.layout.height)
+    }
+
+    #[test]
+    fn a_decode_landing_on_an_idle_app_reaches_the_box() {
+        let captured: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+        let captured_in = captured.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let img = scope.create_element("img");
+            root.append_child(&img);
+            *captured_in.borrow_mut() = Some(img);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+
+        // Swap in the gated loader before the `src` that triggers the load.
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        {
+            let doc = app.doc.as_ref().expect("mounted");
+            doc.borrow_mut().tree.image_loader = Some(Arc::new(GatedLoader { gate: gate.clone() }));
+        }
+
+        let img = captured.borrow().clone().expect("img captured at mount");
+        img.set_attribute("src", "gated://red.png");
+
+        // Settle, the way an app that sets a `src` and then sits still settles:
+        // the load is requested, the tree goes clean, the frame loop sleeps.
+        for _ in 0..8 {
+            if !app.has_pending_layout() {
+                break;
+            }
+            app.resolve_and_repaint(800.0, 600.0);
+        }
+        assert!(
+            !app.has_pending_layout() && !app.has_dirty_nodes(),
+            "the app has to actually be idle for this test to mean anything"
+        );
+        assert_eq!(
+            img_box(&app, &img),
+            (0.0, 0.0),
+            "no pixels yet, so no box yet"
+        );
+
+        // The decode lands. Nothing else happens — no input, no signal write.
+        {
+            let (lock, cv) = &*gate;
+            *lock.lock().unwrap_or_else(|e| e.into_inner()) = true;
+            cv.notify_all();
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !app.has_pending_images() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            app.has_pending_images(),
+            "the decode never reached the queue"
+        );
+
+        assert!(
+            app.has_pending_layout(),
+            "the desktop paint preamble / wake and the Android loop gate on this \
+             — without it the frame loop goes back to sleep for ever"
+        );
+        assert!(
+            app.has_dirty_nodes(),
+            "the AboutToWait frame clock and RinchContext::update gate on this \
+             one instead — it is a different predicate and needs its own answer"
+        );
+
+        // And the resolve those gates ask for is the one that gives the `<img>`
+        // the intrinsic size it was created without.
+        app.resolve_and_repaint(800.0, 600.0);
+        assert_eq!(
+            img_box(&app, &img),
+            (3.0, 2.0),
+            "the decoded bitmap's size must reach the box"
+        );
+
+        // Drained: this costs one frame, not every frame from here on.
+        assert!(!app.has_pending_images());
+    }
+
+    /// A `background-image` decode changes no box — `drain_pending_images`
+    /// reports it as *not* needing a Taffy recompute — but its users' pixels did
+    /// change, so they have to be in the dirty region the next paint clears, or
+    /// the software renderer's dirty-region path repaints some other node's rect
+    /// and skips the freshly decoded background entirely.
+    #[test]
+    fn a_background_image_decode_marks_its_users_paint_dirty() {
+        let captured: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+        let captured_in = captured.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "width: 50px; height: 50px");
+            *captured_in.borrow_mut() = Some(root.clone());
+            root
+        });
+        app.mount_component(800.0, 600.0);
+
+        // Swap the loader in before the style that triggers the load, so the
+        // default `FileImageLoader` never gets a chance to fail it first.
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        {
+            let doc = app.doc.as_ref().expect("mounted");
+            doc.borrow_mut().tree.image_loader = Some(Arc::new(GatedLoader { gate: gate.clone() }));
+        }
+        captured
+            .borrow()
+            .clone()
+            .expect("root captured at mount")
+            .set_attribute(
+                "style",
+                "width: 50px; height: 50px; background-image: url(gated://bg.png)",
+            );
+        for _ in 0..8 {
+            if !app.has_pending_layout() {
+                break;
+            }
+            app.resolve_and_repaint(800.0, 600.0);
+        }
+
+        // A paint consumes the dirty region, so drop what the settle frames
+        // left behind: what the decode adds has to stand on its own.
+        {
+            let doc = app.doc.as_ref().expect("mounted");
+            doc.borrow_mut().tree.paint_dirty_nodes.clear();
+        }
+
+        {
+            let (lock, cv) = &*gate;
+            *lock.lock().unwrap_or_else(|e| e.into_inner()) = true;
+            cv.notify_all();
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !app.has_pending_images() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            app.has_pending_images(),
+            "the background-image decode never reached the queue"
+        );
+
+        app.resolve_and_repaint(800.0, 600.0);
+        assert!(!app.has_pending_images(), "drained");
+
+        let bg_id = captured
+            .borrow()
+            .clone()
+            .expect("root captured at mount")
+            .node_id()
+            .0;
+        let doc = app.doc.as_ref().expect("mounted");
+        let d = doc.borrow();
+        assert!(
+            d.tree.paint_dirty_nodes.contains(&bg_id),
+            "the background's own node must be in the region the next paint \
+             clears, or the dirty-region path repaints around it"
+        );
+    }
+
+    /// The synchronous path this is measured against: a `data:` URI is decoded
+    /// straight into the cache, so the `<img>` is sized on its first layout.
+    /// Both paths set the same Taffy node context — the asynchronous one just
+    /// does it after the inline boxes have already been measured, which is the
+    /// whole difficulty.
+    #[test]
+    fn a_data_uri_is_sized_on_the_first_layout() {
+        let captured: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+        let captured_in = captured.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let img = scope.create_element("img");
+            img.set_attribute("src", RED_3X2_DATA_URI);
+            root.append_child(&img);
+            *captured_in.borrow_mut() = Some(img);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+
+        let img = captured.borrow().clone().expect("img captured at mount");
+        assert_eq!(img_box(&app, &img), (3.0, 2.0));
+        assert!(
+            !app.has_pending_images(),
+            "a data: URI never goes near the pending queue"
         );
     }
 }

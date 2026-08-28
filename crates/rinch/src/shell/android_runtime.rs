@@ -409,6 +409,13 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         // Check if app has pending layout (signal changes create pending updates)
         let has_momentum = gesture.has_momentum();
         let redraw = REDRAW_PENDING.swap(false, Ordering::AcqRel);
+        // `pending_layout` also covers a finished image decode, which has
+        // dirtied no node (`RinchApp::has_pending_images`) — without that this
+        // loop spins past the decode forever and the `<img>` paints as a blank
+        // card. Found on a moto g stylus showing a rasterised PDF page out of
+        // app-private storage: the page was on disk, the box was the right
+        // size, and the pixels only arrived when something else happened to
+        // make the screen redraw.
         let pending = frame.pending_layout;
         let needs_paint = redraw || pending || has_momentum || frame.needs_paint;
 

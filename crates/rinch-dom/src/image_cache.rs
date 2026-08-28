@@ -186,7 +186,38 @@ pub fn request_image_load(doc_key: u64, src: String, loader: Arc<dyn ImageLoader
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(pending);
+
+        // Wake the main thread. The desktop event loop runs on
+        // `ControlFlow::Wait`, so without this the decode sits in the queue
+        // until some other input happens to arrive — an `<img src>` set while
+        // the app is otherwise idle stays 0x0 and unpainted, in practice
+        // forever. Dispatching an empty callback is the cheapest thing that
+        // goes through the platform wake path.
+        //
+        // The wake is *promptness only*, never the correctness guarantee, and
+        // must not be treated as one: hosts install their own dispatcher, and
+        // an embedded one deliberately wakes nothing (its game loop is already
+        // turning); the desktop one coalesces, so a wake can be swallowed when
+        // another closure is already queued. What actually guarantees the drain
+        // is [`has_pending`], which every host's "is there anything to do?"
+        // gate consults.
+        rinch_core::run_on_main_thread(|| {});
     });
+}
+
+/// Whether any decode is queued for this document.
+///
+/// A completed image load dirties no DOM node — the decoding thread has no idea
+/// which nodes reference the source, and [`ImageCache::drain_pending`] is what
+/// works that out — so a frame loop that short-circuits on "nothing is dirty"
+/// skips the drain and the image never gets its intrinsic size. Anything that
+/// gates layout on dirtiness has to ask this too.
+pub fn has_pending(doc_key: u64) -> bool {
+    PENDING_IMAGES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|item| item.doc_key == doc_key)
 }
 
 /// Remove all queued entries for a document that is being torn down.
@@ -273,6 +304,63 @@ mod tests {
         assert_eq!(cache2.drain_pending(doc2), vec!["doc2.png".to_string()]);
         assert!(cache2.get("doc2.png").is_some());
         assert_eq!(pending_count_for(doc2), 0);
+    }
+
+    #[test]
+    fn has_pending_is_scoped_to_the_document_and_cleared_by_the_drain() {
+        let doc1 = rinch_core::dom::next_doc_key();
+        let doc2 = rinch_core::dom::next_doc_key();
+
+        assert!(!has_pending(doc1), "nothing queued yet");
+
+        // A decode lands for doc2. It is doc2's reason to resolve, and must not
+        // become doc1's — a doc1 frame loop that believed this would resolve
+        // every frame for ever, since doc1's drain can never clear it.
+        push_pending(doc2, "doc2.png");
+        assert!(has_pending(doc2));
+        assert!(!has_pending(doc1));
+
+        // The drain is what clears it — this is the loop-termination argument
+        // for every gate that consults `has_pending`.
+        let mut cache2 = ImageCache::new();
+        cache2.drain_pending(doc2);
+        assert!(!has_pending(doc2));
+    }
+
+    #[test]
+    fn has_pending_covers_a_failed_decode_and_is_cleared_by_it() {
+        // A failed load is queued like any other result, so it must also report
+        // as pending: the drain is the only thing that removes it, and a gate
+        // that ignored failures would leave the entry queued for ever.
+        let doc = rinch_core::dom::next_doc_key();
+        PENDING_IMAGES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(PendingImage {
+                doc_key: doc,
+                src: "broken.png".to_string(),
+                result: Err("nope".to_string()),
+            });
+        assert!(has_pending(doc));
+
+        let mut cache = ImageCache::new();
+        assert!(
+            cache.drain_pending(doc).is_empty(),
+            "a failure is not newly decoded"
+        );
+        assert!(!has_pending(doc), "but it is drained");
+    }
+
+    #[test]
+    fn purge_pending_clears_has_pending() {
+        let doc = rinch_core::dom::next_doc_key();
+        push_pending(doc, "gone.png");
+        assert!(has_pending(doc));
+        purge_pending(doc);
+        assert!(
+            !has_pending(doc),
+            "a torn-down document must stop asking its host to resolve"
+        );
     }
 
     #[test]
