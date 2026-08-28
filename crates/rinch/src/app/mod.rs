@@ -2970,16 +2970,23 @@ mod popup_backdrop_hit_tests {
     /// The one node carrying the backdrop's class. The component appends it
     /// last, but finding it by class says what is meant rather than relying on
     /// that.
+    ///
+    /// Iterated with `Slab::iter`, not `0..nodes.len()`: a slab's `len()` is
+    /// its *occupied* count, not one past its highest index, so the moment
+    /// anything in the tree is freed the backdrop can live past the end of
+    /// that range and this would fail blaming the component.
     fn find_backdrop(app: &RinchApp) -> usize {
         let doc = app.doc.as_ref().unwrap();
         let d = doc.borrow();
-        (0..d.tree.nodes.len())
-            .find(|&id| {
-                d.tree
-                    .get(id)
-                    .and_then(|n| n.attributes.get("class"))
+        d.tree
+            .nodes
+            .iter()
+            .find(|(_, n)| {
+                n.attributes
+                    .get("class")
                     .is_some_and(|c| c.contains("rinch-dropdown-menu__backdrop"))
             })
+            .map(|(id, _)| id)
             .expect("the menu renders a backdrop when close_on_click_outside is on")
     }
 

@@ -1143,9 +1143,12 @@ div { style: "position: fixed; top: var(--rinch-window-top-inset, 0px); bottom: 
 ```
 
 `Drawer`, `Modal`, and the top-anchored `Notification` positions already do this.
-Backdrops that intentionally cover the whole window (`DropdownMenu`, `Select`)
-deliberately do not. Do **not** "fix" this by insetting the fixed containing
-block — that would break CSS semantics and make desktop diverge from rinch-web.
+`DropdownMenu`'s and `Select`'s click-catching backdrops are **not** fixed — they
+are `position: absolute` inside the popup's own root (see the note on
+`.rinch-dropdown-menu__backdrop`), so the inset never applied to them, and a
+click outside whatever clips the popup does not dismiss it. Do **not** "fix"
+this by insetting the fixed containing block — that would break CSS semantics
+and make desktop diverge from rinch-web.
 
 ## Transparent Windows
 
