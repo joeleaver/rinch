@@ -30,6 +30,7 @@ use crate::computed_style::{
     BackgroundValue, DisplayValue, OverflowValue, PositionValue, VisibilityValue,
 };
 use crate::node::{Node, NodeKind, NodeTree, RawNodeId};
+use crate::stacking::{PaintKind, paints_at_stacking_root, stacking_paint_order};
 
 /// Compute the dirty region (union of all paint-dirty node rects) in physical pixels.
 ///
@@ -451,17 +452,17 @@ pub fn paint_document(
     );
 }
 
-/// Paint children with proper CSS stacking context support.
+/// Paint the children of `node_id`, front to back.
 ///
-/// When the current node is a stacking context (or the root/body), children
-/// are painted in three phases per the CSS spec:
-/// 1. Descendant SCs with negative z-index (sorted ascending)
-/// 2. In-flow non-SC children in DOM order
-/// 3. Descendant SCs with non-negative z-index (sorted by z-index, stable DOM order)
+/// A stacking-context root (and the body, which is one by fiat) paints the
+/// sequence [`stacking_paint_order`] gives it — CSS 2.1 Appendix E order, with
+/// descendant stacking contexts and positioned `z-index: auto` boxes hoisted out
+/// of their parents and sorted in among each other.
 ///
-/// When the current node is NOT a stacking context, only non-SC children are
-/// painted in DOM order — SC children are skipped because they will be
-/// collected and painted by an ancestor stacking context.
+/// Any other node paints only the children that were *not* hoisted, in tree
+/// order; an ancestor stacking context has the rest. [`paints_at_stacking_root`]
+/// is the one predicate that decides which is which, and hit testing asks it the
+/// same question so that what is on top is also what is tapped.
 #[allow(clippy::too_many_arguments)]
 fn paint_children_with_stacking(
     tree: &NodeTree,
@@ -479,67 +480,20 @@ fn paint_children_with_stacking(
         return;
     };
 
-    let is_sc_root = node_id == tree.body_id || creates_stacking_context(node);
+    // Content this node has already drawn as inline boxes, via
+    // `paint_inline_layout`: painting it again as a box would double it.
+    let already_drawn_inline = |child: &Node, kind: PaintKind| {
+        skip_ifc_children && kind != PaintKind::StackingContext && child.ifc_root == Some(node_id)
+    };
+
     let is_body = node_id == tree.body_id;
-
-    if is_sc_root {
-        // Collect descendant SCs that should be painted at this level.
-        // At the body level, use the root variant which hoists position:fixed
-        // SCs from within intermediate SC boundaries — fixed elements should
-        // always paint at viewport level, not clipped by ancestor overflow.
-        let entries = if is_body {
-            collect_stacking_contexts_root(tree, &node.children, scale, offset_x, offset_y)
-        } else {
-            collect_stacking_contexts(tree, &node.children, scale, offset_x, offset_y)
-        };
-
-        // Phase 1: Negative z-index stacking contexts (sorted ascending)
-        let mut negative: Vec<&StackingContextEntry> =
-            entries.iter().filter(|e| e.z_index < 0).collect();
-        negative.sort_by_key(|e| (e.z_index, e.dom_order));
-        for entry in &negative {
-            paint_node(
-                tree,
-                entry.node_id,
-                painter,
-                scale,
-                entry.offset_x,
-                entry.offset_y,
-                font_cx,
-                layout_cx,
-                node_transform,
-            );
-        }
-
-        // Phase 2: In-flow non-SC children in DOM order
-        for &child_id in &node.children {
-            let Some(child) = tree.get(child_id) else {
-                continue;
-            };
-            if creates_stacking_context(child) {
+    if is_body || node.creates_stacking_context() {
+        for entry in stacking_paint_order(tree, node_id, is_body, scale, offset_x, offset_y) {
+            if let Some(child) = tree.get(entry.node_id)
+                && already_drawn_inline(child, entry.kind)
+            {
                 continue;
             }
-            if skip_ifc_children && child.ifc_root.is_some() {
-                continue;
-            }
-            paint_node(
-                tree,
-                child_id,
-                painter,
-                scale,
-                offset_x,
-                offset_y,
-                font_cx,
-                layout_cx,
-                node_transform,
-            );
-        }
-
-        // Phase 3: Non-negative z-index stacking contexts (sorted by z-index, stable DOM order)
-        let mut non_negative: Vec<&StackingContextEntry> =
-            entries.iter().filter(|e| e.z_index >= 0).collect();
-        non_negative.sort_by_key(|e| (e.z_index, e.dom_order));
-        for entry in &non_negative {
             paint_node(
                 tree,
                 entry.node_id,
@@ -553,16 +507,11 @@ fn paint_children_with_stacking(
             );
         }
     } else {
-        // Not a stacking context — paint only non-SC children in DOM order.
-        // SC children are skipped; they'll be collected by an ancestor SC.
         for &child_id in &node.children {
             let Some(child) = tree.get(child_id) else {
                 continue;
             };
-            if creates_stacking_context(child) {
-                continue;
-            }
-            if skip_ifc_children && child.ifc_root.is_some() {
+            if paints_at_stacking_root(child) || already_drawn_inline(child, PaintKind::InFlow) {
                 continue;
             }
             paint_node(
