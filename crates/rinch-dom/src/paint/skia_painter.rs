@@ -434,6 +434,18 @@ impl Painter for TinySkiaPainter {
     }
 
     fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
+        // A fully transparent solid fill writes no pixel — `SourceOver` at
+        // alpha 0 leaves the destination exactly as it found it — so
+        // rasterising it is cost with no output, and the cost is proportional
+        // to the shape. The guard belongs here rather than at any one caller:
+        // `transparent` is `background-color`'s initial value, so it arrives
+        // from every element on every page, and it arrives the same way from
+        // border colours, text-decoration and the render-surface backdrop.
+        if let Brush::Solid(color) = brush
+            && color.components[3] <= 0.0
+        {
+            return;
+        }
         let Some(paint) = brush_to_paint(brush) else {
             return;
         };
@@ -642,12 +654,51 @@ impl Painter for TinySkiaPainter {
         let fill_rule = to_fill_rule(fill);
         mask.fill_path(&path, fill_rule, true, ts);
 
-        // If there was a previous mask, intersect with it
+        // If there was a previous mask, intersect with it — but only over the
+        // part of the surface the new clip path actually reaches.
+        //
+        // `Mask::new` hands back a mask of zeroes and `fill_path` writes only
+        // inside the path, so every byte outside the path's device-space bounds
+        // is still zero, and zero times whatever the parent mask holds is zero.
+        // Multiplying those bytes is arithmetic whose answer is already in the
+        // buffer. Running the loop over the whole mask regardless is what made
+        // a clip cost the surface rather than the box: at 1080×2460 that is
+        // 2.66 million multiply-and-divides per nested clip, and the library
+        // screen pushes seventeen clips a frame — every `overflow: hidden` box,
+        // every scroller, every rounded thumbnail — for about 35ms of a 90ms
+        // frame on the moto g stylus 5G. See card K24.
+        //
+        // The bounds are padded by a pixel because `fill_path` is called with
+        // anti-aliasing on and its coverage can spill into the pixel outside
+        // the geometric edge. The padding is done in floating point, before
+        // the cast: `as i64` saturates, so adding to the result of one can
+        // overflow.
+        //
+        // If the bounds cannot be mapped into device space the whole surface
+        // is walked. Narrowing on a guess would be the one way to get this
+        // wrong — outside the region it walks, the parent mask is never
+        // applied, and content paints straight through the enclosing clip.
         if let Some(ref prev) = previous_mask {
+            let px = |v: f32, limit: u32| -> usize { (v as f64).clamp(0.0, limit as f64) as usize };
+            let (x0, x1, y0, y1) = match bounds.transform(ts) {
+                Some(device) => (
+                    px((device.left() - 1.0).floor(), w),
+                    px((device.right() + 1.0).ceil(), w),
+                    px((device.top() - 1.0).floor(), h),
+                    px((device.bottom() + 1.0).ceil(), h),
+                ),
+                None => (0, w as usize, 0, h as usize),
+            };
+            let stride = w as usize;
             let mask_data = mask.data_mut();
             let prev_data = prev.data();
-            for (m, p) in mask_data.iter_mut().zip(prev_data.iter()) {
-                *m = ((*m as u16 * *p as u16 + 127) / 255) as u8;
+            for y in y0..y1 {
+                let row = y * stride;
+                let m = &mut mask_data[row + x0..row + x1];
+                let p = &prev_data[row + x0..row + x1];
+                for (m, p) in m.iter_mut().zip(p.iter()) {
+                    *m = ((*m as u16 * *p as u16 + 127) / 255) as u8;
+                }
             }
         }
 
