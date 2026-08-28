@@ -100,6 +100,7 @@ registers the node without asking for anything back.
 | `on_focus_gained` | Tab onto the node, a press on it (or on any of its children), `focus()` / `request_focus`, and when the **window** regains OS focus while this target still holds the claim |
 | `on_focus_lost` | Anything else takes the keyboard — another registered widget, an `<input>`, a `<select>`, the rich-text editor, a render surface — a press landing outside, and when the **window** loses OS focus |
 | `on_key` | Every `KeyDown` while this target holds focus, **before** the runtime's own handling |
+| `on_ime` | Every IME composition event while this target holds focus (see [IME](#ime) below) |
 
 `on_key` returns `true` to **consume** the key. A consumed key stops there: no
 Tab navigation, no Enter/Space activation, no DevTools shortcut. Returning
@@ -155,6 +156,61 @@ window refocus, with no key routing in between. Use it to hide a caret and idle
 a blink timer. While the window is blurred, rinch reports the OS IME disabled,
 so a candidate box follows the window that actually has the keyboard.
 
+### IME
+
+A widget with its own text model can take **IME composition** — CJK conversion,
+autocorrect, dead keys, a swipe keyboard — by registering `on_ime`. That is what
+declares the target a *text* target: the runtime then switches the platform
+input method on while the widget holds the keyboard, and routes every one of the
+five portable `ImeEvent` variants to it — the same contract the rich-text editor
+and a built-in `<input>` consume. A registration without `on_ime` turns nothing on, so a focusable card
+or a custom checkbox never pops a candidate window.
+
+```rust
+use rinch::prelude::*;
+
+register_focus_target(
+    &node,
+    FocusEntry::new()
+        // Where the OS puts its candidate box, in logical window pixels.
+        .caret_rect(move || Some(caret.get()))
+        .on_ime(move |e| match e {
+            // A transient overlay you render and discard — never document text.
+            ImeEvent::Preedit { text, cursor } => model.set_preedit(text, *cursor),
+            // The conversion the user chose. Insert it as one edit.
+            ImeEvent::Commit(text) => model.insert(text),
+            // Composition ended with nothing committed.
+            ImeEvent::Disabled => model.clear_preedit(),
+            _ => {}
+        })
+        .on_focus_lost(move || model.clear_preedit()),
+);
+```
+
+`caret_rect` is `(x, y, w, h)` in **logical window space** — CSS pixels from the
+window's top-left, the same space layout bounds are reported in. Do not
+pre-multiply by the display scale factor; the shell hands the rect to the
+platform as a logical size and the platform scales it. Return `None` when there
+is no caret; placement then falls back to the platform's default. The provider
+is polled every time rinch reconciles the window's IME state (once per
+event-loop iteration), so the candidate box follows the caret with nothing to
+notify — keep it cheap, and do not mutate the DOM from it.
+
+Two things the runtime deliberately does **not** do:
+
+- **It never fabricates an event.** It holds no preedit on your behalf, so a
+  focus change is not an `ImeEvent::Disabled`. When another target claims the
+  keyboard the window's input method may stay enabled throughout and nothing
+  ends your composition — clear the preedit in `on_focus_lost`, as above.
+- **`ImeEvent::DeleteSurrounding` is inert on desktop today.** Rinch asks winit
+  only for cursor-area support, so no desktop backend advertises
+  surrounding-text and the variant never arrives. Android's `InputConnection`
+  does send it.
+
+Everything under [Window focus](#window-focus) applies: while the window is
+blurred, IME reports disabled and no composition is routed, but the claim — and
+`on_ime` with it — comes back on refocus.
+
 ## Where this does *not* apply
 
 - **The browser backend (`rinch-web`).** There is no arbiter there because the
@@ -165,9 +221,13 @@ so a candidate box follows the window that actually has the keyboard.
   capture-phase hook for the whole document, dispatched *before* the arbiter and
   regardless of focus. It is for global shortcuts; `on_key` is for a focused
   widget. They are different jobs and both still exist.
-- **IME.** A registered target drives no IME composition yet. `FocusEntry`
-  accepts a `caret_rect` provider so the plumbing is ready, but nothing reads it
-  — tracked as issue #176.
+- **IME on the browser backend.** `on_ime` is desktop / Android / embed only,
+  like the rest of this API. On web, attach `compositionstart` /
+  `compositionupdate` / `compositionend` to your element yourself — the browser
+  delivers composition to whatever it considers focused.
+- **The Android soft keyboard.** A registered target participates in desktop
+  IME, but does not yet raise Android's on-screen keyboard: the shell still
+  watches for a focused `<input>` or the rich-text editor.
 - **Modal containment.** Tab still reaches controls behind a `Modal`, `Drawer`
   or `DropdownMenu` backdrop; the backdrop blocks pointer hits only. Tracked
   separately.

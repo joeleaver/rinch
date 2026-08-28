@@ -952,9 +952,20 @@ register_focus_target(
   fires `on_focus_lost` and keeps the claim (releasing would fire
   `data-onchange` on every alt-tab, #226); refocus re-fires `on_focus_gained`.
   `ime_state()` reports disabled while blurred.
-- Not yet: IME for a registered target (`FocusEntry::caret_rect` is an unread
-  seam, #176) and backdrop modality (Tab still reaches controls behind a
-  Modal/Drawer backdrop).
+- **IME rides the same claim** (#176): adding `.on_ime(|e: &ImeEvent| …)`
+  declares the target a *text* target, so `ime_state()` switches the platform
+  input method on for it and every `ImeEvent` is routed to it, exactly like the
+  editor and `<input>`. Without `on_ime` a focusable node drives no IME (a card
+  must not pop a candidate window). `.caret_rect(|| Some((x, y, w, h)))` places
+  the OS candidate box in **logical window pixels** (not physical — the shell
+  passes it to winit as a `LogicalPosition`), and is re-polled every event-loop
+  iteration so it follows the caret. The runtime fabricates no events: a focus
+  change is *not* an `ImeEvent::Disabled`, so clear your preedit in
+  `on_focus_lost`. `ImeEvent::DeleteSurrounding` stays inert on desktop
+  (`sync_ime` requests only `with_cursor_area()`).
+- Not yet: the Android soft keyboard for a registered target (the shell still
+  watches for a focused `<input>`/editor), and backdrop modality (Tab still
+  reaches controls behind a Modal/Drawer backdrop).
 - **Web has no arbiter** — `register_focus_target` is desktop/Android/embed
   only; use a real `tabindex` and the DOM's own `focus`/`blur` there.
 

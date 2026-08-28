@@ -1246,6 +1246,21 @@ impl RinchApp {
                         self.dispatch_input_ime(node_id, ime);
                         actions.push(AppAction::RequestRedraw);
                     }
+                    // A registered custom text component (issue #176) consumes
+                    // the same portable `ImeEvent` as the two built-in engines
+                    // — the routing half of "IME is a shared runtime service",
+                    // not a parallel path.
+                    FocusTarget::Node(node_id) => {
+                        // Self-heal a stale claim before delivering, exactly
+                        // like the KeyDown arm: node ids are recycled slab
+                        // indices, so a claim whose node was unmounted must not
+                        // keep the OS composing into nothing.
+                        if !self.node_target_is_live(node_id) {
+                            self.set_focus_target(FocusTarget::None);
+                        } else if crate::focus_registry::offer_ime(self.doc_key(), node_id, &ime) {
+                            actions.push(AppAction::RequestRedraw);
+                        }
+                    }
                     // Surfaces and no focus do not consume IME.
                     _ => {}
                 }
