@@ -1,4 +1,5 @@
-//! Android runtime using android-activity (NativeActivity) + softbuffer.
+//! Android runtime using android-activity (NativeActivity), presenting
+//! straight into the `ANativeWindow` the Activity owns.
 //!
 //! Bypasses winit entirely for direct control over the Android Activity
 //! lifecycle, touch input, and surface management. Uses the same
@@ -697,84 +698,86 @@ fn map_android_keycode(keycode: android_activity::input::Keycode) -> Option<KeyC
     }
 }
 
-// ── Softbuffer surface wrapper ───────────────────────────────────────────────
+// ── The window surface ───────────────────────────────────────────────────────
 
-/// Wrapper around `NativeWindow` that provides both `HasWindowHandle` and
-/// `HasDisplayHandle` traits required by softbuffer.
-struct AndroidWindow {
-    native: ndk::native_window::NativeWindow,
-}
-
-impl raw_window_handle::HasWindowHandle for AndroidWindow {
-    fn window_handle(
-        &self,
-    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
-        // Delegate to ndk's impl
-        self.native.window_handle()
-    }
-}
-
-impl raw_window_handle::HasDisplayHandle for AndroidWindow {
-    fn display_handle(
-        &self,
-    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
-        Ok(unsafe {
-            raw_window_handle::DisplayHandle::borrow_raw(
-                raw_window_handle::RawDisplayHandle::Android(
-                    raw_window_handle::AndroidDisplayHandle::new(),
-                ),
-            )
-        })
-    }
-}
-
+/// The screen, and the one place a finished frame becomes pixels on it.
+///
+/// This writes straight into the buffer `ANativeWindow_lock` hands back. It
+/// used to go through `softbuffer`, which is the right abstraction on the
+/// desktop — one API over X11, Wayland, Win32 and the rest — and the wrong one
+/// here, because Android is the platform where softbuffer cannot map the
+/// window's memory into the caller's hands. Its Android backend keeps a shadow
+/// `Vec<Pixel>` the size of the screen, allocates and zeroes a fresh one on
+/// every `next_buffer()`, lets the caller fill *that*, and then copies it a
+/// byte at a time into the locked window buffer on `present()`. Every frame
+/// therefore paid for a 10.6 MB allocation and two full-screen copies where
+/// one would do.
+///
+/// Card K27 measured the three phases on a moto g stylus 5G at 1080x2460,
+/// with a temporary `log::info!` probe around each — the technique K24 used —
+/// before and after this rewrite:
+///
+/// ```text
+///                     acquire   fill   swap    total
+/// through softbuffer      4.1    2.9    5.2     12.2
+/// into the window         0.5    2.0    0.6      3.1
+/// ```
+///
+/// `acquire` is the allocate-and-zero, `fill` is this function's own copy, and
+/// `swap` is handing the buffer to the compositor. So only about a quarter of
+/// the ~12ms was the copy this file controls; the rest was the shadow buffer
+/// existing at all. That mattered more than it sounds: on a
+/// screen that is scrolling with momentum the painter returns its cached
+/// pixmap untouched and nothing is redrawn, so those 12ms *were* the entire
+/// frame — 298 of the 318 frames in K27's library-scroll trace repainted
+/// nothing and cost 13.3ms each anyway. After the rewrite the same trace's
+/// unchanged frames cost 6.4ms, and the loop presents about 30% more of them
+/// in the same wall-clock window — the residue is `ANativeWindow_lock`
+/// blocking for a free buffer, which is the display's back-pressure and not
+/// work.
+///
+/// Writing into the window directly gives up nothing here. The one thing a
+/// shadow buffer buys is the ability to leave pixels alone between frames,
+/// and this shell never does: `build_pixels` hands back a complete frame every
+/// time, so every pixel of the window is written every time regardless of what
+/// the swap chain had in it before.
 struct SoftSurface {
-    surface: softbuffer::Surface<std::sync::Arc<AndroidWindow>, std::sync::Arc<AndroidWindow>>,
+    native: ndk::native_window::NativeWindow,
     width: u32,
     height: u32,
 }
 
 impl SoftSurface {
     fn new(window: &ndk::native_window::NativeWindow, width: u32, height: u32) -> Option<Self> {
-        use std::sync::Arc;
-
-        let wrapper = Arc::new(AndroidWindow {
+        let surface = Self {
             native: window.clone(),
-        });
-        let width = width.max(1);
-        let height = height.max(1);
+            width: width.max(1),
+            height: height.max(1),
+        };
+        surface.configure();
+        Some(surface)
+    }
 
-        let context = softbuffer::Context::new(wrapper.clone()).ok()?;
-        let mut surface = softbuffer::Surface::new(&context, wrapper).ok()?;
-
-        use std::num::NonZeroU32;
-        surface
-            .configure(
-                NonZeroU32::new(width).unwrap(),
-                NonZeroU32::new(height).unwrap(),
-                softbuffer::AlphaMode::Opaque,
-            )
-            .ok()?;
-
-        Some(Self {
-            surface,
-            width,
-            height,
-        })
+    /// Ask the window for buffers of the size and format this shell paints.
+    ///
+    /// `R8G8B8X8_UNORM` and not `R8G8B8A8_UNORM`: the frame is opaque, the
+    /// fourth byte is never read, and asking for an alpha channel would invite
+    /// the compositor to blend a surface that has nothing behind it.
+    fn configure(&self) {
+        use ndk::hardware_buffer_format::HardwareBufferFormat;
+        if let Err(e) = self.native.set_buffers_geometry(
+            self.width as i32,
+            self.height as i32,
+            Some(HardwareBufferFormat::R8G8B8X8_UNORM),
+        ) {
+            log::error!("present: set_buffers_geometry failed: {e}");
+        }
     }
 
     fn resize(&mut self, width: u32, height: u32) {
-        let width = width.max(1);
-        let height = height.max(1);
-        self.width = width;
-        self.height = height;
-
-        use std::num::NonZeroU32;
-        let _ = self.surface.configure(
-            NonZeroU32::new(width).unwrap(),
-            NonZeroU32::new(height).unwrap(),
-            softbuffer::AlphaMode::Opaque,
-        );
+        self.width = width.max(1);
+        self.height = height.max(1);
+        self.configure();
     }
 
     fn present_pixels(&mut self, pixels: &[u8], width: u32, height: u32) {
@@ -782,28 +785,39 @@ impl SoftSurface {
             self.resize(width, height);
         }
 
-        let mut buffer = match self.surface.next_buffer() {
-            Ok(b) => b,
+        let mut guard = match self.native.lock(None) {
+            Ok(g) => g,
             Err(_) => return,
         };
+        // `lines()` is `None` only for a format with no byte size — which
+        // `configure` has already ruled out, but a window whose geometry
+        // request was refused could still be something else, and a garbled
+        // screen is worse than a dropped frame.
+        let Some(lines) = guard.lines() else {
+            return;
+        };
 
-        let w = width as usize;
-        let src_stride = w * 4;
-        for (y, row) in buffer.pixel_rows().enumerate() {
-            let src_offset = y * src_stride;
-            for x in 0..w.min(row.len()) {
-                let base = src_offset + x * 4;
-                if base + 3 < pixels.len() {
-                    row[x] = softbuffer::Pixel::new_rgb(
-                        pixels[base],
-                        pixels[base + 1],
-                        pixels[base + 2],
-                    );
-                }
+        let src_stride = width as usize * 4;
+        for (y, line) in lines.enumerate() {
+            let src = y * src_stride;
+            if src + src_stride > pixels.len() {
+                break;
             }
+            let n = line.len().min(src_stride);
+            // SAFETY: `MaybeUninit<u8>` has the same layout as `u8`, so an
+            // initialised `&[u8]` is a valid `&[MaybeUninit<u8>]` to read
+            // from. This is the transmute `MaybeUninit::copy_from_slice`
+            // performs, written out because that method is not yet stable on
+            // this toolchain.
+            let src_uninit = unsafe {
+                std::slice::from_raw_parts(
+                    pixels[src..src + n].as_ptr().cast::<std::mem::MaybeUninit<u8>>(),
+                    n,
+                )
+            };
+            line[..n].copy_from_slice(src_uninit);
         }
-
-        let _ = buffer.present();
+        // Dropping the guard unlocks the buffer and posts it.
     }
 }
 
@@ -870,11 +884,21 @@ impl GpuSurface {
         let render_texture = Self::make_texture(&device, width, height);
         let readback_buffer = Self::make_buffer(&device, width, height);
 
+        // `use_cpu: false`, which is the whole point of having a device.
+        //
+        // It read `true` until card K27 measured it. Vello's `use_cpu` swaps
+        // its compute pipeline for CPU implementations of the same stages —
+        // a debugging aid — so this feature initialised Vulkan, allocated a
+        // GPU texture, and then rasterised on the same four cores the
+        // software painter uses. On a moto g stylus 5G at 1080x2460 that cost
+        // 31ms a frame on the library list and 56ms on a screen with a
+        // rasterised PDF page; with the flag corrected the same frames took
+        // **2.3ms and 5.0ms**. Nothing else about the path changed.
         let mut renderer = vello::Renderer::new(
             &device,
             vello::RendererOptions {
                 antialiasing_support: vello::AaSupport::area_only(),
-                use_cpu: true,
+                use_cpu: false,
                 num_init_threads: None,
                 pipeline_cache: None,
             },
@@ -931,6 +955,32 @@ impl GpuSurface {
         self.readback_buffer = Self::make_buffer(&self.device, w, h);
     }
 
+    /// Render the scene on the GPU and bring the pixels back to the CPU.
+    ///
+    /// **The readback is what this path costs, and it costs more than the
+    /// drawing it replaces.** Card K27 timed the four phases separately on a
+    /// moto g stylus 5G at 1080x2460, on three real screens:
+    ///
+    /// ```text
+    ///            vello   readback   unpack   present     total
+    /// library      2.7       51.8     16.9       3.5      75.5
+    /// sheet        1.9       36.0     14.9       3.1      59.3
+    /// PDF page     5.0       46.9     16.3       3.3      73.4
+    /// ```
+    ///
+    /// The rasterisation is 2–5ms. Everything after it — waiting for
+    /// `copy_texture_to_buffer` to land in mappable memory, then stripping
+    /// wgpu's 256-byte row padding out of the mapped range — is 50–69ms, and
+    /// it is paid on *every* presented frame whether or not anything changed,
+    /// because unlike the software painter there is no cached pixmap to
+    /// return unread. The software path on the same three screens repaints in
+    /// 44–83ms and presents an unchanged frame in 6.4ms.
+    ///
+    /// So `android-gpu` as written is slower than the CPU it was meant to
+    /// relieve, and the fix is not in this function: it is for the shell to
+    /// hand the `ANativeWindow` to wgpu as a surface and present the swapchain
+    /// texture directly, at which point the numbers above become the 2–5ms
+    /// column alone. Until that exists, this is a debugging path.
     fn render_to_pixels(&mut self, scene: &vello::Scene) -> (&[u8], u32, u32) {
         let view = self
             .render_texture
