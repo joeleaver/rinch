@@ -220,7 +220,10 @@ blurred, IME reports disabled and no composition is routed, but the claim — an
 - **The document-level keyboard hook.** `set_keyboard_interceptor` is a
   capture-phase hook for the whole document, dispatched *before* the arbiter and
   regardless of focus. It is for global shortcuts; `on_key` is for a focused
-  widget. They are different jobs and both still exist.
+  widget. They are different jobs and both still exist. Its *lifetime* does
+  match the arbiter's, though: registering it during a render releases it when
+  that component unmounts, exactly as a `FocusEntry` is deregistered (issue
+  #183). Registering it from `main` keeps app lifetime.
 - **IME on the browser backend.** `on_ime` is desktop / Android / embed only,
   like the rest of this API. On web, attach `compositionstart` /
   `compositionupdate` / `compositionend` to your element yourself — the browser

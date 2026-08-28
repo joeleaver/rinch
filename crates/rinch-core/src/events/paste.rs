@@ -44,7 +44,7 @@ thread_local! {
     /// The one interceptor slot for the whole thread — the same single-slot,
     /// last-wins caveat as [`KEYBOARD_INTERCEPTOR`](super::set_keyboard_interceptor):
     /// two documents on one thread share it.
-    static PASTE_INTERCEPTOR: RefCell<Option<PasteInterceptor>> = RefCell::new(None);
+    static PASTE_INTERCEPTOR: RefCell<Option<PasteInterceptor>> = const { RefCell::new(None) };
 }
 
 /// Set the global paste interceptor.
@@ -63,40 +63,19 @@ thread_local! {
 /// installed, so a later `set_paste_interceptor` is never clobbered by an
 /// earlier component unmounting. Registering outside any render — from `main`,
 /// a timer, a detached callback — has no owner and so lives for the life of the
-/// app, as before.
+/// app, as before. That discipline lives in
+/// [`install_scoped_slot`](crate::reactive::install_scoped_slot), shared with
+/// the keyboard and selection registries.
 pub fn set_paste_interceptor<F>(cb: F)
 where
     F: Fn(&PasteEventData) -> bool + 'static,
 {
-    let cb: PasteInterceptor = Rc::new(cb);
-    let mine = Rc::downgrade(&cb);
-    // The displaced interceptor is dropped *after* the borrow ends: its `Drop`
-    // is user code and may re-enter this module (clearing, or registering a
-    // replacement), which inside the `borrow_mut` would panic.
-    let _previous = PASTE_INTERCEPTOR.with(|i| i.borrow_mut().replace(cb));
-    crate::reactive::on_cleanup(move || {
-        let Some(ours) = mine.upgrade() else {
-            // Already replaced by a later registration, which owns the slot now.
-            return;
-        };
-        let _displaced = PASTE_INTERCEPTOR.with(|i| {
-            let mut slot = i.borrow_mut();
-            if slot
-                .as_ref()
-                .is_some_and(|current| Rc::ptr_eq(current, &ours))
-            {
-                slot.take()
-            } else {
-                None
-            }
-        });
-    });
+    crate::reactive::install_scoped_slot(&PASTE_INTERCEPTOR, Rc::new(cb));
 }
 
 /// Clear the global paste interceptor.
 pub fn clear_paste_interceptor() {
-    // Dropped outside the borrow — see `set_paste_interceptor`.
-    let _previous = PASTE_INTERCEPTOR.with(|i| i.borrow_mut().take());
+    crate::reactive::clear_scoped_slot(&PASTE_INTERCEPTOR);
 }
 
 /// Whether a paste interceptor is registered.
@@ -112,8 +91,7 @@ pub fn has_paste_interceptor() -> bool {
 /// The `Rc` is cloned out before the call so the handler may re-enter (register a
 /// different interceptor, for instance) without a double borrow.
 pub fn dispatch_paste_event(data: &PasteEventData) -> bool {
-    let interceptor = PASTE_INTERCEPTOR.with(|i| i.borrow().clone());
-    match interceptor {
+    match crate::reactive::read_scoped_slot(&PASTE_INTERCEPTOR) {
         Some(cb) => cb(data),
         None => false,
     }
