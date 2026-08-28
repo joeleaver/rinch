@@ -13,9 +13,16 @@
 //!
 //! | the finger | becomes | emitted |
 //! |---|---|---|
-//! | moves past [`SCROLL_THRESHOLD`] | a scroll | `MouseWheel` per frame, then momentum |
+//! | moves past [`SCROLL_THRESHOLD`] | a scroll | `PointerCancel`, then `MouseWheel` per frame, then momentum |
 //! | lifts while still | a tap | `MouseDown`/`MouseUp` (left) at the down point |
 //! | stays still past [`LONG_PRESS_TIMEOUT`] | a context menu | `MouseDown`/`MouseUp` (right) |
+//!
+//! Only the first of those three abandons something. A tap and a long press
+//! each *complete* the press they started, so they end with a release; a scroll
+//! takes the gesture away from whatever was under the finger, and
+//! [`PlatformEvent::PointerCancel`] is how the document is told. Nothing else
+//! ends a gesture here — see the note on `PointerCancel` in
+//! [`TouchGesture::process`] for why there is no scroll-end event beside it.
 
 use std::time::{Duration, Instant};
 
@@ -99,6 +106,27 @@ impl TouchGesture {
     /// `now` is passed in rather than read from the clock so that the whole
     /// recogniser stays a pure function of its inputs, and a test can hold a
     /// finger down for 500ms without sleeping.
+    ///
+    /// # Why a cancel and no scroll-end
+    ///
+    /// [`PlatformEvent::PointerCancel`] says "the interaction you had is gone",
+    /// and the only thing here that takes one away is a scroll claiming the
+    /// gesture. The obvious sibling — a "the finger lifted after scrolling"
+    /// event — is deliberately absent, on three grounds:
+    ///
+    /// - Nothing could consume it. A scroll reaches the document as
+    ///   `MouseWheel`, which only moves a container that can actually scroll; a
+    ///   row that wants to know it was swiped never sees the deltas in the first
+    ///   place, so handing it the lift would complete half a gesture.
+    /// - The lift is not when the scroll ends. Momentum keeps emitting wheel
+    ///   deltas after the finger is gone (see [`Self::tick_momentum`]), so an
+    ///   end fired on `Up` would be a lie for as long as the list is still
+    ///   coasting — an honest one has to wait for the fling to settle, which is
+    ///   a design of its own and not this one.
+    /// - It would be a second end-of-gesture channel. The pointer stream this
+    ///   recogniser is being grown towards ends with a release the document
+    ///   already understands, and two events meaning "the finger is up" is one
+    ///   more than anyone can keep in agreement.
     pub(crate) fn process(
         &mut self,
         action: TouchAction,
@@ -127,6 +155,15 @@ impl TouchGesture {
                         if dx.abs() > SCROLL_THRESHOLD || dy.abs() > SCROLL_THRESHOLD {
                             // Crossed threshold — switch to scrolling, which
                             // also drops the pending long press.
+                            //
+                            // The scroll has just taken the gesture over, and
+                            // this is the moment the document has to hear about
+                            // it: not at the lift, half a second later, but now,
+                            // while it still might complete whatever the press
+                            // started. Emitted on the crossing frame, so exactly
+                            // once per gesture — `Scrolling` never returns to
+                            // `Pending`.
+                            events.push(PlatformEvent::PointerCancel);
                             self.state = TouchState::Scrolling {
                                 last_x: x,
                                 last_y: y,
@@ -175,7 +212,10 @@ impl TouchGesture {
                         });
                     }
                     TouchState::Scrolling { .. } => {
-                        // End of scroll drag — momentum will be applied in tick()
+                        // End of scroll drag — momentum will be applied in
+                        // tick(). No event: the document was told this gesture
+                        // was no longer its own back when the scroll claimed it,
+                        // and a lift adds nothing to that.
                     }
                     // The context event was dispatched half a second ago. The
                     // release only closes the press it opened — no left-button
@@ -193,15 +233,25 @@ impl TouchGesture {
                 self.state = TouchState::Idle;
             }
             TouchAction::Cancel => {
-                // A cancelled gesture never becomes a tap, but a long press that
-                // already fired still gets its release: the press pair stays
-                // balanced and `:active` cannot stick.
-                if matches!(self.state, TouchState::LongPressed) {
-                    events.push(PlatformEvent::MouseUp {
+                match self.state {
+                    // The system took the contact away from an unresolved press
+                    // — a parent view claiming the gesture, the app going to the
+                    // background. Same message as a scroll taking it over, for
+                    // the same reason: the press will never be completed.
+                    TouchState::Pending { .. } => events.push(PlatformEvent::PointerCancel),
+                    // A long press that already fired still gets its release:
+                    // the press pair stays balanced and `:active` cannot stick.
+                    // It is not cancelled — the context event *completed*, and
+                    // telling the document to tear down the menu the same finger
+                    // just opened is the opposite of what happened.
+                    TouchState::LongPressed => events.push(PlatformEvent::MouseUp {
                         x,
                         y,
                         button: MouseButton::Right,
-                    });
+                    }),
+                    // Already cancelled on the crossing frame; a second one
+                    // would be a cancel with nothing left to cancel.
+                    TouchState::Scrolling { .. } | TouchState::Idle => {}
                 }
                 self.state = TouchState::Idle;
                 self.velocity_x = 0.0;
@@ -296,6 +346,7 @@ mod tests {
                     delta_x,
                     delta_y,
                 } => format!("wheel {x} {y} {delta_x} {delta_y}"),
+                PlatformEvent::PointerCancel => "cancel".to_string(),
                 other => format!("{other:?}"),
             })
             .collect()
@@ -364,7 +415,9 @@ mod tests {
 
     /// The behaviour that already worked must keep working: a press released
     /// before the deadline is the tap it always was, and the timer dies with it
-    /// rather than firing into the next frame.
+    /// rather than firing into the next frame. No cancel either — a tap
+    /// *completes* the press it started, and the asserted sequence is the whole
+    /// sequence, so the absence is checked rather than assumed.
     #[test]
     fn a_press_released_before_the_deadline_is_still_a_tap() {
         let mut f = Finger::new();
@@ -394,8 +447,8 @@ mod tests {
         f.act(800, TouchAction::Up, 100.0, 160.0);
         assert_eq!(
             f.emitted(),
-            ["move 100 100", "wheel 100 100 0 30"],
-            "the wheel event is the scroll; nothing else may be synthesised"
+            ["move 100 100", "cancel", "wheel 100 100 0 30"],
+            "the cancel hands the gesture to the scroll; nothing else may be synthesised"
         );
 
         assert!(
@@ -403,13 +456,19 @@ mod tests {
             "the flick must still coast after the lift"
         );
         f.tick(820);
-        assert_eq!(f.emitted().len(), 3, "the coast emits a wheel event");
+        assert_eq!(f.emitted().len(), 4, "the coast emits a wheel event");
     }
 
     /// Once the menu is open the gesture belongs to it. Dragging the same finger
     /// away must not scroll the list behind the menu, and the lift must still not
     /// click — the alternative is a menu that appears and then has the page
     /// yanked out from under it by the very finger that opened it.
+    ///
+    /// Nor may the movement cancel: the press did not get taken away, it
+    /// *resolved*, into the context event that fired half a second ago. A cancel
+    /// here would tell the document to tear down the menu the same finger just
+    /// opened. So the absorbed movement stays absorbed, and the sequence is the
+    /// one stage 1 asserted, unchanged.
     #[test]
     fn movement_after_the_context_menu_has_fired_is_absorbed() {
         let mut f = Finger::new();
@@ -423,6 +482,83 @@ mod tests {
             f.emitted(),
             ["move 100 100", "down Right 100 100", "up Right 100 300"],
             "no wheel, no click — and the release lands where the finger left"
+        );
+    }
+
+    /// The event this stage exists for, and the two things about it that are
+    /// easy to get wrong: *when* it fires and *how often*.
+    ///
+    /// When: on the frame the finger leaves the slop, not on the first move
+    /// (which is still a press) and not on the lift (by which time whatever was
+    /// under the finger may already have acted). How often: once, however many
+    /// frames the scroll then runs for — the document is told the gesture is no
+    /// longer its own, and repeating that says nothing new.
+    #[test]
+    fn a_press_that_becomes_a_scroll_cancels_once_on_the_frame_it_crosses() {
+        let mut f = Finger::new();
+        f.act(0, TouchAction::Down, 100.0, 100.0);
+
+        // 3px is inside the slop — this is still a press that could yet be a tap
+        // or a long press, and cancelling it here would kill both.
+        f.act(10, TouchAction::Move, 103.0, 100.0);
+        assert_eq!(f.emitted(), ["move 100 100"], "no cancel inside the slop");
+
+        // 12px — the scroll claims the gesture on this frame.
+        f.act(20, TouchAction::Move, 100.0, 112.0);
+        assert_eq!(
+            f.emitted(),
+            ["move 100 100", "cancel"],
+            "the cancel lands on the crossing frame, ahead of the first wheel"
+        );
+
+        f.act(30, TouchAction::Move, 100.0, 140.0);
+        f.act(40, TouchAction::Move, 100.0, 170.0);
+        f.act(50, TouchAction::Up, 100.0, 170.0);
+        assert_eq!(
+            f.emitted(),
+            [
+                "move 100 100",
+                "cancel",
+                "wheel 100 100 0 28",
+                "wheel 100 100 0 30"
+            ],
+            "and the lift adds nothing — the cancel was the whole announcement"
+        );
+        assert_eq!(
+            f.emitted().iter().filter(|e| *e == "cancel").count(),
+            1,
+            "exactly one cancel per gesture, however long the scroll ran"
+        );
+    }
+
+    /// A cancelled gesture must leave nothing behind. The next press is an
+    /// ordinary press: it taps, it does not re-announce the cancel that ended
+    /// the gesture before it, and it does not inherit the flick's momentum.
+    #[test]
+    fn the_press_after_a_cancelled_one_starts_clean() {
+        let mut f = Finger::new();
+        f.act(0, TouchAction::Down, 100.0, 100.0);
+        f.act(20, TouchAction::Move, 100.0, 140.0);
+        f.act(40, TouchAction::Move, 100.0, 180.0);
+        f.act(60, TouchAction::Up, 100.0, 180.0);
+        let after_scroll = f.emitted().len();
+        assert!(
+            f.gesture.has_momentum(),
+            "precondition: the flick is still coasting when the next press lands"
+        );
+
+        f.act(200, TouchAction::Down, 50.0, 50.0);
+        assert!(
+            !f.gesture.has_momentum(),
+            "a new press stops the coast rather than scrolling under the finger"
+        );
+        f.act(300, TouchAction::Up, 50.0, 50.0);
+        f.tick(5_000);
+
+        assert_eq!(
+            &f.emitted()[after_scroll..],
+            ["move 50 50", "down Left 50 50", "up Left 50 50"],
+            "an ordinary tap, with no cancel leaked from the gesture before it"
         );
     }
 
@@ -447,7 +583,11 @@ mod tests {
         f.act(0, TouchAction::Down, 5.0, 5.0);
         f.act(100, TouchAction::Cancel, 5.0, 5.0);
         f.tick(5_000);
-        assert_eq!(f.emitted(), ["move 5 5"]);
+        assert_eq!(
+            f.emitted(),
+            ["move 5 5", "cancel"],
+            "the system took an unresolved press away — the document has to hear so"
+        );
 
         let mut g = Finger::new();
         g.act(0, TouchAction::Down, 5.0, 5.0);

@@ -831,7 +831,15 @@ impl RinchApp {
                     let hit_node = hit_test(&doc.borrow().tree, x, y);
                     if let Some(hit_node) = hit_node {
                         let mut doc_mut = doc.borrow_mut();
-                        let mut scroll_handler_to_fire: Option<(usize, f64)> = None;
+                        // (container, handler, scroll_top) per container that
+                        // actually moved. A list because the two axes can resolve
+                        // to different containers — a horizontally scrolling strip
+                        // inside a vertically scrolling page — and each is owed its
+                        // own event. Keyed by container so a diagonal that moves one
+                        // container on both axes still fires once: `onscroll` is
+                        // "this element scrolled", not "this element scrolled
+                        // vertically".
+                        let mut scrolled: Vec<(usize, usize, f64)> = Vec::new();
 
                         // Vertical scrolling
                         // First try the hit node's ancestor chain. If the hit node is in
@@ -865,7 +873,7 @@ impl RinchApp {
                                 }
                                 doc_mut.tree.dirty_nodes.insert(scroll_node_id);
                                 if let Some(hid) = handler_id {
-                                    scroll_handler_to_fire = Some((hid, new_y));
+                                    scrolled.push((scroll_node_id, hid, new_y));
                                 }
                             }
                         }
@@ -885,6 +893,15 @@ impl RinchApp {
                             let visible_width = doc_mut.client_width(nid);
                             let max_scroll = (content_width - visible_width).max(0.0);
 
+                            // Read before the mutable node borrow, as the
+                            // vertical half does.
+                            let handler_id = doc_mut
+                                .tree
+                                .nodes
+                                .get(scroll_node_id)
+                                .and_then(|n| n.attributes.get("data-onscroll"))
+                                .and_then(|s| s.parse::<usize>().ok());
+                            let mut moved = false;
                             if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
                                 let new_x = (node.scroll_offset.0 - delta_x).clamp(0.0, max_scroll);
                                 if new_x != node.scroll_offset.0 {
@@ -892,17 +909,39 @@ impl RinchApp {
                                     node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
                                     doc_mut.tree.push_dirty(scroll_node_id);
                                     self.scene_dirty = true;
+                                    moved = true;
                                 }
+                            }
+                            // The payload stays `scrollTop`, which is what
+                            // `ScrollCallback` is documented to carry and what
+                            // every existing handler reads. A container that only
+                            // scrolls sideways therefore reports an unchanged 0 —
+                            // the event is the news, and `scrollLeft` is a read
+                            // away on the same node handle. Passing the horizontal
+                            // offset in the vertical slot instead would silently
+                            // corrupt anything keyed off it, `virtual_list`
+                            // included.
+                            if moved
+                                && let Some(hid) = handler_id
+                                && !scrolled.iter().any(|(n, _, _)| *n == scroll_node_id)
+                            {
+                                let scroll_top = doc_mut.scroll_top(nid);
+                                scrolled.push((scroll_node_id, hid, scroll_top));
                             }
                         }
 
                         drop(doc_mut);
-                        if let Some((handler_id, scroll_top)) = scroll_handler_to_fire {
+                        for (_, handler_id, scroll_top) in scrolled {
                             use rinch_core::events::{EventHandlerId, dispatch_scroll_event};
                             dispatch_scroll_event(EventHandlerId(handler_id), scroll_top);
                         }
                         actions.push(AppAction::RequestRedraw);
                     }
+                }
+            }
+            PlatformEvent::PointerCancel => {
+                if self.cancel_pointer_interaction(vp_w, vp_h) {
+                    actions.push(AppAction::RequestRedraw);
                 }
             }
             PlatformEvent::ModifiersChanged(mods) => {
@@ -1374,6 +1413,100 @@ impl RinchApp {
         }
 
         actions
+    }
+
+    /// Release everything an in-flight press is holding, without completing any
+    /// of it. The body of [`PlatformEvent::PointerCancel`].
+    ///
+    /// This is [`PlatformEvent::MouseUp`]'s teardown with every commit taken
+    /// out: no click, no drop, no `on_end`. The pairing is the point — a press
+    /// that ends in a cancel and a press that ends in a release leave the app in
+    /// the same state, and differ only in what they fired on the way. Each of
+    /// the five things released below is something a `MouseUp` would otherwise
+    /// have *finished*:
+    ///
+    /// - a pending element drag, which `MouseUp` turns into a click. This is the
+    ///   one that matters most on a touchscreen: without it, a flick through a
+    ///   list ends in a click on whichever row the finger started on.
+    /// - an active element drag, which `MouseUp` drops. Cancelled the way
+    ///   Escape cancels it — `ondragleave` on the target, `ondragend` on the
+    ///   source, no `ondrop` — because a cancelled drag must not commit.
+    /// - a pointer-capture [`Drag`](rinch_core::Drag), whose `on_end` is its
+    ///   commit callback. `Drag::cancel` fires `on_cancel` instead, which is
+    ///   exactly what the web backend does on its own `pointercancel`.
+    /// - a scrollbar or text-selection drag, both of which are just released.
+    /// - the `:active` style, which would otherwise stick to an element the
+    ///   finger has stopped pressing.
+    ///
+    /// Returns whether anything was released, so a cancel that finds nothing in
+    /// flight — the common case, since most gestures start over an element that
+    /// is not draggable — costs no repaint.
+    fn cancel_pointer_interaction(&mut self, vp_w: f32, vp_h: f32) -> bool {
+        let mut released = false;
+
+        // Scoped to the document this input stream belongs to, like every other
+        // `end_drag` call site: a cancel in one document must not tear down a
+        // drag-select another `RinchApp` on this thread is still holding
+        // (issue #139).
+        #[cfg(feature = "desktop")]
+        crate::editor::end_drag(self.input_doc());
+
+        // A pending drag is discarded outright. `MouseUp` would have read it as
+        // "the threshold was never crossed, so this was a click" — the reading a
+        // cancel exists to prevent.
+        released |= self.pending_drag.take().is_some();
+
+        if let Some(drag) = self.active_dnd.take() {
+            released = true;
+            // A surface the drag was over hears that it left, never that
+            // something dropped on it.
+            if let Some((surface_sid, _)) = self.drag_over_surface.take() {
+                crate::render_surface::dispatch_surface_event(
+                    surface_sid,
+                    crate::render_surface::SurfaceEvent::DragLeave,
+                );
+            }
+            if let Some(doc) = &self.doc {
+                if let Some(target_id) = drag.over_target {
+                    Self::dispatch_drag_attr(doc, target_id, "data-ondragleave");
+                }
+                // `ondragend` still fires: the source has a ghost and a
+                // dragging class to undo, and it is the only callback that
+                // will ever tell it to.
+                let (cx, cy) = drag.cursor;
+                events::set_click_context(events::ClickContext {
+                    mouse_x: cx,
+                    mouse_y: cy,
+                    element_x: 0.0,
+                    element_y: 0.0,
+                    element_width: 0.0,
+                    element_height: 0.0,
+                    text_hit: Default::default(),
+                    viewport_width: vp_w,
+                    viewport_height: vp_h,
+                    button: events::MouseButton::Left,
+                    modifiers: self.modifier_state(),
+                });
+                Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragend");
+            }
+            events::reset_drag_ghost_visibility();
+            self.scene_dirty = true;
+        }
+
+        // The pointer-capture drag's counterpart to the `finish_drag` on
+        // `MouseUp`. A no-op when none is active.
+        rinch_core::Drag::cancel();
+
+        released |= self.scrollbar_drag.take().is_some();
+        released |= std::mem::take(&mut self.text_selecting);
+
+        // Clear `:active`, and — as on `MouseUp` — don't count it as a reason to
+        // redraw: the dirty state it leaves is batched by `AboutToWait`.
+        if let Some(doc) = &self.doc {
+            doc.borrow_mut().update_active(None);
+        }
+
+        released
     }
 
     /// Dispatch `data-onenter` handler for the hovered node or its ancestors.

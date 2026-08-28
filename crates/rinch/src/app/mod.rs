@@ -3497,3 +3497,380 @@ mod popup_backdrop_hit_tests {
         assert_eq!(menu.closes.get(), 1, "what it reaches is the dismissal");
     }
 }
+
+#[cfg(test)]
+mod pointer_cancel_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// A `draggable` div carrying a live click handler, which is the shape that
+    /// makes the trap visible: `MouseDown` on a draggable arms a *pending* drag
+    /// rather than clicking, and it is `MouseUp` that later decides between
+    /// "the threshold was never crossed, so this was a click" and "this was a
+    /// drag". A cancel has to reach in between those two.
+    fn mount_draggable() -> (RinchApp, (f32, f32), Rc<Cell<usize>>) {
+        let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let clicks_in = clicks.clone();
+        let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id_in = id.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let row = scope.create_element("div");
+            row.set_attribute("style", "width: 200px; height: 40px");
+            row.set_attribute("draggable", "true");
+            let rid = scope.register_handler({
+                let clicks = clicks_in.clone();
+                move || clicks.set(clicks.get() + 1)
+            });
+            row.set_attribute("data-rid", &rid.0.to_string());
+            root.append_child(&row);
+            id_in.set(Some(row.node_id().0));
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        let row_id = id.get().expect("node id captured at mount");
+        let centre = {
+            let d = app.doc.as_ref().unwrap().borrow();
+            let n = d.tree.get(row_id).unwrap();
+            let (ax, ay) = RinchApp::compute_absolute_position(&d.tree, row_id);
+            (ax + n.layout.width / 2.0, ay + n.layout.height / 2.0)
+        };
+        (app, centre, clicks)
+    }
+
+    fn send(app: &mut RinchApp, event: PlatformEvent) -> Vec<AppAction> {
+        app.handle_event(event, (800, 600), 1.0)
+    }
+
+    fn press(x: f32, y: f32) -> PlatformEvent {
+        PlatformEvent::MouseDown {
+            x,
+            y,
+            button: MouseButton::Left,
+        }
+    }
+
+    fn release(x: f32, y: f32) -> PlatformEvent {
+        PlatformEvent::MouseUp {
+            x,
+            y,
+            button: MouseButton::Left,
+        }
+    }
+
+    /// The whole point of the event, stated as the difference between two
+    /// otherwise identical gestures. Press and release is a click; press,
+    /// cancel, release is nothing at all.
+    ///
+    /// This is the trap stage 3 walks into without it: once a moving finger
+    /// emits a real `MouseDown`/`MouseUp` pair, every flick through a list ends
+    /// in a click on whichever row it started on, because `MouseUp` is where
+    /// `handle_click` fires. The cancel is what takes the press off the table
+    /// while the finger is still moving.
+    #[test]
+    fn a_cancel_between_press_and_release_leaves_no_click_behind() {
+        let (mut app, (x, y), clicks) = mount_draggable();
+
+        // Control: the same two events, uninterrupted, are a click.
+        send(&mut app, press(x, y));
+        send(&mut app, release(x, y));
+        assert_eq!(clicks.get(), 1, "precondition: press+release clicks");
+
+        send(&mut app, press(x, y));
+        assert!(
+            app.pending_drag.is_some(),
+            "precondition: a press on a draggable arms a pending drag"
+        );
+
+        send(&mut app, PlatformEvent::PointerCancel);
+        assert!(
+            app.pending_drag.is_none(),
+            "the cancel drops the pending drag rather than deferring it"
+        );
+        assert!(
+            app.doc
+                .as_ref()
+                .unwrap()
+                .borrow()
+                .tree
+                .active_node
+                .is_none(),
+            ":active must not stick to an element that is no longer pressed"
+        );
+
+        send(&mut app, release(x, y));
+        assert_eq!(
+            clicks.get(),
+            1,
+            "the release after a cancel completes nothing"
+        );
+    }
+
+    /// The gesture after a cancelled one is an ordinary gesture. A cancel is a
+    /// teardown, not a mode.
+    #[test]
+    fn a_press_after_a_cancelled_one_clicks_normally() {
+        let (mut app, (x, y), clicks) = mount_draggable();
+
+        send(&mut app, press(x, y));
+        send(&mut app, PlatformEvent::PointerCancel);
+        send(&mut app, release(x, y));
+        assert_eq!(clicks.get(), 0);
+
+        send(&mut app, press(x, y));
+        send(&mut app, release(x, y));
+        assert_eq!(clicks.get(), 1, "the next press is just a press");
+    }
+
+    /// Most gestures start over something that is not draggable and holds
+    /// nothing, and on Android every scroll now sends one of these. A cancel
+    /// with nothing in flight must therefore be free — no repaint asked for, no
+    /// state disturbed.
+    #[test]
+    fn a_cancel_with_nothing_in_flight_asks_for_no_repaint() {
+        let (mut app, (x, y), clicks) = mount_draggable();
+
+        let actions = send(&mut app, PlatformEvent::PointerCancel);
+        assert!(
+            actions.is_empty(),
+            "nothing was released, so nothing needs redrawing, got {actions:?}"
+        );
+
+        send(&mut app, press(x, y));
+        send(&mut app, release(x, y));
+        assert_eq!(clicks.get(), 1, "and the document is untouched");
+    }
+}
+
+#[cfg(test)]
+mod wheel_scroll_dispatch_tests {
+    use super::*;
+    use rinch_core::events::{ScrollCallback, register_scroll_handler};
+
+    /// A mounted scroll container and everything a test needs to poke it: its
+    /// node id, a point inside it, and every `scrollTop` its `onscroll` handler
+    /// has been handed.
+    struct Scroller {
+        app: RinchApp,
+        id: usize,
+        centre: (f32, f32),
+        fired: Rc<RefCell<Vec<f64>>>,
+    }
+
+    /// A scroll container with `data-onscroll` wired to a recorder, sized by the
+    /// caller so one fixture covers "scrolls sideways", "scrolls down" and
+    /// "scrolls both ways".
+    fn mount_scroller(container_style: &str, content_style: &str) -> Scroller {
+        let fired: Rc<RefCell<Vec<f64>>> = Rc::new(RefCell::new(Vec::new()));
+        let fired_in = fired.clone();
+        let handler_id = register_scroll_handler(ScrollCallback::from(move |top: f64| {
+            fired_in.borrow_mut().push(top);
+        }));
+        let container_style = container_style.to_string();
+        let content_style = content_style.to_string();
+        let id: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+        let id_in = id.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let container = scope.create_element("div");
+            container.set_attribute("style", &container_style);
+            container.set_attribute("data-onscroll", &handler_id.0.to_string());
+            let content = scope.create_element("div");
+            content.set_attribute("style", &content_style);
+            container.append_child(&content);
+            *id_in.borrow_mut() = Some(container.node_id().0);
+            container
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        let container_id = id.borrow().expect("node id captured at mount");
+        let centre = {
+            let d = app.doc.as_ref().unwrap().borrow();
+            let n = d.tree.get(container_id).unwrap();
+            let (ax, ay) = RinchApp::compute_absolute_position(&d.tree, container_id);
+            (ax + n.layout.width / 2.0, ay + n.layout.height / 2.0)
+        };
+        Scroller {
+            app,
+            id: container_id,
+            centre,
+            fired,
+        }
+    }
+
+    /// Wheel deltas are the *content's* movement, so a negative delta_x scrolls
+    /// right — the same sign convention the touch recogniser emits with.
+    fn wheel(app: &mut RinchApp, (x, y): (f32, f32), delta_x: f64, delta_y: f64) {
+        app.handle_event(
+            PlatformEvent::MouseWheel {
+                x,
+                y,
+                delta_x,
+                delta_y,
+            },
+            (800, 600),
+            1.0,
+        );
+    }
+
+    fn offsets(app: &RinchApp, id: usize) -> (f64, f64) {
+        let d = app.doc.as_ref().unwrap().borrow();
+        d.tree.get(id).unwrap().scroll_offset
+    }
+
+    /// The gap this fixes: a container scrolled sideways moved its content and
+    /// told nobody, while the identical vertical gesture fired `onscroll`. On a
+    /// phone that is half of every scroll going unreported.
+    #[test]
+    fn a_horizontal_scroll_dispatches_its_onscroll_handler() {
+        let Scroller {
+            mut app,
+            id,
+            centre,
+            fired,
+        } = mount_scroller(
+            "width: 100px; height: 50px; overflow-x: auto",
+            "width: 500px; height: 20px",
+        );
+
+        wheel(&mut app, centre, -30.0, 0.0);
+
+        assert_eq!(offsets(&app, id).0, 30.0, "precondition: the strip moved");
+        assert_eq!(
+            fired.borrow().len(),
+            1,
+            "the handler fires for the axis that moved"
+        );
+        // The payload is `scrollTop`, which is what `ScrollCallback` is
+        // documented to carry — unchanged here, because this container only
+        // scrolls sideways. How far it went is `scroll_left()` on the same node,
+        // and putting the horizontal offset in the vertical slot instead would
+        // have quietly broken everything that reads it as a top.
+        assert_eq!(fired.borrow()[0], 0.0);
+    }
+
+    /// A scroll that moves nothing — already hard against the edge — is not a
+    /// scroll, and must not fire. The vertical half has always worked this way.
+    #[test]
+    fn a_horizontal_scroll_that_moves_nothing_does_not_dispatch() {
+        let Scroller {
+            mut app,
+            id,
+            centre,
+            fired,
+        } = mount_scroller(
+            "width: 100px; height: 50px; overflow-x: auto",
+            "width: 500px; height: 20px",
+        );
+
+        wheel(&mut app, centre, 30.0, 0.0);
+
+        assert_eq!(offsets(&app, id).0, 0.0, "already at the left edge");
+        assert!(fired.borrow().is_empty());
+    }
+
+    /// The behaviour that already worked, asserted so the rewrite of the
+    /// dispatch bookkeeping cannot quietly drop it.
+    #[test]
+    fn a_vertical_scroll_still_dispatches_with_its_new_top() {
+        let Scroller {
+            mut app,
+            id,
+            centre,
+            fired,
+        } = mount_scroller(
+            "width: 100px; height: 50px; overflow-y: auto",
+            "width: 20px; height: 500px",
+        );
+
+        wheel(&mut app, centre, 0.0, -40.0);
+
+        assert_eq!(offsets(&app, id).1, 40.0);
+        assert_eq!(*fired.borrow(), vec![40.0]);
+    }
+
+    /// A diagonal flick moves one container on both axes. `onscroll` means "this
+    /// element scrolled", not "this element scrolled vertically", so it fires
+    /// once — twice would make a handler that counts, or that starts an
+    /// animation, do it double on the diagonal frames of every flick.
+    #[test]
+    fn a_diagonal_scroll_of_one_container_dispatches_once() {
+        let Scroller {
+            mut app,
+            id,
+            centre,
+            fired,
+        } = mount_scroller(
+            "width: 100px; height: 50px; overflow: auto",
+            "width: 500px; height: 500px",
+        );
+
+        wheel(&mut app, centre, -30.0, -40.0);
+
+        assert_eq!(
+            offsets(&app, id),
+            (30.0, 40.0),
+            "precondition: both axes moved"
+        );
+        assert_eq!(
+            *fired.borrow(),
+            vec![40.0],
+            "one event, carrying the new scrollTop"
+        );
+    }
+
+    /// The two axes need not resolve to the same element: a sideways strip
+    /// inside a vertically scrolling page is the ordinary case. Each container
+    /// scrolled, so each is owed its own event, with its own top.
+    #[test]
+    fn a_diagonal_scroll_across_two_containers_dispatches_to_each() {
+        let outer_fired: Rc<RefCell<Vec<f64>>> = Rc::new(RefCell::new(Vec::new()));
+        let inner_fired: Rc<RefCell<Vec<f64>>> = Rc::new(RefCell::new(Vec::new()));
+        let outer_in = outer_fired.clone();
+        let inner_in = inner_fired.clone();
+        let outer_handler = register_scroll_handler(ScrollCallback::from(move |top: f64| {
+            outer_in.borrow_mut().push(top);
+        }));
+        let inner_handler = register_scroll_handler(ScrollCallback::from(move |top: f64| {
+            inner_in.borrow_mut().push(top);
+        }));
+        let ids: Rc<RefCell<Option<(usize, usize)>>> = Rc::new(RefCell::new(None));
+        let ids_in = ids.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let page = scope.create_element("div");
+            page.set_attribute("style", "width: 300px; height: 100px; overflow-y: auto");
+            page.set_attribute("data-onscroll", &outer_handler.0.to_string());
+            let strip = scope.create_element("div");
+            strip.set_attribute("style", "width: 100px; height: 400px; overflow-x: auto");
+            strip.set_attribute("data-onscroll", &inner_handler.0.to_string());
+            let wide = scope.create_element("div");
+            wide.set_attribute("style", "width: 500px; height: 400px");
+            strip.append_child(&wide);
+            page.append_child(&strip);
+            *ids_in.borrow_mut() = Some((page.node_id().0, strip.node_id().0));
+            page
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        let (page_id, strip_id) = ids.borrow().expect("node ids captured at mount");
+        // A point inside both boxes. Not the strip's centre: the strip is 400
+        // tall inside a 100-tall page, so its middle is clipped away and the
+        // wheel would land on the page instead.
+        let point = {
+            let d = app.doc.as_ref().unwrap().borrow();
+            let (ax, ay) = RinchApp::compute_absolute_position(&d.tree, strip_id);
+            (ax + 50.0, ay + 25.0)
+        };
+
+        wheel(&mut app, point, -30.0, -40.0);
+
+        assert_eq!(offsets(&app, page_id).1, 40.0);
+        assert_eq!(offsets(&app, strip_id).0, 30.0);
+        assert_eq!(*outer_fired.borrow(), vec![40.0], "the page scrolled down");
+        assert_eq!(
+            *inner_fired.borrow(),
+            vec![0.0],
+            "the strip scrolled sideways, and reports its own unchanged top"
+        );
+    }
+}

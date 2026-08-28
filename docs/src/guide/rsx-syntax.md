@@ -112,7 +112,7 @@ Supported HTML-element event attributes:
 | `oncontextmenu` | Right-click, or a 500ms long press on Android (suppresses the native menu when handled) | `Fn()` |
 | `oninput` | `<input>`/`<textarea>` value change, per keystroke | `Fn(String)` |
 | `onchange` | Commit boundary: the gesture ends (blur after a modification, Enter, a `<select>` pick) — fires with the final value | `Fn(String)` |
-| `onscroll` | Scroll container scrolls | `Fn(f64)` (scrollTop) |
+| `onscroll` | Scroll container scrolls, on either axis | `Fn(f64)` (scrollTop — read `scroll_left()` on the node for the horizontal offset) |
 | `ondragstart` … `ondrop`, `ondragend` | Element drag-and-drop | `Fn()` |
 | `onfiledrop`, `onfiledragenter`/`onfiledragleave` | OS → app file drop | `Fn(Vec<PathBuf>)` / `Fn()` |
 
