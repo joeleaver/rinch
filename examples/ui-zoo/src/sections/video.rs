@@ -7,16 +7,14 @@ use rinch_video::{
 
 #[component]
 pub fn video_section() -> NodeHandle {
-    let player = use_video_player(
-        "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-    );
+    let player = use_video_player("https://media.w3.org/2010/05/sintel/trailer.mp4");
 
     rsx! {
         Fragment {
             Stack { gap: "xs",
                 Title { order: 1, "Video Player" }
                 Text { size: "lg", color: "dimmed",
-                    "Video playback powered by libmpv. VideoViewport renders decoded frames via GPU compositing underneath the Vello UI layer. VideoControls provides play/pause, seeking, volume, and timestamp."
+                    "Video playback powered by libmpv. VideoViewport renders decoded frames beneath the UI layer — composited on the GPU backend, blitted over the painted pixels on the software one. VideoControls provides play/pause, seeking, volume, and timestamp."
                 }
             }
             Space { h: "xl" }
@@ -140,9 +138,7 @@ pub fn video_section() -> NodeHandle {
 
 #[component]
 fn network_video_player() -> NodeHandle {
-    let net_player = use_video_player_paused(
-        "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-    );
+    let net_player = use_video_player_paused("https://media.w3.org/2010/05/sintel/trailer.mp4");
 
     rsx! {
         Fragment {
