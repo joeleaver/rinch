@@ -994,6 +994,22 @@ impl RinchDocument {
                 if let Some(c) = self.tree.nodes.get_mut(child_id) {
                     c.ifc_root = Some(root_id);
                 }
+                // …and everything *inside* that inline element belongs to this
+                // IFC too. Marking the `<a>` and stopping was enough for text —
+                // `walk_inline_children` recurses through it either way — but it
+                // left any inline-block descendant with `ifc_root == None`, so
+                // `compute_inline_block_layouts` never measured it and the
+                // `InlineBox` pushed for it at the bottom of this file read a
+                // `layout` that was still zero.
+                //
+                // The symptom is an `<img>` inside a link: it disappears, with
+                // the right `src`, a computed width and height from its own
+                // style, and a 0x0 layout box — while the same `<img>` as a
+                // direct child of the block, or beside text in a `<p>`, lays out
+                // correctly. Found rendering a saved web page in SetListArray,
+                // where every site's logo and half its chord diagrams are
+                // wrapped in an anchor.
+                self.mark_inline_descendants(root_id, child_id, root_taffy);
             }
             // Block-level children are left in place (existing behavior).
         }

@@ -2232,3 +2232,51 @@ mod inset_fast_path {
         assert_eq!(layout_of(&doc, child), expected);
     }
 }
+
+/// An inline-block nested inside an inline element still belongs to the block's
+/// inline formatting context, and must be measured.
+///
+/// `mark_inline_descendants` used to mark an inline child with its `ifc_root`
+/// and stop there. That was enough for text — `walk_inline_children` recurses
+/// either way — but it left any inline-block *descendant* with
+/// `ifc_root == None`, so `compute_inline_block_layouts` never measured it and
+/// the Parley `InlineBox` pushed for it read a `layout` that was still zero.
+///
+/// The symptom in an app is an `<img>` inside an `<a>` vanishing: right `src`,
+/// a computed width and height from its own style, and a 0x0 layout box, while
+/// the identical image as a direct child of the block lays out correctly. Found
+/// rendering a saved web page, where every site's logo is wrapped in an anchor.
+#[test]
+fn test_inline_block_inside_an_inline_element_is_measured() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.append_child(body, container);
+    doc.set_inner_html(
+        container,
+        "<div id=\"direct\"><i style=\"display: inline-block; width: 90px; height: 30px\"></i></div>\
+         <div id=\"nested\"><a><i style=\"display: inline-block; width: 90px; height: 30px\"></i></a></div>",
+    );
+
+    doc.resolve_layout(800.0, 600.0);
+
+    let boxes: Vec<(f32, f32)> = rinch_dom::testing::query_selector(&doc.tree, "i")
+        .into_iter()
+        .map(|id| {
+            let l = doc.tree.get(id).unwrap().layout;
+            (l.width, l.height)
+        })
+        .collect();
+
+    assert_eq!(boxes.len(), 2, "both inline-blocks should be in the tree");
+    assert_eq!(
+        boxes[0],
+        (90.0, 30.0),
+        "a direct inline-block child of the block has always worked"
+    );
+    assert_eq!(
+        boxes[1],
+        (90.0, 30.0),
+        "and one wrapped in an <a> must be laid out the same way"
+    );
+}
