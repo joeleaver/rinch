@@ -141,6 +141,16 @@ thread_local! {
     /// Surface pixel data for inline painting, keyed by surface ID.
     /// Set before paint_document() and cleared after.
     static SURFACE_PIXELS: RefCell<Option<HashMap<usize, SurfacePixelData>>> = const { RefCell::new(None) };
+
+    /// Surface pixel data for inline painting, keyed by **viewport name** —
+    /// the software backend's video frames (issue #358).
+    ///
+    /// `SURFACE_PIXELS` is keyed by the `usize` surface id a `RenderSurface`
+    /// component stamps into `data-render-surface`; a video viewport carries no
+    /// such id, only the `data-viewport` name its player was created with, so
+    /// the two registries cannot share a key space. Set before
+    /// `paint_document()` and cleared after, like `SURFACE_PIXELS`.
+    static VIEWPORT_PIXELS: RefCell<Option<HashMap<String, SurfacePixelData>>> = const { RefCell::new(None) };
 }
 
 /// Set the active viewport names for hole-punching during this paint cycle.
@@ -158,6 +168,31 @@ pub fn set_active_viewports(names: Option<HashSet<String>>) {
 /// element's position, like `<img>` elements.
 pub fn set_surface_pixels(pixels: Option<HashMap<usize, SurfacePixelData>>) {
     SURFACE_PIXELS.with(|v| *v.borrow_mut() = pixels);
+}
+
+/// Set viewport frame data for inline painting during the current paint cycle,
+/// keyed by `data-viewport` name.
+///
+/// This is the **software** backend's video path (issue #358). A `data-viewport`
+/// node with an entry here paints its frame inline, during paint, at its own
+/// z-order — so anything drawn above it (a drawer, a modal, a dropdown) covers
+/// it by ordinary paint order. A node with no entry falls through to normal
+/// element painting, which is what leaves the GPU compositor path untouched:
+/// that backend never sets this map, so every `data-viewport` node there still
+/// paints as a plain element and gets its hole punched.
+///
+/// Call with `Some(map)` before `paint_document()` and `None` after.
+pub fn set_viewport_pixels(pixels: Option<HashMap<String, SurfacePixelData>>) {
+    VIEWPORT_PIXELS.with(|v| *v.borrow_mut() = pixels);
+}
+
+/// Whether an inline frame is available for the viewport named `name`.
+fn has_viewport_pixels(name: &str) -> bool {
+    VIEWPORT_PIXELS.with(|v| {
+        v.borrow()
+            .as_ref()
+            .is_some_and(|map| map.contains_key(name))
+    })
 }
 
 /// Set the dirty region for incremental painting.
@@ -827,6 +862,80 @@ fn paint_node(
 
                 // Borders (no border-radius for img elements)
                 paint_borders(painter, node, scale, x, y, w, h, 0.0.into(), node_transform);
+            }
+
+            if opacity < 1.0 {
+                painter.pop_layer();
+            }
+        }
+        // Inline painting for a `data-viewport` node whose frame arrives by
+        // name — the software backend's video path (issue #358).
+        //
+        // Sibling of the `data-render-surface` arm below and for the same
+        // reason: a frame drawn *here*, during paint, sits at the node's own
+        // z-order, so a drawer or a modal painted after it covers it by
+        // ordinary paint order. The software backend used to blit video onto
+        // the finished pixel buffer instead, clipped only by its
+        // overflow-clipping ancestors, which destroyed every overlay above it.
+        //
+        // The guard is the map, not the attribute: with no entry for this name
+        // the node falls through to normal element painting, which is what
+        // leaves `GameViewport` and the whole GPU compositor path untouched —
+        // that backend never sets `VIEWPORT_PIXELS` at all.
+        NodeKind::Element(_)
+            if node
+                .attributes
+                .get("data-viewport")
+                .is_some_and(|name| has_viewport_pixels(name)) =>
+        {
+            let rect = Rect::new(x, y, x + w, y + h);
+            let opacity = node.computed_style.opacity;
+            if opacity < 1.0 {
+                painter.push_layer(BlendMode::Normal, opacity, node_transform, &rect.into());
+            }
+
+            let visible = !matches!(
+                node.computed_style.visibility,
+                VisibilityValue::Hidden | VisibilityValue::Collapse
+            );
+            if visible {
+                // Opaque black over the whole box, then the frame fitted inside
+                // it — so the letterbox bars are black, which is what a browser
+                // paints for `<video>` (issue #354's software half).
+                //
+                // The black is paint's to draw, not the element's `background`:
+                // rinch-video flips that to `transparent` the moment a frame
+                // arrives, because the GPU backend composites video *under* the
+                // UI and an opaque element background would hide it. rinch-video
+                // cannot know which backend it is running on, so the backend
+                // that paints the frame is the one that owns its backdrop.
+                painter.fill_color(
+                    Fill::NonZero,
+                    node_transform,
+                    AlphaColor::<Srgb>::new([0.0, 0.0, 0.0, 1.0]),
+                    &rect.into(),
+                );
+
+                VIEWPORT_PIXELS.with(|vp| {
+                    let guard = vp.borrow();
+                    let Some(pixels) = guard
+                        .as_ref()
+                        .zip(node.attributes.get("data-viewport"))
+                        .and_then(|(map, name)| map.get(name))
+                    else {
+                        return;
+                    };
+                    image::paint_image_data(
+                        painter,
+                        &pixels.data,
+                        pixels.width,
+                        pixels.height,
+                        rect,
+                        scale,
+                        crate::computed_style::ObjectFitValue::Contain,
+                        node_transform,
+                    );
+                });
             }
 
             if opacity < 1.0 {

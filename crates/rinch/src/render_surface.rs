@@ -301,6 +301,16 @@ pub struct RenderSurfaceHandle {
     pub(crate) event_handler: std::rc::Rc<RefCell<Option<Box<dyn Fn(SurfaceEvent)>>>>,
     /// Viewport name for hole-punch compositing.
     pub(crate) viewport_name: String,
+    /// Whether this surface carries decoded **video** frames.
+    ///
+    /// Video and `GameViewport` both arrive through
+    /// [`create_render_surface_with_name`]-shaped construction and both stamp a
+    /// `data-viewport` attribute, so the name cannot tell them apart — and
+    /// renaming video's surface would silently reroute `GameViewport` with it.
+    /// This flag is set at video's registration site and nowhere else (issue
+    /// #358): on the software backend video paints inline, at its own z-order,
+    /// while a `GameViewport` keeps the compositor blit it has always had.
+    pub(crate) is_video: bool,
     /// Layout size in physical pixels, updated by the compositor each frame.
     pub(crate) layout_size: Arc<Mutex<(u32, u32)>>,
     /// Layout position in logical pixels (window coordinates), updated each frame.
@@ -540,6 +550,7 @@ impl std::fmt::Debug for RenderSurfaceHandle {
         f.debug_struct("RenderSurfaceHandle")
             .field("id", &self.id)
             .field("viewport_name", &self.viewport_name)
+            .field("is_video", &self.is_video)
             .finish()
     }
 }
@@ -578,6 +589,7 @@ pub fn create_render_surface() -> RenderSurfaceHandle {
         needs_redraw: Arc::new(AtomicBool::new(false)),
         event_handler: std::rc::Rc::new(RefCell::new(None)),
         viewport_name: format!("__render_surface_{id}"),
+        is_video: false,
         layout_size: Arc::new(Mutex::new((0, 0))),
         layout_position: Arc::new(Mutex::new((0.0, 0.0))),
         #[cfg(target_arch = "wasm32")]
@@ -603,6 +615,21 @@ pub fn create_render_surface() -> RenderSurfaceHandle {
 /// bypass the [`RenderSurface`] component (they use `VideoViewport` + a raw
 /// `SurfaceWriter` instead).
 pub fn create_render_surface_with_name(viewport_name: &str) -> RenderSurfaceHandle {
+    create_named_surface(viewport_name, false)
+}
+
+/// Create the render surface a **video player** delivers decoded frames into.
+///
+/// Identical to [`create_render_surface_with_name`] except that the surface is
+/// marked as carrying video, which is what routes it away from the compositor
+/// blit on the software backend (issue #358). Separate entry point rather than
+/// a name convention: `GameViewport` shares
+/// [`create_render_surface_with_name`], so a naming rule would reroute it too.
+pub fn create_video_surface(viewport_name: &str) -> RenderSurfaceHandle {
+    create_named_surface(viewport_name, true)
+}
+
+fn create_named_surface(viewport_name: &str, is_video: bool) -> RenderSurfaceHandle {
     let id = next_surface_id();
     let handle = RenderSurfaceHandle {
         id,
@@ -616,6 +643,7 @@ pub fn create_render_surface_with_name(viewport_name: &str) -> RenderSurfaceHand
         needs_redraw: Arc::new(AtomicBool::new(false)),
         event_handler: std::rc::Rc::new(RefCell::new(None)),
         viewport_name: viewport_name.to_string(),
+        is_video,
         layout_size: Arc::new(Mutex::new((0, 0))),
         layout_position: Arc::new(Mutex::new((0.0, 0.0))),
         #[cfg(target_arch = "wasm32")]
@@ -693,6 +721,39 @@ fn is_inline_surface(surface: &RenderSurfaceHandle) -> bool {
     surface.viewport_name.starts_with("__render_surface_")
 }
 
+/// Whether a surface belongs on the **compositor** path — a layer on GPU, a
+/// post-paint blit on software — rather than being painted inline during
+/// `paint_document`.
+///
+/// The whole routing table, in one place, decided by backend × purpose:
+///
+/// | | `RenderSurface` | video | `GameViewport` |
+/// |---|---|---|---|
+/// | software | inline | inline (#358) | compositor blit |
+/// | GPU | inline | compositor + backdrop (#354) | compositor |
+///
+/// Software blits its compositor frames onto the *finished* pixel buffer, after
+/// the whole UI has been painted and clipped only by the viewport's
+/// overflow-clipping ancestors — a write with no notion of occlusion, which
+/// destroyed every overlay above a playing video. GPU has no such problem: its
+/// layers are blitted first and the Vello UI alpha-blends on top, so an opaque
+/// drawer already covers the video there.
+///
+/// A plain `const fn` of three booleans rather than a `cfg`-gated branch, so
+/// both columns of the table stay reachable to tests whichever backend the
+/// crate was built for.
+///
+/// Gated like `is_inline_surface`: nothing on a wasm build has a compositor to
+/// route to.
+#[cfg(feature = "desktop")]
+pub(crate) const fn surface_takes_compositor_path(
+    is_inline: bool,
+    is_video: bool,
+    gpu: bool,
+) -> bool {
+    !is_inline && (gpu || !is_video)
+}
+
 /// Collect frames from registered surfaces that use the compositor path
 /// (video, GameViewport — NOT RenderSurface components).
 ///
@@ -705,8 +766,13 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
         let reg = reg.borrow();
         let mut frames = Vec::new();
         for surface in reg.iter() {
-            // Skip inline-paint surfaces (handled by collect_surface_pixels_by_id)
-            if is_inline_surface(surface) {
+            // Skip anything that paints inline: a `RenderSurface` component on
+            // both backends, plus video on software (#358).
+            if !surface_takes_compositor_path(
+                is_inline_surface(surface),
+                surface.is_video,
+                cfg!(feature = "gpu"),
+            ) {
                 continue;
             }
             // Skip surfaces that use GPU texture source
@@ -754,6 +820,46 @@ pub fn collect_surface_pixels_by_id()
             if !buf.pixels.is_empty() {
                 map.insert(
                     surface.id,
+                    rinch_dom::paint::SurfacePixelData {
+                        data: buf.pixels.clone(),
+                        width: buf.width,
+                        height: buf.height,
+                    },
+                );
+            }
+        }
+        map
+    })
+}
+
+/// Collect **video** frames keyed by `data-viewport` name, for inline painting.
+///
+/// The software counterpart of [`collect_surface_pixels_by_id`] (issue #358).
+/// The two registries cannot share a key space: a `RenderSurface` component
+/// stamps its `usize` surface id into `data-render-surface`, while a video
+/// viewport carries only the name its player was created with, so this one is
+/// keyed by name and feeds `rinch_dom::paint::set_viewport_pixels()`.
+///
+/// Returns every video surface with a non-empty buffer — not only the ones with
+/// a *new* frame — because paint redraws the node whenever anything else on the
+/// frame does. Clears dirty flags as a side effect, exactly as the other
+/// collectors do.
+#[cfg(feature = "desktop")]
+pub fn collect_video_frames_by_name()
+-> std::collections::HashMap<String, rinch_dom::paint::SurfacePixelData> {
+    use std::collections::HashMap;
+    SURFACE_REGISTRY.with(|reg| {
+        let reg = reg.borrow();
+        let mut map = HashMap::new();
+        for surface in reg.iter() {
+            if !surface.is_video {
+                continue;
+            }
+            surface.needs_redraw.store(false, Ordering::Release);
+            let buf = surface.buffer.lock().unwrap();
+            if !buf.pixels.is_empty() {
+                map.insert(
+                    surface.viewport_name.clone(),
                     rinch_dom::paint::SurfacePixelData {
                         data: buf.pixels.clone(),
                         width: buf.width,
@@ -1593,4 +1699,105 @@ fn setup_resize_observer(
     let observer = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()).unwrap();
     observer.observe(canvas);
     (observer, callback)
+}
+
+// ── #358: which surfaces reach the compositor, and which paint inline ────────
+
+#[cfg(all(test, feature = "desktop"))]
+mod compositor_routing_tests {
+    use super::*;
+
+    /// The whole table from `surface_takes_compositor_path`'s doc comment,
+    /// pinned in both columns regardless of which backend this build is.
+    ///
+    /// The asymmetry is the point: on software the frame would otherwise be
+    /// written over the finished pixel buffer, on top of any overlay above it;
+    /// on GPU the layers go down *first* and the UI blends over them, so video
+    /// genuinely belongs on the compositor there.
+    #[test]
+    fn the_backend_routing_table() {
+        const SOFTWARE: bool = false;
+        const GPU: bool = true;
+        // (is_inline, is_video)
+        const RENDER_SURFACE: (bool, bool) = (true, false);
+        const VIDEO: (bool, bool) = (false, true);
+        const GAME_VIEWPORT: (bool, bool) = (false, false);
+
+        for (label, (inline, video), gpu, expected) in [
+            ("RenderSurface / software", RENDER_SURFACE, SOFTWARE, false),
+            ("RenderSurface / gpu", RENDER_SURFACE, GPU, false),
+            ("video / software", VIDEO, SOFTWARE, false),
+            ("video / gpu", VIDEO, GPU, true),
+            ("GameViewport / software", GAME_VIEWPORT, SOFTWARE, true),
+            ("GameViewport / gpu", GAME_VIEWPORT, GPU, true),
+        ] {
+            assert_eq!(
+                surface_takes_compositor_path(inline, video, gpu),
+                expected,
+                "{label} takes the compositor path? expected {expected}"
+            );
+        }
+    }
+
+    /// A video surface's frame is collected by name for inline painting, and —
+    /// on software — is *not* also handed to the blit that would write it over
+    /// the finished UI. That double delivery is #358.
+    #[test]
+    fn a_video_frame_goes_to_the_inline_map_and_off_the_software_blit() {
+        let video = create_video_surface("test-video");
+        video.writer().submit_frame(&[10, 20, 30, 255], 1, 1);
+
+        let by_name = collect_video_frames_by_name();
+        let frame = by_name
+            .get("test-video")
+            .expect("the video frame is collected by viewport name");
+        assert_eq!((frame.width, frame.height), (1, 1));
+        assert_eq!(frame.data, vec![10, 20, 30, 255]);
+
+        let blitted = collect_surface_frames();
+        assert_eq!(
+            blitted.iter().any(|(name, ..)| name == "test-video"),
+            cfg!(feature = "gpu"),
+            "video reaches the compositor path on GPU only — on software it \
+             paints inline instead (#358)"
+        );
+
+        unregister_render_surface(video.id());
+    }
+
+    /// The regression guard the design calls for: `GameViewport` shares
+    /// `create_render_surface_with_name`, so it must keep the compositor blit it
+    /// has always had on **both** backends.
+    #[test]
+    fn a_game_viewport_surface_still_reaches_the_compositor() {
+        let game = create_render_surface_with_name("game");
+        game.writer().submit_frame(&[1, 2, 3, 255], 1, 1);
+
+        assert!(
+            !collect_video_frames_by_name().contains_key("game"),
+            "a GameViewport is not video and must not be painted inline"
+        );
+        assert!(
+            collect_surface_frames()
+                .iter()
+                .any(|(name, ..)| name == "game"),
+            "a GameViewport surface still takes the compositor path"
+        );
+
+        unregister_render_surface(game.id());
+    }
+
+    /// And a `RenderSurface` component keeps its own inline path, by id.
+    #[test]
+    fn a_render_surface_component_is_still_collected_by_id() {
+        let surface = create_render_surface();
+        mount_render_surface(&surface);
+        surface.writer().submit_frame(&[9, 9, 9, 255], 1, 1);
+
+        assert!(collect_surface_pixels_by_id().contains_key(&surface.id()));
+        assert!(collect_video_frames_by_name().is_empty());
+        assert!(collect_surface_frames().is_empty());
+
+        unregister_render_surface(surface.id());
+    }
 }
