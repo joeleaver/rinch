@@ -50,7 +50,12 @@ impl BrowserCapture {
     /// Capture a screenshot of an HTML string.
     ///
     /// Returns PNG bytes.
-    pub fn capture_html(&self, html: &str, width: u32, height: u32) -> Result<Vec<u8>, BrowserError> {
+    pub fn capture_html(
+        &self,
+        html: &str,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>, BrowserError> {
         // Create temp files
         let temp_dir = std::env::temp_dir();
         let html_path = temp_dir.join(format!("rinch_vtest_{}.html", std::process::id()));
@@ -86,12 +91,16 @@ impl BrowserCapture {
         }
 
         // Read PNG
-        std::fs::read(&png_path)
-            .map_err(|e| BrowserError::ReadError(e.to_string()))
+        std::fs::read(&png_path).map_err(|e| BrowserError::ReadError(e.to_string()))
     }
 
     /// Capture a screenshot of an HTML file.
-    pub fn capture_html_file(&self, html_path: &Path, width: u32, height: u32) -> Result<Vec<u8>, BrowserError> {
+    pub fn capture_html_file(
+        &self,
+        html_path: &Path,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>, BrowserError> {
         let temp_dir = std::env::temp_dir();
         let png_path = temp_dir.join(format!("rinch_vtest_{}.png", std::process::id()));
 
@@ -116,8 +125,7 @@ impl BrowserCapture {
             )));
         }
 
-        std::fs::read(&png_path)
-            .map_err(|e| BrowserError::ReadError(e.to_string()))
+        std::fs::read(&png_path).map_err(|e| BrowserError::ReadError(e.to_string()))
     }
 }
 

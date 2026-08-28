@@ -1,7 +1,7 @@
 //! HTML serializer - converts rinch DOM JSON to standalone HTML.
 
-use serde_json::Value;
 use crate::css_export::computed_style_to_css;
+use serde_json::Value;
 
 /// Configuration for HTML serialization.
 #[derive(Debug, Clone)]
@@ -129,7 +129,7 @@ fn serialize_element(html: &mut String, node: &Value, indent: usize) {
                     let filtered = strip_css_variables(inline_style);
                     if !filtered.trim().is_empty() {
                         if !style.is_empty() {
-                            style.push_str(" ");
+                            style.push(' ');
                         }
                         style.push_str(&filtered);
                     }
@@ -137,7 +137,11 @@ fn serialize_element(html: &mut String, node: &Value, indent: usize) {
             } else if key != "class" && key != "data-rid" {
                 // Include other attributes (skip class and internal rinch attributes)
                 if let Some(v) = value.as_str() {
-                    attrs.push_str(&format!(" {}=\"{}\"", html_escape_attr(key), html_escape_attr(v)));
+                    attrs.push_str(&format!(
+                        " {}=\"{}\"",
+                        html_escape_attr(key),
+                        html_escape_attr(v)
+                    ));
                 }
             }
         }
@@ -145,7 +149,7 @@ fn serialize_element(html: &mut String, node: &Value, indent: usize) {
 
     // Build the opening tag
     html.push_str(&indent_str);
-    html.push_str("<");
+    html.push('<');
     html.push_str(tag);
     if !style.is_empty() {
         html.push_str(&format!(" style=\"{}\"", html_escape_attr(&style)));
@@ -158,7 +162,7 @@ fn serialize_element(html: &mut String, node: &Value, indent: usize) {
         return;
     }
 
-    html.push_str(">");
+    html.push('>');
 
     // Serialize children
     let children = node.get("children").and_then(|v| v.as_array());
@@ -175,7 +179,7 @@ fn serialize_element(html: &mut String, node: &Value, indent: usize) {
             }
         }
     } else if has_children {
-        html.push_str("\n");
+        html.push('\n');
         if let Some(children) = children {
             for child in children {
                 serialize_node(html, child, indent + 1);
@@ -198,7 +202,7 @@ fn serialize_text(html: &mut String, node: &Value, indent: usize) {
         if !trimmed.is_empty() {
             html.push_str(&indent_str);
             html.push_str(&html_escape(trimmed));
-            html.push_str("\n");
+            html.push('\n');
         }
     }
 }
@@ -207,8 +211,20 @@ fn serialize_text(html: &mut String, node: &Value, indent: usize) {
 fn is_void_element(tag: &str) -> bool {
     matches!(
         tag.to_lowercase().as_str(),
-        "area" | "base" | "br" | "col" | "embed" | "hr" | "img" | "input" |
-        "link" | "meta" | "param" | "source" | "track" | "wbr"
+        "area"
+            | "base"
+            | "br"
+            | "col"
+            | "embed"
+            | "hr"
+            | "img"
+            | "input"
+            | "link"
+            | "meta"
+            | "param"
+            | "source"
+            | "track"
+            | "wbr"
     )
 }
 

@@ -33,9 +33,11 @@ pub fn computed_style_to_css(styles: &Value) -> String {
             "Absolute" => "absolute",
             "Fixed" => "fixed",
             "Static" => "static",
-            "Relative" | _ => "relative",
+            // "Relative" and anything unrecognised.
+            _ => "relative",
         };
-        if css_val != "relative" { // Skip default
+        if css_val != "relative" {
+            // Skip default
             css.push_str(&format!("position: {}; ", css_val));
         }
     }
@@ -91,25 +93,50 @@ pub fn computed_style_to_css(styles: &Value) -> String {
     emit_length_percentage(&mut css, obj, "border_left_width", "border-left-width");
 
     // After border widths, add border-style if any border has width
-    let has_border = ["border_top_width", "border_right_width", "border_bottom_width", "border_left_width"]
-        .iter()
-        .any(|key| {
-            obj.get(*key)
-                .and_then(|v| v.as_object())
-                .and_then(|o| o.get("Length"))
-                .and_then(|v| v.as_f64())
-                .map(|len| len.abs() > 0.01)
-                .unwrap_or(false)
-        });
+    let has_border = [
+        "border_top_width",
+        "border_right_width",
+        "border_bottom_width",
+        "border_left_width",
+    ]
+    .iter()
+    .any(|key| {
+        obj.get(*key)
+            .and_then(|v| v.as_object())
+            .and_then(|o| o.get("Length"))
+            .and_then(|v| v.as_f64())
+            .map(|len| len.abs() > 0.01)
+            .unwrap_or(false)
+    });
     if has_border {
         css.push_str("border-style: solid; ");
     }
 
     // Border radius (now supports percentages)
-    emit_length_percentage(&mut css, obj, "border_radius_top_left", "border-top-left-radius");
-    emit_length_percentage(&mut css, obj, "border_radius_top_right", "border-top-right-radius");
-    emit_length_percentage(&mut css, obj, "border_radius_bottom_right", "border-bottom-right-radius");
-    emit_length_percentage(&mut css, obj, "border_radius_bottom_left", "border-bottom-left-radius");
+    emit_length_percentage(
+        &mut css,
+        obj,
+        "border_radius_top_left",
+        "border-top-left-radius",
+    );
+    emit_length_percentage(
+        &mut css,
+        obj,
+        "border_radius_top_right",
+        "border-top-right-radius",
+    );
+    emit_length_percentage(
+        &mut css,
+        obj,
+        "border_radius_bottom_right",
+        "border-bottom-right-radius",
+    );
+    emit_length_percentage(
+        &mut css,
+        obj,
+        "border_radius_bottom_left",
+        "border-bottom-left-radius",
+    );
 
     // Colors (already serialized as "#rrggbb" or "#rrggbbaa")
     if let Some(v) = obj.get("background_color").and_then(|v| v.as_str()) {
@@ -160,7 +187,8 @@ fn emit_overflow(css: &mut String, obj: &serde_json::Map<String, Value>, key: &s
             "Scroll" => "scroll",
             "Auto" => "auto",
             "Clip" => "clip",
-            "Visible" | _ => return, // Skip default
+            // "Visible" is the default; nothing to emit.
+            _ => return,
         };
         css.push_str(&format!("{}: {}; ", prop, css_val));
     }
@@ -169,7 +197,9 @@ fn emit_overflow(css: &mut String, obj: &serde_json::Map<String, Value>, key: &s
 fn emit_dimension(css: &mut String, obj: &serde_json::Map<String, Value>, key: &str, prop: &str) {
     if let Some(v) = obj.get(key) {
         if let Some(s) = v.as_str() {
-            if s == "Auto" { return; } // Skip auto
+            if s == "Auto" {
+                return;
+            } // Skip auto
         }
         if let Some(o) = v.as_object() {
             if let Some(len) = o.get("Length").and_then(|v| v.as_f64()) {
@@ -181,10 +211,17 @@ fn emit_dimension(css: &mut String, obj: &serde_json::Map<String, Value>, key: &
     }
 }
 
-fn emit_length_percentage(css: &mut String, obj: &serde_json::Map<String, Value>, key: &str, prop: &str) {
+fn emit_length_percentage(
+    css: &mut String,
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    prop: &str,
+) {
     if let Some(v) = obj.get(key) {
         if let Some(s) = v.as_str() {
-            if s == "Zero" { return; } // Skip zero
+            if s == "Zero" {
+                return;
+            } // Skip zero
         }
         if let Some(o) = v.as_object() {
             if let Some(len) = o.get("Length").and_then(|v| v.as_f64()) {
@@ -198,10 +235,17 @@ fn emit_length_percentage(css: &mut String, obj: &serde_json::Map<String, Value>
     }
 }
 
-fn emit_length_percentage_auto(css: &mut String, obj: &serde_json::Map<String, Value>, key: &str, prop: &str) {
+fn emit_length_percentage_auto(
+    css: &mut String,
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    prop: &str,
+) {
     if let Some(v) = obj.get(key) {
         if let Some(s) = v.as_str() {
-            if s == "Auto" { return; } // Skip auto
+            if s == "Auto" {
+                return;
+            } // Skip auto
         }
         if let Some(o) = v.as_object() {
             if let Some(len) = o.get("Length").and_then(|v| v.as_f64()) {
@@ -213,18 +257,16 @@ fn emit_length_percentage_auto(css: &mut String, obj: &serde_json::Map<String, V
     }
 }
 
-fn emit_f32(css: &mut String, obj: &serde_json::Map<String, Value>, key: &str, prop: &str, default: f64) {
+fn emit_f32(
+    css: &mut String,
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    prop: &str,
+    default: f64,
+) {
     if let Some(v) = obj.get(key).and_then(|v| v.as_f64()) {
         if (v - default).abs() > 0.01 {
             css.push_str(&format!("{}: {}; ", prop, v));
-        }
-    }
-}
-
-fn emit_f32_px(css: &mut String, obj: &serde_json::Map<String, Value>, key: &str, prop: &str, default: f64) {
-    if let Some(v) = obj.get(key).and_then(|v| v.as_f64()) {
-        if (v - default).abs() > 0.01 {
-            css.push_str(&format!("{}: {}px; ", prop, v));
         }
     }
 }
@@ -235,7 +277,8 @@ fn emit_flex_direction(css: &mut String, obj: &serde_json::Map<String, Value>) {
             "Column" => "column",
             "RowReverse" => "row-reverse",
             "ColumnReverse" => "column-reverse",
-            "Row" | _ => return, // Skip default
+            // "Row" is the default; nothing to emit.
+            _ => return,
         };
         css.push_str(&format!("flex-direction: {}; ", css_val));
     }
@@ -246,7 +289,8 @@ fn emit_flex_wrap(css: &mut String, obj: &serde_json::Map<String, Value>) {
         let css_val = match v {
             "Wrap" => "wrap",
             "WrapReverse" => "wrap-reverse",
-            "NoWrap" | _ => return, // Skip default
+            // "NoWrap" is the default; nothing to emit.
+            _ => return,
         };
         css.push_str(&format!("flex-wrap: {}; ", css_val));
     }
@@ -286,7 +330,8 @@ fn emit_font_style(css: &mut String, obj: &serde_json::Map<String, Value>) {
         let css_val = match v {
             "Italic" => "italic",
             "Oblique" => "oblique",
-            "Normal" | _ => return, // Skip default
+            // "Normal" is the default; nothing to emit.
+            _ => return,
         };
         css.push_str(&format!("font-style: {}; ", css_val));
     }
@@ -295,7 +340,9 @@ fn emit_font_style(css: &mut String, obj: &serde_json::Map<String, Value>) {
 fn emit_line_height(css: &mut String, obj: &serde_json::Map<String, Value>) {
     if let Some(v) = obj.get("line_height") {
         if let Some(s) = v.as_str() {
-            if s == "Normal" { return; }
+            if s == "Normal" {
+                return;
+            }
         }
         if let Some(o) = v.as_object() {
             if let Some(n) = o.get("Relative").and_then(|v| v.as_f64()) {
@@ -309,7 +356,8 @@ fn emit_line_height(css: &mut String, obj: &serde_json::Map<String, Value>) {
 
 fn emit_letter_spacing(css: &mut String, obj: &serde_json::Map<String, Value>) {
     if let Some(v) = obj.get("letter_spacing").and_then(|v| v.as_f64()) {
-        if v.abs() > 0.001 {  // Only emit if non-zero
+        if v.abs() > 0.001 {
+            // Only emit if non-zero
             css.push_str(&format!("letter-spacing: {:.2}px; ", v));
         }
     }
@@ -317,7 +365,8 @@ fn emit_letter_spacing(css: &mut String, obj: &serde_json::Map<String, Value>) {
 
 fn emit_word_spacing(css: &mut String, obj: &serde_json::Map<String, Value>) {
     if let Some(v) = obj.get("word_spacing").and_then(|v| v.as_f64()) {
-        if v.abs() > 0.001 {  // Only emit if non-zero
+        if v.abs() > 0.001 {
+            // Only emit if non-zero
             css.push_str(&format!("word-spacing: {:.2}px; ", v));
         }
     }
@@ -329,7 +378,8 @@ fn emit_text_align(css: &mut String, obj: &serde_json::Map<String, Value>) {
             "Center" => "center",
             "End" => "right",
             "Justify" => "justify",
-            "Start" | _ => return, // Skip default
+            // "Start" is the default; nothing to emit.
+            _ => return,
         };
         css.push_str(&format!("text-align: {}; ", css_val));
     }
@@ -338,8 +388,14 @@ fn emit_text_align(css: &mut String, obj: &serde_json::Map<String, Value>) {
 fn emit_text_decoration(css: &mut String, obj: &serde_json::Map<String, Value>) {
     if let Some(v) = obj.get("text_decoration") {
         if let Some(o) = v.as_object() {
-            let underline = o.get("underline").and_then(|v| v.as_bool()).unwrap_or(false);
-            let strikethrough = o.get("strikethrough").and_then(|v| v.as_bool()).unwrap_or(false);
+            let underline = o
+                .get("underline")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let strikethrough = o
+                .get("strikethrough")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
             if underline && strikethrough {
                 css.push_str("text-decoration: underline line-through; ");
@@ -359,7 +415,8 @@ fn emit_white_space(css: &mut String, obj: &serde_json::Map<String, Value>) {
             "Pre" => "pre",
             "PreWrap" => "pre-wrap",
             "PreLine" => "pre-line",
-            "Normal" | _ => return, // Skip default
+            // "Normal" is the default; nothing to emit.
+            _ => return,
         };
         css.push_str(&format!("white-space: {}; ", css_val));
     }

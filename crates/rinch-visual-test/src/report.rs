@@ -1,7 +1,7 @@
 //! Report generation - creates HTML reports of test results.
 
-use std::path::Path;
 use crate::runner::TestResult;
+use std::path::Path;
 
 /// Generate an HTML report of test results.
 pub fn generate_html_report(results: &[TestResult], output_path: &Path) -> std::io::Result<()> {
@@ -16,7 +16,9 @@ pub fn generate_html_report(results: &[TestResult], output_path: &Path) -> std::
     html.push_str("  <meta charset=\"utf-8\">\n");
     html.push_str("  <title>Visual Regression Test Report</title>\n");
     html.push_str("  <style>\n");
-    html.push_str("    body { font-family: -apple-system, sans-serif; margin: 20px; background: #f5f5f5; }\n");
+    html.push_str(
+        "    body { font-family: -apple-system, sans-serif; margin: 20px; background: #f5f5f5; }\n",
+    );
     html.push_str("    .summary { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }\n");
     html.push_str("    .pass { color: #22c55e; }\n");
     html.push_str("    .fail { color: #ef4444; }\n");
@@ -30,7 +32,9 @@ pub fn generate_html_report(results: &[TestResult], output_path: &Path) -> std::
     html.push_str("    h1 { margin-bottom: 10px; }\n");
     html.push_str("    h2 { margin: 0 0 10px 0; }\n");
     html.push_str("    .score { font-size: 14px; color: #666; }\n");
-    html.push_str("    .error { background: #fef2f2; padding: 10px; border-radius: 4px; color: #991b1b; }\n");
+    html.push_str(
+        "    .error { background: #fef2f2; padding: 10px; border-radius: 4px; color: #991b1b; }\n",
+    );
     html.push_str("  </style>\n");
     html.push_str("</head>\n<body>\n");
 
@@ -42,7 +46,10 @@ pub fn generate_html_report(results: &[TestResult], output_path: &Path) -> std::
         passed, failed
     ));
     if errored > 0 {
-        html.push_str(&format!("  <p class=\"fail\">{} tests errored</p>\n", errored));
+        html.push_str(&format!(
+            "  <p class=\"fail\">{} tests errored</p>\n",
+            errored
+        ));
     }
     html.push_str("</div>\n");
 
@@ -52,17 +59,17 @@ pub fn generate_html_report(results: &[TestResult], output_path: &Path) -> std::
         let status_icon = if result.passed { "✓" } else { "✗" };
 
         html.push_str(&format!("<div class=\"test {}\">\n", status_class));
-        html.push_str(&format!(
-            "  <h2>{} {}</h2>\n",
-            status_icon, result.name
-        ));
+        html.push_str(&format!("  <h2>{} {}</h2>\n", status_icon, result.name));
         html.push_str(&format!(
             "  <p class=\"score\">SSIM Score: {:.4} (threshold: 0.99)</p>\n",
             result.ssim_score
         ));
 
         if let Some(error) = &result.error {
-            html.push_str(&format!("  <div class=\"error\">{}</div>\n", html_escape(error)));
+            html.push_str(&format!(
+                "  <div class=\"error\">{}</div>\n",
+                html_escape(error)
+            ));
         }
 
         html.push_str("  <div class=\"images\">\n");
@@ -136,8 +143,15 @@ pub fn print_summary(results: &[TestResult]) {
     println!("{}", "=".repeat(60));
 
     for result in results {
-        let status = if result.passed { "✓ PASS" } else { "✗ FAIL" };
-        println!("{} {} (SSIM: {:.4})", status, result.name, result.ssim_score);
+        let status = if result.passed {
+            "✓ PASS"
+        } else {
+            "✗ FAIL"
+        };
+        println!(
+            "{} {} (SSIM: {:.4})",
+            status, result.name, result.ssim_score
+        );
         if let Some(error) = &result.error {
             println!("  Error: {}", error);
         }

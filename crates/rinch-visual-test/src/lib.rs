@@ -3,15 +3,15 @@
 //! Compares rinch GPU rendering against browser (Chromium) rendering
 //! of equivalent HTML/CSS.
 
+pub mod browser;
+pub mod capture;
+pub mod compare;
 pub mod css_export;
 pub mod html_serializer;
-pub mod browser;
-pub mod compare;
-pub mod capture;
-pub mod runner;
 pub mod report;
+pub mod runner;
 
 pub use compare::ComparisonResult;
 pub use css_export::computed_style_to_css;
 pub use html_serializer::{serialize_to_html, HtmlConfig};
-pub use runner::{TestRunner, TestDefinition, TestResult};
+pub use runner::{TestDefinition, TestResult, TestRunner};

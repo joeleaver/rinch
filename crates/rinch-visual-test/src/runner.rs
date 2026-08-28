@@ -1,13 +1,13 @@
 //! Test runner - orchestrates visual regression testing.
 
-use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-use crate::capture::{RinchCapture, CaptureError};
-use crate::html_serializer::{serialize_to_html, HtmlConfig};
 use crate::browser::{BrowserCapture, BrowserError};
+use crate::capture::{CaptureError, RinchCapture};
 use crate::compare::{compare_images, CompareError};
+use crate::html_serializer::{serialize_to_html, HtmlConfig};
 
 #[derive(Error, Debug)]
 pub enum RunnerError {
@@ -119,10 +119,12 @@ impl TestRunner {
 
     /// Load test configuration from a JSON file.
     pub fn load_config(path: &Path) -> Result<TestConfig, RunnerError> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| RunnerError::ConfigError(format!("Failed to read {}: {}", path.display(), e)))?;
-        serde_json::from_str(&content)
-            .map_err(|e| RunnerError::ConfigError(format!("Failed to parse {}: {}", path.display(), e)))
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            RunnerError::ConfigError(format!("Failed to read {}: {}", path.display(), e))
+        })?;
+        serde_json::from_str(&content).map_err(|e| {
+            RunnerError::ConfigError(format!("Failed to parse {}: {}", path.display(), e))
+        })
     }
 
     /// Run all tests in the configuration.
@@ -184,13 +186,7 @@ impl TestRunner {
         let mut results = Vec::new();
 
         for test in &config.tests {
-            let result = self.run_test(
-                test,
-                &mut rinch,
-                &browser,
-                &html_config,
-                config.viewport,
-            );
+            let result = self.run_test(test, &mut rinch, &browser, &html_config, config.viewport);
             results.push(result);
         }
 
@@ -295,7 +291,9 @@ impl TestRunner {
 
         // Update baseline if requested and test passed
         if self.update_baselines && comparison.passed {
-            let baseline_path = self.baselines_dir.join(format!("{}_baseline.png", test.name));
+            let baseline_path = self
+                .baselines_dir
+                .join(format!("{}_baseline.png", test.name));
             let _ = std::fs::create_dir_all(&self.baselines_dir);
             let _ = std::fs::copy(&expected_path, &baseline_path);
         }
