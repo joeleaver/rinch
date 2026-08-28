@@ -80,39 +80,72 @@ pub fn compare_images_decoded(
 
 /// Calculate SSIM between two images.
 ///
-/// Uses a simplified SSIM calculation on luminance channel.
+/// SSIM is a *local* statistic: it is defined per window and averaged over the
+/// image. Computing one mean/variance/covariance over every pixel instead —
+/// which this used to do — collapses it into a global correlation that is
+/// dominated by overall brightness and total contrast, and is almost blind to
+/// localized structural change. Two renders that a human reads as ~91% alike
+/// scored 0.45 that way, which made every threshold in `tests.json`
+/// uninterpretable.
+///
+/// Windows are 8x8 and non-overlapping (a cheap stand-in for the 11x11 Gaussian
+/// of the original paper — enough to make the score track what the eye sees).
+/// Partial windows at the right/bottom edge are dropped.
 fn calculate_ssim(img1: &RgbaImage, img2: &RgbaImage) -> f64 {
-    let (_width, _height) = img1.dimensions();
+    const WINDOW: usize = 8;
+    // (0.01 * 255)^2 and (0.03 * 255)^2 — the stabilizing constants.
+    const C1: f64 = 6.5025;
+    const C2: f64 = 58.5225;
 
-    // Convert to grayscale luminance
-    let luma1: Vec<f64> = img1.pixels()
-        .map(|p| 0.299 * p[0] as f64 + 0.587 * p[1] as f64 + 0.114 * p[2] as f64)
-        .collect();
-    let luma2: Vec<f64> = img2.pixels()
-        .map(|p| 0.299 * p[0] as f64 + 0.587 * p[1] as f64 + 0.114 * p[2] as f64)
-        .collect();
+    let (width, height) = img1.dimensions();
+    let luma = |img: &RgbaImage| -> Vec<f64> {
+        img.pixels()
+            .map(|p| 0.299 * p[0] as f64 + 0.587 * p[1] as f64 + 0.114 * p[2] as f64)
+            .collect()
+    };
+    let luma1 = luma(img1);
+    let luma2 = luma(img2);
 
-    // SSIM constants
-    let c1 = 6.5025; // (0.01 * 255)^2
-    let c2 = 58.5225; // (0.03 * 255)^2
+    let (w, h) = (width as usize, height as usize);
+    let (windows_x, windows_y) = (w / WINDOW, h / WINDOW);
+    if windows_x == 0 || windows_y == 0 {
+        // Too small to window: fall back to treating the image as one window.
+        return ssim_window(&luma1, &luma2, C1, C2).clamp(0.0, 1.0);
+    }
 
-    // Calculate means
-    let n = luma1.len() as f64;
-    let mean1: f64 = luma1.iter().sum::<f64>() / n;
-    let mean2: f64 = luma2.iter().sum::<f64>() / n;
+    let mut total = 0.0;
+    for wy in 0..windows_y {
+        for wx in 0..windows_x {
+            let mut a = Vec::with_capacity(WINDOW * WINDOW);
+            let mut b = Vec::with_capacity(WINDOW * WINDOW);
+            for dy in 0..WINDOW {
+                let row = (wy * WINDOW + dy) * w + wx * WINDOW;
+                a.extend_from_slice(&luma1[row..row + WINDOW]);
+                b.extend_from_slice(&luma2[row..row + WINDOW]);
+            }
+            total += ssim_window(&a, &b, C1, C2);
+        }
+    }
 
-    // Calculate variances and covariance
-    let var1: f64 = luma1.iter().map(|x| (x - mean1).powi(2)).sum::<f64>() / n;
-    let var2: f64 = luma2.iter().map(|x| (x - mean2).powi(2)).sum::<f64>() / n;
-    let covar: f64 = luma1.iter().zip(luma2.iter())
-        .map(|(x, y)| (x - mean1) * (y - mean2))
-        .sum::<f64>() / n;
+    (total / (windows_x * windows_y) as f64).clamp(0.0, 1.0)
+}
 
-    // SSIM formula
-    let ssim = ((2.0 * mean1 * mean2 + c1) * (2.0 * covar + c2)) /
-               ((mean1.powi(2) + mean2.powi(2) + c1) * (var1 + var2 + c2));
+/// SSIM over a single window of luminance samples.
+fn ssim_window(a: &[f64], b: &[f64], c1: f64, c2: f64) -> f64 {
+    let n = a.len() as f64;
+    let mean_a: f64 = a.iter().sum::<f64>() / n;
+    let mean_b: f64 = b.iter().sum::<f64>() / n;
+    let var_a: f64 = a.iter().map(|x| (x - mean_a).powi(2)).sum::<f64>() / n;
+    let var_b: f64 = b.iter().map(|x| (x - mean_b).powi(2)).sum::<f64>() / n;
+    let covar: f64 = a
+        .iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - mean_a) * (y - mean_b))
+        .sum::<f64>()
+        / n;
 
-    ssim.clamp(0.0, 1.0)
+    ((2.0 * mean_a * mean_b + c1) * (2.0 * covar + c2))
+        / ((mean_a.powi(2) + mean_b.powi(2) + c1) * (var_a + var_b + c2))
 }
 
 /// Generate a diff image highlighting differences.
@@ -131,10 +164,9 @@ fn generate_diff(img1: &RgbaImage, img2: &RgbaImage) -> (u32, RgbaImage) {
             let p1 = img1.get_pixel(x, y);
             let p2 = img2.get_pixel(x, y);
 
-            let is_different =
-                (p1[0] as i16 - p2[0] as i16).abs() > pixel_threshold as i16 ||
-                (p1[1] as i16 - p2[1] as i16).abs() > pixel_threshold as i16 ||
-                (p1[2] as i16 - p2[2] as i16).abs() > pixel_threshold as i16;
+            let is_different = (p1[0] as i16 - p2[0] as i16).abs() > pixel_threshold as i16
+                || (p1[1] as i16 - p2[1] as i16).abs() > pixel_threshold as i16
+                || (p1[2] as i16 - p2[2] as i16).abs() > pixel_threshold as i16;
 
             if is_different {
                 diff_count += 1;
@@ -155,7 +187,7 @@ fn generate_diff(img1: &RgbaImage, img2: &RgbaImage) -> (u32, RgbaImage) {
 pub fn save_diff_image(result: &ComparisonResult, path: &std::path::Path) -> std::io::Result<()> {
     if let Some(diff) = &result.diff_image {
         diff.save(path)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
     }
     Ok(())
 }
@@ -173,7 +205,40 @@ mod tests {
         }
 
         let ssim = calculate_ssim(&img, &img);
-        assert!((ssim - 1.0).abs() < 0.001, "SSIM should be ~1.0 for identical images");
+        assert!(
+            (ssim - 1.0).abs() < 0.001,
+            "SSIM should be ~1.0 for identical images"
+        );
+    }
+
+    /// A localized defect on a *busy* background must move the score.
+    ///
+    /// This is the case the old whole-image SSIM could not see. On a detailed
+    /// background the global variance is already large, so blanking a 1.6%
+    /// patch barely perturbs it: the old statistic scored 0.9921 here, while
+    /// windowing scores 0.9844. That gap is the whole point — a real screen is
+    /// busy, and a real rendering defect is local.
+    #[test]
+    fn test_localized_difference_on_busy_background() {
+        // 4px checkerboard: plenty of structure everywhere, like a page of text.
+        let mut img1 = RgbaImage::new(128, 128);
+        for (x, y, pixel) in img1.enumerate_pixels_mut() {
+            let v = if ((x / 4) + (y / 4)) % 2 == 0 { 255 } else { 0 };
+            *pixel = Rgba([v, v, v, 255]);
+        }
+        // Flatten a 16x16 corner (1.6% of the image) to mid-grey.
+        let mut img2 = img1.clone();
+        for y in 0..16 {
+            for x in 0..16 {
+                img2.put_pixel(x, y, Rgba([128, 128, 128, 255]));
+            }
+        }
+
+        let ssim = calculate_ssim(&img1, &img2);
+        assert!(
+            ssim < 0.99,
+            "a localized defect on a busy background must lower SSIM below 0.99, got {ssim}"
+        );
     }
 
     #[test]
@@ -189,6 +254,10 @@ mod tests {
         }
 
         let ssim = calculate_ssim(&img1, &img2);
-        assert!(ssim < 0.95, "SSIM should be low for very different images: {}", ssim);
+        assert!(
+            ssim < 0.95,
+            "SSIM should be low for very different images: {}",
+            ssim
+        );
     }
 }

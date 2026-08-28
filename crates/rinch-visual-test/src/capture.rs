@@ -1,10 +1,10 @@
 //! Rinch capture - connects to running rinch app via debug protocol.
 
+use serde::Deserialize;
+use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
-use serde::Deserialize;
-use serde_json::{json, Value};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -66,7 +66,10 @@ impl RinchCapture {
         send_message(&mut stream, &handshake)?;
         let _response = receive_message(&mut stream)?;
 
-        Ok(Self { stream, request_id: 0 })
+        Ok(Self {
+            stream,
+            request_id: 0,
+        })
     }
 
     /// Capture a screenshot as PNG bytes.
@@ -77,9 +80,8 @@ impl RinchCapture {
 
         let response = receive_message(&mut self.stream)?;
 
-        // Check for error response
-        if let Some(Value::String(err_msg)) = response.get("error") {
-            return Err(CaptureError::CommandFailed(err_msg.clone()));
+        if let Some(err) = response_error(&response) {
+            return Err(CaptureError::CommandFailed(err));
         }
 
         // Look for bytes response: {"id": N, "type": "bytes", "data": "base64..."}
@@ -89,26 +91,39 @@ impl RinchCapture {
                     use base64::Engine;
                     let bytes = base64::engine::general_purpose::STANDARD
                         .decode(base64_data)
-                        .map_err(|e| CaptureError::ProtocolError(format!("base64 decode: {}", e)))?;
+                        .map_err(|e| {
+                            CaptureError::ProtocolError(format!("base64 decode: {}", e))
+                        })?;
                     return Ok(bytes);
                 }
             }
         }
 
-        Err(CaptureError::CommandFailed("Screenshot returned no data".into()))
+        Err(CaptureError::CommandFailed(
+            "Screenshot returned no data".into(),
+        ))
     }
 
     /// Get the DOM tree as JSON.
     pub fn dom_tree(&mut self) -> Result<Value, CaptureError> {
         self.request_id += 1;
-        let cmd = json!({ "id": self.request_id, "method": "dom_tree" });
+        // `DebugCommandKind` is an adjacently-tagged enum (`tag = "method"`,
+        // `content = "params"`), so a struct variant needs its `params` key
+        // present even when every field defaults.
+        // `verbose` pulls each node's computed styles, without which the
+        // exported HTML is an unstyled skeleton the browser renders blank.
+        // `max_depth` overrides the server's shallow default of 3.
+        let cmd = json!({
+            "id": self.request_id,
+            "method": "dom_tree",
+            "params": { "max_depth": 1000, "verbose": true }
+        });
         send_message(&mut self.stream, &cmd)?;
 
         let response = receive_message(&mut self.stream)?;
 
-        // Check for error response
-        if let Some(Value::String(err_msg)) = response.get("error") {
-            return Err(CaptureError::CommandFailed(err_msg.clone()));
+        if let Some(err) = response_error(&response) {
+            return Err(CaptureError::CommandFailed(err));
         }
 
         // Look for json response: {"id": N, "type": "json", "data": {...}}
@@ -120,7 +135,9 @@ impl RinchCapture {
             }
         }
 
-        Err(CaptureError::CommandFailed("DomTree returned no data".into()))
+        Err(CaptureError::CommandFailed(
+            "DomTree returned no data".into(),
+        ))
     }
 
     /// Click at coordinates.
@@ -130,9 +147,8 @@ impl RinchCapture {
         send_message(&mut self.stream, &cmd)?;
         let response = receive_message(&mut self.stream)?;
 
-        // Check for error response
-        if let Some(Value::String(err_msg)) = response.get("error") {
-            return Err(CaptureError::CommandFailed(err_msg.clone()));
+        if let Some(err) = response_error(&response) {
+            return Err(CaptureError::CommandFailed(err));
         }
 
         Ok(())
@@ -145,9 +161,8 @@ impl RinchCapture {
         send_message(&mut self.stream, &cmd)?;
         let response = receive_message(&mut self.stream)?;
 
-        // Check for error response
-        if let Some(Value::String(err_msg)) = response.get("error") {
-            return Err(CaptureError::CommandFailed(err_msg.clone()));
+        if let Some(err) = response_error(&response) {
+            return Err(CaptureError::CommandFailed(err));
         }
 
         Ok(())
@@ -193,10 +208,31 @@ fn is_process_running(pid: u32) -> bool {
     std::path::Path::new(&format!("/proc/{}", pid)).exists()
 }
 
+/// Extract the message from an error response.
+///
+/// The server answers with `{"type": "error", "message": "..."}`; older code
+/// here looked for a bare `error` key, so every failure was misreported as a
+/// missing payload instead of the reason the command failed.
+fn response_error(response: &Value) -> Option<String> {
+    if response.get("type").and_then(Value::as_str) == Some("error") {
+        return Some(
+            response
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error")
+                .to_string(),
+        );
+    }
+    if let Some(Value::String(msg)) = response.get("error") {
+        return Some(msg.clone());
+    }
+    None
+}
+
 /// Send a length-prefixed JSON message.
 fn send_message(stream: &mut TcpStream, msg: &Value) -> Result<(), CaptureError> {
-    let json_bytes = serde_json::to_vec(msg)
-        .map_err(|e| CaptureError::ProtocolError(e.to_string()))?;
+    let json_bytes =
+        serde_json::to_vec(msg).map_err(|e| CaptureError::ProtocolError(e.to_string()))?;
 
     let len = json_bytes.len() as u32;
     stream.write_all(&len.to_be_bytes())?;
@@ -215,6 +251,5 @@ fn receive_message(stream: &mut TcpStream) -> Result<Value, CaptureError> {
     let mut buf = vec![0u8; len];
     stream.read_exact(&mut buf)?;
 
-    serde_json::from_slice(&buf)
-        .map_err(|e| CaptureError::ProtocolError(e.to_string()))
+    serde_json::from_slice(&buf).map_err(|e| CaptureError::ProtocolError(e.to_string()))
 }
