@@ -96,12 +96,50 @@ impl DisplayValue {
 }
 
 /// CSS position property values.
+///
+/// The default is `Static`, which is what CSS says the initial value of
+/// `position` is — and, less obviously, the only value that keeps a node which
+/// never reaches Stylo out of the stacking machinery.
+///
+/// This used to default to `Relative`, which looked harmless because
+/// [`PositionValue::to_taffy`] maps `Static` and `Relative` to the same Taffy
+/// position, so layout could not tell the two apart. Paint could. Style
+/// resolution runs on elements only — `resolve_styles_recursive` returns early
+/// for anything that is not an element — so every *text* node in the document
+/// keeps `ComputedStyle::default()` for its whole life, and with `Relative` as
+/// the default that made `is_positioned_z_auto` in `crate::stacking` answer
+/// `true` for all of them. A positioned `z-index: auto` box is hoisted out of
+/// its parent and painted from the nearest stacking-context ancestor's
+/// sequence, so every text node was, and the guard that stops an IFC root's
+/// children being drawn a second time (`already_drawn_inline` in
+/// `crate::paint`) only recognises a child it is itself the `ifc_root` of. A
+/// hoisted text node arrives at an *ancestor*, where that test cannot match, so
+/// every run of text in an inline formatting context was painted twice: once by
+/// its IFC root, out of the Parley layout that carries `text-transform`,
+/// `letter-spacing` and the inline styling; and once by the standalone text
+/// path in `paint_node`, which has none of that and draws the raw DOM string at
+/// the IFC root's own box origin.
+///
+/// Both copies land on the same pixels when the run has no `text-transform`, no
+/// `letter-spacing` and no padding on the root to displace the content box —
+/// which is most text, which is why this survived so long looking like nothing
+/// worse than slightly heavy antialiasing. Where it does not, you see it: a
+/// group header styled `text-transform: uppercase; letter-spacing: 0.16em` drew
+/// "SOLID" with "Solid" struck through it, at two widths, and a chip with
+/// `padding: 6px 12px` drew its label twice, a line and a padding apart. Found
+/// on an Android device (card K20) and reproducible on the desktop the whole
+/// time; nothing about it was platform-specific.
+///
+/// `Static` costs nothing at layout time — `to_taffy` still returns
+/// `taffy::Position::Relative` for it — and `is_positioned_z_auto` is the only
+/// place in the tree that asks whether a position is non-static, so this is a
+/// one-predicate change with the whole of the double paint behind it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub enum PositionValue {
-    #[default]
     Relative,
     Absolute,
     Fixed,
+    #[default]
     Static,
     Sticky,
 }
