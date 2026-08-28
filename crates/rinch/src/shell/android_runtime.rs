@@ -24,19 +24,16 @@ use crate::shell::touch_gesture::{TouchAction, TouchGesture};
 
 // ── Cross-thread dispatch ────────────────────────────────────────────────────
 
-static MAIN_QUEUE: Mutex<Vec<Box<dyn FnOnce() + Send>>> = Mutex::new(Vec::new());
 static REDRAW_PENDING: AtomicBool = AtomicBool::new(false);
 
+/// Queue a cross-thread closure and ask for a frame.
+///
+/// The queue itself lives in `rinch-core` so every host shares one
+/// ([`rinch_core::queue_main_callback`], issue #172); what this shell adds is
+/// the redraw request that gets the loop back around to drain it.
 fn dispatch_to_main_thread(f: Box<dyn FnOnce() + Send>) {
-    MAIN_QUEUE.lock().unwrap().push(f);
+    rinch_core::queue_main_callback(f);
     REDRAW_PENDING.store(true, Ordering::Release);
-}
-
-fn drain_main_queue() {
-    let callbacks: Vec<Box<dyn FnOnce() + Send>> = MAIN_QUEUE.lock().unwrap().drain(..).collect();
-    for cb in callbacks {
-        cb();
-    }
 }
 
 // ── Entry points ─────────────────────────────────────────────────────────────
@@ -393,7 +390,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         rinch_android::lifecycle::drain_lifecycle();
 
         // Drain cross-thread callbacks
-        drain_main_queue();
+        rinch_core::drain_main_callbacks();
         rinch_core::reactive::drain_polls();
 
         // The frame clock. Every time-driven thing `RinchApp` owns — CSS

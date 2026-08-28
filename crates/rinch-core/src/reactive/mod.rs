@@ -340,6 +340,70 @@ pub fn set_cross_thread_dispatcher(dispatcher: fn(Box<dyn FnOnce() + Send>)) {
     *CROSS_THREAD_DISPATCHER.lock().unwrap() = Some(dispatcher);
 }
 
+/// Register `dispatcher`, but only if no dispatcher is registered yet.
+///
+/// [`set_cross_thread_dispatcher`] is last-wins, which is what a host owning the
+/// process wants: the desktop shell's dispatcher also wakes its winit event
+/// loop, and it must win. An embedded context arms cross-thread dispatch through
+/// this door instead, so creating one inside a desktop app cannot displace the
+/// runtime's waking dispatcher with a queue-only one. Either way both hosts push
+/// onto the same [`queue_main_callback`] queue, so whichever dispatcher is
+/// installed, every drain site sees every closure.
+pub fn set_cross_thread_dispatcher_if_unset(dispatcher: fn(Box<dyn FnOnce() + Send>)) {
+    let mut slot = CROSS_THREAD_DISPATCHER.lock().unwrap();
+    if slot.is_none() {
+        *slot = Some(dispatcher);
+    }
+}
+
+/// Closures queued from a background thread, waiting to run on the main thread.
+///
+/// The queue lives here, next to the dispatcher it backs, because *every* host
+/// needs the same one: the desktop shell drains it before each paint and on each
+/// event-loop wake, the Android loop drains it once per frame, and an embedded
+/// `RinchContext` drains it at the top of `update()`. It used to be a `static`
+/// private to `shell/rinch_runtime.rs`, which is `desktop`-gated — so an
+/// `embed`-only build had nowhere to put a cross-thread closure and
+/// [`Signal::send`](crate::Signal::send) panicked in the one mode most likely to
+/// want it (issue #172).
+static MAIN_QUEUE: Mutex<Vec<Box<dyn FnOnce() + Send>>> = Mutex::new(Vec::new());
+
+/// Push `f` onto the shared main-thread queue.
+///
+/// Returns `true` if the queue was empty before the push — a host's cue to wake
+/// its event loop, which it then does once per batch rather than once per
+/// closure. A host with nothing to wake (an embedded context, whose game loop is
+/// already turning) ignores it.
+pub fn queue_main_callback(f: Box<dyn FnOnce() + Send>) -> bool {
+    let mut queue = MAIN_QUEUE.lock().unwrap();
+    let was_empty = queue.is_empty();
+    queue.push(f);
+    was_empty
+}
+
+/// Run every queued main-thread callback. Call from the main thread only.
+///
+/// The queue is process-global, so a host that drains it runs the work queued
+/// against every host on the thread. That is correct rather than merely
+/// tolerable: the payload is a `Send` closure that writes its own signals, and
+/// signals are thread-local — not per-document — so it does the same thing
+/// whoever runs it. The document it ultimately touches is still repainted by its
+/// own host, because a signal change notifies every subscriber (issue #134).
+pub fn drain_main_callbacks() {
+    let callbacks: Vec<Box<dyn FnOnce() + Send>> = MAIN_QUEUE.lock().unwrap().drain(..).collect();
+    for callback in callbacks {
+        callback();
+    }
+}
+
+/// Drop every queued main-thread callback without running it.
+///
+/// For host shutdown only: a queued closure typically captures app state that is
+/// about to be torn down, so running it there would be worse than losing it.
+pub fn clear_main_callbacks() {
+    MAIN_QUEUE.lock().unwrap().clear();
+}
+
 /// Check if the current thread is the main (UI) thread.
 ///
 /// Returns `true` if `register_main_thread()` hasn't been called yet
@@ -353,7 +417,13 @@ pub(crate) fn is_main_thread() -> bool {
 
 /// Dispatch a closure to the main thread via the registered dispatcher.
 ///
-/// Panics if no dispatcher has been registered (i.e., rinch runtime not initialized).
+/// Panics if no dispatcher has been registered (i.e., rinch runtime not
+/// initialized). Reaching this at all means [`register_main_thread`] was called,
+/// which only a host does — so a host that registers the main thread without
+/// also registering a dispatcher is strictly worse off than one that registers
+/// neither, where [`is_main_thread`] answers `true` and `send()` degrades to a
+/// direct `set()`. Registering both is the contract; the panic is what catches a
+/// host that forgot (issue #172).
 pub(crate) fn dispatch_to_main_thread(f: Box<dyn FnOnce() + Send>) {
     let dispatcher = CROSS_THREAD_DISPATCHER.lock().unwrap();
     if let Some(dispatch) = *dispatcher {
