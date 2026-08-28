@@ -1368,6 +1368,9 @@ impl RinchApp {
                     actions.push(AppAction::RequestRedraw);
                 }
             }
+            // `PlatformEvent` is `#[non_exhaustive]`: a future variant is a no-op
+            // here until this match is taught about it.
+            _ => {}
         }
 
         actions

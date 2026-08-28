@@ -6,6 +6,11 @@ use std::path::PathBuf;
 ///
 /// Platform backends translate their native events into these variants.
 /// The rinch runtime processes these without any platform-specific knowledge.
+///
+/// `#[non_exhaustive]`: a new variant can be added in a minor release without
+/// that being a breaking change for downstream code. Any `match` on this enum
+/// outside `rinch-platform` must carry a wildcard (`_`) arm.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum PlatformEvent {
     /// The application has been resumed (window ready for rendering).
