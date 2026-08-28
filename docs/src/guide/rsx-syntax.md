@@ -109,7 +109,7 @@ Supported HTML-element event attributes:
 | `onmousedown` / `onmouseup` | Pointer press / release (any button) | `Fn()` |
 | `onmousemove` | Pointer moves over the element | `Fn()` |
 | `onmouseenter` / `onmouseleave` | Pointer enters / leaves the element | `Fn()` |
-| `oncontextmenu` | Right-click (suppresses the native menu when handled) | `Fn()` |
+| `oncontextmenu` | Right-click, or a 500ms long press on Android (suppresses the native menu when handled) | `Fn()` |
 | `oninput` | `<input>`/`<textarea>` value change, per keystroke | `Fn(String)` |
 | `onchange` | Commit boundary: the gesture ends (blur after a modification, Enter, a `<select>` pick) — fires with the final value | `Fn(String)` |
 | `onscroll` | Scroll container scrolls | `Fn(f64)` (scrollTop) |
