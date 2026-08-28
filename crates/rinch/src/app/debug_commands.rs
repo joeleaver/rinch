@@ -295,7 +295,7 @@ impl RinchApp {
                     let hit_node = hit_test(&doc.borrow().tree, x, y);
                     if let Some(hit_node) = hit_node {
                         let mut doc_mut = doc.borrow_mut();
-                        let mut scroll_handler_to_fire: Option<(usize, f64)> = None;
+                        let mut scroll_handler_to_fire: Option<(usize, usize)> = None;
                         if let Some(scroll_node_id) = find_scroll_container(&doc_mut.tree, hit_node)
                             .or_else(|| find_scroll_container_at_point(&doc_mut.tree, x, y))
                         {
@@ -318,15 +318,18 @@ impl RinchApp {
                                     doc_mut.tree.dirty_nodes.insert(scroll_node_id);
                                     self.scene_dirty = true;
                                     if let Some(hid) = handler_id {
-                                        scroll_handler_to_fire = Some((hid, new_y));
+                                        scroll_handler_to_fire = Some((hid, scroll_node_id));
                                     }
                                 }
                             }
                         }
+                        let event = scroll_handler_to_fire.map(|(hid, node_id)| {
+                            (hid, Self::scroll_event_for(&doc_mut.tree, node_id))
+                        });
                         drop(doc_mut);
-                        if let Some((handler_id, scroll_top)) = scroll_handler_to_fire {
+                        if let Some((handler_id, event)) = event {
                             use rinch_core::events::{EventHandlerId, dispatch_scroll_event};
-                            dispatch_scroll_event(EventHandlerId(handler_id), scroll_top);
+                            dispatch_scroll_event(EventHandlerId(handler_id), event);
                         }
                     }
                 }

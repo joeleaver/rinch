@@ -113,25 +113,57 @@ impl<F: Fn(Vec<PathBuf>) + 'static> crate::element::IntoEventHandler<FileDropCal
     }
 }
 
-/// Cloneable callback for scroll events.
+/// Where a scroll container sits after it scrolled — the payload handed to a
+/// [`ScrollCallback`].
 ///
-/// Receives the current scroll offset (scroll_top) as `f64`.
-#[derive(Clone)]
-pub struct ScrollCallback(pub Rc<dyn Fn(f64)>);
+/// `onscroll` means "this element scrolled", not "this element scrolled
+/// vertically": one gesture can move a container on both axes, and a container
+/// can be horizontal-only. Both offsets therefore travel together, so a
+/// listener never has to go back to the DOM to learn what the other axis did
+/// (issue #177).
+///
+/// `#[non_exhaustive]`: a field can be added in a minor release without that
+/// being a breaking change for downstream code. Construct one with
+/// [`ScrollEvent::new`] rather than a struct literal, and read fields by name.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ScrollEvent {
+    /// Distance the content is scrolled down, in logical pixels (`scrollTop`).
+    pub scroll_top: f64,
+    /// Distance the content is scrolled right, in logical pixels
+    /// (`scrollLeft`).
+    pub scroll_left: f64,
+}
 
-impl ScrollCallback {
-    /// Create a new scroll callback from a function.
-    pub fn new<F: Fn(f64) + 'static>(f: F) -> Self {
-        Self(Rc::new(f))
-    }
-
-    /// Invoke the callback with the current scroll offset.
-    pub fn invoke(&self, scroll_top: f64) {
-        (self.0)(scroll_top)
+impl ScrollEvent {
+    /// A scroll event at the given offsets.
+    pub fn new(scroll_top: f64, scroll_left: f64) -> Self {
+        Self {
+            scroll_top,
+            scroll_left,
+        }
     }
 }
 
-impl<F: Fn(f64) + 'static> From<F> for ScrollCallback {
+/// Cloneable callback for scroll events.
+///
+/// Receives a [`ScrollEvent`] carrying the container's offset on **both** axes.
+#[derive(Clone)]
+pub struct ScrollCallback(pub Rc<dyn Fn(ScrollEvent)>);
+
+impl ScrollCallback {
+    /// Create a new scroll callback from a function.
+    pub fn new<F: Fn(ScrollEvent) + 'static>(f: F) -> Self {
+        Self(Rc::new(f))
+    }
+
+    /// Invoke the callback with the container's current scroll offsets.
+    pub fn invoke(&self, event: ScrollEvent) {
+        (self.0)(event)
+    }
+}
+
+impl<F: Fn(ScrollEvent) + 'static> From<F> for ScrollCallback {
     fn from(f: F) -> Self {
         Self::new(f)
     }
@@ -149,7 +181,7 @@ impl crate::element::IntoEventHandler<ScrollCallback> for ScrollCallback {
     }
 }
 
-impl<F: Fn(f64) + 'static> crate::element::IntoEventHandler<ScrollCallback> for F {
+impl<F: Fn(ScrollEvent) + 'static> crate::element::IntoEventHandler<ScrollCallback> for F {
     fn into_event_handler(self) -> ScrollCallback {
         ScrollCallback::from(self)
     }
@@ -514,7 +546,8 @@ pub fn dispatch_file_drop_event(id: EventHandlerId, paths: Vec<PathBuf>) -> bool
 /// Register a scroll event handler and return its ID.
 ///
 /// The handler will be called when an element with the corresponding
-/// `data-onscroll` attribute is scrolled, passing the current scroll offset.
+/// `data-onscroll` attribute is scrolled, passing a [`ScrollEvent`] with the
+/// container's offset on both axes.
 #[doc(hidden)]
 pub fn register_scroll_handler(callback: ScrollCallback) -> EventHandlerId {
     let id = next_handler_id();
@@ -523,10 +556,10 @@ pub fn register_scroll_handler(callback: ScrollCallback) -> EventHandlerId {
     let root = crate::context::current_context_root();
     crate::reactive::record_handler(id);
     let owner = crate::reactive::Owner::current();
-    let callback = ScrollCallback::new(move |scroll_top| {
+    let callback = ScrollCallback::new(move |event| {
         let _root = crate::context::push_context_root(root);
         let _owner = owner.push();
-        callback.invoke(scroll_top);
+        callback.invoke(event);
     });
     SCROLL_REGISTRY.with(|registry| {
         registry.borrow_mut().handlers.insert(id, callback);
@@ -537,11 +570,11 @@ pub fn register_scroll_handler(callback: ScrollCallback) -> EventHandlerId {
 /// Dispatch a scroll event to the handler with the given ID.
 ///
 /// Returns `true` if a handler was found and called.
-pub fn dispatch_scroll_event(id: EventHandlerId, scroll_top: f64) -> bool {
+pub fn dispatch_scroll_event(id: EventHandlerId, event: ScrollEvent) -> bool {
     let handler: Option<ScrollCallback> =
         SCROLL_REGISTRY.with(|registry| registry.borrow().handlers.get(&id).cloned());
     if let Some(h) = handler {
-        h.invoke(scroll_top);
+        h.invoke(event);
         true
     } else {
         false
@@ -686,11 +719,11 @@ mod owner_tests {
         check_handler_owner(
             &scope,
             || {
-                register_scroll_handler(ScrollCallback::new(|_top: f64| {
+                register_scroll_handler(ScrollCallback::new(|_ev: ScrollEvent| {
                     Signal::new(0);
                 }))
             },
-            |id| dispatch_scroll_event(id, 12.0),
+            |id| dispatch_scroll_event(id, ScrollEvent::new(12.0, 0.0)),
         );
     }
 

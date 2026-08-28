@@ -2236,7 +2236,13 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             && let Some(id_str) = el.get_attribute("data-onscroll")
             && let Ok(id) = id_str.parse::<usize>()
         {
-            events::dispatch_scroll_event(events::EventHandlerId(id), el.scroll_top() as f64);
+            // Both axes: the browser fires one `scroll` for a gesture that moved
+            // the element either way, and a horizontal-only scroller has nothing
+            // to say in `scroll_top` alone (#177).
+            events::dispatch_scroll_event(
+                events::EventHandlerId(id),
+                events::ScrollEvent::new(el.scroll_top() as f64, el.scroll_left() as f64),
+            );
         }
     }) as Box<dyn FnMut(_)>);
     browser_doc

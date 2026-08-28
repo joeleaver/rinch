@@ -116,20 +116,50 @@ pub(crate) struct TextSelection {
     pub(crate) focus_offset: usize,
 }
 
-// ── ScrollbarDrag ────────────────────────────────────────────────────────────
+// ── Scrollbars ───────────────────────────────────────────────────────────────
+
+/// Which of a scroll container's two scrollbars an interaction is about.
+///
+/// One enum rather than a vertical and a horizontal copy of everything: the
+/// thumb arithmetic is identical once you name the axis, and a single pointer
+/// can only ever be dragging one bar, which a pair of parallel `Option` fields
+/// would let the type system forget (#178).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ScrollAxis {
+    /// The bar down the right-hand edge, moving `scroll_offset.1`.
+    Vertical,
+    /// The bar along the bottom edge, moving `scroll_offset.0`.
+    Horizontal,
+}
+
+impl ScrollAxis {
+    /// The component of a pointer position that moves this bar's thumb.
+    pub(crate) fn along(self, x: f32, y: f32) -> f32 {
+        match self {
+            ScrollAxis::Vertical => y,
+            ScrollAxis::Horizontal => x,
+        }
+    }
+}
 
 /// State for an active scrollbar drag operation.
+///
+/// Axis-generic: `start_pos`, `content_size` and `container_size` are all read
+/// along [`ScrollbarDrag::axis`].
 pub(crate) struct ScrollbarDrag {
     /// The node ID of the scroll container being scrolled.
     pub node_id: usize,
-    /// The Y coordinate where the drag started (screen pixels).
-    pub start_y: f32,
-    /// The scroll_offset.1 value when the drag started.
+    /// Which bar is being dragged.
+    pub axis: ScrollAxis,
+    /// The pointer coordinate along `axis` where the drag started (screen
+    /// pixels — see the coordinate-space note on [`ScrollbarHit`]).
+    pub start_pos: f32,
+    /// The scroll offset along `axis` when the drag started.
     pub start_scroll: f64,
-    /// Content height of the scroll container (for ratio calculation).
-    pub content_height: f64,
-    /// Container height of the scroll container.
-    pub container_height: f64,
+    /// Content extent along `axis` (for ratio calculation).
+    pub content_size: f64,
+    /// Container extent along `axis`.
+    pub container_size: f64,
 }
 
 // ── Focus arbiter ────────────────────────────────────────────────────────────
@@ -853,7 +883,7 @@ impl RinchApp {
         // Resolve handler ids under a read borrow, then drop it before
         // dispatching — handlers are user code and may call back into the
         // document.
-        let mut to_fire: Vec<(usize, f64)> = Vec::new();
+        let mut to_fire: Vec<(usize, rinch_core::events::ScrollEvent)> = Vec::new();
         {
             let d = doc.borrow();
             for (node, scroll_top) in clamps {
@@ -864,14 +894,36 @@ impl RinchApp {
                     .and_then(|n| n.attributes.get("data-onscroll"))
                     .and_then(|s| s.parse::<usize>().ok())
                 {
-                    to_fire.push((handler_id, scroll_top));
+                    // The clamp is vertical-only (`clamp_scroll_offsets` writes
+                    // `.scroll_offset.1`), but the payload carries both axes, so
+                    // the horizontal offset comes off the node unchanged rather
+                    // than being reported as zero.
+                    let scroll_left = d.tree.nodes.get(node.0).map_or(0.0, |n| n.scroll_offset.0);
+                    to_fire.push((
+                        handler_id,
+                        rinch_core::events::ScrollEvent::new(scroll_top, scroll_left),
+                    ));
                 }
             }
         }
-        for (handler_id, scroll_top) in to_fire {
+        for (handler_id, event) in to_fire {
             use rinch_core::events::{EventHandlerId, dispatch_scroll_event};
-            dispatch_scroll_event(EventHandlerId(handler_id), scroll_top);
+            dispatch_scroll_event(EventHandlerId(handler_id), event);
         }
+    }
+
+    /// The [`ScrollEvent`](rinch_core::events::ScrollEvent) describing where a
+    /// container currently sits.
+    ///
+    /// Read off the node *after* every axis of a gesture has been applied, so a
+    /// diagonal wheel's single event carries both new offsets rather than one
+    /// new and one stale (#177).
+    pub(crate) fn scroll_event_for(
+        tree: &rinch_dom::NodeTree,
+        node_id: usize,
+    ) -> rinch_core::events::ScrollEvent {
+        let (left, top) = tree.get(node_id).map_or((0.0, 0.0), |n| n.scroll_offset);
+        rinch_core::events::ScrollEvent::new(top, left)
     }
 
     /// Apply deferred scroll-into-view requests.
@@ -2892,11 +2944,12 @@ mod layout_notification_tests {
     /// through the deferred queue drained after layout.
     #[test]
     fn layout_scroll_clamp_fires_onscroll_handler() {
-        use rinch_core::events::{ScrollCallback, register_scroll_handler};
+        use rinch_core::events::{ScrollCallback, ScrollEvent, register_scroll_handler};
 
         let fired: Rc<RefCell<Vec<f64>>> = Rc::new(RefCell::new(Vec::new()));
         let fired_in = fired.clone();
-        let handler_id = register_scroll_handler(ScrollCallback::from(move |top: f64| {
+        let handler_id = register_scroll_handler(ScrollCallback::from(move |ev: ScrollEvent| {
+            let top = ev.scroll_top;
             fired_in.borrow_mut().push(top);
         }));
 
@@ -3825,7 +3878,7 @@ mod pointer_cancel_tests {
 #[cfg(test)]
 mod wheel_scroll_dispatch_tests {
     use super::*;
-    use rinch_core::events::{ScrollCallback, register_scroll_handler};
+    use rinch_core::events::{ScrollCallback, ScrollEvent, register_scroll_handler};
 
     /// A mounted scroll container and everything a test needs to poke it: its
     /// node id, a point inside it, and every `scrollTop` its `onscroll` handler
@@ -3834,17 +3887,17 @@ mod wheel_scroll_dispatch_tests {
         app: RinchApp,
         id: usize,
         centre: (f32, f32),
-        fired: Rc<RefCell<Vec<f64>>>,
+        fired: Rc<RefCell<Vec<ScrollEvent>>>,
     }
 
     /// A scroll container with `data-onscroll` wired to a recorder, sized by the
     /// caller so one fixture covers "scrolls sideways", "scrolls down" and
     /// "scrolls both ways".
     fn mount_scroller(container_style: &str, content_style: &str) -> Scroller {
-        let fired: Rc<RefCell<Vec<f64>>> = Rc::new(RefCell::new(Vec::new()));
+        let fired: Rc<RefCell<Vec<ScrollEvent>>> = Rc::new(RefCell::new(Vec::new()));
         let fired_in = fired.clone();
-        let handler_id = register_scroll_handler(ScrollCallback::from(move |top: f64| {
-            fired_in.borrow_mut().push(top);
+        let handler_id = register_scroll_handler(ScrollCallback::from(move |ev: ScrollEvent| {
+            fired_in.borrow_mut().push(ev);
         }));
         let container_style = container_style.to_string();
         let content_style = content_style.to_string();
@@ -3920,12 +3973,16 @@ mod wheel_scroll_dispatch_tests {
             1,
             "the handler fires for the axis that moved"
         );
-        // The payload is `scrollTop`, which is what `ScrollCallback` is
-        // documented to carry — unchanged here, because this container only
-        // scrolls sideways. How far it went is `scroll_left()` on the same node,
-        // and putting the horizontal offset in the vertical slot instead would
-        // have quietly broken everything that reads it as a top.
-        assert_eq!(fired.borrow()[0], 0.0);
+        // #177: the payload carries the axis that actually moved. Before
+        // `ScrollEvent` this was a bare `scroll_top` and a horizontal-only
+        // scroller fired an event that said nothing — the listener learned that
+        // *something* happened and had to go back to the DOM to find out what.
+        assert_eq!(
+            fired.borrow()[0],
+            ScrollEvent::new(0.0, 30.0),
+            "scroll_left is the news; scroll_top is unchanged because this \
+             container only scrolls sideways"
+        );
     }
 
     /// A scroll that moves nothing — already hard against the edge — is not a
@@ -3965,7 +4022,9 @@ mod wheel_scroll_dispatch_tests {
         wheel(&mut app, centre, 0.0, -40.0);
 
         assert_eq!(offsets(&app, id).1, 40.0);
-        assert_eq!(*fired.borrow(), vec![40.0]);
+        // The number `virtual_list` keys off, in the field it now reads.
+        assert_eq!(*fired.borrow(), vec![ScrollEvent::new(40.0, 0.0)]);
+        assert_eq!(fired.borrow()[0].scroll_top, 40.0);
     }
 
     /// A diagonal flick moves one container on both axes. `onscroll` means "this
@@ -3993,8 +4052,9 @@ mod wheel_scroll_dispatch_tests {
         );
         assert_eq!(
             *fired.borrow(),
-            vec![40.0],
-            "one event, carrying the new scrollTop"
+            vec![ScrollEvent::new(40.0, 30.0)],
+            "one event, carrying BOTH new offsets — the payload is read back \
+             after both axes have been applied, so neither is stale"
         );
     }
 
@@ -4003,16 +4063,18 @@ mod wheel_scroll_dispatch_tests {
     /// scrolled, so each is owed its own event, with its own top.
     #[test]
     fn a_diagonal_scroll_across_two_containers_dispatches_to_each() {
-        let outer_fired: Rc<RefCell<Vec<f64>>> = Rc::new(RefCell::new(Vec::new()));
-        let inner_fired: Rc<RefCell<Vec<f64>>> = Rc::new(RefCell::new(Vec::new()));
+        let outer_fired: Rc<RefCell<Vec<ScrollEvent>>> = Rc::new(RefCell::new(Vec::new()));
+        let inner_fired: Rc<RefCell<Vec<ScrollEvent>>> = Rc::new(RefCell::new(Vec::new()));
         let outer_in = outer_fired.clone();
         let inner_in = inner_fired.clone();
-        let outer_handler = register_scroll_handler(ScrollCallback::from(move |top: f64| {
-            outer_in.borrow_mut().push(top);
-        }));
-        let inner_handler = register_scroll_handler(ScrollCallback::from(move |top: f64| {
-            inner_in.borrow_mut().push(top);
-        }));
+        let outer_handler =
+            register_scroll_handler(ScrollCallback::from(move |ev: ScrollEvent| {
+                outer_in.borrow_mut().push(ev);
+            }));
+        let inner_handler =
+            register_scroll_handler(ScrollCallback::from(move |ev: ScrollEvent| {
+                inner_in.borrow_mut().push(ev);
+            }));
         let ids: Rc<RefCell<Option<(usize, usize)>>> = Rc::new(RefCell::new(None));
         let ids_in = ids.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -4045,11 +4107,338 @@ mod wheel_scroll_dispatch_tests {
 
         assert_eq!(offsets(&app, page_id).1, 40.0);
         assert_eq!(offsets(&app, strip_id).0, 30.0);
-        assert_eq!(*outer_fired.borrow(), vec![40.0], "the page scrolled down");
+        assert_eq!(
+            *outer_fired.borrow(),
+            vec![ScrollEvent::new(40.0, 0.0)],
+            "the page scrolled down"
+        );
         assert_eq!(
             *inner_fired.borrow(),
-            vec![0.0],
-            "the strip scrolled sideways, and reports its own unchanged top"
+            vec![ScrollEvent::new(0.0, 30.0)],
+            "the strip scrolled sideways, and reports its own offsets"
+        );
+    }
+
+    /// `virtual_list` is the in-tree consumer that *keys off* the payload: it
+    /// mounts the row range covering `scroll_top`. The `ScrollEvent` change
+    /// moved that number out of the callback's only argument and into a field,
+    /// so this drives the whole wire — wheel, dispatch, `ev.scroll_top`, window
+    /// recompute — rather than asserting on the payload alone.
+    #[test]
+    fn virtual_list_still_windows_off_the_vertical_offset() {
+        let list_id: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+        let list_in = list_id.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let outer = scope.create_element("div");
+            outer.set_attribute("style", "width: 200px; height: 100px");
+            let list = rinch_core::virtual_list(
+                scope,
+                20.0,
+                || (0..1000).collect::<Vec<i32>>(),
+                |i: &i32| *i,
+                0,
+                |i: i32, scope: &mut RenderScope| {
+                    let row = scope.create_element("div");
+                    row.set_attribute("style", "height: 20px");
+                    row.set_attribute("data-row", &i.to_string());
+                    row
+                },
+            );
+            *list_in.borrow_mut() = Some(list.node_id().0);
+            outer.append_child(&list);
+            outer
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        let list = list_id.borrow().expect("list captured at mount");
+        // The window div is the container's second child (spacer first).
+        let win = {
+            let d = app.doc.as_ref().unwrap().borrow();
+            let kids = &d.tree.get(list).unwrap().children;
+            assert_eq!(
+                d.tree.get(kids[1]).unwrap().attributes["class"],
+                "rinch-vlist__window"
+            );
+            kids[1]
+        };
+
+        let first_row = |app: &RinchApp| -> i32 {
+            let d = app.doc.as_ref().unwrap().borrow();
+            let kids = &d.tree.get(win).unwrap().children;
+            assert!(!kids.is_empty(), "the window renders rows");
+            d.tree.get(kids[0]).unwrap().attributes["data-row"]
+                .parse()
+                .unwrap()
+        };
+        assert_eq!(first_row(&app), 0, "precondition: windowed at the top");
+
+        let centre = {
+            let d = app.doc.as_ref().unwrap().borrow();
+            let n = d.tree.get(list).unwrap();
+            let (ax, ay) = RinchApp::compute_absolute_position(&d.tree, list);
+            (ax + n.layout.width / 2.0, ay + n.layout.height / 2.0)
+        };
+        wheel(&mut app, centre, 0.0, -400.0);
+
+        assert_eq!(offsets(&app, list).1, 400.0, "the list scrolled down");
+        assert_eq!(
+            first_row(&app),
+            20,
+            "the window re-mounted from row 400/20 — `scroll_top` reached the \
+             list unchanged"
+        );
+    }
+}
+
+/// The desktop horizontal scrollbar (#178): hit-tested, dragged, and — with
+/// both bars up — the corner that belongs to neither.
+#[cfg(test)]
+mod horizontal_scrollbar_tests {
+    use super::hit_testing::{SCROLLBAR_HIT_THICKNESS, find_scrollbar_hit};
+    use super::*;
+    use rinch_core::events::{ScrollCallback, ScrollEvent, register_scroll_handler};
+
+    struct Bars {
+        app: RinchApp,
+        id: usize,
+        /// Absolute origin and size of the scroll container.
+        rect: (f32, f32, f32, f32),
+        fired: Rc<RefCell<Vec<ScrollEvent>>>,
+    }
+
+    /// A scroll container with `data-onscroll` wired to a recorder and a single
+    /// child sized by the caller, so one fixture covers "overflows sideways",
+    /// "overflows down" and "overflows both ways".
+    fn mount(container_style: &str, content_style: &str) -> Bars {
+        let fired: Rc<RefCell<Vec<ScrollEvent>>> = Rc::new(RefCell::new(Vec::new()));
+        let fired_in = fired.clone();
+        let handler_id = register_scroll_handler(ScrollCallback::from(move |ev: ScrollEvent| {
+            fired_in.borrow_mut().push(ev);
+        }));
+        let container_style = container_style.to_string();
+        let content_style = content_style.to_string();
+        let id: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+        let id_in = id.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let container = scope.create_element("div");
+            container.set_attribute("style", &container_style);
+            container.set_attribute("data-onscroll", &handler_id.0.to_string());
+            let content = scope.create_element("div");
+            content.set_attribute("style", &content_style);
+            container.append_child(&content);
+            *id_in.borrow_mut() = Some(container.node_id().0);
+            container
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        let container_id = id.borrow().expect("node id captured at mount");
+        let rect = {
+            let d = app.doc.as_ref().unwrap().borrow();
+            let n = d.tree.get(container_id).unwrap();
+            let (ax, ay) = RinchApp::compute_absolute_position(&d.tree, container_id);
+            (ax, ay, n.layout.width, n.layout.height)
+        };
+        Bars {
+            app,
+            id: container_id,
+            rect,
+            fired,
+        }
+    }
+
+    fn press(app: &mut RinchApp, (x, y): (f32, f32)) {
+        app.handle_event(
+            PlatformEvent::MouseDown {
+                x,
+                y,
+                button: rinch_platform::MouseButton::Left,
+            },
+            (800, 600),
+            1.0,
+        );
+    }
+
+    fn drag_to(app: &mut RinchApp, (x, y): (f32, f32)) {
+        app.handle_event(PlatformEvent::MouseMove { x, y }, (800, 600), 1.0);
+    }
+
+    fn offsets(app: &RinchApp, id: usize) -> (f64, f64) {
+        let d = app.doc.as_ref().unwrap().borrow();
+        d.tree.get(id).unwrap().scroll_offset
+    }
+
+    const WIDE: &str = "width: 200px; height: 100px; overflow-x: auto";
+    const TALL: &str = "width: 200px; height: 100px; overflow-y: auto";
+    const BOTH: &str = "width: 200px; height: 100px; overflow: auto";
+
+    /// The gap: a container that overflows sideways had no bar to hit, so a
+    /// user with an ordinary mouse could not pan it at all.
+    #[test]
+    fn the_bottom_edge_of_a_horizontal_scroller_hits_its_scrollbar() {
+        let Bars { app, id, rect, .. } = mount(WIDE, "width: 800px; height: 40px");
+        let (x, y, w, h) = rect;
+        let d = app.doc.as_ref().unwrap().borrow();
+
+        let hit = find_scrollbar_hit(&d.tree, x + w / 2.0, y + h - 2.0)
+            .expect("the bottom strip is the horizontal scrollbar");
+        assert_eq!(hit.node_id, id);
+        assert_eq!(hit.axis, ScrollAxis::Horizontal);
+        assert_eq!(hit.content_size, 800.0, "content extent along the axis");
+        assert_eq!(hit.container_size, 200.0, "visible extent along the axis");
+
+        // And nothing on the right-hand edge: this container does not scroll
+        // vertically, so there is no vertical bar to grab.
+        assert!(
+            find_scrollbar_hit(&d.tree, x + w - 2.0, y + h / 2.0).is_none(),
+            "no vertical bar on a horizontal-only scroller"
+        );
+    }
+
+    /// The behaviour that already worked, pinned so the axis generalisation
+    /// cannot quietly drop it.
+    #[test]
+    fn the_right_edge_of_a_vertical_scroller_still_hits_its_scrollbar() {
+        let Bars { app, id, rect, .. } = mount(TALL, "width: 40px; height: 800px");
+        let (x, y, w, h) = rect;
+        let d = app.doc.as_ref().unwrap().borrow();
+
+        let hit = find_scrollbar_hit(&d.tree, x + w - 2.0, y + h / 2.0)
+            .expect("the right strip is the vertical scrollbar");
+        assert_eq!(hit.node_id, id);
+        assert_eq!(hit.axis, ScrollAxis::Vertical);
+        assert_eq!(hit.content_size, 800.0);
+        assert_eq!(hit.container_size, 100.0);
+        assert!(
+            find_scrollbar_hit(&d.tree, x + w / 2.0, y + h - 2.0).is_none(),
+            "no horizontal bar on a vertical-only scroller"
+        );
+    }
+
+    /// The corner. With both bars up their strips would overlap in a square at
+    /// the bottom-right and one would silently win every click there. Neither
+    /// claims it — which also matches the paint pass, where both tracks stop
+    /// short so no thumb is ever drawn in a square that cannot be grabbed.
+    #[test]
+    fn the_corner_between_two_scrollbars_belongs_to_neither() {
+        let Bars { app, rect, .. } = mount(BOTH, "width: 800px; height: 800px");
+        let (x, y, w, h) = rect;
+        let d = app.doc.as_ref().unwrap().borrow();
+        let t = SCROLLBAR_HIT_THICKNESS;
+
+        assert!(
+            find_scrollbar_hit(&d.tree, x + w - 2.0, y + h - 2.0).is_none(),
+            "the corner square hits no scrollbar"
+        );
+
+        // Both bars still exist — they have merely given up the corner. Just
+        // clear of it, each strip answers for its own axis.
+        let above_corner = find_scrollbar_hit(&d.tree, x + w - 2.0, y + h - t - 2.0)
+            .expect("the vertical bar runs up to the corner");
+        assert_eq!(above_corner.axis, ScrollAxis::Vertical);
+        let left_of_corner = find_scrollbar_hit(&d.tree, x + w - t - 2.0, y + h - 2.0)
+            .expect("the horizontal bar runs left of the corner");
+        assert_eq!(left_of_corner.axis, ScrollAxis::Horizontal);
+    }
+
+    /// Press then drag the horizontal thumb: `scroll_offset.0` follows the
+    /// pointer's *x*, and `.1` is untouched.
+    #[test]
+    fn dragging_the_horizontal_thumb_scrolls_sideways() {
+        let Bars {
+            mut app,
+            id,
+            rect,
+            fired,
+        } = mount(WIDE, "width: 800px; height: 40px");
+        let (x, y, w, h) = rect;
+
+        // Press at the left end of the track: jump-to-click lands at 0.
+        press(&mut app, (x + 2.0, y + h - 2.0));
+        assert_eq!(offsets(&app, id), (0.0, 0.0));
+
+        // Drag half the track. `scroll_delta = (moved / (container - 4)) *
+        // content` — the vertical bar's arithmetic, read along x.
+        let moved = (w - 4.0) / 2.0;
+        drag_to(&mut app, (x + 2.0 + moved, y + h - 2.0));
+
+        let (left, top) = offsets(&app, id);
+        assert!(left > 0.0, "the container scrolled right, got {left}");
+        assert_eq!(top, 0.0, "the vertical offset is untouched");
+        assert_eq!(
+            left,
+            ((w as f64 - 4.0) / 2.0 / (200.0 - 4.0)) * 800.0,
+            "half the track is half the content, clamped by max_scroll"
+        );
+
+        // And the app was told, on the axis that moved (#177).
+        let last = *fired.borrow().last().expect("onscroll fired");
+        assert_eq!(last, ScrollEvent::new(0.0, left));
+    }
+
+    /// The vertical drag, unchanged by the generalisation.
+    #[test]
+    fn dragging_the_vertical_thumb_still_scrolls_down() {
+        let Bars {
+            mut app,
+            id,
+            rect,
+            fired,
+        } = mount(TALL, "width: 40px; height: 800px");
+        let (x, y, w, h) = rect;
+
+        press(&mut app, (x + w - 2.0, y + 2.0));
+        assert_eq!(offsets(&app, id), (0.0, 0.0));
+
+        let moved = (h - 4.0) / 2.0;
+        drag_to(&mut app, (x + w - 2.0, y + 2.0 + moved));
+
+        let (left, top) = offsets(&app, id);
+        assert_eq!(left, 0.0, "the horizontal offset is untouched");
+        assert_eq!(top, ((h as f64 - 4.0) / 2.0 / (100.0 - 4.0)) * 800.0);
+        assert_eq!(
+            *fired.borrow().last().expect("onscroll fired"),
+            ScrollEvent::new(top, 0.0)
+        );
+    }
+
+    /// A thumb that moves must dirty where it *was* as well as where it now is,
+    /// or the software renderer's dirty-region caching leaves the old thumb
+    /// painted — #173's failure mode. It does, because the thumb lives inside
+    /// the container's own layout rect and every scroll marks that whole rect
+    /// paint-dirty; this pins the property rather than the mechanism.
+    #[test]
+    fn a_moving_horizontal_thumb_dirties_its_old_rect_as_well_as_its_new_one() {
+        let Bars {
+            mut app, id, rect, ..
+        } = mount(WIDE, "width: 800px; height: 40px");
+        let (x, y, w, h) = rect;
+
+        press(&mut app, (x + 2.0, y + h - 2.0));
+        // Clear the frame's dirty bookkeeping, then move the thumb.
+        app.resolve_and_repaint(800.0, 600.0);
+        {
+            let mut d = app.doc.as_ref().unwrap().borrow_mut();
+            d.tree.paint_dirty_nodes.clear();
+        }
+        drag_to(&mut app, (x + 2.0 + (w - 4.0) / 2.0, y + h - 2.0));
+
+        let d = app.doc.as_ref().unwrap().borrow();
+        assert!(
+            d.tree.paint_dirty_nodes.contains(&id),
+            "the scroll container is paint-dirty after the thumb moved"
+        );
+        let region = rinch_dom::paint::compute_dirty_region(&d.tree, 1.0, 800.0, 600.0)
+            .expect("a dirty region");
+        // The thumb travels along the bottom edge inside the container's box,
+        // so the whole strip — old position at the left end, new position mid
+        // track — is inside the region.
+        assert!(
+            region.x0 <= x as f64 && region.x1 >= (x + w) as f64,
+            "the region spans the whole track, not just the new thumb: {region:?}"
+        );
+        assert!(
+            region.y0 <= (y + h - 8.0) as f64 && region.y1 >= (y + h) as f64,
+            "and covers the bottom edge the thumb sits on: {region:?}"
         );
     }
 }
