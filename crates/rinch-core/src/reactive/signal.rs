@@ -185,14 +185,32 @@ impl<T: 'static> Signal<T> {
     }
 
     /// Subscribe the current observer (if any) to this signal.
+    ///
+    /// A subscription that is actually *new* is also recorded on the observer,
+    /// so it can be released when that observer re-runs or is disposed (issue
+    /// #171). A second read in the same run finds the id already in the set and
+    /// records nothing, which keeps the registry lookup to once per dependency
+    /// per run rather than once per read.
     fn track(&self) {
-        let observer = RUNTIME.with(|rt| rt.borrow().observer_stack.last().copied());
-        if let Some(observer) = observer {
-            SIGNAL_STORE.with(|store| {
-                if let Some(slot) = store.borrow_mut().get_slot_mut(self.id, self.generation) {
-                    slot.subscribers.insert(observer);
-                }
-            });
+        let Some(observer) = RUNTIME.with(|rt| rt.borrow().observer_stack.last().copied()) else {
+            return;
+        };
+        // The store borrow is released before the observer is touched: nothing
+        // should reach `EFFECTS` while `SIGNAL_STORE` is borrowed mutably.
+        let subscribed = SIGNAL_STORE.with(|store| {
+            store
+                .borrow_mut()
+                .get_slot_mut(self.id, self.generation)
+                .is_some_and(|slot| slot.subscribers.insert(observer))
+        });
+        if subscribed {
+            super::effect::record_dep(
+                observer,
+                super::DepKey::Signal {
+                    id: self.id,
+                    generation: self.generation,
+                },
+            );
         }
     }
 
@@ -577,6 +595,19 @@ impl<T: 'static> Signal<T> {
     /// dispose fixpoint (PR4) will perform. Test-only.
     pub(crate) fn free_for_tests(&self) {
         super::free_signal_for_tests(self.id, self.generation);
+    }
+
+    /// How many observers are subscribed to this signal, or 0 if it is freed.
+    ///
+    /// Test-only: the subscriber set is private, and "the set is empty again
+    /// once the observers are gone" is the whole contract of issue #171.
+    pub(crate) fn subscriber_count_for_tests(&self) -> usize {
+        SIGNAL_STORE.with(|store| {
+            store
+                .borrow()
+                .get_slot(self.id, self.generation)
+                .map_or(0, |slot| slot.subscribers.len())
+        })
     }
 }
 

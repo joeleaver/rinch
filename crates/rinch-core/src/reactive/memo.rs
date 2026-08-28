@@ -66,7 +66,12 @@ struct MemoInner<T> {
     owner: RefCell<super::Owner>,
     /// Observers to notify, ordered — same contract (and same reason) as
     /// `SignalSlot::subscribers`: a memo's dependents run in registration order.
-    subscribers: RefCell<BTreeSet<ObserverId>>,
+    ///
+    /// Shared with the memo's `MEMO_STORE` slot (an `Rc`, not a plain
+    /// `RefCell`), because unsubscribing a disposed observer starts from a
+    /// type-erased slot key and cannot downcast to `MemoInner<T>` to reach the
+    /// set — see `MemoSlot::subscribers` (issue #171).
+    subscribers: Rc<RefCell<BTreeSet<ObserverId>>>,
 }
 
 impl<T: Clone + 'static> Memo<T> {
@@ -77,6 +82,9 @@ impl<T: Clone + 'static> Memo<T> {
             ObserverId(rt.next_id())
         });
 
+        // Shared with the store slot below, so a type-erased unsubscribe can
+        // reach it (issue #171).
+        let subscribers = Rc::new(RefCell::new(BTreeSet::new()));
         let inner = Rc::new(MemoInner {
             id,
             value: RefCell::new(None),
@@ -84,7 +92,7 @@ impl<T: Clone + 'static> Memo<T> {
             dirty: Cell::new(true),
             root: crate::context::current_context_root(),
             owner: RefCell::new(super::Owner::current()),
-            subscribers: RefCell::new(BTreeSet::new()),
+            subscribers: Rc::clone(&subscribers),
         });
 
         // Store memo as an effect so it can be notified. We store a "marker"
@@ -115,14 +123,24 @@ impl<T: Clone + 'static> Memo<T> {
             // observers, so it allocates nothing to attribute. Set for
             // uniformity with every other `EffectInner`.
             owner: super::Owner::current(),
+            // Not inert: this is where the *memo's* own subscriptions are
+            // recorded, since the lazy recompute runs under the marker's id
+            // (issue #171).
+            deps: RefCell::new(Vec::new()),
+            // …and the recompute, not this body, is what re-reads them. A run of
+            // this marker must therefore leave them alone.
+            body_tracks_deps: false,
         });
         register(id, marker);
 
         // Store in MEMO_STORE and return Copy handle. The marker's ObserverId
         // rides along so freeing the slot can also remove the EFFECTS entry — the marker
         // holds the second strong Rc to this same MemoInner.
-        let (store_id, generation) =
-            MEMO_STORE.with(|store| store.borrow_mut().alloc(inner as Rc<dyn Any>, id));
+        let (store_id, generation) = MEMO_STORE.with(|store| {
+            store
+                .borrow_mut()
+                .alloc(inner as Rc<dyn Any>, id, subscribers)
+        });
 
         // Attribute this memo to the ambient owner, if any (issue #141). The
         // marker effect is deliberately NOT recorded separately: `free_memo`
@@ -170,13 +188,22 @@ impl<T: Clone + 'static> Memo<T> {
             .downcast::<MemoInner<T>>()
             .expect("Memo type mismatch (internal error)");
 
-        // Subscribe current observer to this memo
-        RUNTIME.with(|rt| {
-            let rt = rt.borrow();
-            if let Some(&observer) = rt.observer_stack.last() {
-                inner.subscribers.borrow_mut().insert(observer);
-            }
-        });
+        // Subscribe the current observer to this memo, and record the
+        // subscription on it so a dispose (or its next run) releases it — the
+        // memo half of issue #171. Same "only when the insert is new" rule as
+        // `Signal::track`.
+        let observer = RUNTIME.with(|rt| rt.borrow().observer_stack.last().copied());
+        if let Some(observer) = observer
+            && inner.subscribers.borrow_mut().insert(observer)
+        {
+            super::effect::record_dep(
+                observer,
+                super::DepKey::Memo {
+                    id: self.id,
+                    generation: self.generation,
+                },
+            );
+        }
 
         // Recompute if dirty.
         //
@@ -197,7 +224,9 @@ impl<T: Clone + 'static> Memo<T> {
             let owner = inner.owner.borrow().clone();
             let _root_guard = crate::context::push_context_root(inner.root);
             let _owner_guard = owner.push();
-            let _observer_guard = super::effect::ObserverGuard::push(inner.id);
+            // Retracking: this is the pass that reads the memo's dependencies,
+            // so it replaces the set the previous recompute took out (#171).
+            let _observer_guard = super::effect::ObserverGuard::push_retracking(inner.id);
 
             let value = (inner.f.borrow())();
             *inner.value.borrow_mut() = Some(value);
@@ -267,6 +296,18 @@ impl<T: 'static> Memo<T> {
     /// disposal that #141's dispose fixpoint (PR4) will perform. Test-only.
     pub(crate) fn free_for_tests(&self) {
         super::free_memo(self.id, self.generation);
+    }
+
+    /// How many observers are subscribed to this memo, or 0 if it is freed.
+    /// Test-only counterpart of `Signal::subscriber_count_for_tests`.
+    pub(crate) fn subscriber_count_for_tests(&self) -> usize {
+        let Some(inner_any) = MEMO_STORE.with(|s| s.borrow().get_inner(self.id, self.generation))
+        else {
+            return 0;
+        };
+        inner_any
+            .downcast::<MemoInner<T>>()
+            .map_or(0, |inner| inner.subscribers.borrow().len())
     }
 }
 

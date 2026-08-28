@@ -392,6 +392,45 @@ pub fn run_on_main_thread(f: impl FnOnce() + Send + 'static) {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub(crate) struct ObserverId(pub(crate) usize);
 
+/// One subscription an observer currently holds: a slot in [`SIGNAL_STORE`] or
+/// in [`MEMO_STORE`], named the way the `Copy` handles name it — index plus
+/// generation.
+///
+/// Recorded on the observer's `EffectInner` as the subscription is taken out,
+/// and walked back out to release it when the observer re-runs or is disposed
+/// (issue #171). Without it, a signal that outlives its observers accumulates
+/// dead `ObserverId`s forever, and every write to it queues each one for a
+/// `run_effect` that finds nothing to run.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum DepKey {
+    Signal { id: u32, generation: u32 },
+    Memo { id: u32, generation: u32 },
+}
+
+impl DepKey {
+    /// Remove `observer` from this dependency's subscriber set.
+    ///
+    /// **Generation-safe.** Both arms resolve the slot through the same
+    /// generation-filtered lookup every other reader uses, so a slot that has
+    /// since been freed and handed to a new signal or memo is a miss rather than
+    /// a write into the new occupant's set. (Belt and braces: `ObserverId`s are
+    /// monotonic and never reused — that is the execution-order contract of
+    /// issue #154 — so even a generation-blind removal could only ever look for
+    /// an id the new occupant's set does not contain.)
+    pub(crate) fn unsubscribe(self, observer: ObserverId) {
+        match self {
+            DepKey::Signal { id, generation } => SIGNAL_STORE.with(|store| {
+                if let Some(slot) = store.borrow_mut().get_slot_mut(id, generation) {
+                    slot.subscribers.remove(&observer);
+                }
+            }),
+            DepKey::Memo { id, generation } => {
+                MEMO_STORE.with(|store| store.borrow().unsubscribe(id, generation, observer));
+            }
+        }
+    }
+}
+
 // ============================================================================
 // Signal Storage
 // ============================================================================
@@ -517,6 +556,13 @@ struct MemoSlot {
     /// type-erased: freeing a memo has to remove the marker's `EFFECTS` entry
     /// too, and a type-erased caller cannot downcast to reach `MemoInner::id`.
     observer: ObserverId,
+    /// The memo's subscriber set, shared with its `MemoInner`.
+    ///
+    /// Shared rather than owned for the same type-erasure reason as `observer`:
+    /// unsubscribing a disposed observer (issue #171) starts from a [`DepKey`],
+    /// which names a slot, and a type-erased caller cannot downcast an
+    /// `Rc<dyn Any>` to `MemoInner<T>` to reach the set inside it.
+    subscribers: Rc<RefCell<BTreeSet<ObserverId>>>,
     generation: u32,
 }
 
@@ -535,7 +581,12 @@ impl MemoStore {
         }
     }
 
-    pub(crate) fn alloc(&mut self, inner: Rc<dyn Any>, observer: ObserverId) -> (u32, u32) {
+    pub(crate) fn alloc(
+        &mut self,
+        inner: Rc<dyn Any>,
+        observer: ObserverId,
+        subscribers: Rc<RefCell<BTreeSet<ObserverId>>>,
+    ) -> (u32, u32) {
         let generation = self.next_gen;
         self.next_gen = self.next_gen.wrapping_add(1);
         if self.next_gen == 0 {
@@ -545,6 +596,7 @@ impl MemoStore {
         let slot = MemoSlot {
             inner,
             observer,
+            subscribers,
             generation,
         };
 
@@ -564,6 +616,23 @@ impl MemoStore {
             .as_ref()
             .filter(|s| s.generation == generation)
             .map(|s| Rc::clone(&s.inner))
+    }
+
+    /// Remove an observer from a memo's subscriber set, if this slot still
+    /// holds the memo the caller recorded.
+    ///
+    /// Type-erased on purpose: the caller holds a [`DepKey`], not a `Memo<T>`,
+    /// and an `Rc<dyn Any>` cannot be downcast without `T`. Hence the set being
+    /// shared with the slot rather than living only inside `MemoInner`.
+    pub(crate) fn unsubscribe(&self, id: u32, generation: u32, observer: ObserverId) {
+        if let Some(slot) = self
+            .slots
+            .get(id as usize)
+            .and_then(|s| s.as_ref())
+            .filter(|s| s.generation == generation)
+        {
+            slot.subscribers.borrow_mut().remove(&observer);
+        }
     }
 
     /// Free a slot, **returning** its `Rc` and the marker's [`ObserverId`]
@@ -607,6 +676,10 @@ pub(crate) fn free_memo(id: u32, generation: u32) {
         // lookups, and an `Rc` handed out by an earlier one can still be in
         // flight. This is the flag that tells such a run it has been retired.
         marker.disposed.set(true);
+        // And release what the memo's *computation* subscribed to: the marker is
+        // the id a memo's sources hold, so leaving its deps recorded would strand
+        // a dead `ObserverId` in every signal the computation read (issue #171).
+        effect::unsubscribe_deps_of(marker, observer);
     }
     drop(marker);
     drop(inner);

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
 
-use super::{ObserverId, RUNTIME};
+use super::{DepKey, ObserverId, RUNTIME};
 
 thread_local! {
     /// Storage for all effects, needed because effects reference themselves: an
@@ -124,6 +124,26 @@ pub(super) struct EffectInner {
     /// a strong reference here would make every scope immortal, since `EFFECTS`
     /// holds the `Rc<EffectInner>` until `Scope::dispose` removes it.
     pub(super) owner: super::Owner,
+    /// The subscriptions this observer holds right now, in the order it took
+    /// them out during its current run.
+    ///
+    /// One entry per subscriber set this observer's id sits in: pushed when a
+    /// read actually *inserts* it, drained back out when the observer re-runs or
+    /// is disposed. Keeping the two sides in step is what stops a signal that
+    /// outlives its observers accumulating dead ids (issue #171); clearing it
+    /// per run is what keeps the vec bounded by the observer's live dependency
+    /// count rather than by everything it has ever read.
+    pub(super) deps: RefCell<Vec<DepKey>>,
+    /// Whether a *run* of this observer is what re-reads its dependencies.
+    ///
+    /// True for an effect: the body is what tracks, so each run replaces the dep
+    /// set wholesale. False for a memo's dirty-marker, whose body only flips a
+    /// flag and queues the memo's dependents — a memo's dependencies are read by
+    /// the lazy recompute in `Memo::try_get`, which pushes this same id and does
+    /// the replacing there. Releasing them on a marker run would unsubscribe the
+    /// memo from its own sources, and a dirty memo nobody happens to read would
+    /// then stay disconnected from them.
+    pub(super) body_tracks_deps: bool,
 }
 
 impl Effect {
@@ -139,6 +159,8 @@ impl Effect {
             disposed: Cell::new(false),
             root: crate::context::current_context_root(),
             owner: super::Owner::current(),
+            deps: RefCell::new(Vec::new()),
+            body_tracks_deps: true,
         });
 
         // Store the effect
@@ -166,6 +188,8 @@ impl Effect {
             disposed: Cell::new(false),
             root: crate::context::current_context_root(),
             owner: super::Owner::current(),
+            deps: RefCell::new(Vec::new()),
+            body_tracks_deps: true,
         });
 
         register(id, inner);
@@ -219,6 +243,47 @@ pub(super) fn register(id: ObserverId, inner: Rc<EffectInner>) {
     drop(displaced);
 }
 
+/// Record that `observer` has just subscribed to `dep`.
+///
+/// Called only from a read that actually inserted the id into a subscriber set,
+/// so the list holds no duplicates within a run and the registry is probed once
+/// per dependency per run rather than once per read.
+///
+/// The push happens under the `EFFECTS` borrow deliberately: a [`DepKey`] is
+/// `Copy` and displaces nothing, so this cannot run user code — the borrow
+/// discipline the rest of this module keeps has nothing to trip over here.
+pub(super) fn record_dep(observer: ObserverId, dep: DepKey) {
+    EFFECTS.with(|effects| {
+        if let Some(inner) = effects.borrow().get(&observer) {
+            inner.deps.borrow_mut().push(dep);
+        }
+    });
+}
+
+/// Release every subscription `observer` currently holds.
+///
+/// `drain` rather than `take`, so the buffer stays with the observer and a
+/// re-running effect re-records its deps without reallocating. The `deps` borrow
+/// is held across the removals, which touch only the signal and memo stores —
+/// no user code runs under it, so nothing can re-enter this `RefCell`.
+pub(super) fn unsubscribe_deps_of(inner: &EffectInner, observer: ObserverId) {
+    for dep in inner.deps.borrow_mut().drain(..) {
+        dep.unsubscribe(observer);
+    }
+}
+
+/// Release every subscription the observer registered under `id` holds.
+///
+/// The `Rc` is cloned out of the registry first: the removals borrow
+/// `SIGNAL_STORE`/`MEMO_STORE` mutably, and nothing should reach into another
+/// reactive store while `EFFECTS` is borrowed.
+fn unsubscribe_deps(id: ObserverId) {
+    let Some(inner) = EFFECTS.with(|effects| effects.borrow().get(&id).cloned()) else {
+        return;
+    };
+    unsubscribe_deps_of(&inner, id);
+}
+
 /// Dispose the effect with this id, if it is still registered.
 ///
 /// The by-id counterpart of [`Effect::dispose`], and its implementation.
@@ -242,6 +307,10 @@ pub(super) fn dispose_effect(id: ObserverId) {
         // exactly what `run_effect` holds across the body it is running), and
         // this is the flag that tells such a run it has been retired.
         inner.disposed.set(true);
+        // Release the subscriptions its last run took out, so a signal that
+        // outlives this effect stops holding — and stops queueing — a dead
+        // `ObserverId` (issue #171).
+        unsubscribe_deps_of(inner, id);
     }
     drop(inner);
 }
@@ -286,9 +355,24 @@ pub(crate) fn registry_ids_for_tests() -> Vec<usize> {
 pub(super) struct ObserverGuard;
 
 impl ObserverGuard {
+    /// Push `id` as the current observer.
     pub(super) fn push(id: ObserverId) -> Self {
         RUNTIME.with(|rt| rt.borrow_mut().observer_stack.push(id));
         ObserverGuard
+    }
+
+    /// Push `id` for a pass that re-reads its dependencies — an effect body, or
+    /// a memo's lazy recompute — which is definitely about to happen.
+    ///
+    /// Releases the subscriptions the previous such pass took out first, so the
+    /// observer ends up subscribed to exactly what it read this time (issue
+    /// #171): a dependency it stops reading stops both waking it and holding its
+    /// id. "Definitely about to happen" is load-bearing — [`run_effect`] takes
+    /// the body borrow before pushing, so the re-entrant run it skips cannot
+    /// strip the subscriptions of the run already in progress beneath it.
+    pub(super) fn push_retracking(id: ObserverId) -> Self {
+        unsubscribe_deps(id);
+        Self::push(id)
     }
 }
 
@@ -326,10 +410,6 @@ pub(super) fn run_effect(id: ObserverId) {
         // is unrelated to the component this effect belongs to (issue #141).
         let _owner_guard = inner.owner.push();
 
-        // Push this effect as the current observer. RAII so a panic in the
-        // effect body cannot strand it on the stack (issue #141).
-        let _observer_guard = ObserverGuard::push(id);
-
         // An effect never re-enters itself.
         //
         // `f` is borrowed for the whole body, so a *synchronous* re-entry would
@@ -345,6 +425,12 @@ pub(super) fn run_effect(id: ObserverId) {
         // still running turns a self-triggering body into a hang, which is
         // strictly harder to debug than a stale value. The effect re-runs on the
         // next genuine change.
+        //
+        // The borrow is taken *before* the observer is pushed, and that order is
+        // load-bearing: a tracking push also releases the previous run's
+        // subscriptions (issue #171), and doing that on a run we are about to
+        // skip would strip the subscriptions of the run in progress one frame
+        // below — leaving an effect that never wakes again.
         let Ok(mut body) = inner.f.try_borrow_mut() else {
             tracing::debug!(
                 "run_effect({}): SKIPPED - re-entered while already running",
@@ -352,6 +438,17 @@ pub(super) fn run_effect(id: ObserverId) {
             );
             return;
         };
+
+        // Push this effect as the current observer. RAII so a panic in the
+        // effect body cannot strand it on the stack (issue #141). Retracking
+        // only if the body is what reads this observer's dependencies — a memo's
+        // marker keeps the subscriptions its recompute took out.
+        let _observer_guard = if inner.body_tracks_deps {
+            ObserverGuard::push_retracking(id)
+        } else {
+            ObserverGuard::push(id)
+        };
+
         body();
         drop(body);
 
@@ -660,5 +757,282 @@ mod dispose_tests {
         // The effect is not wedged: a later genuine change still runs it.
         signal.set(2);
         assert_eq!(runs.get(), 2);
+    }
+}
+
+#[cfg(test)]
+mod unsubscribe_tests {
+    use super::*;
+    use crate::reactive::{Memo, Scope, Signal};
+    use std::cell::Cell;
+
+    /// A disposed effect leaves no trace in the signal it read (issue #171).
+    ///
+    /// The loop count matters for the same reason it does in the reclamation
+    /// tests: one cycle cannot distinguish "unsubscribed" from "the set happens
+    /// to be small". Pre-fix this set reaches 51.
+    #[test]
+    fn disposing_effects_leaves_no_dead_subscribers_behind() {
+        let source = Signal::new(0);
+
+        // Positive control, subscribed for the whole test: proves the removals
+        // are targeted rather than the set being wrongly emptied.
+        let survivor_runs = Rc::new(Cell::new(0));
+        let hits = survivor_runs.clone();
+        let _survivor = Effect::new(move || {
+            source.get();
+            hits.set(hits.get() + 1);
+        });
+        assert_eq!(source.subscriber_count_for_tests(), 1);
+
+        for _ in 0..50 {
+            let effect = Effect::new(move || {
+                source.get();
+            });
+            assert_eq!(source.subscriber_count_for_tests(), 2);
+            effect.dispose();
+            assert_eq!(
+                source.subscriber_count_for_tests(),
+                1,
+                "a disposed effect must not stay in the subscriber set"
+            );
+        }
+
+        // And the survivor is still wired up, not merely still counted.
+        source.set(1);
+        assert_eq!(survivor_runs.get(), 2);
+    }
+
+    /// The memo half of the same contract: a memo's subscriber set is separate
+    /// storage, reached through a type-erased slot key.
+    #[test]
+    fn disposing_an_effect_leaves_no_dead_subscribers_in_the_memo_it_read() {
+        let source = Signal::new(1);
+        let doubled = Memo::new(move || source.get() * 2);
+
+        let effect = Effect::new(move || {
+            let _ = doubled.get();
+        });
+        assert_eq!(doubled.subscriber_count_for_tests(), 1);
+
+        effect.dispose();
+        assert_eq!(
+            doubled.subscriber_count_for_tests(),
+            0,
+            "a disposed effect must not stay in a memo's subscriber set either"
+        );
+    }
+
+    /// A freed memo unsubscribes from its own sources.
+    ///
+    /// The memo's computation runs under its dirty-marker's id, so the marker is
+    /// what the sources hold — a different removal path from `dispose_effect`,
+    /// reached from a different level of the disposal fixpoint.
+    #[test]
+    fn freeing_a_memo_leaves_no_dead_subscribers_in_its_sources() {
+        let source = Signal::new(1);
+        let doubled = Memo::new(move || source.get() * 2);
+        assert_eq!(doubled.get(), 2, "the computation ran and subscribed");
+        assert_eq!(source.subscriber_count_for_tests(), 1);
+
+        doubled.free_for_tests();
+        assert_eq!(
+            source.subscriber_count_for_tests(),
+            0,
+            "a freed memo's marker must leave its sources' subscriber sets"
+        );
+    }
+
+    /// A dependency an effect stops reading loses the subscription at the
+    /// re-run, not merely at disposal — otherwise the dep list would hold
+    /// everything the effect has ever read and the leak would just move.
+    #[test]
+    fn a_dependency_an_effect_stops_reading_drops_its_subscription() {
+        let which = Signal::new(true);
+        let a = Signal::new(0);
+        let b = Signal::new(0);
+        let runs = Rc::new(Cell::new(0));
+
+        let hits = runs.clone();
+        let effect = Effect::new(move || {
+            if which.get() {
+                a.get()
+            } else {
+                b.get()
+            };
+            hits.set(hits.get() + 1);
+        });
+        assert_eq!(a.subscriber_count_for_tests(), 1);
+        assert_eq!(b.subscriber_count_for_tests(), 0);
+
+        which.set(false); // re-runs, reading `b` this time
+        assert_eq!(
+            a.subscriber_count_for_tests(),
+            0,
+            "the stale subscription must go when the effect stops reading it"
+        );
+        assert_eq!(b.subscriber_count_for_tests(), 1);
+
+        // And the effect is no longer woken by what it stopped reading.
+        let before = runs.get();
+        a.set(1);
+        assert_eq!(runs.get(), before, "a dropped dependency must not wake it");
+        b.set(1);
+        assert_eq!(runs.get(), before + 1, "the current one still does");
+
+        effect.dispose();
+        assert_eq!(b.subscriber_count_for_tests(), 0);
+        assert_eq!(which.subscriber_count_for_tests(), 0);
+    }
+
+    /// Disposing one effect does not disturb another's subscription to the same
+    /// signal — even when both were created and disposed in the same cycle.
+    #[test]
+    fn disposing_one_effect_leaves_its_neighbours_subscribed() {
+        let source = Signal::new(0);
+        let first = Effect::new(move || {
+            source.get();
+        });
+        let second = Effect::new(move || {
+            source.get();
+        });
+        assert_eq!(source.subscriber_count_for_tests(), 2);
+
+        first.dispose();
+        assert_eq!(source.subscriber_count_for_tests(), 1);
+        second.dispose();
+        assert_eq!(source.subscriber_count_for_tests(), 0);
+    }
+
+    /// The shape issue #171 is actually about: a long-lived root signal under an
+    /// app that mounts and unmounts components.
+    #[test]
+    fn disposing_scopes_leaves_a_long_lived_signal_with_no_dead_subscribers() {
+        let root = Signal::new(0);
+
+        for _ in 0..50 {
+            let scope = Scope::new();
+            scope.run(|| {
+                let derived = Memo::new(move || root.get() + 1);
+                Effect::new(move || {
+                    // Both a direct dependency and one through a memo, so the
+                    // effect, the memo's marker and the memo's own subscriber
+                    // set are all exercised.
+                    root.get();
+                    let _ = derived.get();
+                });
+            });
+            scope.dispose();
+            assert_eq!(
+                root.subscriber_count_for_tests(),
+                0,
+                "an unmounted component must leave nothing behind in a signal \
+                 that outlives it"
+            );
+        }
+    }
+
+    /// A re-entrant run is skipped, and the skip must not strip the
+    /// subscriptions of the run already in progress beneath it.
+    ///
+    /// This is why `run_effect` takes the body borrow *before* pushing the
+    /// observer: the push is what releases the previous run's subscriptions, and
+    /// releasing them on a run that then bails out would leave an effect that
+    /// never wakes again.
+    #[test]
+    fn a_skipped_re_entrant_run_keeps_the_subscriptions_of_the_run_in_progress() {
+        let signal = Signal::new(0);
+        let runs = Rc::new(Cell::new(0));
+
+        let hits = runs.clone();
+        let _effect = Effect::new(move || {
+            let seen = signal.get();
+            hits.set(hits.get() + 1);
+            if seen == 0 {
+                // Flushes synchronously and re-enters this very effect.
+                signal.set(1);
+            }
+        });
+
+        assert_eq!(runs.get(), 1, "the re-entrant run is skipped");
+        assert_eq!(
+            signal.subscriber_count_for_tests(),
+            1,
+            "the skipped run must not have released the live run's subscription"
+        );
+
+        signal.set(2);
+        assert_eq!(runs.get(), 2, "and the effect is still woken");
+    }
+
+    /// A memo's dirty-marker keeps the subscriptions its *recompute* took out.
+    ///
+    /// The marker runs like any other effect when a source changes, but its body
+    /// only flips a flag — it reads nothing. Retracking it would therefore
+    /// unsubscribe the memo from its own sources, and a dirty memo that nobody
+    /// happens to read would stay disconnected from them: the next change to a
+    /// source would not reach the marker, so the memo's dependents would not be
+    /// queued. The memo's dependencies belong to the lazy recompute in
+    /// `Memo::try_get`, which pushes the same id and replaces them there.
+    #[test]
+    fn a_memo_marker_keeps_its_sources_across_its_own_run() {
+        let source = Signal::new(1);
+        let doubled = Memo::new(move || source.get() * 2);
+        assert_eq!(doubled.get(), 2);
+        assert_eq!(source.subscriber_count_for_tests(), 1);
+
+        source.set(2); // the marker runs, without anyone reading the memo
+        assert_eq!(
+            source.subscriber_count_for_tests(),
+            1,
+            "a marker's run must not release what its recompute subscribed to"
+        );
+        assert_eq!(doubled.get(), 4, "and the memo still recomputes correctly");
+        assert_eq!(
+            source.subscriber_count_for_tests(),
+            1,
+            "the recompute replaces the set rather than growing it"
+        );
+    }
+
+    /// A dep whose slot was freed and handed to a new signal is not removed from
+    /// the new occupant.
+    ///
+    /// Both halves matter: the removal is generation-filtered, and `ObserverId`s
+    /// are never reused, so a stale key can only ever look for an id the new
+    /// occupant's set does not hold.
+    #[test]
+    fn a_dep_whose_slot_was_recycled_does_not_disturb_the_new_occupant() {
+        let doomed = Signal::new(0);
+        let effect = Effect::new(move || {
+            doomed.get();
+        });
+        assert_eq!(doomed.subscriber_count_for_tests(), 1);
+
+        doomed.free_for_tests(); // the effect still holds the DepKey
+        let recycled = Signal::new(0);
+        assert_eq!(
+            recycled.debug_id(),
+            doomed.debug_id(),
+            "the store must have reused the slot for this test to mean anything"
+        );
+
+        let runs = Rc::new(Cell::new(0));
+        let hits = runs.clone();
+        let _other = Effect::new(move || {
+            recycled.get();
+            hits.set(hits.get() + 1);
+        });
+        assert_eq!(recycled.subscriber_count_for_tests(), 1);
+
+        effect.dispose(); // walks the stale key
+
+        assert_eq!(
+            recycled.subscriber_count_for_tests(),
+            1,
+            "the stale key names a generation this slot no longer has"
+        );
+        recycled.set(1);
+        assert_eq!(runs.get(), 2, "the new occupant's subscriber still fires");
     }
 }
