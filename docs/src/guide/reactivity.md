@@ -85,6 +85,31 @@ This happens automatically—you never manually specify dependencies.
                                            effects re-run
 ```
 
+### Dependencies are per-run
+
+The dependency set is rebuilt on every run, not accumulated. An effect ends each
+run subscribed to exactly the signals and memos it read *that* time, so a
+dependency it stops reading stops waking it:
+
+```rust
+let show_details = Signal::new(true);
+let details = Signal::new(String::new());
+
+Effect::new(move || {
+    if show_details.get() {
+        render(details.get()); // subscribed only while the branch is taken
+    }
+});
+
+show_details.set(false); // re-runs; `details` is no longer a dependency
+details.set("...".into()); // does not re-run the effect
+show_details.set(true);   // re-runs, and picks `details` back up
+```
+
+Disposal releases the subscriptions too — an effect (or a scope full of them)
+that is disposed leaves nothing behind in the signals it read, so a long-lived
+signal does not accumulate dead observers as components mount and unmount.
+
 ## Execution Order
 
 When several effects observe the **same** signal, they run in **registration order** — the order the `Effect`s (or `Memo`s) were created. This is a guaranteed contract, not an implementation detail.
