@@ -290,6 +290,10 @@ pub(super) fn paint_input_value(
 
     // Build text layout
     let scaled_font_size = font_size * scale as f32;
+    // Kept glyph-for-glyph in step with `RinchApp::compute_input_cursor_from_click`
+    // (crates/rinch/src/app/click_handling.rs) — a property added here and not
+    // there moves the painted text out from under the caret. Both should move to
+    // `ComputedStyle::build_parley_layout` together (#320).
     let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
     builder.push_default(parley::style::StyleProperty::FontSize(scaled_font_size));
     builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));

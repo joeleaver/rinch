@@ -100,19 +100,13 @@ fn hit_test_node(
     // the root's *border-box* origin. Add the root's left/top padding+border so
     // the hit rect lines up with where the box is painted (otherwise a button in
     // a text flow only registers clicks in the sub-rect overlapping the un-padded
-    // box). Paint applies exactly this content-box offset in `paint_inline_layout`.
-    let (nx, ny) = if !is_fixed
-        && node.display_mode == rinch_dom::DisplayMode::InlineBlock
-        && let Some(root_id) = node.ifc_root
-        && let Some(root) = tree.get(root_id)
-    {
-        let cs = &root.computed_style;
-        (
-            nx + cs.padding_left.to_px() + cs.border_left_width.to_px(),
-            ny + cs.padding_top.to_px() + cs.border_top_width.to_px(),
-        )
-    } else {
+    // box). Paint applies exactly this content-box offset in `paint_inline_layout`,
+    // and so does caret placement — one function, so the three cannot drift.
+    let (nx, ny) = if is_fixed {
         (nx, ny)
+    } else {
+        let (dx, dy) = rinch_dom::paint::ifc_content_box_offset(tree, node);
+        (nx + dx, ny + dy)
     };
 
     let nw = node.layout.width;

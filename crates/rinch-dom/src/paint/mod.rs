@@ -215,6 +215,34 @@ pub fn compute_absolute_position(tree: &NodeTree, node_id: RawNodeId, scale: f64
     (x, y)
 }
 
+/// The offset from a node's summed layout origin to the origin it is *painted*
+/// at, for a box an IFC positions.
+///
+/// An inline-block laid out by an inline formatting context stores its
+/// `layout.x`/`layout.y` relative to the IFC root's **content** box, while a
+/// parent-chain sum like [`compute_absolute_position`] adds up **border**-box
+/// origins. Paint bridges the two: it hands `paint_inline_layout` the root's
+/// content-box origin, so the box lands one padding+border in from where the
+/// sum alone puts it. Anything mapping a screen point back into such a box —
+/// hit testing, caret placement — has to add the same offset or it is looking
+/// at the box's old address.
+///
+/// Returns `(0.0, 0.0)` for every box the IFC does not position, which is all
+/// of them outside a text flow.
+pub fn ifc_content_box_offset(tree: &NodeTree, node: &Node) -> (f32, f32) {
+    if node.display_mode != crate::DisplayMode::InlineBlock {
+        return (0.0, 0.0);
+    }
+    let Some(root) = node.ifc_root.and_then(|id| tree.get(id)) else {
+        return (0.0, 0.0);
+    };
+    let cs = &root.computed_style;
+    (
+        cs.padding_left.to_px() + cs.border_left_width.to_px(),
+        cs.padding_top.to_px() + cs.border_top_width.to_px(),
+    )
+}
+
 /// Compose a node's CSS transform onto `parent_transform`, applied about the
 /// node's transform-origin. Percentage-based translate values are resolved
 /// against the node's layout box (so they resolve to 0 on a collapsed axis).
