@@ -1197,6 +1197,18 @@ ThemeProvider generates CSS variables:
 - Typography: `--rinch-font-size-{xs,sm,md,lg,xl}`, `--rinch-font-family`
 - Semantic: `--rinch-color-body`, `--rinch-color-text`, `--rinch-color-dimmed`
 
+**Generic font families are repaired on Android** (`crates/rinch-dom/src/fonts.rs`,
+issue #322). fontique maps the `monospace` slot to the literal name `"monospace"`,
+which `/system/fonts` is not indexed under, so the slot is empty and `<code>`,
+`<pre>` and the whole default `font_family_monospace` stack render proportional.
+Build font contexts with `rinch_dom::fonts::new_font_context()` — never
+`parley::FontContext::new()` — so every context resolves a stack identically;
+the document's, the hit-test one, and the input hit-test one must agree glyph for
+glyph or a tap lands on the wrong character. The repair fills `monospace`,
+`ui-monospace`, `ui-sans-serif` and `ui-serif` only where the platform left them
+empty; `ui-rounded` and `fangsong` are deliberately left alone (Android has no
+face for either).
+
 **Window chrome inset (not ThemeProvider-generated).** `--rinch-window-top-inset`
 is published at runtime by whatever chrome rinch draws above your content — the
 Linux in-app menu bar (28px) and the `BorderlessWindow` titlebar (36px, +28 when

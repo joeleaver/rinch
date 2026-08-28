@@ -344,7 +344,7 @@ impl RinchApp {
             last_click_time: Instant::now(),
             last_click_pos: (0.0, 0.0),
             click_count: 0,
-            hit_test_font_cx: parley::FontContext::new(),
+            hit_test_font_cx: rinch_dom::fonts::new_font_context(),
             hit_test_layout_cx: parley::LayoutContext::new(),
             window_props: None,
             modifiers: Modifiers::default(),

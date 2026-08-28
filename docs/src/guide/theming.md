@@ -114,6 +114,21 @@ var(--rinch-h1-line-height)
 var(--rinch-h1-font-weight)
 ```
 
+#### Generic font families on Android
+
+`monospace`, `ui-monospace`, `ui-sans-serif` and `ui-serif` resolve to a real
+device face on Android. They do not out of the box: the font backend looks the
+`monospace` slot up under the literal name `"monospace"`, which `/system/fonts`
+is not indexed under, so the slot ends up empty and every `<code>`/`<pre>` —
+and the whole default `font_family_monospace` stack, whose every name is absent
+on Android — renders proportional. rinch repairs the map when it builds a font
+context (`rinch_dom::fonts::new_font_context`), appending the first candidate
+the device actually has: `Roboto Mono`, `Droid Sans Mono`, `Noto Sans Mono`,
+`Cutive Mono` for the monospace slots. Only slots the platform left empty are
+touched, and no other platform is affected. `ui-rounded` and `fangsong` are
+left empty — Android ships no face for either, on any platform they fall
+through to the next entry in the stack.
+
 ### Shadows
 
 ```css
