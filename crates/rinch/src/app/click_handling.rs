@@ -255,6 +255,7 @@ impl RinchApp {
             Some(Self::compute_input_cursor_from_click(
                 &d.tree,
                 &mut self.hit_test_font_cx,
+                &mut self.hit_test_layout_cx,
                 nid,
                 x,
                 y,
@@ -541,6 +542,7 @@ impl RinchApp {
     fn compute_input_cursor_from_click(
         tree: &rinch_dom::NodeTree,
         font_cx: &mut parley::FontContext,
+        layout_cx: &mut parley::LayoutContext<peniko::Brush>,
         node_id: usize,
         click_x: f32,
         click_y: f32,
@@ -560,11 +562,21 @@ impl RinchApp {
 
         // Where the field's border box is *painted*. The parent-chain sum is the
         // one every other caller uses; the IFC offset on top of it is what makes
-        // the answer agree with paint for a field a text flow positions — which
-        // a `<textarea>` between two blocks is, because the anonymous block that
-        // wraps it carries the field's own padding.
+        // the answer agree with paint for a field a text flow positions. A
+        // `<textarea>` between two blocks is one: the anonymous block box the IFC
+        // wraps it in clones the *containing block's* computed style (ifc.rs:672),
+        // padding included, and paint reads that padding when it hands
+        // `paint_inline_layout` a content-box origin.
         let (abs_x, abs_y) = Self::compute_absolute_position(tree, node_id);
-        let (ifc_dx, ifc_dy) = rinch_dom::paint::ifc_content_box_offset(tree, node);
+        // `hit_test_node` skips the IFC correction for a `position: fixed` box —
+        // paint hoists it to body level, out of any IFC's content origin — so
+        // skip it here too, or the caret and the hit rect disagree by one padding.
+        let (ifc_dx, ifc_dy) =
+            if node.computed_style.position == rinch_dom::computed_style::PositionValue::Fixed {
+                (0.0, 0.0)
+            } else {
+                rinch_dom::paint::ifc_content_box_offset(tree, node)
+            };
         let abs_x = abs_x + ifc_dx;
         let abs_y = abs_y + ifc_dy;
 
@@ -596,12 +608,12 @@ impl RinchApp {
             value
         };
 
-        // The app's shared hit-test context, never a fresh one: a
+        // Both contexts are the app's own, never fresh ones: a
         // `FontContext::new()` here would re-scan the system on every click and
         // would not have the app's own registered typefaces in it at all, so it
-        // would measure the text against a face the painter never used.
-        let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
-
+        // would measure the text against a face the painter never used — and a
+        // `LayoutContext::new()` would throw away its shaping caches once per
+        // click for no gain.
         let mut builder = layout_cx.ranged_builder(font_cx, display_text, 1.0, true);
         builder.push_default(parley::style::StyleProperty::FontSize(font_size));
         builder.push_default(parley::style::StyleProperty::FontStack(

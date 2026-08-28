@@ -215,6 +215,13 @@ pub struct RinchApp {
     pub(crate) click_count: u8,
     /// Font context for hit testing (reused across frames).
     pub(crate) hit_test_font_cx: parley::FontContext,
+    /// Parley layout context for hit testing, paired with `hit_test_font_cx`
+    /// and reused across clicks. Caret placement rebuilds a field's text layout
+    /// to ask which character a click landed on; a `LayoutContext::new()` per
+    /// click would throw away the shaping caches every time. Not the document's
+    /// own `layout_cx` — reaching that would mean holding the document's
+    /// `RefCell` mutably right in the middle of click dispatch.
+    pub(crate) hit_test_layout_cx: parley::LayoutContext<peniko::Brush>,
     /// Window properties for configuring borderless, transparent, etc.
     pub(crate) window_props: Option<rinch_core::element::WindowProps>,
     /// Current keyboard modifier state.
@@ -338,6 +345,7 @@ impl RinchApp {
             last_click_pos: (0.0, 0.0),
             click_count: 0,
             hit_test_font_cx: parley::FontContext::new(),
+            hit_test_layout_cx: parley::LayoutContext::new(),
             window_props: None,
             modifiers: Modifiers::default(),
             scene_dirty: true,
@@ -3878,8 +3886,9 @@ mod wheel_scroll_dispatch_tests {
 /// Caret placement from a click inside a multi-line text field.
 ///
 /// A `<textarea>` between two blocks is laid out by an inline formatting
-/// context, and the anonymous block the IFC wraps it in carries the field's own
-/// padding. Paint and hit testing both add that content-box offset; the caret
+/// context, and the anonymous block box the IFC wraps it in clones the
+/// *containing block's* computed style, padding included. Paint and hit testing
+/// both add that content-box offset; the caret
 /// arithmetic summed the parent chain and did not, so it measured the click
 /// against a box one padding higher than the one on screen and put the caret a
 /// line below the finger. Invisible in an `<input>` — there is only one line to
