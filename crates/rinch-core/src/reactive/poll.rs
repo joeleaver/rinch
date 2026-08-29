@@ -138,6 +138,46 @@ where
     signal
 }
 
+/// How long until the soonest timed poll is due, if any is.
+///
+/// **Why a shell needs to ask.** Card K37 stopped the Android frame loop
+/// waking sixty-two times a second on a still screen: it now sleeps on the
+/// looper until something happens. [`drain_polls`] runs once per iteration of
+/// that loop, so a loop that never iterates never drains, and a
+/// `PollRate::Hz(60)` bridge over an audio thread's atomic — a playhead, a
+/// level meter, a network-status flag — would stop being sampled the moment
+/// the user took their finger off the screen. That is not a hypothetical
+/// consequence of the change; it is the direct one, and the loop cannot see it
+/// from outside this module because the registry is a thread-local `Vec` here.
+///
+/// So the loop asks, and caps its sleep at the answer. `None` means nothing
+/// timed is registered and the loop is free to sleep until an event, which is
+/// the case for every app that has never called [`poll_signal`] — including,
+/// today, every app in this repository. The cost of the question is a walk of a
+/// list that is almost always empty.
+///
+/// **`PollRate::EveryFrame` is deliberately not counted.** It means what it
+/// says: sample on every frame that is painted. A still screen paints no
+/// frames, so there is nothing for it to be late for, and treating it as a
+/// zero-length deadline would turn it into a busy-wait — the exact failure K37
+/// exists to remove, reintroduced by the fix for it.
+pub fn next_poll_due() -> Option<std::time::Duration> {
+    if !is_main_thread() {
+        return None;
+    }
+    let now = Instant::now();
+    POLL_REGISTRY.with(|reg| {
+        reg.borrow()
+            .iter()
+            .filter(|entry| entry.interval_ms > 0)
+            .map(|entry| {
+                let due = std::time::Duration::from_millis(entry.interval_ms);
+                due.saturating_sub(now.duration_since(entry.last_fired))
+            })
+            .min()
+    })
+}
+
 /// Fire any polls whose interval has elapsed, dropping those whose signal has
 /// been freed.
 ///
@@ -232,6 +272,55 @@ mod tests {
         counter.set(7);
         drain_polls();
         assert_eq!(signal.get(), 7);
+    }
+
+    /// The three answers the Android frame loop asks this for, on one slide.
+    ///
+    /// Card K37 made that loop sleep with no timeout when nothing is moving,
+    /// and this is the one thing that can still be owed work while it sleeps:
+    /// a timed `poll_signal` is *read* by the loop rather than written to it,
+    /// so no producer exists to ring the waker. Answering `None` when a `Hz`
+    /// or `Millis` poll is registered would stop that poll dead the moment the
+    /// user lifted a finger; answering `Some(ZERO)` for an `EveryFrame` poll
+    /// would turn the idle loop into a spin.
+    #[test]
+    fn next_poll_due_reports_only_the_polls_that_have_a_clock() {
+        assert_eq!(
+            next_poll_due(),
+            None,
+            "an app with no polls at all must leave the loop free to sleep"
+        );
+
+        let every_frame = poll_signal(|| 0i32, PollRate::EveryFrame);
+        assert_eq!(
+            next_poll_due(),
+            None,
+            "`EveryFrame` means every frame that is painted, and a still \
+             screen paints none — it is not a deadline, and treating it as \
+             one would be a busy-wait"
+        );
+
+        let timed = poll_signal(|| 0i32, PollRate::Millis(500));
+        assert_eq!(
+            next_poll_due(),
+            Some(std::time::Duration::ZERO),
+            "a poll is registered with `last_fired` in the past so its first \
+             sample happens immediately; the loop must not sleep past it"
+        );
+
+        drain_polls();
+        let left = next_poll_due().expect("the timed poll is still registered");
+        assert!(
+            left > std::time::Duration::from_millis(400)
+                && left <= std::time::Duration::from_millis(500),
+            "having just been sampled it is next due in about its own \
+             interval, got {left:?}"
+        );
+
+        // Keep both signals alive to here: `drain_polls` reaps an entry whose
+        // signal has been freed, and a reaped entry would make the assertion
+        // above pass for the wrong reason.
+        let _ = (every_frame, timed);
     }
 
     #[test]

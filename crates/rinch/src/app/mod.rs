@@ -6525,6 +6525,96 @@ mod android_frame_clock_tests {
         );
     }
 
+    /// **Which state decides how long the loop sleeps**, tested in both
+    /// directions on one slide.
+    ///
+    /// Card K37 replaced the loop's flat `poll_events(Some(16ms))` with a
+    /// question — is this iteration presenting a frame? — and the answer picks
+    /// between "come back at the display's next deadline" and "sleep until
+    /// something happens". Both wrong answers are bugs with a history in this
+    /// module. Answer "no" while a transition is running and the loop sleeps
+    /// through the rest of the slide: that is K23's fault, an invisible
+    /// pointer-active sheet, arrived at from the other end. Answer "yes" once
+    /// nothing is running and the loop spins, which is the same phone with a
+    /// hot back and a flat battery.
+    ///
+    /// So this drives the sheet the way the shell does and checks the pacing
+    /// decision at every step: paced for every frame the sheet moves in,
+    /// *including the one that finishes it*, and idle on the first frame after
+    /// it has settled and not before.
+    #[test]
+    fn the_loop_is_paced_while_the_sheet_slides_and_idles_the_moment_it_stops() {
+        /// One frame at 60Hz. The real loop reads this from the display; the
+        /// value only has to be some frame interval for the assertions below.
+        const FRAME: Duration = Duration::from_nanos(16_666_667);
+
+        let mut sheet = mount();
+        let (x, y) = centre(&sheet.app, sheet.trigger);
+        tap(&mut sheet.app, x, y);
+
+        let mut paced = 0usize;
+        let mut went_idle = false;
+        let deadline = Instant::now() + SETTLE;
+        while Instant::now() < deadline {
+            let frame = android_frame::pump_frame(&mut sheet.app, PHYSICAL, SCALE);
+            // What the shell's `presented` is: the paint happened, so the
+            // surface blocked and the frame reached the glass.
+            let presented = frame.pending_layout || frame.needs_paint;
+            if frame.pending_layout {
+                sheet.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+            }
+            sheet.app.scene_dirty = false;
+
+            // `spent` is zero and `wake_pending` false so that the assertion
+            // is about the *decision*, not about arithmetic already covered by
+            // `android_frame::pacing_tests`.
+            let wait = android_frame::poll_timeout(presented, false, Duration::ZERO, FRAME, None);
+
+            if presented {
+                assert!(
+                    wait.is_some(),
+                    "a frame the sheet moved in must be followed by another at \
+                     the display's next deadline — an animating loop that waits \
+                     for an event waits for the tap that was meant to happen \
+                     *after* the sheet arrived"
+                );
+                paced += 1;
+                std::thread::sleep(Duration::from_millis(8));
+                continue;
+            }
+
+            // Nothing left to present. This is the first such frame, so the
+            // slide must already be over — a loop that idles mid-transition is
+            // the K23 fault with a new cause.
+            assert_eq!(
+                panel_y(&sheet.app, sheet.panel),
+                0.0,
+                "the loop went idle while the sheet was still at \
+                 {}px — it would have stayed there",
+                panel_y(&sheet.app, sheet.panel)
+            );
+            assert_eq!(
+                wait, None,
+                "and with the slide finished the loop must sleep on the \
+                 looper, not on a timer: every wake on a still screen is \
+                 battery spent asking a question whose answer is no"
+            );
+            went_idle = true;
+            break;
+        }
+
+        assert!(
+            went_idle,
+            "the loop never stopped asking for frames — after {SETTLE:?} of a \
+             220ms slide it is not animating, it is spinning"
+        );
+        assert!(
+            paced > 1,
+            "a 220ms slide is many frames and every one of them has to be \
+             paced; only {paced} were"
+        );
+    }
+
     /// The other half of turning the clock: the frames it moves the sheet in
     /// have to reach the screen.
     ///

@@ -120,6 +120,13 @@ pub fn drain_updates() -> Vec<ImeUpdate> {
 
 fn push(update: ImeUpdate) {
     UPDATES.lock().unwrap().push(update);
+    // Every one of the entry points below runs on the IME's thread, not the
+    // frame loop's, and this queue is invisible to the `ALooper` that loop
+    // sleeps on. Since K37 that loop sleeps indefinitely on a still screen —
+    // and a screen with a soft keyboard on it and a finger typing into it is,
+    // to the looper, still. Without this the committed word waits for the next
+    // touch.
+    crate::wake::wake_main();
 }
 
 // ── JNI entry points (called from RinchInputConnection.java) ───────────
