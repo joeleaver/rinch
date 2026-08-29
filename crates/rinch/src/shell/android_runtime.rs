@@ -694,12 +694,15 @@ fn collect_input_events(
     }
 
     // A press that has been held still long enough is a context menu. This sits
-    // beside the momentum tick because both are clocks the finger is not driving,
-    // and the loop's 16ms poll is what turns them.
+    // beside the momentum tick because both are clocks the finger is not
+    // driving, and a turn of the event loop is what turns them. Both are handed
+    // the same `now`, and since card K39 the fling needs it: the loop's rate is
+    // the panel's rate (K37) and is therefore not a constant any curve may be
+    // written in terms of.
     gesture.tick_long_press(now, &mut events);
 
     // Apply momentum scrolling
-    gesture.tick_momentum(&mut events);
+    gesture.tick_momentum(now, &mut events);
 
     events
 }
