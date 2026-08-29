@@ -103,9 +103,14 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
     events::clear_handlers();
     rinch_core::clear_context();
 
+    // The device outlives the window; the swapchain does not. That asymmetry
+    // is the whole lifecycle design of the GPU path and the reason these are
+    // two bindings rather than one — see [`GpuContext`] for what each half
+    // dies of. On the software path there is nothing to keep, so there is only
+    // `surface`.
     #[cfg(feature = "android-gpu")]
-    let mut gpu_surface: Option<GpuSurface> = None;
-    let mut surface: Option<SoftSurface> = None;
+    let mut gpu: Option<GpuContext> = None;
+    let mut surface: Option<WindowSurface> = None;
     let mut mounted = false;
     let mut physical_size = (0u32, 0u32);
     let mut scale_factor = 1.0f64;
@@ -149,10 +154,26 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                             h
                         );
 
-                        surface = SoftSurface::new(&native_window, w, h);
+                        // The old surface is dropped *first*, and on its own
+                        // line, because `surface = <new>` would build the new
+                        // one while the old was still alive. On the software
+                        // path that is merely wasteful; on the GPU path two
+                        // swapchains on one `ANativeWindow` is
+                        // `VK_ERROR_NATIVE_WINDOW_IN_USE_KHR`, and the window
+                        // stays un-drawable for the rest of the process.
+                        // `InitWindow` twice with no `TerminateWindow` between
+                        // is not the documented sequence, but the sequence a
+                        // phone actually delivers is not something this file
+                        // gets to assume.
+                        surface = None;
+
+                        #[cfg(not(feature = "android-gpu"))]
+                        {
+                            surface = SoftSurface::new(&native_window, w, h);
+                        }
                         #[cfg(feature = "android-gpu")]
                         {
-                            gpu_surface = GpuSurface::new(w, h);
+                            surface = GpuContext::attach(&mut gpu, &native_window, w, h);
                         }
 
                         if !mounted {
@@ -166,10 +187,31 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                     }
                 }
                 MainEvent::TerminateWindow { .. } => {
-                    #[cfg(feature = "android-gpu")]
-                    {
-                        gpu_surface = None;
-                    }
+                    // Everything that can touch the window dies here, inside
+                    // the callback, before `poll_events` returns.
+                    //
+                    // That timing is not a nicety. `android-activity` delivers
+                    // this event from `onNativeWindowDestroyed`, and the
+                    // Android thread that raised it is *blocked* until this
+                    // loop has acknowledged it — so a swapchain dropped here
+                    // is a swapchain destroyed while the `ANativeWindow` is
+                    // still alive, which is the only order Vulkan accepts. A
+                    // swapchain dropped one iteration later would be destroyed
+                    // against a window the system had already freed.
+                    //
+                    // And it is the *only* way to present, which is what makes
+                    // "render into a dead surface" unreachable rather than
+                    // unlikely: the sole `GpuSurface` in the process is this
+                    // binding, the paint block below cannot run without it,
+                    // and this line empties it before the paint block is
+                    // reached. There is no second handle to go stale.
+                    //
+                    // `gpu` — the device, the queue and vello's compiled
+                    // pipelines — deliberately survives. Pressing Home
+                    // destroys the window and nothing else; rebuilding the
+                    // renderer on the way back would cost the better part of a
+                    // second of black screen for a device Vulkan never
+                    // invalidated.
                     surface = None;
                 }
                 MainEvent::WindowResized { .. } => {
@@ -196,10 +238,6 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         process_actions(&actions, &mut running);
 
                         if let Some(ref mut s) = surface {
-                            s.resize(w, h);
-                        }
-                        #[cfg(feature = "android-gpu")]
-                        if let Some(ref mut s) = gpu_surface {
                             s.resize(w, h);
                         }
 
@@ -426,10 +464,9 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
             }
 
             #[cfg(feature = "android-gpu")]
-            if let (Some(gpu), Some(soft)) = (&mut gpu_surface, &mut surface) {
+            if let (Some(ctx), Some(s)) = (&mut gpu, &mut surface) {
                 let scene = app.build_scene(scale_factor, logical_size);
-                let (pixels, w, h) = gpu.render_to_pixels(scene);
-                soft.present_pixels(pixels, w, h);
+                s.present_scene(&mut ctx.renderer, scene);
             }
 
             #[cfg(not(feature = "android-gpu"))]
@@ -700,6 +737,24 @@ fn map_android_keycode(keycode: android_activity::input::Keycode) -> Option<KeyC
 
 // ── The window surface ───────────────────────────────────────────────────────
 
+/// Whatever this build presents through, named once so the loop above can hold
+/// a single binding and the lifecycle can be reasoned about in one place.
+///
+/// The two implementations are not variants of a runtime choice — they are two
+/// different builds. A `--features android-gpu` binary has no `SoftSurface`
+/// compiled into it at all, and the shipping binary has no wgpu. That matters
+/// here for a reason beyond code size: both presenters take the *same*
+/// `ANativeWindow`, and Android lets a window be connected to exactly one
+/// producer API at a time. `ANativeWindow_lock` connects it to the CPU
+/// producer; creating a Vulkan swapchain connects it to
+/// `NATIVE_WINDOW_API_EGL`. Building both and picking one at runtime would
+/// mean the loser of that race silently failing every frame, so the choice is
+/// made by the compiler and only one of them exists.
+#[cfg(not(feature = "android-gpu"))]
+type WindowSurface = SoftSurface;
+#[cfg(feature = "android-gpu")]
+type WindowSurface = GpuSurface;
+
 /// The screen, and the one place a finished frame becomes pixels on it.
 ///
 /// This writes straight into the buffer `ANativeWindow_lock` hands back. It
@@ -741,12 +796,14 @@ fn map_android_keycode(keycode: android_activity::input::Keycode) -> Option<KeyC
 /// and this shell never does: `build_pixels` hands back a complete frame every
 /// time, so every pixel of the window is written every time regardless of what
 /// the swap chain had in it before.
+#[cfg(not(feature = "android-gpu"))]
 struct SoftSurface {
     native: ndk::native_window::NativeWindow,
     width: u32,
     height: u32,
 }
 
+#[cfg(not(feature = "android-gpu"))]
 impl SoftSurface {
     fn new(window: &ndk::native_window::NativeWindow, width: u32, height: u32) -> Option<Self> {
         let surface = Self {
@@ -823,23 +880,115 @@ impl SoftSurface {
 
 // ── GPU surface (wgpu + vello) ──────────────────────────────────────────
 
+/// The device, and everything standing on it that outlives any one window.
+///
+/// **This struct exists because of when things die.** A Vulkan device, and the
+/// twenty-odd compute pipelines vello compiles against it, belong to the
+/// process: nothing Android does to an Activity invalidates them. A swapchain
+/// belongs to the `ANativeWindow`, and Android destroys that window every time
+/// the Activity is stopped — every press of Home, every task switch, every
+/// screen rotation on some devices. Those are different lifetimes, so they are
+/// different structs, and the loop holds one binding for each.
+///
+/// The version of this file that read the frame back to the CPU had no
+/// swapchain and therefore no reason to make the distinction: it kept device
+/// and target in one `GpuSurface` and dropped the lot on `TerminateWindow`.
+/// Doing that now would recompile vello's pipeline set on every resume, and
+/// the logcat timestamps say what that costs. On a moto g stylus 5G, cold:
+///
+/// ```text
+/// 18:28:44.113  vello: initialising shader modules in parallel using 6 threads
+/// 18:28:45.350  GPU: Adreno (TM) 619 (Vulkan)          <- 1,237 ms later
+/// ```
+///
+/// and then, pressing Home and returning twice:
+///
+/// ```text
+/// 18:32:12.476  InitWindow: 1080x2460
+/// 18:32:12.484  GPU surface: formats=[...]             <- 8 ms
+/// 18:32:17.620  InitWindow: 1080x2460
+/// 18:32:17.624  GPU surface: formats=[...]             <- 4 ms
+/// ```
+///
+/// Those two lines are a whole swapchain rebuild, and no `GPU: Adreno` line
+/// appears between them, which is the observable proof that the device was
+/// reused. One struct instead of two would have made every resume a
+/// 1.2-second black screen in exchange for throwing away a device Vulkan
+/// never invalidated.
 #[cfg(feature = "android-gpu")]
-struct GpuSurface {
-    renderer: vello::Renderer,
-    render_texture: wgpu::Texture,
-    readback_buffer: wgpu::Buffer,
+struct GpuContext {
+    /// Kept because a surface must be created by the same instance that will
+    /// present it, and the surfaces are created long after this struct is —
+    /// once per window, for as many windows as the Activity is given.
+    instance: wgpu::Instance,
+    /// Kept because `get_capabilities` is a question about an (adapter,
+    /// surface) *pair*: the formats and present modes a window supports have
+    /// to be asked again for each new window, not cached from the first.
+    adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    width: u32,
-    height: u32,
+    renderer: vello::Renderer,
 }
 
 #[cfg(feature = "android-gpu")]
-impl GpuSurface {
-    fn new(width: u32, height: u32) -> Option<Self> {
-        let width = width.max(1);
-        let height = height.max(1);
+impl GpuContext {
+    /// Give the window a swapchain, bringing the device up if this is the
+    /// first window the process has seen.
+    ///
+    /// Called from `InitWindow` and nowhere else. The `slot` argument is the
+    /// loop's `gpu` binding: on the first call it is filled in and on every
+    /// later one it is reused, so a resume costs a swapchain and not a device.
+    fn attach(
+        slot: &mut Option<GpuContext>,
+        window: &ndk::native_window::NativeWindow,
+        width: u32,
+        height: u32,
+    ) -> Option<GpuSurface> {
+        if slot.is_none() {
+            *slot = Some(GpuContext::new(window)?);
+        }
+        let ctx = slot.as_ref()?;
 
+        let surface = match ctx.instance.create_surface(AndroidWindow {
+            native: window.clone(),
+        }) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("GPU: create_surface failed: {e}");
+                return None;
+            }
+        };
+
+        // The device was chosen for the *first* window this process saw. A
+        // later window is a different `ANativeWindow` and, in principle, a
+        // different `VkSurfaceKHR` with its own presentation-support answer.
+        // In practice every Android surface on a device is supported by the
+        // same queue family, so this has never been seen to fail — but
+        // presenting to a surface the adapter cannot present to is undefined
+        // behaviour, not an error, and the check costs one call at window
+        // creation.
+        if !ctx.adapter.is_surface_supported(&surface) {
+            log::error!("GPU: adapter cannot present to this window; no GPU frames");
+            return None;
+        }
+
+        GpuSurface::new(ctx, surface, width, height)
+    }
+
+    /// Bring up the instance, adapter, device and renderer.
+    ///
+    /// Takes the window because the adapter has to be chosen *for* a surface:
+    /// `request_adapter`'s `compatible_surface` is what makes wgpu pick a
+    /// queue family that can actually present, and a device whose queue cannot
+    /// present is a device that can draw the frame and not show it. The
+    /// surface built here is a probe — it is dropped at the end of this
+    /// function and the real one is built by [`attach`](Self::attach) from the
+    /// instance this leaves behind. Creating and destroying a bare
+    /// `VkSurfaceKHR` is cheap and, importantly, does not connect the
+    /// `ANativeWindow` to a producer API; only creating a *swapchain* does
+    /// that, which is why this probe cannot collide with the swapchain that
+    /// follows it.
+    fn new(window: &ndk::native_window::NativeWindow) -> Option<Self> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
             flags: wgpu::InstanceFlags::empty(),
@@ -847,10 +996,20 @@ impl GpuSurface {
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
         });
 
+        let probe = match instance.create_surface(AndroidWindow {
+            native: window.clone(),
+        }) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("GPU: probe surface failed: {e}");
+                return None;
+            }
+        };
+
         let adapter =
             match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
+                compatible_surface: Some(&probe),
                 force_fallback_adapter: false,
             })) {
                 Ok(a) => a,
@@ -881,9 +1040,6 @@ impl GpuSurface {
             log::error!("GPU DEVICE LOST: reason={reason:?} msg={msg}");
         });
 
-        let render_texture = Self::make_texture(&device, width, height);
-        let readback_buffer = Self::make_buffer(&device, width, height);
-
         // `use_cpu: false`, which is the whole point of having a device.
         //
         // It read `true` until card K27 measured it. Vello's `use_cpu` swaps
@@ -894,7 +1050,7 @@ impl GpuSurface {
         // 31ms a frame on the library list and 56ms on a screen with a
         // rasterised PDF page; with the flag corrected the same frames took
         // **2.3ms and 5.0ms**. Nothing else about the path changed.
-        let mut renderer = vello::Renderer::new(
+        let renderer = vello::Renderer::new(
             &device,
             vello::RendererOptions {
                 antialiasing_support: vello::AaSupport::area_only(),
@@ -903,94 +1059,326 @@ impl GpuSurface {
                 pipeline_cache: None,
             },
         )
+        .map_err(|e| log::error!("GPU: vello renderer failed: {e}"))
         .ok()?;
 
-        log::info!("GPU: {width}x{height} {:?}", adapter.get_info().backend);
+        let info = adapter.get_info();
+        log::info!(
+            "GPU: {} ({:?}), driver {}",
+            info.name,
+            info.backend,
+            info.driver_info
+        );
 
         Some(Self {
-            renderer,
-            render_texture,
-            readback_buffer,
+            instance,
+            adapter,
             device,
             queue,
+            renderer,
+        })
+    }
+}
+
+/// One window's swapchain, and the texture vello is allowed to draw into.
+///
+/// **Why there is an intermediate texture at all.** Vello is a compute
+/// rasteriser: its final stage writes finished pixels into a *storage* image
+/// from a compute shader. A swapchain image is a colour attachment, and on
+/// Android — as on most drivers — it is not usable as a storage image, so
+/// vello cannot be pointed at it. `render_to_texture` therefore draws into
+/// `target`, an `Rgba8Unorm` storage texture the size of the window, and a
+/// full-screen triangle then samples that into the swapchain image in the
+/// format the display asked for. Vello's own `util` module does exactly this
+/// and its documentation is explicit that the alternative — handing vello the
+/// swapchain texture when the driver happens to allow it — "should generally
+/// be avoided, as some GPUs assume that you will not be rendering to the
+/// surface using a compute pipeline, and optimise accordingly".
+///
+/// The blit costs one texture read and one write per pixel, entirely on the
+/// GPU. What it replaces is the readback this path used to do: a
+/// `copy_texture_to_buffer` into mappable memory, a blocking wait for it, and
+/// a row-by-row CPU copy to strip wgpu's 256-byte row padding — 50 to 69ms per
+/// frame on this device, against a rasterisation that took 2 to 5ms. Card K27
+/// measured that; card K35 is this rewrite, and measured it again the same
+/// way — a `log::info!` per frame through `adb logcat`, medians over a few
+/// hundred frames, on the same three screens of the same app on the same moto
+/// g stylus 5G at 1080x2460, release build.
+///
+/// ```text
+///           resolve  scene   vello  readback  unpack  present   total
+/// K27, reading the frame back:
+/// library       0.0    0.0     2.3      51.6    16.5     12.2    84.0
+/// sheet         0.0    2.4     1.8      44.8    14.7     12.1    74.8
+/// pdf           0.0    0.0     5.0      64.0    16.6     12.6    96.9
+///
+/// K35, presenting the swapchain:
+/// library       0.0    0.0     2.4         -       -      1.6     4.1
+/// sheet         0.0    1.2     2.5         -       -     15.3    18.8
+/// pdf           0.0    0.0     5.6         -       -      1.6     7.4
+/// ```
+///
+/// The `readback` and `unpack` columns are gone, which was the entire point,
+/// and `vello` is unchanged — 2.4 against 2.3, 5.6 against 5.0 — which is the
+/// evidence that nothing about the *rasterisation* was disturbed. A frame on
+/// the library list costs 4.1ms where it cost 84.0.
+///
+/// **Read the `present` column carefully; it is not all work.** It is the
+/// acquire, the blit and the `vkQueuePresentKHR` together, and under Fifo the
+/// first and last of those block on the display. Broken out, the library
+/// frame is `acquire 0.1 / blit 1.1 / present 0.4` and the sheet frame is
+/// `acquire 0.1 / blit 1.1 / present 14.1`. The blit is a millisecond on all
+/// three screens; the sheet's extra 14ms is vsync back-pressure, and it
+/// appears there and not on the other two because the sheet is the only one of
+/// the three that rebuilds its scene every frame (`scene 1.2`) and so actually
+/// gives the compositor something new often enough to be throttled.
+///
+/// **What is left is not this file.** Frame-to-frame, the same traces measure
+/// 20.4 / 36.0 / 24.0 ms — 4 to 17ms more than the paint costs. That residue is
+/// the `poll_events(Some(16ms))` timeout at the top of the loop, which blocks
+/// for its full 16ms whenever no input is arriving, and it is paid by the
+/// software path identically. Presenting the swapchain has moved the ceiling
+/// from "the readback" to "the loop's own clock", which is a different card.
+#[cfg(feature = "android-gpu")]
+struct GpuSurface {
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    /// Vello's canvas: `Rgba8Unorm`, `STORAGE_BINDING` so vello may write it,
+    /// `TEXTURE_BINDING` so the blit may read it.
+    target: wgpu::Texture,
+    target_view: wgpu::TextureView,
+    blitter: wgpu::util::TextureBlitter,
+    /// Clones of the context's device and queue — both are `Arc` handles, so
+    /// this costs a refcount and buys `resize` and `present_scene` the ability
+    /// to work without being handed the whole context. The renderer is *not*
+    /// cloned, because vello's `Renderer` is a `&mut` resource with a frame's
+    /// worth of scratch buffers in it and there must only ever be one.
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    width: u32,
+    height: u32,
+}
+
+#[cfg(feature = "android-gpu")]
+impl GpuSurface {
+    fn new(
+        ctx: &GpuContext,
+        surface: wgpu::Surface<'static>,
+        width: u32,
+        height: u32,
+    ) -> Option<Self> {
+        let width = width.max(1);
+        let height = height.max(1);
+        let caps = surface.get_capabilities(&ctx.adapter);
+
+        log::info!(
+            "GPU surface: formats={:?} present={:?} alpha={:?}",
+            caps.formats,
+            caps.present_modes,
+            caps.alpha_modes
+        );
+
+        // **Format negotiation, and the one wrong answer.**
+        //
+        // Vello writes an `Rgba8Unorm` texture whose bytes are already
+        // sRGB-encoded — that is what a CSS colour is. The blit samples that
+        // texture (a `Unorm` read hands the shader the stored value untouched)
+        // and writes the result to the swapchain. So the swapchain must also
+        // be a plain `Unorm` format: an `*UnormSrgb` attachment would apply a
+        // linear-to-sRGB encode on the way out, on values that are already
+        // encoded, and the whole app would come out washed out and pale. That
+        // failure is uniform and subtle enough to be mistaken for a theme bug,
+        // which is why it is spelled out here rather than left to the reader
+        // of a `matches!`.
+        //
+        // Between the two acceptable formats there is nothing to choose:
+        // `Bgra8Unorm` is what Android hands out and the byte swap is free in
+        // the blit's fragment shader, since the sampler yields components by
+        // name and the attachment stores them by its own order.
+        let format = match caps.formats.iter().copied().find(|f| {
+            matches!(
+                f,
+                wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
+            )
+        }) {
+            Some(f) => f,
+            None => {
+                log::error!(
+                    "GPU: window offers no non-sRGB 8-bit format ({:?}); no GPU frames",
+                    caps.formats
+                );
+                return None;
+            }
+        };
+
+        // Opaque if the window will take it, matching the software path's
+        // `R8G8B8X8_UNORM` request and for the same reason: this shell paints
+        // every pixel of a full-screen frame, there is nothing behind it, and
+        // asking the compositor to blend a surface with no alpha to respect is
+        // work nobody wants done. `Auto` is the fallback and lets wgpu pick
+        // whatever the window does support.
+        let alpha_mode = if caps
+            .alpha_modes
+            .contains(&wgpu::CompositeAlphaMode::Opaque)
+        {
+            wgpu::CompositeAlphaMode::Opaque
+        } else {
+            wgpu::CompositeAlphaMode::Auto
+        };
+
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width,
+            height,
+            // **Fifo, which means this loop no longer decides when to
+            // present.**
+            //
+            // Fifo is the one present mode Vulkan guarantees exists, and it is
+            // vsync: `get_current_texture` blocks until the display has
+            // released an image. That is a real change in who paces the frame
+            // loop, and it is the change that was already true. The software
+            // path's `ANativeWindow_lock` blocks for a free buffer in exactly
+            // the same way — K27's note that "what is left is
+            // `ANativeWindow_lock` waiting for a free buffer, which is the
+            // display's back-pressure rather than work" describes Fifo by
+            // another name. The loop's own 16ms `poll_events` timeout was
+            // always an approximation of the same 60Hz; now something
+            // authoritative enforces it.
+            //
+            // The cost is that a timing probe around the acquire measures
+            // *waiting*, not work, and a reader of those numbers who forgets
+            // it will conclude the present is expensive. Mailbox would hide
+            // the wait by rendering frames nobody sees, which is a worse thing
+            // to do to a phone battery than to a benchmark.
+            present_mode: wgpu::PresentMode::Fifo,
+            desired_maximum_frame_latency: 2,
+            alpha_mode,
+            view_formats: vec![],
+        };
+        surface.configure(&ctx.device, &config);
+
+        let (target, target_view) = Self::make_target(&ctx.device, width, height);
+
+        Some(Self {
+            surface,
+            config,
+            target,
+            target_view,
+            blitter: wgpu::util::TextureBlitter::new(&ctx.device, format),
+            device: ctx.device.clone(),
+            queue: ctx.queue.clone(),
             width,
             height,
         })
     }
 
-    fn make_texture(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture {
-        device.create_texture(&wgpu::TextureDescriptor {
-            label: None,
+    fn make_target(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rinch-vello-target"),
             size: wgpu::Extent3d {
-                width: w,
-                height: h,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::STORAGE_BINDING
-                | wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
-        })
-    }
-
-    fn make_buffer(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Buffer {
-        let row = (w * 4 + 255) & !255;
-        device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: (row * h) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        })
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
     }
 
     fn resize(&mut self, width: u32, height: u32) {
         let (w, h) = (width.max(1), height.max(1));
+        if (w, h) == (self.width, self.height) {
+            return;
+        }
         self.width = w;
         self.height = h;
-        self.render_texture = Self::make_texture(&self.device, w, h);
-        self.readback_buffer = Self::make_buffer(&self.device, w, h);
+        self.config.width = w;
+        self.config.height = h;
+        // Both halves, in this order. Reconfiguring the surface retires the
+        // old swapchain images; the intermediate has to grow to match or the
+        // blit would stretch a window-sized frame across a differently sized
+        // window, which on a rotation is not a subtle artefact.
+        self.surface.configure(&self.device, &self.config);
+        let (target, view) = Self::make_target(&self.device, w, h);
+        self.target = target;
+        self.target_view = view;
     }
 
-    /// Render the scene on the GPU and bring the pixels back to the CPU.
-    ///
-    /// **The readback is what this path costs, and it costs more than the
-    /// drawing it replaces.** Card K27 timed the four phases separately on a
-    /// moto g stylus 5G at 1080x2460, on three real screens:
-    ///
-    /// ```text
-    ///            vello   readback   unpack   present     total
-    /// library      2.7       51.8     16.9       3.5      75.5
-    /// sheet        1.9       36.0     14.9       3.1      59.3
-    /// PDF page     5.0       46.9     16.3       3.3      73.4
-    /// ```
-    ///
-    /// The rasterisation is 2–5ms. Everything after it — waiting for
-    /// `copy_texture_to_buffer` to land in mappable memory, then stripping
-    /// wgpu's 256-byte row padding out of the mapped range — is 50–69ms, and
-    /// it is paid on *every* presented frame whether or not anything changed,
-    /// because unlike the software painter there is no cached pixmap to
-    /// return unread. The software path on the same three screens repaints in
-    /// 44–83ms and presents an unchanged frame in 6.4ms.
-    ///
-    /// So `android-gpu` as written is slower than the CPU it was meant to
-    /// relieve, and the fix is not in this function: it is for the shell to
-    /// hand the `ANativeWindow` to wgpu as a surface and present the swapchain
-    /// texture directly, at which point the numbers above become the 2–5ms
-    /// column alone. Until that exists, this is a debugging path.
-    fn render_to_pixels(&mut self, scene: &vello::Scene) -> (&[u8], u32, u32) {
-        let view = self
-            .render_texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+    fn reconfigure(&mut self) {
+        self.surface.configure(&self.device, &self.config);
+    }
 
-        if let Err(e) = self.renderer.render_to_texture(
+    /// Take the next swapchain image, rebuilding the swapchain if the window
+    /// has moved on without telling us.
+    ///
+    /// `Outdated` and `Lost` are not errors here, they are how a compositor
+    /// says the window changed — a rotation, a fold, an insets change, a
+    /// resize the Activity has not yet delivered as `WindowResized`. The
+    /// answer to both is the same: reconfigure and ask once more.
+    ///
+    /// The retry is bounded at one, and deliberately does not try to work out
+    /// the window's new size for itself. If the window really did change
+    /// shape, this surface is still configured at the old one and will go on
+    /// reporting `suboptimal` until `WindowResized` reaches the loop above and
+    /// calls `resize` — a frame or two of the compositor scaling a
+    /// slightly-wrong image, which is invisible, against a spin here that
+    /// would not be. Dropping a frame is this function's failure mode; looping
+    /// is not.
+    fn acquire(&mut self) -> Option<wgpu::SurfaceTexture> {
+        for attempt in 0..2 {
+            match self.surface.get_current_texture() {
+                // `suboptimal` means the image can be presented but no longer
+                // matches the window — the first frame after a rotation, in
+                // practice. Rebuilding and asking again gives the *right*
+                // frame one vsync later, which is invisible; presenting the
+                // wrong one is not.
+                Ok(frame) if frame.suboptimal && attempt == 0 => {
+                    drop(frame);
+                    self.reconfigure();
+                }
+                Ok(frame) => return Some(frame),
+                Err(e @ (wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost))
+                    if attempt == 0 =>
+                {
+                    log::info!("GPU: swapchain {e:?}, reconfiguring");
+                    self.reconfigure();
+                }
+                Err(e) => {
+                    log::error!("GPU: acquire failed: {e:?}");
+                    return None;
+                }
+            }
+        }
+        None
+    }
+
+    /// Rasterise the scene and put it on the screen, with no trip through
+    /// system memory.
+    ///
+    /// The order — rasterise, *then* acquire — is deliberate. Under Fifo the
+    /// acquire blocks until the display releases an image, so submitting
+    /// vello's compute work first gives the GPU something to do during that
+    /// wait instead of starting it afterwards. It also means an acquire that
+    /// fails costs only the frame, not the scene: the intermediate texture
+    /// still holds a valid, correctly sized frame, and the next iteration
+    /// draws over it.
+    fn present_scene(&mut self, renderer: &mut vello::Renderer, scene: &vello::Scene) {
+        if let Err(e) = renderer.render_to_texture(
             &self.device,
             &self.queue,
             scene,
-            &view,
+            &self.target_view,
             &vello::RenderParams {
                 base_color: peniko::Color::from_rgba8(255, 255, 255, 255),
                 width: self.width,
@@ -999,60 +1387,87 @@ impl GpuSurface {
             },
         ) {
             log::error!("GPU render failed: {e}");
+            return;
         }
 
-        let row = (self.width * 4 + 255) & !255;
+        let Some(frame) = self.acquire() else {
+            return;
+        };
+
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        encoder.copy_texture_to_buffer(
-            self.render_texture.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &self.readback_buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(row),
-                    rows_per_image: Some(self.height),
-                },
-            },
-            wgpu::Extent3d {
-                width: self.width,
-                height: self.height,
-                depth_or_array_layers: 1,
-            },
-        );
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("rinch-blit"),
+            });
+        self.blitter
+            .copy(&self.device, &mut encoder, &self.target_view, &view);
         self.queue.submit(std::iter::once(encoder.finish()));
+        frame.present();
+    }
+}
 
-        let slice = self.readback_buffer.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |_| {});
+#[cfg(feature = "android-gpu")]
+impl Drop for GpuSurface {
+    /// Wait for the GPU to be finished with the swapchain before the swapchain
+    /// stops existing.
+    ///
+    /// This runs before any field is dropped, which is the point. The last
+    /// frame this surface presented may still be in the compositor's hands and
+    /// its command buffer still executing; `wgpu` will destroy the
+    /// `VkSwapchainKHR` when the `Surface` field goes, and destroying a
+    /// swapchain with work outstanding against its images is undefined
+    /// behaviour. Waiting here — inside `TerminateWindow`, while Android's own
+    /// thread is still blocked waiting for this loop to acknowledge the
+    /// event — is the one moment where the wait is both safe and free of
+    /// anything to race against.
+    fn drop(&mut self) {
         let _ = self.device.poll(wgpu::PollType::Wait {
             submission_index: None,
             timeout: None,
         });
+    }
+}
 
-        // Return the mapped data directly — caller must use it before we unmap
-        // We can't return a reference to mapped data across the unmap boundary,
-        // so we copy row-by-row to strip padding and return owned data via a static buffer.
-        static PIXEL_BUF: Mutex<Vec<u8>> = Mutex::new(Vec::new());
-        let data = slice.get_mapped_range();
-        let stride = (self.width * 4) as usize;
-        let mut buf = PIXEL_BUF.lock().unwrap();
-        buf.resize(stride * self.height as usize, 0);
-        for y in 0..self.height as usize {
-            let src = y * row as usize;
-            let dst = y * stride;
-            buf[dst..dst + stride].copy_from_slice(&data[src..src + stride]);
-        }
-        drop(data);
-        self.readback_buffer.unmap();
+/// The `ANativeWindow`, wearing the two traits wgpu needs to make a surface
+/// from it.
+///
+/// `ndk` implements `HasWindowHandle` for `NativeWindow` but not
+/// `HasDisplayHandle` — there is no display object on Android to point at —
+/// so the pair has to be assembled here. The `native` field is a *clone*,
+/// which on `NativeWindow` is an `ANativeWindow_acquire`: wgpu takes ownership
+/// of this value and keeps it for the life of the `Surface`, so the window
+/// cannot be freed out from under a live swapchain even if the Activity
+/// releases its own reference first. That is the second lock on the lifecycle,
+/// under the one in `TerminateWindow`.
+#[cfg(feature = "android-gpu")]
+struct AndroidWindow {
+    native: ndk::native_window::NativeWindow,
+}
 
-        let ptr = buf.as_ptr();
-        let len = buf.len();
-        drop(buf);
-        // SAFETY: the static Mutex ensures the buffer lives long enough;
-        // caller uses it immediately in present_pixels before next frame.
-        let pixels = unsafe { std::slice::from_raw_parts(ptr, len) };
-        (pixels, self.width, self.height)
+#[cfg(feature = "android-gpu")]
+impl raw_window_handle::HasWindowHandle for AndroidWindow {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        self.native.window_handle()
+    }
+}
+
+#[cfg(feature = "android-gpu")]
+impl raw_window_handle::HasDisplayHandle for AndroidWindow {
+    fn display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        Ok(unsafe {
+            raw_window_handle::DisplayHandle::borrow_raw(
+                raw_window_handle::RawDisplayHandle::Android(
+                    raw_window_handle::AndroidDisplayHandle::new(),
+                ),
+            )
+        })
     }
 }
 
